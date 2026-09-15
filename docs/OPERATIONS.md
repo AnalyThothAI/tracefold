@@ -1790,7 +1790,7 @@ SELECT min(a.opened_at_ms) AS oldest_due
   FROM news_event_assets a
   JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
   LEFT JOIN news_event_reactions r
-    ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = 'reaction_v1'
+    ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = 'reaction_v2'
  WHERE a.opened_at_ms <= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 3600000
    AND (r.state IS NULL OR r.state IN ('pending', 'partial'));
 

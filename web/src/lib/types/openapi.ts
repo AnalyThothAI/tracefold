@@ -2391,10 +2391,21 @@ export interface components {
              */
             tradability: "direct" | "second_order" | "contextual" | "none";
         };
-        /** NewsTriageAssetData */
+        /**
+         * NewsTriageAssetData
+         * @description One typed asset of a Triage verdict (#651 §6.2).
+         *
+         *     ``market_type`` is the catalogue's instrument-class vocabulary, never a free string: the browser has
+         *     to be able to tell `SEI` the token from `SEI` the listed insurer, and so does anything reading this
+         *     API. Verdicts written before #651 carry `null` or a provider-tag word; the projection normalizes
+         *     those to `unknown` rather than publishing a market nobody established.
+         */
         NewsTriageAssetData: {
-            /** Market Type */
-            market_type?: string | null;
+            /**
+             * Market Type
+             * @enum {string}
+             */
+            market_type: "crypto" | "equity" | "commodity" | "index" | "fx" | "pre_ipo" | "unknown";
             /**
              * Role
              * @enum {string}

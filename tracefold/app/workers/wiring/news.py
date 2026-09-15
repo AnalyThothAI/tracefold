@@ -50,6 +50,7 @@ from tracefold.news import ProgressionVerifier
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
+from tracefold.news.market_review.pricing import QuoteRequest
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererLoop, read_display_quotes, read_pushed_news
 from tracefold.news.pipeline.maintenance import JanitorLoop
@@ -101,8 +102,8 @@ class _MarketNotificationDatabase:
     async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T:
         return await self.lane.tx(name, fn, timeout_seconds=timeout_seconds)
 
-    async def quotes_for_symbols(self, symbols: Sequence[str], *, now_ms: int) -> list[dict[str, Any]]:
-        return await read_display_quotes(self.lane, symbols, now_ms=now_ms, name="news_market_quotes")
+    async def quotes_for_symbols(self, requests: Sequence[QuoteRequest], *, now_ms: int) -> list[dict[str, Any]]:
+        return await read_display_quotes(self.lane, requests, now_ms=now_ms, name="news_market_quotes")
 
     async def pushed_news_for_symbol(self, symbol: str, *, now_ms: int) -> dict[str, Any]:
         """`MarketNotificationDatabasePort.pushed_news_for_symbol`: the delivered-card ledger, read once.

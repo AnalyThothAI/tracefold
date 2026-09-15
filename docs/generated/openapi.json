@@ -5659,18 +5659,20 @@
       },
       "NewsTriageAssetData": {
         "additionalProperties": false,
+        "description": "One typed asset of a Triage verdict (#651 \u00a76.2).\n\n``market_type`` is the catalogue's instrument-class vocabulary, never a free string: the browser has\nto be able to tell `SEI` the token from `SEI` the listed insurer, and so does anything reading this\nAPI. Verdicts written before #651 carry `null` or a provider-tag word; the projection normalizes\nthose to `unknown` rather than publishing a market nobody established.",
         "properties": {
           "market_type": {
-            "anyOf": [
-              {
-                "maxLength": 16,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "crypto",
+              "equity",
+              "commodity",
+              "index",
+              "fx",
+              "pre_ipo",
+              "unknown"
             ],
-            "title": "Market Type"
+            "title": "Market Type",
+            "type": "string"
           },
           "role": {
             "enum": [
@@ -5689,6 +5691,7 @@
         },
         "required": [
           "symbol",
+          "market_type",
           "role"
         ],
         "title": "NewsTriageAssetData",

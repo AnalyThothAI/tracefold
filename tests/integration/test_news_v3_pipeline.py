@@ -14,7 +14,10 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.delivery import card_assets
+from tracefold.news.market_review.instruments import Instrument
+from tracefold.news.market_review.pricing import QuoteRequest
+from tracefold.news.models import TRIAGE_POLICY_VERSION, MarketAsset, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
@@ -2200,4 +2203,166 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
     assert {tagged_new, tagged_old} <= text_ids
     assert plain_id not in text_ids
     assert text_page["counts"] == asset_page["counts"]
+    conn.commit()
+
+
+def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(conn) -> None:
+    """Item -> verdict -> card -> quote target -> detail projection, with a market the tag contradicts.
+
+    The Event is the shape #651 §6.2 is about: one provider tag (`CRCL`), a subject the tag does not
+    name (`V`), and a catalogue that lists `V` under two markets. Every step here is a real seam --
+    PostgreSQL validates the verdict, the catalogue answers the candidates, the read model projects the
+    detail -- because every one of them used to lose the distinction somewhere.
+    """
+
+    repos = repositories_for_connection(conn)
+    event_id = "ev-typed-primary"
+    opened_at_ms = 1_796_600_000_000
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [
+                Instrument("binance.perp", "VUSDT", "V", "crypto", "USDT"),
+                Instrument("us.listed", "V", "V", "equity", None),
+                Instrument("us.listed", "CRCL", "CRCL", "equity", None),
+            ],
+            now_ms=opened_at_ms,
+        )
+        conn.execute(
+            """
+            INSERT INTO news_items (item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,
+                                    provider_metadata, first_ingest_mode, created_at_ms, updated_at_ms)
+            VALUES (%s, 'opennews', %s, 'headline', %s, %s, '{}'::jsonb, 'live', %s, %s)
+            """,
+            (f"i-{event_id}", f"i-{event_id}", opened_at_ms, opened_at_ms, opened_at_ms, opened_at_ms),
+        )
+        conn.execute(
+            """
+            INSERT INTO news_events (
+              event_id, leader_item_id, dedupe_family, event_kind, comparison_fingerprint, comparison_title,
+              leader_title, focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method,
+              focus_span_start, focus_span_end, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
+              storyline_key, grounded_assets, ingest_mode, created_at_ms, updated_at_ms
+            ) VALUES (
+              %s, %s, 'general', 'news', %s, 'visa adds on chain credit to its stablecoin card programme',
+              'Visa adds on-chain credit to its stablecoin card programme', %s,
+              'Visa adds on-chain credit to its stablecoin card programme', '', 'whole_item', 0, 15,
+              %s, %s, %s, 'candidate', 'asset:CRCL', '["CRCL"]'::jsonb, 'live', %s, %s
+            )
+            """,
+            (
+                event_id,
+                f"i-{event_id}",
+                event_id,
+                f"fact:{event_id}",
+                opened_at_ms,
+                opened_at_ms,
+                opened_at_ms + 3_600_000,
+                opened_at_ms,
+                opened_at_ms,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms) VALUES ('CRCL', %s, NULL, %s)",
+            (event_id, opened_at_ms),
+        )
+        evidence = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=opened_at_ms)
+
+    # The catalogue answers what `V` could be, uncollapsed, so the model is shown the ambiguity.
+    candidates = repos.instruments.instrument_class_candidates(["V", "CRCL"])
+    assert candidates == {"V": ("crypto", "equity"), "CRCL": ("equity",)}
+    assert repos.instruments.instrument_classes()["V"] == "crypto", "the collapsed map is why this is needed"
+
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        assets=[
+            {"symbol": "V", "market_type": "equity", "role": "primary"},
+            {"symbol": "CRCL", "market_type": "equity", "role": "mentioned"},
+        ],
+        direction="neutral",
+        scope="single_name",
+        magnitude=2,
+        confidence=0.8,
+        audience="us_equity",
+        headline_zh="Visa 在稳定币卡业务中引入链上信贷",
+        why_zh="发卡方以链上借贷提供营运资金。",
+    )
+    judgment = scored_judgment(verdict)
+    trace = {
+        "judgment_contract_version": judgment.judgment_contract_version,
+        "judgment_origin": "model",
+        "judgment_sha256": judgment.scored_judgment_sha256,
+        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+        "editorial_sha256": judgment.editorial.editorial_sha256,
+        "runtime_manifest_sha": "b" * 64,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "a" * 64,
+        "evidence_version": int(evidence["evidence_version"]),
+        "evidence_sha256": str(evidence["evidence_sha256"]),
+        "focus_fact_id": str(evidence["focus_fact_id"]),
+        "told": [],
+        "told_count": 0,
+    }
+
+    def _insert(payload: dict[str, Any]) -> None:
+        repos.news.insert_verdict(
+            event_id=event_id,
+            stage="triage",
+            policy_version=TRIAGE_POLICY_VERSION,
+            judgment_contract_version=judgment.judgment_contract_version,
+            judgment_origin="model",
+            rule_baseline_decision="push",
+            final_decision="push",
+            override_rule=None,
+            throttled_by=None,
+            verdict=payload,
+            model_editorial=judgment.editorial.model_dump(mode="json"),
+            judgment_sha256=judgment.scored_judgment_sha256,
+            runtime_manifest_sha="b" * 64,
+            model="test",
+            program_version=SEMANTIC_PROGRAM_VERSION,
+            program_sha256="a" * 64,
+            degraded=False,
+            error_code=None,
+            trace=trace,
+            evidence_version=int(evidence["evidence_version"]),
+            evidence_sha256=str(evidence["evidence_sha256"]),
+            focus_fact_id=str(evidence["focus_fact_id"]),
+            now_ms=opened_at_ms + 1_000,
+        )
+
+    # PostgreSQL is where the typed contract is a fact rather than a promise: a v10 verdict carrying a
+    # market outside the vocabulary is refused by `news_current_typed_assets_valid`.
+    with pytest.raises(CheckViolation), repos.transaction():
+        _insert(
+            {
+                **verdict.model_dump(mode="json"),
+                "assets": [{"symbol": "V", "market_type": "token", "role": "primary"}],
+            }
+        )
+    with repos.transaction():
+        _insert(verdict.model_dump(mode="json"))
+
+    # The card names the judgment's own subject rather than the only tag the provider sent.
+    shown = card_assets(verdict.model_dump(mode="json"), ["CRCL"], catalog_candidates=candidates)
+    assert shown == [MarketAsset("V", "equity"), MarketAsset("CRCL", "equity")]
+
+    # And the typed quote target refuses the same-name coin: `V/equity` is priced by an equity source or
+    # by nothing. The `us.listed` directory proves the ticker exists, so the answer is `unavailable`.
+    quotes = {
+        row["requested_symbol"]: row
+        for row in repos.price.quotes_for_symbols(
+            [QuoteRequest(asset.symbol, asset.market_type) for asset in shown], now_ms=opened_at_ms + 2_000
+        )
+    }
+    assert quotes["V"]["state"] == "unavailable" and quotes["V"]["venue"] is None
+    assert quotes["V"]["instrument_class"] == "equity"
+    assert repos.price.resolve_instruments([QuoteRequest("V")])[QuoteRequest("V")].venue == "binance.perp"
+
+    # The public detail projection carries the market, so the browser can tell the two `V`s apart too.
+    detail = repos.news.event_detail(event_id)
+    assert detail is not None
+    assert detail["triage"]["assets"] == [
+        {"symbol": "V", "market_type": "equity", "role": "primary"},
+        {"symbol": "CRCL", "market_type": "equity", "role": "mentioned"},
+    ]
     conn.commit()

@@ -15,7 +15,7 @@ from typing import Any, ClassVar, Literal
 from ..artifact_identity import canonical_json, canonical_sha
 from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..events.storyline import final_storyline_key
-from ..models import TRIAGE_POLICY_VERSION, json_ready
+from ..models import TRIAGE_POLICY_VERSION, MarketAsset, json_ready
 from ..program.contracts import (
     ScoredJudgment,
     SemanticJudge,
@@ -66,6 +66,31 @@ log = logging.getLogger("tracefold.news")
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
 # The two decisions that owe a reader a card, and the one delivery kind there is: one Event, one card.
 _DELIVERED_DECISIONS: frozenset[str] = frozenset({"push", "escalate"})
+
+
+@dataclass(frozen=True, slots=True)
+class _TriageBundle:
+    """Everything one Triage turn reads from PostgreSQL in a single session."""
+
+    card: dict[str, Any]
+    history: ReaderHistorySnapshot
+    admission: str
+    event_kind: str
+    catalog_candidates: dict[str, tuple[str, ...]]
+
+
+def _candidate_symbols(card: Mapping[str, Any]) -> tuple[str, ...]:
+    """Every symbol this Event already carries: Gate-grounded tags first, then raw provider tags.
+
+    The candidate list is disambiguation evidence about symbols the Event *names*; it is never a place
+    for the catalogue to suggest instruments nothing in the evidence mentions.
+    """
+
+    coins = (dict(card.get("provider_metadata") or {}).get("coins") or ()) if card.get("provider_metadata") else ()
+    return (
+        *(str(value) for value in card.get("grounded_assets") or () if value),
+        *(str(coin.get("symbol")) for coin in coins if isinstance(coin, Mapping) and coin.get("symbol")),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +234,7 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, history, admission, event_kind = bundle
+        card, history, admission, event_kind = bundle.card, bundle.history, bundle.admission, bundle.event_kind
         # Evidence snapshots are immutable by design, so a pre-cut queued message may still carry the
         # old candidate admission after a source-contract migration has held the material Event.  Route
         # from current PostgreSQL truth before looking for a settled verdict.
@@ -227,7 +252,13 @@ class TriageConsumer:
         arm = await self._select_arm(card, event_id=event_id, stamp=stamp)
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         route = self._route_inputs(
-            card, history, event_id=event_id, facts=facts, stamp=stamp, queue_lag_ms=queue_lag_ms
+            card,
+            history,
+            event_id=event_id,
+            facts=facts,
+            stamp=stamp,
+            queue_lag_ms=queue_lag_ms,
+            catalog_candidates=bundle.catalog_candidates,
         )
         trace = _initial_trace(
             route,
@@ -326,6 +357,7 @@ class TriageConsumer:
         facts: GateFacts,
         stamp: int,
         queue_lag_ms: int,
+        catalog_candidates: Mapping[str, Sequence[str]],
     ) -> _RouteInputs:
         """The Event as the Program will see it, plus the hashes the persist step compares against.
 
@@ -342,6 +374,7 @@ class TriageConsumer:
             told_rows=told_rows,
             now_ms=stamp,
             queue_lag_ms=queue_lag_ms,
+            catalog_candidates=catalog_candidates,
         )
         return _RouteInputs(
             event_id=event_id,
@@ -574,7 +607,7 @@ class TriageConsumer:
                 title=route.wire_title,
                 headline_zh=verdict.headline_zh,
                 scope=verdict.scope,
-                verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
+                verdict_primaries=[MarketAsset.of(a) for a in verdict.assets if a.role == "primary"],
                 grounded_assets=route.facts.grounded_assets,
                 dedupe_family=str(card.get("dedupe_family") or "general"),
                 aliases=self._aliases,
@@ -629,7 +662,7 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_reload", functools.partial(self._load, event_id=event_id, stamp=stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, history, _admission, event_kind = bundle
+        card, history, event_kind = bundle.card, bundle.history, bundle.event_kind
         if event_kind not in EVENT_KINDS:
             return None
         refreshed = self._route_inputs(
@@ -639,6 +672,7 @@ class TriageConsumer:
             facts=_gate_facts(card, self.watchlist_symbols),
             stamp=stamp,
             queue_lag_ms=queue_lag_ms,
+            catalog_candidates=bundle.catalog_candidates,
         )
         if refreshed.prelim_key != route.prelim_key:
             trace["first_storyline_key_preliminary"] = route.prelim_key
@@ -815,23 +849,24 @@ class TriageConsumer:
                 ),
             )
 
-    def _load_with_aliases(
-        self, repos: Any, event_id: str, stamp: int
-    ) -> tuple[dict[str, Any], ReaderHistorySnapshot, str, str] | None:
+    def _load_with_aliases(self, repos: Any, event_id: str, stamp: int) -> _TriageBundle | None:
         """The Triage bundle plus a refreshed alias table, both from the one session (#75)."""
 
         self._refresh_aliases(repos, now=stamp)
         return self._load(repos, event_id, stamp)
 
     @staticmethod
-    def _load(repos: Any, event_id: str, stamp: int) -> tuple[dict[str, Any], ReaderHistorySnapshot, str, str] | None:
+    def _load(repos: Any, event_id: str, stamp: int) -> _TriageBundle | None:
         card = repos.news.event_card(event_id)
         routing = repos.news.event_admission(event_id)
         if card is None or routing is None:
             return None
-        return (
-            card,
-            _read_history(repos.news, event_id=event_id, card=card, now_ms=stamp),
-            str(routing.get("admission") or ""),
-            str(routing.get("event_kind") or ""),
+        return _TriageBundle(
+            card=card,
+            history=_read_history(repos.news, event_id=event_id, card=card, now_ms=stamp),
+            admission=str(routing.get("admission") or ""),
+            event_kind=str(routing.get("event_kind") or ""),
+            # #651 §A. Read in the same session as the card, so the disambiguation evidence the model is
+            # shown is the catalogue this judgment actually ran against, not a cached copy of an older one.
+            catalog_candidates=repos.instruments.instrument_class_candidates(_candidate_symbols(card)),
         )

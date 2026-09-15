@@ -124,7 +124,9 @@ class CaseResult(BaseModel):
     latency_ms: int = 0
     error_code: str | None = None
     # Per-dimension outcome of *this* candidate: gold_hit/gold_miss, retention_hit/retention_miss,
-    # ungolded_change/ungolded_unchanged, field_absent.
+    # ungolded_change/ungolded_unchanged, field_absent, and on `asset_grounding` the narrower
+    # `known_wrong_market` -- the candidate named the reviewer's symbols in a market the reviewer
+    # contradicted, which is a different defect from naming the wrong names (#651 §6.2).
     dimension_outcomes: tuple[tuple[str, str], ...] = ()
     # Which hard gate zeroed this case, or "" when none did.
     hard_gate: str = ""

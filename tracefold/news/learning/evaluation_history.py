@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..events.storyline import NO_STORYLINE_KEY
-from ..models import base_symbol
+from ..market_review.instrument_storage import InstrumentsRepository
+from ..models import MarketAsset, base_symbol
 from ..reader_history import TARGETED_HISTORY_WINDOW_MS, ReaderHistorySnapshot, build_reader_history
 
 
@@ -25,7 +26,9 @@ class Receipt:
     comparison_fingerprint: str = ""
     dedupe_family: str = "general"
     grounded_assets: tuple[str, ...] = ()
-    assets: tuple[str, ...] = ()
+    # Typed, like `ReaderHistoryRow.assets` (#651 §6.2): a replayed receipt has to carry the same asset
+    # identity the production row carries, or the two overlap rules cannot be the same rule.
+    assets: tuple[MarketAsset, ...] = ()
     canonical_assets: tuple[str, ...] = ()
 
     def as_told_row(self) -> dict[str, Any]:
@@ -41,7 +44,7 @@ class Receipt:
             "headline_zh": self.headline_zh,
             "why_zh": self.why_zh,
             "grounded_assets": list(self.grounded_assets),
-            "assets": list(self.assets),
+            "assets": [{"symbol": asset.symbol, "market_type": asset.market_type} for asset in self.assets],
             "canonical_assets": list(self.canonical_assets),
         }
 
@@ -61,6 +64,15 @@ class EvaluationReaderHistory:
     def __init__(self, conn: Any) -> None:
         self._conn = conn
         self._symbol_aliases: dict[str, str] | None = None
+        # The same catalogue reader production uses, over the same session (#651 §A). A replay that
+        # resolved candidates by a second copy of that query could disagree with the live judge about
+        # what the catalogue holds, which is the one thing a replay exists to rule out.
+        self._instruments = InstrumentsRepository(conn)
+
+    def catalog_candidates(self, symbols: Sequence[str]) -> dict[str, tuple[str, ...]]:
+        """What the catalogue holds for each symbol a replayed Event names, uncollapsed."""
+
+        return self._instruments.instrument_class_candidates(symbols)
 
     def _alias_map(self) -> dict[str, str]:
         if self._symbol_aliases is None:
@@ -119,8 +131,13 @@ class EvaluationReaderHistory:
                      AS headline_zh,
                    v.verdict ->> 'why_zh' AS why_zh,
                    COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
+                   -- Symbol *and* market (#651 §6.2). Projecting the symbol alone was what made a
+                   -- replayed receipt unable to tell `SEI` the token from `SEI` the listed insurer while
+                   -- the production row beside it could.
                    COALESCE(
-                     (SELECT jsonb_agg(asset ->> 'symbol')
+                     (SELECT jsonb_agg(jsonb_build_object(
+                               'symbol', asset ->> 'symbol',
+                               'market_type', asset ->> 'market_type'))
                         FROM jsonb_array_elements(COALESCE(v.verdict -> 'assets', '[]'::jsonb)) AS asset
                        WHERE asset ->> 'symbol' IS NOT NULL),
                      '[]'::jsonb
@@ -185,9 +202,7 @@ def receipt_from_output(*, event_id: str, at_ms: int, output: Mapping[str, Any],
         comparison_fingerprint=str(output.get("comparison_fingerprint") or ""),
         dedupe_family=str(output.get("dedupe_family") or "general"),
         grounded_assets=tuple(str(value) for value in output.get("grounded_assets") or ()),
-        assets=tuple(
-            str(asset.get("symbol") or "") for asset in verdict.get("assets") or () if isinstance(asset, Mapping)
-        ),
+        assets=tuple(MarketAsset.of(asset) for asset in verdict.get("assets") or () if isinstance(asset, Mapping)),
         canonical_assets=tuple(str(value) for value in output.get("canonical_assets") or ()),
     )
 

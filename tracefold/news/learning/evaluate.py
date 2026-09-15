@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.storyline import final_storyline_key
+from ..models import MarketAsset
 from ..program.contracts import ProgramCallTrace, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.lm import RecordedLM, RuntimeModelIdentity
@@ -951,7 +952,7 @@ class CandidateEvaluator:
         snapshot = case["snapshot"]
         event = dict(snapshot.get("card") or {})
         grounded = tuple(str(value) for value in event.get("grounded_assets") or [])
-        primaries = [asset.symbol for asset in verdict.assets if asset.role == "primary"]
+        primaries = [MarketAsset.of(asset) for asset in verdict.assets if asset.role == "primary"]
         storyline = final_storyline_key(
             title=str(event.get("leader_title") or ""),
             headline_zh=verdict.headline_zh,

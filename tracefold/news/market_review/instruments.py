@@ -32,6 +32,17 @@ InstrumentStatus = Literal["trading", "delisted"]
 INSTRUMENT_CLASSES: Final[frozenset[str]] = frozenset(
     {"crypto", "equity", "commodity", "index", "fx", "pre_ipo", "unknown"}
 )
+# One stable order over the vocabulary, so a per-symbol candidate list is bytes rather than set iteration
+# order (#651 §A): the model-visible Gate evidence and every identity hashed over it must be reproducible.
+INSTRUMENT_CLASS_ORDER: Final[tuple[InstrumentClass, ...]] = (
+    "crypto",
+    "equity",
+    "commodity",
+    "index",
+    "fx",
+    "pre_ipo",
+    "unknown",
+)
 # Classes that are not crypto. The Gate collapses them into one `equity_or_commodity` asset class (#89).
 NON_CRYPTO_CLASSES: Final[frozenset[str]] = frozenset({"equity", "commodity", "index", "fx", "pre_ipo"})
 # Venues in the table that nobody trades on: they answer "is this symbol a stock?" and nothing else (#91). The
@@ -345,6 +356,7 @@ __all__ = [
     "ALIAS_SEEDS",
     "EQUITY_DEXS",
     "INSTRUMENT_CLASSES",
+    "INSTRUMENT_CLASS_ORDER",
     "NON_CRYPTO_CLASSES",
     "REFERENCE_VENUES",
     "Instrument",

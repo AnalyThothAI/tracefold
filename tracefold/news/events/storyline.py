@@ -32,6 +32,7 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..market_review.instruments import resolve_base_symbol
+from ..models import MarketAsset, base_symbol, market_type_of, same_market_asset
 
 STORYLINE_REGISTRY_VERSION: Final = "news_storyline_registry_v1"
 _REGISTRY_RESOURCE: Final = "storyline_registry.json"
@@ -272,6 +273,9 @@ def registry_storyline_key(text: str) -> str | None:
 
 _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 
+# The one prefix an instrument-keyed storyline uses. Named because two functions parse it and one writes it.
+_ASSET_KEY_PREFIX: Final = "asset:"
+
 
 # A model primary is free text (`TriageAsset.symbol` is any 1-16 characters) and this fallback is reached
 # precisely when nothing grounded it, so it is the least validated string in the pipeline — and it becomes a
@@ -281,7 +285,7 @@ _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 _SYMBOL_SHAPE: Final = re.compile(r"^[A-Z0-9]{1,10}(\.[A-Z]{1,4})?$")
 
 
-def _symbol_in_text(symbol: str, text: str) -> bool:
+def symbol_in_text(symbol: str, text: str) -> bool:
     """True when the base symbol appears in the text as its own uppercase token (a `$TICKER` cashtag counts: `$`
     is not a word character).
 
@@ -295,10 +299,52 @@ def _symbol_in_text(symbol: str, text: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9]){base}(?![A-Za-z0-9])", text) is not None
 
 
-def _asset_key(symbols: Sequence[str], aliases: Mapping[str, str] | None) -> str:
-    """``asset:<SYM>`` for the first symbol after alias resolution (#75 collapses one issuer's contracts)."""
+def _asset_key(assets: Sequence[MarketAsset], aliases: Mapping[str, str] | None) -> str:
+    """``asset:<market>:<SYM>``, or ``asset:<SYM>`` when the market is unknown (#651 §6.2).
 
-    return f"asset:{sorted(resolve_base_symbol(symbol, aliases) for symbol in symbols)[0]}"
+    The symbol is still resolved through aliases first (#75 collapses one issuer's contracts), and the
+    first symbol alphabetically is still the bucket. What is new is that the bucket carries the market:
+    `SEI` the Cosmos token and `SEI` the NYSE-listed insurer are two storylines, and before this they
+    were one — which made the duplicate-comparison set of each contain the other's cards.
+
+    An asset whose market nobody established keeps the untyped key. That is deliberate and is the same
+    rule :func:`same_storyline_key` applies when it compares two of these: unknown cannot contradict, so
+    it must not split a bucket either, or every card written before #651 would leave its own storyline.
+    """
+
+    resolved = sorted(
+        (MarketAsset(resolve_base_symbol(asset.symbol, aliases), asset.market_type) for asset in assets),
+        key=lambda asset: (asset.symbol, asset.market_type),
+    )
+    return f"asset:{resolved[0].key}"
+
+
+def storyline_asset(key: str) -> MarketAsset | None:
+    """The instrument an ``asset:`` storyline key names, or ``None`` for any other kind of key."""
+
+    if not key.startswith(_ASSET_KEY_PREFIX):
+        return None
+    body = key[len(_ASSET_KEY_PREFIX) :]
+    market, _, symbol = body.partition(":")
+    return MarketAsset(symbol, market_type_of(market)) if symbol else MarketAsset(body, "unknown")
+
+
+def same_storyline_key(left: str, right: str) -> bool:
+    """Whether two storyline keys name one story, under the #651 §6.2 market rule.
+
+    Exact equality answers every key kind. Two ``asset:`` keys additionally compare as instruments, which
+    is what lets a typed key and an untyped one still meet: the Event's *preliminary* key is computed at
+    Gate time from provider tags, with no judgment and therefore no market, while the delivered cards it
+    is compared against carry the final key a judgment typed. Requiring the strings to match would have
+    dropped every asset-keyed card out of its own storyline tier the moment the final key gained a market.
+    """
+
+    if not left or left == NO_STORYLINE_KEY:
+        return False
+    if left == right:
+        return True
+    one, two = storyline_asset(left), storyline_asset(right)
+    return one is not None and two is not None and same_market_asset(one, two)
 
 
 def preliminary_storyline_key(*, title: str, strong_assets: Sequence[str], asset_class: str, dedupe_family: str) -> str:
@@ -321,7 +367,13 @@ def preliminary_storyline_key(*, title: str, strong_assets: Sequence[str], asset
     if key is not None:
         return key
     if asset_class not in {"macro", "none"}:
-        named = [symbol for symbol in strong_assets if symbol.upper() not in _CL_SYMBOLS]
+        # Untyped on purpose: at Gate time no judgment has said what this Event is about, so the market is
+        # not known and inventing one from the catalogue would key an equity story as a coin story on the
+        # strength of a same-name token. `same_storyline_key` is what makes this key still meet the typed
+        # final keys of the cards it is compared against (#651 §6.2).
+        named = [
+            MarketAsset(base_symbol(symbol), "unknown") for symbol in strong_assets if symbol.upper() not in _CL_SYMBOLS
+        ]
         if named:
             return _asset_key(named, None)
     return NO_STORYLINE_KEY
@@ -332,7 +384,7 @@ def final_storyline_key(
     title: str,
     headline_zh: str,
     scope: str,
-    verdict_primaries: Sequence[str],
+    verdict_primaries: Sequence[MarketAsset],
     grounded_assets: Sequence[str],
     dedupe_family: str,
     aliases: Mapping[str, str] | None = None,
@@ -355,11 +407,15 @@ def final_storyline_key(
     answered, so a degraded card keeps the pre-#100 fallback: the provider's tags are the only evidence there is.
 
     This key is a duplicate-comparison and operator-facing grouping, never a claim shown to the reader — the
-    card's tickers come from ``delivery.card_assets`` (verdict primaries ∩ grounded), which this does not touch."""
+    card's tickers come from ``delivery.card_assets`` (this judgment's own typed assets), which this does not
+    touch. Since #651 §6.2 the key carries the primary's market when it names one, and
+    :func:`same_storyline_key` is what compares two of these."""
 
     grounded = {resolve_base_symbol(a, aliases) for a in grounded_assets}
     primaries = [
-        a for a in verdict_primaries if a.upper() not in _CL_SYMBOLS and resolve_base_symbol(a, aliases) in grounded
+        a
+        for a in verdict_primaries
+        if a.symbol.upper() not in _CL_SYMBOLS and resolve_base_symbol(a.symbol, aliases) in grounded
     ]
     if primaries and scope != "macro":
         return _asset_key(primaries, aliases)
@@ -374,7 +430,7 @@ def final_storyline_key(
     named = [
         a
         for a in verdict_primaries
-        if a.upper() not in _CL_SYMBOLS and _SYMBOL_SHAPE.match(a.upper().replace("XYZ-", ""))
+        if a.symbol.upper() not in _CL_SYMBOLS and _SYMBOL_SHAPE.match(a.symbol.upper().replace("XYZ-", ""))
     ]
     if named:
         return _asset_key(named, aliases)
@@ -385,7 +441,11 @@ def final_storyline_key(
     # false negative here costs a coarser group; a false positive contaminates another card's comparison set. A
     # degraded verdict is exempt: it has no `assets` to begin with, and "NVIDIA to invest $100bn" never spells
     # `NVDA`.
-    fallback = [a for a in grounded_assets if a.upper() not in _CL_SYMBOLS and (degraded or _symbol_in_text(a, text))]
+    fallback = [
+        MarketAsset(base_symbol(a), "unknown")
+        for a in grounded_assets
+        if a.upper() not in _CL_SYMBOLS and (degraded or symbol_in_text(a, text))
+    ]
     if fallback:
         return _asset_key(fallback, aliases)
     return NO_STORYLINE_KEY
@@ -406,5 +466,8 @@ __all__ = [
     "normalize_storyline_text",
     "preliminary_storyline_key",
     "registry_storyline_key",
+    "same_storyline_key",
+    "storyline_asset",
     "storyline_entry",
+    "symbol_in_text",
 ]

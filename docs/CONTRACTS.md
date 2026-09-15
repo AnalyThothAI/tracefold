@@ -215,7 +215,7 @@ same request-time venue and contract: Binance is tried first, Hyperliquid second
 push-minus-1H, push-minus-24H, and push anchor, the latest trade no later than the millisecond timestamp is used only when it is
 at most 60 seconds old; otherwise the adapter falls back to the last closed one-minute candle within 90 seconds.
 The calculation never mixes venues or contracts, needs no continuously collected tick history, and does not
-write these presentation returns into `reaction_v1`. The 24 h value is calculated from the current and
+write these presentation returns into `reaction_v2`. The 24 h value is calculated from the current and
 push-minus-24H anchors on that same contract; a fresh same-contract `rolling_24h` snapshot is only a fallback when
 the on-demand point path is unavailable. An unavailable value is labelled rather than replaced with another window.
 Direction renders polarity and impact together on one line, such as `🧭 方向 利空 · 影响明显`; novelty remains
@@ -856,6 +856,21 @@ Model delivery intent has exactly one owner: the model editorial envelope's
 `TradeRelevanceV1.reader_value`; final action has exactly one owner in the
 origin-matched `DecisionResult`.
 
+Each `assets[]` entry is `{symbol, market_type, role}`, and `market_type` is
+required over the instrument-class vocabulary
+`crypto|equity|commodity|index|fx|pre_ipo|unknown` (#651 §6.2). A bare symbol is
+not an instrument identity — `SEI` is a Binance token and a NYSE-listed insurer,
+`ATOM` is Atomera — so the storyline key, the told overlap, the quote target and
+the Gold comparison all compare `(market_type, base_symbol, role)`. Two *known*
+and different markets contradict; `unknown` on either side cannot, which is the
+one rule that keeps every verdict written before #651 comparing exactly as it
+did. Those rows carry `null` or a provider-tag word (`token`, `cex`,
+`equity_or_commod`) in that position; every reader normalizes anything outside
+the vocabulary to `unknown` rather than guessing, and the durable rows are never
+rewritten. The v10 branch of `news_verdicts_current_judgment_check` enforces the
+vocabulary in PostgreSQL for new rows only, for the same reason. A non-listed
+institution is a text subject and never gets an invented ticker.
+
 `TradeRelevanceV1` is the nested output of `EventSemantics.v2`:
 
 - `impact_breadth`: `none|single_instrument|sector|regional|cross_asset|global_systemic`;
@@ -923,7 +938,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v6`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v2`,
-`news_semantic_program_v9`,
+`news_semantic_program_v10`,
 `news_triage_policy_v13`, `news_delivery_card_v11`, artifact schema
 `news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and

@@ -19,8 +19,8 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_sha
-from ..events.storyline import final_storyline_key
-from ..models import base_symbol
+from ..events.storyline import final_storyline_key, symbol_in_text
+from ..models import MarketAsset, MarketType, base_symbol, same_market_asset
 from ..program.contracts import ScoredJudgment, TriageContext
 from ..taxonomy import ModelTaxonomyV1
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
@@ -168,7 +168,7 @@ def production_decision(
         title=str(storyline.get("title") or ""),
         headline_zh=judgment.verdict.headline_zh,
         scope=judgment.verdict.scope,
-        verdict_primaries=[asset.symbol for asset in judgment.verdict.assets if asset.role == "primary"],
+        verdict_primaries=[MarketAsset.of(asset) for asset in judgment.verdict.assets if asset.role == "primary"],
         grounded_assets=grounded,
         dedupe_family=str(storyline.get("dedupe_family") or "general"),
     )
@@ -196,6 +196,112 @@ def _labelled(dimensions: Mapping[str, Any], names: Sequence[str]) -> list[tuple
     return [(name, str(dimensions[name])) for name in names if str(dimensions.get(name) or "") in {"pass", "fail"}]
 
 
+# One typed asset claim, as both sides of the gold comparison see it (#651 §6.2). Role is part of it
+# because a primary and a mention are different claims: before this, naming `SEI` as a mention when the
+# reviewer said it was the subject compared equal, so the metric could not see the swap at all.
+TypedAssetClaim = tuple[str, str, MarketType]  # (role, base symbol, market_type)
+
+
+def typed_asset_claims(assets: Any) -> frozenset[TypedAssetClaim]:
+    """The typed, role-bearing asset set of one verdict or one accepted correction."""
+
+    if not isinstance(assets, Sequence) or isinstance(assets, (str, bytes)):
+        return frozenset()
+    claims: set[TypedAssetClaim] = set()
+    for value in assets:
+        if not isinstance(value, Mapping):
+            continue
+        asset = MarketAsset.of(value)
+        if asset.symbol:
+            claims.add((str(value.get("role") or "primary"), asset.symbol, asset.market_type))
+    return frozenset(claims)
+
+
+def asset_claims_match(observed: frozenset[TypedAssetClaim], expected: frozenset[TypedAssetClaim]) -> bool:
+    """Whether a candidate's assets are the accepted answer, under the honest #651 §6.2 market rule.
+
+    The role/symbol sets have to be the same set — a missing, extra or re-roled name is a miss as it
+    always was. On top of that, a market both sides state has to agree; `unknown` on either side cannot
+    contradict, which is what keeps every review accepted before #651 scoring exactly as it did.
+    """
+
+    named = {(role, symbol) for role, symbol, _ in observed}
+    if named != {(role, symbol) for role, symbol, _ in expected}:
+        return False
+    return all(
+        any(
+            same_market_asset(MarketAsset(symbol, seen), MarketAsset(symbol, wanted))
+            for seen in (market for role, name, market in observed if (role, name) == (want_role, symbol))
+            for wanted in (market for role, name, market in expected if (role, name) == (want_role, symbol))
+        )
+        for want_role, symbol in named
+    )
+
+
+def known_wrong_markets(observed: frozenset[TypedAssetClaim], expected: frozenset[TypedAssetClaim]) -> tuple[str, ...]:
+    """The names both sides agree on and disagree about: same role and symbol, two known markets.
+
+    Reported apart from an ordinary asset miss because it is a different defect with a different repair.
+    "You named CRCL and the answer was V" is a grounding error; "you said SEI is a coin and it is the
+    listed insurer" is the model reading one identity as another, and the instruction that fixes it is
+    not the same sentence.
+    """
+
+    wrong = {
+        f"{symbol}/{market}"
+        for role, symbol, market in observed
+        if market != "unknown"
+        and any(
+            other_role == role and other_symbol == symbol and other_market not in {"unknown", market}
+            for other_role, other_symbol, other_market in expected
+        )
+    }
+    return tuple(sorted(wrong))
+
+
+def ungrounded_primaries(
+    assets: Sequence[Any],
+    *,
+    grounded: frozenset[str] | set[str],
+    evidence_text: str,
+    catalog_candidates: Sequence[Any] = (),
+) -> tuple[str, ...]:
+    """Primary symbols that nothing in this Event's evidence names.
+
+    The gate used to be "a primary the *Gate grounded* nothing for scores zero", and on `727ffc0b` that
+    zeroed the correct answer. The provider tagged `XPL`, `CRCL`, `XYZ-CRCL` and `V`; the Gate grounded
+    only the `CRCL` spellings, because a B+ tag grounds only when the text spells it and the headline
+    says `Visa`, not `V`. So the Event named `V` all along, the model read the subject correctly, and the
+    metric punished it for a grade bar that was answering a different question (#651 §5).
+
+    Grounding is that other question: does this Event name this symbol at all. A Gate-grounded tag says
+    yes; so does the evidence text spelling it as its own token, and so does the instrument catalogue
+    holding it for a symbol this Event carries. What stays is the gate that matters — a primary that
+    appears nowhere is invented, and an invented subject is not a grading question.
+    """
+
+    if not grounded:
+        return ()
+    catalog = {candidate.symbol for candidate in catalog_candidates}
+    return tuple(
+        sorted(
+            asset.symbol
+            for asset in (MarketAsset.of(value) for value in assets)
+            if asset.symbol
+            and asset.symbol not in grounded
+            and asset.symbol not in catalog
+            and not symbol_in_text(asset.symbol, evidence_text)
+        )
+    )
+
+
+def evidence_text_of(context: Any) -> str:
+    """Every bounded string of an Event the model was allowed to read a symbol out of."""
+
+    evidence = context.evidence
+    return " ".join((evidence.title, evidence.raw_first_line, evidence.content))
+
+
 def _gold_value(expected: Mapping[str, Any], name: str) -> Any:
     """Return one exact accepted correction, or the no-Gold sentinel."""
 
@@ -203,9 +309,7 @@ def _gold_value(expected: Mapping[str, Any], name: str) -> Any:
         assets = expected.get("assets")
         if not isinstance(assets, Sequence) or isinstance(assets, (str, bytes)):
             return _NO_GOLD
-        return frozenset(
-            base_symbol(str(dict(asset).get("symbol") or "")) for asset in assets if isinstance(asset, Mapping)
-        )
+        return typed_asset_claims(assets)
     if name in {"trade_channels", "trade_affected_markets"}:
         value = expected.get(name)
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
@@ -490,8 +594,11 @@ def stable_hard_gate(
     grounded = {
         base_symbol(str(value)) for value in dict(episode.policy_metric.get("gate") or {}).get("grounded_assets") or ()
     }
-    if grounded and any(
-        base_symbol(asset.symbol) not in grounded for asset in judgment.verdict.assets if asset.role == "primary"
+    if ungrounded_primaries(
+        [asset for asset in judgment.verdict.assets if asset.role == "primary"],
+        grounded=grounded,
+        evidence_text=evidence_text_of(episode.context),
+        catalog_candidates=episode.context.gate.catalog_candidates,
     ):
         return "ungrounded_primary_asset"
     relevance = judgment.editorial.relevance

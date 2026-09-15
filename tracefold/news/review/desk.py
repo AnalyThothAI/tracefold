@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.identity import comparison_title as normalize_comparison_title
 from ..market_review.storage import MarketReviewCohort, PriceRepository
+from ..models import MarketType, market_type_of
 from ..outcome import decision_zh
 from ..program.contracts import (
     TRADE_AFFECTED_MARKET_ORDER,
@@ -298,10 +299,26 @@ class NoveltyJudgment(BaseModel):
 
 
 class ExpectedAsset(BaseModel):
+    """One asset a reviewer states as the correct answer, in the market vocabulary (#651 §6.2).
+
+    Required, because a symbol without a market is not an answer to "which instrument is this about":
+    `SEI/crypto` and `SEI/equity` were byte-identical gold, so a candidate that named the wrong one of
+    the two scored a hit. A review accepted before #651 says nothing here and reads as `unknown`, which
+    cannot contradict and therefore still scores exactly as it did.
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     symbol: str = Field(min_length=1, max_length=32)
+    market_type: MarketType
     role: Literal["primary", "mentioned"] = "primary"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _market_is_vocabulary_or_unknown(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {**value, "market_type": market_type_of(value.get("market_type"))}
+        return value
 
 
 class ExpectedCorrection(BaseModel):

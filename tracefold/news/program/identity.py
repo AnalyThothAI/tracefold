@@ -105,12 +105,18 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
     "artifact.py": ("render_model_evidence_json",),
     "assembly.py": ("normalize_restates", "restatement_index_error"),
     "contracts.py": (
+        # `CatalogCandidate` and the function that builds the list decide what disambiguation evidence
+        # the model is shown and in what order (#651 §A). The visible-input schema alone would not
+        # catch a change to the bounding or the ordering, and an envelope that cannot see the code
+        # choosing the model's evidence is decoration.
+        "CatalogCandidate",
         "EditorialEnvelope",
         "ProgramTrace",
         "TriageContext",
         "TradeRelevanceV1",
         "_canonical_code_set",
         "aggregate_program_usage",
+        "catalog_candidates_of",
     ),
     "lm.py": (
         "LMCallLedger",
@@ -191,13 +197,17 @@ def _golden_inputs(predictor: PredictorName) -> dict[str, str]:
             "provider_metadata": {},
             "queue_priority": "normal",
             "asset_class": "none",
-            "grounded_assets": [],
+            "grounded_assets": ["GOLD"],
             "storyline_key": "golden",
         },
         watchlist=(),
         told_rows=(),
         now_ms=2_000,
         queue_lag_ms=1_000,
+        # A two-class golden candidate, because the ambiguous symbol is the one the field exists for:
+        # an empty list would let the rendered request keep its bytes while the candidate row stopped
+        # being emitted at all (#651 §A).
+        catalog_candidates={"GOLD": ("crypto", "commodity")},
     )
     prepared = _prepare(context)
     if predictor == "event_semantics":

@@ -10,6 +10,7 @@ from typing import Any
 # S608 exemption below selects one of two fixed lifecycle columns after validating the target state.
 from ..artifact_identity import canonical_sha
 from ..learning.contracts import epoch_id_for_bundle
+from ..market_review.pricing import REACTION_METRIC_VERSION
 from .sql_values import _dumps
 
 
@@ -1062,7 +1063,7 @@ class LearningStorage:
                     SELECT max(abs(x.return_1h_bps)) AS max_abs_return_1h_bps
                       FROM news_event_reactions x
                      WHERE x.event_id = e.event_id
-                       AND x.metric_version = 'reaction_v1'
+                       AND x.metric_version = %s
                        AND x.is_primary
               ) reaction ON true
              WHERE s.event_id = %s
@@ -1077,6 +1078,10 @@ class LearningStorage:
                 program_sha256,
                 policy_version,
                 bundle_sha,
+                # The current measurement version, read from the pricing contract rather than pinned as a
+                # literal: historical rows keep their own version and are audit, and this projection reads
+                # exactly one of them (#651 §3).
+                REACTION_METRIC_VERSION,
                 event_id,
                 evidence_version,
             ),

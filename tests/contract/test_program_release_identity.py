@@ -21,7 +21,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "bb1fbf47a933d21109be9e0f31b10b324ccd4cedfcd405e40499bdec2bbcc930"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "93c8e620c1be260c82c14c7047297e2fb140f7737335efd0d5615234de4f0d7d"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -30,14 +30,15 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "bb1fbf47a933d21109be9e0f31b10b324ccd4cedfcd405
 # instruction is rendered from the codebook constants that gained the running-event counter-examples.
 # #567 moves only the taxonomy instruction: the twelve rules the #534 and #548 reviewers adjudicated by are
 # now codebook constants, so the drafters, the reviewers and the metric's feedback read one text.
-# #651 leaves this untouched on purpose: the release image changed representation, not prompt bytes, and
-# this pin is what proves that separately from `NEWS_STABLE_PROGRAM_SHA256`.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "9de537e16b4acbe3d643bfff030001ac74c407728b2fb32677b445956a51d1a8"
+# #651 moves the EventSemantics instruction: `market_type` is a required vocabulary value and the Gate
+# now shows the model the catalogue's uncollapsed candidates. The pin is separate from
+# `NEWS_STABLE_PROGRAM_SHA256`, which also moved because the image is now the native state document.
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "ffe44715c77b589b052302dd45ee8a13c5e4009364458818df9ffc9dd58168ed"
 
 # #651 re-pins this over the native DSPy state document rather than three instruction strings. The
 # instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
 # the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
-NEWS_STABLE_PROGRAM_SHA256 = "ba492f87de5d72efd7c95c18c343e3f56c13b771cf82cd591f719609b887ef99"
+NEWS_STABLE_PROGRAM_SHA256 = "8f344c77c49f8563f83be4f6715152b7332e84ca8adc240c5365090bbb9ba751"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
@@ -79,10 +80,10 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_state().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v9",
+        "program_version": "news_semantic_program_v10",
         "policy_version": "news_triage_policy_v13",
         "review_rubric_version": "news_review_v6",
-        "metric_id": "tracefold.news.production_action_trade_relevance_v9",
+        "metric_id": "tracefold.news.production_action_trade_relevance_v10",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
 
@@ -145,12 +146,14 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "artifact.render_model_evidence_json",
         "assembly.normalize_restates",
         "assembly.restatement_index_error",
+        "contracts.CatalogCandidate",
         "contracts.EditorialEnvelope",
         "contracts.ProgramTrace",
         "contracts.TriageContext",
         "contracts.TradeRelevanceV1",
         "contracts._canonical_code_set",
         "contracts.aggregate_program_usage",
+        "contracts.catalog_candidates_of",
         "lm.AuditedConfiguredLM",
         "lm.LMCallLedger",
         "lm.LMCallReceipt",

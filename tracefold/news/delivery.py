@@ -36,7 +36,7 @@ from typing import Any, Literal
 from .card_format import LINKABLE_TICKER_RE, LINKABLE_VENUE_SYMBOL_RE
 from .feishu_card import feishu_card
 from .market_review.pricing import parse_price, quote_change_24h_bps, return_bps
-from .models import ReaderMarketMovement, ReaderTradeTarget
+from .models import MarketAsset, ReaderMarketMovement, ReaderTradeTarget, base_symbol, market_type_of
 from .reader_card import (
     CARD_ASSETS_MAX,
     ReaderCard,
@@ -176,26 +176,60 @@ def reader_market_movements(
     return tuple(movements)
 
 
-def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> list[str]:
-    """Assets shown on the card: the verdict's primary assets that the Gate grounded (code fact ∩ model claim);
-    when the model named no grounded primary, the grounded assets themselves — never provider noise alone.
+def card_assets(
+    verdict: Mapping[str, Any],
+    grounded_assets: Sequence[str],
+    *,
+    catalog_candidates: Mapping[str, Sequence[str]] | None = None,
+) -> list[MarketAsset]:
+    """The typed instruments the card names: this judgment's own primaries, then its mentions.
 
-    The fallback used to apply only while the Gate had grounded at most `_MAX_ASSETS` symbols, so a card
-    the Gate grounded five or more symbols on and whose model named no grounded primary showed the reader
-    no ticker at all — the widest, most cross-asset stories losing the one line that says what they are
-    about. The count is a reason to print fewer names, not none: the same first four, in the same stable
-    order the line already truncates to (#562 §5 row 9).
+    Two rules changed in #651 §6.2, and both were the same mistake in different places.
+
+    The old function intersected the model's primaries with the Gate's grounded tags and, when nothing
+    survived, printed the sorted grounded tags instead. That fallback is deleted. A provider tag is a
+    lead, not a subject: the Visa story tagged `CRCL` printed `CRCL` beside a headline about Visa, and
+    sorting made which wrong ticker appeared a function of the alphabet. A judgment that named its own
+    subject is the authority on what the card is about, tag or no tag.
+
+    The intersection is deleted for the same reason: `V` was the correct primary of an Event whose only
+    provider tag was `CRCL`, and requiring the tag threw the right answer away to keep the wrong one.
+
+    What replaces both is identity. Assets are shown only when their market is known, because the ticker
+    on the card is also the quote target beside it, and a symbol whose market nobody established cannot
+    be priced without guessing which instrument it is. A model asset that arrived untyped — every verdict
+    written before #651 — is typed here only when the catalogue *proves* exactly one class for it; two
+    candidates (`SEI`) stay unknown and are not shown. `grounded_assets` is now used for exactly one
+    thing: a degraded judgment has no model assets at all, and there the same proof rule is the only
+    evidence there is.
     """
 
-    grounded = {str(a).upper().replace("XYZ-", "") for a in grounded_assets}
-    primaries = [
-        str(a.get("symbol") or "").upper().replace("XYZ-", "")
-        for a in (verdict.get("assets") or [])
-        if isinstance(a, Mapping) and a.get("role") == "primary"
+    candidates = dict(catalog_candidates or {})
+
+    def _typed(asset: Mapping[str, Any]) -> MarketAsset:
+        known = MarketAsset.of(asset)
+        if known.market_type != "unknown":
+            return known
+        proven = tuple(candidates.get(known.symbol) or ())
+        return MarketAsset(known.symbol, market_type_of(proven[0])) if len(proven) == 1 else known
+
+    raw = [a for a in (verdict.get("assets") or []) if isinstance(a, Mapping) and a.get("symbol")]
+    ordered = [
+        *(_typed(a) for a in raw if a.get("role") == "primary"),
+        *(_typed(a) for a in raw if a.get("role") == "mentioned"),
     ]
-    shown = [s for s in dict.fromkeys(primaries) if s in grounded]
-    if not shown:
-        shown = sorted(grounded)
+    if not raw:
+        # Degraded: no model answered, so the only claim available is the catalogue's own, and only where
+        # it is unambiguous. A tag the catalogue holds under two markets proves nothing and is not shown.
+        ordered = [
+            MarketAsset(base_symbol(str(tag)), market_type_of((candidates.get(base_symbol(str(tag))) or (None,))[0]))
+            for tag in grounded_assets
+            if len(candidates.get(base_symbol(str(tag))) or ()) == 1
+        ]
+    shown: list[MarketAsset] = []
+    for asset in ordered:
+        if asset.symbol and asset.market_type != "unknown" and asset not in shown:
+            shown.append(asset)
     return shown[:_MAX_ASSETS]
 
 
@@ -206,13 +240,18 @@ def news_reader_card(
     decision: str,
     grounded_assets: Sequence[str],
     assets: Sequence[str] | None = None,
+    catalog_candidates: Mapping[str, Sequence[str]] | None = None,
     degraded: bool = False,
     quotes: Sequence[Mapping[str, Any]] = (),
     untradeable: bool = False,
 ) -> ReaderCard:
     """One Event's card, in facts. `quotes` are `PriceRepository.quotes_for_symbols` rows for the
     rendered assets, in that order; passing none renders exactly the v9 card, so the price is additive
-    and never a precondition for delivery."""
+    and never a precondition for delivery.
+
+    `assets` is what the Deliverer already resolved for the quote read; `catalog_candidates` is what
+    :func:`card_assets` needs to resolve them itself when a caller renders the card on its own. Passing
+    neither renders only the assets the judgment typed."""
 
     original_title = str(event.get("leader_title") or "")
     link = str(event.get("leader_url") or "")
@@ -241,7 +280,14 @@ def news_reader_card(
             direction=direction,
             novelty=novelty,
             magnitude=magnitude,
-            tickers=tuple(assets if assets is not None else card_assets(verdict, grounded_assets)),
+            tickers=tuple(
+                assets
+                if assets is not None
+                else (
+                    asset.symbol
+                    for asset in card_assets(verdict, grounded_assets, catalog_candidates=catalog_candidates)
+                )
+            ),
             source=(str(event.get("reporting_origin") or ""),),
             report_count=int(event.get("member_count") or 1),
         ),
@@ -260,6 +306,7 @@ def render_first_card(
     decision: str,
     grounded_assets: Sequence[str],
     assets: Sequence[str] | None = None,
+    catalog_candidates: Mapping[str, Sequence[str]] | None = None,
     degraded: bool = False,
     quotes: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
@@ -277,6 +324,7 @@ def render_first_card(
             decision=decision,
             grounded_assets=grounded_assets,
             assets=assets,
+            catalog_candidates=catalog_candidates,
             degraded=degraded,
             quotes=quotes,
         )

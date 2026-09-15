@@ -34,9 +34,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal, TypedDict, cast
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_sha
+from ..models import MarketType, market_type_of
 from ..program.contracts import (
     ReaderValue,
     TradeAffectedMarket,
@@ -155,7 +156,10 @@ novelty: new_fact / progression / restatement, judged against the told ledger yo
 `restatement` only when a told entry carries the same fact, and then name that entry's event_id.
 
 expected: ONLY for dimensions you marked fail, state the exact correct value — including every failed typed
-trade-relevance dimension. Leave a field out when you are not confident.
+trade-relevance dimension. Leave a field out when you are not confident. Every asset you state carries
+market_type from crypto / equity / commodity / index / fx / pre_ipo / unknown: a ticker without its market is
+not an answer, because the same three letters name a token and a listed company. Say unknown rather than pick
+a market the evidence does not establish.
 This is the most valuable part of the draft: "wrong" without "and the answer is X" teaches nothing.
 
 Do NOT label taxonomy (subject codes, event family, change state, assertion status) and do not judge the
@@ -167,10 +171,20 @@ reasoning: one short sentence a reviewer can check quickly."""
 
 
 class DraftAsset(BaseModel):
+    """Mirrors `desk.ExpectedAsset`, market included (#651 §6.2)."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     symbol: str = Field(min_length=1, max_length=32)
+    market_type: MarketType
     role: Literal["primary", "mentioned"] = "primary"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _market_is_vocabulary_or_unknown(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {**value, "market_type": market_type_of(value.get("market_type"))}
+        return value
 
 
 class DraftExpected(BaseModel):

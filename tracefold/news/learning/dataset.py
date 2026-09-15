@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_sha
 from ..events.storyline import NO_STORYLINE_KEY
-from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
+from ..models import TRIAGE_POLICY_VERSION, MarketAsset, TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, TriageContext
 from ..review.desk import (
     READER_CONTRACT_SHA256,
@@ -136,6 +136,16 @@ class AdmittedCandidate:
 
     candidate_sha: str
     registered_at_ms: int
+
+
+def _event_symbols(event: Mapping[str, Any]) -> tuple[str, ...]:
+    """The symbols one replayed Event names, in the order the live judge reads them."""
+
+    coins = dict(event.get("provider_metadata") or {}).get("coins") or ()
+    return (
+        *(str(value) for value in event.get("grounded_assets") or () if value),
+        *(str(coin.get("symbol")) for coin in coins if isinstance(coin, Mapping) and coin.get("symbol")),
+    )
 
 
 class DevelopmentDatasetStore:
@@ -547,7 +557,7 @@ class DevelopmentDatasetStore:
                         comparison_fingerprint=str(card.get("comparison_fingerprint") or ""),
                         dedupe_family=str(card.get("dedupe_family") or "general"),
                         grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ()),
-                        assets=tuple(asset.symbol for asset in verdict.assets),
+                        assets=tuple(MarketAsset.of(asset) for asset in verdict.assets),
                         canonical_assets=self._history.canonical_assets(
                             tuple(str(value) for value in card.get("grounded_assets") or ())
                         ),
@@ -816,6 +826,7 @@ class DevelopmentDatasetStore:
             told_rows=told_rows,
             now_ms=int(case["opened_at_ms"]),
             queue_lag_ms=0,
+            catalog_candidates=self._history.catalog_candidates(_event_symbols(event)),
         )
 
     def load_case(self, case: DatasetCaseRef) -> dict[str, Any]:

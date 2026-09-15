@@ -17,6 +17,7 @@ from typing import Any
 # S608 exemptions below interpolate only module-owned ranking/optional-clause fragments; all values stay bound.
 from .instruments import (
     ALIAS_SEEDS,
+    INSTRUMENT_CLASS_ORDER,
     REFERENCE_VENUES,
     Instrument,
     InstrumentSearchIdentity,
@@ -161,6 +162,47 @@ class InstrumentsRepository:
                 resolved = tier.get(base)
                 if resolved:
                     out.setdefault(alias, resolved)
+        return out
+
+    def instrument_class_candidates(self, symbols: Iterable[str]) -> dict[str, tuple[str, ...]]:
+        """base_symbol -> every instrument class the catalogue holds for it, both tiers, uncollapsed.
+
+        :meth:`instrument_classes` answers the Gate's question — "is this headline about a coin or a
+        stock" — and to answer it at all it must collapse: one symbol, one class, traded tier wins. That
+        collapse is exactly what hides the case #651 is about. `SEI` is a Binance token *and* a NYSE
+        ticker; the collapsed map says `crypto` and the ambiguity disappears before anything can read it.
+
+        This is the other question, and it is the model's: what could this symbol be. Both tiers are
+        returned side by side (`SEI -> ("crypto", "equity")`) so the Program can see that the catalogue
+        itself does not know, and so code can tell an unambiguous symbol — exactly one class — from one
+        it may not resolve on its own. Aliases resolve to their base the same way, per tier, so a
+        provider tag and the issuer symbol give the same answer.
+
+        Bounded by the caller's symbol list; the result is a per-symbol tuple in the vocabulary's own
+        order so two calls with the same catalogue produce the same bytes.
+        """
+
+        wanted = sorted({normalize_symbol(symbol) for symbol in symbols if str(symbol).strip()} - {""})
+        if not wanted:
+            return {}
+        alias_rows = self.conn.execute(
+            "SELECT alias, base_symbol FROM news_symbol_aliases WHERE alias = ANY(%s)", (wanted,)
+        ).fetchall()
+        aliases = {str(row["alias"]).upper(): str(row["base_symbol"]).upper() for row in alias_rows}
+        bases = sorted({*wanted, *aliases.values()})
+        rows = self.conn.execute(
+            "SELECT base_symbol, instrument_class FROM news_market_instruments"
+            " WHERE status = 'trading' AND base_symbol = ANY(%s)",
+            (bases,),
+        ).fetchall()
+        holdings: dict[str, set[str]] = {}
+        for row in rows:
+            holdings.setdefault(str(row["base_symbol"]).upper(), set()).add(str(row["instrument_class"]))
+        out: dict[str, tuple[str, ...]] = {}
+        for symbol in wanted:
+            classes = holdings.get(symbol, set()) | holdings.get(aliases.get(symbol, symbol), set())
+            if classes:
+                out[symbol] = tuple(name for name in INSTRUMENT_CLASS_ORDER if name in classes)
         return out
 
     def is_tradeable(self, base_symbol: str) -> bool:

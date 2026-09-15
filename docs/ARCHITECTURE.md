@@ -282,10 +282,16 @@ display state: one row per provider source holding a bounded normalized quote
 map, no history, no tick id, no raw payload. `news_event_reactions` is the
 deterministic return between an Event's market anchor (`opened_at_ms`, the
 provider publication time) and a fixed horizon, keyed by
-`(event_id, symbol, metric_version)`; `reaction_v1` freezes candle interval,
-alignment, gap tolerance, source selection, aggregation and the hit definition,
-so a later revision publishes a new version beside v1 rather than changing what
-a stored row means. The row also records `is_primary` — whether the model called
+`(event_id, symbol, metric_version)`; `reaction_v2` freezes candle interval,
+alignment, gap tolerance, source selection, aggregation, the hit definition and —
+since #651 — which contract a symbol resolves to, so a later revision publishes a
+new version beside the old one rather than changing what a stored row means. v2 is
+that cut: resolution is `(symbol, market_type)` and filters
+`news_market_instruments.instrument_class`, so an equity Event is measured against
+an equity contract or against nothing, never against the same-name coin. Stored
+`reaction_v1` rows keep their version and are audit; every current projection reads
+the current version only, so an Event measured before the cut reports no move until
+the typed planner has measured it again. The row also records `is_primary` — whether the model called
 that asset a primary at measurement time — because the review's event-level
 sample is the median over primaries and re-deriving that from verdict JSONB per
 request costs 1.2 s at the 720 h bound, past Serve's one-second statement
@@ -801,7 +807,7 @@ recent live Events + watchlist -> exact-symbol-first resolution (alias only as f
 due Event-assets (live Events, pushed and held alike) -> pinned or resolved instrument
   -> merged historical 5m candle ranges (<=32 requests/turn, concurrency 4)
   -> p0 = last closed candle at or before opened_at_ms; p1/p4 the same at +1H/+4H
-  -> (pH/p0)-1 in integer basis points -> news_event_reactions (reaction_v1)
+  -> (pH/p0)-1 in integer basis points -> news_event_reactions (reaction_v2)
   -> Feed/Detail attachment + `news review queue --view market`
 
 one approved delivery -> the same exact-symbol-first contract candidates
@@ -997,7 +1003,7 @@ already was when the provider pushed it — an X status id is a Snowflake — wh
 a stale artifact arriving for the first time. Measured over 3174 frames in 30
 days that age is bimodal (2491 within 10 s, 7 beyond 16 h, nothing between) and
 never negative. `published_at_ms` is untouched: `opened_at_ms` derives from it
-and anchors `reaction_v1`.
+and anchors `reaction_v2`.
 
 Before Gate, one pure OpenNews source classifier
 (`opennews_source_classifier_v2`) decides which of the two planes a frame is on.
@@ -1191,7 +1197,7 @@ from the Verdict and belongs to `DecisionResult`. Splitting semantic judgment fr
 per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
-The only executable generation is `news_semantic_program_v9`. Issue #193
+The only executable generation is `news_semantic_program_v10`. Issue #193
 hard-cuts the artifact to one canonical JSON document; issue #306 keeps that
 shape and changes what the instructions *are*, each becoming the complete
 prompt for its Predictor rather than a bounded advisory appended to a rendered
@@ -1213,7 +1219,7 @@ field list and per-call `traces`/`train` scratch. Loading is one path:
 `NativeNewsProgram(state)` builds the Predictors from the code-owned seed
 defaults, calls DSPy's own `load_state`, then re-reads `named_predictors()` and
 refuses anything the round trip did not reproduce. The stable root is
-`ba492f87de5d72efd7c95c18c343e3f56c13b771cf82cd591f719609b887ef99`.
+`8f344c77c49f8563f83be4f6715152b7332e84ca8adc240c5365090bbb9ba751`.
 Issue #117 changed the EventSemantics instruction and typed output while
 preserving the then two-Predictor graph and its two-call common-success path;
 #501 added the taxonomy Predictor beside them, which is why the ordinary path is
@@ -1511,7 +1517,7 @@ removing their second, count-based editor. Every path names its rule; nothing
 drops silently.
 
 The Program factory owns the execution contract. A successful ordinary-News
-primary route under `news_semantic_program_v9` normally makes three serial
+primary route under `news_semantic_program_v10` normally makes three serial
 provider calls: EventSemantics, taxonomy, then the exact current ReaderCard.
 The in-process normalizer and assembler make no provider request. DSPy's
 JSONAdapter may make one formatting fallback independently for any Predictor,
@@ -1663,7 +1669,7 @@ This keeps public price latency outside the reader's initial-news path and gives
 later enrichers one receipt-bound in-place update capability without creating a follow-up card. Edit work is
 serialized independently of initial sends, so a slow update cannot delay the next accepted news message.
 These are request-time presentation returns,
-not `reaction_v1`: they do not wait for a future horizon and are never persisted
+not `reaction_v2`: they do not wait for a future horizon and are never persisted
 as review evidence. For every anchor the adapter first selects the latest trade
 at or before the millisecond timestamp when it is at most 60 seconds old, then
 falls back to the last closed one-minute candle within 90 seconds. Binance is
@@ -2042,7 +2048,7 @@ The resource guardrails are unchanged except that #567 moved
 `mean_total_tokens_growth_pct` to 0.25 while the call and provider-cost caps that
 actually bill stay at 0.10.
 
-Metric v9 (`tracefold.news.production_action_trade_relevance_v9`) uses the one
+Metric v10 (`tracefold.news.production_action_trade_relevance_v10`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
 selection and CandidateEvaluator. Its candidate scalar weights 45% final
 production action, 35% exact TradeRelevance dimensions, 10% semantics/novelty,

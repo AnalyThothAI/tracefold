@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .market_review.instruments import INSTRUMENT_CLASSES, InstrumentClass
 
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v6"
@@ -182,12 +184,110 @@ class ReaderReceipt(ExactNewsModel):
         return cls(state="not_received", delivery_state=delivery_state, error_code=error_code)
 
 
+# The one market vocabulary News compares assets under (#651 §6.2). It is the instrument-class
+# vocabulary `news_market_instruments` already stores, `unknown` included, because a model asset, a
+# reviewer's gold asset, a catalogue candidate and a quote target all have to be the same kind of thing
+# for "same instrument" to be one question with one answer.
+MarketType = InstrumentClass
+MARKET_TYPES: Final[frozenset[str]] = INSTRUMENT_CLASSES
+
+
+def market_type_of(value: Any) -> MarketType:
+    """The vocabulary value a stored or supplied market position carries, or ``unknown``.
+
+    One normalizer, shared by the typed contracts and by every projection that reads verdict JSONB
+    directly. Anything outside the vocabulary — a pre-#651 free string, ``null``, a misspelling — is
+    ``unknown``: the code does not know, and saying so is the only honest answer. Never guessed.
+    """
+
+    text = str(value or "").strip().lower()
+    return cast(MarketType, text) if text in MARKET_TYPES else "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class MarketAsset:
+    """A canonical symbol and its market, which together are one comparable instrument identity."""
+
+    symbol: str
+    market_type: MarketType = "unknown"
+
+    @classmethod
+    def of(cls, value: Any) -> MarketAsset:
+        """One asset from a typed model, a stored JSONB object, or a bare symbol string."""
+
+        if isinstance(value, Mapping):
+            return cls(base_symbol(str(value.get("symbol") or "")), market_type_of(value.get("market_type")))
+        symbol = getattr(value, "symbol", None)
+        if symbol is not None:
+            return cls(base_symbol(str(symbol)), market_type_of(getattr(value, "market_type", None)))
+        return cls(base_symbol(str(value or "")), "unknown")
+
+    @property
+    def key(self) -> str:
+        """The stable token two sides agree on: typed when the market is known, bare when it is not."""
+
+        return self.symbol if self.market_type == "unknown" else f"{self.market_type}:{self.symbol}"
+
+
+def same_market_asset(left: MarketAsset, right: MarketAsset) -> bool:
+    """Whether two assets name one instrument, under the honest rule of #651 §6.2.
+
+    Equal canonical symbols are necessary. Beyond that, two *known* and different markets are a real
+    contradiction — `SEI/crypto` is not `SEI/equity` — and anything else cannot claim to be different:
+    `unknown` is what every asset written before #651 carries, and treating it as a mismatch would
+    silently drop the whole delivered history out of every overlap it is the evidence for.
+    """
+
+    if not left.symbol or left.symbol != right.symbol:
+        return False
+    return "unknown" in {left.market_type, right.market_type} or left.market_type == right.market_type
+
+
+def market_assets_overlap(left: Iterable[MarketAsset], right: Iterable[MarketAsset]) -> bool:
+    """True when any asset on the left names the same instrument as any asset on the right."""
+
+    other = tuple(right)
+    return any(same_market_asset(one, two) for one in left for two in other)
+
+
 class TriageAsset(BaseModel):
+    """One instrument a judgment is about, in the one market vocabulary News compares assets under.
+
+    ``market_type`` used to be a free optional string, and a free optional string is not an identity:
+    ``SEI`` the Cosmos token and ``SEI`` the NYSE-listed insurer produced byte-identical assets, so the
+    storyline key, the told overlap, the gold comparison and the quote target could not tell a coin
+    headline from an equity headline about the same three letters (#651 §6.2). It is required now, over
+    exactly the catalogue's instrument-class vocabulary, so every comparison is ``(market_type, symbol,
+    role)`` and a contradiction is visible instead of silently agreeing.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     symbol: str = Field(min_length=1, max_length=16)
-    market_type: str | None = Field(default=None, max_length=16)
+    market_type: MarketType = Field(
+        description=(
+            "REQUIRED. crypto | equity | commodity | index | fx | pre_ipo | unknown. "
+            "Emit unknown rather than confirming a market the evidence does not establish."
+        )
+    )
     role: Literal["primary", "mentioned"]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _market_is_vocabulary_or_unknown(cls, value: Any) -> Any:
+        """Normalize the stored position before validation, so reading history can never raise.
+
+        Verdicts written before #651 carry ``null`` or a provider-tag word (``token``, ``cex``,
+        ``private``, ``equity_or_commod``) here. Those rows are audit truth and are never rewritten, so
+        the one contract that owns this field is also the one place that says what they mean: nothing
+        the vocabulary can honour, therefore ``unknown``. Refusing them would crash every reader of the
+        durable ledger; defaulting them to ``crypto`` would invent the exact claim this field exists to
+        stop inventing.
+        """
+
+        if isinstance(value, Mapping):
+            return {**value, "market_type": market_type_of(value.get("market_type"))}
+        return value
 
 
 class TriageVerdict(BaseModel):
@@ -245,6 +345,7 @@ __all__ = [
     "DELIVERY_CARD_VERSION",
     "EVENT_IDENTITY_VERSION",
     "GATE_POLICY_VERSION",
+    "MARKET_TYPES",
     "NEWS_BUS_SCHEMA_VERSION",
     "OUTBOX_MAX_AGE_MS",
     "TRIAGE_POLICY_VERSION",
@@ -254,6 +355,8 @@ __all__ = [
     "Decision",
     "EngineType",
     "ExactNewsModel",
+    "MarketAsset",
+    "MarketType",
     "NewsFeedEntry",
     "Novelty",
     "ReaderDeliveryPresentation",
@@ -266,4 +369,7 @@ __all__ = [
     "TriageVerdict",
     "base_symbol",
     "json_ready",
+    "market_assets_overlap",
+    "market_type_of",
+    "same_market_asset",
 ]

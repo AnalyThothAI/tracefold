@@ -87,8 +87,8 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
 export function newsTriageFixture(overrides: Partial<NewsTriageSummary> = {}): NewsTriageSummary {
   return {
     assets: [
-      { role: "primary", symbol: "BTC" },
-      { role: "mentioned", symbol: "ETH" },
+      { market_type: "crypto", role: "primary", symbol: "BTC" },
+      { market_type: "crypto", role: "mentioned", symbol: "ETH" },
     ],
     audience: "macro",
     audience_zh: "宏观",
@@ -233,14 +233,14 @@ export function newsVerdictFixture(overrides: Partial<NewsVerdict> = {}): NewsVe
     override_rule: null,
     policy_version: "news_triage_policy_v11",
     program_sha256: "4".repeat(64),
-    program_version: "news_semantic_program_v9",
+    program_version: "news_semantic_program_v10",
     published_at_ms: NEWS_NOW_MS - 60_000,
     rule_baseline_decision: "escalate",
     stage: "triage",
     throttled_by: null,
     verdict: {
       audience: "macro",
-      assets: [{ role: "primary", symbol: "BTC" }],
+      assets: [{ market_type: "crypto", role: "primary", symbol: "BTC" }],
       confidence: 0.82,
       direction: "bearish",
       headline_zh: "央行政策转向，风险资产承压",
