@@ -1,166 +1,155 @@
 # Tracefold
 
-Tracefold is an evidence-first market research system with exactly one
-business capability. News V3 turns the operator's OpenNews Strategy pushes
-into deduplicated Events, triages them with bounded structured model calls
-under deterministic rules, and delivers reader cards through Feishu or one bound Telegram channel. One Python service
-persists material facts in PostgreSQL, builds a deterministic read model, and
-serves a React operator console plus stable HTTP and CLI contracts.
+Tracefold is an evidence-first market research and trading system. **News** turns
+provider input into durable editorial and market facts, classifications, reader
+cards, and wallet net-buy episodes. **Trading** consumes a public OI projection,
+freezes Cases, and produces engine-neutral Signals. The optional Nautilus Runtime
+owns execution separately. A React console and HTTP/CLI surfaces expose persisted
+facts, decisions, and outcomes.
 
-Tracefold is not a trading bot or a chat product. Provider frames are inputs,
-not business truth.
+News and Trading are sibling capabilities, not one another's implementation layer.
+Provider frames, model predictions, submitted commands, and UI state are not substitutes
+for durable evidence or actual delivery/execution outcomes.
 
 ## Architecture
 
 ```text
-OpenNews WSS
-  -> integrations (RabbitMQ is the News transport plane)
-  -> PostgreSQL material facts
-  -> single-writer read models
-  -> HTTP / CLI / React
+OpenNews -> RabbitMQ -> News admission -> PostgreSQL
+                         |-- editorial Events -> Program -> decision -> delivery
+                         `-- market facts -> notifications
+                                          `-> App OI mapper -> Trading Case / Signal
+
+Wallet roster + chain receipts -> fill ledger -> net-buy episodes -> notification
+                                                `-> independent price samples
+
+Signal + authenticated control -> separate Nautilus Runtime -> venue / reconciliation
+
+PostgreSQL projections -> Serve -> HTTP / React
+                      `-> read-only CLI commands
 ```
-
-The hard invariants are:
-
-- PostgreSQL material facts are the only business truth.
-- Current rows use stable product/window/target keys, never run or attempt IDs.
-- Each current read model has exactly one writer and is rebuildable from facts.
-- Unchanged projections write zero serving rows.
-- News consumers recover by re-consuming durable broker queues plus database
-  idempotency keys.
-- Read surfaces never call providers or models.
-- Missing evidence is explicit, never replaced by a fabricated zero or fallback.
-
-The Python package is deliberately shallow:
 
 ```text
 tracefold/
-  news/           broker-driven Event pipeline: Deduper, Gate, Triage, delivery, labels
-  integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu, Telegram)
-  platform/       config, PostgreSQL/Alembic, telemetry, bounded resource primitives
-  app/            composition (`tracefold.app.workers` root), HTTP, and CLI adapters
+  news/           editorial pipeline, market facts, wallet episodes, learning/release
+  trading/        OI admission, frozen Cases, Alpha, Signals, execution transport
+  integrations/   provider, broker, delivery, market, and Nautilus/Binance adapters
+  platform/       configuration, PostgreSQL/Alembic, telemetry, bounded resources
+  app/            Serve/Workers/Runtime composition, HTTP, CLI, cross-context mapping
 ```
 
-Other packages import the business capability from `tracefold.news`, not from
-its internal modules. See
-[Architecture](docs/ARCHITECTURE.md).
+Serve and Workers share the application image. The account-owning execution Runtime
+has a separate image and lifecycle. Neither business package imports the other or
+reads its tables; App performs the explicit handoff. See [Architecture](docs/ARCHITECTURE.md)
+for the implemented boundaries and current data flow.
 
-## Start the complete product
+## Start the application
 
-Prerequisites are Git, Make, [uv](https://docs.astral.sh/uv/), a running
-Docker daemon, the Docker Compose plugin, and `curl`. On macOS, start Docker
-Desktop before continuing. From a fresh clone, the complete operator path is
-one command:
+Prerequisites: Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose
+plugin, and `curl`. On macOS, start Docker Desktop first. From the checkout:
 
 ```bash
 make up
 ```
 
-`make up` preflights the prerequisites, initializes the operator files without
-overwriting existing choices, builds one application image containing the
-React console and Python service, bootstraps least-privilege PostgreSQL roles
-on a fresh volume, migrates to the current schema, starts Serve and Workers,
-and waits for both runtimes plus the HTML console. It exits non-zero and points
-to `make logs` if any required boundary is not ready.
-
-Open `http://127.0.0.1:8765/` after it succeeds. The lifecycle is deliberately
-small:
+This initializes operator files without overwriting existing choices, builds the
+application image containing Python and the React console, starts PostgreSQL and
+RabbitMQ, applies broker policy and migrations, and starts Serve and Workers.
+A failed required startup boundary returns non-zero and can be inspected with logs.
+Open `http://127.0.0.1:8765/` after successful startup.
 
 ```bash
-make status  # fail closed unless DB, migration, Serve, Workers, console, and the runtime are ready
-make logs    # follow service logs; Ctrl-C leaves the services running
-make down    # stop containers without deleting PostgreSQL data
+make status  # inspect required application and configured execution readiness
+make logs    # follow logs; Ctrl-C does not stop the services
+make down    # stop application containers without deleting PostgreSQL data
 ```
 
-A second `make up` rebuilds that application image and recreates only the
-migration, Serve, and Workers containers so configuration changes take effect.
-An already running PostgreSQL container is not recreated, and its named volume,
-operator configuration, and role passwords are preserved.
+A subsequent `make up` rebuilds the application and recreates the application roles,
+not a running PostgreSQL container. Data volumes and operator configuration persist.
+Generated defaults contain no live provider/model/delivery credentials; optional
+capabilities report disabled, unavailable, or degraded states rather than fake data.
+Add operator settings to `~/.tracefold/config.yaml` and rerun `make up` as appropriate.
+An explicitly enabled but invalid delivery configuration is not a successful setup.
 
-The optional Binance execution runtime is deployed separately, because it owns a
-live account and must not be restarted by a News, Serve, or Workers release:
-`make runtime-build`, `make runtime-up`, `make runtime-restart`,
-`make runtime-status`, `make runtime-logs`, and `make runtime-down`. `make up`
-never names it; `make down` refuses while it exists. See
-[Operations](docs/OPERATIONS.md). The generated
-defaults contain no live OpenNews, model, webhook, or bot credential (the
-Telegram token file is an empty placeholder), and News push is disabled. The
-product still starts; credential-dependent capabilities report
-an explicit degraded or unavailable state instead of fabricating data. Add
-structured settings to `~/.tracefold/config.yaml`; place the Telegram bot token
-only in `~/.tracefold/telegram_bot_token`, then rerun `make up`.
-If push is explicitly enabled with an incomplete or insecure provider
-configuration, Workers fails startup instead of silently discarding requested
-deliveries.
+### Optional execution Runtime
 
-The operator-owned runtime directory is:
+Execution is disabled by default. Its independent lifecycle is:
+
+```bash
+make runtime-build
+make runtime-up
+make runtime-status
+make runtime-logs
+make runtime-restart
+make runtime-down
+```
+
+These are lifecycle commands, not a recommendation to enable live trading.
+`make up` does not restart the execution Runtime; `make down` refuses while it exists.
+Use the [Operations](docs/OPERATIONS.md) and [Security](docs/SECURITY.md) procedures
+for the configured paper/live account and any authorized activation or cutover.
+The current Signal lane is OI-based; arbitrary editorial explanations do not
+implicitly become implemented trading strategies.
+
+### Operator configuration
 
 ```text
-~/.tracefold/config.yaml                 # 0600
-~/.tracefold/telegram_bot_token          # optional Telegram secret; 0600
-~/.tracefold/postgres_password           # fresh-volume bootstrap only; 0600
-~/.tracefold/postgres_database_password  # shared non-superuser application login; 0600
-~/.tracefold/logs/serve.log                # one file per container role
-~/.tracefold/logs/workers.log
-~/.tracefold/logs/nautilus.log
+~/.tracefold/config.yaml
+~/.tracefold/telegram_bot_token
+~/.tracefold/postgres_password
+~/.tracefold/postgres_database_password
+~/.tracefold/logs/
 ~/.tracefold/cache/
 ```
 
-The directory itself is mode `0700`. `tracefold init` is the sole default
-configuration generator; repository fixtures and `.env` files are not runtime
-truth. Confirm the active path and redacted credential booleans with:
+The operator directory is private (`0700`) and secret/config files use `0600`.
+`tracefold init` owns generated defaults. Keep live credentials out of repository
+files, examples, logs, and PRs; the Telegram token belongs in its dedicated file.
+Inspect redacted configuration and available commands with:
 
 ```bash
-uv run tracefold config           # reads only ~/.tracefold/config.yaml; no database or broker
+uv run tracefold config
 uv run tracefold --help
-docker compose exec workers tracefold news bus-check  # broker reachable, topology, queue depths
-docker compose exec workers tracefold db audit        # migration head, news_* row counts and tables
 ```
 
-Any CLI command that reaches PostgreSQL or RabbitMQ runs **inside** the Workers
-container. The configured DSN and broker URL are compose-network addresses and
-are used exactly as written; there is no host address rewriting.
+For the standard Compose deployment, database/broker addresses in the active config
+are Compose-network addresses. Run those operational commands inside Workers:
 
-Exact HTTP fields come from [OpenAPI](docs/generated/openapi.json). The
-complete CLI snapshot is [cli-help.md](docs/generated/cli-help.md). Detailed
-installation, credential, initialization, and development-loop instructions
-are in [Setup](docs/SETUP.md).
+```bash
+docker compose exec workers tracefold news bus-check
+docker compose exec workers tracefold db audit
+```
+
+Do not assume automatic host-address rewriting. Development tests instead use their
+explicit isolated resources. See [Setup](docs/SETUP.md) for detailed installation
+and configuration, [CLI help](docs/generated/cli-help.md) for command grammar, and
+[OpenAPI](docs/generated/openapi.json) for HTTP fields.
 
 ## Development
 
-GitHub Issues are the durable specification and acceptance surface. During an
-edit, run only the smallest check that can disprove the change. Select the
-final local checkpoint by the changed seam and risk; broad local suites are not
-a fixed ladder.
+Start with the requested observable outcome and the affected owner. A complete change
+normally belongs in one cohesive PR, including callers, tests, documentation, generated
+outputs, and obsolete-path removal. Use an Issue when durable scope or coordination is
+needed, not as a mandatory precondition for a bounded fix.
 
-```bash
-uv run pytest -q tests/path/test_module.py::test_exact_case  # edit loop example
-make check       # hermetic static/architecture/contract bundle when affected
-make test-fast   # optional broad hermetic final checkpoint; not per-edit
-make test-ci     # optional once for declared high-risk changes
-```
+Run focused checks while editing and broaden according to risk. `make test-fast`
+is a broad hermetic checkpoint; `make test-ci` is the complete local preflight when
+that scope is useful or explicitly required, not an automatic prerequisite for PR
+submission. The remote required CI plan is unchanged by local check selection.
+See [Development](docs/DEVELOPMENT.md) and [Issues/PRs](docs/agents/issue-tracker.md).
 
-The maintained documentation surface is intentionally small:
-
-| Need | Source |
-|---|---|
-| Install and deployment | [docs/SETUP.md](docs/SETUP.md) |
-| Data and module architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| Public config/API/CLI contracts | [docs/CONTRACTS.md](docs/CONTRACTS.md) |
-| Operations and PostgreSQL diagnosis | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
-| Design and local verification policy | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| Test lanes and fixed CI implementation | [docs/TESTING.md](docs/TESTING.md) |
-| Frontend boundaries | [docs/FRONTEND.md](docs/FRONTEND.md) |
-| Secrets and authentication | [docs/SECURITY.md](docs/SECURITY.md) |
-
-Generated artifacts live in `docs/generated/` and always have checked-in
-generators. Historical design records and implementation-detail test archives
-do not live in the repository.
+| Need | Owner |
+| --- | --- |
+| Coding-agent entry points | [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md) |
+| Architecture and flow | [Architecture](docs/ARCHITECTURE.md) |
+| API, CLI, config contracts | [Contracts](docs/CONTRACTS.md) |
+| Setup and operations | [Setup](docs/SETUP.md), [Operations](docs/OPERATIONS.md) |
+| Local verification and CI | [Development](docs/DEVELOPMENT.md), [Testing](docs/TESTING.md) |
+| UI boundaries | [Frontend](docs/FRONTEND.md) |
+| Migrations and authority | [Migrations](docs/MIGRATIONS.md), [Security](docs/SECURITY.md) |
+| Review language and taxonomy | [CONTEXT.md](CONTEXT.md), [News taxonomy](docs/NEWS_TAXONOMY.md) |
 
 ## Non-goals
 
-- no trade execution;
-- no compatibility aliases for retired names or paths;
-- no provider response, queue, process cache, or projection as alternate truth;
-- no hidden provider calls or mutations in read APIs;
-- no repository-local live credentials.
+No duplicate business truth in queues or caches, hidden provider/model calls in read
+APIs, automatic execution authority from a news model's answer, repository-local live
+credentials, or compatibility aliases for replaced internal implementation paths.

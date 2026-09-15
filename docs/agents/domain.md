@@ -1,22 +1,22 @@
 # Domain exploration
 
-Tracefold is one bounded context. `docs/ARCHITECTURE.md` is the sole current
-backend architecture map.
+News and Trading are sibling bounded contexts, composed by `tracefold.app`.
+They are not one undifferentiated business module. The optional Nautilus process
+executes Trading signals but does not give News or the Signal lane order authority.
 
-Before changing business behavior:
+For a business change, find the owning code and trace the relevant path from input
+to persisted fact, decision, and actual consumer. Distinguish editorial News,
+market observations, wallet net-buy episodes, and Trading execution; their admission,
+retry, freshness, and completion meanings are not interchangeable.
 
-1. identify the owning root interface: `tracefold.news` or `tracefold.trading`;
-   these sibling capabilities are composed only by `tracefold.app`;
-2. trace provider input to PostgreSQL fact, durable target or broker queue,
-   current row, and public consumer;
-3. preserve the glossary embodied by persisted fact names and public
-   contracts;
-4. import a business capability only from its package root;
-5. update the GitHub Issue when the accepted domain decision changes.
+Use [Architecture](../ARCHITECTURE.md#package-map) for package boundaries.
+Ordinary cross-package consumers use the business package's public interfaces;
+App composition and concrete integrations may use the explicit internal owners
+allowed by the architecture tests. Do not expand public exports merely to wire an
+internal implementation, or introduce an interface for every private helper.
 
-Optional root `CONTEXT.md`, `CONTEXT-MAP.md`, or ADR files may be consulted when
-present. Their absence is not an error and does not justify creating a second
-documentation hierarchy.
-
-If an established term is insufficient, make the naming decision explicit in
-the current issue before introducing a competing synonym.
+Use persisted and public contract names consistently. [CONTEXT.md](../../CONTEXT.md)
+clarifies review terminology: a model Proposal is not accepted Gold, and an AI
+reviewer is not a human reviewer. Consult relevant historical decisions when needed,
+not as an obligatory reading list. Record a material domain decision in the current
+Issue or PR; no separate naming ticket or new documentation hierarchy is required.

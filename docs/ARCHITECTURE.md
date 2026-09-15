@@ -1,3094 +1,404 @@
 # Architecture
 
-Tracefold is one Python codebase/image with two mutually exclusive runtime
-composition roots, one CLI, one React console, and one PostgreSQL database.
-It has two business capabilities: News V3, and — since #104 — the Trading
-core, a bounded context that turns persisted open-interest facts into immutable,
-engine-neutral Trade Signals. They are siblings,
-not layers: neither imports the other and neither reads the other's tables. The
-architecture remains Kappa/CQRS: append-oriented material facts are the only
-business truth; deterministic current views and bounded immutable model
-publications are derived state.
+Tracefold is a Python codebase with two sibling business capabilities, News and
+Trading, a React operator console, and PostgreSQL persistence. Serve and Workers
+share the application image. The optional Nautilus execution process has its own
+image and lifecycle; it is not a third business context or a News worker.
+
+This document maps the current owners, data flow, and boundaries. Exact public
+fields belong to [Contracts](CONTRACTS.md) and [generated schemas](generated/README.md);
+operator procedures belong to [Operations](OPERATIONS.md); coding and verification
+policy belongs to [Development](DEVELOPMENT.md). Current source owns implementation
+constants, enabled tasks, and state transitions. Historical Issue plans explain
+past decisions but are not additional runtime or PR requirements.
 
 ## Data flow
 
 ```text
-OpenNews Strategy WSS
-  -> RabbitMQ news.raw -> Workers admission
-       -> PostgreSQL market Item + typed fact -> market notification loop
-       -> PostgreSQL editorial Item + Event -> RabbitMQ news.triage
-            -> PostgreSQL Verdict + delivery queue row (one transaction)
-            -> Workers delivery claim -> provider -> PostgreSQL delivery receipt
-  -> PostgreSQL read projections -> tracefold serve -> HTTP / React
+OpenNews Strategy WSS / history recovery
+  -> RabbitMQ raw handoff -> News admission -> PostgreSQL Item
+       |-- editorial: Event -> triage handoff -> News Program -> deterministic decision
+       |      -> verdict + delivery intent -> sender -> durable delivery outcome
+       |-- market: typed OI / liquidation / smart-money fact
+              |-- market notification rules -> durable intent -> sender -> outcome
+              `-- public OI projection -> App mapper -> Trading Source / Case / Signal
 
-PostgreSQL News OI projection -> App mapper -> Trading Case + Signal (one transaction)
-  -> Nautilus Runtime <- authenticated OperatorIntent in PostgreSQL
-  -> venue / reconciliation -> PostgreSQL ExecutionObservation -> HTTP / React
+Tracked-wallet roster + chain receipts
+  -> wallet fill ledger -> net-buy detector -> episode + first notification intent
+  -> independent price observations
+
+Trading Signal + authenticated OperatorIntent
+  -> separate Nautilus Runtime -> venue / reconciliation -> ExecutionObservation
+
+PostgreSQL read projections -> Serve -> HTTP / React console
+                           `-> read-only CLI commands
 ```
 
-Beside that hot path runs one strictly bounded review plane, the Price Review
-plane (#88, #304): two polling loops in Workers read their own work from PostgreSQL,
-call public venue REST with no database connection held, and write two derived
-read models — latest-only current quotes and versioned Event Reactions. It is
-not a market lane: no tick history, no socket, no OI, no order book, and no
-price reaches the Gate, Triage or `decide()`. Delivery may make bounded,
-ephemeral public-history reads solely to render the already-approved card; a
-price failure never changes whether the card is sent. The plane's failure is
-local by construction; News ingestion, judgment and readiness do not depend on
-it.
+The editorial and market paths deliberately diverge at admission. A market
+measurement does not need an editorial Event, model verdict, learning cohort, or
+reader card before it can be stored or reach the Trading source projection.
+The current Trading policy consumes OI evidence; an arbitrary news explanation is
+not itself an implemented automatic-trading strategy.
 
-Beside both runs the Trading Signal core. It is disabled by default.
-When enabled, one cold `SignalLane` reads persisted OI facts through a **public
-News projection**, keeps the source venue only as evidence provenance, freezes
-one content-addressed Case with source-native public bars, and runs one
-deterministic long-only Alpha policy. `NO_TRADE` remains on the Case; `long`
-commits `Case=SIGNAL_EMITTED` and an engine-neutral `TradeSignalV1` in one
-PostgreSQL transaction. The Signal contains no account, route, quantity,
-notional, leverage, order, grant, reservation, or OMS state.
+The canonical Compose application path includes PostgreSQL, RabbitMQ, the one-shot
+broker-policy application, migration, Serve, and Workers. `make up` manages that
+application lifecycle; the separate `make runtime-*` targets manage execution.
+See [compose.yaml](../compose.yaml), [Makefile](../Makefile), and [Setup](SETUP.md).
+Changing News or Serve is not permission to restart an account-owning runtime.
 
-The Nautilus Runtime consumes the Signal and the authenticated
-OperatorIntent/Observation transport. Execution is disabled by default; paper
-and live activate one profile-gated Binance USD-M TradingNode under the same
-Strategy/Risk/OMS/reconciliation owner. New profiles are cold, require
-authoritative Binance flatness, and start entry-paused until an authenticated
-durable resume. RabbitMQ remains News-only.
-
-`tracefold serve` initializes public HTTP/static, read repositories, serve
-telemetry, and no operator write path. Its database pool is read-only and it
-owns no Runtime or venue semantics. `tracefold workers` initializes the bounded external
-capability, singleton runtime status, and the RabbitMQ-driven News consumers
-when News is enabled. Admission and Triage recover through durable broker queues
-and database idempotency keys; Delivery claims its PostgreSQL queue. There is no database wake plane, no
-projection/EDF coordinator, no CPU-process lane, and no in-memory correctness
-dependency. Provider raw frames remain inputs until normalized and persisted
-as material facts.
-
-The deployment composition has four required boundaries: PostgreSQL, one
-successful migration job, Serve, and Workers. `make up` is only their
-fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
-On an empty PostgreSQL volume, the image's `initdb` hook creates one ordinary,
-non-superuser application login, `tracefold`, from
-`postgres_database_password`. It owns the public application schema and is
-shared by Alembic, Serve, Workers, Nautilus, and CLI processes. The hook creates
-the required extensions, revokes the `tracefold_app` bootstrap login, and is
-never replayed against a non-empty cluster. Process attribution remains in
-stable `application_name` values; the HTTP Serve pool separately enforces
-connection-level read-only transactions.
-
-The same project-scoped application image contains the Python service and a
-production React build. Migration, Serve, and Workers use that exact image and
-build revision with different commands and credentials.
-`make up` builds the image once and recreates migration, Serve, and Workers;
-missing execution credentials are a legal product state. It
-starts PostgreSQL when absent but does not recreate a running PostgreSQL
-container. Serve owns the static console and public HTTP
-boundary; Workers exposes only its loopback operational boundary. Image
-construction and Compose startup do not become alternate configuration
-sources: `tracefold init` remains the single generated-default authority and
-`~/.tracefold/config.yaml` remains the single live application config.
-
-## External Data runtime contract
-
-External Data is not a third business capability or a shared runtime. It is a
-classification applied before choosing a transport: business semantics decide
-whether work belongs on RabbitMQ, in a latest-state collector, behind a bounded
-PostgreSQL planner, or under the Runtime's own account authority. The four
-canonical classes are:
-
-- `durable_event`: every admitted item matters; persist facts, hand off at
-  least once internally, make consumers idempotent, and retain explicit
-  retry/DLQ/outbox/recovery semantics.
-- `latest_state`: only the newest answer matters; coalesce work, skip missed
-  refreshes, never queue stale refresh jobs, and preserve the last good value
-  when a provider fails.
-- `derived_work`: the result remains useful and can be rebuilt from durable
-  facts plus provider history; plan bounded batches from PostgreSQL and catch
-  up idempotently.
-- `capital_truth`: an external write or venue state can be irreversible;
-  prepare durable intent, attempt once, reconcile against provider truth, and
-  fail closed when the result is uncertain.
-
-One runtime may host all four classes without making their lifecycle rules the
-same. In particular, a shared retry policy would erase information: a missed
-quote refresh has no durable value, while an ambiguous order must not simply be
-resent.
-
-The class states the required contract. News implements its `durable_event`
-boundary with confirmed publish before settlement, structured consumer-task
-supervision, two database-backed handoff repair lanes, and durable incident
-recovery; none of those mechanisms turns RabbitMQ into business truth.
-
-<!-- BEGIN EXTERNAL DATA INVENTORY -->
-
-### Canonical inventory
-
-This table is review evidence, not a runtime registry. Production never reads
-it, and adding a flow here cannot enable a provider, task, queue or business
-action. `Worker task` names the stable task interface when the flow has one;
-`-` means the flow runs inside the task named by its parent row.
-
-Business runner classes carry only a typed `work_semantics` review annotation.
-The architecture harness discovers stages independently from the typed
-`NewsPipeline` composition and the one `SignalLane`: every stage must
-declare its semantics or an explicit internal-maintenance exemption, and each
-non-durable external stage must emit the common telemetry. Durable broker stages
-retain the existing broker/worker measurements. No scheduler, provider selector
-or business branch reads these annotations, so the inventory remains review
-evidence rather than executable configuration.
-
-| Flow | Owner | Semantic class | Source / authority | Transport | Worker task / trigger | Storage owner and consumers |
-| --- | --- | --- | --- | --- | --- | --- |
-| OpenNews live frames | News | `durable_event` | enabled OpenNews Strategies | WebSocket -> RabbitMQ | `news-receiver`; provider frames | `news_items` / `news_events`; Deduper, Triage, feed |
-| OpenNews history recovery | News | `durable_event` | official Strategy hits history | REST -> `raw.recovery.*` | `news-recovery`; startup or closed incident | same Admission path and News facts; never direct delivery |
-| RabbitMQ raw handoff | News | `durable_event` | OpenNews live/recovery envelopes | RabbitMQ quorum queue | `news-deduper`; message delivery | `news_items` / `news_events`; Triage projection |
-| RabbitMQ event handoff | News | `durable_event` | admitted `news_events` | RabbitMQ quorum queue | `news-triage`; message delivery | versioned `news_verdicts`; Delivery decision |
-| PostgreSQL verdict handoff | News | `durable_event` | push/escalate verdicts | `news_delivery_queue` row in the verdict's transaction | `news-deliverer`; claimed due row | `news_deliveries`; reader receipt truth |
-| Binance spot quote/day quote | News Market Review | `latest_state` | Binance public spot REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
-| Binance perpetual quote/day quote | News Market Review | `latest_state` | Binance public USD-M REST | REST polling | `news-quotes`; 20 s price / 300 s day reference | `news_quote_snapshots`; feed/event review readers |
-| Hyperliquid quote | News Market Review | `latest_state` | Hyperliquid public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
-| OKX quote | News Market Review | `latest_state` | OKX public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
-| Delivery price anchors | News Delivery | `derived_work` | Binance aggregate trades, then Hyperliquid/OKX/Lighter/Bitget recent trades; closed 1 m candles as fallback | bounded public REST on one approved delivery | `news-deliverer`; claimed delivery intent | ephemeral `ReaderDeliveryPresentation` only; no persisted tick history |
-| Single-name tradeability verification | News Delivery | `derived_work` | fresh Binance, Hyperliquid, OKX, Lighter and Bitget public catalogues | one bounded post-send fan-out | `news-deliverer`; eligible sent message | result stored in desired card or receipt-bound deletion evidence |
-| Binance candles | News Market Review / Trading Signal | `derived_work` | Binance public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-signal-lane`; due work | versioned `news_event_reactions` or frozen Trading Case evidence |
-| Hyperliquid candles | News Market Review / Trading Signal | `derived_work` | Hyperliquid public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-signal-lane`; due work | versioned `news_event_reactions` or frozen Trading Case evidence |
-| OKX candles | News Market Review | `derived_work` | OKX public closed bars | REST on planned demand | `news-reactions` or delivery fallback | versioned `news_event_reactions` or ephemeral delivery presentation |
-| Binance instruments | News Market Review | `latest_state` | Binance spot and USD-M catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | changed rows only in `news_market_instruments`, plus the venue's `news_market_instrument_snapshot_state`; Gate, quote/reaction planning, Trading projection |
-| Hyperliquid instruments | News Market Review | `latest_state` | main perp, spot and bounded HIP-3 catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | changed rows only in `news_market_instruments`, plus the venue's `news_market_instrument_snapshot_state`; Gate, quote/reaction planning, Trading projection |
-| OKX instruments | News Market Review | `latest_state` | OKX live USDT swaps and USDT/USDC spot catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | changed rows only in `news_market_instruments`, plus the venue's `news_market_instrument_snapshot_state`; Gate and price-source resolution |
-| US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | changed reference rows in `news_market_instruments`, plus the directory's `news_market_instrument_snapshot_state`; non-crypto classification only |
-| Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
-| Trading Signal lane | Trading | `derived_work` | one public News OI projection and source-native closed bars | PostgreSQL planner + REST | `trading-signal-lane`; App-owned poll, 2 s when enabled | admission ledger, frozen `trading_cases`, and atomic `trading_trade_signals` |
-| Roster wallet Transfer logs | News Chain Tape | `durable_event` | Robinhood Chain public JSON-RPC `eth_getLogs`; the chain is the authority | REST polling | `news-chain-tape`; 2 s when enabled | `news_market_wallet_fills` via classification; calibration counts, later wallet rules |
-| Wallet fill classification | News Chain Tape | `derived_work` | the same transaction receipt, plus the stablecoin cash leg inside it | REST on planned demand | `news-chain-tape`; per discovered transaction | `news_market_wallet_fills`; the same consumers |
-| Tracked-trader roster | News Chain Tape | `latest_state` | rhtrenches.com `/api/traders` and `/api/trader/{handle}` | REST polling | `news-chain-tape`; 1 h | `news_market_wallet_roster`; the topic filter above, and every fill's pinned version |
-| Wallet position verification | News Chain Tape | `derived_work` | public JSON-RPC block-start `balanceOf` plus preceding same-block transfers for buys; block-before-sell balance or reported bag for exits | REST on planned demand | `news-wallet-research`; bounded pending fills | buy evidence and `news_market_wallet_checks`; explicit position basis |
-| Wallet card context | News Chain Tape | `latest_state` | rhtrenches.com `/api/trader/{handle}` bags and `/api/tokens` marks | REST polling | `news-wallet-research` or `news-wallet-digest`; on demand, cached 60 s | event evidence or digest fact pack; observed marks and explicitly dated provider context |
-| Wallet observation price receipt | News Chain Tape | `derived_work` | DexScreener's deepest Robinhood Chain pool, then the provider's own `mark` | REST on planned demand | `news-wallet-research`; +15 m, +1 h and +4 h from observation | `news_market_wallet_outcomes`; sent and unsent observations, pinned reference basis |
-| Wallet buy digest | News Chain Tape | `derived_work` | PostgreSQL buy fact pack; optional model selects existing fact IDs | SQL planner plus bounded model call | `news-wallet-digest`; every 4 h by default | wallet digest Item and model selection audit; existing notification path |
-| Nautilus OI Runtime | Trading execution | `capital_truth` | `TradeSignalV1`, authenticated `OperatorIntentV1`, Nautilus Cache/Portfolio, Binance | bounded PostgreSQL transport; CLI and console ingress are durable before acknowledgement | profile-gated `tracefold nautilus` | append-only `ExecutionObservationV1` plus one current durable Runtime generation; disabled by default |
-
-The runtime limits behind that inventory are code-owned safety policy. `shared`
-means one turn-wide cap is divided among the named rows. `adapter-owned` names a
-real boundary that has no second timeout imposed by these loops; it is evidence
-for a future budget issue, not a claim of infinity. A dash means the concept
-does not apply.
-
-| Flow | Cadence / trigger | Freshness SLO | Batching key | Max targets | Max source groups / requests | External concurrency | Turn / provider deadline | Catch up / coalesce / stale-not-blank | Failure semantics |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| OpenNews live frames | provider push; reconnect after 3 s | provider-current | Strategy stream | provider-enabled Strategies; provider-owned | one account / one WSS | one WSS session | receiver idle/provider budgets; broker confirm | history recovery / incident windows / no | disconnect opens a durable incident; a frame is not business truth before Admission persists it |
-| OpenNews history recovery | startup, request, or 300 s fallback scan; 30 s overlap | recover while provider history exists | Strategy + incident window | bounded pending incidents and enabled Strategies | 100 hits/page; shared 60 provider calls and 1,000 confirmed messages/turn | serial Strategies/pages | shared 30 s wall budget plus provider-client budget | yes / requested pass coalesces / no | typed transient failures and budget exhaustion stay pending with bounded backoff; only explicit no-history/retention terminalizes |
-| RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; decode/permanent/exhausted transient failures are terminal, handler-side broker failures are counted returns, and only settlement or unknown failures reach root supervision |
-| RabbitMQ event handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Event marker | Event ID | configured bounded Triage prefetch; repair batch 50 | one queue delivery | configured bounded consumer | broker connection/confirm budgets | yes / stable-ID duplicates coalesce at Triage / expired is explicit | confirmed publish precedes Event marker; PostgreSQL repairs marker-null Events while relevant and projects older rows as expired |
-| PostgreSQL verdict handoff | 1 s claim poll; a due row is claimed the moment it is due | queue row committed with the verdict | Event ID + delivery kind | one claimed intent per claim; 20 per turn | one `FOR UPDATE SKIP LOCKED` claim | one claim at a time | 30 s claim lease; 3 attempts | no catch-up needed / a re-decided Event coalesces on `ON CONFLICT (event_id, kind)` / `dead` is explicit | the queue row commits with the verdict, so there is nothing to repair; a spent budget is `state = 'dead'` with its reason, while external delivery remains at-most-once |
-| Binance spot quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=600 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
-| Binance perpetual quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=600 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
-| Hyperliquid quote | start-based 20 s | current <=45 s; native reference <=600 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 current groups; one group request | current 4 | 10 s current turn / 8 s provider | no / yes / yes | completed answer commits even when another source times out; failed/pending source keeps its previous row |
-| OKX quote | 20 s | fresh through 60 s | `okx.spot` / `okx.perp` source group | shared cap 256 symbols | shared cap 12 groups; one whole-market request/group | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
-| Delivery price anchors | one approved delivery | event/push-time | one venue symbol + news/push-1h/push/push-24h anchors | displayed assets only | at most two Binance contracts, then one Hyperliquid, one OKX, one Lighter, and one Bitget contract; 2 s/contract | displayed assets parallel; anchors parallel where supported | bounded by the per-contract deadline | no / duplicate anchors coalesced / no | use the last trade at/before each anchor only within 60 s, then the last closed 1 m candle within 90 s; venue failure tries the next whole calculation and never changes delivery policy |
-| Single-name tradeability verification | one eligible sent card | current catalogue | exact ticker aliases | one single-name ticker | exactly five venue families | venue families parallel | 25 s whole review | no / exact contract dedupe / yes | any hit edits and keeps; only five successful empty answers delete; any failure or unresolved identity keeps |
-| Binance candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
-| Hyperliquid candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
-| OKX candles | planned Event/delivery demand | useful while provider history exists | venue symbol + bounded time range | shared Reaction cap 100 due rows; delivery displayed assets only | shared Reaction cap 32; delivery one request/missing anchor | shared Reaction cap 4; delivery displayed assets parallel | 8 s provider; delivery 2 s/contract outer deadline | yes for Reaction / duplicate delivery anchors coalesced / no | same local failure semantics as the other price venues |
-| Binance instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | one catalogue snapshot | one family fetch; adapter owns spot/perp subrequests | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting, and keeps the last refresh time it earned |
-| Hyperliquid instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family / DEX | main perp, spot and at most 32 builder DEXes | one bounded family fetch | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting, and keeps the last refresh time it earned |
-| OKX instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | live USDT swaps and USDT/USDC spot | one bounded family fetch | venue families serial | 8 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting, and keeps the last refresh time it earned |
-| US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
-| Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
-| Trading Signal lane | App-owned poll, 2 s | source age <= configured admission window; Signal TTL = min(180 s, admission window) | underlying / durable source key | 1 Case freeze and 4 decisions/turn | source-native public bar calls serial | one | adapter-owned provider / 10 s PostgreSQL boundaries | bounded overlap / durable source idempotency / no | missing or uncertain evidence creates no Signal; Case+Signal commit atomically |
-| Roster wallet Transfer logs | 2 s when enabled | tip plus a 30-block (~3 s) overlap | block range | the roster union: 40 addresses as configured, each list capped at 200 by the settings model | 2 `eth_getLogs`/turn; at most 100,000 blocks/turn | serial | adapter-owned 10 s read / 5 s connect | bounded block-range catch-up; the durable position stops one overlap short of the block read / overlapping re-reads collapse on the chain's identity / no | an RPC failure ends the turn with the classified position unchanged; the next turn re-reads the same range |
-| Wallet fill classification | one discovered transaction | same turn as its log | `tx_hash` | 20 receipts/turn; the rest stay pending. The classified position lags one overlap, so each movement's receipt is fetched about three times at the default 2 s cadence and the effective provider load is roughly three times that cap | 1 receipt + 1 block header per transaction, plus at most 2 cached `eth_call` per fill | serial | adapter-owned 10 s read | pending transactions carry to the next turn / per-token metadata cached for the process / no | an unanswered receipt stops that turn's remaining transactions and stores nothing for them; after `MISSING_RECEIPT_ATTEMPTS` turns that transaction is banked as one `unknown` and is never asked for again while the log window still offers it, so one movement is either a stored fill or one count and never both |
-| Tracked-trader roster | 1 h | <=1 h | roster version | the site's published addresses; 40 selected | 1 list call plus 1 per address past the closed-trade floor, paced >=0.25 s apart | serial | adapter-owned 15 s read / 5 s connect | no / an unchanged member-and-statistics snapshot re-stamps its version / yes | a site failure keeps the previous version and the tape keeps following it |
-| Wallet exit verification | one live sell of a roster wallet | the public node holds ~6,100 blocks (~10 min) of state | fill identity | 12 derived observations/turn | 1 `eth_call` per sell | serial | adapter-owned 10 s read | no / a re-read writes the same check row / no | a pruned block or a refusal is `None`, not a balance of zero: the rule falls back to the reported bag and the card prints `site_reported` |
-| Wallet card context | on demand while deriving | cached 60 s | handle for bags; whole market for marks | one handle per exit; one market snapshot per turn | 1 bags call per uncached handle, 1 marks call per turn, paced >=0.25 s apart with the roster | serial | adapter-owned 15 s read / 5 s connect | no / the cache coalesces a burst in one token / yes | any failure costs the card one line and never the card |
-| Wallet card price receipt | +1 h and +4 h after a send; taken on the tape's own turn | recorded within a day of the horizon or banked `unavailable` | `delivery_key` + horizon | 4 receipts/turn | 1 DexScreener call per receipt, then at most 1 shared marks call | serial | adapter-owned 8 s read / 5 s connect | yes / a due receipt is retried each turn / no | an unanswered horizon stays due for 24 h and is then recorded as `unavailable`, which is a row rather than a silence |
-| Nautilus OI Runtime | active only for `paper|live`; 0.5 s current heartbeat; complete private proof every 5 s and immediately on ambiguity/flatten; Nautilus native in-flight/open/position checks at 2/5/5 s | command/Signal TTL; account clock <10 s and complete reconciliation <15 s, both derived from the one 5 s period; public heartbeat stale after 5 s | account slot advisory lock | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; control state survives restarts and only a Command moves it; unowned exposure or lost singleton halts |
-
-Workers exposes one bounded Prometheus vocabulary at the existing telemetry
-seam. The concrete metric names carry the project prefix:
-
-```text
-tracefold_external_data_turn_duration_seconds{name}
-tracefold_external_data_turn_total{name,outcome}
-tracefold_external_data_target_count{name}
-tracefold_external_data_source_count{name}
-tracefold_external_data_last_success_age_seconds{name}
-tracefold_external_data_provider_call_duration_seconds{name,source}
-tracefold_external_data_provider_call_total{name,source,outcome}
-tracefold_external_data_provider_bytes_total{name,source}
-tracefold_external_data_skipped_or_coalesced_total{name,reason}
-```
-
-The last-success age is evaluated when Prometheus scrapes rather than frozen at
-the end of a turn, so it keeps growing if one collector stops while Workers is
-still alive. `name`, `source`, `outcome` and `reason` accept only code-owned
-finite values; symbols, Event IDs, URLs, Strategy IDs and dynamic Hyperliquid
-DEX names are never labels. Response bytes are recorded only when an adapter
-already exposes an exact byte count.
-
-### Extension and extraction gates
-
-Every new external-data flow must state its semantic class, authoritative
-source, current-versus-historical meaning, freshness target, missed-turn rule,
-failure behavior, batching key, target/source/request bounds, concurrency and
-deadline, storage owner, consumers, and whether it can change a News or Trading
-action. Raw data and an event derived from it are classified independently:
-current OI can be `latest_state`, while a product-level OI jump signal may be
-`derived_work` or `durable_event` depending on its consumer contract.
-
-Direct provider wiring remains the smallest correct seam. A capability registry
-requires at least four production providers, four capabilities and the same
-selection matrix repeated in three wiring locations. A shared latest-state
-runner requires a second production collector to duplicate at least the
-non-overlap, missed-cadence and telemetry envelope with the same failure
-semantics. Until those facts exist, do not add an `ExternalDataService`,
-provider plugin registry, `BaseCollector`, `BaseWorker`, generic task engine or
-new top-level package.
-
-NautilusTrader `1.231.0` is a pinned dependency and the execution authority
-inside the one profile-gated Binance USD-M Runtime process. It is not a new
-business truth, scheduler, News transport, or provider registry. It consumes
-`TradeSignalV1` and `OperatorIntentV1`, proves the dedicated account before
-the account slot, and projects venue outcomes back as append-only Observations plus
-one current row. PostgreSQL remains business truth; News, Triage, Review and
-Learning stay on their present runtimes.
-
-<!-- END EXTERNAL DATA INVENTORY -->
-
-## Truth, control state, and derived state
-
-Material facts include:
-
-- news: canonical provider Item facts pushed by the Strategies enabled in the
-  operator's OpenNews account and persisted in `news_items` (provenance union,
-  provider metadata, raw first line, first ingest mode). Tracefold applies no
-  local Strategy allowlist.
-- market: the same `news_items` row is also where a market observation lives
-  (#553). A frame from a market Strategy carries `market_kind`
-  (`oi|liquidation|smart_money|unknown_market`, and `wallet` since `0372` for
-  the observations the chain tape derives rather than a Strategy sends),
-  `market_source_strategy_id`,
-  `market_parse_status` (`parsed|raw`), `market_parse_error` and the frame's own
-  `provider_params`, and one typed fact row is written beside it in the same
-  transaction: `news_oi_signals`, `news_market_liquidations`,
-  `news_market_smart_money` or `news_market_wallet_events`.
-  `market_kind IS NULL` is exactly "this Item is ordinary news", and one CHECK
-  states that pair as one fact. All four ledgers
-  are cascade children of `news_items`, so a typed fact cannot outlive the
-  record it was parsed from.
-
-The two Price Review read models are derived and rebuildable, with different
-lifecycles on purpose (#88). `news_quote_snapshots` is last-value-wins current
-display state: one row per provider source holding a bounded normalized quote
-map, no history, no tick id, no raw payload. `news_event_reactions` is the
-deterministic return between an Event's market anchor (`opened_at_ms`, the
-provider publication time) and a fixed horizon, keyed by
-`(event_id, symbol, metric_version)`; `reaction_v1` freezes candle interval,
-alignment, gap tolerance, source selection, aggregation and the hit definition,
-so a later revision publishes a new version beside v1 rather than changing what
-a stored row means. The row also records `is_primary` — whether the model called
-that asset a primary at measurement time — because the review's event-level
-sample is the median over primaries and re-deriving that from verdict JSONB per
-request costs 1.2 s at the 720 h bound, past Serve's one-second statement
-timeout. Both tables cascade with their Event under existing retention.
-
-The current read model is `news_events` (plus `news_event_members`,
-`news_event_bands`, `news_event_assets`). It uses stable product identity, has
-exactly one runtime writer, is rebuildable from facts, and writes zero serving
-rows when its business payload is unchanged. `news_events` is rebuildable by
-replaying `news_items` through the Deduper: `admit_frame` expands every
-first-seen Strategy tuple retained on the material Item, while `tracefold news
-replay` applies the same classifier and Deduper policy to saved provider hits.
-Its durable `event_kind` is the closed editorial
-classification `news|listing` (#553); exact,
-artifact and near-duplicate joins are restricted to the same kind so source
-contracts cannot collapse into each other. The three market kinds it used to
-hold — `oi`, `liquidation`, `unsupported_market` — are not Event kinds any more:
-those frames are stored as market Items and open no Event, so an Event's
-`source_contract_reason` is `NULL` on everything the current writer can open.
-The column survives only because
-`news_event_evidence_current_contract_check` names the evidence card's keys
-exactly. Migration `0336`
-physically deleted every pre-genesis Event, including rows that carried the
-retired `source_contract_unverified` value.
-
-`news_oi_signals` is the OI measurement ledger, written at admission from the
-Item and never from an Event. Migration `20260905_0365` dropped its `event_id`
-foreign key — the column stays as the opaque source identifier a frozen Trading
-Case already resolves — and made `(source_item_id, metric_version)` its
-observation key, so one provider record parsed under one metric version is one
-row. At insertion it freezes the exact source Item, provider, source venue,
-native `raw_instrument`, `measurement_definition` and actual availability clock;
-evidence capture never reconstructs those fields from a later Event leader. The
-`learning_epoch` column is gone with the Event-shaped write path.
-Its three timestamps are three separately recorded facts and no rule orders them:
-`observed_at_ms` is the provider's own publication stamp carried unmodified from
-`news_items.published_at_ms` through `news_events.opened_at_ms` and arriving at
-second granularity, `available_at_ms` is when this host could first read the
-frame, and `created_at_ms` is when the row was written. An exchange clock ahead
-of this host's is recorded as measured rather than clamped or refused (#544).
-OpenNews's raw `coins` annotation remains
-source evidence in `news_items.provider_metadata`; the Gate derives the bounded
-`grounded_assets` from it. `news_event_assets` is the durable Event-market
-identity ledger of those Gate-grounded symbols. The read API
-exposes the evidence and the resolved ledger projection as different fields.
-Market observations are not in it at all: they carry their own `symbol` and
-`raw_instrument` on the typed fact, which is the identity `/api/news/market`
-groups and renders.
-
-OpenNews connection state in `news_ingest_state`, explicit incident intervals
-in `news_opennews_incidents`,
-and broker queues are control state. Retry attempts and terminal reasons are
-likewise queue policy, not facts. `news_verdicts` (Triage decisions bound to a
-policy version) are derived model outputs bound to frozen evidence; they are
-not material facts. `news_deliveries` is the outbound ledger keyed by
-`(event_id, kind)` and holds no retry, lease, or backfill of its own: the
-attempt budget and the lease belong to the `news_delivery_queue` row that lives
-until the ledger row exists (#598 D2). A `sent` or `terminal` row is final and
-is never sent again; the only row an attempt may take back is the `sending` row
-it wrote itself, and only when the provider proved the card never left (#604 N1).
-Reader receipt truth is `news_deliveries.state = 'sent'`; a model decision,
-pending attempt, or missing delivery row never means that the reader saw a card.
-`news_event_evidence_snapshots` freezes the exact fact unit and evidence
-version read by Triage so a later member cannot rewrite the meaning of an old
-verdict.
-
-The learning plane is append-only. `news_reviews` stores rubric judgments and
-their separate acceptance receipts; `news_external_miss_snapshots` stores
-important facts that never became an Event. Content-addressed datasets,
-candidate manifests, evaluation reports, pairwise cases, model recordings,
-deployments and rollback receipts live in `news_learning_artifacts` and
-`news_learning_cases`. `news_canary_activations`, `news_agent_assignments`, and
-`news_agent_runtime_manifests` are the durable production control/audit seam.
-Workers registers the runtime manifest and its linked active/deployment receipt
-as a synchronous startup barrier before its probe can become ready.
-`news_learning_epochs` records immutable evidence epochs. Since #314 the running
-deployment opens its own: the same startup barrier that appoints the active
-Agent appends a row for its bundle if it has never run here, named
-`bundle_<first eight hex of bundle_sha>`, carrying that bundle's
-`envelope_sha256`, and tripping every armed or active canary. Because a bundle
-covers the two instructions, the computed execution envelope, the four model
-slots, the retrieval contract and the policy, a deployment that changes what the
-model sees cannot go on accruing evidence into the previous cohort. Rows
-`program_v1`–`program_v9`, each opened by a hand-written migration, remain
-append-only audit history. Only accepted `news_review_v6` evidence created in
-the running bundle's epoch and bound to that exact bundle is eligible for
-metric v8, optimizer, replay or release gates.
-The operator fast loop that used to sit beside that plane
-(`tracefold.news.learning.experiment`, #193) was deleted in #343, and with it
-its on-disk run directories, snapshot/compare arm comparison and the
-`promotable: false` experiment candidate. Offline research now enters only
-through `news learning run` over a frozen development dataset.
-
-`news_learning_retention_state` makes the bounded 90/365-day cold purge and
-its current backlog/error observable; the database function pins the current
-and previous distinct stable release chains. The exact `news_*` base-table set
-and four security-barrier review views are executable in
-`tests/integration/test_news_v3_pipeline.py`, not repeated as a hand-maintained
-table-count contract.
+`tracefold init` generates operator defaults; `~/.tracefold/config.yaml` is the
+application configuration authority. Missing optional provider credentials are a
+capability state, not a reason to fabricate data. Inspect redacted configuration
+and actual capability status rather than infer operation from task construction.
 
 ## Package map
 
-The production package is `tracefold/` at the repository root; there is no `src/` parent
-and no compatibility path back to one (#373). One consequence is worth stating, because
-it changes what a green test run means: the repository root is itself an import root, so
-any process whose working directory is the checkout can import `tracefold` off the working
-tree, and an ordinary pytest pass no longer says anything about what the wheel contains.
-`tests/package/test_installed_distribution.py` is the answer to that — it builds the real
-wheel and sdist, installs the wheel outside the repository, and reads the product and its
-packaged resources from there with the checkout absent from the working directory,
-`PYTHONPATH`, and `sys.path`. The image runs the same kind of check on itself from `/`,
-since `/app` is an import root for the same reason.
+Production code is under `tracefold/`, without a `src/` parent:
 
-```text
-tracefold.news
-  the News capability. OpenNews ingest and the broker envelope; the one source
-  classifier that splits editorial frames from market observations; the Event
-  pipeline (Deduper and its atomic admission transaction, Gate, Triage,
-  Deliverer, Janitor, recovery); the native DSPy Program with its artifact
-  registry, seed instructions and chat transport; ReviewDesk and the offline
-  learning and release planes; instrument/quote/reaction review; the three
-  market parsers, the notification loop and the chain wallet tape; and every
-  `news_*` statement behind a named repository method in `storage/`.
-  `similarity.py` stays in the package root because relocating it waits on an
-  approved identity migration.
-
-tracefold.trading
-  the disabled-by-default Alpha/Signal capability. `signal_lane.py` is the one
-  deep module (`advance()`: Source -> Case -> Signal); beside it are the
-  App-facing contracts, the one admission with its closed reason set, the OI
-  source projection, the frozen long-only policy, the price window a Case is
-  frozen against, and `trading_*` storage behind one repository.
-
-tracefold.integrations
-  provider and external-system adapters: OpenNews, RabbitMQ, Feishu, Telegram,
-  public market data, and the profile-gated pinned Nautilus/Binance OI Runtime
-
-tracefold.platform
-  config models/loader, PostgreSQL/Alembic (`postgres/client.py`, `audit.py`, `migrations.py`), telemetry, paths,
-  bounded resource primitives, docker host translation
-
-tracefold.app
-  Serve/Workers database composition, `repository_session.py`, HTTP, CLI,
-  the Workers lifecycle root plus capability wiring (`app/workers/`), and the
-  thin Nautilus process/database/probe composition root (`app/nautilus/`).
-  `workers/wiring/database.py` satisfies each capability's own database port;
-  `workers/wiring/news_to_trading.py` is the single News -> Trading mapper.
-  News CLI commands are owned by their bus/instrument/review/learning/diagnostic
-  modules; HTTP routes and exact schemas are owned by feed/event/review/status
-  resource modules under `app/http/`.
-```
-
-This map names top-level packages only. A per-file inventory here is a second
-copy of the tree that drifts the moment a module is added, and the rules that
-actually constrain the layout — allowed import edges, who may own SQL, which
-consumer families may reach a private collaborator — are executable in
-`tests/architecture/test_backend_boundaries.py`.
-
-Each business package root is its stable public Python interface:
-`tracefold.news` and `tracefold.trading` export only value and port contracts.
-Ordinary feature callers import those contracts from the root. Runtime
-policies, evaluators, persistence, review workflows, and composition helpers
-remain with their concrete owners and are not re-exported.
-
-The application composition root and concrete provider adapters are private
-implementation collaborators, not product consumers. Where one of them must
-construct a repository, schedule an internal worker, or reuse the exact pinned
-parser/composer implementation behind a public protocol, its consumer family
-and allowed contract family are bounded by the architecture harness. Those
-seams use explicit owner imports so they cannot masquerade as product APIs.
-They are not re-exported, compatibility interfaces, or available to feature
-callers; all public models and protocols still come from the package root.
+| Package | Responsibility |
+| --- | --- |
+| `tracefold.news` | Admission, editorial Events, Program, deterministic decisions, delivery, review/learning/release, market observations, wallet episodes, and `news_*` storage. |
+| `tracefold.trading` | OI source admission, frozen Cases, Alpha evaluation, engine-neutral Signals, execution transport contracts, and `trading_*` storage. |
+| `tracefold.integrations` | Provider, broker, delivery, public-market, and Nautilus/Binance adapters. |
+| `tracefold.platform` | Configuration, PostgreSQL/Alembic, telemetry, identity, and bounded process resources. |
+| `tracefold.app` | Serve/Workers/Nautilus composition, HTTP/CLI adapters, database-port implementations, and News → Trading mapping. |
 
 The dependency direction is:
 
 ```text
-app -> integrations + business packages + platform
-integrations -> business package interfaces + platform
+app -> integrations + news + trading + platform
+integrations -> the relevant business contracts + platform
 news -> platform
 trading -> platform
-platform -> Python / third-party libraries only
+platform -> Python / third-party libraries
 ```
 
-`tracefold.app` is the only seam that knows both capabilities. It is where a
-public News projection row becomes a Trading candidate, and it is the reason
-Trading can consume News truth without a cross-domain import or a reach-through
-read.
+News and Trading neither import each other nor read the other's tables. Ordinary
+cross-package consumers use the business package's public value and port contracts.
+App composition and concrete integration collaborators use explicit internal owner
+imports where the architecture harness permits them; they do not enlarge public
+exports simply to construct an implementation. Package roots perform no runtime I/O.
 
-That seam is typed on both sides. Each business package declares the narrow
-port it needs from the process — `NewsDatabasePort`, `QuoteDatabasePort`,
-`ReactionDatabasePort`, `TradingDatabasePort`, each just a bounded read and a bounded transaction — and
-`app/workers/wiring/database.py` implements them over `WorkerDatabase`, choosing
-the lane, the deadline default and the error vocabulary. A business module never
-names `worker_session`, `run_news` or `heavy_business`: no import edge was never
-the same thing as no dependency. The handoff itself is two independent frozen
-row contracts, News's `OiTradeProjectionRow` and Trading's own `OiCandidateRow`,
-translated field by field in `news_to_trading.py`, so a rename on
-either side fails at the seam rather than inside a runner. The `TypedDict`s *are*
-the SELECT lists, and #537 PR-4 deleted the version string that used to sit above
-them: it restated in prose what the types already state and was never compared
-with anything in production. The OI row publishes the deterministic ledger and
-nothing else: sixteen keys read from
-`news_oi_signals` joined to the source Item for its `first_ingest_mode`, plus a
-bounded bulk point-in-time instrument catalogue and the complete fixed-window OI
-source universe. The triage verdict, the learning epoch, the six `jsonb`
-equalities that re-proved the ledger against the verdict's copy of it and the
-four News version literals are gone (#510); #553 then removed the Event the
-ledger hung off entirely, so the read is one ledger written at admission and one
-Item column. A frame reaches Trading without
-passing through the editorial pipeline or the active learning arm, so a News
-policy or Program identity move is no longer a Trading contract change. Ingest
-provenance is published and never filtered here — the Signal lane refuses a
-recovery frame by name; editorial News, liquidations and smart-money reports have
-no Signal-lane projection.
-The live OI handoff reads that projection through the News cold adapter, closes
-the News transaction, and then lets the Trading adapter open its own bounded
-transactions. No callback receives both repositories and there is no
-cross-context transaction.
+`app/workers/wiring/news_to_trading.py` maps the public News OI projection to Trading's
+own row contract field by field. The News read finishes before the Trading transaction
+starts. There is no callback holding both repositories and no cross-context transaction.
+A change to editorial policy or Program identity does not by itself change this OI
+projection contract.
 
-`tracefold.app` decides how capabilities are assembled and run, never what a
-business fact means. It reads business projections; it does not write business
-tables. Every `news_*` / `trading_*` `INSERT`, `UPDATE` and `DELETE` lives in
-the owning package's storage behind a named repository method.
+`tests/architecture/test_backend_boundaries.py` enforces the implemented dependency
+and SQL boundaries. Installed-distribution tests verify the wheel outside the checkout;
+a local import from the repository alone does not establish correct packaging.
 
-| Surface | Semantic owner | App responsibility |
+## Truth, control state, and derived state
+
+| Kind | Examples | Meaning |
 | --- | --- | --- |
-| Canary identity / durable reason | News Release | transaction + runtime facts |
-| Candidate artifact lineage | News Release runtime | image/model composition caller |
-| DSPy endpoint binding | App | full owner |
-| News → Trading projection | App mapper | field-by-field mapping |
+| Source facts | Items, typed market observations, wallet fills and source provenance | What was observed and durably recorded, including explicit uncertainty. |
+| Decisions and receipts | Verdicts, accepted reviews, Signals, delivery outcomes, execution observations | What the named owner decided or actually observed, with its evidence and identity. |
+| Control state | Claims, retry scheduling, broker queues, runtime/capability status, release activation | Progress and authority, not an alternative copy of the business facts. |
+| Derived views | Event membership, quotes, reactions, current episode state, HTTP/React projections | Replaceable projections with an identified writer and freshness meaning. |
 
-Business packages never import `tracefold.app`, provider integrations, or each
-other. Transport adapters do not own business rules. `app/workers/root.py` owns
-only process lifecycle and TaskGroup coordination; concrete News, Market Review,
-and Trading construction lives under `app/workers/wiring/`. Platform exposes only
-bounded resource contracts. Queue state machines and
-read-model behavior stay with their business owner. These rules are executable
-in `tests/architecture/test_backend_boundaries.py`.
+A model prediction is not a source fact. An accepted review is a recorded acceptance,
+not proof of independent human accuracy. A queued notification is not a delivery;
+a recorded command is not an accepted order or fill. Reconcile uncertain external
+writes with their provider or venue rather than infer success from a local intent.
 
-A Provider is an integration adapter, not a product layer, registry, or second
-source of truth. Each adapter translates one upstream transport and error model
-into a business-package protocol. The adapters are OpenNews (the authenticated
-Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
-(`aio-pika`), Feishu (the custom-bot webhook), Telegram (one operator-bound
-channel via the Bot API; fixed origin and configured target), and the isolated
-public venue catalog/price adapters, and the isolated profile-gated Nautilus
-Binance USD-M boundary. Nautilus is absent in disabled mode and is a required
-identity-bound runtime in paper/live mode. No provider owns a durable queue. Expected
-provider failures stay inside the owning bounded
-loop; an unhandled child exception is deliberately a Workers-root failure and
-the container restarts the single process.
+Current projections use stable business keys and identified writers. Preserve their
+fact lineage and avoid rewriting unchanged business payloads. Provider timestamps,
+host availability timestamps, and database timestamps describe different clocks;
+do not invent ordering between independent clocks or clamp a measured source time.
 
-SQL ownership follows the same boundary: News owns `news_*`; Trading owns
-`trading_*`; platform owns Alembic and `workers_runtime`. News makes no cross-domain read: its single
-read-only seam (`macro_module_current` as Analyst evidence) went with the
-Analyst lane in #57, and the Macro tables themselves went in #68. The
-architecture gate checks SQL table references against the generated current
-schema and fails if its production SQL scan is empty. Production statements
-live in the owning storage/PostgreSQL boundary or the small named App adapter
-allowlist. Public and cross-context projections list columns explicitly.
-High-risk runtime and query-audit paths import the same canonical statement
-builder; the audit does not maintain a representative copy.
-SQL functions follow the same ownership rule: a Trading trigger may
-call only Trading/platform helpers, including its own canonical-JSON seal
-helper, never a News-prefixed function.
+News learning artifacts bind the actual Program, execution envelope, policy, review,
+and dataset identities. Runtime bundle changes can start a new eligible cohort;
+retired hand-written epoch numbers are audit history, not the name of today's cohort.
+Read the owning identity and release code when changing those contracts.
 
 ## Transaction ownership
 
-Application services and workers own transaction scope. Repository writes use
-the supplied connection and never expose commit switches or open hidden
-transactions.
+The caller owns the transaction; repositories use its supplied connection and do
+not hide commits. Business database callbacks receive only their bounded repository
+capability, not a cross-context session or an escape hatch into App internals.
 
-A Worker callback receives only the repository capabilities required by its
-bounded context, never the raw connection or the cross-capability repository
-session. The Worker database adapter owns the true outer transaction: setup,
-callback SQL, commit or rollback, and its one telemetry observation. A nested
-repository transaction cannot shorten that scope or manufacture a second
-transaction count.
+Important atomic units include an admitted Item plus its editorial assignment or
+typed market fact; a verdict plus its delivery intent; a Case plus its admission
+record; a Signal plus its Case transition; and a complete wallet receipt's facts
+or derivation updates. Read the owning repository for the exact predicates.
 
-Important atomic units are:
+Provider, model, broker, filesystem, and other external I/O runs outside database
+transactions. Prepare expensive validation, canonical serialization, and hashes
+before the callback; materialize richer objects after it. Keep SQL, locks, row mapping,
+and immediate conditional-write checks bounded inside the transaction.
 
-- one accepted OpenNews frame: NewsItem upsert with provenance union plus its
-  Event assignment (new Event, bands, assets, or membership);
-- one Triage verdict insert; one delivery begin or settle;
-- one `TradeSignalV1` insert plus the guarded Case `RUNNING -> SIGNAL_EMITTED`
-  transition;
-- one Case insert plus its `CASE_CREATED` admission row.
+Database and finite-operation adapters own native deadlines and physical resource
+permits. An asyncio timeout must not imply that an underlying operation has stopped
+or release its permit early. Preserve cancellation, completion, and retry semantics
+at the actual adapter boundary, rather than copying another timeout wrapper into a
+business loop. [Operations](OPERATIONS.md) and the relevant tests cover diagnosis.
 
-Provider, model, filesystem, and network I/O occurs outside database
-transactions. The same rule excludes Pydantic materialization, canonical JSON,
-hashing, compression, large sorts/deep comparisons, and sleep/backoff. A
-callback may execute SQL/transaction-scoped locks, map rows to primitives, and
-immediately check rowcount/`RETURNING`/CAS. Payloads are prepared before the
-callback and rich objects are materialized after it.
+## External Data runtime contract
 
-Each Worker database session owns exactly one bounded PostgreSQL transaction.
-It installs its statement and transaction limits as transaction-local settings
-in one setup round trip, so PostgreSQL is the native deadline authority for all
-SQL in that session. Transaction exit restores the connection automatically;
-there is no session reset round trip. Awaiting DB, finite-operation, and model
-work adds only a bounded completion grace so the native result wins at
-its deadline. If an asyncio wrapper callback is delayed, an already-completed
-native future is consumed directly. A typed recurring business-DB future that
-remains alive beyond the grace is a local loop failure: its permit stays bound
-to native completion and the loop retries on its natural cadence. Control-DB,
-model, cleanup, and otherwise unclassified overruns remain fatal. This
-decision uses the exception's typed physical capability, never an error-string
-or operation-name prefix. A business-lane PostgreSQL idle-transaction
-disconnect is bounded admission failure. The idempotent runtime-heartbeat
-child retries only precise transient database failures; 15 seconds without a
-fresh heartbeat degrades readiness without killing the root, while recovery
-restores readiness. Pinned-singleton loss, invariant failures, and an unfinished
-native control future remain fatal. Only an explicitly classified true
-external provider seam may translate a finite-operation overrun into its
-existing durable retry, degradation, or terminal policy; doing so never
-releases the shared capability permit before the underlying future actually
-finishes.
+External data is not a generic shared scheduler or an extra business capability.
+Different flows have different replay and loss semantics. The Workers stage annotations
+and architecture tests currently distinguish:
 
-News consumers have no frontier lease; the broker's single-active-consumer and
-per-message ack are their fences. Delivery has no broker queue at all: its fence
-is the row it claims with `FOR UPDATE SKIP LOCKED` and the
-`news_deliveries (event_id, kind)` key underneath it.
+| Class | Meaning |
+| --- | --- |
+| `durable_event` | Every admitted event matters; persist and recover idempotently. |
+| `latest_state` | The newest useful value matters; coalesce refresh work and retain explicit stale/unavailable state. |
+| `derived_work` | Bounded work can be rebuilt from durable facts and provider history. |
+| `signal_truth` | The Trading lane commits its durable engine-neutral decision and Case transition. |
 
-Every business task the Workers root runs is declared in
-`app/workers/task_contract.py` against one named capability and a
-`foundational` flag (#553 PR-3). News reception, admission and retention are
-foundational: they are the information entry every other capability reads, so a
-program error there stays root fatal and the container restart that has always
-healed it still happens. Every other task is optional, owns exactly one
-capability key, and an unexpected program error inside it stops that task and
-records that capability `faulted`. A Trading lane exception, a push sender that
-cannot be constructed, and a News Program that cannot be assembled or registered
-are each confined to `trading_signal_lane`, `news_delivery` and
-`news_editorial`; reception, admission, retention and the read APIs beside them
-keep running, and nothing auto-restarts the stopped task. A PostgreSQL failure
-is never confined, in a task or in composition. The loopback readiness
-probe reports basic readiness and that capability report as two separate fields,
-so a faulted capability is never read back as a reason to switch a healthy fact
-API off; the console prints the report on 流水线状态. Recoverable Receiver broker incidents, Recovery
-provider/broker/database faults, and consumer-handler `BrokerUnavailable` /
-`BrokerBackpressure` failures do not stop a task at all. Receiver and Recovery
-keep durable incident rows and `/api/news/status` recovery state until the
-history gap closes; a consumer handler returns the delivery through the same
-counted broker settlement as `TransientError`, so RabbitMQ delays it and
-dead-letters it after the shared budget. The status broker layer retains the
-latest confirmed-publish failure code and timestamp from the running Workers
-process. Unclassified handler and settlement failures still reach root
-supervision. Recovery exposes `reason=recovery_pending` before an attempt and
-`reason=recovery_transient` after a typed failed attempt; neither is a false
-process-readiness failure.
+These annotations describe Workers business stages; they do not select providers or
+schedule tasks. External account/order authority belongs to the separate Runtime.
+It is not another `work_semantics` value to add to a News collector, and uncertain
+orders must not inherit an ordinary quote-refresh retry policy.
+
+### Canonical inventory
+
+Use the current composition rather than a hand-maintained table of provider counts,
+model names, refresh intervals, and historical tasks:
+
+| Flow | Current owner |
+| --- | --- |
+| OpenNews admission and editorial processing | `tracefold/news/pipeline/` and App News wiring |
+| Instruments, current quotes, Event reactions | News market-review owners and their provider adapters |
+| OI, liquidation, smart-money notifications | `tracefold/news/market_notifications.py` |
+| Wallet receipts, net-buy detection, price sampling | App chain-tape wiring and its three independently supervised task declarations |
+| OI Source → Case → Signal | `tracefold/trading/signal_lane.py` |
+| Account, orders, protection, reconciliation | Nautilus integration, composed by `tracefold/app/nautilus/` |
+
+The code-owned limits still apply. Inspect their definitions and consumer tests when
+changing cadence or budgets; this map intentionally does not keep a second numerical
+configuration ledger.
+
+### Extension and extraction gates
+
+For a new flow, identify its authority, meaning, consumers, persistence/recovery needs,
+bounded I/O, and failure behavior. That design can be part of the implementing Issue
+or PR. Do not require a separate form for each item or an arbitrary number of providers
+before extracting a useful shared component. Equally, do not introduce a registry,
+base-worker hierarchy, or generic retry engine without an actual common responsibility.
 
 ## Workers task set
 
-`tracefold/app/workers/task_contract.py` is the source of truth for this set:
-it declares every business task, the capability each answers for, and whether an
-unexpected error inside it is root fatal or one faulted capability beside
-healthy ones. The root TaskGroup adds `workers-probe` (loopback
-health/readiness/metrics) and `workers-control` (singleton lock, heartbeat,
-runtime row) around what that module returns, which today is: the News consumer
-tasks when News is enabled (`news-receiver`, `news-recovery`, `news-deduper`,
-`news-janitor` — the foundational four — plus `news-triage` and
-`news-deliverer`), the bounded polling loops (`news-instruments`, and with
-venues enabled `news-quotes` and `news-reactions`), `market-notifications` when
-the market notification loop is composed, `news-chain-tape` and `news-wallet-research` when the wallet
-tape is enabled, `news-wallet-digest` when its digest is also enabled, and the one Signal loop when Trading is enabled
-(`trading-signal-lane`). A new optional loop joins by returning one more
-`WorkerTask` with its own capability name; nothing else changes. There is no
-acquisition clock, projection coordinator, model arbiter, stream ingester,
-identity backfill, or universe sync task. The polling loops read public
-catalogues and prices on code-owned cadences. Their database admission is explicit per capability: instrument
-snapshots use the four-slot News lane; current Quotes and the wallet tape use
-ordinary business admission; Janitor, Event Reactions and Trading share the
-one-slot heavy admission. None creates another pool or worker.
+`tracefold/app/workers/task_contract.py` is the authoritative declaration of task
+names, capabilities, and whether a failure is foundational. App owns polling,
+cancellation, and supervision; business runners own their action and durable state.
+
+Reception, recovery, admission, and retention are foundational News tasks. Optional
+capabilities include editorial judgment, delivery, instrument/quote/reaction review,
+market notifications, the wallet tasks, and the Trading Signal lane when configured.
+The root also owns the probe and singleton/control work.
+
+The wallet composition currently declares `news-chain-tape`, `news-wallet-net-buy`,
+and, when available, `news-wallet-prices`. There is no current wallet digest or
+single-wallet research task. A declared task is not proof that its capability is
+available or healthy; read composition status and actual durable progress.
+
+Unexpected errors in optional tasks are attributed to their capability while healthy
+siblings can continue. Foundational failures and shared infrastructure/ownership
+failures retain their root-level semantics. Do not turn one missing optional provider
+into a blanket denial of healthy read APIs, or hide a required ingestion failure
+behind a green readiness response.
 
 ## Product flows
 
 ### News
 
-News V3 is a broker-driven Event pipeline. RabbitMQ is the only transport,
-buffer, retry, concurrency, and dead-letter plane; PostgreSQL holds facts,
-decisions, and audit; every write is idempotent by key. The Story/Brief/RSS/
-pinned-WorldMonitor lane and the title-translation lane are retired.
+Admission stores normalized provider Items and separates editorial from market input.
+Editorial Items join same-kind Events through the existing dedupe and grounding owners.
+Triage receives frozen evidence rather than mutable provider responses.
 
-```text
-OpenNews account Strategies (whatever the account has enabled; no local allowlist)
-  -> authenticated persistent WSS; server pushes strategy.triggered; no app subscribe frame
-  -> Receiver publishes each accepted frame to x:news with publisher confirms
-     (routing key raw.opennews.<strategy_id>; recovery frames use raw.recovery.<strategy_id>)
-  -> q:news.raw [single-active-consumer] Deduper:
-       Item upsert (provenance union) -> content-block title + pinned normalization
-       -> source-contract classification (opennews_source_classifier_v2); the frame's
-          primary Strategy decides which of the two planes it is on
-       -> market plane (oi | liquidation | smart_money | unknown_market): one transaction
-          writes the Item with its market columns and one typed fact row, then stops.
-          No title/minhash dedupe, no Gate, no storyline, no evidence snapshot, no
-          verdict, no Event, no broker publish. Live and recovery are the same path.
-       -> editorial plane (news | listing): durable event_kind
-       -> same-kind exact fingerprint / MinHash 32x4 LSH near-duplicate + strong-fact veto
-       -> Event new|member (dedupe_family window) -> Gate (provider-graded grounded_assets,
-          registry macro/energy flags, PR-template veto) -> preliminary
-          storyline key; a stronger later member re-gates a suppressed Event
-       -> publish event.<dedupe_family>.<queue_priority> for every admitted candidate
-          or listing Event; the suffix affects broker scheduling only
-  -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
-       SemanticJudge.judge(TriageContext) -> current EventSemantics with nested
-          TradeRelevanceV1
-       -> deterministic _normalize_and_validate_semantics -> Taxonomy (NewsTaxonomyV1)
-       -> ReaderCard.v2
-       -> deterministic _assemble -> one atomic SemanticJudgment
-          (verdict + editorial envelope + trace/runtime identities); normally three
-       serial provider calls through explicit Predictor-local LMs/token caps
-       (ReaderCard.v2 optionally has a dedicated primary endpoint); JSONAdapter
-       may make one format fallback per Predictor (at most six calls per route),
-       and primary failure restarts the full fallback route (at most twelve calls) -> final storyline key
-       from the verdict (written back) -> model-origin decide() or the structured
-       lane's typed DecisionResult -> current verdict row
-       (news_judgment_v2 marker, judgment origin/hash, model editorial when applicable,
-       headline_zh, audience, exact runtime manifest,
-       Program identity, per-Predictor execution/cost trace, preliminary + final status snapshots,
-       named rule) -> a `news_delivery_queue` row for a push or escalate, inserted in the same
-       transaction as the verdict; no broker publish (#598 D2)
-  -> Deliverer loop [one Workers task, polling PostgreSQL]: restart edit/delete reconciliation waits
-       out News-lane admission before claiming -> claim a due row
-       (`FOR UPDATE SKIP LOCKED`, attempts + 1, next_attempt_at_ms = now + 30 s)
-       -> provider prepare/preflight -> begin(sending)
-       -> one configured-provider delivery attempt
-       -> settle sent|terminal; crash between send and ack
-       -> ambiguous_after_crash
-       -> the queue row is deleted once the ledger row exists, deferred on a retryable failure,
-          and `dead` once the 3-attempt budget is spent
-  -> RabbitMQ 4.3 quorum delayed retry inside each business queue (no retry lane):
-     TransientError is a counted return delayed 30 s and terminal after 3 total attempts,
-     DeferError is an uncounted return delayed the same 30 s and never terminal;
-     x:news.dlx -> q:news.dead (at-least-once) for decode/permanent/exhausted deliveries
-  -> Janitor: bounded Event->Triage handoff repair (the push-Verdict handoff needs none: it is a
-              row in the verdict's own transaction), band expiry, 30/365-day Item retention,
-              bounded learning-evidence retention on the one-slot heavy gate,
-     broker snapshot (depth, ready/unacked, delayed, pending dead letters, byte share, policy match)
-  -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
-  -> Serve, beside all of it: /api/news/market and /api/news/market/{item_id} read the
-     market Items and their typed facts directly, asking nothing of Gate, Triage,
-     the broker, a model or Trading
-```
+The public semantic seam is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`.
+The native DSPy Program executes EventSemantics, Taxonomy, and ReaderCard predictors;
+deterministic assembly and policy own validation and the reader-facing decision.
+A better-looking model answer alone does not establish a better final notification.
 
-Feed search is a Serve-only read concern. A pure News-owned planner classifies
-each request as either exact asset identity or Event text, using the existing
-instrument catalogue for canonical symbol, alias, venue-symbol, and bounded
-pair resolution. The PostgreSQL feed repository then applies exactly one
-predicate before counts and cursor pagination: the durable
-`news_event_assets.symbol` ledger for asset identity, or the persisted Event
-search document for text. Search creates no Event or business row, publishes no
-broker message, and is absent from Judge, Gate, Delivery, Learning, and Trading;
-those pipelines therefore have no search dependency or alternate truth.
+The current GEPA path optimizes Taxonomy and preserves the EventSemantics and
+ReaderCard instructions. [News taxonomy](NEWS_TAXONOMY.md) owns classification language;
+program and learning code own signatures, budgets, identity, metrics, and selection.
+This is the current target, not a permanent restriction against designing another
+optimization target in a future scoped change.
 
-Every broker delivery lives inside its consumer channel's `TaskGroup`, and one
-typed domain outcome becomes exactly one AMQP settlement. Success acks. A
-`DeferError` is `basic.nack(requeue=true)`, which RabbitMQ does not count as a
-failed delivery, so a process that cannot admit a message may say so
-indefinitely. A `TransientError` is `basic.reject(requeue=true)`, which
-increments the broker's `x-delivery-count` and becomes terminal once the queue's
-`delivery-limit` is spent. A decode error or `PermanentError` is
-`basic.reject(requeue=false)`. A handler-side `BrokerUnavailable` or
-`BrokerBackpressure` is the same counted `basic.reject(requeue=true)` as a
-`TransientError`; it shares the one delivery budget and never fails Workers
-root by itself. An unclassified handler exception or an ack/reject failure
-settles nothing and fails the consumer; channel closure releases the delivery
-and Workers root supervision turns readiness unhealthy. The application
-therefore holds no retry counter, no timer and no republish path:
-`BusMessage.attempt` is read from the broker's counter and is one greater than
-it. This deliberately permits duplicates at the confirm-to-marker crash window
-and relies on the existing stable message IDs and PostgreSQL idempotency keys to
-converge.
+Review proposals, explicit acceptance, frozen datasets, optimization, candidate
+registration, evaluation, and production release are distinct actions. An optimizer
+cannot make its own proposals accepted truth or authorize its own promotion. Use
+[CONTEXT.md](../CONTEXT.md), the current CLI, and [Operations](OPERATIONS.md), rather
+than old experiment transcripts or machine-specific model presets as instructions.
 
-Retry configuration is a RabbitMQ policy, generated from
-`tracefold.news.broker_policy` into `docker/rabbitmq/definitions.json` and
-imported by `tracefold news bus-policy apply` (a one-shot Compose service before
-Workers starts). The application declares queue type, exchanges, bindings and
-passive consumer access; it never repairs policy drift. Workers verifies the
-effective policy at startup and refuses to consume when it does not match,
-because a missing policy is not a degraded mode — it is immediate redelivery,
-the quorum default delivery limit and at-most-once dead lettering. Terminal
-dead lettering is `at-least-once`, so a `news.dead` that is unavailable or full
-leaves the message held on its source queue (visible as `messages_dlx`) instead
-of dropping it; RabbitMQ retries that transfer about every three minutes.
-
-The Event and Verdict business tables are the two concrete handoff ledgers;
-there is no generic outbox table. `published_at_ms IS NOT NULL` means confirmed,
-a marker-null row at or below the 30-minute relevance ceiling is pending, and a
-strictly older row is expired. Repair scans use a 15-second minimum age, the
-30-minute maximum age, and a batch limit. They publish first and CAS the marker
-after confirmation. Marker failure therefore causes a safe duplicate on the
-next turn. Feed page, counts, filters, detail, and telemetry use the same
-code-owned ceiling; expired rows remain auditable but are never shown as
-pending or republished.
+An approved editorial decision and delivery intent commit together. The sender claims
+work, performs the provider call outside the transaction, and persists the outcome.
+Only an actual sent receipt means the reader received a card. Retry is conditioned on
+what the provider failure proves; an unknown result is not proof of non-delivery.
+Price or contextual presentation reads must not silently become a second decision
+policy or require a card to wait indefinitely.
 
 #### Price Review plane (#88, #304)
 
-Two bounded loops beside the hot path, sharing one instrument-resolution strategy
-and no state with it:
-
-```text
-recent live Events + watchlist -> exact-symbol-first resolution (alias only as fallback,
-  reference tiers never candidates) -> unique Price Instruments deduplicated by
-  (venue, venue_symbol, price_kind) -> grouped by provider source
-  -> mandatory current REST phase: <=12 source groups, concurrency 4, deadline 10 s;
-     preserve done, cancel+await pending, sample received_at_ms per normalized source response
-  -> all successful current sources in one short transaction, one latest-only row per source
-     in news_quote_snapshots
-  -> after commit, <=2 due Binance ticker/24hr calls in parallel update only the
-     in-process reference cache; the next natural current turn persists the reference
-  -> GET /api/news/quotes (<=100 symbols, resolved server-side, fresh|stale|unavailable|unlisted)
-
-due Event-assets (live Events, pushed and held alike) -> pinned or resolved instrument
-  -> merged historical 5m candle ranges (<=32 requests/turn, concurrency 4)
-  -> p0 = last closed candle at or before opened_at_ms; p1/p4 the same at +1H/+4H
-  -> (pH/p0)-1 in integer basis points -> news_event_reactions (reaction_v1)
-  -> Feed/Detail attachment + `news review queue --view market`
-
-one approved delivery -> the same exact-symbol-first contract candidates
-  -> Binance first, then Hyperliquid, then OKX
-  -> for news time, push-minus-1H and push time: last trade at/before the
-     millisecond anchor when no more than 60 s old
-  -> otherwise the last closed 1 m candle at/before that anchor within 90 s
-  -> accept one venue/contract for the complete calculation; never mix endpoints
-     from different venues in one return
-  -> ephemeral Telegram presentation only; no tick table and no continuous collector
-```
-
-Work is `O(source groups)`, never `O(Events x assets)`: a hundred Events naming
-BTC are one Quote target and one provider result. Reaction identity keeps its
-Event anchor — that cannot be deduplicated without corrupting the metric — but
-its provider reads are coalesced by instrument and merged time range, so one
-candle response fills many Events.
-
-Failure is local: a venue that times out, blocks, rate-limits or answers
-nonsense is skipped for that turn and leaves its previous row untouched, so a
-stale quote stays visibly stale rather than becoming zero or vanishing. A
-transient provider failure writes no Reaction row at all, which leaves the work
-due; only a stable semantic reason (`instrument_unresolved`, `reference_only`,
-`history_expired`, `no_candle_within_gap`) terminalizes one. Price never enters
-the Gate, Triage, `decide()`, a throttle key or a ranking signal. Since card v10
-(#113) it does reach the reader's card, as display and only as display: one
-行情 line rendered from a `fresh` (effective age <= 45 s) Quote Snapshot, never read back by
-any decision, and absent rather than approximated when no fresh value exists —
-68.7% of a week's cards carried one.
-
-An OI frame has no provider coin tag and now opens no Event, so it writes nothing
-to `news_event_assets` (#553): the deterministic judge that used to record its
-verified primary there in the same transaction as a Verdict (#267) is deleted
-along with the Verdict. The symbol lives on the fact instead —
-`news_oi_signals.symbol` beside the provider's own `raw_instrument` — keyed by
-`(source_item_id, oi_signal_v1)`, and that ledger is the whole of what the
-Trading Signal lane reads (#510) and what `/api/news/market?kind=oi` renders. The
-Quote planner unions recent live OI symbols into
-its existing bounded working set.
-The price remains display-only: it cannot change a market fact, a policy or
-delivery eligibility, and a stale or unavailable quote silently removes the
-行情 line.
-
-The price and the day change are two questions on two cadences (#304 hard-cuts
-#109's replacement rule). Binance
-answers "what is it worth now" in 45.5 kB (`ticker/price`, whole USD-M market,
-weight 2) and both questions in 270 kB (`ticker/24hr`, weight 42) — 92% of the
-bigger payload is fields we never display, for symbols nobody asked about. Every
-turn therefore asks mandatory current first. The loop uses start-based,
-non-overlapping 20 s cadence; a turn taking 8 s sleeps 12 s and one taking 25 s
-starts the next turn immediately, without catch-up work. Binance spot/perp are
-in the first current wave. At the 10 s deadline every completed result is kept,
-pending tasks are cancelled and awaited, and all successful sources commit in
-one transaction. Each source is stamped when its own normalized response
-finishes rather than when the slowest source or database write finishes.
-
-Only after that transaction succeeds can the two due Binance day reads run in
-parallel. They update the bounded process-local `openPrice` cache and never
-perform a reference-only write; the next natural current snapshot carries the
-new reference. Thus a turn makes at most 12 current plus 2 day calls, and a day
-timeout cannot delay, replace or roll back a current price. Quote plan/store
-uses ordinary business admission; Event Reaction, Janitor and Trading keep the
-one-slot heavy gate over the same existing business pool.
-
-What the wide read caches is the rolling window's `openPrice`, **not** the
-percentage. `priceChangePercent` is `lastPrice/openPrice - 1`, and the numerator
-is the number the next turn is about to replace — freezing the ratio for 300 s
-while refreshing the price every 20 s would put a price and a percentage that
-cannot be derived from each other side by side, most visibly in the minutes after
-a push. Caching the denominator instead means the percentage is recomputed from
-each turn's own price, and the only thing ageing is a 24 h window open, which
-moves 0.023% per turn.
-
-Nothing is cached for a day read that failed or was cancelled, so the source
-remains due while its already-written current row stays intact. A reference is
-valid through 600,000 ms; at 600,001 ms, when missing, or when more than 5,000 ms
-in the future, only `change_pct` becomes `null`. The window is deliberately wider
-than one 300 s day cadence: at 360,000 ms a single missed optional day read took
-the 24 h change off every card (#562 `5 row 10). The price, `change_basis`, raw
-timestamps and reference timestamp stay visible. Hyperliquid never adds a day
-request: its current response already carries `prevDayPx`, stamped with that
-current response's receipt time.
-
-Current freshness is one read-time calculation shared by Quote HTTP, status and
-Delivery. Receipt and applicable provider ages are exposed separately and
-clamped only for display; `effective_age_ms` is their maximum. A provider or
-receipt timestamp more than 5,000 ms in the future remains visible but forces
-`stale`. With no provider timestamp the basis is `received_only`; otherwise it
-is `source_and_received`. This is not a timer write and does not add another
-stored state.
-
-A symbol that joins the working set triggers a wide read immediately instead of
-waiting out the cadence, since the plan is ordered newest Event first and that
-symbol is the card the operator is looking at; coverage records what the last
-wide read *asked* for, so a symbol no venue lists cannot pin a source to the
-expensive endpoint. `binance.spot` asks by name on both endpoints, with the
-`symbols=` list dropped only on `ticker/24hr` past 100 symbols where the weight
-tiers make the whole market cheaper.
+News market review owns latest quote snapshots and versioned Event reactions.
+Quotes are current display state, not a tick-history ledger; reactions compare an
+Event anchor with a defined observation horizon. Their interpretation, source choice,
+coverage, and missing-data behavior belong to the owning versioned implementation.
+The independently bounded Workers loops perform provider I/O without holding a
+transaction and publish their derived views without changing editorial admission.
 
 ### Why the quote source is REST and not a WebSocket
 
-Recorded so the question is answered by measurement rather than re-litigated
-(#109, measured 2026-08-21 from the deployment host):
-
-USD-M REST rows are whole-market payloads — 744 symbols, the endpoint has no
-`symbols=` filter — so their cost does not scale with how many we read. The WSS
-rows do:
-
-| transport | steady state | per day |
-|---|---|---|
-| REST `fapi/v1/ticker/price` @ 20 s (whole market) | 45.5 kB/turn | 0.20 GB |
-| REST `fapi/v1/ticker/24hr` @ 20 s (whole market) | 270.1 kB/turn | 1.19 GB |
-| REST after #304 (mandatory price @ 20 s + post-store 24hr @ 300 s) | — | **0.27 GB** |
-| WSS `fstream` `!miniTicker@arr` (whole market) | **0 frames in 22 s** | — |
-| WSS spot `<sym>@miniTicker` x 218 | 185 B/frame, ~1 fps | ~3.5 GB |
-| WSS Hyperliquid `allMids` | 3.0 kB/s | 0.27 GB |
-
-Three facts, each sufficient on its own. A subscription is cheaper than polling
-only when you consume *faster* than the venue pushes; the console polls over
-HTTP every 15 s, so a socket would multiply bandwidth 12–20× to move a number
-nobody reads faster. The real saving is in payload choice, not transport. And
-Binance's futures socket produced no frames at all from this host across all
-three documented URL forms while its REST worked throughout — "connected but
-silent" would be the *normal* state for 218 of 256 targets, which is the one
-failure mode a socket hides and REST cannot (a REST error becomes `stale`
-immediately; a silent socket freezes the last price and says nothing).
-
-A WSS Quote Source becomes right only when all four hold, each verified rather
-than assumed: (1) the browser is no longer an HTTP-polling reader, which is its
-own architecture decision; (2) a product requirement names a freshness SLO
-tighter than the collector cadence, and someone can say what a reader does with
-it; (3) the venue's socket is verified to deliver from the deployment host for a
-sustained window; (4) its steady-state bandwidth measures lower than the
-REST plane it would replace at the accepted cadence — 0.27 GB/day for USD-M
-after #304, not the 1.19 GB/day figure that motivated the question. If it is ever built it
-must meet what the OpenNews receiver already meets — jittered reconnect with
-resubscription, forced reconnect before the venue's connection lifetime,
-ping/pong liveness, **a per-symbol staleness watchdog that degrades a
-silent-but-connected socket to `stale` instead of freezing the last value**,
-subscription diffing inside the venue's subscribe rate limit, one connection per
-venue with isolated failure, no socket in Serve, and REST as the source of truth
-on startup and after any gap.
-
-
-Ownership: `tracefold.integrations.rabbitmq` is the only module that imports
-`aio_pika`; `tracefold.news.bus` owns the envelope, routing keys, error classes,
-and Publisher/Consumer protocols. `tracefold.news.pipeline` physically separates
-Receiver, Recovery, Admission, Triage, Delivery, and Maintenance; the concrete
-stages are wired directly by `tracefold.app.workers.wiring.news` and run as
-asyncio tasks in the single Workers process but coordinate only through the
-broker and PostgreSQL keys, so they can be scaled out without code changes.
-News consumers use their own four-slot database lane
-(`WorkerDatabase.run_news`) so background backlog never starves a live Event;
-a lane admission timeout is a `DeferError` (uncounted requeue), a statement
-overrun is a `TransientError` (counted).
-
-Identity: `news_items.item_id = sha256(source_id, params.id)`. Event identity
-v6 is `sha256(identity_version, item_id, fact_id, event_kind)` for every route.
-Migration `0336` deletes all pre-v6 Events; current Admission contains no
-legacy collision or rekey branch.
-`tracefold.news.events.titles`
-extracts the first content block (skipping URL-only, label-only, `reply/quote:`
-lines and pinned wire source labels/suffixes; exchange names and `@handles`
-are subjects and stay — `@Krakenfx launches ...` keeps `Krakenfx`),
-`tracefold.news.events.identity`
-normalizes for comparison, `tracefold.news.events.tokens` + `minhash` produce the
-band keys stored in `news_event_bands`. Admission prepares fact units, Gate output and MinHash outside PostgreSQL,
-then one short transaction owns the Item/Event assignment. It commits before the evidence rows are loaded,
-serialized and hashed; a compare-and-append transaction installs that prepared snapshot before any Event is
-published to RabbitMQ. A crash between those steps is safe because the redelivered Item assignment is idempotent
-and the snapshot append is content-addressed. Fingerprints of at most two tokens never
-share an Event. `event_kind` fences every dedupe candidate lookup and namespaces
-non-News Event identity. Current cross-Item exact/artifact/near joins require
-the same source-contract reason. Pre-genesis Events were physically deleted;
-the current writer has no repair, translation, or join path for them.
-
-That text-derived identity is deliberately weak, and #154 adds the exact one
-beside it rather than loosening it. `news_items.source_artifact_id` is the
-artifact a frame is *about* — for X, `x:<status_id>`, parsed by
-`tracefold.news.opennews.source_artifact_identity` — because the provider
-re-emits the same tweet under new record ids and under inconsistent URL
-spellings (`twitter.com` vs `x.com`, `coindesk` vs `CoinDesk`; `_article_url`
-lowercases the host but not the path). 17 of 29 repeat ingests in a 30-day
-window differed only in that spelling, so the URL string is not an identity and
-the status id is. After the text path misses, the Deduper looks up the same
-artifact **and the same fingerprint** inside a 7-day window: pairing it with the
-fingerprint is what keeps a split digest from collapsing into one Event, while
-the artifact id is what earns the right to skip the three-token `shareable`
-floor and the 12 h dedupe-family window. A hit joins the existing Event as an ordinary
-member, so nothing new is delivered. The same parse yields how old the artifact
-already was when the provider pushed it — an X status id is a Snowflake — which
-`decide()` reads as `stale_source_artifact` for the case the ledger cannot see:
-a stale artifact arriving for the first time. Measured over 3174 frames in 30
-days that age is bimodal (2491 within 10 s, 7 beyond 16 h, nothing between) and
-never negative. `published_at_ms` is untouched: `opened_at_ms` derives from it
-and anchors `reaction_v1`.
-
-Before Gate, one pure OpenNews source classifier
-(`opennews_source_classifier_v2`) decides which of the two planes a frame is on.
-It owns six families in two disjoint vocabularies (#553): `news_v1` and
-`listing_v1` are the `EVENT_KINDS`, and `oi_v1`, `liquidation_v1`,
-`smart_money_v1` and `unknown_market` are the `MARKET_KINDS`.
-
-The market families key on the provider's Strategy id alone — `1019` OI, `2000`
-and `2083` liquidation, `2026` smart money. The four-tuple binding they used to
-carry made a display name load-bearing: when the provider renamed `Large-scale
-liquidation`, every frame under that id fell out of its own contract and was
-recorded as drift, which is a fact about the provider's console rather than
-about what the frame measures. The name, source type and engine type are
-recorded on the fact and gate nothing. Listing stays a generic route: the exact
-`1353` tuple or any `engine_type = listing` frame. A scoreless `market`/`wallet`
-frame this repository has no template for is `unknown_market` — stored,
-readable, and never sent to the model wearing a news costume. Everything else is
-`news_v1`.
-
-`market_route()` reads the frame's *primary* Strategy, so an Item that
-accumulates a market Strategy across replays does not drag an already-classified
-news frame into the market plane, and a market frame is never handed to the
-model because a second tuple looks like news. A frame naming two different
-market families at once is stored as `unknown_market` with
-`market_parse_error = market_category_conflict`: reinterpreting one family's
-numbers under another's semantics is the one thing that function must never do
-quietly. A template that does not match is `parse_status = raw` with the
-parser's named reason, not a refusal — `Withdraw USDC` is a real account report,
-and deleting a fact to protect a parser is the wrong trade.
-
-Recovery runs the identical path for a market frame: same classifier, same
-parser, same single transaction, no Event either way, so a recovered OI
-measurement now produces the ledger row the Event-shaped write path never did.
-Ordinary editorial recovery keeps `admission=recovery`; the three market
-admissions (`telemetry_deterministic`, `liquidation_deterministic`,
-`unsupported_market_contract`) are deleted and survive only on historical rows.
-Event identity v6 namespaces every FactUnit by route, so different
-contracts for one provider record cannot merge by arrival order. There is no
-source registry, queue, worker, ID-only routing, or pre-v6 identity bridge.
-Migration `0336` deletes the historical classifications and every Event marked
-by `0330`; a later provider redelivery creates a new current Event through the
-single v6 writer.
-
-Gate and storyline (`tracefold.news.events.gate`, `tracefold.news.events.storyline`) are pure
-functions and keep no Strategy name table of their own: grounded assets are the
-provider's grade B+/A/A+ coin tags plus any literal `$TICKER` cashtag (the
-provider already resolved Bitcoin -> BTC, Home Depot -> HD); `CL`/`XYZ-CL` is
-grounded only in energy context and a short stop-list drops English-word tags.
-The Gate keeps no word list of its own either (#509 PR-2): the energy context
-for `CL`, the `macro_lexicon` fact behind `asset_class=macro`, and the
-queue-order subset are the `gate.energy_context` / `gate.macro` /
-`gate.queue_high` flags on the storyline registry rows the text matched, read
-through `events.gate.gate_lexicon_flags`. The v5 regexes that used to sit in
-`gate.py` are deleted, so "energy" and "macro" mean the same thing to the Gate
-and to the storyline key instead of two lists disagreeing about `iranian`, 沙特,
-`barrels` and every central bank outside the Fed. Adding a word is a registry
-row; `gate.queue_high` rows are a subset of the `gate.macro` ones.
-Existence on a venue is deliberately not a condition: #75 shipped that filter
-behind a flag and the dry-run killed it — every tag the provider had itself
-mapped to a venue was already listed, and the ones it would have removed were
-real equities with no crypto perp (#89). The instrument universe labels a tag
-instead: `asset_class` is `equity_or_commodity` when a grounded symbol resolves
-to an `equity`/`commodity`/`index`/`fx`/`pre_ipo` instrument, `crypto` when it
-resolves to a coin, and falls back to the provider's `XYZ-` prefix when the
-universe is empty or does not know the symbol. Equities with no crypto perp
-(`UWMC`, `TLX`) are answered by the `us.listed` reference tier (#91), which is
-consulted only for symbols no traded venue lists — `ATOM` is the Cosmos token
-on three exchanges *and* Atomera on the NYSE, and the venue that lists a symbol
-always describes it. The tier is excluded from `asset_refs`, from the console's
-`符号落表` funnel segment, and from the `trading` / `by_venue` figures; only
-`instrument_classes()` reads it.
-The Gate does not decide relevance: every ordinary-news Item is a `candidate`
-unless it is a recovery replay, a law-firm template notice (strong template
-phrases always; weak ones only without a grounded asset), or an unscored or
-under-80 market frame (#126). The `news.gate` low-signal switch was
-deleted in #504: it defaulted off, was never turned on, and produced zero
-admissions in the whole retained history. A `listing` frame takes the
-`listing_deterministic` admission, which is admitted and judged like a
-candidate (#72). A member that
-joins a suppressed Event with stronger evidence (score >= 80, an A/A+ grounded
-tag, or a different source) re-gates it in place and it publishes once.
-`queue_priority` is `high` (AMQP priority 5) for score >= 90, watchlist hits,
-listing frames, or a registry hit flagged `gate.queue_high` (the rates topic and
-the Fed). It is a broker scheduling hint only: it may be persisted and measured,
-but cannot enter a Predictor, `decide()`, ReaderCard or reader-facing importance
-UI.
-
-The storyline key is composed from a **code-owned registry**, not from an
-ordered pattern list (#509). `tracefold/news/events/storyline_registry.json`
-(`news_storyline_registry_v1`) holds `conflict` / `actor` / `geo` / `topic`
-entries, each with a Chinese label, literal aliases per script and the optional
-Gate flags above; `latin` aliases match on word boundaries and every other
-script matches as a substring, both over NFKC-normalized, case-folded text, and
-the longest alias at a position wins. An alias belongs to exactly one entry, so matching yields a *set* of
-positioned hits with no priority rule of its own. Structure is enforced at load:
-unique aliases, no structural regex syntax (a literal `.` is fine and escaped —
-`u.s.` needs it), already-normalized surface forms, `members` that name entries
-which exist, and no aliases at all on a `conflict` row. An entry may set `standalone: false`, which means "match
-me, but never be the key on your own": the hit still counts toward a conflict's
-`members` and the entry still owns its aliases, but it is skipped when the
-`actor`/`geo`/`topic` steps pick a winner. `us` is the case that needs it — a US
-dateline is not a storyline for this reader, and letting `美国` / `washington` /
-`u.s.` open a bucket put CPI, jobless claims and housing starts into one hourly
-budget. The key is then composed by one fixed rank —
-1. `asset:<SYM>` (a verdict primary the Gate grounded, scope not macro),
-2. `conflict:<id>` (an active conflict whose `members` the text names — a
-conflict owns no aliases of its own, so `hormuz`, `lebanon` and `mideast` are
-`geo` rows that keep their coverage if the war is ever set inactive),
-3. `actor:<id>`, 4. `geo:<id>`, 5. `topic:<id>`, 6. the model's own
-symbol-shaped primary, 7. a grounded tag the text actually names (#100), 8.
-`none` — with earliest mention as the tie-break inside a rank. Shuffling the
-registry cannot move a key, and adding a storyline is one row plus one
-assertion rather than a reordering of everything above it. The symbol shape
-accepts one exchange suffix (`02015.HK`, `DTE.DE`). `none` replaces the old
-`macro:<dedupe_family>` fallback: the dedupe family is a column on the Event
-row, not a storyline, and policy v13's budget exempts `none` exactly.
-
-The preliminary key (status bar and told retrieval before Triage) walks that
-rank with its first step removed: registry first, then an A/A+ or cashtag
-strong tag, then `none`. A provider tag names an *affected* asset until Triage
-names a primary, so letting it win before Triage keyed "Iran attacked another
-ship outside the Strait of Hormuz" as `asset:BTC` on the strength of a BTC tag,
-and the told ledger's exact-storyline tier then answered a war card with
-Bitcoin cards. A B+ tag never opens a preliminary storyline. The final key is
-computed after Triage from the verdict's grounded primaries and scope — where
-the asset is back on top, because the model has now named its subject against
-the Gate's grounding — written back to `news_events`, and used by duplicate
-comparison, operator grouping, and advisory locking. `STORYLINE_REGISTRY_SHA256` (the
-registry file's bytes) is written into every verdict trace as an audit field.
-It is deliberately not part of `policy_sha256` and opens no learning epoch:
-maintaining the registry is data maintenance, not a policy change.
-
-Registry changes are a hard cut with no data migration. `news_events.storyline_key`
-keeps whatever string the row was written with, so historical rows stay their own
-audit truth; nothing reads or translates the retired `theme:` / `macro:` formats.
-The one visible consequence is bounded and one-directional: the budget counts
-only delivered cards inside `storyline_budget_window_s` (1 h), so for the first
-hour after a deploy that changes key formats those rows still carry the old
-format, match no new key, and are not counted. The `recent_seen_rows` ledger the
-similarity check reads is 4 h and is unaffected — it compares headlines, not
-keys. The budget therefore errs toward releasing a card rather than withholding
-one, for one hour, once.
-
-Triage is a deep semantic-judgment **Module**. Its only hot-path generation
-**Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
-consumer does not know Predictor instructions, output schemas, model
-routing, retry state, or artifact layout. That **Interface** lives at the
-semantic-judgment **Seam**, and `RoutedSemanticJudge` is the production
-**Adapter** there. It wraps one `NativeNewsProgram(dspy.Module)` and explicit
-primary/fallback model slots. Recorded-arm replay is an evaluator-side composition seam,
-not a second production generation Interface: the default evaluation path
-re-executes the real arm-scoped native Program with every Predictor call
-answered by `RecordedLM` from the run's content-addressed recordings. The Program
-still enters through `judge(TriageContext)`. A missing recording makes the
-evaluation `incomplete` without falling through to a live provider; a request
-or identity mismatch is a miss, never live I/O. This shape gives
-the hot-path caller **Leverage** (one call owns graph execution, validation,
-fallback and audit) while keeping replay authority outside production
-generation. Its **Depth** is the amount of behavior hidden behind the single
-hot-path `judge()` method, not the number of internal Predictor calls.
-
-Inside the Module, the fixed Program graph is
-`EventSemantics -> deterministic _normalize_and_validate_semantics -> Taxonomy
--> ReaderCard -> deterministic _assemble`. The two deterministic steps are
-private functions in `tracefold/news/program/module.py`, not classes: they spend
-no provider call and have no state to own.
-`EventSemantics` judges novelty, grounded entities, direction, scope,
-magnitude and audience without writing reader copy, and emits one nested typed
-`TradeRelevanceV1`: impact breadth, tradability, surprise, development delta,
-at most four canonical channels/affected markets, and the sole model delivery
-intent `reader_value` (`escalate|realtime|background|none`). It has no separate
-model-authored `decision` or `actionable` field. Issue #117 also makes it emit
-the four model-owned axes of `news_taxonomy_v1`: at most three pinned IPTC
-subject qcodes, event family, change state and assertion status. The assembler
-derives the fifth axis, source authority, only from the exact structured
-reporting-source identity; strategy/provenance routing IDs confer no authority
-and the model cannot claim it. Taxonomy is persisted in `EditorialEnvelope.v2` but is not an
-input to Gate, `decide()`, ReaderCard, Delivery or Trading.
-For `new_fact` and `progression`, the normalizer discards any stray non-negative
-`restates` index and records the raw and normalized values on the originating
-call trace; a real `restatement` still requires a valid told-ledger index. It
-also preserves raw relevance arrays in trace, then de-duplicates and sorts them
-by code-owned enum order. The normalizer makes no provider call.
-`ReaderCard` receives the original evidence plus an explicit
-`ReaderCardSemanticView` containing only assets, direction,
-magnitude, novelty/restates, scope, channels and affected markets. It produces
-only `headline_zh` and `why_zh`; it cannot read reader intent, tradability,
-surprise, development delta, taxonomy or ToldContext. The assembler makes no model call:
-it projects the exact presentation-only `TriageVerdict`. Final action is absent
-from the Verdict and belongs to `DecisionResult`. Splitting semantic judgment from copy creates internal
-per-Predictor feedback, demonstration, routing and future fine-tuning seams;
-it does not add a second product stage or a second card.
-
-The only executable generation is `news_semantic_program_v9`. Issue #193
-hard-cuts the artifact to one canonical JSON document; issue #306 keeps that
-shape and changes what the instructions *are*, each becoming the complete
-prompt for its Predictor rather than a bounded advisory appended to a rendered
-stack, with the code-owned seed text in `tracefold/news/program/seed.py`. Issue
-#314 removes the last field that was not a written instruction, and issue #501
-adds the third instruction: the artifact
-holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
-per Predictor (`event_semantics`, `taxonomy`, `reader_card`), and
-`program_sha256` is the canonical hash of exactly those
-three values. The stable root is
-`32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a`.
-Issue #117 changed the EventSemantics instruction and typed output while
-preserving the then two-Predictor graph and its two-call common-success path;
-#501 added the taxonomy Predictor beside them, which is why the ordinary path is
-three calls today.
-
-**Program identity has two halves, and they have two authors.**
-`program_sha256` addresses the write-set a human or GEPA may edit.
-`envelope_sha256` — `compute_execution_identity()` in
-`tracefold/news/program/identity.py` — addresses everything the code decides
-about a model call: exact DSPy/LiteLLM/transitive-GEPA versions, public Signature
-dumps, actual `dspy.JSONAdapter` renders for the schema, JSON-object and
-prompt-only capability paths, the typed output contracts, model-visible input
-shapes, the four model slots, retry/fallback/error transitions, route deadline,
-the 2/6/12 per-Predictor/per-route/per-judgment physical-call ceilings
-(`PROGRAM_PREDICTOR_MAX_CALLS` / `PROGRAM_ROUTE_MAX_CALLS` /
-`PROGRAM_JUDGMENT_MAX_CALLS`), token ceilings, normalization/assembly surface
-and the breaker. It is computed from those values rather than declared
-beside them, so a change to any of them moves the identity whether or not anyone
-remembers to say so. One contract test
-(`tests/contract/test_program_release_identity.py`) pins it, and re-pinning that
-line is the signature on an identity migration. #567 is one such migration and it
-is the codebook's: the taxonomy instruction is rendered from
-`tracefold/news/taxonomy.py`, so writing down the rules two rounds of Gold review
-had been applying by hand moved the Program root, the envelope and therefore the
-bundle together, which opens a new learning epoch and retires the previous one's
-accepted Gold to audit.
-
-This replaced a declared `factory_id` literal, which had the failure mode every
-hand-maintained version has: not that somebody picks the wrong string, but that
-a change lands and nobody bumps anything. Three identity-clearing incidents in
-four days were that, and the pin net that grew to catch them — nine epoch
-counts, four byte-equality tests, a mirrored constant module and five documents
-each restating the current identity — was guarding the declaration rather than
-the behavior.
-
-`program_sha256` is behavior identity and nothing else. It no longer contains
-parent lineage, optimization cost, trajectory or teacher endpoint, so two runs
-that reach the same three instructions are the same running Program however much
-they cost and whoever launched them. Lineage is a property of the candidate
-(`ProposalReceipt.program_parent_sha256` and `program_candidate_sha256`), and
-since #202 it is *derived* at registration by re-applying the patch rather than
-declared. Folding any of it into the runtime root let "who produced this" change
-what "this Program" meant.
-
-Everything else the Program needs — the three-Predictor graph, the typed schemas,
-the normalizer, the assembler, the model route and the execution budget — is
-code, and `envelope_sha256` is computed over what that code renders. It is one
-hash over one golden render rather than twenty-odd component hashes that the
-same package generated and verified in the same process; that was a self-proof,
-not an attestation, and neither it nor this replaces exact image/CI evidence.
-
-DSPy's public `JSONAdapter` renders every request from the same Signature.
-Application configuration resolves and declares each self-hosted endpoint's
-effective capability; the audited Program seam consumes that declaration and
-does not infer capabilities from the model name. Schema-capable endpoints receive a JSON Schema
-constraint, JSON-object endpoints receive that response format, and prompt-only
-endpoints receive neither. Field descriptions remain model-visible on every
-path. An unknown outer DSPy envelope sibling is filtered by JSONAdapter, while
-unknown or missing fields inside the business Pydantic output fail closed. A
-truncated response is terminal for that Predictor and never enters the adapter's
-single format fallback.
-
-There is one instruction text per Predictor and no Tracefold-owned prompt
-renderer (#306 Phase 2): DSPy's public adapter renders the surrounding
-Signature and inputs while injecting that instruction unchanged. Until
-then the prompt was a layering — a sealed QualityKernel, nine ordered code-owned
-RulePacks, one bounded advisory slot the optimizer could write, and a final
-authority seal telling the model to resolve conflicts in that order — assembled
-on every call, guarded by 55 reviewed coverage anchors and by authority patterns
-that refused any advisory claiming to outrank the packs. What that bought was
-the ability to say "the learned part cannot override the reviewed part" *inside
-the prompt*. What it cost was that the learned part could only ever be an
-addendum, blind to the text it was appended to and structurally unable to repair
-a sentence in it — and the measured result was a shipped stable artifact whose
-two advisories were both the empty string, i.e. a learning plane that had never
-contributed a byte to a reader-visible prompt.
-
-So the governance moved to where it already lived: a human edits `seed.py` and
-GEPA proposes a replacement for the same string, both produce a new
-`program_sha256`, and both travel the same candidate -> canary -> reviewed diff
--> promote pipeline. `RulePackSpec`, `CoverageAnchor`,
-`validate_expert_baseline_coverage`, the advisory authority patterns, the
-optimizer-owned Predictor's mutable-surface check, the proposer's read-only
-brief and the four-part renderer are all retired. What survived, because none of
-it was ever about authority, is `validate_program_instruction`: NFC canonicality,
-the byte and estimated-token budget, credential shapes, and the injection
-markers (template braces, a script tag, a URL, a credential header, a
-prompt-injection opener). It applies identically to a human's edit and to an
-optimizer's proposal, which is the point — there is one author role now.
-
-An instruction carries no identity hash: a digest cannot help a model judge
-news, it was billed on every call, and carrying one meant a pure identity change
-rewrote the prompt. There is no demo section either. The DemoBank family is
-deleted rather than left empty. `NativeNewsProgram` constructs exactly three
-named `dspy.Predict` objects — `event_semantics`, `taxonomy`, `reader_card`, in
-that execution order — with empty demos, so there is no path by which a demo
-can reach a provider. The taxonomy Predictor (#501) classifies the Event under
-`news_taxonomy_v1` from evidence and Gate facts alone; its seed is rendered
-from the codebook constants in `tracefold/news/taxonomy.py`, and the label set
-travels in the typed `ModelTaxonomyV1` output schema rather than in prose. The
-three run sequentially on purpose: the production slot is one llama.cpp server
-where concurrency saves no wall clock, and recording call indices are assigned
-in append order, so a parallel call would make record/replay nondeterministic.
-
-DSPy owns Predictor execution, request rendering, structured-output parsing and
-LiteLLM provider I/O. Tracefold's thin `AuditedConfiguredLM(dspy.BaseLM)` calls
-the public typed `LMRequest -> LMResponse` contract and owns only safe request
-identity, usage/cost and one terminal disposition per physical call. It provides
-sync execution for `dspy.GEPA` and genuine async execution for production; it
-does not construct HTTP, messages or `response_format`. Provider retry and cache
-are disabled. JSONAdapter may perform one format fallback per Predictor, so a
-common route uses exactly three calls, one route is capped at six, and a
-complete primary-to-fallback judgment is capped at twelve.
-
-The factory owns route topology, slot roles, token ceilings, deadlines and
-breaker policy. The concrete model bound to each slot has a separate
-secret-free `configured_endpoint_model_v3` identity over provider, model,
-endpoint fingerprint, temperature behavior, structured-output mode and normalized LM kwargs.
-That boundary makes provider execution semantics auditable without pretending
-an endpoint change rewrote the Program graph. Every endpoint can explicitly omit
-temperature, choose JSON Schema, JSON-object, or prompt-only JSON, and add guarded
-OpenAI-compatible body fields. There is no Kimi URL/model special case. Known
-provider defaults remain narrow (the `qwen*:thinking` alias's prompt-JSON
-envelope, DeepSeek's JSON-object mode), while local and other models are
-configured through the same request block.
-
-The production registry resolves an image-carried SHA, never arbitrary database
-instructions, and the document is one `<program_sha256>.json` file. Loading
-fails closed on an unknown version, hash or factory, non-canonical or
-duplicate-keyed JSON, a non-finite number, an unsafe or secret-bearing key, a
-symlink or traversal path, or a file whose name is not its own root. Pickle,
-cloudpickle, dynamic code/classes, endpoints and credentials are not
-supported formats. This is the executable-state Seam: Program evolution can
-change reviewed state without allowing a data row to become Python control
-flow. There is no LangChain Prompt executor, dual-run mode, legacy Adapter, or
-compatibility fallback; Prompt-era columns/rows are read-only audit history.
-
-The Module never retrieves from a network; it ranks bounded local reader
-history. `repository.reader_history` reads only first deliveries durably settled
-`sent` for a Triage `push`/`escalate`, excluding the current Event. It returns
-three disjoint projections from that one material truth:
-
-- `recent_seen_rows`: every receipt aged at most 4 h, newest first, cap 128;
-- `targeted_told_rows`: receipts older than 4 h and at most 48 h, with up to 8
-  exact `(family, comparison_fingerprint)` matches followed by up to 24
-  canonical-asset overlaps. Exact matches win when one Event qualifies twice;
-- `similar_told_rows`: up to 32 receipts aged at most 24 h whose normalized
-  `comparison_title` is closest to the current Event's by pg_trgm
-  `similarity()`, excluding rows the two bands above already selected. The band
-  is bounded by that K, not by delivery volume: at 38 sent cards an hour the
-  128-row recent ledger covers under 4 h on 79% of judgments, while the median
-  same-event repeat arrives 211 min after its first card (#491).
-
-Only the recent projection reaches deterministic `decide().seen`; the targeted
-and similar projections are semantic evidence for the Program and cannot extend
-a policy throttle. Telemetry requests `include_targeted=False`. Production
-initial load and stale refresh, plus CandidateEvaluator seed and in-run receipt
-replay, use the same pure `build_reader_history` boundary/cap/dedup rules; the
-similarity band is re-ranked in Python with `trigram_similarity`, the twin of
-pg_trgm's algorithm, so SQL and replay agree on the order.
-
-`ToldLedgerSnapshot.select` is a pure, deterministic, candidate-conditioned
-selector — not a Retriever service, Protocol or Adapter — that ranks the union
-against *this* Event and shows the Program at most 16 rows. Its tiers are
-targeted exact fact, exact storyline, shared instrument (canonical symbol
-sets), same-fact title similarity at or above 0.15 over the Deduper's
-normalized `comparison_title`, then the rest. Inside every tier the order is
-the raw trigram similarity desc, sent time newest-first, then the stable Event
-identity, so the same history always produces the same selection whatever
-order the database returned it in. Character bigrams remain the primitive for
-`decide()`'s Chinese headline comparison; they are not used for
-`comparison_title`, where 4.6% of random English pairs cross 0.25 on bigrams
-and 0.10% on word trigrams.
-The storyline tier is capped at 8 of the 16 rows and its overflow yields to the
-tiers below before filling what is left, because ranking storyline first with no
-cap starves everything under it: a dense storyline puts 14-17 same-key cards in
-one window, and measured on the accepted corpus that scored *below* the
-predecessor.
-
-Two numbers were measured, not chosen. Against every accepted `restatement`
-whose duplicate target was inside the 4 h ledger (n=22), target recall@N was:
-predecessor 19/22; strict tier order at 12 rows 18/22; capped tiers at 12 rows
-19/22; capped tiers at 16 rows **21/22**. The binding constraint on the
-predecessor was never the ranking — no ordering recovers what the cap excludes —
-so the row budget moved with it, paid for by `ReaderCard` no longer receiving
-the ledger at all (the two-call total moves about +2%). The single remaining
-miss is a cross-lingual paraphrase naming a different instrument, which no
-deterministic primitive reaches. Issue #175's fixed overnight cases then moved
-source and selected recall from 0/2 at 4 h to 2/2 at 48 h; an exploratory 7-day
-window recovered no additional fixed target and substantially enlarged the
-candidate pool. Each model-visible
-entry carries index `i`, age, final storyline key, concrete comparison title,
-instrument symbols, magnitude, direction, `headline_zh` and `why_zh`; the Event id, sent time,
-selection tier, similarity, history scope and retrieval reason stay audit-only.
-`READER_HISTORY_SHA256` binds source truth/windows/caps/projection;
-`TOLD_SELECTOR_SHA256` binds selection and the unchanged model-visible schema;
-their composite `NEWS_RETRIEVAL_SHA256` is the arm's `retrieval_sha256`, so
-either source or selector behavior changes the Program and bundle identities.
-
-The three Predictors do not read the same input. `EventSemantics` receives the
-model-safe Event evidence, grounded Gate facts and selected told context;
-`taxonomy` receives the evidence and Gate facts only, because reader history is
-novelty evidence and a classifier that could read it could be taught to label
-by what was already sent; `ReaderCard` receives the evidence plus only
-`ReaderCardSemanticView`.
-`queue_priority`, provider score, Gate macro lexicon, queue lag and the
-watchlist are excluded from both model-visible schemas; the watchlist remains a
-code-owned objective policy guard. The boundary is the schema rather than a
-prompt reminder: the card input forbids ToldContext and extras, so a card
-payload or recorded demo carrying history or delivery intent is rejected at the
-renderer. Novelty is `EventSemantics`' job; a copy step that can re-read old
-cards can re-interpret them. All three Predictor instructions are English. `ReaderCard` has exactly two Chinese text outputs:
-`headline_zh` (the card header — a complete headline that keeps the decisive
-fact, not a stub) and `why_zh` (the one card sentence adding what the headline
-does not say). `headline_zh` is the only Verdict reader title, while `audience`
-(crypto / us_equity / macro / none) is an EventSemantics field. The verdict also carries
-`novelty`
-(`new_fact` / `progression` / `restatement`, judged against the told ledger)
-and `restates` (the ledger index a restatement points at; -1 otherwise) —
-the reader-facing memory Triage has (issue #61): dedup is byte/word-level,
-novelty is the semantic last line against the same fact told again from
-another outlet or under another storyline key. Magnitude remains a Program
-output. Policy v11 owns ordinary model action from one atomic `ScoredJudgment`, and a
-degraded judgment carries its own typed `DecisionResult`. The OI and liquidation
-judgments that used to sit beside it are gone with the Events they decided
-(#553). A *grounded* restatement is handled first, and
-the existing stale-source and content-similarity protections remain after
-action selection. The action section is exactly:
-
-1. deterministic listing objective guard, unless the model marked the frame
-   `reader_value=none` (policy v13, #523: the admission is the provider's
-   `engine_type=listing` tag, so it also carries marketing, trading-competition
-   and operations notices; a `background` listing frame still pushes);
-2. grounded-watchlist objective guard;
-3. `reader_value=escalate` and `realtime_eligible` -> `escalate`;
-4. `reader_value=realtime` and `realtime_eligible` -> `push`;
-5. `background|none` -> `drop`;
-6. every other combination -> `trade_relevance_inconsistent`.
-
-No market observation enters this list, or any other part of Triage: it opens
-no Event, so there is nothing to decide. Degraded handling owns one objective
-baseline result.
-
-`realtime_eligible` requires magnitude >= 2; tradability `direct` or
-`second_order`; non-empty channels and affected markets; and either a
-`state_change`, or `material_detail` that is direct/unscheduled/material versus
-expectation. Queue priority, provider score, macro lexicon and `scope=macro`
-cannot select or rescue an action. A Gate-admitted `listing_deterministic` frame
-(`listing_exempt_from_duplicate`) skips the restatement drop and similarity
-throttle only when the matched card names none of its instruments, compared as
-symbol sets rather than headline text; a re-issued notice for the same
-instrument is still withheld. `news.policy` exposes six v13 knobs:
-`restatement_drop`, `similarity_max`, `stale_source_max_age_s`,
-`listing_exempt_from_duplicate`, `storyline_budget_window_s` and
-`storyline_budget_max`.
-
-Policy v13 has **no reader-global quota** (no hourly, two-hour or four-hour
-cap on what the reader receives, and no operator mute) but it does have a
-**per-storyline content budget** (#504, which withdraws policy v7's "no
-storyline quota" decision): an ordinary `push` whose final storyline key
-already has `storyline_budget_max` (2) delivered cards inside
-`storyline_budget_window_s` (3600 s) is withheld as
-`storyline:<key>:budget`. The ledger is the same `recent_seen_rows` the
-similarity check reads (sent first deliveries, newest first, `settled_at_ms`
-and the card's final key). Three exemptions, all content: an `escalate` that
-survived corroboration; a bullish/bearish reversal against the newest
-*directional* delivered card on that key — policy v13 (#523) reads past
-neutral, unclear and direction-less cards to find it, because one neutral card
-landing on a key otherwise hid a real reversal behind it, while those cards
-still count toward the budget; and the `none` key, which is not a storyline
-(the registry matched nothing) and is neither counted nor budgeted. Either knob at
-0 disables the budget. Two more v12 rules run before it: an eligible
-`escalate` whose code-owned `editorial.taxonomy.source_authority` is
-`unknown` and whose Event has a single member is downgraded to `push` as
-`trade_relevance_escalate_uncorroborated` (grounded assets are not
-corroboration); and an eligible realtime `single_name` verdict that names no
-primary asset drops as `single_name_without_instrument` (it checks only that a
-primary exists, never the instrument universe, so a Hong Kong ticker passes).
-Once the semantic conditions pass and no content rule withholds the card, the
-delivery harness executes the decision; it only enforces explicit
-idempotency, provider pacing, and real delivery receipts.
-
-Duplicate protection is content evidence rather than a quota: each ordinary
-`push` headline is compared with cards the reader actually received in the
-last four hours (character-bigram Jaccard, `tracefold.news.similarity`). At or
-above `similarity_max` (0.25) the card is withheld with
-`storyline:<key>:seen`; otherwise it is sent regardless of prior volume.
-`similarity_max = 0` disables this check and never restores a count cap.
-`escalate` and degraded wire-headline fallbacks skip similarity because a
-false positive is least affordable there; a directional reversal also passes
-because bigrams are blind to negation. `trace.seen_scope=all` records that the
-ordinary push path was measured. This preserves the useful part of policies
-v5/v6 (catching same-fact repeats such as a cross-key provider batch) while
-removing their second, count-based editor. Every path names its rule; nothing
-drops silently.
-
-The Program factory owns the execution contract. A successful ordinary-News
-primary route under `news_semantic_program_v9` normally makes three serial
-provider calls: EventSemantics, taxonomy, then the exact current ReaderCard.
-The in-process normalizer and assembler make no provider request. DSPy's
-JSONAdapter may make one formatting fallback independently for any Predictor,
-so a route makes at most six calls. Provider errors do not trigger that fallback,
-and `max_tokens` truncation is terminal without another format call. The
-code-owned 20-second deadline
-applies to the whole route, not to each call. If primary still fails, fallback
-restarts the full Program with its own route deadline; the complete chain
-therefore makes at most twelve visible provider attempts. Client-side
-cache and hidden provider retries are disabled so the trace count equals real
-attempts. Missing or invalid `novelty` fails closed; the genesis deleted
-pre-current Program traces. Market frames never reach the Program because they
-never reach Triage. An ordinary Program failure is
-degraded, not silent: code-owned listing or grounded-watchlist objectives may
-use the wire headline; every other failure drops as
-`degraded_no_objective_guard`, even when the provider score or queue priority is
-high or the text contains macro words. Three consecutive retryable primary-route
-failures open the default 60-second in-process primary-route circuit, which
-skips directly to fallback. Separately, the consumer owns the durable
-whole-chain `triage_circuit_open` incident; an output failure
-(`news_program_output_truncated` when a Predictor hit `max_tokens`, or a
-typed Program output error on schema mismatch) is degraded but never
-counts toward the circuit and records the failing Predictor, finish reason,
-tokens and error code. After the Program returns the consumer decides and
-persists in one transaction under a per-storyline advisory lock on the final
-key (`repository.lock_storyline`; `pg_advisory_xact_lock('NEWS', hashtext(key))`),
-re-checking the delivered-ledger revision inside the lock so two same-key Events in flight
-cannot both send the same fact (the lock raises the lane's 250 ms
-`lock_timeout` for that transaction only). The wide sent ledger is always
-loaded and materialized without a transaction; the locked primitive revision
-detects any card landing while the model was thinking and discards that stale
-material before a write. Only the *selected* told context decides whether the judgment itself
-is stale: the consumer rebuilds it from the refreshed ledger with the same
-selector and compares `novelty_context_sha256` — the hash of the shown rows that
-are evidence *about this candidate* (storyline, instrument, same-fact), which
-deliberately excludes the recency filler. Filler is there so a sparse candidate
-still sees what the reader has been reading; a card at the top of it cannot turn
-this Event into a restatement of anything, and hashing it would put the whole
-selection back under "any delivery invalidates the judgment", which is the rule
-this replaced. A card that joins on storyline, instrument or same fact does
-change the question, so the consumer reloads sent content evidence under a fresh
-stamp and calls the full Program once more. `selected_context_sha256` records
-the whole selection for replay identity. The old rule compared the raw recent
-event-id set, so any delivery anywhere in the window forced a re-ask; in the
-fixed production cohort that fired on 16% of judgments, of which only 3 of 11
-were actually ledger-driven — the other 8 were Event evidence changing, which
-still re-asks. The trace distinguishes a stale sent ledger
-(`reask_reason=told`, `reasked_after_told_change`) from changed Event evidence
-(`reask_reason=evidence`, `reasked_after_evidence_change`). If a ledger-only
-re-ask fails, the complete first `SemanticJudgment` (verdict and editorial
-envelope together) is still bound to the same evidence and is persisted with
-`reask_failed`. If the evidence changed, the first judgment
-cannot truthfully be rebound to the refreshed snapshot: a failed re-ask uses
-the deterministic degraded fallback over the refreshed Gate facts, with no
-selected Program execution; a second evidence change before persistence raises
-`news_event_evidence_changed` for durable retry.
-The re-ask is a separate Program execution: the ordinary rare case is six
-provider calls total, while each execution independently retains the twelve-call,
-two-route ceiling. All work from both executions remains in audit and cost
-telemetry even when the first result is superseded or the second fails.
-`news_verdicts` atomically stores the current marker and origin, presentation
-Verdict JSON, model editorial envelope when origin is model, judgment hash,
-exact `runtime_manifest_sha`,
-`rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
-`degraded`, and a replayable trace (Program version/SHA, runtime provider/model identity,
-per-Predictor request/input/instruction/demo/output hashes, finish reason,
-latency, tokens and provider-reported cost (or explicit unknown), the
-preliminary storyline key, the preliminary and final status-bar snapshots,
-the told context as shown with event ids, selection tier and similarity,
-`told_count`, `selected_context_sha256`, `restates_event_id`,
-every initial/re-ask Program execution and which one was selected (when the
-persisted verdict came from the Program), `reask_reason`,
-`first_judgment`/`first_input_sha256`/`reask_failed` when re-asked,
-`verdict_sha256`, model `editorial_sha256`, `judgment_sha256`, and the final
-storyline key). Exact record/replay and every scoring path validate one typed
-`ScoredJudgment`; they never reconstruct editorial state from an independent
-verdict dict. Exact replay binds
-the request to the resolved runtime model identity; a recording mismatch or
-miss fails rather than falling through to live I/O.
-
-There is no second product model stage: one Event persists one
-SemanticJudgment and one card (issue #57), produced by the three internal serial
-Predictors above.
-That changes the normal provider-call cost from one to three and expands the
-latency and failure surface; the benefit is future per-Predictor optimization,
-not a claim that the initial Program is already more accurate. `escalate`
-stays a `decide()` outcome — a high-importance
-push that takes the same `news_delivery_queue` row as an ordinary push and
-wears a ⚡ card header — and never triggers another Program execution. The retired
-Analyst lane (`q:news.deep`, the `verdict.escalate`/`verdict.deep` routing
-keys, the evidence bundle and its `verify_verdict()` gate, follow-up cards)
-left `stage='deep'` verdicts and `kind='followup'` deliveries as historical
-rows that are never written again. An old `news.deep` queue left on a broker is
-reported as topology drift like any other unexpected name; the runtime does not
-know it and never deletes it.
-
-Delivery (`tracefold.news.delivery`, `pipeline.delivery.DelivererLoop`) renders the
-reader contract (`news_delivery_card_v11`): the header is `headline_zh` (⚡ when
-the decision is escalate), falling back only to the original Event title when
-the current headline sanitizes to empty. The first body line is `why_zh`, and the
-second is the facts in plain
-words — direction label, `新进展` when the verdict's `novelty` is `progression`
-(#113: 28.8% of a week's cards advanced a story the reader already had one for
-and the card said nothing), magnitude label, the tickers the model called
-primary and the Gate grounded, source（N 条报道）, and the leader item's
-publication time in the reader's zone (UTC+8). News derives this list
-from model-primary ∩ Gate-grounded assets. There is no second derivation: the
-deterministic OI branch that read a symbol back out of its ledger row went with
-the OI card (#553). A market observation is a reader card too, built from the
-same value object and quoted from the same read model — see the market
-notification loop below (#562). The third body line is the market's own number for those
-same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`. At delivery, an
-on-demand trade/candle point becomes the current number; if no contract
-produces one, an existing `fresh` Quote Snapshot may still provide the display
-price. A stale, unavailable or unlisted result leaves no line, no placeholder
-and no zero. The change window is named from `change_basis` rather than assumed
-(`rolling_24h` -> `24h`, `provider_day` -> `日内`, unknown -> the price without a
-percentage), `（永续）` marks each asset whose number comes from a proxy
-market rather than its own — an equity/commodity/index on a Binance TradFi perp
-or a Hyperliquid/OKX TradFi perp, 51.9% of a week's card assets. It is keyed on
-`instrument_class`, not on the contract type: BTC also prices on a perpetual,
-but for a crypto asset that *is* its own market, so it carries no mark. The mark
-is repeated per asset rather than said once for the line, because a trailing
-mark on a mixed line cannot say whether it covers the last asset or all of them.
-The price/percentage formatting
-mirrors the console's `web/src/features/news/model/newsPrice.ts` character for
-character. Source candidates and the existing quote snapshot are read in one
-separate short database session over exactly the code-verified
-`reader_assets()` result. Provider I/O begins only after that connection is
-returned, so the facts and market lines cannot name different assets and no
-database transaction is held across public REST calls. Any price failure
-degrades to the existing fresh display quote or no line: delivery eligibility
-never depends on the price plane.
-That same read may produce an ephemeral typed `ReaderTradeTarget` only from an exact official catalogue contract.
-The target is not part of `news_delivery_card_v11`: only the Telegram Adapter uses it to link the displayed ticker
-to the matching Binance, Hyperliquid, OKX, Lighter, or Bitget trade page. Untyped URLs and inconsistent metadata
-stay plain text, and Feishu receives the card unchanged.
-The same ephemeral `ReaderDeliveryPresentation` carries one ordered market row
-per displayed asset. `新闻后` is the delivery-time point versus the provider
-publication-time point; `1h` is that same delivery-time point versus the point
-exactly one hour before delivery. For Telegram, “delivery time” is the timestamp returned in the receipt of the
-initial `sendMessage`, not the later edit time. The Deliverer intentionally renders a pending presentation first,
-settles that receipt as `sent`, and starts price enrichment only afterward in a background task. The pending
-message shows `计算中` for `新闻后`, `1h`, and `24h`; the ready presentation is applied to the same provider
-message with `editMessageText`. Immediately before the provider mutation, the desired ready card is durably
-recorded as `pending_card/editing`. Provider confirmation atomically promotes it to the canonical card and
-`edited`; an uncertain failure retains the previous confirmed card plus the desired card under `ambiguous`.
-This keeps public price latency outside the reader's initial-news path and gives
-later enrichers one receipt-bound in-place update capability without creating a follow-up card. Edit work is
-serialized independently of initial sends, so a slow update cannot delay the next accepted news message.
-These are request-time presentation returns,
-not `reaction_v1`: they do not wait for a future horizon and are never persisted
-as review evidence. For every anchor the adapter first selects the latest trade
-at or before the millisecond timestamp when it is at most 60 seconds old, then
-falls back to the last closed one-minute candle within 90 seconds. Binance is
-tried first, Hyperliquid second, and OKX third for an already grounded asset; a newly discovered exact contract
-may also use Lighter or Bitget. One row always retains the same venue and contract for its current, news,
-push-minus-1h, and push-minus-24h anchors. `24h` is calculated from the current and minus-24h anchors on that
-same contract; a fresh same-contract snapshot is only a fallback when the on-demand point path is unavailable. A missing value is
-shown as `暂无`, never borrowed from another window. Telegram renders each asset as a separate four-line block:
-`🎯 标的 BTC`, `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%`; multiple assets repeat the complete block with
-a blank line between them. The adapter reads those assets from the reader card's own fields rather than from any
-rendered line, and admits only tokens matching the bounded ticker grammar into a trade link, so direction,
-magnitude, or arbitrary card text cannot become a target. Polarity and impact share one direction row, such as
-`🧭 方向 利空 · 影响明显`, while
-novelty is a badge immediately below the title (`🆕 新事实` or `🔄 新进展`). A progression names the previous
-headline immediately only when the optional post-delivery verifier is unavailable and an exact-fact retrieval or
-a stored title-similarity score of at least `0.50` supports it. With the verifier configured, the first message
-shows a one-line indented `关联确认中` child block without naming a parent. After the send receipt is durable,
-one bounded structured Predictor compares the current Event with at most eight selected told-ledger candidates:
-the common path is one physical call and JSONAdapter may spend one format fallback. It confirms only the same
-concrete subject and event chain with a material new action, result, number, confirmation, reversal, or state
-change; a shared topic, sector, ticker, country, or storyline bucket is insufficient. Price reads and this review
-run concurrently and settle through one edit of the original Telegram message. A confirmation replaces the
-pending child block with a nested `✅ 已确认关联` block that links the stored prior Telegram receipt as
-`此前：<parent headline>` and shows the age calculated from the two actual push timestamps. Rejection,
-unavailability, or a model confirmation without a sent, undeleted, same-target parent receipt changes the edited
-message to `🆕 新事实` and removes the complete association child block; it never retains `🔄 新进展`,
-exposes a failed-review explanation to readers, invents an unlinked parent, or derives age from candidate event
-time. The exact
-verifier result and its content-addressed verifier identity are stored inside the desired durable card before the
-edit intent. Broad zero-similarity storyline buckets therefore never become an unaudited “上一条”. If a macro or sector verdict has no
-code-verified ticker, Telegram explicitly renders its scope and `暂无直接标的`. It turns
-the normalized reporting-origin
-text itself into the original-source HTTPS link (X/Twitter handles become `<handle> 的推特`; known wire brands
-use their reader names), so it has no separate source button. The footer has no time heading and lists the
-original artifact or provider publication time, send-start time, and normalized linked source in that order.
-Times use the reader's UTC+8 zone at whole-second precision. A missing input is shown as `暂无` while known fields
-remain visible. Typed trade targets, movements, and timing context are not persisted; the progression-review
-result is part of the desired card, alongside the rendered desired card and edit lifecycle. The edit ledger CAS identifies the original provider, message ID, push timestamp,
-and keyed target digest, and a canonical receipt admits no extra provider fields. Every `editing` row inherited by
-a new process is changed to `ambiguous` at startup rather than guessed successful or retried. The consumer does not
-start until that reconciliation commits. A 30-second runtime sweep also terminalizes an `editing` intent older than
-60 seconds, so a temporary failure of both edit settlement and ambiguity recording cannot strand it forever.
-For a `single_name` card with one candidate ticker, or with no grounded ticker but a confident code-like identity
-in its title, a second post-send task derives exact ticker aliases (including market-coded forms such as
-`02605.HK`) and queries fresh Binance, Hyperliquid, OKX, Lighter, and Bitget catalogues.
-An exact hit keeps the message, adds the typed target link, and prices that contract without waiting for the
-periodic universe snapshot. Five successful empty catalogue answers on a candidate specific enough to be an
-exchange identifier lead the same in-place edit with `未找到可交易标的`. Any missing identity, timeout, blocked
-response, malformed catalogue, or partial venue fan-out states nothing about tradability. Nothing is deleted:
-#562 `5 row 5 removed the `deleteMessage` path and its durable `deleting` intent, because removing a card the
-reader has already read, on an LLM-derived candidate list plus a title heuristic, cost more than a line saying
-what the catalogues answered. `news_deliveries` keeps its `delete_*` columns as the audit of the deliveries
-removed while that path existed; no writer reaches them.
-Feishu still receives the stable card unchanged.
-The stable Feishu card then has a 打开来源 button and a small `Tracefold · <event_id[:8]>`
-note. There is no original headline line, no translated title, no event type or
-scope enum, no provider score, and no line labelled as AI: those internals stay
-in the console and `tracefold news why`.
-A degraded Event (the model chain failed and the rule baseline still pushes)
-gets the wire text instead of a verdict view: the original headline as header,
-the original description as the body line, and a facts line of tickers,
-source and time only — no direction, magnitude or novelty the model never judged
-and no "模型不可用" copy; the degraded verdict's `headline_zh` is the wire headline
-too, so the console feed and the context line name the Event (issue #65). The
-行情 line still renders there: the price is our own fact, not the model's.
-AI copy is sanitized (URLs fall back to the code-owned title). The initial send
-is retried only where the provider proved it never happened:
-`news_deliveries(event_id, kind)` (`kind` is always `first`) is
-inserted as `sending` after provider prepare/preflight and before the single
-initial delivery HTTP call, then settled `sent`/`terminal`. The intent behind it
-lives in `news_delivery_queue` until that ledger row exists, and its three
-attempts 30 s apart are spent on preflight and send failures the adapter can
-defend as `not_sent` and retriable — a connect failure, a rate limit — where the
-attempt gives its `sending` row back so the retry can own the identity again. A
-refusal settles `terminal` on the first attempt, and so does an unknown outcome
-such as a read timeout or a 5xx: the card may already be on a reader's screen and
-a second one is the worse answer. A spent budget leaves the ledger row `terminal`
-with the provider's last error code and the queue row `dead` with
-`news_delivery_attempts_exhausted` (#598 D2, #604 N1). Telegram enrichment begins only after a successful
-settlement. It records edit intent before provider I/O; update success confirms the ready card/receipt, while an
-uncertain update or post-provider persistence failure keeps the initial `sent` state and records edit ambiguity;
-interrupted rows are terminalized at startup. Recovery items, suppressed
-events never deliver. There is no operator pause or mute: `news_control_state`
-was removed after never withholding a single card in the whole retained history,
-and an unread singleton that two hot-path consumers still SELECT is how a second
-decision plane grows beside `decide()`. Policy v13 has
-no reader-global quota; its only volume rule is the per-storyline content
-budget (`storyline:<key>:budget`, #504) with the escalate, reversal and
-`none` exemptions and the `throttled_by_key` observation described above.
-
-Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
-backpressure/unavailability, and Triage circuit opens are rows in
-`news_opennews_incidents`. The Receiver never uses process memory to decide
-whether a durable broker incident exists: every classified broker failure
-opens it and updates ingest state in one transaction; every confirmed live
-publish unconditionally closes matching open broker incidents and updates
-ingest state in one transaction. An actual close wakes Recovery. Reconnect does
-the same for transport incidents, so a process restart cannot strand an older
-row.
-
-A Receiver that is killed rather than stopped reports nothing at all: the
-Workers root closes business admission before it cancels the task, and a signal
-kill never reaches application code. The next Receiver records that gap instead.
-`news_ingest_state.connected` is written true only by a live connection and
-false only by a reported disconnect, so finding it still true at startup means
-the previous process died while connected; the successor opens a
-`process_outage` interval starting at that row's last write — the last moment
-the old process is known to have been running, refreshed at least once a minute
-by the Janitor's snapshot — and its own connection closes it. Opening is
-idempotent on the one-open-row-per-cause index, and the start is clamped to the
-successor's own clock so a predecessor whose clock ran ahead cannot open an
-interval that closes before it began.
-
-Recovery scans on startup, explicit wakeup, and a 300-second fallback. It pages
-the official Strategy history for closed pending intervals and publishes
-stable-ID `raw.recovery.*` frames under one turn-wide 30-second / 60-provider-
-call / 1,000-message budget. Typed provider, broker, or database faults leave
-the incident pending; provider/broker and known-incident database errors record
-their bounded code and use bounded in-process backoff; budget exhaustion also stays
-pending and schedules another turn. Provider calls and confirmed broker
-publishes each inherit the remaining turn deadline, so neither can overrun the
-wall budget. An empty current Strategy list is a retryable configuration state,
-not proof that historical data never existed. Only explicit no-history or
-retention exhaustion may write unavailable/partial. Unknown exceptions leave
-the runner and fail Workers. Recovery Admission persists facts and evidence
-but is defensively barred from Triage and Delivery. Dead letters are
-operator-visible through `tracefold news dlq inspect|replay|purge`.
-
-News storage is split by meaning, not by a fragile table count. Material
-evidence and current Event state remain in the ingestion/Event tables;
-judgment, delivery and exact evidence snapshots are immutable observations;
-reviews and learning artifacts form the cold learning plane. Read queries are
-registered in `tracefold.news.storage.query_specs` for the query audit.
-
-Learning loop (#112): `ReviewDesk` draws deterministic, version-homogeneous
-tasks from sent, model-drop, Gate-suppressed, throttled, delivery-failed,
-high-reaction and random strata. The operator sees the exact historical
-evidence, verdict, policy trace and real sent receipt, then records a
-multi-dimensional rubric (`should_push`, factuality, evidence sufficiency,
-entity grounding, novelty, direction, magnitude, copy value, timeliness and
-first bad owner). Current `news_review_v6` retains exact gold for the seven
-TradeRelevance fields from v4 and adds exact taxonomy Gold plus draft/reviewer
-provenance. One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient taxonomy Gold; no taxonomy-specific
-second reviewer or adjudication is required. A failed scored dimension without expected
-gold is not scored. A judgment becomes training/eval truth only after a separate
-acceptance receipt. An important fact missing before Event creation enters as
-an immutable external-miss snapshot, rather than a fake Event id.
-
-Issue #453 reuses that same accepted review and frozen development Dataset for
-taxonomy optimization. `dataset.py` projects accepted four-axis taxonomy into
-the existing episode, so the episode projection root covers Gold. The pure
-`taxonomy_metric.py` helper compares it with Stable or candidate taxonomy and
-the existing metric folds the result into `semantics_novelty`. Code-owned
-source authority stays outside model target, score and feedback. No
-taxonomy-specific Dataset, table, shadow Program,
-registration, evaluator, or release lifecycle exists.
-
-Epoch rows `program_v1`-`program_v9` were each opened by a hand-written
-migration and remain append-only audit history; [Migrations](MIGRATIONS.md)
-records which revision opened which. The invariant that outlives them: earlier
-reviews, datasets, recordings, reports and release receipts stay readable audit
-evidence, but they are promotion-ineligible and cannot seed the current Program.
-Evidence accumulation starts from zero at every epoch — Event reviews and
-acceptance receipts must be created after the current epoch, and eligible
-verdicts must match the exact stable Program bundle.
-
-`CandidateEvaluator` is a deep Module whose Interface freezes accepted
-current-bundle / `news_review_v6` evidence, compares Stable with exactly one registered Prompt candidate,
-and publishes release evidence. Validation/holdout replay
-both arms sequentially because each arm's would-reach-reader ledger changes
-later decisions. Predictor requests/responses are recorded per call and
-content-addressed — retained as auditable forensic evidence — and the default
-replay path answers each arm from those recordings, surfacing a request or
-identity miss as an incomplete evaluation rather than falling through to live
-I/O. A frozen dataset accepts Event cases only
-from the exact active Program bundle cohort and records every Program,
-retrieval, runtime-model, execution and policy hash plus the reader-contract
-version; a mutable provider model alias is marked as mutable rather than
-described as an immutable snapshot. Hidden validation
-pre-registers at most 50 independent fact-cluster representatives before either
-arm output is inspected, permits at most 100 human judgments, and returns
-`UNKNOWN` when the batch remains unresolved. A candidate-only critical error
-(unsupported fact, wrong entity/direction, missed key fact, severe repetition,
-or injection obedience) is a release failure. Mean and peak delivery load are
-reported for operator impact analysis but are not candidate-release quotas;
-correctly recognizing many distinct facts cannot fail a release by count alone.
-The optional GEPA optimization is a cold, manual development tool, never a
-Workers loop. `news learning run` reads a frozen development corpus once
-and then holds task and reflection model endpoints plus a typed budget — no DB write, broker,
-delivery, canary or promotion credential — and can emit only a bounded
-`PromptPatchV1`. The patch contract carries all three Predictor instructions, but #501 permits only the
-taxonomy instruction to change and requires EventSemantics and ReaderCard to remain byte-identical. The
-graph, output schemas, execution budget, model slots and policy are code, covered by `envelope_sha256`,
-and outside the write set.
-The optimizer calls public `dspy.GEPA` exactly once with `instruction_proposer=None`,
-`add_format_failure_as_feedback=False` (dspy 3.3.1 renders that feedback with a hard-coded ChatAdapter
-that describes a request shape this JSONAdapter program never sends), and the existing
-`NativeNewsProgram(base_strategy).taxonomy` Predict inside one learning-only wrapper as its student
-with `num_threads=1`. The budget is DSPy's own: `--auto light|medium|heavy` or an explicit
-`--max-metric-calls`, exactly one, passed through unchanged, with the resolved metric-call count recorded
-in the optimizer receipt; there is no floor or preflight of Tracefold's own. Its code-owned six-example
-reflection minibatch reuses GEPA's native knob: it is wider than the tie-prone default of three. The
-reflection model is an operating requirement — strong, ≥128K context — recorded by the run receipt, not
-checked by code. The wrapper converts an audited task-output truncation or a typed `ModelTaxonomyV1`
-validation failure into one failed Prediction so DSPy keeps the trace batch aligned (#478); DSPy 3.3.1
-otherwise re-raises the truncation or drops the invalid example, leaving GEPA indexing a shorter batch.
-Every such failure scores the native `failure_score` of `0.0`: the v3 sentinel of `-(train_count + 1)`
-dominated the Pareto front and left candidate zero with an aggregate below every real candidate. The
-wrapper does not retry, parse, evaluate or select. Reflection truncation, transport/provider failure and
-budget refusal remain run-terminal.
-Admission is GEPA's own answer (#501 D4): the candidate at `best_idx` advances when its selection
-aggregate is strictly above candidate zero's and its instruction is valid and bounded; otherwise the run
-is `NO_OP`. There is no per-control replay, per-objective check or instruction growth budget at
-selection — those are what the offline and holdout release gates already decide, and re-deciding them on
-the selection set only made `ADVANCE` unreachable (the #456 rule required every Stable-correct control to
-replay at exactly `1.0`, which the seed itself did not satisfy). A candidate that overfit the selection
-set is caught by offline evaluation, at the cost of one evaluation; that is DSPy's standard division of
-labour between selection and holdout.
-Frozen examples carry only the rendered taxonomy evidence and accepted taxonomy Gold; the deterministic
-metric returns the mean of subject set-F1 and exact family/state/assertion axes, and its feedback quotes
-the codebook definition of the expected and predicted labels plus any precedence rule written for that
-confusion. There is no component selector,
-ReaderCard rollout, production composite, semantic judge, direct GEPA import, private DSPy API or
-second evaluator. GEPA cannot accept a review,
-register/deploy its output, move a stable pointer, or promote a candidate.
-#202 deleted the container platform that used to surround it — image, launcher,
-metered proxy sidecar, sandbox policy, tariff, build attestation — because it
-proved *where* two strings came from, which was never what made them safe.
-Automated optimizers may propose a Program candidate but cannot modify the
-reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
-or production assignment.
-
-One optimization produces one `news_prompt_candidate_v2`, and only when it ends
-in `ADVANCE`. Every terminal state — `NO_OP`, `REJECTED`, `ADVANCE` — also
-writes a complete `news_optimization_run_report_v4`, so a run that spent a
-budget and shipped nothing is still readable. Issue #193 had already collapsed
-the compile's evidence into a single `CompileRecordV1`; #202 removed the compile
-itself, and with it the record, the sealed input bundle, the sidecar's per-call
-ledger, the `CompilerBuildAttestation` and the tariff. Those documents proved
-*where* two instructions were produced. Nothing downstream ever needed that:
-public `dspy.GEPA` returns native Predict candidates, and `run_gepa` extracts
-only GEPA's best candidate while refusing demos or any extra Predictor, then copies EventSemantics and
-ReaderCard unchanged into the three-string patch contract. Rows written
-under the old chain stay in `news_learning_artifacts`
-as append-only audit and no longer parse, so they cannot be re-armed.
-
-The embedded optimization usage v3 keeps physical task/reflection usage exact. If GEPA terminates before
-returning its public result, the report records `metric_calls=null`; it does not turn completed-but-unknown
-metric evaluations into zero or reconstruct a count from private optimizer state.
-
-What replaced provenance is binding, checked at registration by a party that did
-not produce the candidate. `release register` re-applies the patch to the
-running stable Program to *derive* the arm's identity, re-projects the frozen
-corpus, records its own `development_episode_projection_root_sha256`, and
-re-derives the #199 Objective Plan rather than trusting the candidate's summary.
-A declared optimizer split is registrable only when its Objective Plan schema,
-representative case IDs/count/root, and split all equal that re-derived plan;
-registration checks this before writing candidate artifacts.
-A patch a person wrote and a patch GEPA wrote are admissible on exactly the same
-evidence.
-
-Each of the two optimizer roles — task and reflection (32k tokens) — is
-one `ModelExecutionIdentity` carrying the complete secret-free execution
-contract, in place of the `endpoint_sha256 -> model_sha256 -> binding_sha256`
-chain and the role binding above it. Its one surviving digest is
-`endpoint_fingerprint`, because the endpoint URL names the host a credential is
-presented to and therefore may not be stored. Both are required before a budget is spent. The separate
-diagnostic baseline and release evaluator retain their semantic judge; it is not an optimizer endpoint,
-budget field, identity or receipt.
-
-What bounds the offline job now is what it holds, not what surrounds it: a
-frozen corpus read once through the shared application login, two model
-endpoints, and a typed in-process budget whose per-call ceiling is also the rate
-an unpriced call is charged at. It has no database writer call path, broker,
-delivery, canary, or promotion authority; role separation is not that boundary.
-If dynamic code generation ever becomes a candidate again, the sandbox threat
-model is rebuilt with it under a new Issue rather than kept warm for it.
-
-What GEPA is allowed to optimize is decided once, by `learning/objective.py`,
-and every plane that needs the answer rebuilds the same plan from the same
-frozen episodes: `news learning readiness`, `run_gepa` through the one offline
-entry point, and `CandidateEvaluator` when it
-re-projects a registered candidate's corpus. Under #501 a case is **included** when accepted four-axis
-taxonomy Gold is valid and recorded Stable taxonomy exists; an owner column, a derived owner or a
-taxonomy review dimension grants no optimizer authority and takes none away. Everything else is
-an **excluded diagnostic** and never enters a reflective minibatch. `run_gepa` splits the included cases
-after Objective Plan v4 elects one deterministic representative per connected fact cluster. Shadowed media
-members remain frozen audit facts but add no optimizer weight.
-The candidate's `optimization_objective_summary.v4` binds the plan schema and
-representative ids/count/root; registration re-derives that population and refuses claims that do not
-carry the current identity, while leaving their artifact bytes intact.
-`news learning readiness --development SHA` publishes the plan with zero model
-calls, and `run` rebuilds it and refuses on the same conditions before any
-endpoint is touched. Its v4 report separately publishes `objective.compilable` and
-`development_profile.ready`; it has no ambiguous top-level outcome. Its `taxonomy_gold` block summarizes
-the elected cluster representatives — the same one-vote-per-connected-fact-cluster population the freeze's
-dataset distributions summarize — so per-case Gold that legitimately differs between media members of one
-fact (`announced` versus `effective`, a subject-code superset) cannot make readiness refuse a corpus the
-freeze accepted (#534). The release evaluator's `taxonomy` release evidence is summarized over that same
-elected cluster-representative population, for both arms alike, so Stable and candidate are compared on
-identical cases and an offline or held-out evaluation cannot fail closed where readiness and the freeze
-passed (#548). Inter-drafter κ is computed for every corpus that carries dual drafts, held-out ones
-included. The population is every case with valid accepted Gold and a replayable Stable
-answer (#501 D9) — `included`, with `stable_exact` recorded as a diagnostic — because the #456 target/control rule (explicit-owner mismatches versus Stable-exact
-controls) measured which batch drafted the label rather than the Program. #501 also deleted the
-60/60 and 30/30 target/control floors and the 50-cluster calibration gate: GEPA needs Gold-bearing
-samples, not a quota of Stable mistakes, and a small corpus ends in `NO_OP` on its own. Inter-drafter κ
-is still computed at freeze time over every dual-labelled cluster and published beside the corpus
-(`counts.calibration`, `dataset_calibration_receipt.v2`); it is reported, never gated, because the
-holdout is the gate.
-
-Whether a development corpus is *enough* is decided by coverage, never by the
-calendar (#259). The release profile asks for independent connected fact
-clusters by role — boundary, retention, negative, at least one safety — plus the
-strata both split halves must carry, and the Objective Plan asks for Gold-bearing
-clusters and a cluster-disjoint, time-ordered
-split. A case is *boundary* when the reviewer marked it `must_push`/`must_hold`,
-failed a reviewer-owned rubric dimension, or wrote an `expected_correction`, and
-*retention* otherwise; the five code-written `taxonomy_*` dimensions never count
-(#534), because they record whether Stable's taxonomy equalled Gold rather than
-judging Stable, and treating them as rubric defects turned the retention floor
-into a quota of Stable taxonomy successes. `natural_day_n` — how many
-distinct UTC dates the accepted cases opened
-on — and `window_duration_hours` are published beside those counts as
-diagnostics of case concentration and gate nothing. The two say different things
-and may disagree freely: a 72 h freeze whose reviews all landed in one afternoon
-reads `1` and `72.0`. Counting dates measures midnights rather than evidence,
-and because a frozen corpus admits only cases produced by the *active* Stable
-bundle, a calendar gate delayed every Stable iteration by days it had no way to
-produce. Out-of-time generalization is
-proven once, later, by the Future Holdout — a ValidationDataset frozen strictly
-after candidate registration, at least 24 h long, with its own eligible-Event
-and reviewed-cluster floors. No stable-age, window-age or calendar-day gate may
-stand in for it, and a development temporal diagnostic is never holdout
-evidence.
-
-`news learning run` (#453, #501) is the only way to generate a candidate: one command
-writes zero-call readiness and invokes stock GEPA exactly once over the same
-frozen corpus, exiting `0` only on `ADVANCE`. Candidate zero is the sole optimization baseline, and
-GEPA's own `best_idx` is the admitted candidate when it is strictly above candidate zero with a valid
-instruction. The only later baseline is
-Stable on accepted examples that did not exist when the candidate was made,
-produced by the release plane's holdout stage. A candidate whose
-EventSemantics and ReaderCard instructions are byte-identical to its parent —
-derived from the registered write-set, never declared — moves no verdict, card or
-delivery decision, so the blind-pairwise stages show both arms the identical card
-and can only report a coin flip; for that class the holdout's primary is the
-per-axis taxonomy evidence the evaluator already computes, read since #567 as the
-paired per-cluster bootstrap 95 % interval the profile's own `bootstrap` block
-defines — an axis regresses only when its whole interval is below zero and, since
-#626, the candidate improves only when `four_axis_exact_accuracy`'s whole interval
-is above zero, over at least `primary_clusters_min`
-Gold-bearing clusters — a PASS advances straight to promotion, and evaluation
-requires a live Program because recordings are addressed by whole-program SHA.
-That exact rate is the primary metric for this class because a card is correctly
-classified only when all four of its axes are, where the `taxonomy_overall` mean
-it replaced nets a gain on one axis against a slip on another; the mean and every
-`axis_interval_95` stay published as receipt evidence.
-The resource guardrails are unchanged except that #567 moved
-`mean_total_tokens_growth_pct` to 0.25 while the call and provider-cost caps that
-actually bill stay at 0.10.
-
-Metric v8 (`tracefold.news.production_action_trade_relevance_v8`) uses the one
-version-bound production-action projection shared by baseline, failure-cluster
-selection and CandidateEvaluator. Its candidate scalar weights 45% final
-production action, 35% exact TradeRelevance dimensions, 10% semantics/novelty,
-10% ReaderCard reviewer anchors and 10% the deterministic ReaderCard copy lint,
-normalized over the components a case actually carries, with component
-denominators/effective weight mass/gold coverage published. Listing/telemetry
-are outside the relevance denominator; watchlist guard cases are policy evidence
-and do not send action feedback to GEPA. The four model-owned taxonomy axes are
-one subscore of the existing semantics/novelty component: subject-code set F1
-plus exact event family, change state and assertion status. `source_authority`
-is code-derived and absent from target, score and feedback.
-
-The copy lint (`tracefold.news.reader_card_lint_v1`, #306 Phase 1) is what makes
-the ReaderCard side scorable at all without a reviewer label. Before it, the
-only card dimension the ruler could measure was `factual_fidelity`, through the
-sealed equivalence judge; the rest of the card contract — banned evaluative
-filler, meta openings, self-description, emoji, URLs, the Chinese language
-boundary, the 15-60 character headline band, the count of decision-relevant
-numbers the original headline stated, a single-sentence `why_zh` — lived only as
-prose inside a RulePack, and prose cannot score a candidate. The lint is pure, framework-neutral code with no
-model call and no Gold dependency, so the metric, the Objective Plan's mirrored
-gate ladder and any offline report read the same answer, and its tables are
-hashed into the metric receipt like the rest of the ruler.
-
-Two severities, and the split is published in the receipt rather than implied.
-**Hard gates** are `card_lint_url` and `card_lint_self_description` only: a card
-carrying a URL or describing its writer as a model is not a worse card, it is
-not a reader card, so it zeroes the case the way `must_hold_send` does and never
-sends a repair instruction to EventSemantics, which cannot cause it. Everything
-else is **scored** — one point per applicable check in the `reader_card_lint`
-component — including the language boundary, which is a real rule but leaves the
-rest of the card measurable and is the check most likely to fire on copy that is
-otherwise fine. Number retention reads only standalone numeric literals: a digit
-that continues a word (an identifier, a build hash, `COVID19`) is not a number
-the headline promised to keep, and treating one as such would fail faithful
-cards, and the number check counts figures rather than matching them, because a
-faithful rendering converts the unit (`$1.5B` -> `15亿美元`) and a
-literal-identity test would fail the conversions the contract asks for — and
-feed that failure back to the optimizer as a repair instruction. A gated card
-publishes its gate and no per-check outcomes, so the component denominator never
-disagrees with the zero.
-
-Promotion is monotonic: development screen -> future temporal validation ->
-blind pairwise review -> 24 h shadow -> deterministic 10% canary -> stable.
-Every stage requires the prior sealed PASS. One Event is assigned to exactly
-one production arm before Program execution and runs exactly one assigned
-Program. Canary selector `news_canary_selector_v2` is live-only and excludes the
-three admissions `recovery`, `listing_deterministic` and
-`telemetry_deterministic` — the last of which no current frame can take — but
-includes queue-high Events. Startup, resume and assignment bind
-and validate selector version, eligibility-profile SHA, rolling-profile SHA and
-the exact runtime manifest; any drift trips the activation. A
-candidate artifact/schema fault trips the canary to stable, and activation,
-assignment, deployment and rollback receipts remain auditable. The market view
-is secondary discovery evidence only: it defaults to one exact
-Program/policy/runtime-model cohort, uses horizon-mature coverage denominators,
-clusters similar withheld Events at fact grain, and never treats a 1 h/4 h move or a
-directional hit as causality, reward, or `should_push` truth. The former
-directional-hit, price-by-magnitude and price-by-event-type rankings are
-retired: ReviewDesk does not render them, taxonomy has no price or delivery authority,
-and they consumed the 30-day read budget without producing release evidence.
-Coverage may span 30 days, while the operator discovery queue is explicitly
-bounded to the most recent seven days; the market view rejects a larger window,
-while the separate evidence-coverage view retains 30 days.
-
-`tracefold news replay <hits.json>` remains the deterministic
-provider-hits Deduper+Gate regression; `tracefold news why <event_id>` prints a
-single production chain. The retired single-label evaluator, policy-only
-corpus gate, label-copy UI and `news_event_labels` table no longer exist.
-
-`20260831_0340` is the single Alembic root and the current-schema baseline
-(#449): a fresh PostgreSQL 18 database reaches the complete current schema in
-one step, an already-stamped database replays no baseline DDL, and the
-revisions before it live only in Git history and the pre-cut image. Since #314
-no migration appends a learning epoch row — the running deployment opens its own
-at the startup barrier described above.
-
-Every new schema change is a normal linear, immutable, forward-only revision
-after that baseline. Exact-image replacement requires source, image, and live
-database to share the current head. Downgrade of an irreversible cut is a
-verified backup restore.
-
-This document keeps no migration changelog. Each revision's own docstring
-carries its evidence, and [Migrations](MIGRATIONS.md) is the single place that
-names the head, the authoring and evidence contract, the operator sequence, and
-what each revision did. The chronology this section used to repeat had drifted
-two revisions behind the head and credited the market-observation cut to the
-wrong revision, which is what a second copy does.
-
-See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
-[Frontend Architecture](FRONTEND.md) for the other current authority surfaces.
-
+The current News quote/reaction plane is bounded review and presentation work, not an
+order-book or tick-history trading feed. It uses public REST adapters and latest-state
+or historical-window semantics. Quotes are not another editorial truth source.
+A WebSocket may be appropriate for a different product requirement, but it must be
+justified by that consumer's latency and loss/recovery needs, not added because a
+historical manual declared one transport universally faster or permanently forbidden.
 
 ## Trading core
 
-`tracefold.trading` is the disabled-by-default Alpha/Signal capability. It is
-one deep module with one business action:
-
-```python
-await signal_lane.advance()
-```
-
-The caller — always `tracefold.app` — owns polling, the stop event and process
-lifecycle, and knows none of the admission order, underlying de-duplication,
-bar cutoff, manifest construction, Case lease, Signal identity, or transaction
-boundaries.
-
-The Nautilus OI Runtime is the only execution owner. Three owners preceded it
-and each was deleted rather than kept alongside;
-[ADR 0002](adr/0002-trading-execution-owner-hard-cuts.md) records what they were
-and which words an archived row may still carry.
+`tracefold.trading` is disabled by default and owns Source → Case → Signal, not account
+execution. Its implementation is separate from News classification and reader delivery.
 
 ### The domain language
 
-One word, one meaning, shared by the writer and every read surface:
-
 | Term | Meaning |
 | --- | --- |
-| **Source** | a persisted, citable provider-native OI market fact |
-| **Admission** | the durable Gate answer taken *before* a Case exists |
-| **Case** | a frozen candidate that passed live Admission and may run the Alpha policy |
-| **Decision Plane** | process lifecycle: `DISABLED`, `STARTING`, `RUNNING`, or `FAULTED` |
-| **Policy decision** | pure `long`, `no_trade`, or `not_run`; never execution permission |
-| **NO_TRADE** | the policy ran to completion and declined |
-| **BLOCKED** | a system fact or invariant stopped the decision completing safely |
-| **SIGNAL_EMITTED** | the Case and exactly one engine-neutral Signal committed atomically |
-| **Signal** | a finite-TTL Alpha conclusion with evidence identity; never an order or permission |
-| **Command** | one `OperatorIntentV1`; recorded by an operator, never interpreted by the recorder |
-| **Execution Observation** | append-only Runtime/Binance fact; never a second OMS |
-
-`CaseState` is the whole `trading_cases.state` vocabulary — `PENDING`,
-`RUNNING`, `NO_TRADE`, `SIGNAL_EMITTED`, `BLOCKED` — and
-`trading_cases_state_check` admits exactly it. Admission's four statuses and
-five stages are closed the same way, by
-`trading_candidate_gate_status_check` and `trading_candidate_gate_stage_check`.
-Each vocabulary has one owner: a narrowed CHECK, not a CHECK and a trigger
-saying the same thing twice. Shape is owned the same way, one level up: the
-Pydantic contract that produces a durable execution fact is the only thing that
-validates its JSON. `20260903_0357` deleted the CHECKs that restated those rules
-in SQL, because two statements of one rule can disagree and did — the collation
-incident of 2026-09-02 (#510 PR-1). The database keeps what only it can know:
-primary keys, foreign keys, NOT NULL, the enumerated value sets, the identity
-regexes, the append-only triggers, and the clock inequalities that order two
-stamps taken from *one* clock. It does not order stamps from different clocks:
-`20260904_0362` deleted the two CHECKs that did, because a venue's clock running
-ahead of this host's is a fact about the world and not a corrupt row (#544).
+| Source | An OI observation with provenance and an admissible source contract. |
+| Case | Frozen point-in-time source, market, and policy evidence for an Alpha decision. |
+| Signal | An engine-neutral decision; not an account, size, leverage, or order instruction. |
+| OperatorIntent | An authenticated durable control request, not proof of Runtime acceptance. |
+| ExecutionObservation | A recorded Runtime/venue outcome, not a promised future fill. |
 
 ### The one live path
 
 ```text
-bounded OI projection snapshot
-  -> normalize source
-  -> closed source-venue partition
-  -> deterministic admission
-  -> fetch closed provider-native bars (outside every transaction)
-  -> one transaction: Case + CASE_CREATED admission row
-  -> pure deterministic OI policy
-  -> NO_TRADE on Case
-     or one transaction: Case=SIGNAL_EMITTED + TradeSignalV1
-  -> Runtime reads the unresolved Signal, sizes it, enters, protects, exits
-  -> append-only Observations plus one current Runtime projection
+public News OI projection -> explicit App mapping -> Trading admission
+  -> frozen Case -> pure Alpha evaluation
+  -> NO_TRADE on the Case, or atomic SIGNAL_EMITTED + TradeSignalV1
+  -> separate Runtime authority -> order / fill / protection / exit observations
 ```
 
-**Editorial News does not trigger automatic Trading.** News stays a sibling
-bounded context; the App seam maps one public OI projection into the lane and
-nothing else. Neither package imports the other or reads the other's tables,
-and RabbitMQ remains News-only. There is no strategy registry, no venue
-priority, no cross-venue fallback, no execution exchange, queue, outbox, Redis,
-second database, or in-memory correctness ledger.
+The handoff reads the OI ledger and Item provenance, not editorial verdicts, Events,
+Program identity, or learning epochs. Trading does not use RabbitMQ as an execution
+queue. The current Alpha is long-only; extending strategies is a product/code change,
+not something a news explanation or architecture diagram already implements.
 
 ### Admission
 
-Admission owns source contract, supported source venue, freshness, the
-liquidity floor, market context and source idempotency. It records one decision
-per `source_key` in `trading_candidate_gate_decisions` — the admission ledger —
-so the console can explain why a Source did not become a Case. The scan window
-is exactly the admission window (`max_age_ms`): a frame outside it has one
-possible answer, `trigger_stale`, and the ledger already holds it. A terminal
-row keeps its status, stage, reason, evidence and case link; only the two
-evaluation counters move, so "the scanner re-read this source 40 times" and "the
-answer changed" stay distinguishable.
-
-The closed refusal vocabulary is `source_contract_invalid`, `source_not_live`,
-`venue_unresolved`, `oi_value_below_floor`, `trigger_stale`,
-`market_data_unavailable`, `market_data_invalid`, `already_consumed`, and
-`case_created` for the admission itself. Everything the lane does not own is
-answered by the owner that can act on it: routability by the Runtime's
-`instrument_unmapped` disposition, one undecided Case per issuer by the
-`ux_trading_case_in_flight_underlying` partial unique index, and one Case per
-source by `trading_cases_primary_source_key_unique` — both of which surface here
-as `freeze:already_consumed`, because the insert is what refused. There is no
-per-turn freeze budget: the lane freezes every admissible frame in the turn.
-
-The rulebook that produced a row travels in its `evidence` (`gate_version`,
-`gate_config_digest`) rather than in the row's key. A version bump therefore
-advances the one row about that source instead of opening a second one beside
-it, which is what the ledger always did in practice and what every reader had to
-re-derive with a `DISTINCT ON`. Retention is 90 days, purged in bounded batches
-by the same turn.
-
-Source venue chooses only the public bars used as evidence. It does not select
-an execution route, and it is the whole of the evidence for Hyperliquid's
-`hl.xyz` builder DEX. The supported venues, the provider family that answers
-each one's public reads, and that venue's own spelling of a market are one table
-in `tracefold/trading/sources.py`; the admission digest, the telemetry
-vocabulary and the Workers bar fetcher all read it. Nothing in Admission reads
-an upstream judge, Program, policy or learning cohort.
+Admission owns source validation, supported venues, freshness, market context,
+liquidity, and source idempotency. Rejections and deferred work remain explainable
+through the admission ledger. `sources.py` owns the supported source vocabulary;
+`admission.py` owns current admission semantics. Do not maintain a second source or
+venue-priority registry in documentation or App wiring.
 
 ### The Case and its manifest
 
-Cases freeze source identity, cutoff, the price window, a venue-neutral
-`market_key`, and the exact policy identity, version, typed config and config
-digest — all of them inside the `manifest` jsonb, which is the copy the lane
-compares before it decides, the copy `/api/trading/cases` reads a Case's policy
-identity and digest off, and the only copy there is. `policy_checks` records
-every condition the policy executed — threshold, operator, measured value,
-pass/fail — so a Case decided a week ago is explained without today's
-configuration, and it is why the frozen `policy_config` dictionary itself stopped
-being published beside it (#604 T3): every number that was tested is already on a
-check, beside what it was measured against.
-
-The `trading_manifest_v11` manifest names exactly one `primary_trigger`, one
-`policy_id` / `policy_version` / exact typed `policy_config` /
-`policy_config_digest`, a venue-neutral `market_key`, and a point-in-time
-`contexts` object. `contexts.market` is the sole market truth and `contexts.oi`
-is the provider's measured frame — the four numbers, its two clocks, its venue,
-its source Item and the provider's own measurement contract — with no upstream
-judgment, Program, policy or cohort identity on it. A restart re-runs the exact
-policy identity the Case froze rather than comparing the Case with today's
-thresholds; a Case naming a retired identity is `BLOCKED /
-policy_identity_retired` and is never re-decided, and a Case frozen under an
-earlier manifest version is `BLOCKED / manifest_invalid` on its next claim. The
-third block reason is `source_stale`: one clock over a Case, the Source's own
-`observed_at_ms + max_age_ms`, which also bounds the Signal's TTL. A claim is
-`run_id` on a Case still in `PENDING` or `RUNNING`, and that predicate on the
-terminal transition — not a lease, and not an attempt counter — is what stops
-two runs settling one Case twice.
-
-**Trigger and context are different types.** A trigger is the one persisted
-fact that starts an evaluation and fixes its cutoff. Context may enrich that
-evaluation only when it existed no later than the cutoff. Notification `sent`
-is notification transport success, not a trigger; Alpha must not depend on a
-notification channel being reachable. News push is the only such channel that
-exists; #528 deleted the Trading one, which had never been enabled.
-
-Production runs exactly one pure policy,
-`source_native_oi_smart_money_long_v5`: deterministic, long-only, code-owned
-thresholds, answering `long` or `no_trade` only. V5 is V4 without
-`min_whale_long_profit_bps`, a threshold every admitted frame in the ledger
-passed by two orders of magnitude; the measurement stays frozen on the Case,
-because it is data about the frame rather than a rule. It cannot express a
-permission, an execution environment or a venue. `long` produces a
-`TradeSignalV1`; the Signal grants no execution authority.
+A Case freezes source identity, cutoff, market context, and exact policy configuration.
+The policy runs against that frozen evidence. A successful signal insert and its
+Case transition are atomic. Account/risk sizing and executable venue routing do not
+belong in the Signal lane or its manifest as shadow Runtime state.
 
 ### Runtime ownership
 
-The Nautilus OI Runtime owns the account, the risk numbers, orders, protection,
-exits and recovery. `tracefold.trading` owns none of them and holds no order
-state. Paper and live run the same Strategy / Risk / OMS / reconciliation code
-and differ only by account slot, credential namespace and Binance environment.
+The Nautilus integration owns account state, execution routing, risk, orders,
+protection, exits, and reconciliation. App supplies its process/database/probe
+composition. Paper and live use the configured Runtime path with their respective
+account/environment settings; neither mode turns a local command into a fill.
+Inspect the pinned dependency and Runtime construction for implementation details.
 
-Canonical up/deploy/status derives the execution Compose profile from operator
-config: disabled stops Nautilus, while paper or live starts exactly one Binance
-USD-M TradingNode. **`account_slot` plus `mode` is the whole execution
-identity.** A session advisory lock owns the account slot and is the only thing
-that decides who may execute for it, and `runtime_id` fences the generation that
-owns the durable projection row. The projection states what the Runtime is
-doing, not what build is doing it: `runtime_release`, `config_sha256`,
-`runtime_revision`, `image_digest`, `credential_fingerprint` and
-`lifecycle_state` were written on every heartbeat and read by nothing but the
-`/status` JSON, and `20260904_0361` deleted all six along with the release
-string on every Observation. A restart after a code, image or risk-config change is a restart:
-the Runtime does not need a new name, does not require a flat account, and does
-not reset control state. `mode: disabled` is the switch that means "do not
-trade".
-
-**Private account truth has one owner.** The App root disables Nautilus's
-duplicate startup reconciliation and requires one complete Binance position +
-regular-order + Algo-order report before activation. It refreshes that report
-every `reconciliation_interval_seconds`, and wakes immediately for
-unknown order outcomes, protection ambiguity, unexpected exposure and pending
-flatten. It is a proof, not a precondition: a Runtime starts while the account
-holds a position and rebuilds ownership from durable facts. Only a successfully loaded empty triple can assert `account_flat=true`;
-a provider, parse, account-scope or Cache projection error escapes without
-advancing the reconciliation clock. Nautilus keeps its native in-flight,
-missing-open-order and position consistency loops as ExecutionEngine mechanics,
-not as flat authority. Every Nautilus 1.231 Binance private attribute the proof
-needs is isolated in `nautilus_1231_binance_compat.py`; no reconciliation or
-Strategy module reaches a private adapter member directly.
-
-**One number owns account freshness.** `reconciliation_interval_seconds` is the
-private-reconciliation period, and `account_stale_after_ns` and
-`reconciliation_stale_after_ns` are two and three times it.
-`market_stale_after_seconds` is its own operator number because the quote
-stream, not the private scan, decides it. Day-start equity and intraday equity
-are one function, `account_equity_usd` — USDT balance plus unrealized PnL at
-current marks — so `daily_loss_limit` compares one definition with itself.
-
-**The risk numbers are operator configuration.** `trading.execution.risk`
-carries `risk_fraction_per_trade`, `max_risk_per_trade_usd`,
-`max_total_risk_usd`, `max_positions`, `max_leverage`, `max_daily_loss_usd`,
-`stop_distance_bps`, `reconciliation_interval_seconds` and
-`market_stale_after_seconds`, each with a pydantic bound that states why it is
-where it is. `tracefold config` prints them, and they reach the Runtime as its
-`OiRiskLimits` gap policy and nowhere else: an edit changes what the Runtime
-enforces without renaming the account slot, the client order namespace or the
-Nautilus instance id, which is derived from `account_slot:mode`. The stop
-distance stays a Runtime number: the Nautilus Strategy places and replaces the
-stop, and neither the Case nor the Signal carries it.
-
-**The event loop does no PostgreSQL.** The process holds two connections, not
-three. The singleton session holds the account-slot advisory lock and is read
-during the sequential startup sequence; from `bridge.start()` the bridge thread
-is the only PostgreSQL caller the process has, owning the singleton heartbeat,
-the durable recovery identities, the day-start baseline, the projection write,
-the two input reads and the audit flush. Its
-session carries a five-second `statement_timeout`, because reading Commands on
-it is how an operator flattens and a statement that has not finished within one
-reconciliation period is broken rather than slow. The trading event loop keeps
-Binance, Nautilus and the in-memory picture, offers `RuntimeStateProjector` the
-row it computed, and reads everything else from memory. A failing current-state
-step logs its cause once and lets the `alive` heartbeat go stale, which is
-already how every reader decides a Runtime is gone.
-
-**Quote streams are opened per admitted entry.** `on_start` subscribes nothing:
-subscribing all ~500 routed USDT perpetuals is what made Binance close the
-market-data WebSocket with 1008 `Too many requests`, and every illiquid route it
-opened fed `market_stale` refusals to a Runtime that holds at most one position.
-`QuoteStreamCoordinator` opens one stream when an admission needs a mark, and
-the entry waits for the first tick as redeliveries of an unresolved Signal —
-bounded by `QUOTE_WARMUP_NS`, inside every Signal TTL, never as a blocked event
-loop. Recovery opens a stream for each position it reclaims, a closed position
-gives its stream back, and a refused admission's stream is closed by the pump
-once its warm-up window is spent.
-
-**Readiness is three facts, and only three.** `alive` means the process,
-TradingNode, event loop and database session are up; the composition root's loop
-owns it, because reaching the loop body is what proves all four. `execution_safe`
-means this Runtime's picture of the account is current and undisputed: startup
-reconciliation happened, the private scan behind it is still fresh, no exposure
-it does not own appeared, and it still holds the account slot. `entries_armed`
-adds only what an operator asked for. So the Runtime's own `entry_block_reason`
-is exactly one of `startup_reconciliation_unproven`, `reconciliation_stale`,
-`unexpected_exposure`, `ownership_ambiguous`, `singleton_lost`, `entries_paused` and `emergency_halted`,
-and the probe is ready exactly when `alive && execution_safe`.
-
-The Runtime persists `facts_expire_at_ns` from its configured reconciliation period
-(three periods after the last complete private proof). HTTP uses that deadline and
-the independent five-second process heartbeat; it has no second ten-second private
-freshness constant. The browser receives their minimum as `facts_expire_at_ms`.
-
-
-Everything an entry needs beyond that — equity, a quote, the day baseline, a
-writable audit — is answered on the entry path against that request's own facts,
-where a refusal names the request that failed rather than disarming the Runtime.
-#520 PR-B deleted the five booleans that sat between: `singleton_ready` and
-`portfolio_ready` were true whenever the process could run at all,
-`control_plane_ready` gated entries on the input plane that is the only source of
-entry requests, `audit_ready` refused exposure because the local copy of what
-Binance already stores was unwritable, and `day_start_ready` refused it because a
-baseline the Runtime can compute from current equity had not been written yet.
-
-**TradePlan owns entry identity and frozen risk (#644).** Before any economic entry
-submission, the existing database bridge commits one `trading_trade_plans` row keyed
-by Signal id or manual-entry Command id. A bounded in-memory prepare/commit receipt
-hands submission authority back to the callback thread. A failed or uncertain commit
-cannot submit; retrying an existing identity grants query authority only. Admission
-is checked again against the frozen quantity after the receipt arrives. No SQL runs
-in a strategy callback.
-
-The plan freezes account slot and paper/live mode, actual instrument, direction,
-deterministic entry client order id, creation and entry-expiry clocks, entry quantity,
-stop distance, admitted risk budget, leverage ceiling and versioned TP/maximum-holding
-policy. Only low-frequency lifecycle fields change: prepared, entry_working, open,
-closing, closed or unresolved; first-open and terminal clocks; exit and history-gap
-reasons. PostgreSQL forbids changes to frozen intent, reopening terminal rows or
-deleting plans. A partial unique index allows one active plan per account/mode/instrument.
-There is no order-state mirror or second OMS.
-
-**Restart and steady recovery use the same unbounded ownership set.** The bridge
-loads all nonterminal plans for the current account slot and mode, with a bounded
-overflow that fails closed, regardless of age or audit availability. Observation
-recovery and its seven-day cutoff are removed. Native account/strategy, instrument,
-side and deterministic order shapes must agree. An explicit entry-to-position link
-is used when present; a cold Cache may use only a unique active plan on that
-instrument and side. Multiple candidates produce `ownership_ambiguous`, never a
-newest-entry guess.
-
-A full private proof includes positions, ordinary orders and Algo orders. A plan
-without current exposure additionally queries its frozen entry id through the
-pinned Binance HTTP adapter. Only an actual no-such-order response means absent;
-transport/authentication/parse failures produce no fresh proof. A second full private
-scan follows these queries so a newer fill cannot be hidden by an earlier position
-scan. Terminal retirement requires fresh, consistent absence of positions and
-working orders, plus the deterministic entry query or a validated cached terminal
-entry. Entry expiry is an admission deadline, never a position ownership deadline.
-
-Existing positions keep their frozen stop, risk contribution, TP and holding deadline
-after configuration changes or restarts. The existing timer pump evaluates normal
-TP/time exits through `ExitCoordinator`, sharing query-first, deterministic reduce-only
-exit generations with operator flatten and protection failures. Stop replacement
-still proves the new exact reduce-only stop before retiring the old one. Blocking new
-entries does not block risk-reducing exits.
-
-Cold reconstruction cannot prove the original native fee basis. Its realized PnL
-remains unknown with `native_pnl_basis_incomplete_after_restart`; plans preserve
-ownership while observations independently describe available execution history.
-
-**Ownership constrains only new exposure.** `/flatten account` converges the
-whole account slot: a deterministic reduce-only exit for every owned position, a
-reduce-only market close bounded to three attempts for every unowned one, and a
-cancel for every remaining resting order. `complete_from_reconciliation` still
-requires the later Binance private flat proof.
-
-**One closed operator-control grammar, one local ingress.** The operator CLI,
-`tracefold trading issue`, carries the local OS uid. The HTTP console is read-only
-and has no command route or dedicated write connection (#624). The Workers probe
-serves only `/healthz`, `/readyz` and `/metrics`; the Telegram control webhook
-was removed in #528.
-
-`/pause`, `/resume`, `/halt`, account-only `/flatten`, and short-lived `/long` /
-`/short` map to `OperatorIntentV1`; the grammar contains no quantity, notional,
-leverage, venue or order parameter. The CLI appends an intent before replying;
-only the Runtime may append accepted, rejected or completed control Observations.
-Pause blocks new entries; halt is sticky and rejects resume; flatten pauses
-entries and completes only after a later fresh reconciliation proves flat.
-Historical manual entries remain audited execution facts in the read-only console.
-
-**Control state belongs to the account slot and survives every deploy.**
-`trading_execution_runtime_control_state` is keyed by `account_slot`; the
-Runtime creates an unpaused row the first time it starts for a slot and nothing
-but an accepted Command moves it afterwards. A pending Signal or Command is one
-whose own `expires_at_ns` has not passed, which is why there is no activation
-waterline: the read states the TTL the contract already carries.
-
-Commands and Signals share one bounded Runtime input, with Commands admitted and
-handled first; queue pressure evicts only volatile Signal admission, because
-PostgreSQL replays an unresolved Signal and a dropped Command is gone. The
-Strategy callback reaches only Cache, Portfolio and in-memory queues;
-PostgreSQL polling, audit and Telegram I/O are background work.
-
-**One delivery path.** The bridge's 200 ms indexed anti-join is the whole
-transport: an entry is unresolved until a disposition observation or committed plan
-exists; control Commands require a disposition, so the read is complete on its own and a poll that lands late reads what
-an early one would have. The `LISTEN`/`NOTIFY` wake that used to sit beside it
-could only make an already-correct read arrive sooner, at the cost of an
-autocommit session, a channel-name regex and a `pg_notify` on all three append
-paths; #537 PR-4 deleted it and kept the poll.
-
-**Timer callbacks are not on the event loop.** Measured against a real
-`TradingNode` on the pinned `nautilus-trader` 1.231.0 in
-`tests/integration/test_nautilus_live_clock_threads.py`: `on_start` and every
-order/position callback run on the asyncio event-loop thread, while a
-`LiveClock` timer callback runs on one Rust-owned thread that
-`threading.enumerate()` does not list. `RuntimeExecutionState` is unlocked, so
-`OiNautilusStrategy.on_timer` does nothing but hand its pump to the event loop
-and every coordinator mutates that aggregate from a single thread.
-
-`OiNautilusStrategy` owns only Nautilus start/stop, the bounded input timer,
-control-command routing and native callback routing. One
-`RuntimeExecutionState` aggregate holds execution, order, position and control
-identity, and concrete `EntryCoordinator`, `ProtectionCoordinator`,
-`ExitCoordinator` and `RecoveryCoordinator` owners implement the four lifecycle
-algorithms against it. `RuntimeObservationWriter` alone translates native facts
-and dispositions into `ExecutionObservationV1`. There is no Protocol, ABC,
-registry, plugin, service locator, or future-Runtime interface behind that
-split.
+The business Signal lane imports no Nautilus engine and has no order authority.
+This is a real separation of responsibilities, not a claim that the repository has
+removed the Nautilus integration entirely.
 
 ### Failure semantics
 
-Expected business refusals are a closed typed vocabulary written durably.
-Everything else — a PostgreSQL timeout, a serialization failure, a repository
-bug — propagates out of `advance()` with its transaction rolled back, so the
-Case stays claimable and the Source is not consumed by an infrastructure fault.
-Case+Signal failure rolls back both rows; no partial handoff exists. The Signal
-lane keeps no heartbeat row of its own: `/readyz` states whether the Workers
-process is alive, and the newest `trading_cases.created_at_ms` is when the lane
-last froze a Case.
-
-**A verdict and a clock are different refusals.** On the entry path
-`account_stale`, `market_stale`, `day_start_baseline_missing` and the two
-account-not-yet-loaded refusals write no `signal_disposition` at all: they
-release the in-process claim, the unresolved anti-join redelivers the Signal on
-the next poll, and only `expires_at_ns` closes it with a terminal `expired`.
-Every deterministic refusal — unmapped, busy, below minimum, any risk `deny` —
-is terminal and single-shot.
-
-**A durable append fails in two ways.** A connection or timeout error keeps its
-batch at the head of the audit queue and retries it unchanged. An integrity
-refusal — CHECK, unique, foreign key, NOT NULL — is a verdict no retry can
-change, so the batch leaves the queue and one `audit_gap` observation with
-`cause=audit_append_rejected` records how many events were lost, the first
-`event_id`, and the count per `normalized_kind`. The sink stays unhealthy until
-that gap is itself durable, and reports it as `audit_healthy=false` with
-`audit_failure_reason` on the account projection; it does not disarm entries.
-Binance holds the account's own order and fill history, so refusing to open a
-position because the local copy of it is unwritable spends the risk of not
-acting to protect a copy (#520 PR-B). A quarantined
-`signal_disposition` or `control_disposition` still resolves its Signal or
-Command, because the Runtime lost the audit fact, not the input. Only the
-App-side writer knows psycopg; it translates `psycopg.errors.IntegrityError`
-into the sink's own `AuditAppendRejected`.
-
-The bridge cycle runs its Command read, Signal read and audit flush as three
-independent steps in that order, and only a lost connection aborts the cycle, so
-an unwritable ledger cannot stop an operator from flattening. A step that keeps
-failing logs its cause once rather than once per cycle, and the failure needs no
-readiness gate of its own: an entry request can only arrive through the Signal or
-Command read, so a Runtime whose input reads are failing has nothing to admit.
-
-Observation batches use one set-based insert inside a savepoint, so an identity
-or unique-disposition conflict rolls back the whole batch rather than leaving a
-committable prefix. Callers validate and canonicalize payloads before entering
-their explicit transaction; the repository callback then performs only SQL,
-locks and primitive row checks.
-
-### Read projections
-
-Current product reads are Case/Alpha, the folded per-entry execution table, and
-the current execution Runtime projection — one HTTP owner each, three GET
-routes. The TradeSignal and ExecutionObservation ledgers have no HTTP owner
-since #537 PR-5: their routes published a second and third shape over exactly
-the rows the execution table folds, no browser surface called either, and
-`tracefold trading signals | observations` reads the repository directly. The
-admission ledger has had none since #589 PR-2, on the same terms: #553 PR-1
-deleted the OI frame table that joined each admission row to its Event, which
-was the only browser reader either `/api/trading/gate*` route ever had, and
-`tracefold trading gate` reads the same two statements.
-`trading_cases`, `trading_candidate_gate_decisions`, `trading_trade_signals`,
-`trading_operator_intents`, `trading_execution_observations`,
-`trading_execution_runtime_control_state` and
-`trading_execution_runtime_state` are still the whole Trading schema — a ledger
-without a read route is durable evidence, not a deleted fact.
-
-Append-only history and current state are separate rows on purpose.
-`trading_execution_runtime_state` is the one generation-fenced current
-projection: its `reconciliation_observed_at_ns` is the only account-freshness
-proof, and `account_flat_proven` is that row's own `account_flat` — the venue's
-complete report of positions, regular orders and Algo orders — conjoined with
-the `account_snapshot` the same row carries, which the Nautilus Cache answered
-for the same instant. Both sources have to say flat, and no reader folds the
-observation window to obtain either. A `steady` reconciliation that finds the
-same positions, regular orders and Algo orders as the previous one appends no
-observation at all — unchanged current state is what the projection is for. Any
-other trigger, and any change to those three identity sets, still appends.
-
-`RuntimeAccountProjector` reads only the sole Nautilus Cache/Portfolio plus the
-`RuntimeExecutionState` aggregate, then stores one bounded replaceable JSON
-projection carrying current equity, drawdown, aggregate fixed-stop risk,
-position PnL, protection coverage and open/in-flight/unknown-order rows. It is
-not an execution contract, durable ledger, reconciliation owner, risk gate, OMS
-or alternate account truth.
-
-The admission ledger holds one row per `source_key`, so the frame table a reader
-scrolls and the distributions printed above it are the same rows: both are plain
-scans of `trading_candidate_gate_decisions`, where each used to be a
-`DISTINCT ON` over a key that could hold two rows for one frame. One bounded
-index scan in frame order is the whole of what `tracefold trading gate` runs,
-where the deleted route ran four — the fourth an unbounded scan of the 90-day
-ledger for two clocks one card hint printed (#537 PR-5) — and a distribution
-over the window is a `GROUPING SETS` query an operator writes against the same
-rows (#589 PR-2). The Runtime
-projection publishes `routes_count`, not the catalogue itself — the count is
-what `/api/trading/status` renders, and the catalogue's one rule belongs to the
-process that can act on it.
-
-Every product statistic is a bounded aggregation over durable rows. Signal
-latency is computed from durable source, Case and Signal timestamps; execution
-latency comes only from append-only Observations. No report reconstructs an
-order or treats an HTTP response, process cache, model output or provider
-response as alternate truth. Each console page's statement has one owner in
-`tracefold/trading/storage/queries.py`, and the query-plan audit EXPLAINs that
-builder's own output — unfiltered and filtered — rather than a copy of it.
-
-`GET /api/trading/executions` is the desk table, and it is a fold rather than a
-correlation: one row per entry identity in a 24-hour window, built by joining
-that entry's own disposition, `order`, `fill`, `protection` and `position`
-observations and deriving one `stage` word from the result. An entry identity is
-whatever `oi_runtime/observations.py:correlation` stamps on those facts — a
-Signal's `signal_id`, or the `command_id` of a `manual_entry` Command — so the
-two windows are one `UNION ALL` and `source` says which a row is. Folding by
-`signal_id` alone left the CLI manual entry, the one ingress that can prove the
-whole chain, with no row at all (#528 PR-3). The console used to rebuild this in
-the browser keyed on `command_id`, which a flatten close — carried under the
-entry's identity, because that is whose exposure it closes — could never match,
-so the flatten progress never advanced (#528 C). Command rows travel in the same
-response and read their `control_disposition` alone; nothing attaches a venue
-observation to a Command row, since a flatten converges the whole account slot
-rather than one intent.
-
-A `position` observation carries the whole outcome: quantity as it stood before
-the close, the average entry, and on `closed` the venue's own `avg_px_close`,
-`realized_pnl` and which of the three Runtime exits took it —
-`stop_filled`, `flatten` or `unclaimed_flatten`. Before #528 a `closed` position
-said `quantity: 0` and nothing else, so no reader could state how a trade ended.
-
-HTTP, CLI and React command and observation views are read
-projections: recorded, Runtime accepted, order accepted, fill, and account flat
-are five distinct facts.
+A business refusal is different from a storage, process, or venue failure. Preserve
+transaction rollback and replayability instead of marking an input consumed because
+infrastructure failed. Unknown external order results require reconciliation, not
+blind resubmission. Recorded intent, Runtime acceptance, order acceptance, fill, and
+venue-proven flatness are separate facts in CLI, HTTP, and React views.
 
 ### OI research replay
 
-The #459 Stage A corpus and replay are **not part of the service**. They live in
-`notebooks/research/` with every other research script, and nothing under
-`tracefold/` imports them: `oi_research_cli.py oi-corpus` seals a Binance
-open-interest corpus, `oi_research_cli.py oi-replay` scores one pre-registered
-rule over it on the symbols the rule's originating probe never saw, and the
-provider walk that feeds them is `notebooks/research/open_interest_history.py`.
-
-There is no `tracefold trading oi-corpus|oi-replay` command; #537 PR-1 deleted
-the parser and the CLI handler with the modules, because a research script that
-reads a local corpus off disk never needed a service seam. See
-[the research workspace](../notebooks/README.md) for how it is run and what it
-may touch: no database transaction, no receipt, no venue write, no execution
-path.
+Offline OI corpus/replay research lives in [notebooks](../notebooks/README.md), outside
+the service's runtime imports and account authority. A backtest, local replay, or
+code test is not a live execution receipt or production profitability proof.
 
 ### Runtime and cutover
 
-A deployment with `execution.mode=disabled` requires no execution credential and
-`make runtime-status` rejects a leftover Nautilus process. `make up`,
-`make deploy-image` and `make status` always require PostgreSQL, migration,
-Serve, Workers and Web. For `paper|live`, `make status` additionally requires one
-healthy Nautilus container whose `/readyz` answers: the operator facts the
-Runtime derives — `execution_safe`, `entries_armed` and why not,
-`startup_reconciled`, `unexpected_exposure`, `account_flat`, the position and
-order counts and the protection status. It states nothing about which build is
-answering, because nothing acts on that (#537 PR-4). The runtime
-is deployed by its own `make runtime-*` targets from its own
-`tracefold-runtime:<sha>` image, so a News, Serve or Workers deploy neither stops
-nor recreates the process that owns exposure (#537 PR-2). Decision starts `STARTING`, advances to `RUNNING`
-with a durable heartbeat, and a real schema, wiring, policy or generation fault
-records `FAULTED` -- on the Decision Plane's own row, and on the Workers
-capability report as `trading_signal_lane` -- rather than becoming observer mode
-or taking the Workers process down with it (#553 PR-3).
-
-Rollback is allowed only with venue-proven flat and a schema-compatible image.
-When exposure exists the only safe direction is roll-forward: the Runtime
-retains sole authority until it protects or closes the position.
+The execution process has a separately built image and explicit `make runtime-*`
+commands. Application deployment must not implicitly restart it. Follow
+[Operations](OPERATIONS.md), [Security](SECURITY.md), and current readiness/account
+state for an authorized cutover. Disabled execution does not require live credentials.
+Do not infer a safe rollback from an old Issue receipt or a green unit test while a
+live account may still have exposure.
 
 ## Market observations (#137, #553)
 
-Four OpenNews Strategies report the market rather than the news: `1019`
-(`OI Event Monitor`), `2000` (`实时清算`) and `2083` (`Large-scale liquidation`)
-for forced trades, and `2026` (`聪明钱监控`) for what one labelled account did.
-Any other scoreless `market`/`wallet` Strategy this repository has no template
-for joins them as `unknown_market`. None of them opens a News Event.
-
-They are a **sibling plane of the editorial one**, not a lane inside it. A
-market frame is admitted by `admit_market_item` in one transaction that writes
-the `news_items` row with its market columns and one typed fact row, and then
-stops: no title or MinHash dedupe, no Gate, no storyline, no evidence snapshot,
-no verdict, no Event, no broker publish, no model call, no delivery. Live and
-recovery run the identical path. Every one of those steps answers an editorial
-question, and two OI frames for the same symbol differing only in their four
-numbers *are* two measurements — collapsing them is losing data, not
-deduplicating it.
+Market frames and editorial Events answer different questions. Admission stores a
+market Item and its typed fact without running editorial dedupe, Gate, or Triage.
+Unknown or unparsable evidence remains visible with its raw data and parse reason;
+it must not be converted into a fabricated measurement.
 
 ### What is stored
 
-`news_items` carries the observation itself: `market_kind`
-(`oi|liquidation|smart_money|unknown_market`, plus the derived `wallet` kind
-`0372` added), `market_source_strategy_id`,
-`market_parse_status` (`parsed|raw`), `market_parse_error`, and
-`provider_params`, the frame's own payload, which the old metadata whitelist
-dropped before persistence so no consumer could read `relatedAddress` or
-`strategy.metrics` back at any precision. `market_kind IS NULL` is exactly "this
-Item is ordinary news" and the other three columns are meaningless without it,
-so `news_items_market_parse_status_check` states the pair as one fact:
-`parse_status = 'parsed'` exactly when `parse_error IS NULL`. A partial index
-`ix_news_items_market_observed` covers the market subset in reverse arrival
-order.
-
-One typed table per kind holds the numbers, and they stay separate tables — a
-shared supertable would need a column for every kind's semantics and a NULL for
-every other kind's. `0365` created the first three; `0372` added
-`news_market_wallet_events` for the derived `wallet` kind on the same pattern:
-
-- `news_oi_signals` — one measurement per `(source_item_id, metric_version)`.
-  Migration `20260905_0365` dropped its `event_id` foreign key (the column
-  remains as the opaque source identifier a frozen Trading Case resolves) and
-  its `learning_epoch`, and added `provider`, `raw_instrument`,
-  `received_at_ms`, `measurement_definition` and `historical`. It was reachable
-  only through `news_events` before, so a recovery frame — which never reached
-  Triage — produced no row at all, and a frame the title deduper merged into
-  another Event produced none either; `0365` reconstructs both populations from
-  `news_event_members` and flags them `historical = true`.
-- `news_market_liquidations` — one row per Item, unique and cascade-owned.
-  `0365` deleted the venue allowlist that admitted `binance` and `hyperliquid`
-  and refused everything else, which had discarded 13 of the 143 real
-  liquidation reports in the retained window; renamed `venue` to nullable
-  `source_venue`, the provider's own string stored as sent; and added
-  `provider`, `raw_instrument`, `source_strategy_id` and `available_at_ms`.
-  Supporting a venue's *information* is not the same claim as trading there.
-- `news_market_smart_money` — new in `0365`: one account, one action
-  (`open|close`), one side (`long|short`), one instrument, the reported notional,
-  the price and an optional realized PnL, with the same source-contract columns
-  the other two carry.
-
-- `news_market_wallet_events` — new in `0372` (#572 PR-2): one derived wallet
-  observation, `exit`, `crowding` or `digest`, written by the chain tape rather
-  than parsed from a provider frame.
-
-All four are cascade children of `news_items`, so a typed fact cannot outlive
-the record it was parsed from. Before `0365` the liquidation table had no
-foreign key at all and a purged Item left its liquidation behind as unreachable
-evidence; that revision deletes the orphans it cannot adopt.
+Items retain provider provenance and parsing state. Typed OI, liquidation,
+smart-money, and derived wallet observations have their own identities and consumers.
+OI publication time comes from the Item/source fact, not a required editorial Event
+that this path does not create. Retain independent observed/available/persisted clocks.
 
 ### The parsers, and what is no longer beside them
 
-`tracefold.news.oi_signals` parses `{SYM} OI Rise {x}%, OI Value {y}, Whale Long
-Profit {z}%, Whale/OI Ratio {w}%` — about 190 frames a day — into four integers
-under `oi_signal_parser_v1`, and `oi_source_contract()` proves the provider's
-own measurement window. `liquidations.py` and `smart_money.py` do the same for
-their one-line templates under `liquidation_parser_v1` /
-`opennews_liquidation_source_v2` and `smart_money_parser_v1` /
-`opennews_smart_money_source_v1`. Liquidations and smart-money reports key their
-fact on `sha256(item_id, fact_id, parser_version)`; an OI row keeps the
-`sha256(news_event_identity_v6, item_id, fact_id, 'oi')` string in `event_id`
-that every existing row and every frozen Trading Case already carries, and its
-observation key is `(source_item_id, metric_version)`.
-
-Both one-line templates abbreviate a dollar figure the same way, so `K`/`M`/`B`
-is one multiplier defined in `liquidations.py` and read from there by
-`smart_money.py`. The smart-money parser refused the suffix until #553, on a
-comment that called it unmeasured: the provider writes `$798.18K` and `$2.21M`
-routinely, only 8 of the 113 distinct titles in the retained window parsed, and
-every other report was an unstructured record outside the account grouping.
-An abbreviated *price* is still refused — the provider spells prices in full,
-so one is a drifted template rather than a figure to pick a multiplier for.
-
-What #553 deleted from `oi_signals.py` is the *judge*: the pseudo
-`TriageVerdict`, the reader headline, the rule names, the `DecisionResult` and
-the Program identity. `_JudgmentOrigin` is now `model|degraded` only, and
-`judgment_origin = 'oi'|'liquidation'` survives on historical `news_verdicts`
-rows and in the CHECK that validates them. The `news_oi_signal_v3` and
-`news_liquidation_fact_v2` program versions are retired for the same reason.
-
-The lane had already lost its threshold in #458 — a strict `whale_oi_ratio_bps`
-floor and an opening-rank ceiling inside a rolling 4 h window, which decided
-whether a reader was interrupted. It was removed rather than retuned for two
-measured reasons. Over 48 h it and Trading's Alpha policy selected disjoint
-sets: seven frames were pushed to the reader that the capital lane had refused,
-and none of the five it admitted. And #459 checked the provider's own number
-against Binance's open-interest history: the reported five-minute move is
-substantially price rather than position, and entered at a price a taker can
-actually get, those frames returned −276 bps at 4 h against a +82 bps baseline.
-Judging what was left — "the template matched" — through a verdict, an Event and
-a policy version was the cost #553 removed.
-
-A template this code cannot prove is not an error the reader should be denied.
-`parse_status` becomes `raw`, the named reason is recorded
-(`oi_template_unmatched`, `liquidation_template_unmatched`,
-`smart_money_template_unmatched`, `unknown_market_source`, or
-`market_category_conflict` when one frame names two market families), and the
-Item is stored exactly as it arrived.
+The owning parser translates an identified source contract into typed facts.
+Unmatched templates are explicit raw/failed-parse states. A new market observation
+does not become a duplicate merely because its symbol matches an earlier measurement.
+Parser, notification, and Trading admission decisions are separate responsibilities.
 
 ### How it is read
 
-`tracefold.news.storage.market` is the read model, and it goes through no
-verdict, reader-history snapshot, Event leader or model: an observation exists
-because the provider reported it and this process stored it. The list collapses
-*consecutive* observations of the same group, and the group is per kind — an OI
-group is one provider, venue, native instrument and measurement definition; a
-liquidation group swaps the definition for the liquidated side; a smart-money
-group is one account acting one way on one instrument. A uniform "latest row per
-symbol" would let one account's Close bury another account's Open and a Binance
-liquidation bury an OKX one. An observation with no trustworthy group fields is
-its own group: unknown does not merge with unknown. Collapsing is a property of
-the whole window rather than of a page — otherwise one group would appear twice
-with two different counts either side of a page boundary — so the window is read
-under `MARKET_WINDOW_ROW_CAP` (5,000 rows, roughly three times a full 168 h
-window at the measured 208 observations a day) and the groups are paged out of
-it.
-
-`/api/news/market` and `/api/news/market/{item_id}` are the whole reader surface;
-`docs/CONTRACTS.md` pins their grammar. `notification_status` is reported beside
-`parse_status` and never folded into it: a record the parser could not read and a
-parsed record no card spoke for are both ordinary outcomes, and one combined
-column would have to misreport one of them.
+Market list/detail APIs read the persisted market projection. Parsing status and
+notification status remain separate: a parsed fact may legitimately be unsent.
+Exact fields and pagination belong to [Contracts](CONTRACTS.md), not an inferred
+editorial Event or copied frontend schema.
 
 ### The market notification loop
 
-One loop, one tick, one card at a time (#553 PR-2). `tracefold/news/market_notifications.py`
-holds three direct rule branches — OI, liquidation, smart money. There is no
-Policy object, no Strategy registry, no per-symbol task or timer and no model: an
-abstraction over three branches would need a consumer this repository does not
-have. A record whose template no parser could prove is not a fourth branch: it is
-marked processed with its own group key and given no track, no intent and no
-card, and the page reports it `not_alerted` /
-`unstructured_record_not_alerted`. It used to be a card outside every suppression
-rule, and the four such cards production sent — two `Deposit` lines and two BTC
-opens the parser has since learned to read — are the whole of what that idea
-produced (#582 `3.2).
-
-Two durable states, each answering one question. `news_market_tracks` answers
-*when is this group worth interrupting a reader again* — the last observation,
-the anchor the last delivered card covered, the round it is in, the next due
-time. `news_market_deliveries` answers *what happened to one card* — a stable
-`delivery_key` derived from the group, the trigger Item and the reason, the
-snapshot frozen at the first attempt, the attempts, and the receipt or the error.
-Neither is a second copy of the facts: the observations a card covers are the
-Items carrying its `market_notify_delivery_key`, so "which observations did this
-card speak for" is answered by the Items themselves.
-
-A card speaks for one alert round and no further back.
-`news_market_tracks.round_started_at_ms` is where the group's current round began
-on the host's receive clock — the observation that opened a first card after the
-4 h OI quiet reset, the first report of the current 60 s liquidation follow-up
-window, or the first smart-money observation of the current 24 h round —
-and `market_adopt_unclaimed` never reaches below it. Without that bound the first
-production MARSCOIN card covered an OI observation held below the follow-up
-threshold six hours earlier together with the one that opened the new round, and
-printed `01:20–07:34` as its span. Inside a round nothing changes: a follow-up
-still speaks for everything that round held, which is why `6 % → 9 % → 13 %` is
-one first card and one follow-up covering both later numbers. An observation the
-rules finished with and no card will ever cover reads `uncovered` /
-`alert_round_ended_before_a_card` on the page rather than claiming to be merging
-into a card that is never coming (#562 PR-F).
-
-There is no market queue on the broker. The PostgreSQL intent already carries
-persistence, due time and restart recovery, so bridging it through RabbitMQ would
-add a second ledger that could disagree with the first. Every wait is a due time:
-a retry is a later `next_attempt_at_ms`, never a sleeping task, which is why a
-process that dies mid-wait loses nothing.
-
-The loop takes work by marker rather than by cursor. `news_items.market_notify_state`
-is `pending` until the loop has grouped an observation, and a transaction that
-commits late — with an earlier stamp than one already processed — is still in the
-next turn's answer. A `created_at_ms` high-water mark would have skipped it for
-ever.
-
-Sending goes through the one entry ordinary News uses. `InitialSendEntry` in
-`tracefold/news/pipeline/delivery.py` holds the operator's single
-`min_interval_seconds` and one lock, so every outbound message queues in arrival
-order and the provider never sees two at once. Every one means every one: a first
-card, the enrichment edit that follows it on an editable provider, and a market
-card. The Deliverer kept a second lock and a second stamp for its edit until
-#604 N3, which made the provider's real rate twice the configured number on
-Telegram. The market loop claims one card, releases its PostgreSQL connection,
-and only then calls the sender.
-
-The card carries the market's own price on the same terms the News card does.
-#553 kept market observations out of News's first-card preparation entirely, and
-the cost was a card about an instrument that never said what the instrument was
-worth: the OI symbol was already in the quote loop's target set, the liquidation
-and smart-money reports carried a price and a PNL that were projected and then
-dropped, and the OI frame's two whale columns were selected by SQL and never
-reached the card. #562 `2 revises that one clause — a market card still enters no
-model, no tradability check and no deletion logic, and its quote is one read-only
-lookup on the same `news_quote_snapshots` read model, with the same rule and the
-same code. `MarketNotificationDatabasePort.quotes_for_symbols` is the port; the
-Workers wiring satisfies it with `read_display_quotes` — the News first card's
-own session, budget and degradation — and the loop turns those rows into card
-facts with `reader_quotes`, which lives beside the value object it builds and is
-the one mapping both renderers use. There is no market-specific quote rule
-anywhere. Only
-a `fresh` quote is rendered, a percentage only when its reference is inside
-`QUOTE_REFERENCE_MAX_AGE_MS`, and stale, unavailable or unlisted leaves no line,
-no placeholder and no zero. The read is bounded by
-`QUOTE_READ_TIMEOUT_SECONDS`, which lives beside the other quote budgets in the
-pricing domain and is applied by the loop itself as well as by the shared read —
-"no card waits longer than this for a price" is the loop's promise to the reader,
-not something a composition site could quietly stop keeping. Every failure of the
-read — admission, overrun, timeout, a raising port — is the same answer as a stale
-quote: the card goes out unquoted, on its own attempt, with no retry consumed and
-no notification decision changed. It happens between two short transactions
-rather than inside the claiming one, so no transaction of this loop's is open
-across it, and a retry asks for nothing at all because it re-sends the card
-frozen at the first attempt.
-
-Because the read and the freeze are now two transactions, the `FOR UPDATE SKIP
-LOCKED` that finds the due card no longer spans the claim, so `market_begin_send`
-carries the predicate that lock used to provide: it updates only a row still at
-the attempt count and due time the card was *read* with. A card another process
-claimed, sent and re-queued in that window fails this compare-and-set instead of
-spending its second attempt early against the first attempt's snapshot, and the
-loop that lost moves on to the next due card rather than ending its turn. On the card the two planes are never written as one:
-`来源报告价` is the provider's own figure — the price a liquidation or an
-account action was reported at, and the smart-money report's realised PNL beside
-it — while `行情` is the market's current quote. They carry different labels and
-sit on different lines, but they are written by one money rule, because two
-adjacent numbers in two number systems are read as a move nobody made: every
-dollar figure on every card — a smart-money notional, a liquidation's largest
-reported amount, a reported price, a PNL, a quote — is `card_format.money`,
-exact to the cent with thousands separators and the sign outside the currency
-mark. The single exception is the OI *value* line, which is `usd_compact`
-(`$1.20B`) because an open-interest total is a magnitude whose last six digits
-say nothing a reader acts on. A liquidation group's largest reported
-amount is chosen by comparing the reports as numbers —
-`MarketObservation.notional_amount` is the one place that text becomes a
-quantity — because `max` over the stored text answered `980000` for a group that
-also reported `1000000`. The OI card carries the frame's own `Whale
-Long Profit` and `Whale/OI Ratio` percentages on one line of their own, in the
-provider's terms and only when the frame carried them. The smart-money caveat
-that a `Close` is only the source's reported close or reduction is printed by a
-card that printed a Close, and by no other — on an open-only card it explained a
-word that is not there, which is how a caveat stops being read on the cards that
-need it.
-
-An OI card also says what News the reader already has about the same instrument
-(#582 `3.3). It is the second display read and it works exactly like the first:
-`MarketNotificationDatabasePort.pushed_news_for_symbol` is the port, the Workers
-wiring satisfies it with `read_pushed_news` — the same News lane, the same
-`QUOTE_READ_TIMEOUT_SECONDS` budget, the same "any failure is no line"
-degradation — and both reads run concurrently under one deadline, because "no
-card waits longer than this before being sent" is one promise rather than one per
-read. One clock, two answers: `asyncio.wait` keeps whichever read finished and
-cancels only the one still running, so a News plane that hangs costs the news
-lines and leaves the price that arrived on the card. The statements are
-`storage/decisions.py`'s, beside the
-reader-history projection they reuse: the delivered-card ledger with the same
-`first` / `sent` / not-deleted predicate and the same headline COALESCE, and the
-same `news_symbol_aliases` equivalence the targeted reader-history band resolves
-an asset with, so a story tagged `9988` counts for a `BABA` card. Two windows
-because there are two questions: `已推` counts by when the reader was interrupted
-(at most three titles, newest first) and `共` counts how many editorial Events
-named the instrument at all, told or not. Both carry the Event window
-(`opened_at_ms` inside 48 h) and only the pushed half adds
-`news_deliveries.settled_at_ms`, so what is quoted is always a subset of what is
-counted: a card pushed 10 h ago for an Event opened 50 h ago would otherwise read
-`已推 1 · 共 0`, and a zero total prints nothing at all. The card
-prints nothing when the total is zero, which is the ordinary answer for a token
-nothing was written about, and the whole block is at most four lines with no link
-and no button. Liquidation and smart money spend no read at all: `family == "oi"`
-is the condition, and it is the only thing that would have to change.
-
-The card's detail button needs an absolute URL or no button at all. A reader opens
-the card in Feishu or Telegram, where `/news/market/{item_id}` is not a link — the
-first real market card in production carried exactly that relative path and no
-client could follow it. The operator names the console's public origin in
-`api.public_url` — `api.host`/`api.port` is the uvicorn bind address and says
-nothing about the address a browser outside the process can open — and the Workers
-News wiring is the one place that reads it, passing it as the market loop's
-`console_base_url`. A deployment that has not named one leaves `market_detail_url`
-answering None: the card is rendered without the action element and its note line
-prints the item id instead. There is no default, because no default this repository
-could invent would be reachable (#553).
-
-What a failed send *proved* is decided in the adapter and nowhere else. Feishu and
-Telegram now carry `commit_phase` beside the code ordinary News still records: a
-pre-connect failure, an explicit vendor rejection and a 429 are `not_sent`; a
-write/read timeout, an unparsable answer and a provider 5xx are `unknown`. That
-two-string vocabulary lives in `tracefold/news/delivery_contracts.py` rather than in
-the loop that first needed it — an adapter naming its own failure must not import the
-business loop it serves, and the architecture test holds that direction (#562). Only
-`not_sent` is retried, at most three real attempts with 5 s and then 30 s held in
-PostgreSQL. An `unknown` card is never re-sent and never reported as delivered —
-the provider may well have it — but it does not lock the group either: its
-snapshot becomes the anti-duplicate anchor, and the next genuine escalation, action
-change or window still reaches the reader.
-
-The task is one optional Workers capability, `market_notifications`, declared in
-`worker_business_tasks()` beside the Trading Signal lane and polled by App at the
-loop's own 2 s tick. An unexpected program error stops that task and faults that
-capability; reception, fact writes and every read carry on beside it (#553 PR-3).
-
-Trading is unchanged by all of this and reads the same ledger it always did:
-`news_oi_signals` through `tracefold/app/workers/wiring/news_to_trading.py`, at
-App composition, with no Event in between and no News judgment, Program, policy
-or cohort identity on the candidate.
+The market notification owner applies direct rules to durable observations, creates
+intents, and uses the shared delivery outcome semantics. Bounded display quote/context
+reads are optional presentation inputs, not prerequisites for fact admission or a
+second market policy. An unknown send is neither a delivered receipt nor permission
+to retry blindly. Optional notification failure must not erase the underlying facts.
 
 ### The wallet tape (#572 PR-1)
 
-Robinhood Chain's tracked wallets are the market plane's second provider.
-PR-1 is the ingestion half: `news-chain-tape` writes what a followed wallet did
-and nothing else — no `news_items` row, no card, no notification. The rules that
-turn those fills into something a reader receives are PR-2's, below, and they
-read this ledger rather than the chain.
-
-Trades come from chain logs, not from the provider's own tape. The site's tape
-is missing about two thirds of the closes its own ledger reports, while one
-`eth_getLogs` call with the roster as a topic array answers 100,000 blocks in
-under two seconds — so the site supplies the roster and the chain supplies the
-fills (#572 `3.1, `3.3).
-
-Three durable shapes, three lifetimes:
-
-- `news_market_wallet_fills` is the ledger. Its identity is the chain's own
-  `(chain_id, tx_hash, log_index)`, so an overlapping re-read writes nothing
-  new. Amounts stay raw integers in `numeric(78,0)`; `usd` is filled only when
-  the routed trade's cash leg is the pinned stablecoin and is NULL — `unpriced`
-  — for a pool quoted in anything else.
-- `news_market_wallet_roster` versions membership, ranks and all recorded member statistics together.
-  A change in any member field creates a new version; an identical snapshot refreshes only its fetch
-  time. A fill's `roster_version` pins the list and reported statistics used when it was seen, so a
-  later provider refresh cannot rewrite its selection evidence. A provider failure keeps the previous
-  version rather than emptying it.
-- `news_market_wallet_tape_state` is one row holding how far the tape has been
-  classified, as a `(block, transaction index)` pair. A block number alone
-  cannot say "half of this block is classified", and one block can hold more
-  roster transactions than a turn may fetch receipts for. The position
-  deliberately stops one 30-block overlap short of the block the turn read to:
-  a mark set to the head would declare that block complete on the turn it was
-  first seen, and every re-fetched log from the overlap would then be filtered
-  out before a receipt was requested — which is the same as having no overlap.
-  Lagging it is what lets a tip that answered short be picked up next turn, and
-  the re-read costs nothing but one `ON CONFLICT DO NOTHING`. The row also
-  accumulates the two noise counters, because "how much of this stream is
-  noise" is answered by the rows that are *not* in the fills table.
-
-Classification follows the traded token's transfer path to or from an address emitting a recognized
-V3/V4 Swap in the same receipt. An unrelated token gift cannot borrow another token's swap. Each
-terminal recipient is considered, including non-roster recipients when checking cash attribution.
-The supported routed cash leg is USDG entering the wallet's counterparty; if several assets or
-recipients share that funding, the observed fills remain but their cash and dollar amounts are unknown.
-USDG itself is never a traded-position fill. The two recorded real receipts validate those routes,
-not arbitrary executor economics or pool authenticity. Direct sells whose money returns to the wallet
-remain `transfer_out`; a swap-connected buy without attributable cash remains unpriced.
-
-A plain inbound transfer is counted rather than treated as a buy. Original quantities and the token's
-own decimals remain separate. Retention runs on Janitor's existing heavy slot while the tape is enabled.
-A first start watches near the chain head; neither roster membership nor retained fills establish a
-complete position history. The block hash is evidence, not automatic reorg correction.
+The tracked-trader provider supplies roster context; chain receipts supply fills.
+The tape records transaction/log identities, raw quantities, cash attribution, and
+roster provenance. Plain transfers are not automatically buys, and missing cash
+attribution is unknown pricing, not zero spend. Overlap and idempotency support
+re-reading, but a stored block hash alone does not implement full reorg repair or
+prove complete historic position coverage.
 
 ### Concentrated wallet net-buy episodes (#641)
 
-App supervises three independent tasks: `news-chain-tape` collects receipts and rosters,
-`news-wallet-net-buy` detects episodes, and `news-wallet-prices` samples episode prices.
-Their capabilities are `chain_tape`, `wallet_net_buy` and `wallet_prices`. Each owns its
-bounded turn and cancellation. Detection and first notification have no balance, bags,
-external quote or model dependency.
+The three independent tasks collect receipts, detect concentrated net-buy episodes,
+and sample prices. Detection and first notification have no balance, bags, external
+quote, or model dependency. Complete transaction facts and derivation progress commit
+atomically. The detector calculates the supported windows from the same fill set,
+with explicit member coverage, pricing, and exclusion reasons.
 
-The receipt is the derivation boundary. All relevant buy/sell/transfer facts are stored
-atomically before detection reads them. A bounded ordered pending seed selects complete
-transactions; each receipt's events, updates and `derived_at_ms` / `derived_reason` commit
-together. A rejected transaction leaves the same input pending. The detector reads one
-longest 30-minute token window and computes both fixed windows outside the transaction.
+An episode retains an immutable first snapshot and an independently updated current
+snapshot. Its logical first notification uses the existing market intent/delivery
+owner. Before the first attempt, eligibility and freshness are checked against actual
+persisted state; the attempted payload then freezes. Price samples remain independent
+observations with target and actual times. Without a known trigger baseline, returns
+remain unknown rather than invented.
 
-For each normalized quality-roster address, window net USD is known buys minus known sells
-from the same fill set; raw net token quantity must also be positive. Unknown trade pricing
-or a transfer out excludes that address. Both global and member monitoring must support
-the entire window. Each snapshot freezes roster version, when membership was known, ranks,
-source statistics, coverage and the exact block/log cutoff. Whale-only members remain
-visible context. Removed members remain collected for the necessary 30-minute support.
-Missing receipts stop the cursor. Withdrawn, inconsistent or missing overlap logs expose
-a reorg gap; this implementation does not rewrite chain history automatically.
-
-An episode is keyed by chain, token contract and its first fresh triggering transaction.
-A partial unique index permits only one active episode per chain/token. The first snapshot
-never changes. Only the detector writes the latest snapshot, and only when business facts
-change. Chain-time sliding expiry never creates an episode. A new priced buy must increase
-a currently qualified buyer's net spend to extend the episode; 30 minutes without such
-activity closes it. A 3→2→3 sequence and later qualification of the second window stay in
-the same episode.
-
-The existing market tracks/deliveries own the sole logical first intent. Before its first
-attempt the sender checks the persisted latest state, pending token facts and the frozen
-60-second age budget. Invalid/stale intent suppression is durable. Once sending starts,
-the send snapshot and channel payload freeze; retry and unknown-result rules are shared
-with existing market delivery. There are no wallet followups. Muted episodes are readable
-but ineligible for later adoption when the switch is restored.
-
-Prices are sampled independently at 15m/1h/4h for sent and unsent episodes. The baseline is
-only a price already known at the trigger, with its actual source/time; the detector
-currently has no such external price dependency, so ordinary new episodes honestly have
-no baseline. Target and actual sample times remain distinct. The maximum permitted sample delay is
-60 seconds; a provider call completing after that records late with no target price. Without a baseline, change
-stays unknown. These are price observations, not executable returns.
-
-The console reads `/api/news/wallets/events` and `/events/{episode_id}`; `/api/news/wallets`
-only supplies auxiliary roster/state. List statistics precede pagination within the same
-read snapshot. Detail preserves initial/current facts, all qualifying and excluded members,
-a keyset-paged raw timeline, and actual price observations. The old card API, single-wallet
-research, exit/crowding rules, digest program/tasks and their configurations are deleted.
-Migration `20260912_0376` archives retired rows losslessly and creates the single current
-contract. See the [wallet cutover runbook](wallet-net-buy-cutover.md).
+The console reads `/api/news/wallets/events` and episode detail; the roster endpoint
+is auxiliary context. The old card API, single-wallet research, exit/crowding rules,
+and digest tasks are not the current product. See the
+[wallet cutover runbook](wallet-net-buy-cutover.md) for migration and validation.
 
 ### Retention
 
-A market Item lives on the `news.retention.judged_days` tier whatever happened
-to it. It has no verdict, no review and no learning case, so the evidence
-predicate that promotes an ordinary Item can never preserve one; under
-`raw_days` alone every OI frame, liquidation report and account report would
-expire in 30 days while the ordinary news it sits beside kept a year. Which
-retention an observation gets is a decision about the observation, not a reward
-for having been judged. The typed facts follow their Item through the cascade.
+Apply the owning retention policy to source facts, projections, receipts, and learning
+evidence according to their actual lifetime and foreign-key lineage. Market facts do
+not gain editorial-review evidence merely by sharing `news_items`. Preserve required
+audit and active release references; use current schema and retention code, not a
+manually counted table list or obsolete migration narrative.

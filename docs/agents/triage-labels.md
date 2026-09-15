@@ -1,13 +1,17 @@
-# Triage Labels
+# Triage labels
 
-The skills use five canonical triage roles. This table maps those roles to the labels in this repository.
+Labels describe coordination state; they do not authorize changes or determine
+what an AI is capable of implementing. Use existing repository labels when
+helpful, and do not block an otherwise clear task on label creation or assignment.
 
-| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
-| -------------------------- | -------------------- | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| Label | Meaning |
+| --- | --- |
+| `needs-triage` | Scope or priority needs evaluation. |
+| `needs-info` | A concrete unanswered question blocks progress. |
+| `ready-for-agent` | The task is sufficiently specified for implementation. |
+| `ready-for-human` | A human decision, permission, or non-automatable action is needed. |
+| `wontfix` | The request will not be implemented; explain why. |
 
-When a skill mentions a triage role, use the corresponding label string from this table.
+Keep states coherent when triaging, but do not rewrite unrelated labels or copy
+another skill repository's workflow into this project. A missing tool or resource
+should name the blocked step, not turn the whole task into "human implementation".
