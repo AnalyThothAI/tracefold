@@ -735,6 +735,9 @@ def _evaluate_target(
         display_table=False,
         failure_score=0.0,
     )(_StoredAnswers(answers))
+    # A row `Evaluate` could not score at all -- the ruler itself raised, and `Evaluate` absorbed it under
+    # its own `failure_score` -- is still a case this run was asked about. Dropping it would shrink the
+    # denominator silently, which is the one thing these counts exist to prevent.
     rows = [
         {
             "case_id": str(example.case_id),
@@ -742,8 +745,14 @@ def _evaluate_target(
             "score": captured[str(example.case_id)].score,
             "components": dict(captured[str(example.case_id)].components),
         }
-        for example in devset
         if str(example.case_id) in captured
+        else {
+            "case_id": str(example.case_id),
+            "outcome": "technical_failure",
+            "score": 0.0,
+            "components": {"failure": "news_program_baseline_target_metric_raised"},
+        }
+        for example in devset
     ]
     return rows, _from_percent(evaluation.score)
 
