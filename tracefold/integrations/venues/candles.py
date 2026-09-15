@@ -4,7 +4,7 @@ Both providers report a candle's end inclusively (`closeTime` / `T` are one mill
 open). Normalizing to an exclusive `close_at_ms = open + interval` here means the domain's "last candle
 closed at or before this instant" never has to know whose off-by-one it is looking at.
 
-Only trade prices: no mark, oracle, index or mid history is mixed into `reaction_v1`.
+Only trade prices: no mark, oracle, index or mid history is mixed into the Reaction ledger.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ async def _fetch_binance_reaction_candles(
     spot_base_url: str,
     futures_base_url: str,
 ) -> tuple[Candle, ...]:
-    """The `reaction_v1` interval, which reads O/H/L/V it does not keep.
+    """The Reaction interval, which reads O/H/L/V it does not keep.
 
     Only `close` reaches a `Candle`, but a bar whose high is below its own open or close is not a bar
     that lost precision — it is a row the provider did not mean, and taking its close would put a price

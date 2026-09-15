@@ -1005,7 +1005,7 @@ export function newsQuoteFixture(overrides: Partial<NewsQuote> = {}): NewsQuote 
 export function newsReactionFixture(overrides: Partial<NewsReaction> = {}): NewsReaction {
   return {
     asset_n: 1,
-    metric_version: "reaction_v1",
+    metric_version: "reaction_v2",
     priced_n: 1,
     return_1h_bps: 152,
     return_4h_bps: -87,
@@ -1024,7 +1024,7 @@ export function newsEventReactionFixture(
     anchor_at_ms: NEWS_NOW_MS - 6 * 3_600_000,
     instrument_class: "crypto",
     is_primary: true,
-    metric_version: "reaction_v1",
+    metric_version: "reaction_v2",
     p0: "68000.0",
     p0_at_ms: NEWS_NOW_MS - 6 * 3_600_000,
     p1: "69033.6",

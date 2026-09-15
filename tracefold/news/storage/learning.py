@@ -1310,22 +1310,6 @@ class LearningStorage:
         ).fetchall()
         return tuple(dict(row) for row in rows)
 
-    def learning_epoch_row_for_bundle(self, bundle_sha: str) -> dict[str, Any] | None:
-        """The epoch one exact bundle accrues evidence under, or None until that bundle has deployed.
-
-        Keyed on the bundle rather than on an epoch label (#314): the label is a truncation for humans,
-        and two different bundles must never resolve to one epoch because their first eight hex digits
-        collide.
-        """
-
-        row = self.conn.execute(
-            "SELECT epoch_id, starts_at_ms, bundle_sha, envelope_sha256, artifact_schema_version, "
-            "baseline_program_version, baseline_program_sha256, prior_evidence_disposition, reset_reason "
-            "FROM news_learning_epochs WHERE bundle_sha = %s",
-            (bundle_sha,),
-        ).fetchone()
-        return None if row is None else dict(row)
-
     def db_now_ms(self) -> int:
         row = self.conn.execute(
             "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"

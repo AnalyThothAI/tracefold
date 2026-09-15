@@ -28,7 +28,7 @@ from tracefold.news.program.lm import (
     program_json_adapter,
 )
 from tracefold.news.program.resources import candidates as candidate_programs
-from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.program.signatures import EventSemanticsSignature
 from tracefold.news.release import runtime as release_runtime
 from tracefold.news.release.canary import (
@@ -974,7 +974,7 @@ def _wire_startup_test(
         program_sha256="b" * 64,
         envelope_sha256=EXECUTION_ENVELOPE_SHA256,
     )
-    stable_artifact = SimpleNamespace(program_sha256="b" * 64, schema_version="news_program_strategy_artifact_v1")
+    stable_artifact = SimpleNamespace(program_sha256="b" * 64, schema_version=PROGRAM_SCHEMA_VERSION)
     stable_program = object()
     progression_verifier = object()
     news = _StartupNewsRepository(

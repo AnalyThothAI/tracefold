@@ -113,7 +113,7 @@ def _event_reaction_loop(
     )
 
 
-# Narrower than the venue package's five, and left that way. A `reaction_v1` row is a measurement other
+# Narrower than the venue package's five, and left that way. A Reaction row is a measurement other
 # rows are compared against, so widening the set is a decision about the metric's population rather than
 # about plumbing: production holds 827 reactions on `binance.*` / `hl.*` and none anywhere else, and a
 # symbol whose only listing is on Lighter or Bitget would start receiving them the day this tuple grows.

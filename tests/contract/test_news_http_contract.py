@@ -17,6 +17,7 @@ from tracefold.app.http.schemas import news_common as news_common_schemas
 from tracefold.app.http.schemas import status as status_schemas
 from tracefold.news import EVENT_KINDS, MARKET_KINDS
 from tracefold.news.market_review.instruments import InstrumentSearchIdentity
+from tracefold.news.market_review.pricing import REACTION_METRIC_VERSION
 from tracefold.news.models import Admission
 from tracefold.news.storage.feed import _triage_assets
 from tracefold.platform.config.models import Settings
@@ -309,7 +310,7 @@ class _FakePriceRepository:
     def price_status(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("price_status", kwargs))
         return {
-            "metric_version": "reaction_v1",
+            "metric_version": REACTION_METRIC_VERSION,
             "oldest_due_age_ms": 0,
             "sources": [],
             "fresh_sources": 0,
@@ -1475,7 +1476,7 @@ def test_event_detail_keeps_the_two_market_meanings_in_separate_fields(client) -
 def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     api, _ = client
     data = api.get("/api/news/status", params={"token": TOKEN}).json()["data"]
-    assert data["price"]["metric_version"] == "reaction_v1"
+    assert data["price"]["metric_version"] == REACTION_METRIC_VERSION
     assert data["price"]["sources"] == []
     # The backlog SLO has to be *served*, not merely declared: the envelope drops unset fields, so a schema
     # default with no repository value disappears from the response entirely.

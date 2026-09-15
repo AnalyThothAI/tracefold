@@ -191,46 +191,23 @@ def test_the_deployment_that_appoints_an_agent_opens_that_agent_s_epoch(conn) ->
     # being handed a value invented to fill it.
     assert row["program_factory_id"] is None
 
-    evaluator = CandidateEvaluator(conn, stable=stable, judges={})
-    assert evaluator._ledger.epoch_started_at_ms() > 0
-
-    # An epoch row that does not describe the running bundle is refused rather than used. The table is
-    # append-only by trigger, so the drift is staged as a second bundle's row read through an arm whose
-    # envelope does not match it.
-    drifted = _arm(program_sha256="d" * 64)
-    conn.execute(
-        "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, bundle_sha, "
-        "envelope_sha256, artifact_schema_version, baseline_program_version, baseline_program_sha256, "
-        "prior_evidence_disposition, reset_reason, created_at_ms) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'audit_only', 'runtime_bundle_identity_change', %s)",
-        (
-            epoch_id_for_bundle(drifted.bundle_sha),
-            row_start := _epoch_started_at_ms(conn),
-            "https://github.com/AnalyThothAI/tracefold/issues/314",
-            drifted.bundle_sha,
-            "0" * 64,
-            PROGRAM_SCHEMA_VERSION,
-            PROGRAM_VERSION,
-            drifted.program_sha256,
-            row_start,
-        ),
-    )
-    with pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"):
-        CandidateEvaluator(conn, stable=drifted, judges={})._ledger.epoch_started_at_ms()
+    assert int(row["starts_at_ms"]) > 0
 
 
-def test_an_unseen_bundle_has_no_epoch_row_to_read(conn) -> None:
-    """The refusal a missing epoch has to produce, now that no migration guarantees one exists.
+def test_an_unappointed_bundle_may_not_be_evaluated_against(conn) -> None:
+    """The refusal a bundle nobody deployed has to produce.
 
     It is no longer a refusal to freeze: a corpus is evidence and accepted labels, and asks nothing about
-    deployments (#651 §9). What still has no answer for a bundle nobody ever appointed is the question the
-    epoch row is the record of — when this bundle's own evidence line opened.
+    deployments (#651 §9). #651 §12 also deleted `LearningLedger.epoch_started_at_ms`, which re-read the
+    epoch row and re-checked every column the startup barrier had just written; nothing called it. What
+    still refuses a bundle the last deployment did not appoint is the release plane's own question, asked
+    once at the top of `evaluate`.
     """
 
     never_deployed = _arm(program_sha256="e" * 64)
 
-    with pytest.raises(ValueError, match="news_learning_epoch_not_deployed"):
-        CandidateEvaluator(conn, stable=never_deployed, judges={})._ledger.epoch_started_at_ms()
+    with pytest.raises(ValueError, match="news_learning_active_stable_mismatch"):
+        CandidateEvaluator(conn, stable=never_deployed, judges={})._ledger.assert_active_stable()
 
 
 def test_reopening_the_same_bundle_is_idempotent_and_keeps_the_original_start(conn) -> None:
@@ -4222,7 +4199,6 @@ def test_a_taxonomy_only_holdout_survives_a_one_cluster_slip_the_bootstrap_canno
     assert primary["taxonomy_overall_improved"] is True
     assert primary["axis_interval_95"]["assertion_status_accuracy"] == intervals["assertion_status_accuracy"]
     assert report.evidence["failures"] == []
-    assert "four_axis_exact_not_improved" not in report.evidence["blockers"]
     # Nothing blocks at all: the deleted development coverage floors were the only codes this thin
     # fixture corpus ever tripped, and the holdout's own endpoint is satisfied.
     assert report.evidence["blockers"] == []

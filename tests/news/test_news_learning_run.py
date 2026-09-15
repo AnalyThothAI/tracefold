@@ -12,6 +12,7 @@ import pytest
 
 from tracefold.app.cli.commands import news_learning_run as run_commands
 from tracefold.app.cli.parser import build_parser
+from tracefold.news.learning.contracts import PROMPT_CANDIDATE_SCHEMA
 
 _DATASET = "d" * 64
 
@@ -230,7 +231,7 @@ def test_advance_is_the_only_zero_exit_and_names_its_candidate(monkeypatch: Any,
 
     def with_candidate(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
         result = legs.on_optimize(args, settings, stable)
-        _write(Path(args.out) / "prompt_candidate.json", {"schema_version": "news_prompt_candidate_v2"})
+        _write(Path(args.out) / "prompt_candidate.json", {"schema_version": PROMPT_CANDIDATE_SCHEMA})
         return result
 
     monkeypatch.setattr(

@@ -97,7 +97,7 @@ def _chain(conn, *, label: str, bundle_sha: str, run_sha: str, created_at_ms: in
     observation_sha = _artifact(
         conn,
         label=f"{label}:observation",
-        kind="shadow_observation",
+        kind="canary_observation",
         payload={"candidate_sha": candidate_sha, "run_sha": run_sha},
         created_at_ms=created_at_ms,
     )

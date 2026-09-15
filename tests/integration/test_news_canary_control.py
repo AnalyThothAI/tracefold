@@ -12,7 +12,7 @@ from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring import news as workers
-from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.release import runtime as release_runtime
 from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
@@ -705,7 +705,7 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
         "manifest_sha": "1" * 64,
         "stable_bundle_sha": "2" * 64,
         "envelope_sha256": "4" * 64,
-        "artifact_schema_version": "news_program_strategy_artifact_v1",
+        "artifact_schema_version": PROGRAM_SCHEMA_VERSION,
         "program_version": PROGRAM_VERSION,
         "program_sha256": "5" * 64,
         "candidate_shas": ("3" * 64,),
@@ -744,7 +744,7 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
             manifest_sha="4" * 64,
             stable_bundle_sha="5" * 64,
             envelope_sha256="6" * 64,
-            artifact_schema_version="news_program_strategy_artifact_v1",
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
             program_version=PROGRAM_VERSION,
             program_sha256="7" * 64,
             candidate_shas=(),

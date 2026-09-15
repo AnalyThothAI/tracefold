@@ -478,10 +478,17 @@ class NewsChainTapeSettings(BaseModel):
 
 
 class NewsWatchlistEntry(BaseModel):
+    """One operator-named symbol the Gate treats as an objective push.
+
+    Symbol only. The entry used to carry a free-string `market_type` defaulting to `"any"` that nothing
+    ever read: the Gate compares base symbols, and since #651 §6.2 `market_type` means one exact thing
+    elsewhere -- `InstrumentClass` plus `unknown`, on a typed `MarketAsset`. Keeping a second, unrelated
+    vocabulary under the same name in operator configuration was the part worth deleting.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     symbol: str
-    market_type: str = "any"
 
     @field_validator("symbol", mode="before")
     @classmethod
