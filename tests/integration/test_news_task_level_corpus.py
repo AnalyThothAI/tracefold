@@ -27,6 +27,7 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import ClosedWindow
 from tracefold.news.learning.dataset import DatasetSpec
+from tracefold.news.learning.metric import CandidatePrediction, accepted_review_metric, build_compile_example
 from tracefold.news.learning.objective import (
     DevelopmentEpisode,
     build_gepa_objective_plan,
@@ -470,3 +471,41 @@ def test_readiness_is_ready_for_the_target_that_was_reviewed_and_train_empty_for
     assert by_target["explanation"]["planned"] is False
     assert by_target["explanation"]["case_n"] == 3
     assert "development_profile" not in classification
+
+
+def test_the_release_metric_does_not_charge_a_candidate_for_a_taxonomy_nobody_stated(conn) -> None:
+    """A reviewer's silence is not a schema failure, and it must not score like one.
+
+    `accepted_review_metric` used to zero the whole case under a `schema_invalid` gate whenever the
+    accepted review carried no taxonomy. Under v6 that could only mean a corrupt corpus, because every
+    submission carried four axes. Under v7 it is the ordinary shape of a reviewer who judged the copy and
+    nothing else, and zeroing the case would blame the model for a question nobody asked -- with feedback
+    telling it to return axes the corpus has no answer for.
+    """
+
+    event_id = _open_event(conn)
+    _submit(
+        conn,
+        event_id,
+        EventRubricSubmission(
+            dimensions={"why_support": "fail", "factual_fidelity": "pass"},
+            evidence_refs=["source:sentence:1"],
+            explanation=ExplanationCorrectionV1(key_facts=["DRAM \u5408\u7ea6\u4ef7 8 \u6708\u518d\u6b21\u4e0a\u6da8"]),
+        ),
+    )
+    manifest = _freeze(conn)
+    export = _datasets(conn, _arm()).development_compile_export(manifest.artifact_sha)
+    episode = DevelopmentEpisode.model_validate(export.episodes[0])
+
+    example = build_compile_example(episode)
+    production = example.production_judgment
+    assert production is not None
+    outcome = accepted_review_metric(
+        example,
+        CandidatePrediction(verdict=production["verdict"], editorial=production["editorial"]),
+    )
+
+    assert outcome.hard_gate == ""
+    assert not any(dimension.startswith("taxonomy_") for dimension, _result in outcome.dimension_outcomes)
+    assert "Taxonomy" not in " ".join(outcome.feedback)
+    assert outcome.component_denominators["semantics_novelty"] == 0
