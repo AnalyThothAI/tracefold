@@ -752,16 +752,22 @@ def _target_evidence(
     cases: Sequence[BaselineCase],
     results: Sequence[CaseResult],
     *,
+    answers: Mapping[str, CandidatePrediction],
     judge: CardEquivalenceJudge | None,
     route: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The per-target denominators and the #651 §8.1 product scoreboard, over one population."""
+    """The per-target denominators and the #651 §8.1 product scoreboard, over one population.
 
-    answered = {result.case_id for result in results if result.answered}
+    `answers` is what *this run* answered: the persisted judgment in `recorded`, and the live one the
+    route just produced in the two live modes. Reading the stored judgment in a live mode would score
+    production's answer and publish it under the candidate's name.
+    """
+
+    answered = {result.case_id for result in results if result.answered} & set(answers)
     strata = {case.episode.case_id: case.episode.stratum for case in cases}
     examples = {case.episode.case_id: _target_examples(case.episode) for case in cases}
     predictions = {
-        case.episode.case_id: _target_predictions(_stored_prediction(case))
+        case.episode.case_id: _target_predictions(answers[case.episode.case_id])
         for case in cases
         if case.episode.case_id in answered
     }
@@ -871,15 +877,20 @@ def run_baseline(
     strict = bind_metric(None) if judge is not None else None
     examples = [_gold_example(case) if mode == "recorded" else build_compile_example(case.episode) for case in cases]
     results: list[CaseResult] = []
+    # What this run answered, per case, in the one shape the per-target rulers read. `recorded` fills it
+    # from the persisted judgment; the live modes fill it from the judgment the route just produced.
+    answers: dict[str, CandidatePrediction] = {}
     strict_scores: dict[str, float] = {}
     latency: dict[str, Any] = {}
     route: dict[str, Any] = {}
 
     if mode == "recorded":
         for case, example in zip(cases, examples, strict=True):
-            outcome = metric(example, _stored_prediction(case))
+            prediction = _stored_prediction(case)
+            answers[case.episode.case_id] = prediction
+            outcome = metric(example, prediction)
             if strict is not None:
-                strict_scores[case.episode.case_id] = float(strict(example, _stored_prediction(case)).score)
+                strict_scores[case.episode.case_id] = float(strict(example, prediction).score)
             results.append(_case_result(case, outcome, latency_ms=0))
 
     else:
@@ -944,6 +955,7 @@ def run_baseline(
                 verdict=judgment.verdict.model_dump(mode="json"),
                 editorial=judgment.editorial.model_dump(mode="json"),
             )
+            answers[case.episode.case_id] = prediction
             try:
                 outcome = metric(example, prediction)
                 if strict is not None:
@@ -1004,6 +1016,7 @@ def run_baseline(
         mode=mode,
         artifact=artifact,
         judge=judge,
+        answers=answers,
         strict_scores=strict_scores,
         latency=latency,
         route=route,
@@ -1022,6 +1035,7 @@ def _build_report(
     mode: BaselineMode,
     artifact: NewsProgramStateV1,
     judge: CardEquivalenceJudge | None,
+    answers: Mapping[str, CandidatePrediction],
     strict_scores: Mapping[str, float],
     latency: Mapping[str, Any],
     route: Mapping[str, Any],
@@ -1053,7 +1067,7 @@ def _build_report(
     # answer different questions: the composite is one number for "would this candidate ship the right
     # action", and these are three numbers for "did it classify, understand and explain correctly", each
     # with the denominator that says how much of the corpus could ask.
-    targets, scoreboard = _target_evidence(cases, results, judge=judge, route=route)
+    targets, scoreboard = _target_evidence(cases, results, answers=answers, judge=judge, route=route)
 
     gold_n = sum(result.gold_scored_n for result in answered)
     labelled_n = sum(result.labelled_n for result in answered)
