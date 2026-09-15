@@ -719,7 +719,9 @@ def _expected_delivery(should_push: str) -> bool | None:
 # A v1 report cannot answer the second question and must not be read as if it could.
 # v4 (#501): `included`/`excluded` population; `taxonomy_gold` reports `stable_exact_n` and
 # `stable_mismatch_n` as diagnostics; no owner distribution, no target/control halves.
-READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v4"] = "tracefold.news.gepa_readiness_report.v4"
+# v5 (#651): the report names the optimization `target`, because one corpus now explains three different
+# Predictor compiles and a readiness answer that does not say which one is not an answer.
+READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v5"] = "tracefold.news.gepa_readiness_report.v5"
 # One Predictor evaluation may use JSONAdapter's single format fallback. This is a physical-call ceiling,
 # not the usual successful-path count, so the readiness receipt must reserve both attempts.
 _TASK_CALLS_PER_METRIC_CALL: Final = 2
@@ -761,6 +763,7 @@ def build_readiness_report(
     episodes: Sequence[DevelopmentEpisode],
     identity: Mapping[str, Any],
     coverage: Mapping[str, Any],
+    target: str = "classification",
 ) -> dict[str, Any]:
     """Explain a compile before anyone pays for one. No model call, no write, no second projection.
 
@@ -800,6 +803,7 @@ def build_readiness_report(
     gold_summary = summarize_taxonomy(gold_rows)
     return {
         "schema": READINESS_SCHEMA,
+        "target": target,
         "identity": dict(identity),
         # Diagnostics, in the release profile's own vocabulary, and separate from `corpus` below because
         # these are the *dataset's* sealed counts rather than anything re-derived from the episodes.
