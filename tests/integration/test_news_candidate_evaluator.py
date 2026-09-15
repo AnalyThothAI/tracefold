@@ -3724,7 +3724,7 @@ def _taxonomy_only_candidate(
             state=_fixture_state(
                 event_semantics=base.instruction_for("event_semantics"),
                 taxonomy=(
-                    f"{base.instruction_for("taxonomy")}\nPrefer the narrower subject code{variant} when both apply."
+                    f"{base.instruction_for('taxonomy')}\nPrefer the narrower subject code{variant} when both apply."
                 ),
                 reader_card=base.instruction_for("reader_card"),
             ),

@@ -169,9 +169,9 @@ def test_loader_refuses_a_demo_whose_fields_are_not_the_signature_s() -> None:
 
 def test_loader_refuses_a_truncated_signature_or_a_carried_scratch_list() -> None:
     truncated = load_stable_program_state().model_dump(mode="json")
-    truncated["state"]["reader_card"]["signature"]["fields"] = truncated["state"]["reader_card"]["signature"][
-        "fields"
-    ][:1]
+    truncated["state"]["reader_card"]["signature"]["fields"] = truncated["state"]["reader_card"]["signature"]["fields"][
+        :1
+    ]
     with pytest.raises(ValueError, match="news_program_state_signature_fields_invalid"):
         NewsProgramStateV1.model_validate(truncated)
 

@@ -70,7 +70,7 @@ from .signatures import EventSemanticsSignature, EventTaxonomySignature, ReaderC
 
 # The exact DSPy whose `dump_state` shape this envelope is. Pinned rather than read at validation time: a
 # state written by another version is a different document, and discovering that at load is the point.
-DSPY_STATE_VERSION: Final[str] = "3.3.1"
+DSPY_STATE_VERSION: Final[Literal["3.3.1"]] = "3.3.1"
 
 # Exactly the keys `dspy.Predict.dump_state()` emits in 3.3.1.
 _PREDICTOR_DOCUMENT_KEYS: Final[frozenset[str]] = frozenset({"traces", "train", "demos", "signature", "lm"})
@@ -244,7 +244,7 @@ class NewsProgramStateV1(_ExactModel):
         moved" a property of the document instead of a claim in a receipt.
         """
 
-        merged = {name: self.predictor_document(name) for name in PREDICTOR_NAMES}
+        merged: dict[str, Any] = {name: self.predictor_document(name) for name in PREDICTOR_NAMES}
         merged[predictor] = dict(document)
         return NewsProgramStateV1.issue(state=merged)
 

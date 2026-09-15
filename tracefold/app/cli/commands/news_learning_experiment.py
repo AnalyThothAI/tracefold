@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from tracefold.app.learning_runtime import compose_news_program_runtime
 from tracefold.app.llm import configured_lm_endpoint
@@ -43,6 +43,7 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
         TARGET_PREDICTOR,
         FrozenDevelopmentDataset,
         OptimizationConfig,
+        OptimizationTarget,
         build_reflection_lm,
         build_task_lm,
         optimize,
@@ -86,7 +87,10 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
     # The task endpoint is the *target Predictor's* production primary slot, not one Triage route for every
     # target (#651). Optimizing ReaderCard against the EventSemantics endpoint would maximize a number that
     # predicts nothing about the model production actually asks to write the card.
-    target = str(getattr(args, "target", "classification") or "classification")
+    declared = str(getattr(args, "target", "classification") or "classification")
+    if declared not in TARGET_PREDICTOR:
+        raise ValueError(f"news_program_compile_target_unknown:{declared}")
+    target = cast(OptimizationTarget, declared)
     predictor = TARGET_PREDICTOR[target]
     task = {
         "event_semantics": composition.event_semantics_primary,

@@ -509,8 +509,9 @@ class _UnderstandingMetric:
             objectives["asset_symbol_set_f1"] = score
             scored.append(score)
             if score < 1.0:
-                notes.append(f"Accepted assets are {sorted(expected_assets) or 'none'}; you named "
-                             f"{sorted(observed) or 'none'}.")
+                notes.append(
+                    f"Accepted assets are {sorted(expected_assets) or 'none'}; you named {sorted(observed) or 'none'}."
+                )
         expected_novelty = getattr(gold, "gold_novelty", None)
         if expected_novelty is not None:
             hit = float(semantics.novelty == expected_novelty)
