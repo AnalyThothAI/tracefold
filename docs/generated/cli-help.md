@@ -488,6 +488,7 @@ usage: tracefold news learning run [-h] --development DEVELOPMENT --out OUT
                                    --max-call-cost-microusd MAX_CALL_COST_MICROUSD
                                    [--max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS]
                                    [--seed SEED]
+                                   [--target {classification,understanding,explanation}]
 
 options:
   -h, --help            show this help message and exit
@@ -502,6 +503,9 @@ options:
   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
   --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
   --seed SEED
+  --target {classification,understanding,explanation}
+                        classification optimizes taxonomy, understanding
+                        event_semantics, explanation reader_card
 
 ```
 
@@ -526,14 +530,13 @@ options:
 ## `news release`
 
 ```
-usage: tracefold news release [-h] {register,evaluate,shadow,canary} ...
+usage: tracefold news release [-h] {register,evaluate,canary} ...
 
 positional arguments:
-  {register,evaluate,shadow,canary}
+  {register,evaluate,canary}
     register            bind a Prompt candidate to the active stable and a
                         frozen dataset
     evaluate            run the evaluate release-evidence gate
-    shadow              run the shadow release-evidence gate
     canary              arm, inspect, or stop the durable one-arm production
                         canary
 
@@ -555,7 +558,7 @@ options:
   --development DEVELOPMENT
                         development dataset artifact SHA
   --candidate CANDIDATE
-                        news_prompt_candidate_v2 JSON/YAML
+                        news_prompt_candidate_v3 JSON/YAML
   --artifact-root ARTIFACT_ROOT
                         write the candidate <program-sha>.json artifact
                         document
@@ -590,32 +593,6 @@ options:
                         recordings
   --observation-manifest OBSERVATION_MANIFEST
                         optional sealed canary observation artifact SHA
-  --out OUT             write the sealed evaluation report
-
-```
-
-## `news release shadow`
-
-```
-usage: tracefold news release shadow [-h] --development DEVELOPMENT
-                                     [--validation VALIDATION]
-                                     --candidate CANDIDATE
-                                     [--observation-manifest OBSERVATION_MANIFEST]
-                                     [--live-program] --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --validation VALIDATION
-                        validation dataset SHA
-  --candidate CANDIDATE
-                        candidate manifest JSON/YAML
-  --observation-manifest OBSERVATION_MANIFEST
-                        reuse a sealed shadow observation artifact instead of
-                        collecting one
-  --live-program        cold-run the candidate Program over the closed
-                        validation window
   --out OUT             write the sealed evaluation report
 
 ```

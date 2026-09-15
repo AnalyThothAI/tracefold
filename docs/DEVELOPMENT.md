@@ -327,7 +327,7 @@ The following evidence rules apply at every level:
 9. **Model quality stays separate.** Pytest protects call budgets, identity,
    serialization, policy, replay, and state semantics. Model quality remains
    the responsibility of frozen corpora, golden evidence,
-   `CandidateEvaluator`, shadow/canary runs, and durable production evidence.
+   `CandidateEvaluator`, canary runs, and durable production evidence.
 
 The exact fixed owners, resource topology, native report contract, and
 historical rationale are maintained in
@@ -467,9 +467,15 @@ uv run tracefold news review submit TASK --version TASK_VERSION \
 # mean (#150 removed the ambiguous `live`):
 #   recorded     — the persisted verdict against the action that shipped. No
 #                  provider call, reproducible across policy revisions.
-#   compile_live — the native Program GEPA optimizes on one task endpoint. No
-#                  route fallback/deadline/breaker; per-call timeout and JSON
-#                  format fallback remain.
+#   compile_live — the native Program GEPA optimizes, with each Predictor bound
+#                  to its own production *primary* slot (#651): event_semantics
+#                  .primary, the taxonomy alias of it, and reader_card.primary —
+#                  a dedicated endpoint when one is configured, the
+#                  EventSemantics alias otherwise. No fallback route, no
+#                  whole-route deadline, no cross-case breaker; the per-call
+#                  client timeout and the JSON format fallback remain.
+#                  Production adds the fallback route, the route deadline and
+#                  the breaker on top of this.
 #   runtime_live — the configured four-slot production Program route, run
 #                  sequentially so circuit state means something.
 uv run tracefold news learning baseline --from-ms START --to-ms END \
@@ -499,17 +505,28 @@ uv run tracefold news review accept-drafts --file /tmp/drafts.json --dry-run
 uv run tracefold news review accept-drafts --file /tmp/drafts.json \
   --only EVENT_OR_TASK_PREFIX[,PREFIX...] --reviewer owner_authorized_codex
 
-# The one candidate path (#453, #501). Freeze once (κ over dual-labelled
+# The one candidate path (#453, #501, #651). Freeze once (κ over dual-labelled
 # clusters is reported in counts.calibration), inspect zero-call readiness, then
 # run stock GEPA exactly once under DSPy's own `auto` budget. The admitted
 # candidate is GEPA's best_idx when strictly above the seed; NO_OP otherwise.
 # Exit 0 means ADVANCE; 1 means NO_OP or REJECTED.
+#
+# `--target` picks which Predictor the run optimizes, and therefore which ruler
+# scores it and which production primary endpoint the task calls answer on:
+#   classification (default) -> taxonomy,        four-axis accepted Gold
+#   understanding            -> event_semantics, typed assets + novelty
+#   explanation              -> reader_card,     typed card + copy lint +
+#                                                accepted-copy retention
+# One target per run: GEPA selects on one Pareto front, so two Predictors moving
+# under one selection score would make the receipt unreadable. The winner is
+# that Predictor's native `dump_state()` — demos included — merged into the
+# parent state for that Predictor alone.
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out artifacts/run-1/development.json
 uv run tracefold news learning readiness --development DATASET_SHA \
   --out /tmp/readiness.json   # 0 model calls, 0 writes
 uv run tracefold news learning run --development DATASET_SHA \
-  --out artifacts/run-1 \
+  --out artifacts/run-1 --target classification \
   --auto light --max-task-model-calls 3000 \
   --max-reflection-model-calls 60 \
   --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
@@ -631,18 +648,19 @@ workflow, not a Worker and not a release gate. It reads the frozen development c
 database write credential, no broker, no delivery, no canary, no promotion. It
 ends in `NO_OP`, `REJECTED` or `ADVANCE`; all three write a complete
 `OptimizationRunReport`, and only `ADVANCE` also writes a
-`news_prompt_candidate_v2` — the bounded EventSemantics winner plus the byte-identical parent ReaderCard,
-and nothing that could ask to ship.
+`news_prompt_candidate_v3` — the complete `NewsProgramStateV1` envelope the candidate would run under,
+with only the target Predictor's native state moved, and nothing that could ask to ship.
 
 Until #202 there were two generation paths and two candidate types, because
 release eligibility came from *where* a candidate was produced: a sealed
 sealed image against a metered proxy, or the fast loop behind
 `promotable=false`. The generator was never the authority for two strings.
-`release register` now binds any Prompt patch — GEPA's or a person's — to the
-active stable Program and a frozen dataset, re-derives the #199 Objective Plan
+`release register` now binds any Program state — GEPA's or a person's — to the
+active stable Program and a frozen dataset, re-validates and re-hashes the candidate's own state
+document rather than re-applying a patch, re-derives the #199 Objective Plan
 rather than trusting the candidate's own summary, and refuses anything that
 disagrees. An `ADVANCE` is still not a release: future holdout, blind pairwise,
-shadow, canary and a human promotion are unchanged.
+canary and a human promotion are unchanged.
 
 `learning snapshot | compare` — the #193 research fast loop of frozen run
 directories and per-arm comparison — was deleted in #343, along with the
@@ -819,17 +837,17 @@ payload. Everything else is computed and verified by the same code in the same
 process over a payload sitting next to it — a self-proof, not an attestation.
 
 What replaced provenance is binding, checked by a party that did not produce the
-candidate. `ProposalReceipt` names the registered `news_prompt_candidate_v2` by
+candidate. `ProposalReceipt` names the registered `news_prompt_candidate_v3` by
 `prompt_candidate_sha256` and carries the registrar's *own*
-`development_episode_projection_root_sha256`; `release register` re-applies the
-patch to derive the arm's Program identity and re-derives the #199 Objective
+`development_episode_projection_root_sha256`; `release register` re-hashes the
+candidate's own state document to derive the arm's Program identity and re-derives the #199 Objective
 Plan rather than trusting the candidate's summary. Migration `20260825_0307`
 admits the new kind, keeps `compile_receipt` and `compile_record` readable as
 audit history, and trips open canary activations whose candidate was registered
 against the old contract.
 
 Promotion requires sealed PASS artifacts in order: development, future
-temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,
+temporal validation, blind pairwise, deterministic 10% canary,
 then stable deployment. `release canary trip` is the fail-closed rollback
 control. Canary selector `news_canary_selector_v2` includes queue-high Events, excludes recovery,
 listing and telemetry lanes, and validates selector/profile/runtime-manifest

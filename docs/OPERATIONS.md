@@ -1499,23 +1499,27 @@ Diagnose News in this order:
    the optimization report does not mirror trajectory or checkpoint state.
    Then `release
    register --candidate prompt_candidate.json` binds it to the active stable and that frozen dataset
-   — re-applying the patch to derive the Program identity and re-deriving the
+   — re-validating and re-hashing the candidate's own `NewsProgramStateV1` document to derive the
+   Program identity, and re-deriving the
    #199 Objective Plan rather than trusting the candidate — and `release
-   evaluate` runs the gate. A patch a person wrote registers on identical terms:
+   evaluate` runs the gate. A state a person wrote registers on identical terms:
    the generator is audit, never permission.
    Production promotion additionally requires a
-   future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
-   observation, and then `release canary arm` — except for a taxonomy-only
-   candidate, whose holdout PASS promotes directly because shadow and canary
-   both measure reader-facing samples it cannot move; inspect with `canary status`
+   future temporal validation dataset, blind pairwise review
+   and then `release canary arm` — except for a taxonomy-only
+   candidate, whose holdout PASS promotes directly because canary
+   measures reader-facing samples it cannot move; inspect with `canary status`
    and use `canary trip` immediately on a schema/artifact/quality guardrail
    breach. Selector `news_canary_selector_v2` includes queue-high Events, excludes recovery/listing/
    telemetry, and trips on selector, eligibility-profile, rolling-profile or
    runtime-manifest drift. One Event belongs to one arm and runs one assigned Program (normally
    three serial Predictor calls, plus only the traced retry/fallback budget). A
    canary is not an excuse to skip the earlier evidence stages: the evaluator rejects a
-   holdout/shadow/canary request before any Program call unless the preceding
-   stage has a sealed PASS. Validation fixes at most 50 independent cluster
+   holdout/canary request before any Program call unless the preceding
+   stage has a sealed PASS. #651 deleted the shadow stage between holdout and
+   canary: it cold-ran the candidate over a closed window to seal a distribution
+   nobody acted on, and its only consumer was canary eligibility, which now reads
+   the holdout PASS directly. Validation fixes at most 50 independent cluster
    tasks before execution; 100 unresolved human judgments, an empty required
    set, or a common provider outage is `UNKNOWN`, while a candidate-only
    critical error is `FAIL`.

@@ -925,7 +925,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_event_evidence_v3`, `news_judgment_v2`,
 `news_semantic_program_v9`,
 `news_triage_policy_v13`, `news_delivery_card_v11`, artifact schema
-`news_program_strategy_artifact_v1`, and source classifier
+`news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and
 `news_liquidation_fact_v2` are retired program versions: the deterministic
 structured lanes wrote them, and market frames no longer produce a verdict at
@@ -948,7 +948,7 @@ unresolved contract identity, position side, quantity/notional/price semantics,
 completeness and throttle assumptions. Its current `complete=false` is a
 material fact.
 
-`ProgramStrategyArtifactV1` is the only executable semantic configuration, and
+`NewsProgramStateV1` is the only executable semantic configuration, and
 it is one canonical JSON document — `schema_version`, the
 `event_semantics_instruction`, `taxonomy_instruction` and
 `reader_card_instruction` texts, and the
@@ -1632,7 +1632,7 @@ CandidateEvaluator re-projects the same v3 plan at registration/evaluation.
 Optimizer candidates publish `optimization_objective_summary.v3`, including the episode projection root,
 plan schema, representative population identity, target dimensions and split roots. Registration re-derives
 and compares every field. The current corpus contract is `news_learning_dataset_v3`, the current candidate
-is `news_prompt_candidate_v2`, and historical v1/v2 artifacts remain audit-only.
+is `news_prompt_candidate_v3`, and historical v1/v2 artifacts remain audit-only.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
@@ -1643,16 +1643,16 @@ The CLI is two groups, because there are two lifecycles (#202 `11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,
 `draft-reviews`, `freeze` — and none of them can ship anything.
-There is no taxonomy registration, shadow, or separate evaluation command.
+There is no taxonomy registration or separate evaluation command.
 Taxonomy Gold is scored directly by the taxonomy GEPA metric during the one `run`; moving-window
 `baseline` is diagnostic only. `news release` admits a
 candidate and moves it: `register`,
-`evaluate`, `shadow`, `canary`. The split is what an operator reads off
+`evaluate`, `canary`. The split is what an operator reads off
 `--help`, and it is the same boundary the packages carry: `news.learning`
 never imports `news.release`.
 
 `release register --development SHA --candidate FILE --artifact-root DIR
-[--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v2` to
+[--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v3` to
 the active stable Program and a frozen development dataset. Whatever supplied
 the candidate instruction pair — `learning run`, which may change only
 EventSemantics and copies ReaderCard byte-identically, or a person — enters here
@@ -1684,9 +1684,6 @@ content-addressed forensic evidence, and without `--live-program` the gate
 replays each arm from them; a missing recording produces an `incomplete`
 evaluation with no live fallback. The separate strict re-execution verification
 pass (`--verify-recordings`) was deleted in #343.
-`release shadow --live-program` cold-runs the candidate over the closed
-validation window and seals the observations; an existing sealed shadow
-observation manifest can be replayed instead.
 `release canary arm|status|hold|resume|trip|close` owns the durable one-arm
 rollout. A candidate may advance only when the prior
 stage has a sealed PASS; a tool or optimizer may propose but cannot accept,

@@ -11,7 +11,7 @@
   provider keys from `~/.tracefold/config.yaml` into chat, docs, tests,
   shell history, or source files.
 - Credential-free ReviewDesk datasets, Program artifacts, candidate manifests,
-  model recordings, shadow observations, evaluation reports, and deployment
+  model recordings, canary observations, evaluation reports, and deployment
   receipts are ordinary repository content. The operator may store, commit, or
   publish them, including evidence, prompts, cards, model outputs, and reviewer
   prose. Publication creates no alternate business truth and grants no runtime,
@@ -152,7 +152,7 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 `decide()` and feed ordering remain deterministic.
 
 The only loadable semantic image is one content-addressed
-`news_program_strategy_artifact_v1` JSON document carried in the application
+`news_program_state_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
 holds a schema version and the three complete Predictor instructions;
 `program_sha256` is the canonical hash of exactly those four values, and the
@@ -224,14 +224,15 @@ in the same report. Reflection alone has the code-owned 32k-token ceiling. The t
 semantic judge, no ReaderCard call, no tool or code-generation authority, and no private DSPy API.
 
 Every terminal state writes `news_optimization_run_report_v4`; only `ADVANCE` also writes
-`news_prompt_candidate_v2`. The only mutable field is the Taxonomy instruction. EventSemantics and ReaderCard
+`news_prompt_candidate_v3`. Exactly one Predictor's native state is mutable per run — the one the
+run's `--target` names. The other two Predictors
 are copied byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
 beside the public native GEPA parent/score/subscore state, GEPA best index and Tracefold admitted index.
 Every candidate is compared directly with accepted Gold rather than with another model output, and the
 admitted one is GEPA's own best when strictly above the seed. Registration independently re-applies the
 patch, re-projects the dataset and re-derives Objective Plan v4. Generator provenance grants no release
 authority;
-future holdout, blind pairwise, shadow, canary and manual promotion remain mandatory.
+future holdout, blind pairwise, canary and manual promotion remain mandatory.
 
 Optimization usage v3 distinguishes a proven zero metric count from an unavailable count: preflight
 refusals record `0`, while an interrupted GEPA compile with no public result records `null`. Physical model

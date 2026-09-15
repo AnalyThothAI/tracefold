@@ -1197,12 +1197,23 @@ shape and changes what the instructions *are*, each becoming the complete
 prompt for its Predictor rather than a bounded advisory appended to a rendered
 stack, with the code-owned seed text in `tracefold/news/program/seed.py`. Issue
 #314 removes the last field that was not a written instruction, and issue #501
-adds the third instruction: the artifact
-holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
-per Predictor (`event_semantics`, `taxonomy`, `reader_card`), and
-`program_sha256` is the canonical hash of exactly those
-three values. The stable root is
-`ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49`.
+adds the third instruction. Issue #651 changes the *representation*: the image is
+now the native DSPy state document, `schema_version` `news_program_state_v1`,
+holding `{schema_version, program_sha256, dspy_version, predictors, state}`
+where `state` is exactly what `NativeNewsProgram.dump_state()` returns for the
+three Predictors — instructions, demos and Signature state. `program_sha256` is
+the canonical hash of that document without its `lm` entries, plus the schema and
+the pinned DSPy version. Three instruction strings could not represent a GEPA
+candidate at all, because the optimizer may attach few-shot demos to a Predictor
+and the old shape had nowhere to put them; a released image now carries what the
+optimizer actually produces. The envelope refuses a non-null `lm` (model routes
+are operator configuration, never baked into an image), an unknown or missing
+Predictor, a demo whose fields are not the Signature's, a truncated Signature
+field list and per-call `traces`/`train` scratch. Loading is one path:
+`NativeNewsProgram(state)` builds the Predictors from the code-owned seed
+defaults, calls DSPy's own `load_state`, then re-reads `named_predictors()` and
+refuses anything the round trip did not reproduce. The stable root is
+`ba492f87de5d72efd7c95c18c343e3f56c13b771cf82cd591f719609b887ef99`.
 Issue #117 changed the EventSemantics instruction and typed output while
 preserving the then two-Predictor graph and its two-call common-success path;
 #501 added the taxonomy Predictor beside them, which is why the ordinary path is
@@ -1807,7 +1818,7 @@ the existing episode, so the episode projection root covers Gold. The pure
 `taxonomy_metric.py` helper compares it with Stable or candidate taxonomy and
 the existing metric folds the result into `semantics_novelty`. Code-owned
 source authority stays outside model target, score and feedback. No
-taxonomy-specific Dataset, table, shadow Program,
+taxonomy-specific Dataset, table, separate Program,
 registration, evaluator, or release lifecycle exists.
 
 Epoch rows `program_v1`-`program_v9` were each opened by a hand-written
@@ -1843,22 +1854,33 @@ The optional GEPA optimization is a cold, manual development tool, never a
 Workers loop. `news learning run` reads a frozen development corpus once
 and then holds task and reflection model endpoints plus a typed budget — no DB write, broker,
 delivery, canary or promotion credential — and can emit only a bounded
-`PromptPatchV1`. The patch contract carries all three Predictor instructions, but #501 permits only the
-taxonomy instruction to change and requires EventSemantics and ReaderCard to remain byte-identical. The
+`NewsProgramStateV1`. A run names one **target**: `classification` optimizes `taxonomy`,
+`understanding` optimizes `event_semantics`, `explanation` optimizes `reader_card`. One target per run,
+because GEPA selects on one Pareto front and two Predictors moving under one selection score would make
+"which change earned the improvement" unanswerable from the receipt. The winner is that Predictor's own
+`dump_state()` merged into the parent state for that Predictor alone; the other two are copied byte for
+byte, and which ones moved is `changed_predictors(parent)` rather than a declared flag. The
 graph, output schemas, execution budget, model slots and policy are code, covered by `envelope_sha256`,
 and outside the write set.
 The optimizer calls public `dspy.GEPA` exactly once with `instruction_proposer=None`,
 `add_format_failure_as_feedback=False` (dspy 3.3.1 renders that feedback with a hard-coded ChatAdapter
-that describes a request shape this JSONAdapter program never sends), and the existing
-`NativeNewsProgram(base_strategy).taxonomy` Predict inside one learning-only wrapper as its student
-with `num_threads=1`. The budget is DSPy's own: `--auto light|medium|heavy` or an explicit
+that describes a request shape this JSONAdapter program never sends), and the target Predictor of
+`NativeNewsProgram(base_state)` inside one learning-only wrapper as its student
+with `num_threads=1`. There is one assembly for all three targets; what is injected per target is the
+metric callable, behind a `TargetMetric` protocol whose whole surface is
+`__call__(gold, pred, trace, pred_name, pred_trace) -> Prediction(score, feedback, objective_scores)`.
+The offline task endpoint is the target Predictor's own production primary slot, so a ReaderCard
+instruction is not optimized against the EventSemantics model. The budget is DSPy's own: `--auto light|medium|heavy` or an explicit
 `--max-metric-calls`, exactly one, passed through unchanged, with the resolved metric-call count recorded
 in the optimizer receipt; there is no floor or preflight of Tracefold's own. Its code-owned six-example
 reflection minibatch reuses GEPA's native knob: it is wider than the tie-prone default of three. The
 reflection model is an operating requirement — strong, ≥128K context — recorded by the run receipt, not
-checked by code. The wrapper converts an audited task-output truncation or a typed `ModelTaxonomyV1`
-validation failure into one failed Prediction so DSPy keeps the trace batch aligned (#478); DSPy 3.3.1
-otherwise re-raises the truncation or drops the invalid example, leaving GEPA indexing a shorter batch.
+checked by code. The wrapper converts an audited task-output truncation or a typed output
+validation failure into one failed Prediction so DSPy keeps the trace batch aligned (#478, re-reproduced
+for #651): `bootstrap_trace_data` re-raises `LMError` and any non-`AdapterParseError` exception out of
+`patched_forward`, `Evaluate` records the row as an error whose prediction is not the
+`(prediction, trace)` tuple the caller unpacks, and the row is then dropped — so GEPA indexes past the
+end of a shortened batch.
 Every such failure scores the native `failure_score` of `0.0`: the v3 sentinel of `-(train_count + 1)`
 dominated the Pareto front and left candidate zero with an aggregate below every real candidate. The
 wrapper does not retry, parse, evaluate or select. Reflection truncation, transport/provider failure and
@@ -1871,10 +1893,14 @@ the selection set only made `ADVANCE` unreachable (the #456 rule required every 
 replay at exactly `1.0`, which the seed itself did not satisfy). A candidate that overfit the selection
 set is caught by offline evaluation, at the cost of one evaluation; that is DSPy's standard division of
 labour between selection and holdout.
-Frozen examples carry only the rendered taxonomy evidence and accepted taxonomy Gold; the deterministic
-metric returns the mean of subject set-F1 and exact family/state/assertion axes, and its feedback quotes
-the codebook definition of the expected and predicted labels plus any precedence rule written for that
-confusion. There is no component selector,
+Frozen examples carry only the target Predictor's rendered evidence and the accepted Gold that target
+scores against. `classification`'s deterministic metric returns the mean of subject set-F1 and exact
+family/state/assertion axes, and its feedback quotes the codebook definition of the expected and
+predicted labels plus any precedence rule written for that confusion. `understanding` scores typed
+validity, accepted asset-set F1 and accepted novelty, skipping an axis no reviewer answered rather than
+scoring it as a miss. `explanation` scores typed validity, the code-owned `card_lint` (whose two gate
+checks zero the case) and retention of accepted copy under the same literal-equality arm
+`accepted_review_metric` uses when no equivalence judge is configured. There is no component selector,
 ReaderCard rollout, production composite, semantic judge, direct GEPA import, private DSPy API or
 second evaluator. GEPA cannot accept a review,
 register/deploy its output, move a stable pointer, or promote a candidate.
@@ -1885,7 +1911,7 @@ Automated optimizers may propose a Program candidate but cannot modify the
 reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
 or production assignment.
 
-One optimization produces one `news_prompt_candidate_v2`, and only when it ends
+One optimization produces one `news_prompt_candidate_v3`, and only when it ends
 in `ADVANCE`. Every terminal state — `NO_OP`, `REJECTED`, `ADVANCE` — also
 writes a complete `news_optimization_run_report_v4`, so a run that spent a
 budget and shipped nothing is still readable. Issue #193 had already collapsed
@@ -1894,8 +1920,9 @@ itself, and with it the record, the sealed input bundle, the sidecar's per-call
 ledger, the `CompilerBuildAttestation` and the tariff. Those documents proved
 *where* two instructions were produced. Nothing downstream ever needed that:
 public `dspy.GEPA` returns native Predict candidates, and `run_gepa` extracts
-only GEPA's best candidate while refusing demos or any extra Predictor, then copies EventSemantics and
-ReaderCard unchanged into the three-string patch contract. Rows written
+only GEPA's best candidate — refusing any extra Predictor or a baked model route, keeping its demos —
+then merges that one native state document into the parent while copying the other two Predictors
+unchanged. Rows written
 under the old chain stay in `news_learning_artifacts`
 as append-only audit and no longer parse, so they cannot be re-armed.
 
@@ -2078,7 +2105,7 @@ publishes its gate and no per-check outcomes, so the component denominator never
 disagrees with the zero.
 
 Promotion is monotonic: development screen -> future temporal validation ->
-blind pairwise review -> 24 h shadow -> deterministic 10% canary -> stable.
+blind pairwise review -> deterministic 10% canary -> stable.
 Every stage requires the prior sealed PASS. One Event is assigned to exactly
 one production arm before Program execution and runs exactly one assigned
 Program. Canary selector `news_canary_selector_v2` is live-only and excludes the

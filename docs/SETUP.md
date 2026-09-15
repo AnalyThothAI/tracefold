@@ -345,7 +345,7 @@ broker scheduling/audit fact and is absent from reader HTTP/OpenAPI/React.
 A change is one candidate kind — a bounded two-instruction Prompt patch:
 record accepted cases with `tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
-offline, holdout, shadow and canary gates under `tracefold news learning`.
+offline, holdout and canary gates under `tracefold news learning`.
 The optional GEPA workflow reads the frozen development corpus once, runs
 bounded GEPA with no database write, broker, delivery, canary or promotion
 credential, and emits at most a typed patch carrying the two Predictor
@@ -382,7 +382,7 @@ open activations and records the cut without rewriting or appending the
 prior-factory judgments are audit-only under exact current-bundle eligibility,
 so the factory-v7 cohort starts at zero.
 The production image has one loader only: the content-addressed
-`news_program_strategy_artifact_v1` document executed as
+`news_program_state_v1` document executed as
 `news_semantic_program_v9` under `news_triage_policy_v13`. Prior roots remain
 immutable audit history and are not executable by the current image. Rollback
 uses the recorded previous same-schema runtime image, never an alternate
