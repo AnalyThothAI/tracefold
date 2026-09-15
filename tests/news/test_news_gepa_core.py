@@ -29,6 +29,7 @@ from tracefold.news.learning.optimizer import (
     target_plan,
 )
 from tracefold.news.program.lm import LMOutputTruncatedError
+from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 from tracefold.news.taxonomy import EVENT_FAMILY_DEFINITIONS, ModelTaxonomyV1
 
 
@@ -156,7 +157,7 @@ def test_optimizer_receipt_records_native_budget_and_disabled_format_feedback() 
     assert constructor["max_metric_calls"] == 40 and "auto" not in constructor
     receipt = optimizer_config_receipt(
         constructor=constructor,
-        target=target_plan("classification", review_rubric_version="news_review_v6"),
+        target=target_plan("classification", review_rubric_version=REVIEW_RUBRIC_VERSION),
         resolved_metric_calls=40,
         task_lm=task,
         reflection_lm=reflection,
@@ -195,7 +196,7 @@ def test_auto_light_passes_through_and_resolves_to_dspys_own_budget() -> None:
     assert resolved == dspy.GEPA.auto_budget(None, num_preds=1, num_candidates=6, valset_size=4)
     receipt = optimizer_config_receipt(
         constructor=constructor,
-        target=target_plan("classification", review_rubric_version="news_review_v6"),
+        target=target_plan("classification", review_rubric_version=REVIEW_RUBRIC_VERSION),
         resolved_metric_calls=resolved,
         task_lm=_RoleLM("task"),
         reflection_lm=_RoleLM("reflection"),
@@ -342,7 +343,7 @@ def test_each_target_resolves_to_its_own_predictor_ruler_and_receipt() -> None:
     """#651: one assembly, three injected rulers, and the target is readable off every receipt."""
 
     plans = {
-        target: target_plan(target, review_rubric_version="news_review_v6")
+        target: target_plan(target, review_rubric_version=REVIEW_RUBRIC_VERSION)
         for target in ("classification", "understanding", "explanation")
     }
 

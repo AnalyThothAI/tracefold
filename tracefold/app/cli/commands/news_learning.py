@@ -129,7 +129,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 plan=plan,
             )
             if not plan.optimizer_cluster_ids:
-                raise ValueError("news_program_compile_no_taxonomy_gold_clusters")
+                raise ValueError(f"news_program_compile_no_labelled_clusters:{plan.target}")
             arm_payload = stable.model_dump(mode="json")
             arm_payload.update(program_sha256=candidate_state.program_sha256)
             candidate_arm = type(stable).model_validate(arm_payload)

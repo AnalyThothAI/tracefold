@@ -20,18 +20,18 @@ from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.review.desk import EventRubricSubmission
 
+# The four model-owned axes. A review states these and nothing else: `source_authority` is derived from
+# the evidence by code, so since #651 it is neither a submittable field nor a rubric dimension.
 _TAXONOMY = {
     "subject_codes": [],
     "event_family": "other",
     "change_state": "unknown",
     "assertion_status": "unknown",
-    "source_authority": "unknown",
 }
 _TAXONOMY_DIMENSIONS = {
     "taxonomy_subject_codes": "pass",
     "taxonomy_event_family": "pass",
     "taxonomy_change_state": "pass",
-    "taxonomy_source_authority": "pass",
     "taxonomy_assertion_status": "pass",
 }
 
@@ -125,7 +125,7 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
             "expected": expected or {},
             "expected_correction": "",
-            "taxonomy": {key: value for key, value in _TAXONOMY.items() if key != "source_authority"},
+            "taxonomy": _TAXONOMY,
         },
         production_judgment=scored_judgment(_VERDICT),
         policy_metric={
@@ -404,7 +404,7 @@ def test_build_baseline_cases_drops_loader_only_keys() -> None:
     assert build_baseline_cases([raw], action_source="policy")[0].recorded_decision_result is None
 
 
-def test_rubric_v6_gold_requires_a_failed_dimension() -> None:
+def test_rubric_v7_gold_requires_a_failed_dimension() -> None:
     base = {
         "kind": "event_rubric",
         "should_push": "should_push",
@@ -436,8 +436,7 @@ def test_rubric_v6_gold_requires_a_failed_dimension() -> None:
         )
 
 
-def test_rubric_v6_submission_without_optional_gold_validates() -> None:
-
+def test_rubric_v7_submission_without_optional_gold_validates() -> None:
     submission = EventRubricSubmission(
         kind="event_rubric",
         should_push="should_hold",

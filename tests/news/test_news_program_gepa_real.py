@@ -171,7 +171,7 @@ def _episode(index: int, *, target: bool, **review_updates: Any) -> DevelopmentE
     stable_taxonomy = news_taxonomy(**_PRODUCT_TAXONOMY, source_authority="reputable_secondary")
     review: dict[str, Any] = {
         "should_push": "uncertain",
-        "dimensions": {},
+        "dimensions": {"factual_fidelity": "pass"},
         "novelty": {"judgment": "uncertain", "duplicate_of": ""},
         "expected": {},
         "expected_correction": "",
@@ -191,6 +191,11 @@ def _episode(index: int, *, target: bool, **review_updates: Any) -> DevelopmentE
         case_id=f"{index:064x}",
         cluster_id=f"{index:064x}",
         stratum="taxonomy_failure" if target else "taxonomy_control",
+        # Which questions this review answered, and therefore which compiles may read it (#651 §9). The
+        # taxonomy above makes it classification evidence, the novelty judgment and the push verdict make
+        # it understanding evidence, and the card dimension makes it explanation evidence. A corpus that
+        # declared a target its reviews never labelled would hand that target invented answers.
+        applicable_targets=("classification", "understanding", "explanation"),
         context=TriageContext.from_card(card, watchlist=(), told_rows=[], now_ms=opened_at_ms, queue_lag_ms=0),
         accepted_review=review,
         production_judgment=scored_judgment(
@@ -277,7 +282,7 @@ def _run_synthetic_gepa(
     target: str = "classification",
 ) -> GepaRunResult:
     task, reflection, _task, _reflection, _ledger = _models()
-    val_count = len(build_gepa_objective_plan(_corpus()).development_selection_episodes)
+    val_count = len(build_gepa_objective_plan(_corpus(), target).development_selection_episodes)
     rows = validation_subscores or tuple(dict.fromkeys(range(val_count), score) for score in aggregate_scores)
     return run_gepa(
         base_program=load_stable_program_state(),
@@ -303,7 +308,7 @@ def _candidates(predictor: str = "taxonomy") -> tuple[str, str, str]:
 
 
 def test_every_gold_case_is_an_optimizer_sample_whatever_its_owner_column_says() -> None:
-    plan = build_gepa_objective_plan(_corpus())
+    plan = build_gepa_objective_plan(_corpus(), "classification")
 
     assert plan.blocking_reasons == ()
     assert len(plan.optimizer_cluster_ids) == 12
@@ -349,7 +354,7 @@ def test_gepa_best_strictly_above_the_seed_advances_only_the_target_predictor(ta
     assert result.metric["predictor_change"]["predictor"] == predictor
     assert result.public_result["gepa_best_index"] == 2
     assert result.public_result["admitted"] is True
-    assert result.optimizer_cluster_ids == build_gepa_objective_plan(_corpus()).optimizer_cluster_ids
+    assert result.optimizer_cluster_ids == build_gepa_objective_plan(_corpus(), target).optimizer_cluster_ids
 
 
 def test_gepa_demos_travel_with_the_winning_candidate() -> None:
@@ -360,7 +365,7 @@ def test_gepa_demos_travel_with_the_winning_candidate() -> None:
     demo = {"evidence_json": "<evidence>", "taxonomy": dict(_OTHER_TAXONOMY)}
 
     def compile_with_demos(student: dspy.Module, **_kwargs: Any) -> dspy.Module:
-        val_count = len(build_gepa_objective_plan(_corpus()).development_selection_episodes)
+        val_count = len(build_gepa_objective_plan(_corpus(), "classification").development_selection_episodes)
         candidates = []
         for index, instruction in enumerate((stable, candidate_one)):
             candidate = copy.deepcopy(student)
@@ -426,7 +431,7 @@ def test_selection_never_replays_controls_or_a_growth_budget() -> None:
     """#501 §9: no per-control replay, no per-objective check, no growth budget in selection."""
 
     stable, candidate, _unused = _candidates()
-    val_count = len(build_gepa_objective_plan(_corpus()).development_selection_episodes)
+    val_count = len(build_gepa_objective_plan(_corpus(), "classification").development_selection_episodes)
     rows = (dict.fromkeys(range(val_count), 1.0), dict.fromkeys(range(val_count), 0.0))
     rows[1][0] = 1.0  # every other selection example regresses; the aggregate still decides
 
@@ -466,7 +471,7 @@ def test_auto_light_resolves_to_dspys_own_budget_and_the_receipt_records_it() ->
     result = _run_synthetic_gepa(instructions=(stable, candidate_two), aggregate_scores=(0.5, 0.9), auto="light")
 
     scalars = result.optimizer_config["constructor_scalar_arguments"]
-    val_count = len(build_gepa_objective_plan(_corpus()).development_selection_episodes)
+    val_count = len(build_gepa_objective_plan(_corpus(), "classification").development_selection_episodes)
     expected = dspy.GEPA.auto_budget(None, num_preds=1, num_candidates=6, valset_size=val_count)
     assert scalars["auto"] == "light"
     assert scalars["max_metric_calls"] == expected
@@ -588,10 +593,9 @@ def test_candidate_task_truncation_scores_zero_and_keeps_the_batch_aligned() -> 
     except GepaNoProgramChange as caught:
         result = caught.result
 
+    selection = build_gepa_objective_plan(_corpus(), "classification").development_selection_episodes
     truncated_validation_index = next(
-        index
-        for index, episode in enumerate(build_gepa_objective_plan(_corpus()).development_selection_episodes)
-        if episode.case_id == f"{11:064x}"
+        index for index, episode in enumerate(selection) if episode.case_id == f"{11:064x}"
     )
     subscores = result.public_result["validation_subscores"]
     assert result.public_result["candidate_count"] >= 2
@@ -629,11 +633,8 @@ def test_candidate_typed_invalid_output_keeps_gepa_batch_aligned() -> None:
     )
 
     assert result.public_result["gepa_best_index"] != 0
-    invalid_validation_index = next(
-        index
-        for index, episode in enumerate(build_gepa_objective_plan(_corpus()).development_selection_episodes)
-        if episode.case_id == f"{11:064x}"
-    )
+    selection = build_gepa_objective_plan(_corpus(), "classification").development_selection_episodes
+    invalid_validation_index = next(index for index, episode in enumerate(selection) if episode.case_id == f"{11:064x}")
     best_index = result.public_result["gepa_best_index"]
     assert result.public_result["validation_subscores"][best_index][str(invalid_validation_index)] == 0
     invalid_index = next(
@@ -696,7 +697,14 @@ class _FixedAnswerTaskLM(dspy.BaseLM):  # type: ignore[misc]
 
 
 def _graded_corpus() -> tuple[DevelopmentEpisode, ...]:
-    """The same corpus with accepted semantics and card Gold, so the non-taxonomy rulers can separate."""
+    """The same corpus with accepted semantics, card Gold and explanation supervision.
+
+    The copy dimensions are failed here, so a v7 review has to carry the `explanation` block that makes
+    the failure trainable (#651 §7.2): a `why_support: fail` with nothing attached is `pending`
+    supervision, and the explanation target excludes it rather than learn "change something". `key_facts`
+    name the company the reviewer says the card must keep, so the odd cases -- whose accepted copy is
+    about NVDA while the scripted candidate always answers TSLA -- separate from the even ones.
+    """
 
     return tuple(
         _episode(
@@ -709,20 +717,42 @@ def _graded_corpus() -> tuple[DevelopmentEpisode, ...]:
                 "headline_zh": "英伟达发布产品" if index % 2 else "特斯拉发布产品",
                 "why_zh": "产品变化影响交付预期。",
             },
+            explanation={
+                "source_spans": [f"taxonomy-{'target' if index % 2 else 'control'} {index}"],
+                "key_facts": ["英伟达发布产品" if index % 2 else "特斯拉发布产品"],
+                "forbidden_claims": [],
+                "error_types": [],
+                "reference_why_zh": "",
+            },
+            explanation_supervision="present",
         )
         for index in range(1, 13)
     )
 
 
 @pytest.mark.parametrize(
-    ("target", "payload_key", "payload"),
+    ("target", "payload_key", "payload", "metric_id", "labelled_axis"),
     [
-        pytest.param("understanding", "semantics", _SEMANTICS_ANSWER, id="understanding"),
-        pytest.param("explanation", "card", _CARD_ANSWER, id="explanation"),
+        pytest.param(
+            "understanding",
+            "semantics",
+            _SEMANTICS_ANSWER,
+            "tracefold.news.event_semantics_gepa_typed_v1",
+            "asset_symbol_set_f1",
+            id="understanding",
+        ),
+        pytest.param(
+            "explanation",
+            "card",
+            _CARD_ANSWER,
+            "tracefold.news.reader_card_gepa_lint_retention_v2",
+            "key_facts_covered",
+            id="explanation",
+        ),
     ],
 )
 def test_real_gepa_runs_end_to_end_for_every_target_without_a_network(
-    target: str, payload_key: str, payload: dict[str, Any]
+    target: str, payload_key: str, payload: dict[str, Any], metric_id: str, labelled_axis: str
 ) -> None:
     """#651: the same stock `dspy.GEPA.compile` drives each target against scripted typed doubles."""
 
@@ -749,9 +779,16 @@ def test_real_gepa_runs_end_to_end_for_every_target_without_a_network(
     predictor = {"understanding": "event_semantics", "explanation": "reader_card"}[target]
     assert result.target == target
     assert result.metric["predictor_change"]["predictor"] == predictor
+    assert result.metric["metric_id"] == metric_id
     assert result.state.changed_predictors(stable) in ((), (predictor,))
     assert result.public_result["candidate_count"] >= 1
-    assert result.public_result["validation_aggregate_objective_scores"]
+    objective_scores = result.public_result["validation_aggregate_objective_scores"]
+    assert objective_scores
+    # The axis fed by the reviewer's own labels is scored, not merely declared: each ruler reads the part
+    # of the accepted review it is the ruler for, and `key_facts_covered` is where the explanation target
+    # finally has a label for what `why_support` was always failed over (#651 §7.2).
+    assert labelled_axis in result.metric["axes"]
+    assert all(labelled_axis in candidate_scores for candidate_scores in objective_scores)
     assert task_delegate.requests
     rendered = str([request.messages for request in task_delegate.requests])
     # Each target asks exactly its own Predictor's frozen question. ReaderCard is the only one handed the

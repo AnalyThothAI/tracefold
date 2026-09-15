@@ -10,7 +10,7 @@ import pytest
 
 import tracefold.news.learning.evaluate as candidate_evaluator_module
 from tests.support.news_judgment import news_taxonomy
-from tracefold.news.learning.evaluate import ArmManifest, development_coverage_blockers
+from tracefold.news.learning.evaluate import ArmManifest
 from tracefold.news.learning.profile import _PROFILE
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.artifact import NewsProgramStateV1
@@ -314,133 +314,21 @@ def test_observed_non_degraded_program_requires_a_selected_execution() -> None:
         )
 
 
-# Every count the release profile actually asks for, with boundary + retention summing to
-# `independent_cluster_n` the way `_dataset_counts` partitions them — and all of it inside one UTC date.
-# Before #259 this exact corpus was refused for the calendar, and for nothing else.
-_ONE_DAY_SUFFICIENT = {
-    "case_n": 168,
-    "independent_cluster_n": 141,
-    "boundary_cluster_n": 34,
-    "retention_cluster_n": 107,
-    "negative_cluster_n": 55,
-    "safety_cluster_n": 9,
-    "stratum_n": 4,
-    "train_stratum_n": 3,
-    "development_selection_stratum_n": 3,
-    "eligible_event_n": 733,
-    "natural_day_n": 1,
-    "window_duration_hours": 21.0,
-}
+def test_the_release_profile_holds_no_development_corpus_quota_at_all() -> None:
+    """#651 §9: the 30/100/50 cluster floors, the strata minimum and the safety case are gone.
 
-
-def test_a_single_calendar_day_with_real_coverage_is_not_blocked() -> None:
-    """#259: `natural_day_n = 1` is a fact about midnights, not about evidence.
-
-    The counts below are the ones the profile has always asked for and they are all met; the only thing
-    separating this corpus from the pre-#259 refusal is that its 21 hours happened not to cross a UTC
-    boundary. A Development Experiment that cannot start until the calendar catches up is a deployment
-    delay wearing a statistics costume.
+    Written against the key set rather than five deleted names, for the same reason #259 wrote the
+    previous version of this test that way: the failure it guards against is not "somebody restored
+    `boundary_clusters_min`", it is "somebody added `min_cases` and called it a different rule". Whether
+    a corpus can be optimized is now a question about one target's split, and `GepaObjectivePlan`
+    answers it with four structural codes; a profile threshold could only re-introduce the quota that
+    refused a good explanation corpus for holding little taxonomy Gold.
     """
 
-    assert development_coverage_blockers(_ONE_DAY_SUFFICIENT) == ()
-
-
-def test_each_objective_half_must_carry_enough_strata() -> None:
-    thin_selection = {
-        **_ONE_DAY_SUFFICIENT,
-        "development_selection_stratum_n": 2,
-    }
-
-    assert development_coverage_blockers(thin_selection) == (
-        "development_development_selection_stratum_n_insufficient",
-    )
-
-
-def test_three_calendar_dates_are_not_evidence_when_the_corpus_is_thin() -> None:
-    """The mirror case, and the one that shows the old gate measured the wrong variable.
-
-    Four minutes either side of a midnight is three UTC dates by the old count and three restatements of
-    one storyline by any honest one. The refusal has to come from the clusters, and its vocabulary must
-    never name a day again — an operator told to wait for the calendar would wait forever.
-    """
-
-    thin = {
-        **_ONE_DAY_SUFFICIENT,
-        "case_n": 6,
-        "independent_cluster_n": 3,
-        "boundary_cluster_n": 2,
-        "retention_cluster_n": 1,
-        "negative_cluster_n": 1,
-        "safety_cluster_n": 1,
-        "stratum_n": 1,
-        "natural_day_n": 3,
-        "window_duration_hours": 0.067,
-    }
-
-    blockers = development_coverage_blockers(thin)
-
-    assert set(blockers) == {
-        "development_boundary_cluster_n_insufficient",
-        "development_retention_cluster_n_insufficient",
-        "development_negative_cluster_n_insufficient",
-        "development_stratum_n_insufficient",
-    }
-    assert not any("day" in blocker for blocker in blockers)
-
-
-def test_raw_event_volume_is_not_an_effective_sample_size() -> None:
-    """#259 §3: the unit of evidence is the connected fact cluster, not the Event row.
-
-    A busy news day produces thousands of eligible Events and can still carry a handful of separable
-    facts. `eligible_event_n` is reported so an operator can see the window's traffic; it buys nothing.
-    """
-
-    loud = {
-        **_ONE_DAY_SUFFICIENT,
-        "eligible_event_n": 40_000,
-        "case_n": 40_000,
-        "independent_cluster_n": 12,
-        "boundary_cluster_n": 4,
-        "retention_cluster_n": 8,
-        "negative_cluster_n": 3,
-        "stratum_n": 2,
-    }
-
-    assert set(development_coverage_blockers(loud)) == {
-        "development_boundary_cluster_n_insufficient",
-        "development_retention_cluster_n_insufficient",
-        "development_negative_cluster_n_insufficient",
-        "development_stratum_n_insufficient",
-    }
-
-
-def test_a_corpus_with_no_safety_case_is_still_refused() -> None:
-    """The one non-threshold rule in the development profile, unchanged by #259."""
-
-    assert development_coverage_blockers({**_ONE_DAY_SUFFICIENT, "safety_cluster_n": 0}) == (
-        "development_safety_empty",
-    )
-
-
-def test_the_development_profile_admits_no_temporal_gate_at_all() -> None:
-    """#259 §6: `natural_days_min` is gone and nothing age-shaped may take its place.
-
-    Written against the key set rather than one deleted name on purpose: the failure this guards against
-    is not "somebody restored `natural_days_min`", it is "somebody added `stable_age_days` and called it
-    a different rule".
-    """
-
-    development = _PROFILE["development"]
-
-    assert set(development) == {
-        "boundary_clusters_min",
-        "retention_clusters_min",
-        "negative_clusters_min",
-        "strata_min",
-        "safety_required",
-    }
+    assert "development" not in _PROFILE
+    assert set(_PROFILE) == {"profile_id", "validation", "guardrails", "bootstrap", "supported_candidates"}
     assert not any(
-        word in key for key in development for word in ("day", "age", "hour", "duration", "window", "natural")
+        word in key for key in _PROFILE for word in ("boundary", "retention", "negative", "strata", "safety", "cluster")
     )
 
 

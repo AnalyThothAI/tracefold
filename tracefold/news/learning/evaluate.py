@@ -59,7 +59,6 @@ from .objective import (
     _expected_delivery,
     elect_cluster_representative_case_ids,
     production_decision,
-    target_split_counts,
 )
 from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA
 from .projection import (
@@ -501,7 +500,10 @@ class CandidateEvaluator:
         ):
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
         candidate = self._registry.load(request.candidate_sha)
-        candidate_plan = self._registry.validate(candidate)
+        # Called for its refusals, not its return value: `validate` re-derives the Objective Plan from the
+        # frozen corpus and rejects a candidate whose declared population the corpus does not support. The
+        # plan itself was only read to feed the corpus-size quotas #651 §9 deleted.
+        self._registry.validate(candidate)
         self._registry.persist(candidate)
         taxonomy_only = self._registry.changed_predictors(candidate) == ("taxonomy",)
         prior_stage = {"holdout": "offline", "canary": "holdout"}.get(request.stage)
@@ -593,10 +595,6 @@ class CandidateEvaluator:
             observations=existing,
             execution_errors=execution_errors,
             observation_dimensions=observation_dimensions,
-            development_profile_counts={
-                **development.counts,
-                **target_split_counts(candidate_plan),
-            },
             taxonomy_only=taxonomy_only,
         )
         if observation_manifest_sha:
@@ -1239,7 +1237,6 @@ class CandidateEvaluator:
         observations: Sequence[Mapping[str, Any]],
         execution_errors: Sequence[str],
         observation_dimensions: Mapping[str, Any] | None,
-        development_profile_counts: Mapping[str, Any],
         taxonomy_only: bool,
     ) -> dict[str, Any]:
         blockers: list[str] = []

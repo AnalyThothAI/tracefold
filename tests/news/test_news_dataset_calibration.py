@@ -9,7 +9,7 @@ import pytest
 
 from tracefold.news.learning.contracts import ClosedWindow, DatasetCaseRef
 from tracefold.news.learning.dataset import DatasetSpec, DevelopmentDatasetStore
-from tracefold.news.learning.profile import _PROFILE, development_coverage_blockers
+from tracefold.news.learning.profile import _PROFILE
 
 _GOLD = {
     "subject_codes": ["medtop:20000205"],
@@ -28,6 +28,9 @@ _OTHER = {
 class _Repository:
     def reviews_by_id(self, review_ids: list[str]) -> dict[str, dict[str, Any]]:
         return {review_id: {"review_id": review_id} for review_id in review_ids}
+
+    def accepted_event_reviews_out_of_contract(self, **_window: Any) -> int:
+        return 0
 
     def review(self, review_id: str) -> dict[str, Any]:
         index = int(review_id.split("-")[1])
@@ -141,23 +144,10 @@ def test_single_labelled_clusters_are_skipped_and_one_representative_votes_per_c
 
 def test_a_corpus_without_dual_labels_carries_no_calibration_and_is_not_blocked_for_it() -> None:
     assert DevelopmentDatasetStore._calibration_receipt([_episode(0, drafts=None)]) is None
-    counts = {
-        "boundary_cluster_n": 30,
-        "retention_cluster_n": 100,
-        "negative_cluster_n": 50,
-        "safety_cluster_n": 1,
-        "stratum_n": 3,
-        "train_stratum_n": 3,
-        "development_selection_stratum_n": 3,
-    }
-
-    assert development_coverage_blockers(counts) == ()
-    # A low κ is reported beside the corpus, never a blocker (#501 §9).
-    assert (
-        development_coverage_blockers({**counts, "calibration": {"cluster_n": 1, "kappa": {"event_family": -0.2}}})
-        == ()
-    )
-    assert not any("calibration" in key for key in _PROFILE["development"])
+    # κ is reported beside the corpus and gates nothing (#501 §9). Since #651 §9 there is no corpus
+    # threshold of any kind left in the profile for it to have become one.
+    assert not any("calibration" in key for key in _PROFILE)
+    assert "development" not in _PROFILE
 
 
 def test_load_case_rejects_review_evidence_and_verdict_identity_tampering() -> None:
@@ -214,7 +204,7 @@ def _counts(
         should_push=should_push,
         opened_at_ms=1_788_432_350_195,
     )
-    return store._dataset_counts(_SPEC, (case,))
+    return store._dataset_counts(_SPEC, (case,), freeze_as_of_ms=1_788_518_760_000)
 
 
 @pytest.mark.parametrize(

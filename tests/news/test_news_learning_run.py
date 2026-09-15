@@ -17,10 +17,21 @@ _DATASET = "d" * 64
 
 
 def _readiness(**updates: Any) -> dict[str, Any]:
+    """A readiness report in the shape `run` reads it — one objective verdict and per-target counts.
+
+    The `development_profile` block this fixture used to carry is gone with the corpus-size quotas it
+    reported (#651 §9), so a stub that still published it would describe a report no command can produce.
+    """
+
     report: dict[str, Any] = {
-        "schema": "tracefold.news.gepa_readiness_report.v5",
+        "schema": "tracefold.news.gepa_readiness_report.v6",
+        "target": "classification",
         "objective": {"compilable": True, "blockers": []},
-        "development_profile": {"ready": True, "blockers": []},
+        "targets": {
+            "schema": "tracefold.news.readiness_targets.v1",
+            "target": "classification",
+            "by_target": {"classification": {"predictor": "taxonomy", "planned": True, "ready": True, "blockers": []}},
+        },
     }
     report.update(updates)
     return report
@@ -49,6 +60,7 @@ def _run_args(tmp_path: Path, **updates: Any) -> Namespace:
         "max_call_cost_microusd": 5_000,
         "max_wall_clock_seconds": 14_400,
         "seed": 129,
+        "target": "classification",
     }
     values.update(updates)
     return Namespace(**values)
@@ -103,6 +115,9 @@ def test_run_parser_is_the_only_candidate_route_and_keeps_explicit_budgets() -> 
 
     assert args.learning_command == "run"
     assert args.seed == 129
+    # One target per run, defaulted rather than inferred: the handler reads it to choose the Predictor and
+    # the population, so a parser that did not supply it would leave that choice to a `getattr` fallback.
+    assert args.target == "classification"
     assert args.auto is None and args.max_metric_calls == 120
     assert not hasattr(args, "max_metric_judge_model_calls")
     for absent in ("semantic_judge", "dataset", "mode", "max_baseline_model_cases"):
@@ -154,22 +169,59 @@ def test_readiness_then_one_optimization_write_the_only_run_artifacts(monkeypatc
     assert "baseline" not in payload["data"]
 
 
-def test_insufficient_readiness_refuses_before_the_optimizer_leg(monkeypatch: Any, tmp_path: Path) -> None:
+def test_a_blocked_objective_refuses_before_the_optimizer_leg(monkeypatch: Any, tmp_path: Path) -> None:
+    """One gate, and it is the Objective Plan for the target this run names (#651 §9).
+
+    The retired second gate was a corpus-size quota over the whole corpus, so it could refuse a run whose
+    own target had ample evidence because a different target's was thin. What is left refuses only what a
+    compile genuinely cannot start without, and says so in the plan's own words.
+    """
+
     legs = _Legs(
         readiness=_readiness(
-            objective={"compilable": True, "blockers": []},
-            development_profile={"ready": False, "blockers": ["development_boundary_cluster_n_insufficient"]},
+            objective={"compilable": False, "blockers": ["train_empty", "selection_empty"]},
         ),
-        optimization=_optimization(outcome="REJECTED", reasons=["split_requires_two_clusters"]),
+        optimization=_optimization(outcome="REJECTED", reasons=["news_program_compile_objective_blocked"]),
     )
     _install(monkeypatch, legs)
 
-    with pytest.raises(
-        ValueError, match="news_learning_run_readiness_blocked:development_boundary_cluster_n_insufficient"
-    ):
+    with pytest.raises(ValueError, match="news_learning_run_readiness_blocked:train_empty,selection_empty"):
         run_commands._handle_learning_run(_run_args(tmp_path), SimpleNamespace(), SimpleNamespace())
 
     assert [name for name, _args in legs.calls] == ["readiness"]
+
+
+def test_a_thin_corpus_the_target_can_still_be_split_from_reaches_the_optimizer(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The quota vocabulary is gone, so being small is no longer a reason to refuse a run (#651 §9).
+
+    These cluster-role counts sit under every floor the retired `development_profile` gate enforced, and
+    the run reads straight past them to the one thing that decides: whether the Objective Plan for this
+    target has a split. A thin corpus now costs one bounded optimization and gets the honest `NO_OP` it
+    deserves, instead of a refusal that described its size rather than its usability.
+    """
+
+    legs = _Legs(
+        readiness=_readiness(
+            coverage={
+                "case_n": 6,
+                "independent_cluster_n": 6,
+                "boundary_cluster_n": 1,
+                "retention_cluster_n": 2,
+                "negative_cluster_n": 1,
+                "stratum_n": 1,
+            },
+        ),
+        optimization=_optimization(),
+    )
+    _install(monkeypatch, legs)
+
+    code, payload = run_commands._handle_learning_run(_run_args(tmp_path), SimpleNamespace(), SimpleNamespace())
+
+    assert [name for name, _args in legs.calls] == ["readiness", "optimize"]
+    assert code == 1 and payload["data"]["outcome"] == "NO_OP"
+    assert payload["data"]["target"] == "classification"
 
 
 def test_advance_is_the_only_zero_exit_and_names_its_candidate(monkeypatch: Any, tmp_path: Path) -> None:

@@ -1410,7 +1410,7 @@ _NUM_RETRIES = 2
 # propagates: laundering a bug into `REJECTED` would retire the traceback that identifies it, and an
 # operator reading a terminal report would see a corpus verdict where there was a broken build.
 _REJECTION_PREFIXES = (
-    "news_program_compile_no_taxonomy_gold_clusters",
+    "news_program_compile_no_labelled_clusters",
     "news_program_compile_objective_blocked",
     "news_program_compile_objective_split_unavailable",
     "news_program_compile_split_",
@@ -1866,7 +1866,10 @@ def plan_blockers(plan: GepaObjectivePlan) -> tuple[str, ...]:
 
     reasons: list[str] = []
     if not plan.optimizer_cluster_ids:
-        reasons.append("news_program_compile_no_taxonomy_gold_clusters")
+        # Named by target since #651 §9: a corpus that holds no evidence this target can read is a
+        # different situation from one that holds none for any target, and an operator acts on the two
+        # differently — the second means go and review, the first means ask a different question.
+        reasons.append(f"news_program_compile_no_labelled_clusters:{plan.target}")
     if plan.split is None:
         reasons.append(plan.split_error or "news_program_compile_objective_split_unavailable")
     reasons.extend(plan.blocking_reasons)
@@ -1892,12 +1895,15 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             target=config.target,
         ),
         "compilable": readiness["objective"]["compilable"],
-        "development_profile": readiness["development_profile"],
+        # The per-target readiness block that replaced `development_profile` (#651 §9). It carries this
+        # target's counts and the other two's beside them, so a `REJECTED` receipt says which kind of
+        # evidence the corpus was short of rather than only that it was short of something.
+        "targets": readiness["targets"],
         "train": readiness["train"],
         "development_selection": readiness["development_selection"],
         "taxonomy_gold": readiness["taxonomy_gold"],
     }
-    blockers = (*plan_blockers(plan), *tuple(readiness["development_profile"]["blockers"]))
+    blockers = plan_blockers(plan)
     if blockers:
         return _terminal(
             "REJECTED",

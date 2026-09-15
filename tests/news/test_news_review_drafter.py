@@ -205,7 +205,7 @@ def test_the_rubric_model_output_carries_no_taxonomy_and_no_taxonomy_dimensions(
     schema = RubricDraft.model_json_schema()
     assert "taxonomy_subject_codes" not in schema["$defs"]["DraftDimensions"]["properties"]
     assert "required" not in schema["$defs"]["DraftDimensions"]
-    # The submission still needs all five, and `submission_payload` writes them from Stable's label
+    # The submission still needs all four, and `submission_payload` writes them from Stable's label
     # against the draft's, so a rubric-only draft acquires them from code and never from the model
     # (#548 PR-B.1: they are written at accept time, not copied from drafting time).
     rubric_only = ReviewDraft.model_validate({**_GOOD, "dimensions": _RUBRIC["dimensions"]})
@@ -297,12 +297,13 @@ def test_taxonomy_dimensions_are_written_by_code_from_stable_against_the_blind_d
 
     labels = taxonomy_dimensions(stable, draft)
 
+    # Stable's persisted row still carries the code-owned `source_authority`, but the rubric has only the
+    # four model axes since #651, so the extra key is read past instead of becoming a fifth dimension.
     assert labels == {
         "taxonomy_subject_codes": "pass",
         "taxonomy_event_family": "pass",
         "taxonomy_change_state": "fail",
         "taxonomy_assertion_status": "pass",
-        "taxonomy_source_authority": "pass",
     }
     assert taxonomy_dimensions(None, draft) == dict.fromkeys(TAXONOMY_DIMENSIONS, "not_applicable")
 
@@ -361,7 +362,6 @@ def test_agreeing_blind_drafts_become_the_draft_and_disagreement_takes_a() -> No
         assert entry.draft.taxonomy.model_dump(mode="json") == _TAXONOMY
         assert entry.draft.taxonomy_disagreement is True
         assert entry.draft.dimensions["taxonomy_event_family"] == "fail"
-        assert entry.draft.dimensions["taxonomy_source_authority"] == "pass"
     assert split.taxonomy_drafters["models"] == ["scripted/blind-a", "scripted/blind-b"]
     assert split.taxonomy_drafters["agreement_rate"] == 0.0
     assert split.taxonomy_drafters["disagreement_task_ids"] == [task["task_id"] for task in _tasks(2)]
@@ -380,7 +380,7 @@ def test_a_reviewer_taxonomy_edit_is_recomputed_into_the_submitted_dimensions() 
     `submission_payload` then emitted the reviewer's *edited* `taxonomy` beside those stale labels, so a
     reviewer who corrected `event_family` to Stable's value still submitted `taxonomy_event_family: fail`
     — a Gold row stating a comparison that had not been made. The entry now carries `stable_taxonomy` and
-    the five code-written dimensions are computed at accept time, from the same function.
+    the code-written taxonomy dimensions are computed at accept time, from the same function.
     """
 
     batch = build_draft_batch(
