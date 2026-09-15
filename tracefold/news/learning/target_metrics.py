@@ -446,6 +446,7 @@ def asset_grounding_outcome(
 
 # --- understanding --------------------------------------------------------------------------------
 
+
 class _ObservedSemantics(BaseModel):
     """The three fields the understanding ruler reads, from whichever shape the caller holds.
 
@@ -988,7 +989,7 @@ def summarize_target_outcomes(
 
     if target not in TARGET_METRIC:
         raise ValueError(f"news_learning_target_unknown:{target}")
-    counts = dict.fromkeys(TARGET_OUTCOMES, 0)
+    counts: dict[str, int] = dict.fromkeys(TARGET_OUTCOMES, 0)
     scores: list[float] = []
     strata: dict[str, int] = {}
     for row in rows:
@@ -1099,8 +1100,7 @@ def product_scoreboard(
             symbol
             for row in understanding
             for components in (dict(row.get("components") or {}),)
-            for symbol in set(components.get("predicted_primaries") or ())
-            - set(components.get("gold_primaries") or ())
+            for symbol in set(components.get("predicted_primaries") or ()) - set(components.get("gold_primaries") or ())
         }
     )
 
@@ -1123,11 +1123,7 @@ def product_scoreboard(
     ]
 
     severe = sorted(
-        {
-            str(name)
-            for row in explanation
-            for name in dict(row.get("components") or {}).get("severe_error_types") or ()
-        }
+        {str(name) for row in explanation for name in dict(row.get("components") or {}).get("severe_error_types") or ()}
     )
     return {
         "schema": PRODUCT_SCOREBOARD_SCHEMA,

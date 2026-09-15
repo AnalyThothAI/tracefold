@@ -720,9 +720,7 @@ class CardEquivalenceJudge:
             route=question,
             key=key,
             cache=self._claim_cache,
-            unavailable=CardClaimAssessment(
-                status="unavailable", answers=None, error_code="metric_judge_unavailable"
-            ),
+            unavailable=CardClaimAssessment(status="unavailable", answers=None, error_code="metric_judge_unavailable"),
             invoke=invoke,
         )
 

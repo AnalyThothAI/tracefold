@@ -342,22 +342,15 @@ def _target_release_evidence(
             for target in LEARNING_TARGETS:
                 if judgment is None:
                     if target in applicable:
-                        rows[arm][target].append(
-                            {"outcome": "technical_failure", "score": 0.0, "stratum": stratum}
-                        )
+                        rows[arm][target].append({"outcome": "technical_failure", "score": 0.0, "stratum": stratum})
                     continue
                 outcome = bind_target_metric(target, None)(golds[target], predictions[target])
-                rows[arm][target].append(
-                    {"outcome": str(outcome.outcome), "score": outcome.score, "stratum": stratum}
-                )
+                rows[arm][target].append({"outcome": str(outcome.outcome), "score": outcome.score, "stratum": stratum})
     return {
         "schema": "tracefold.news.target_release_evidence.v1",
         "judge_route": "none_deterministic_arm",
         **{
-            arm: {
-                target: summarize_target_outcomes(rows[arm][target], target=target)
-                for target in LEARNING_TARGETS
-            }
+            arm: {target: summarize_target_outcomes(rows[arm][target], target=target) for target in LEARNING_TARGETS}
             for arm in ("stable", "candidate")
         },
     }

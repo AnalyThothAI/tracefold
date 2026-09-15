@@ -650,11 +650,7 @@ def _target_examples(episode: DevelopmentEpisode) -> dict[str, dspy.Example]:
         applicable_targets=applicable,
         gold_told_event_ids=told_event_ids,
         **({} if assets is None else {"gold_assets": assets}),
-        **(
-            {}
-            if novelty is None
-            else {"gold_novelty": novelty, "gold_duplicate_of": accepted_duplicate_of(review)}
-        ),
+        **({} if novelty is None else {"gold_novelty": novelty, "gold_duplicate_of": accepted_duplicate_of(review)}),
     ).with_inputs("case_id")
     card_evidence = render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card")
     explanation_example = dspy.Example(
@@ -781,8 +777,7 @@ def _target_evidence(
         rows.extend(
             {"case_id": case.episode.case_id, "outcome": "technical_failure", "score": 0.0, "components": {}}
             for case in cases
-            if case.episode.case_id not in answered
-            and target in tuple(case.episode.applicable_targets)
+            if case.episode.case_id not in answered and target in tuple(case.episode.applicable_targets)
         )
         for row in rows:
             row["stratum"] = strata.get(str(row["case_id"]), "")
@@ -807,7 +802,10 @@ def _target_evidence(
         for predicted in (getattr(predictions[case.episode.case_id]["classification"], "taxonomy", None),)
         if isinstance(predicted, Mapping)
     ]
-    elected = {row["cluster_id"]: row for row in sorted(taxonomy_rows, key=lambda row: row["case_id"], reverse=True)}
+    elected = {
+        str(row["cluster_id"]): row
+        for row in sorted(taxonomy_rows, key=lambda row: str(row["case_id"]), reverse=True)
+    }
     summary = summarize_taxonomy(list(elected.values())) if elected else {}
     scoreboard = product_scoreboard(
         rows_by_target,

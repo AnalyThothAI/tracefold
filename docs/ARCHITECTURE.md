@@ -79,6 +79,12 @@ App composition and concrete integration collaborators use explicit internal own
 imports where the architecture harness permits them; they do not enlarge public
 exports simply to construct an implementation. Package roots perform no runtime I/O.
 
+`news/learning/target_metrics.py` owns every comparison between a Program answer and an
+accepted review: the three per-target rulers, the typed asset and taxonomy comparisons the
+composite metric also reports, and the outcome vocabulary a denominator is stated in. The
+metric judge (`news/learning/judge.py`) belongs to the metric, never to the Program, and
+cannot change `program_sha256`. A caller passes it in; nothing reads it from ambient state.
+
 `app/workers/wiring/news_to_trading.py` maps the public News OI projection to Trading's
 own row contract field by field. The News read finishes before the Trading transaction
 starts. There is no callback holding both repositories and no cross-context transaction.

@@ -168,6 +168,23 @@ for the targets its accepted labels cover. Diagnose whether a defect belongs to 
 evidence, entity identity, classification, reader explanation, novelty, deterministic
 policy, delivery, or evaluation before changing a prompt.
 
+`tracefold/news/learning/target_metrics.py` is the one owner of all three rulers and
+of the accepted-Gold readers behind them; the optimizer, baseline, release evaluator
+and composite production-action metric import it and none reimplement it. Each ruler
+returns a score, feedback, an `outcome` and its components. The outcome is what lets a
+report state a denominator: `scored`, the candidate's own `schema_failure`,
+`technical_failure` and `taxonomy_unavailable` at zero, and `no_gold`,
+`not_applicable`, `judge_unavailable` and `retrieval_miss` excluded from the mean and
+counted separately. Report `applicable_n`, `scored_n`, `failure_n` and each exclusion;
+a run whose `judge_unavailable` share exceeds `JUDGE_UNAVAILABLE_SHARE_MAX` (0.2) is an
+unavailable explanation evaluation, never a pass.
+
+The explanation ruler's score is `F1(evidence_support, key_facts_covered)`, both asked
+of the metric judge. Measure that judge before trusting what it says: `news learning
+judge-calibration --model MODEL --out FILE` scores it against the fixed perturbation
+corpus and writes a receipt whose sha the metric receipt carries. `why_value` and
+`reference_why_zh` are never scored.
+
 Use [News taxonomy](NEWS_TAXONOMY.md), [review terminology](../CONTEXT.md), the
 owning `tracefold/news/program/` and `tracefold/news/learning/` code, and the relevant
 [operational commands](OPERATIONS.md). Read current CLI help for exact flags.

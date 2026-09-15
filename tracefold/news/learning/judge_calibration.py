@@ -158,7 +158,8 @@ def run_judge_calibration(
                 answers = tuple(bool(value) for value in covered.answers)
                 row["fact_answered"] += len(answers)
                 row["fact_hit"] += sum(
-                    1 for answer, expected in zip(answers, case.expected_key_facts_covered, strict=True)
+                    1
+                    for answer, expected in zip(answers, case.expected_key_facts_covered, strict=True)
                     if answer == expected
                 )
                 if answers != case.expected_key_facts_covered:

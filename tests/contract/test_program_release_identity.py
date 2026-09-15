@@ -84,7 +84,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "program_version": "news_semantic_program_v10",
         "policy_version": "news_triage_policy_v14",
         "review_rubric_version": "news_review_v7",
-        "metric_id": "tracefold.news.production_action_trade_relevance_v10",
+        "metric_id": "tracefold.news.production_action_trade_relevance_v11",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
 

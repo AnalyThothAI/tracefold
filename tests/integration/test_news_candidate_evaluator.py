@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.postgres_test_utils import connect_postgres_test

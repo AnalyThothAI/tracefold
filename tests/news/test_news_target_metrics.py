@@ -82,9 +82,7 @@ class _ScriptedJudge:
         del evidence_json, candidate
         self.questions.append("facts_supported")
         if self._unavailable:
-            return FactualEvidenceAssessment(
-                status="unavailable", verdict=None, error_code="metric_judge_unavailable"
-            )
+            return FactualEvidenceAssessment(status="unavailable", verdict=None, error_code="metric_judge_unavailable")
         return FactualEvidenceAssessment(
             status="answered", verdict=FactualEvidenceSupport(supported_by_evidence=self._supported)
         )
@@ -258,9 +256,7 @@ def test_the_same_symbol_in_the_wrong_market_is_a_known_wrong_market_and_scores_
 def test_naming_the_subject_as_a_mention_is_a_role_error_rather_than_a_grounding_one() -> None:
     result = understanding_metric(
         dspy.Example(gold_assets=frozenset({("primary", "SEI", "equity")})),
-        dspy.Prediction(
-            semantics=_semantics(assets=[{"symbol": "SEI", "market_type": "equity", "role": "mentioned"}])
-        ),
+        dspy.Prediction(semantics=_semantics(assets=[{"symbol": "SEI", "market_type": "equity", "role": "mentioned"}])),
     )
 
     assert result.components["role_accuracy"] == 0.0
@@ -281,9 +277,7 @@ def test_understanding_excludes_a_case_with_no_accepted_asset_or_novelty_answer(
         (dspy.Prediction(semantics={"novelty": "not-a-novelty"}), "schema_failure"),
     ],
 )
-def test_every_candidate_local_understanding_failure_scores_zero(
-    prediction: dspy.Prediction, outcome: str
-) -> None:
+def test_every_candidate_local_understanding_failure_scores_zero(prediction: dspy.Prediction, outcome: str) -> None:
     result = understanding_metric(dspy.Example(gold_novelty="new_fact"), prediction)
 
     assert (result.outcome, result.score) == (outcome, 0.0)
@@ -438,8 +432,11 @@ def test_the_denominators_partition_the_population_and_exclude_what_nobody_asked
     assert summary["applicable_n"] == 12
     assert (
         summary["applicable_n"]
-        == summary["scored_n"] + summary["failure_n"] + summary["no_gold_n"]
-        + summary["judge_unavailable_n"] + summary["retrieval_miss_n"]
+        == summary["scored_n"]
+        + summary["failure_n"]
+        + summary["no_gold_n"]
+        + summary["judge_unavailable_n"]
+        + summary["retrieval_miss_n"]
     )
     # Six ones and two candidate-local zeros; the four excluded cases are in no denominator of the mean.
     assert summary["score"] == 0.75
