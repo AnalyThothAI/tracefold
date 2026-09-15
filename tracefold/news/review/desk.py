@@ -182,7 +182,6 @@ _SELECTION_REASON_ZH = {
 _RELEASE_STAGE_ZH = {
     "offline": "离线开发集",
     "holdout": "未来留出集",
-    "shadow": "影子运行",
     "canary": "小流量上线",
 }
 _RELEASE_OUTCOME_ZH = {"pass": "通过", "fail": "失败", "unknown": "证据不足"}
@@ -192,7 +191,6 @@ _PROPOSAL_STATUS_ZH = {
     "evaluating": "评估中",
     "review_required": "需要更多证据",
     "rejected": "已拒绝",
-    "shadow_ready": "可进入影子运行",
     "canary_ready": "可进入小流量上线",
     "canary": "小流量运行中",
     "canary_closed": "小流量已关闭",
@@ -247,8 +245,6 @@ _RELEASE_CODE_ZH = {
     "validation_primary_review_incomplete": "未来留出集匿名判断未完成",
     "validation_review_budget_exhausted": "人工判断预算已用完但结论仍不确定",
     "validation_primary_interval_crosses_zero": "改善区间跨过零，无法证明提升",
-    "shadow_duration_insufficient": "影子运行时间不足",
-    "shadow_observations_empty": "影子运行没有观测",
     "canary_duration_insufficient": "小流量运行时间不足",
     "canary_observations_empty": "小流量运行没有观测",
     "canary_candidate_assignment_n_insufficient": "候选分臂样本不足",
@@ -2594,8 +2590,7 @@ def _proposal_status(timeline: Sequence[Mapping[str, Any]], activation: Mapping[
         return "review_required"
     return {
         "offline": "evaluating",
-        "holdout": "shadow_ready",
-        "shadow": "canary_ready",
+        "holdout": "canary_ready",
         "canary": "promotion_ready",
     }.get(str(latest.get("stage") or ""), "review_required")
 

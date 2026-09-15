@@ -134,7 +134,7 @@ def apply_canary_control(
         if candidate_bundle_sha is None:
             raise ValueError("news_canary_candidate_not_in_image")
         if not repos.news.canary_candidate_eligible(candidate):
-            raise ValueError("news_canary_shadow_evidence_not_passed")
+            raise ValueError("news_canary_holdout_evidence_not_passed")
         activation_id = uuid.uuid4().hex
         repos.news.arm_canary(
             activation_id=activation_id,

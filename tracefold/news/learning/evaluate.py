@@ -347,10 +347,16 @@ def _taxonomy_only_release_codes(
 def _next_stage(stage: str, outcome: str, *, taxonomy_only: bool) -> tuple[str, str]:
     """The stage a sealed report recommends next, and the action that reaches it.
 
-    A taxonomy-only holdout PASS advances straight to promotion. Shadow and canary measure reader-facing
-    samples — canary needs eight assigned Events whose cards a reader saw — and this class changes no card
-    a reader can see, so both stages would spend a production window to observe an identical distribution
-    (#548). Every other candidate keeps shadow then canary.
+    A taxonomy-only holdout PASS advances straight to promotion. Canary measures reader-facing samples —
+    it needs eight assigned Events whose cards a reader saw — and this class changes no card a reader can
+    see, so it would spend a production window to observe an identical distribution (#548). Every other
+    candidate goes holdout then canary.
+
+    #651 removed the `shadow` stage between them. It cold-ran the candidate over a closed validation window
+    and sealed a distribution nobody acted on; its only consumer was the canary eligibility check, which now
+    reads the holdout pass directly. Everything shadow measured that a release decision used — schema
+    breaches, degraded rate, latency p95 — canary measures on live assignments, against readers who
+    actually saw the cards.
     """
 
     if outcome == "fail":
@@ -360,9 +366,7 @@ def _next_stage(stage: str, outcome: str, *, taxonomy_only: bool) -> tuple[str, 
     if stage == "offline":
         return "holdout", "advance"
     if stage == "holdout":
-        return "promotion" if taxonomy_only else "shadow", "advance"
-    if stage == "shadow":
-        return "canary", "advance"
+        return "promotion" if taxonomy_only else "canary", "advance"
     return "promotion", "advance"
 
 
@@ -372,7 +376,7 @@ class EvaluationRequest(BaseModel):
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     validation_dataset_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     candidate_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-    stage: Literal["offline", "holdout", "shadow", "canary"]
+    stage: Literal["offline", "holdout", "canary"]
     observation_manifest_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -392,7 +396,7 @@ class EvaluationReport(BaseModel):
     run_state: Literal["running", "complete", "incomplete"]
     gate_outcome: Literal["pass", "fail", "unknown"]
     eligibility: Literal["current", "stale"]
-    next_stage: Literal["holdout", "shadow", "canary", "promotion", "none"]
+    next_stage: Literal["holdout", "canary", "promotion", "none"]
     recommended_action: Literal["advance", "hold", "reject", "rollback"]
     evidence: dict[str, Any]
 
@@ -498,8 +502,8 @@ class CandidateEvaluator:
         candidate = self._registry.load(request.candidate_sha)
         candidate_plan = self._registry.validate(candidate)
         self._registry.persist(candidate)
-        taxonomy_only = self._registry.is_taxonomy_only(candidate)
-        prior_stage = {"holdout": "offline", "shadow": "holdout", "canary": "shadow"}.get(request.stage)
+        taxonomy_only = self._registry.changed_predictors(candidate) == ("taxonomy",)
+        prior_stage = {"holdout": "offline", "canary": "holdout"}.get(request.stage)
         if prior_stage and not self._registry.has_passed_stage(candidate.candidate_sha, prior_stage):
             raise ValueError(f"news_learning_prior_{prior_stage}_evidence_not_passed")
         if candidate.development_dataset_sha != development.artifact_sha:
@@ -519,7 +523,7 @@ class CandidateEvaluator:
         observation_dimensions: dict[str, Any] | None = None
         observation_manifest_sha = request.observation_manifest_sha
         if not existing:
-            if request.stage in {"shadow", "canary"}:
+            if request.stage == "canary":
                 if request.observation_manifest_sha:
                     observations, observation_dimensions = self._load_production_observations(
                         artifact_sha=request.observation_manifest_sha,
@@ -529,17 +533,10 @@ class CandidateEvaluator:
                     )
                 else:
                     try:
-                        if request.stage == "shadow":
-                            observations, observation_dimensions = await self._run_shadow(
-                                run_sha=run_sha,
-                                dataset=dataset,
-                                candidate=candidate,
-                            )
-                        else:
-                            observations, observation_dimensions = self._collect_canary_observations(
-                                dataset=dataset,
-                                candidate=candidate,
-                            )
+                        observations, observation_dimensions = self._collect_canary_observations(
+                            dataset=dataset,
+                            candidate=candidate,
+                        )
                     except RecordReplayMiss as exc:
                         observations = []
                         execution_errors.append(str(exc))
@@ -562,7 +559,7 @@ class CandidateEvaluator:
             if observations:
                 self._persist_run_cases(run_sha, dataset, observations, stage=request.stage)
                 existing = observations
-            if request.stage in {"shadow", "canary"} and request.observation_manifest_sha is None:
+            if request.stage == "canary" and request.observation_manifest_sha is None:
                 observation_manifest_sha = self._persist_observation_manifest(
                     run_sha=run_sha,
                     stage=request.stage,
@@ -571,7 +568,7 @@ class CandidateEvaluator:
                     observations=observations,
                     dimensions=observation_dimensions or {},
                 )
-        elif request.stage in {"shadow", "canary"}:
+        elif request.stage == "canary":
             if request.observation_manifest_sha:
                 loaded, observation_dimensions = self._load_production_observations(
                     artifact_sha=request.observation_manifest_sha,
@@ -831,120 +828,6 @@ class CandidateEvaluator:
             ),
         )
         return frozenset(case.case_id for case in ranked[:planned])
-
-    async def _run_shadow(
-        self,
-        *,
-        run_sha: str,
-        dataset: DatasetManifest,
-        candidate: CandidateManifest,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Cold-run the candidate over the whole closed production distribution.
-
-        Stable output and delivery are observed production facts. Candidate
-        output uses a private counterfactual reader ledger and can only write
-        learning artifacts/model recordings.
-        """
-
-        rows = self._repository.stable_arm_review_sources(
-            from_ms=dataset.window.from_ms,
-            to_ms=dataset.window.to_ms,
-            bundle_sha=self._stable.bundle_sha,
-            program_version=self._stable.program_version,
-            program_sha256=self._stable.program_sha256,
-        )
-        state = ArmState(deque(Receipt(**receipt) for receipt in dataset.seed_receipts))
-        observations: list[dict[str, Any]] = []
-        for row in rows:
-            opened_at_ms = int(row["opened_at_ms"])
-            state.expire(opened_at_ms)
-            snapshot = dict(row["evidence_snapshot"] or {})
-            focus = dict(snapshot.get("focus_fact") or {})
-            case_id = _sha(
-                {
-                    "shadow": EVALUATOR_VERSION,
-                    "event_id": row["event_id"],
-                    "evidence_version": row["evidence_version"],
-                    "evidence_sha256": row["evidence_sha256"],
-                }
-            )
-            case_ref = {
-                "case_id": case_id,
-                "subject_kind": "event",
-                "event_id": row["event_id"],
-                "evidence_version": row["evidence_version"],
-                "external_snapshot_id": None,
-                "evidence_sha256": row["evidence_sha256"],
-                "review_id": None,
-                "cluster_id": _dataset_fact_cluster(str(focus.get("text") or case_id)),
-                "stratum": "shadow_distribution",
-                "opened_at_ms": opened_at_ms,
-            }
-            case = {"snapshot": snapshot, "opened_at_ms": opened_at_ms}
-            context = self._datasets.build_context(case, state)
-            program_observation = await self._invoke_and_record(
-                run_sha=run_sha,
-                case_id=case_id,
-                arm_name="candidate",
-                arm=candidate.candidate_arm,
-                context=context,
-                trial=1,
-            )
-            if program_observation.get("scored_judgment") is None:
-                candidate_output: dict[str, Any] = {
-                    "error_code": program_observation.get("error_code") or "program_output_missing",
-                    "delivered": False,
-                    "execution": "live",
-                    "delivery": "simulated",
-                    "program": [program_observation],
-                }
-            else:
-                candidate_output = self._apply_policy(
-                    case,
-                    program_observation["scored_judgment"],
-                    state,
-                    candidate.candidate_arm,
-                    context,
-                )
-                candidate_output["execution"] = "live"
-                candidate_output["program"] = [program_observation]
-            if candidate_output.get("delivered"):
-                verdict = dict(candidate_output.get("verdict") or {})
-                state.receipts.append(
-                    receipt_from_output(
-                        event_id=case_id,
-                        at_ms=opened_at_ms,
-                        output=candidate_output,
-                        verdict=verdict,
-                    )
-                )
-            observations.append(
-                {
-                    "case_ref": case_ref,
-                    "stable": _observed_production_output(row),
-                    "candidate": candidate_output,
-                    "comparison": {
-                        "evaluation_stage": "shadow",
-                        "reviewable": False,
-                        "pairing": "observed_stable_vs_candidate_counterfactual",
-                        "outcome_revealed": False,
-                    },
-                }
-            )
-        dimensions = {
-            "input_provenance": "live",
-            "execution": "live",
-            "delivery": "simulated",
-            "review": "none",
-            "dataset_role": "hidden_temporal_holdout",
-            "pairing": "observed_stable_vs_candidate_counterfactual",
-            "outcome_revealed": False,
-            "supported_claims": ["runtime_safety", "distribution", "counterfactual_delivery"],
-            "observation_scope": "all_live_triage_eligible",
-            "window_duration_hours": (dataset.window.to_ms - dataset.window.from_ms) / 3_600_000,
-            "eligible_event_n": len(rows),
-        }
-        return observations, dimensions
 
     def _collect_canary_observations(
         self,
@@ -1366,10 +1249,8 @@ class CandidateEvaluator:
         failures: list[str] = []
         if request.stage in {"offline", "holdout"}:
             blockers.extend(development_coverage_blockers(development_profile_counts))
-        else:
-            prior = "holdout" if request.stage == "shadow" else "shadow"
-            if not self._registry.has_passed_stage(candidate.candidate_sha, prior):
-                blockers.append(f"prior_{prior}_evidence_not_passed")
+        elif not self._registry.has_passed_stage(candidate.candidate_sha, "holdout"):
+            blockers.append("prior_holdout_evidence_not_passed")
         if execution_errors:
             blockers.extend(execution_errors)
         reviews = self._ledger.reviews_by_id(
@@ -1557,13 +1438,13 @@ class CandidateEvaluator:
             failures.append("candidate_provider_cost_regression")
         candidate_latency_p95 = _percentile95(candidate_latencies)
         if (
-            request.stage in {"shadow", "canary"}
+            request.stage == "canary"
             and candidate_latency_p95 is not None
             and candidate_latency_p95 > int(_PROFILE["guardrails"]["candidate_latency_p95_ms_max"])
         ):
             failures.append("candidate_latency_slo_regression")
         candidate_bad_rate = candidate_bad_n / candidate_observed_n if candidate_observed_n else None
-        if request.stage in {"shadow", "canary"}:
+        if request.stage == "canary":
             if candidate_schema_errors:
                 failures.append("candidate_schema_contract_breach")
             if candidate_bad_rate is not None and candidate_bad_rate > float(
@@ -1622,17 +1503,16 @@ class CandidateEvaluator:
                     )
                 elif not primary.get("interval_95") or float(primary["interval_95"]["lower"]) <= 0:
                     blockers.append("validation_primary_interval_crosses_zero")
-        elif request.stage in {"shadow", "canary"}:
+        elif request.stage == "canary":
             if observation_hours is None or observation_hours < 24:
-                blockers.append(f"{request.stage}_duration_insufficient")
+                blockers.append("canary_duration_insufficient")
             if not observations:
-                blockers.append(f"{request.stage}_observations_empty")
-            if request.stage == "canary":
-                candidate_assignment_n = int((observation_dimensions or {}).get("candidate_assignment_n") or 0)
-                if candidate_assignment_n < int(_PROFILE["guardrails"]["canary_candidate_min_n"]):
-                    blockers.append("canary_candidate_assignment_n_insufficient")
-                if (observation_dimensions or {}).get("assignment_invariant_breach_event_ids"):
-                    failures.append("canary_one_arm_assignment_invariant_breach")
+                blockers.append("canary_observations_empty")
+            candidate_assignment_n = int((observation_dimensions or {}).get("candidate_assignment_n") or 0)
+            if candidate_assignment_n < int(_PROFILE["guardrails"]["canary_candidate_min_n"]):
+                blockers.append("canary_candidate_assignment_n_insufficient")
+            if (observation_dimensions or {}).get("assignment_invariant_breach_event_ids"):
+                failures.append("canary_one_arm_assignment_invariant_breach")
         if failures:
             outcome = "fail"
         elif blockers:
@@ -1869,7 +1749,7 @@ class CandidateEvaluator:
         dataset: DatasetManifest,
         candidate: CandidateManifest,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        expected_kind = "shadow_observation" if stage == "shadow" else "canary_observation"
+        expected_kind = "canary_observation"
         row = self._repository.learning_artifact(artifact_sha)
         if row is None or str(row["kind"]) != expected_kind:
             raise ValueError("news_learning_production_observation_not_found")
@@ -1907,8 +1787,6 @@ class CandidateEvaluator:
         }
         if not required <= set(dimensions):
             raise ValueError("news_learning_production_observation_dimensions_incomplete")
-        if stage == "shadow" and dimensions.get("delivery") != "simulated":
-            raise ValueError("news_learning_shadow_delivery_must_be_simulated")
         if stage == "canary" and dimensions.get("delivery") not in {
             "observed",
             "observed_sent",
@@ -1927,7 +1805,7 @@ class CandidateEvaluator:
         observations: Sequence[Mapping[str, Any]],
         dimensions: Mapping[str, Any],
     ) -> str:
-        kind = "shadow_observation" if stage == "shadow" else "canary_observation"
+        kind = "canary_observation"
         payload = {
             "candidate_sha": candidate.candidate_sha,
             "candidate_bundle_sha": candidate.candidate_arm.bundle_sha,
@@ -1949,7 +1827,7 @@ class CandidateEvaluator:
         candidate: CandidateManifest,
         observations: Sequence[Mapping[str, Any]],
     ) -> tuple[str, dict[str, Any]]:
-        kind = "shadow_observation" if stage == "shadow" else "canary_observation"
+        kind = "canary_observation"
         row = self._repository.newest_observation_manifest(kind=kind, observation_run_sha=run_sha)
         if row is None:
             raise ValueError("news_learning_generated_observation_manifest_missing")
@@ -2082,8 +1960,8 @@ def stable_or_common_execution_unavailability(unavailable_n: int, assigned_pair_
     transient ones cannot bias the verdict — but a mass failure is still an evidence gap, never a vacuous
     PASS. The cap is the same `candidate_degraded_or_error_rate_max` that bounds candidate degradation;
     a second knob would let the two drift apart while guarding one concern. The denominator is assigned
-    pairs, not raw observations: only an assigned pair can produce the numerator, and shadow-shaped
-    corpora carry unassigned rows that would otherwise dilute the reported rate.
+    pairs, not raw observations: only an assigned pair can produce the numerator, and a canary corpus
+    carries unassigned rows that would otherwise dilute the reported rate.
     """
 
     if not unavailable_n:

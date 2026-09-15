@@ -62,13 +62,19 @@ class LearningStorage:
         }
 
     def canary_candidate_eligible(self, candidate_manifest_sha: str) -> bool:
+        """Whether a sealed `holdout` PASS exists for this candidate (#651).
+
+        This used to require a `shadow` PASS, and shadow's only consumer was this query. Holdout is the
+        last gate before a reader sees anything and the one whose evidence a release decision reads.
+        """
+
         row = self.conn.execute(
             """
             SELECT 1 AS ok
               FROM news_learning_artifacts
              WHERE kind = 'release_evidence'
                AND payload->>'candidate_sha' = %s
-               AND payload->>'stage' = 'shadow'
+               AND payload->>'stage' = 'holdout'
                AND payload->>'gate_outcome' = 'pass'
              LIMIT 1
             """,
