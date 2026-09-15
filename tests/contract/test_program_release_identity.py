@@ -21,7 +21,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "bb1fbf47a933d21109be9e0f31b10b324ccd4cedfcd405e40499bdec2bbcc930"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -30,9 +30,14 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814
 # instruction is rendered from the codebook constants that gained the running-event counter-examples.
 # #567 moves only the taxonomy instruction: the twelve rules the #534 and #548 reviewers adjudicated by are
 # now codebook constants, so the drafters, the reviewers and the metric's feedback read one text.
+# #651 leaves this untouched on purpose: the release image changed representation, not prompt bytes, and
+# this pin is what proves that separately from `NEWS_STABLE_PROGRAM_SHA256`.
 NEWS_PREDICTOR_INSTRUCTION_SHA256 = "9de537e16b4acbe3d643bfff030001ac74c407728b2fb32677b445956a51d1a8"
 
-NEWS_STABLE_PROGRAM_SHA256 = "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49"
+# #651 re-pins this over the native DSPy state document rather than three instruction strings. The
+# instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
+# the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
+NEWS_STABLE_PROGRAM_SHA256 = "ba492f87de5d72efd7c95c18c343e3f56c13b771cf82cd591f719609b887ef99"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
@@ -44,7 +49,9 @@ def test_execution_envelope_identity_is_pinned() -> None:
     """The intent gate over everything the code decides about a model call.
 
     Editing the request envelope, either output contract, an output schema, the visible-input shape, the
-    route budget, the breaker or the endpoint-capability table turns this red. Re-pinning the line below
+    route budget, the breaker or the endpoint-capability table turns this red. #651 moved it through
+    `module.NativeNewsProgram` and `routing.__module__`: the Program is constructed from the seed defaults
+    and loaded through DSPy's own `load_state`, and routing reads `program.state`. Re-pinning the line below
     *is* the identity migration: there is no `factory_id` to bump, no epoch migration to write and no
     count to keep in step, because the epoch is opened by the deployment that runs under this value and
     named after the bundle that carries it.
