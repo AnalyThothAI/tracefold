@@ -26,7 +26,9 @@ from ..triage_rules import DecidePolicy
 # every valid Gold case is an optimizer sample and κ is reported, not gated. The profile is inside
 # `TRUSTED_ROOT_SHA`; this readable name prevents a v3 corpus from being mistaken for one frozen here.
 LEARNING_PROFILE_ID: Literal["news_learning_release_v4"] = "news_learning_release_v4"
-LEARNING_PROGRAM_VERSION = "news_semantic_program_v9"
+# The one generation the learning plane may compile for. It moves with `PROGRAM_VERSION`: a candidate
+# compiled against a different output contract is not a candidate for this executor (#651 §6.2).
+LEARNING_PROGRAM_VERSION = "news_semantic_program_v10"
 PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v2"] = "news_prompt_candidate_v2"
 MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
     "tracefold.news.model_execution_identity.v1"

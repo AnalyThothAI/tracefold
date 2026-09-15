@@ -21,7 +21,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814b6ced66719d8c81235"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "c5a3b0b6e25c62b895b9b524204fb3bd60ab062ae29bc0e6a03a9a17b4751a37"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -30,9 +30,11 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "8aa82c1af1e3273a0fa584b280b8ab2b4d33d86ae32814
 # instruction is rendered from the codebook constants that gained the running-event counter-examples.
 # #567 moves only the taxonomy instruction: the twelve rules the #534 and #548 reviewers adjudicated by are
 # now codebook constants, so the drafters, the reviewers and the metric's feedback read one text.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "9de537e16b4acbe3d643bfff030001ac74c407728b2fb32677b445956a51d1a8"
+# #651 moves only the EventSemantics instruction: `market_type` is a required vocabulary value and the Gate
+# now shows the model the catalogue's uncollapsed candidates, so the prompt has to say what both are.
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "ffe44715c77b589b052302dd45ee8a13c5e4009364458818df9ffc9dd58168ed"
 
-NEWS_STABLE_PROGRAM_SHA256 = "ffbb0a1ff4e7363496250971d8a52f3a2e1e813700d2320d05b02a6b9edcfb49"
+NEWS_STABLE_PROGRAM_SHA256 = "86062bb0efb2df518d6c387548b0d6a4df356cc640a4e66cb261523fd92ade69"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
@@ -72,10 +74,10 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_artifact().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v9",
+        "program_version": "news_semantic_program_v10",
         "policy_version": "news_triage_policy_v13",
         "review_rubric_version": "news_review_v6",
-        "metric_id": "tracefold.news.production_action_trade_relevance_v9",
+        "metric_id": "tracefold.news.production_action_trade_relevance_v10",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
 
