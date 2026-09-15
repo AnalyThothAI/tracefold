@@ -105,12 +105,18 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
     "artifact.py": ("render_model_evidence_json",),
     "assembly.py": ("normalize_restates", "restatement_index_error"),
     "contracts.py": (
+        # `CatalogCandidate` and the function that builds the list decide what disambiguation evidence
+        # the model is shown and in what order (#651 §A). The visible-input schema alone would not
+        # catch a change to the bounding or the ordering, and an envelope that cannot see the code
+        # choosing the model's evidence is decoration.
+        "CatalogCandidate",
         "EditorialEnvelope",
         "ProgramTrace",
         "TriageContext",
         "TradeRelevanceV1",
         "_canonical_code_set",
         "aggregate_program_usage",
+        "catalog_candidates_of",
     ),
     "lm.py": (
         "LMCallLedger",

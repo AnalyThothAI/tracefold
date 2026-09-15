@@ -407,7 +407,9 @@ def final_storyline_key(
     answered, so a degraded card keeps the pre-#100 fallback: the provider's tags are the only evidence there is.
 
     This key is a duplicate-comparison and operator-facing grouping, never a claim shown to the reader — the
-    card's tickers come from ``delivery.card_assets`` (verdict primaries ∩ grounded), which this does not touch."""
+    card's tickers come from ``delivery.card_assets`` (this judgment's own typed assets), which this does not
+    touch. Since #651 §6.2 the key carries the primary's market when it names one, and
+    :func:`same_storyline_key` is what compares two of these."""
 
     grounded = {resolve_base_symbol(a, aliases) for a in grounded_assets}
     primaries = [

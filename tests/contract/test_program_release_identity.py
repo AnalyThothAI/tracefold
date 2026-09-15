@@ -21,7 +21,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "c5a3b0b6e25c62b895b9b524204fb3bd60ab062ae29bc0e6a03a9a17b4751a37"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "5ef2f0f8b4eb94e4a85300833644351fbb51d46439998a97ea31c8e0236a9b6d"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -140,12 +140,14 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "artifact.render_model_evidence_json",
         "assembly.normalize_restates",
         "assembly.restatement_index_error",
+        "contracts.CatalogCandidate",
         "contracts.EditorialEnvelope",
         "contracts.ProgramTrace",
         "contracts.TriageContext",
         "contracts.TradeRelevanceV1",
         "contracts._canonical_code_set",
         "contracts.aggregate_program_usage",
+        "contracts.catalog_candidates_of",
         "lm.AuditedConfiguredLM",
         "lm.LMCallLedger",
         "lm.LMCallReceipt",
