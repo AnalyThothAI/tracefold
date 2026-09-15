@@ -1516,9 +1516,9 @@ def test_a_pair_from_a_superseded_arm_is_listed_but_cannot_be_judged(conn) -> No
               release_eligible, created_at_ms
             ) VALUES
               (%s, 'judgment', 'pairwise', %s, %s, %s,
-               'news_review_v7', 'reader_contract_v2', 'audit-reviewer', %s::jsonb, %s::jsonb, NULL, true, %s),
+               'news_review_v7', 'reader_contract_v3', 'audit-reviewer', %s::jsonb, %s::jsonb, NULL, true, %s),
               (%s, 'acceptance', 'pairwise', %s, %s, %s,
-               'news_review_v7', 'reader_contract_v2', 'audit-reviewer', '{}'::jsonb, '{}'::jsonb, %s, true, %s)
+               'news_review_v7', 'reader_contract_v3', 'audit-reviewer', '{}'::jsonb, '{}'::jsonb, %s, true, %s)
             """,
             (
                 "9" * 64,

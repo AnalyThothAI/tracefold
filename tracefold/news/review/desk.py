@@ -54,10 +54,16 @@ REVIEW_RUBRIC_VERSION = "news_review_v7"
 # means "every dimension below was answered" and a v7 row does not, so mixing the two contracts would
 # let an absent answer read as a stated one.
 REVIEW_RUBRIC_VERSIONS: tuple[str, ...] = (REVIEW_RUBRIC_VERSION,)
-READER_CONTRACT_VERSION = "reader_contract_v2"
-# This is product truth, not prompt advice.  v2 is the operator-approved
+READER_CONTRACT_VERSION = "reader_contract_v3"
+# This is product truth, not prompt advice.  v2 was the operator-approved
 # no-quota contract: a distinct fact that satisfies push/escalate reaches
-# delivery regardless of prior card volume.  Changing this text requires a new
+# delivery regardless of prior card volume.  v3 (#651 §6.3) keeps that and
+# corrects the duplicate sentence, which still promised a reversal exemption
+# `grounded_restatement` no longer honours: a card the model labels a
+# restatement of an entry the reader already received is dropped whichever way
+# it read the direction, and a genuine reversal is not a restatement at all --
+# it is a new action, so it arrives as `progression` or `new_fact`, which is
+# where the reversal exemption still lives.  Changing this text requires a new
 # version and invalidates old development/validation manifests.
 READER_CONTRACT_TEXT = (
     "Audience: Chinese market-research operator.\n"
@@ -66,8 +72,10 @@ READER_CONTRACT_TEXT = (
     "Single-name boundary: a non-US unlisted/private name is held unless it is a systemic sector or macro fact.\n"
     "Delivery: every distinct fact satisfying push or escalate proceeds to delivery; prior 1h/2h/4h card counts "
     "never veto it.\n"
-    "Duplicate evidence: a normal push may be held only when the sent-reader ledger shows the same fact; reversal, "
-    "escalate and degraded fallback are exempt.\n"
+    "Duplicate evidence: a card restating an entry the sent-reader ledger already holds is dropped, whichever "
+    "direction it reads; a normal push may also be held by a same-fact title match or the per-storyline budget, "
+    "and a card reversing the newest directional entry, an escalate and the degraded fallback are exempt from "
+    "those two.\n"
     "Market reaction: post-event price is discovery evidence, never reward, causality, or should-push truth.\n"
 )
 READER_CONTRACT_SHA256 = hashlib.sha256(READER_CONTRACT_TEXT.encode()).hexdigest()

@@ -371,7 +371,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             row = conn.execute(
                 """
                     SELECT news_current_review_valid(
-                      'judgment', 'event', 'news_review_v7', 'reader_contract_v2',
+                      'judgment', 'event', 'news_review_v7', 'reader_contract_v3',
                       'event-current', 1, NULL, NULL,
                       %(should_push)s, %(dimensions)s, %(novelty)s,
                       %(first_bad_owner)s, %(evidence_refs)s, %(expected_correction)s, %(note)s,
@@ -410,7 +410,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             row = conn.execute(
                 """
                 SELECT news_current_review_valid(
-                  'judgment', 'pairwise', 'news_review_v7', 'reader_contract_v2',
+                  'judgment', 'pairwise', 'news_review_v7', 'reader_contract_v3',
                   NULL, NULL, NULL, 'pairwise-current',
                   NULL, '{}'::jsonb, '{}'::jsonb, NULL, %(evidence_refs)s, '', %(note)s,
                   %(selection)s, %(payload)s, NULL
@@ -467,7 +467,7 @@ def test_retained_json_validators_meet_native_insert_and_update_budget() -> None
                     CHECK (news_current_liquidation_metadata_valid(liquidation_metadata, true)),
                   selection jsonb NOT NULL,
                   review jsonb NOT NULL CHECK (news_current_review_valid(
-                    'judgment', 'event', 'news_review_v7', 'reader_contract_v2',
+                    'judgment', 'event', 'news_review_v7', 'reader_contract_v3',
                     'event-current', 1, NULL, NULL,
                     review ->> 'should_push', review -> 'dimensions', review -> 'novelty',
                     review ->> 'first_bad_owner', review -> 'evidence_refs',

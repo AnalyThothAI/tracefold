@@ -34,8 +34,6 @@ from tracefold.news.learning.objective import (
     build_readiness_report,
 )
 from tracefold.news.review.desk import (
-    READER_CONTRACT_SHA256,
-    READER_CONTRACT_VERSION,
     REVIEW_TASK_VERSION,
     DeskQuery,
     EventRubricSubmission,
@@ -279,7 +277,14 @@ def _accept_v6_review(conn, event_id: str) -> None:
     under test: a v6 row is real, readable audit history that no new corpus may read. The task id is
     recomputed here under the v6 rubric for the same reason the desk recomputes it under v7 -- the rubric
     version is inside the task identity, so a v6 row names a task id no v7 desk would ever mint.
+
+    The reader contract is spelled out rather than imported: `news_current_review_valid` admits the two
+    *pairs* (v6 with `reader_contract_v2`, v7 with `reader_contract_v3`), and a v6 row that named the
+    current contract would be a row production never wrote.
     """
+
+    v6_reader_contract = "reader_contract_v2"
+    v6_reader_contract_sha256 = "bb7f436d232b02446c4f0f17c7b0b4f56c421aa4daf1a3869c5baa9b89970082"
 
     source = conn.execute(
         "SELECT evidence_version, trace #>> '{agent_assignment,bundle_sha}' AS bundle_sha "
@@ -293,8 +298,8 @@ def _accept_v6_review(conn, event_id: str) -> None:
             "event_id": event_id,
             "evidence_version": evidence_version,
             "rubric": "news_review_v6",
-            "reader_contract": READER_CONTRACT_VERSION,
-            "reader_contract_sha256": READER_CONTRACT_SHA256,
+            "reader_contract": v6_reader_contract,
+            "reader_contract_sha256": v6_reader_contract_sha256,
             "agent_cohort_sha256": str(source["bundle_sha"]),
         }
     )

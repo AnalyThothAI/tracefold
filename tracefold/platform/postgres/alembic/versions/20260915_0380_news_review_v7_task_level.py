@@ -6,25 +6,30 @@ Migration evidence:
   trigger function, additive to the data
 - why_database_must_change: four things, all of them places where the v6 rubric is a database fact
   rather than a Python promise.
-  `news_current_review_valid` pins `rubric_version_value = 'news_review_v6'`, and it is both the
+  `news_current_review_valid` pins `rubric_version_value = 'news_review_v6'` and
+  `reader_contract_version_value = 'reader_contract_v2'`, and it is both the
   `news_reviews_current_contract_check` CHECK and the `WHERE` of `news_review_records_v1`. Without this
   revision the first v7 submission is refused outright, and if it somehow landed it would be invisible
-  to every reader that goes through the records view.
+  to every reader that goes through the records view. v7 ships with `reader_contract_v3` (#651 §12
+  corrects the contract's duplicate-evidence sentence, which still promised a reversal exemption
+  `grounded_restatement` no longer honours), so the predicate admits the two *pairs* rather than two
+  independent lists: a v7 row may not claim the v2 text, and a v6 row keeps validating under its own.
   `news_current_event_review_payload_valid` enumerates the payload keys exactly and requires
   `factual_fidelity`, all five `taxonomy_*` dimensions, a complete taxonomy, a novelty judgment and a
   push verdict. v7 requires only a non-empty `dimensions` map and adds an optional `explanation` block,
   so the predicate has to be a second one rather than a loosened first: a v6 row still means "every
   dimension below was answered", and rewriting the v6 predicate to accept absences would retroactively
   turn 1,020 accepted rows into rows that merely might have answered.
-  `news_current_review_source_exists` recomputes the review task id from the literal `'news_review_v6'`.
-  The rubric version is inside the task identity hash, so every v7 task id differs from every v6 one and
-  the append guard would reject every v7 submission as a missing source. It takes the row's rubric
-  version now, which also means the guard can run for both contracts instead of silently skipping v7.
+  `news_current_review_source_exists` recomputes the review task id from the literals `'news_review_v6'`
+  and `'reader_contract_v2'`. Both are inside the task identity hash, so every v7 task id differs from
+  every v6 one and the append guard would reject every v7 submission as a missing source. It takes the
+  row's rubric version now and derives the paired reader contract and its sha from it, which also means
+  the guard can run for both contracts instead of silently skipping v7.
   The same function's pairwise branch requires `dataset.payload ->> 'learning_epoch'` to equal the
   active bundle's epoch label. `news_learning_dataset_v4` seals no epoch, so without this every blind
   pairwise judgment on a corpus frozen after the cut would be refused.
-- current_source_revision: 20260915_0378
-- minimum_supported_source_revision: 20260915_0378
+- current_source_revision: 20260915_0379
+- minimum_supported_source_revision: 20260915_0379
 - lock_level_and_order: no table lock; `CREATE FUNCTION` / `CREATE OR REPLACE FUNCTION` take catalog
   locks only, and the one `DROP FUNCTION` removes a function referenced solely from a plpgsql trigger
   body, which resolves its callee at execution time. One transaction, functions before the replacement
@@ -38,9 +43,10 @@ Migration evidence:
   short-lived CLI connection
 - archive_current_compatibility: compatible.
   Every review accepted under v6 keeps validating byte for byte: the v6 branch of
-  `news_current_review_valid` calls the unchanged `news_current_event_review_payload_valid`, so
-  `news_review_records_v1` keeps showing those rows and the existing CHECK keeps passing without a
-  scan. They are audit history and are neither rewritten nor deleted. What they lose is dataset
+  `news_current_review_valid` keeps `reader_contract_v2` beside `news_review_v6` and calls the unchanged
+  `news_current_event_review_payload_valid`, so `news_review_records_v1` keeps showing those rows and the
+  existing CHECK keeps passing without a scan. They are audit history and are neither rewritten nor
+  deleted. What they lose is dataset
   eligibility, which is a Python-side list (`REVIEW_RUBRIC_VERSIONS`) and not a database fact: a freeze
   counts them as `rubric_ineligible` rather than pretending a v6 row answered a v7 question.
   The pairwise epoch clause is dropped rather than made optional. A dataset sealed before this cut
@@ -55,7 +61,7 @@ Migration evidence:
   postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
 
 Revision ID: 20260915_0380
-Revises: 20260915_0378
+Revises: 20260915_0379
 Create Date: 2026-09-15 00:00:00
 """
 
@@ -312,8 +318,14 @@ CREATE OR REPLACE FUNCTION public.news_current_review_valid(
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
     AS $$
           SELECT (
-            rubric_version_value IN ('news_review_v6','news_review_v7')
-            AND reader_contract_version_value = 'reader_contract_v2'
+            -- Paired, not two independent lists (#651 §12). Each rubric carries exactly the reader
+            -- contract it was written against: v6 rows carry `reader_contract_v2`, and v7 rows carry
+            -- the `reader_contract_v3` this cut introduces, whose duplicate-evidence sentence no longer
+            -- promises the direction-flip exemption `grounded_restatement` stopped honouring. Two
+            -- independent lists would have let a v7 row claim the old contract's text.
+            (rubric_version_value, reader_contract_version_value) IN (
+              ('news_review_v6','reader_contract_v2'), ('news_review_v7','reader_contract_v3')
+            )
             AND subject_kind_value IN ('event','external_miss','pairwise')
             AND CASE subject_kind_value
               WHEN 'event' THEN event_id_value IS NOT NULL AND evidence_version_value >= 1
@@ -399,9 +411,18 @@ CREATE OR REPLACE FUNCTION public.news_current_review_valid(
                          'event_id', source.event_id,
                          'evidence_version', source.evidence_version,
                          'rubric', rubric_version_value,
-                         'reader_contract', 'reader_contract_v2',
-                         'reader_contract_sha256',
-                           'bb7f436d232b02446c4f0f17c7b0b4f56c421aa4daf1a3869c5baa9b89970082',
+                         -- The row's own contract, derived from its rubric because
+                         -- `news_current_review_valid` -- which the guard requires to be TRUE before it
+                         -- reaches here -- admits exactly the two pairs. A v6 task id was hashed with
+                         -- `reader_contract_v2`, so hashing it with v3 would report every historical
+                         -- row's source as missing.
+                         'reader_contract', CASE rubric_version_value
+                           WHEN 'news_review_v6' THEN 'reader_contract_v2'
+                           ELSE 'reader_contract_v3' END,
+                         'reader_contract_sha256', CASE rubric_version_value
+                           WHEN 'news_review_v6'
+                             THEN 'bb7f436d232b02446c4f0f17c7b0b4f56c421aa4daf1a3869c5baa9b89970082'
+                           ELSE '3948e24b276408fdb51190cfb747cece128a71aa1ac126422e9b00092362231d' END,
                          'agent_cohort_sha256', source.trace #>> '{agent_assignment,bundle_sha}'
                        )), 'UTF8')), 'hex'), 16)
             )
