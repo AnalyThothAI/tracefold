@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
+from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
 from tracefold.news.card_format import CHANGE_BASIS_LABEL
 from tracefold.news.delivery import (
@@ -1332,7 +1332,7 @@ def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores
     assert claim.final == "push" and claim.override_rule == "trade_relevance_escalate_uncorroborated"
     assert OVERRIDE_RULE_ZH["trade_relevance_escalate_uncorroborated"]
     # Either corroboration keeps the escalate: a source of known authority, or a second independent arrival.
-    wire = scored_judgment(big, relevance=escalate, taxonomy=news_taxonomy(source_authority="reputable_secondary"))
+    wire = scored_judgment(big, relevance=escalate, source_authority="reputable_secondary")
     assert production_decide(wire, lone, None).final == "escalate"
     merged = production_decide(scored_judgment(big, relevance=escalate), replace(lone, member_count=2), None)
     assert merged.final == "escalate" and merged.override_rule == "trade_relevance_escalate"
@@ -1348,6 +1348,31 @@ def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores
     assert budgeted.override_rule == "trade_relevance_escalate_uncorroborated"
     # A corroborated escalate is the card the budget makes room for.
     assert production_decide(wire, lone, spent, now_ms=_NOW).final == "escalate"
+
+
+def test_the_corroboration_rule_still_fires_when_the_taxonomy_predictor_failed() -> None:
+    """#651 §5.3. `source_authority` is computed from the evidence, not classified by the model, so a
+    judgment whose taxonomy call failed still reaches `decide()` with the corroboration fact intact. Under
+    v13 the rule read it out of the taxonomy object, and such a judgment could not have existed at all."""
+
+    big = _verdict(magnitude=3, scope="macro", assets=[], direction="bearish", headline_zh="伊朗议员称将报复美军")
+    escalate = trade_relevance(reader_value="escalate")
+    lone = replace(_NO_WATCHLIST, member_count=1)
+
+    unclassified = scored_judgment(big, relevance=escalate, taxonomy_error_code="news_program_output_truncated")
+    assert unclassified.editorial.taxonomy is None
+    assert unclassified.editorial.taxonomy_status == "unavailable"
+
+    claim = production_decide(unclassified, lone, None)
+    assert claim.final == "push" and claim.override_rule == "trade_relevance_escalate_uncorroborated"
+
+    corroborated = scored_judgment(
+        big,
+        relevance=escalate,
+        source_authority="reputable_secondary",
+        taxonomy_error_code="news_program_output_truncated",
+    )
+    assert production_decide(corroborated, lone, None).final == "escalate"
 
 
 def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
@@ -1376,7 +1401,7 @@ def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
     corroborated = scored_judgment(
         nameless.model_copy(update={"magnitude": 3}),
         relevance=trade_relevance(reader_value="escalate"),
-        taxonomy=news_taxonomy(source_authority="reputable_secondary"),
+        source_authority="reputable_secondary",
     )
     assert production_decide(corroborated, _NO_WATCHLIST, None).final == "escalate"
     assert decide(nameless, _FACTS, None).override_rule == "watchlist_objective_guard"

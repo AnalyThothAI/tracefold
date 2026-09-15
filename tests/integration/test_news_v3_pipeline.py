@@ -2037,7 +2037,7 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
     row = conn.execute(
         "SELECT policy_version, final_decision, throttled_by FROM news_verdicts WHERE event_id = %s", (third,)
     ).fetchone()
-    assert row is not None and row["policy_version"] == "news_triage_policy_v13"
+    assert row is not None and row["policy_version"] == "news_triage_policy_v14"
     assert row["final_decision"] == "throttled" and row["throttled_by"] == "storyline:conflict:mideast_2026:budget"
     pipeline = repos.news.status_snapshot(now_ms=now_ms)["pipeline"]
     assert pipeline["throttled_by_key"]["storyline:conflict:mideast_2026:budget"] == 1

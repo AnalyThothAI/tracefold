@@ -736,10 +736,16 @@ class TriageConsumer:
         final = decision.final
         reason = decision.throttled_by or decision.override_rule or ""
         if isinstance(s.judgment, ScoredJudgment):
-            taxonomy = s.judgment.editorial.taxonomy
-            classification = "/".join(
-                (taxonomy.event_family, taxonomy.change_state, taxonomy.assertion_status, taxonomy.source_authority)
+            editorial = s.judgment.editorial
+            taxonomy = editorial.taxonomy
+            axes = (
+                (taxonomy.event_family, taxonomy.change_state, taxonomy.assertion_status)
+                if taxonomy is not None
+                # The line is an operator's one-glance summary, so it says which stage is missing rather
+                # than leaving three empty slots (#651 §5.3).
+                else (editorial.taxonomy_status,)
             )
+            classification = "/".join((*axes, editorial.source_authority))
         else:
             classification = str(s.card.get("event_kind") or s.origin)
         context_line = (

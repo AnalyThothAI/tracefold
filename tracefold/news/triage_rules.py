@@ -374,14 +374,17 @@ def decide(
         final, rule = "drop", "trade_relevance_inconsistent"
 
     # #504 D3: an `escalate` needs corroboration the model cannot supply. `source_authority` is the code-owned
-    # taxonomy field issued once from the evidence (`taxonomy.py`), and `member_count` is the Deduper's count of
+    # editorial field issued once from the evidence (`taxonomy.py`), and `member_count` is the Deduper's count of
     # independent arrivals. Unknown source *and* a single Item is a claim, not a fact the reader should be woken
     # for: 92 of the 126 escalates on 2026-09-02 were exactly that (an Iranian MP's statement on a Telegram
     # channel was the first v9 escalate). The card keeps every other right of a push. Grounded assets are not
     # corroboration: a provider tag proves which instrument is mentioned, not that a second party confirmed it.
+    # #651 §5.3 is why it reads the envelope rather than `editorial.taxonomy.source_authority`: the taxonomy
+    # Predictor can fail on its own now, and the loudest card class must not lose its corroboration rule to a
+    # classification failure that says nothing about who reported the fact.
     if (
         rule == "trade_relevance_escalate"
-        and judgment.editorial.taxonomy.source_authority == "unknown"
+        and judgment.editorial.source_authority == "unknown"
         and facts.member_count <= 1
     ):
         final, rule = "push", "trade_relevance_escalate_uncorroborated"
