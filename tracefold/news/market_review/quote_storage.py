@@ -95,7 +95,7 @@ DUE_REACTIONS_SQL: Final = """
 class QuoteStorage:
     conn: Any
 
-    def resolve_instruments(self, requests: Sequence[QuoteRequest]) -> dict[str, PriceInstrument]:
+    def resolve_instruments(self, requests: Sequence[QuoteRequest]) -> dict[QuoteRequest, PriceInstrument]:
         """Raw tag -> the one contract its price comes from, for a bounded batch of typed questions.
 
         Exact-symbol-first: a symbol that is itself tradeable is never resolved through an issuer alias, so
@@ -104,14 +104,17 @@ class QuoteStorage:
         priceable — they answer "does this ticker exist", not "what does it cost".
 
         Typed since #651 §6.2: a request naming a market resolves only to contracts of that market, so an
-        equity question can no longer be answered with a same-name coin. Keyed by the caller's raw symbol
-        so no caller needs normalization knowledge of its own.
+        equity question can no longer be answered with a same-name coin. Keyed by the request rather than
+        by its symbol, because one batch may legitimately ask about `SEI` the coin and `SEI` the listed
+        insurer and they are two different answers; the caller still needs no normalization of its own.
         """
 
         candidates, _ = self._priceable(requests)
-        return {symbol: rows[0] for symbol, rows in candidates.items() if rows}
+        return {request: rows[0] for request, rows in candidates.items() if rows}
 
-    def instruments_for_symbols(self, requests: Sequence[QuoteRequest]) -> dict[str, tuple[PriceInstrument, ...]]:
+    def instruments_for_symbols(
+        self, requests: Sequence[QuoteRequest]
+    ) -> dict[QuoteRequest, tuple[PriceInstrument, ...]]:
         """Every priceable contract that answers each typed question, in the code-owned venue order.
 
         Delivery uses this larger view to fail over an entire price calculation from Binance to Hyperliquid
@@ -123,7 +126,7 @@ class QuoteStorage:
 
     def _priceable(
         self, requests: Sequence[QuoteRequest]
-    ) -> tuple[dict[str, tuple[PriceInstrument, ...]], frozenset[str]]:
+    ) -> tuple[dict[QuoteRequest, tuple[PriceInstrument, ...]], frozenset[QuoteRequest]]:
         """Resolution, once: the priceable contracts per request, and the requests only a directory knows.
 
         The second half is what keeps `unlisted` and `unavailable` different answers for a typed question.
@@ -132,12 +135,8 @@ class QuoteStorage:
         request whose market the catalogue carries nowhere stays `unlisted`.
         """
 
-        normalized = {
-            str(request.symbol): (normalize_symbol(request.symbol), request)
-            for request in requests
-            if str(request.symbol).strip()
-        }
-        wanted = sorted({symbol for symbol, _ in normalized.values() if symbol})
+        normalized = {request: normalize_symbol(request.symbol) for request in requests if str(request.symbol).strip()}
+        wanted = sorted({symbol for symbol in normalized.values() if symbol})
         if not wanted:
             return {}, frozenset()
         alias_rows = self.conn.execute(
@@ -173,18 +172,18 @@ class QuoteStorage:
                     quote_asset=str(row["quote_asset"]) if row["quote_asset"] else None,
                 )
             )
-        result: dict[str, tuple[PriceInstrument, ...]] = {}
-        directory_only: set[str] = set()
-        for raw, (symbol, request) in normalized.items():
+        result: dict[QuoteRequest, tuple[PriceInstrument, ...]] = {}
+        directory_only: set[QuoteRequest] = set()
+        for request, symbol in normalized.items():
             base = symbol if symbol in grouped or symbol in reference else aliases.get(symbol, symbol)
             candidates = tuple(
                 instrument for instrument in grouped.get(base, ()) if request.accepts(instrument.instrument_class)
             )
             if candidates:
-                result[raw] = candidates
+                result[request] = candidates
                 continue
             if any(request.accepts(name) for name in reference.get(base, ())):
-                directory_only.add(raw)
+                directory_only.add(request)
         return result, frozenset(directory_only)
 
     def quote_target_symbols(self, *, since_ms: int, limit: int = 1000) -> list[str]:
@@ -245,7 +244,7 @@ class QuoteStorage:
         seen_instruments: set[tuple[str, str, str]] = set()
         groups: list[str] = []
         for symbol in ordered:
-            instrument = resolved.get(symbol)
+            instrument = resolved.get(QuoteRequest(symbol))
             if instrument is None:
                 continue
             instrument_key = (instrument.venue, instrument.venue_symbol, instrument.price_kind)
@@ -343,16 +342,16 @@ class QuoteStorage:
         if not requested:
             return []
         candidates, directory_only = self._priceable(requested)
-        instruments = {symbol: rows[0] for symbol, rows in candidates.items() if rows}
+        instruments = {request: rows[0] for request, rows in candidates.items() if rows}
         snapshots = self.quote_snapshots() if instruments else {}
         out: list[dict[str, Any]] = []
         for request in requested:
             symbol = request.symbol
-            instrument = instruments.get(symbol)
+            instrument = instruments.get(request)
             if instrument is None:
                 out.append(
                     _directory_only_quote(symbol, request.market_type)
-                    if symbol in directory_only
+                    if request in directory_only
                     else _unlisted_quote(symbol)
                 )
                 continue

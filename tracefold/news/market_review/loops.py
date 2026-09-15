@@ -607,7 +607,9 @@ class EventReactionLoop:
         terminal: list[dict[str, Any]] = []
         for row in rows:
             anchor = int(row["anchor_at_ms"])
-            instrument = _pinned_instrument(row) or instruments.get(str(row["symbol"]))
+            instrument = _pinned_instrument(row) or instruments.get(
+                QuoteRequest(str(row["symbol"]), market_type_of(row.get("market_type")))
+            )
             reason = None
             if instrument is None:
                 reason = "instrument_unresolved"

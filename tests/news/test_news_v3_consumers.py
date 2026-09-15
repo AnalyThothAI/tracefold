@@ -289,12 +289,8 @@ class RecordingPrice:
             raise self.error
         return list(self.reactions)
 
-    def instruments_for_symbols(self, requests: Any) -> dict[str, tuple[PriceInstrument, ...]]:
-        return {
-            request.symbol: self.instruments[request.symbol]
-            for request in requests
-            if request.symbol in self.instruments
-        }
+    def instruments_for_symbols(self, requests: Any) -> dict[Any, tuple[PriceInstrument, ...]]:
+        return {request: self.instruments[request.symbol] for request in requests if request.symbol in self.instruments}
 
 
 class FakeWorkerDatabase:

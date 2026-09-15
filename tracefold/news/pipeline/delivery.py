@@ -1269,7 +1269,6 @@ class DelivererLoop:
             )
         except Exception:
             return []
-        symbols = [asset.symbol for asset in shown]
         originals = {
             str(row.get("requested_symbol") or ""): dict(row) for row in rows or [] if isinstance(row, Mapping)
         }
@@ -1280,17 +1279,17 @@ class DelivererLoop:
         )
         tasks = [
             self._point_quote(
-                symbol,
-                originals.get(symbol, {}),
-                tuple(candidates.get(symbol, ())),
+                request.symbol,
+                originals.get(request.symbol, {}),
+                tuple(candidates.get(request, ())),
                 stamp=stamp,
                 news_target_ms=news_target,
             )
-            for symbol in symbols
+            for request in requests
         ]
         resolved = await asyncio.gather(*tasks, return_exceptions=True)
         out: list[dict[str, Any]] = []
-        for symbol, result in zip(symbols, resolved, strict=True):
+        for symbol, result in zip((request.symbol for request in requests), resolved, strict=True):
             if isinstance(result, BaseException):
                 fallback = originals.get(symbol)
                 if fallback:

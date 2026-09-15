@@ -73,10 +73,11 @@ class _FakePrice:
         del now_ms
         return self._due[:limit]
 
-    def resolve_instruments(self, requests: Any) -> dict[str, PriceInstrument]:
+    def resolve_instruments(self, requests: Any) -> dict[Any, PriceInstrument]:
+        # Keyed by the whole request (#651 §6.2): one batch may ask about the same symbol in two markets.
         self.requested_markets = [(r.symbol, r.market_type) for r in requests]
         return {
-            request.symbol: self.instruments[request.symbol]
+            request: self.instruments[request.symbol]
             for request in requests
             if request.symbol in self.instruments and request.accepts(self.instruments[request.symbol].instrument_class)
         }
