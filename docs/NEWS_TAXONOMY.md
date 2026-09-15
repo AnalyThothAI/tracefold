@@ -103,14 +103,20 @@ corroborated, and none of those three can carry that weight.
 
 ## Persistence and readers
 
-Model-origin `EditorialEnvelope.v2` requires a complete taxonomy and hashes it
-with TradeRelevance in the same `news_judgment_v2` atom. Ordinary readers accept
-that current marker only. Migration `0336` physically deletes earlier envelopes
-and judgments; no Program, history, review task, learning dataset, release gate,
-API, or Web path decodes or translates their retired shapes.
+Model-origin `EditorialEnvelope.v3` carries `source_authority`, `taxonomy_status`
+and `taxonomy_error_code` beside a `taxonomy` that may be JSON null, and hashes
+all of it with TradeRelevance in the same `news_judgment_v2` atom (#651 §5.3): a
+taxonomy Predictor that fails alone leaves the judgment standing. Envelopes
+written under `news_editorial_v2` keep their nested authority and keep
+validating; the storage read boundary converts, and the worker never writes v2
+again. Migration `0336` physically deletes envelopes and judgments older than
+that; no Program, history, review task, learning dataset, release gate, API, or
+Web path decodes or translates their retired shapes.
 
-The Event detail API and console expose Chinese labels for all five axes, and
-market-review discovery reads versioned `event_family`. ReaderHistory,
+The Event detail API and console expose Chinese labels for the four axes and for
+the envelope's source authority, and render `分类不可用` with the error code when
+`taxonomy_status` is `unavailable`; market-review discovery reads versioned
+`event_family`. ReaderHistory,
 ToldContext, progression, learning replay, and evaluation carry full current
 field names and exact current identities; none accepts a compact or historical
 shape. Structured listing, OI, and liquidation presentation reads code-owned
@@ -237,9 +243,9 @@ reads it once, as issued from the evidence — from `editorial.source_authority`
 since #651 moved it out of the taxonomy object, so that a failed taxonomy call
 cannot take the corroboration fact down with the label —
 as the escalate corroboration fact — an eligible `escalate` from an `unknown`
-source with a single Event member is downgraded to `push`. It is a Gate-side
-evidence fact carried on the taxonomy record, not a model judgment, and it is
-not recomputed inside `decide()`. Since #501 taxonomy is the second of three serial Predictors
+source with a single Event member is downgraded to `push`. It is an
+evidence-side fact carried on the editorial envelope, not a model judgment, and
+it is not recomputed inside `decide()`. Since #501 taxonomy is the second of three serial Predictors
 (`event_semantics -> taxonomy -> reader_card`); the common successful production
 route is exactly three physical model calls, and the taxonomy call reads no
 told ledger. #117's "not a third Predictor" decision is withdrawn by #501: the

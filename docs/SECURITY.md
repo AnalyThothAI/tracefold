@@ -229,8 +229,8 @@ run's `--target` names. The other two Predictors
 are copied byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
 beside the public native GEPA parent/score/subscore state, GEPA best index and Tracefold admitted index.
 Every candidate is compared directly with accepted Gold rather than with another model output, and the
-admitted one is GEPA's own best when strictly above the seed. Registration independently re-applies the
-patch, re-projects the dataset and re-derives Objective Plan v4. Generator provenance grants no release
+admitted one is GEPA's own best when strictly above the seed. Registration independently re-reads the
+state document against the running stable, re-projects the dataset and re-derives Objective Plan v4. Generator provenance grants no release
 authority;
 future holdout, blind pairwise, canary and manual promotion remain mandatory.
 

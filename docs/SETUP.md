@@ -342,14 +342,15 @@ macro lexicon, queue lag and watchlist; ReaderCard receives only its reduced
 semantic view and never ToldContext or reader intent. Queue priority remains a
 broker scheduling/audit fact and is absent from reader HTTP/OpenAPI/React.
 
-A change is one candidate kind — a bounded two-instruction Prompt patch:
-record accepted cases with `tracefold news review`, freeze development and
+A change is one candidate kind — a `news_program_state_v1` document that moves
+exactly one Predictor's native state: record accepted cases with
+`tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
 offline, holdout and canary gates under `tracefold news learning`.
 The optional GEPA workflow reads the frozen development corpus once, runs
 bounded GEPA with no database write, broker, delivery, canary or promotion
-credential, and emits at most a typed patch carrying the two Predictor
-instructions. It requires explicit metric/task/reflection/metric-judge call
+credential, and emits at most one state document carrying the target
+Predictor's optimized `dump_state()` beside the other two unchanged. It requires explicit metric/task/reflection/metric-judge call
 limits, a total and a per-call cost limit and a seed; it cannot register,
 accept, deploy or promote. `tracefold news learning run` is the only candidate
 entry: it writes zero-call readiness and invokes stock GEPA exactly once over

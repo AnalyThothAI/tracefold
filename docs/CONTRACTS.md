@@ -978,22 +978,27 @@ unresolved contract identity, position side, quantity/notional/price semantics,
 completeness and throttle assumptions. Its current `complete=false` is a
 material fact.
 
-`NewsProgramStateV1` is the only executable semantic configuration, and
-it is one canonical JSON document — `schema_version`, the
-`event_semantics_instruction`, `taxonomy_instruction` and
-`reader_card_instruction` texts, and the
-`program_sha256` over exactly those four values — carried in the application
-image as `<program_sha256>.json` and selected by the code-owned registry. Since
-#306 Phase 2 each instruction is the complete prompt for its Predictor rather
-than an advisory appended to a rendered stack, and the reviewed seed text lives
-in `tracefold/news/program/seed.py`; #314 removed the `factory_id` field, since
-code identity is computed rather than declared. The stable root is
-`32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a`.
+`NewsProgramStateV1` is the only executable semantic configuration, and it is
+one canonical JSON document — `schema_version`, `dspy_version`, the `predictors`
+in execution order, the native `state` DSPy's own `dump_state()` produced, and
+the `program_sha256` over all of it except the `lm` routes, which are operator
+configuration and never image state (#651 §6.1). Everything an optimizer can
+write — each Predictor's instruction and demos — is inside `state`; everything
+code owns is outside it and hashed by `envelope_sha256`. The document is carried
+in the application image as `<program_sha256>.json`, selected by the code-owned
+registry, and loaded through DSPy's own `load_state`; there is exactly one such
+file. Each instruction is the complete prompt for its Predictor rather than an
+advisory appended to a rendered stack, and the reviewed seed text lives in
+`tracefold/news/program/seed.py`; #314 removed the `factory_id` field, since
+code identity is computed rather than declared. The stable root is pinned by
+`tests/contract/test_program_release_identity.py` as `NEWS_STABLE_PROGRAM_SHA256`
+rather than restated here, so one value moves in one place.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same three
-instructions produce the same Program. Lineage belongs to the candidate's
-`ProposalReceipt`, and since #202 it is *derived* at registration by re-applying
-the patch to the running stable rather than declared by the candidate.
+Predictor documents produce the same Program. Lineage belongs to the candidate's
+`ProposalReceipt`, and since #202 it is *derived* at registration by comparing
+the candidate's state document with the running stable's rather than declared by
+the candidate.
 The graph, schemas, normalizer, assembler, model route and execution budget are
 code, and `envelope_sha256` is computed over what that code renders; a semantic
 change to any of them moves that hash by construction, which one contract test
@@ -1002,9 +1007,11 @@ second editable truth, and they contain no identity hash and no demo section.
 Loading fails closed on an unknown hash or schema version, non-canonical or
 duplicate-keyed JSON, a non-finite number, a path or symlink violation, a file
 name that is not its own root, or unsafe or secret-bearing state.
-The optimizer can emit only a typed patch carrying the three Predictor
-instructions; there is no DemoBank to write to. The trusted side reconstructs
-the final Artifact from the exact active stable root. Pickle, cloudpickle,
+The optimizer can emit only a `news_program_state_v1` document whose Predictor
+documents differ from the running stable's in exactly the target Predictor;
+`with_predictor_document` performs that one merge, so "which bytes moved" is a
+property of the document rather than a claim in a receipt. The trusted side
+reads the state through the one loader, which refuses any `lm` route. Pickle, cloudpickle,
 dynamic Python/classes, endpoints and credentials are not artifact formats.
 One typed `AuditedConfiguredLM` invocation is one stock DSPy/LiteLLM provider
 call, with no client cache or provider retry. JSONAdapter may make one additional
@@ -1619,7 +1626,7 @@ authority. Every terminal state writes
 | --- | --- | --- | --- |
 | `NO_OP` | GEPA's best candidate is the seed or not strictly above it | none | 1 |
 | `REJECTED` | Objective, quality, safety or budget refusal | none | 1 |
-| `ADVANCE` | one bounded Prompt patch with no production authority | `optimization/prompt_candidate.json` | 0 |
+| `ADVANCE` | one target Predictor's state, with no production authority | `optimization/prompt_candidate.json` | 0 |
 
 `--out` must name a missing or empty directory; existing contents are refused
 before readiness or provider work. The directory contains `readiness.json`,
@@ -1717,11 +1724,12 @@ never imports `news.release`.
 `release register --development SHA --candidate FILE --artifact-root DIR
 [--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v3` to
 the active stable Program and a frozen development dataset. Whatever supplied
-the candidate instruction pair — `learning run`, which may change only
-EventSemantics and copies ReaderCard byte-identically, or a person — enters here
-on identical terms, because the generator is audit, not permission. The
-command re-applies the patch to the running stable to derive the candidate's
-Program identity, re-projects the corpus and re-derives the #199 Objective Plan
+the candidate's state document — `learning run`, which moves exactly the
+Predictor its `--target` names and copies the other two byte-identically, or a
+person — enters here on identical terms, because the generator is audit, not
+permission. The command reads the candidate's Program identity off that document
+and derives which Predictors it rewrites by comparing it with the running
+stable, re-projects the corpus and re-derives the #199 Objective Plan
 rather than trusting the candidate's own `objective_summary`, and refuses a
 candidate whose declared projection root, Objective Plan schema, representative
 optimizer population identity, or split disagrees. These checks run before any
