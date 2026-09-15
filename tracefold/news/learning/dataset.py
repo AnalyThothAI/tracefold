@@ -170,7 +170,7 @@ def _referenced_duplicate_event_ids(rows: Sequence[Mapping[str, Any]]) -> tuple[
 def applicable_targets(
     row: Mapping[str, Any],
     *,
-    settled_event_ids: Collection[str],
+    unsettled_event_ids: Collection[str] = (),
 ) -> tuple[LearningTarget, ...]:
     """Which questions one accepted review is evidence for, derived from what it actually labelled.
 
@@ -188,9 +188,9 @@ def applicable_targets(
 
     The one thing a target waits for is a receipt it genuinely depends on: a `restatement` names the card
     it restates, and until that card's delivery has settled the ledger cannot say whether the reader had
-    actually been told. Only that case's `understanding` waits, and only when the referenced Event has a
-    delivery row at all — an Event that was never delivered was never told, so there is nothing to wait
-    for. No price outcome is consulted here or anywhere else in eligibility.
+    actually been told. Only that case's `understanding` waits, and only while the referenced Event's
+    delivery is still in flight — an Event with no delivery row was never told, so there is nothing to
+    wait for. No price outcome is consulted here or anywhere else in eligibility.
     """
 
     payload = dict(row.get("payload") or {})
@@ -203,18 +203,17 @@ def applicable_targets(
     if not understanding:
         expected = dict(payload.get("expected") or {})
         understanding = expected.get("assets") is not None
-    if understanding and _novelty_receipt_ready(novelty, settled_event_ids=settled_event_ids):
+    if understanding and _novelty_receipt_ready(novelty, unsettled_event_ids=unsettled_event_ids):
         targets.append("understanding")
     if payload.get("explanation") is not None or (set(dimensions) & EXPLANATION_DIMENSIONS):
         targets.append("explanation")
     return tuple(target for target in LEARNING_TARGETS if target in targets)
 
 
-def _novelty_receipt_ready(novelty: Mapping[str, Any], *, settled_event_ids: Collection[str]) -> bool:
+def _novelty_receipt_ready(novelty: Mapping[str, Any], *, unsettled_event_ids: Collection[str]) -> bool:
     if str(novelty.get("judgment") or "") != "restatement":
         return True
-    duplicate_of = str(novelty.get("duplicate_of") or "")
-    return not duplicate_of or duplicate_of in settled_event_ids
+    return str(novelty.get("duplicate_of") or "") not in unsettled_event_ids
 
 
 class DevelopmentDatasetStore:
@@ -733,7 +732,7 @@ class DevelopmentDatasetStore:
             from_ms=window.from_ms,
             to_ms=window.to_ms,
         )
-        settled = self._repository.settled_delivery_event_ids(_referenced_duplicate_event_ids([*rows, *external]))
+        in_flight = self._repository.unsettled_delivery_event_ids(_referenced_duplicate_event_ids([*rows, *external]))
         drafts: list[tuple[DatasetCaseRef, str, str]] = []
         for row in [*rows, *external]:
             subject_kind = str(row["subject_kind"])
@@ -773,7 +772,7 @@ class DevelopmentDatasetStore:
                     if str(row.get("delivery_state") or "") == "sent"
                     else "observed_not_sent"
                 ),
-                applicable_targets=applicable_targets(row, settled_event_ids=settled),
+                applicable_targets=applicable_targets(row, unsettled_event_ids=in_flight),
                 provenance=CaseProvenance(
                     program_version=str(row.get("program_version") or ""),
                     program_sha256=str(row.get("program_sha256") or ""),

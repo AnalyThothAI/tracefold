@@ -854,21 +854,22 @@ class LearningStorage:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def settled_delivery_event_ids(self, event_ids: Sequence[str]) -> frozenset[str]:
-        """Which of these Events have a settled first delivery -- sent, or terminally failed.
+    def unsettled_delivery_event_ids(self, event_ids: Sequence[str]) -> frozenset[str]:
+        """Which of these Events have a first delivery in flight -- a row exists and has not settled.
 
         The one receipt a frozen case may have to wait for (#651 §9). A `restatement` review says the
-        reader had already been told the same fact; until the referenced card's delivery has settled, the
-        told ledger cannot say whether they had. An Event with no delivery row at all is absent from this
-        set and is not waiting for anything -- it was never told.
+        reader had already been told the same fact, and until the referenced card's delivery has settled
+        the told ledger cannot say whether they had. The question is deliberately "is it still in
+        flight", not "did it settle": an Event with no delivery row was never told, so there is nothing
+        to wait for and it is absent from this set.
         """
 
         if not event_ids:
             return frozenset()
         rows = self.conn.execute(
             "SELECT event_id FROM news_deliveries "
-            "WHERE kind = 'first' AND event_id = ANY(%s) AND state IN ('sent', 'terminal') "
-            "AND settled_at_ms IS NOT NULL",
+            "WHERE kind = 'first' AND event_id = ANY(%s) "
+            "AND (settled_at_ms IS NULL OR state NOT IN ('sent', 'terminal'))",
             (list(dict.fromkeys(str(value) for value in event_ids)),),
         ).fetchall()
         return frozenset(str(row["event_id"]) for row in rows)
