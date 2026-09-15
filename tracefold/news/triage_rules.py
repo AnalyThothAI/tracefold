@@ -277,6 +277,14 @@ def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, w
     "against any delivered card" let 101 more cards through and 10 escape on one key in one hour. The ``none``
     key is exempt: it is not a storyline but "the registry matched nothing", and counting it withheld Chile's
     GDP print behind an RBNZ decision in the 2026-09-02 replay (#509 D6).
+
+    The key comparison is exact string equality, deliberately, and it is *not* `same_storyline_key`. This
+    counts receipts — how many cards the reader was proven to have received on exactly this key — and the
+    market-aware comparison retrieval uses is inclusive, so borrowing it here would withhold cards on the
+    strength of a card about a different instrument. One consequence is real and bounded: `asset:` keys
+    gained their market in #651 §6.2, so for one budget window after that cutover a card on
+    `asset:crypto:SEI` does not count the cards delivered under the untyped `asset:SEI`, and the budget
+    restarts. Making it not restart is a policy decision and a policy version, not a mechanical one.
     """
 
     if status.key == NO_STORYLINE_KEY:
