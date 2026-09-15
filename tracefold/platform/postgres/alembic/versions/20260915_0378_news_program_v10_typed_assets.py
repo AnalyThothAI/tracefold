@@ -2,8 +2,9 @@
 
 Migration evidence:
 
-- category: constraint rewrite plus one function and one view replacement, additive
-- why_database_must_change: three things.
+- category: constraint rewrite plus two function replacements, one new function and one view
+  replacement, additive
+- why_database_must_change: four things.
   `news_verdicts_current_judgment_check` pins the model and degraded branches to the literals
   `news_semantic_program_v8` / `news_semantic_program_v9`. #651 makes `TriageAsset.market_type` a required
   vocabulary value and shows the Program the catalogue's uncollapsed candidates, so `PROGRAM_VERSION`
@@ -13,6 +14,9 @@ Migration evidence:
   the instrument-class vocabulary. It is scoped to v10 on purpose -- v8 and v9 rows carry `null` and free
   strings (`token`, `cex`, `private`) in that position, are audit truth, and are never rewritten, so a
   vocabulary predicate that applied to them would refuse the ADD CONSTRAINT scan outright.
+  `news_current_review_expected_valid` enumerates a reviewer's expected asset keys exactly as
+  `['symbol','role']`. A reviewer's accepted answer now carries the market too, so without this
+  revision every accepted review that states an asset would be refused outright.
   `news_review_task_source_v1` joins the Reaction ledger on the literal `reaction_v1`. #651 types quote and
   Reaction resolution by `(symbol, market_type)`, so an equity Event is measured against an equity contract
   or against nothing -- a different measurement, and therefore `REACTION_METRIC_VERSION` moves to
@@ -20,8 +24,8 @@ Migration evidence:
   produced by the untyped rule this cut exists to retire.
 - current_source_revision: 20260912_0377
 - minimum_supported_source_revision: 20260912_0377
-- lock_level_and_order: maintenance stop; function creation, then ACCESS EXCLUSIVE constraint drop and add,
-  then the view replacement, in one transaction
+- lock_level_and_order: maintenance stop; function creation and replacement, then ACCESS EXCLUSIVE
+  constraint drop and add, then the view replacement, in one transaction
 - statement_timeout: 120s set locally by the revision (the ADD CONSTRAINT scans every verdict row)
 - lock_timeout: 5s set locally by the revision
 - estimated_rows: `news_verdicts` under the 30-day retention, low tens of thousands
@@ -36,14 +40,17 @@ Migration evidence:
   nor rewritten; the worker never writes v9 again because `PROGRAM_VERSION` is the only value it emits.
   `NOT VALID` was rejected because `news_verdicts.published_at_ms` is updated in place, and an update
   would re-check a v9 row against a v10-only predicate.
+  Every accepted review keeps validating: the expected-asset predicate admits the two-key shape every
+  review written before this revision carries *and* the three-key shape with a vocabulary market,
+  exactly as `0351` admits a taxonomy provenance with or without `drafts`.
   Every `reaction_v1` row stays exactly where it is and keeps its version. Nothing reads the two versions
   together: the planner writes `reaction_v2` and every current projection asks for the current version, so
   an Event measured before this revision reports no 1 h move on the review desk until the typed planner has
   measured it again. That is the honest answer -- the old number was produced against a contract that
   could resolve an equity Event to a same-name coin.
 - role_and_grant_impact: none; the single tracefold login is unchanged
-- failure_state: the transaction rolls back completely and the v8/v9-only predicate and the `reaction_v1`
-  view stay
+- failure_state: the transaction rolls back completely and the v8/v9-only predicate, the two-key
+  expected-asset predicate and the `reaction_v1` view stay
 - roll_forward_or_verified_backup_restore: correct with a new forward revision or restore the verified
   pre-cut backup
 - production_postgres_image:
@@ -85,6 +92,76 @@ def upgrade() -> None:
                           )
                  )
         $_$
+        """
+    )
+
+    # A reviewer's accepted answer carries the market too (#651 §6.2), and the validator enumerated the
+    # asset keys exactly, so a submission naming one would be refused outright. Both key sets are admitted
+    # for the same reason `0351` admits a taxonomy provenance with or without `drafts`: every review
+    # accepted before this revision carries the two-key shape, is audit truth, and is never rewritten.
+    # A three-key asset must name a vocabulary market; `unknown` is how a reviewer says nothing was
+    # established, and is a value rather than an absence.
+    op.execute(
+        """
+CREATE OR REPLACE FUNCTION public.news_current_review_expected_valid(value jsonb) RETURNS boolean
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $_$
+          SELECT CASE jsonb_typeof(value)
+            WHEN 'null' THEN true
+            WHEN 'object' THEN
+              news_jsonb_exact_keys(value, ARRAY[
+                'magnitude','direction','assets','trade_impact_breadth','trade_tradability',
+                'trade_surprise','trade_development_delta','trade_channels',
+                'trade_affected_markets','reader_value'
+              ])
+              AND EXISTS (SELECT 1 FROM jsonb_each(value) field WHERE field.value <> 'null'::jsonb)
+              AND (jsonb_typeof(value -> 'magnitude') = 'null' OR (
+                    jsonb_typeof(value -> 'magnitude') = 'number'
+                    AND value ->> 'magnitude' ~ '^[0-3]$'))
+              AND (jsonb_typeof(value -> 'direction') = 'null'
+                   OR value ->> 'direction' IN ('bullish','bearish','neutral','unclear'))
+              AND (jsonb_typeof(value -> 'assets') = 'null' OR (
+                    jsonb_typeof(value -> 'assets') = 'array'
+                    AND jsonb_array_length(value -> 'assets') <= 16
+                    AND NOT EXISTS (
+                      SELECT 1 FROM jsonb_array_elements(value -> 'assets') asset
+                       WHERE NOT (
+                              news_jsonb_exact_keys(asset, ARRAY['symbol','role'])
+                              OR (news_jsonb_exact_keys(asset, ARRAY['symbol','market_type','role'])
+                                  AND jsonb_typeof(asset -> 'market_type') = 'string'
+                                  AND asset ->> 'market_type' IN (
+                                    'crypto','equity','commodity','index','fx','pre_ipo','unknown'
+                                  ))
+                            )
+                          OR jsonb_typeof(asset -> 'symbol') <> 'string'
+                          OR length(asset ->> 'symbol') NOT BETWEEN 1 AND 32
+                          OR asset ->> 'role' NOT IN ('primary','mentioned')
+                    )))
+              AND (jsonb_typeof(value -> 'trade_impact_breadth') = 'null'
+                   OR value ->> 'trade_impact_breadth' IN (
+                     'none','single_instrument','sector','regional','cross_asset','global_systemic'))
+              AND (jsonb_typeof(value -> 'trade_tradability') = 'null'
+                   OR value ->> 'trade_tradability' IN ('direct','second_order','contextual','none'))
+              AND (jsonb_typeof(value -> 'trade_surprise') = 'null'
+                   OR value ->> 'trade_surprise' IN ('unscheduled','material_vs_expectation','in_line','unknown'))
+              AND (jsonb_typeof(value -> 'trade_development_delta') = 'null'
+                   OR value ->> 'trade_development_delta' IN (
+                     'state_change','material_detail','color_only','scheduled'))
+              AND (jsonb_typeof(value -> 'trade_channels') = 'null'
+                   OR news_jsonb_ordered_string_set_valid(value -> 'trade_channels', ARRAY[
+                     'rates','liquidity','risk_premium','energy_supply','commodity_supply',
+                     'commodity_demand','regulation','exchange_access','product_progress',
+                     'earnings_cashflow','positioning_flow','security_incident'
+                   ], 4))
+              AND (jsonb_typeof(value -> 'trade_affected_markets') = 'null'
+                   OR news_jsonb_ordered_string_set_valid(value -> 'trade_affected_markets', ARRAY[
+                     'crypto_broad','us_equity_broad','rates','fx','energy','metals','single_asset'
+                   ], 4))
+              AND (jsonb_typeof(value -> 'reader_value') = 'null'
+                   OR value ->> 'reader_value' IN ('escalate','realtime','background','none'))
+            ELSE false
+          END
+        $_$;
         """
     )
 

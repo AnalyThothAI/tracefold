@@ -237,6 +237,51 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
         conn.close()
 
 
+def test_the_expected_asset_validator_admits_both_shapes_and_only_a_vocabulary_market() -> None:
+    """#651 §6.2: a reviewer's stated answer carries the market, and history does not.
+
+    `news_current_review_expected_valid` enumerated the asset keys exactly as `{symbol, role}`, so the
+    first accepted review naming a typed asset would have been refused outright. Both shapes are
+    admitted for the same reason every other key-set widening in this schema admits two: the reviews
+    written before the cut are audit truth and are never rewritten. What is *not* admitted is a market
+    outside the vocabulary — the whole point of typing the field is that it is a closed answer.
+    """
+
+    def _expected(assets: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "magnitude": None,
+            "direction": None,
+            "assets": assets,
+            "trade_impact_breadth": None,
+            "trade_tradability": None,
+            "trade_surprise": None,
+            "trade_development_delta": None,
+            "trade_channels": None,
+            "trade_affected_markets": None,
+            "reader_value": None,
+        }
+
+    corpus = [
+        # The shape every review written before #651 carries.
+        (_expected([{"symbol": "SEI", "role": "primary"}]), True),
+        (_expected([{"symbol": "SEI", "market_type": "equity", "role": "primary"}]), True),
+        # `unknown` is a reviewer saying nothing was established, which is a value and not an absence.
+        (_expected([{"symbol": "SEI", "market_type": "unknown", "role": "primary"}]), True),
+        (_expected([{"symbol": "SEI", "market_type": "token", "role": "primary"}]), False),
+        (_expected([{"symbol": "SEI", "market_type": None, "role": "primary"}]), False),
+        (_expected([{"symbol": "SEI", "market_type": "equity", "role": "subject"}]), False),
+        (_expected([{"symbol": "SEI", "market_type": "equity", "role": "primary", "retired": True}]), False),
+    ]
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        for payload, expected_valid in corpus:
+            row = conn.execute("SELECT news_current_review_expected_valid(%s) AS valid", (Jsonb(payload),)).fetchone()
+            assert bool(row["valid"]) is expected_valid, payload
+    finally:
+        conn.close()
+
+
 def test_news_canonical_json_hash_matches_python_for_nested_unicode_payload() -> None:
     payload = {
         "z": [3, {"中文": "证据", "boolean": True}, None],
