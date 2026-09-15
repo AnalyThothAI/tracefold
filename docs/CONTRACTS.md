@@ -1059,10 +1059,9 @@ guard drops a `restatement` that cites a told entry the model was shown,
 whatever the two directions are (#651: the model's `direction` is its reading of
 a fact, not a fact, so it cannot decide whether the reader already has it; a
 real reversal arrives as `progression` or `new_fact`, which the same-fact and
-budget exemptions still cover). After that guard, the generic v10 action order
-is deterministic
-listing/telemetry — which since v13 (#523) does not cover a listing frame the
-model marked `reader_value=none`, leaving it to the `reader_value_none` drop —
+budget exemptions still cover). After that guard, the generic v10 action order is
+deterministic listing/telemetry — which since v13 (#523) does not cover a listing
+frame the model marked `reader_value=none`, leaving it to the `reader_value_none` drop —
 grounded watchlist, eligible `reader_value=escalate`, eligible
 `reader_value=realtime`, background/none, then
 `trade_relevance_inconsistent`; then the v12 escalate corroboration

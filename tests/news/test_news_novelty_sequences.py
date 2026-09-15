@@ -34,7 +34,7 @@ from tests.support.news_novelty_sequences import (
 )
 from tracefold.news.reader_history import build_reader_history
 from tracefold.news.similarity import trigram_similarity
-from tracefold.news.triage_rules import DEFAULT_POLICY, decide, storyline_status
+from tracefold.news.triage_rules import DEFAULT_POLICY, GateFacts, decide, storyline_status
 
 VISA = "visa_onchain_credit"
 CP = "cp_listing_three_venues"
@@ -296,13 +296,14 @@ def test_a_reversal_still_escapes_an_exhausted_storyline_budget() -> None:
 
 
 _MACRO_PAIRS = (
-    # Two countries' releases of the same indicator. The pair scores 0.27 on character trigrams, above
-    # `similarity_max` -- which is why the 4 h receipt ledger and the wider 48 h `told` evidence are
-    # separate sets, and why these rows are `told` only here (see `ReaderHistorySnapshot`).
+    # Two countries' releases of the same indicator. This pair scores 0.27 on character trigrams -- above
+    # `similarity_max`, so had the earlier print been inside the 4 h receipt ledger the deterministic check
+    # would have withheld the second one. That the receipt ledger and the wider `told` evidence are
+    # separate sets is what keeps that counterfactual out of the mechanical layer (`ReaderHistorySnapshot`).
     ("英国8月制造业PMI终值51.7", "美国8月标普全球制造业PMI终值53.9"),
-    # One trade story, two different traded quantities.
+    # One trade story, two different traded quantities. 0.20.
     ("中国8月原油进口同比增4.3%", "中国8月成品油出口同比降11%"),
-    # One series, two statistical periods.
+    # One series, two statistical periods. 0.19.
     ("美国二季度GDP终值上修至2.6%", "美国三季度GDP初值1.8%"),
 )
 
@@ -339,7 +340,7 @@ def test_different_economic_events_in_one_storyline_reach_the_reader_as_new_fact
     # `told` only: the earlier print is six hours old, outside the 4 h receipt ledger `decide()` measures
     # duplicates against and inside the 48 h evidence the model reads.
     status = storyline_status(key, told=rows, seen=[])
-    facts = gate_facts("cp_upbit_first")
+    facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate")
     verdict = triage_verdict(
         novelty="new_fact",
         restates=-1,
@@ -353,7 +354,7 @@ def test_different_economic_events_in_one_storyline_reach_the_reader_as_new_fact
 
     new_fact = decide(
         scored_judgment(verdict, relevance=relevance),
-        replace(facts, admission="candidate"),
+        facts,
         status,
         policy=DEFAULT_POLICY,
         now_ms=now_ms,
@@ -362,7 +363,7 @@ def test_different_economic_events_in_one_storyline_reach_the_reader_as_new_fact
 
     mislabelled = decide(
         scored_judgment(verdict.model_copy(update={"novelty": "restatement", "restates": 0}), relevance=relevance),
-        replace(facts, admission="candidate"),
+        facts,
         status,
         policy=DEFAULT_POLICY,
         now_ms=now_ms,
