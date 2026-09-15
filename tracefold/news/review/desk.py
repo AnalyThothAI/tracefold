@@ -45,7 +45,6 @@ from ..taxonomy import (
     TAXONOMY_VERSION,
     ModelTaxonomyV1,
     NewsTaxonomyV1,
-    source_authority_from_evidence,
 )
 
 REVIEW_RUBRIC_VERSION = "news_review_v6"
@@ -1491,10 +1490,10 @@ class ReviewDesk:
         if task.task_version != task_ref.task_version:
             raise ValueError("news_review_task_version_conflict")
         previous = self._latest_accepted(task)
-        card = dict(dict(task.row.get("evidence_snapshot") or {}).get("card") or {})
-        expected_authority = source_authority_from_evidence(card)
-        if submission.taxonomy.source_authority != expected_authority:
-            raise ValueError("news_review_taxonomy_source_authority_code_mismatch")
+        # The submission's taxonomy no longer carries a source authority to disagree with the code's
+        # (#651 §5.3): `NewsTaxonomyV1` is four model axes plus the codebook, `EventRubricSubmission`
+        # forbids extra keys, and the authority is computed from the evidence on the judgment side. The
+        # check that caught a reviewer overriding it therefore has nothing left to compare.
         provenance = submission.taxonomy_review
         if provenance.draft_author and provenance.draft_author == principal.subject:
             raise ValueError("news_review_taxonomy_self_acceptance_forbidden")

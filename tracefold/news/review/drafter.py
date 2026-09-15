@@ -469,7 +469,6 @@ def submission_payload(
     draft: ReviewDraft,
     *,
     stable_taxonomy: ModelTaxonomyV1 | Mapping[str, Any] | None,
-    source_authority: SourceAuthority = "unknown",
     draft_author: str = DRAFTER_ID,
 ) -> dict[str, Any]:
     """The `EventRubricSubmission` a reviewer would send after accepting this draft, unchanged.
@@ -502,7 +501,10 @@ def submission_payload(
         # The claim cannot be checked without a target, so it is downgraded rather than dropped: a reviewer
         # still sees the model thought this was a repeat, in the one field they will read.
         novelty = {"judgment": "uncertain", "duplicate_of": ""}
-    taxonomy = NewsTaxonomyV1.issue(draft.taxonomy, source_authority=source_authority)
+    # Four axes and the codebook they were labelled against. Source authority is not among them since
+    # #651: it is computed from the evidence, the reviewer never states it, and a submission that carried
+    # it would be asserting a code fact it has no standing to change.
+    taxonomy = NewsTaxonomyV1.issue(draft.taxonomy)
     # Taxonomy provenance names the blind drafters, never the rubric model, which did not label it.
     taxonomy_review: dict[str, Any] = {
         "label_source": "model_draft",

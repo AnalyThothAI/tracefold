@@ -129,11 +129,11 @@ def _open_event(
         relevance.update(relevance_overrides or {})
         editorial = EditorialEnvelope.issue(
             relevance=TradeRelevanceV1.model_validate(relevance),
+            source_authority="reputable_secondary",
             taxonomy=news_taxonomy(
                 event_family="regulatory_legal",
                 change_state="reported",
                 assertion_status="claimed",
-                source_authority="reputable_secondary",
             ),
         )
         judgment = ScoredJudgment.issue(verdict=verdict, editorial=editorial)
@@ -245,7 +245,6 @@ def _rubric(
             event_family="regulatory_legal",
             change_state="reported",
             assertion_status="claimed",
-            source_authority="reputable_secondary",
         ),
         first_bad_owner=first_bad_owner,  # type: ignore[arg-type]
         expected=ExpectedCorrection(magnitude=3) if magnitude == "fail" else None,
