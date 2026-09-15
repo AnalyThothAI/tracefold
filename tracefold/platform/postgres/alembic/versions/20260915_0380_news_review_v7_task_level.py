@@ -2,7 +2,7 @@
 
 Migration evidence:
 
-- category: six function creations, three function replacements, one function signature change with its
+- category: five function creations, two function replacements, one function signature change with its
   trigger function, additive to the data
 - why_database_must_change: four things, all of them places where the v6 rubric is a database fact
   rather than a Python promise.
@@ -73,59 +73,21 @@ def upgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("SET LOCAL statement_timeout = '120s'")
 
-    # The four model axes a reviewer may state under v7. `news_current_review_taxonomy_valid` keeps
-    # validating the seven-key persisted shape for v6 rows and for nothing else: `source_authority` is a
-    # code fact derived from the reporting source, so a v7 submission never carries it and a v7 review
-    # never claims to have labelled it.
-    op.execute(
-        """
-        CREATE FUNCTION public.news_current_review_model_taxonomy_valid(value jsonb) RETURNS boolean
-            LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
-            AS $_$
-          SELECT news_jsonb_exact_keys(value, ARRAY[
-                   'subject_codes','event_family','change_state','assertion_status'
-                 ])
-             AND news_jsonb_ordered_string_set_valid(value -> 'subject_codes', ARRAY[
-                   'medtop:04000000','medtop:20000174','medtop:20000175','medtop:20000177',
-                   'medtop:20000178','medtop:20000180','medtop:20000183','medtop:20000186',
-                   'medtop:20000187','medtop:20000189','medtop:20000190','medtop:20000192',
-                   'medtop:20000195','medtop:20000196','medtop:20000197','medtop:20000199',
-                   'medtop:20000200','medtop:20000204','medtop:20000205','medtop:20000207',
-                   'medtop:20000208','medtop:20000344','medtop:20000346','medtop:20000350',
-                   'medtop:20000359','medtop:20000365','medtop:20000370','medtop:20000371',
-                   'medtop:20000373','medtop:20000379','medtop:20000384','medtop:20000385',
-                   'medtop:20001164','medtop:20001279','medtop:16000000'
-                 ], 3)
-             AND NOT (
-                   value -> 'subject_codes' ? 'medtop:04000000'
-                   AND EXISTS (
-                     SELECT 1 FROM jsonb_array_elements_text(value -> 'subject_codes') code
-                      WHERE code LIKE 'medtop:2000%'
-                   )
-                 )
-             AND value ->> 'event_family' IN (
-                   'financial_results','guidance_outlook','product_service_change','corporate_transaction',
-                   'financing_capital_allocation','leadership_governance','regulatory_legal',
-                   'security_operational_incident','market_access','market_flow_price','macro_policy_data',
-                   'geopolitical_conflict','other'
-                 )
-             AND value ->> 'change_state' IN (
-                   'announced','scheduled','effective','reported','updated','delayed','cancelled','recalled','unknown'
-                 )
-             AND value ->> 'assertion_status' IN ('confirmed','claimed','rumor','conflicted','unknown')
-        $_$
-        """
-    )
-
     # v7 provenance, whose `draft_taxonomy` is the four model axes rather than the persisted taxonomy.
+    # `news_current_model_taxonomy_valid` is the predicate `20260902_0351` already wrote for exactly this
+    # shape -- the blind drafts inside `drafts` are checked with it -- so the reviewer's own taxonomy and
+    # the drafts behind it are now measured by one function instead of two that could drift.
     op.execute(
         """
         CREATE FUNCTION public.news_current_review_v7_taxonomy_provenance_valid(value jsonb) RETURNS boolean
             LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
             AS $_$
-          SELECT news_jsonb_exact_keys(value, ARRAY[
+          SELECT (news_jsonb_exact_keys(value, ARRAY[
                    'label_source','draft_author','review_role','adjudicates_review_id','draft_taxonomy'
                  ])
+                 OR news_jsonb_exact_keys(value, ARRAY[
+                   'label_source','draft_author','review_role','adjudicates_review_id','draft_taxonomy','drafts'
+                 ]))
              AND value ->> 'label_source' IN ('human','model_draft')
              AND jsonb_typeof(value -> 'draft_author') = 'string'
              AND length(value ->> 'draft_author') <= 128
@@ -133,11 +95,18 @@ def upgrade() -> None:
              AND jsonb_typeof(value -> 'adjudicates_review_id') = 'string'
              AND length(value ->> 'adjudicates_review_id') <= 64
              AND (jsonb_typeof(value -> 'draft_taxonomy') = 'null'
-                  OR news_current_review_model_taxonomy_valid(value -> 'draft_taxonomy'))
+                  OR news_current_model_taxonomy_valid(value -> 'draft_taxonomy'))
+             AND (value -> 'drafts' IS NULL
+                  OR jsonb_typeof(value -> 'drafts') = 'null'
+                  OR (jsonb_typeof(value -> 'drafts') = 'object'
+                      AND (SELECT count(*) FROM jsonb_object_keys(value -> 'drafts')) = 2
+                      AND (SELECT bool_and(news_current_model_taxonomy_valid(draft))
+                             FROM jsonb_each(value -> 'drafts') AS drafts(model, draft))))
              AND CASE WHEN value ->> 'label_source' = 'model_draft'
                       THEN btrim(value ->> 'draft_author') <> ''
                       ELSE value ->> 'draft_author' = ''
-                           AND jsonb_typeof(value -> 'draft_taxonomy') = 'null' END
+                           AND jsonb_typeof(value -> 'draft_taxonomy') = 'null'
+                           AND (value -> 'drafts' IS NULL OR jsonb_typeof(value -> 'drafts') = 'null') END
              AND CASE WHEN value ->> 'review_role' = 'adjudication'
                       THEN value ->> 'adjudicates_review_id' <> ''
                       ELSE value ->> 'adjudicates_review_id' = '' END
@@ -273,7 +242,7 @@ def upgrade() -> None:
             AND news_current_review_expected_valid(value -> 'expected')
             AND news_current_review_explanation_valid(value -> 'explanation')
             AND (jsonb_typeof(value -> 'taxonomy') = 'null'
-                 OR news_current_review_model_taxonomy_valid(value -> 'taxonomy'))
+                 OR news_current_model_taxonomy_valid(value -> 'taxonomy'))
             AND news_current_review_v7_taxonomy_provenance_valid(value -> 'taxonomy_review')
             -- Taxonomy is all or nothing in both directions: a label nobody compared, or a comparison
             -- against a label the submission never states, are both answers the corpus cannot read.
