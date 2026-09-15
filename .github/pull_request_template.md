@@ -1,17 +1,15 @@
+## Outcome
+
+<!-- What problem does this solve? Link an Issue when one exists; a clear request can be summarized here. -->
+
+## Changes
+
+<!-- Explain the cohesive change and any material contract or migration decision. -->
+
 ## Verification
 
-- Tested HEAD:
-- Risk being closed:
-- F2P reproducer (bug fixes; otherwise explain N/A):
-- Behavior-preservation evidence (pure refactors; otherwise N/A):
-- Production seam:
-- Targeted P2P:
-- Focused / local commands:
-- Local full preflight:
-  - `PASS / FAIL / PARTIAL / NOT RUN`:
-  - Risk-table or Issue requirement; result, omitted work and reason:
-  - Repairs and revalidation, if needed:
-- Exact-head fixed CI run:
-- Skipped / xfail / automatic retries (required runs reject them):
-- Acceptance-test contract changes:
-- Native report artifacts:
+<!-- List actual commands/results and the changed boundary they exercise. For bug fixes, include the reproducer when available; for refactors, behavior-preservation evidence. Docs-only changes need only affected checks. -->
+
+## Remaining risks
+
+<!-- Omit when empty. Name unrun checks, pending CI, or required follow-up. PR submission does not imply merge, deployment, or live acceptance. -->

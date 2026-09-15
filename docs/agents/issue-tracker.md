@@ -1,39 +1,55 @@
-# Issue tracker: GitHub
+# Issues and pull requests
 
-Issues and PRDs for this repo live as GitHub issues in `AnalyThothAI/tracefold`. Use the `gh` CLI for operations not exposed by the connected GitHub app.
+Use GitHub in `AnalyThothAI/tracefold` for durable requests and review. Use the
+connected GitHub tools or an available `gh` CLI; neither tool is mandatory.
+Resolve an ambiguous number as an Issue or PR before acting on it.
 
-## Conventions
+## Scope before bureaucracy
 
-- **Create an issue**: create it in `AnalyThothAI/tracefold` with a descriptive title, complete Markdown body, and the appropriate triage label.
-- **Read an issue**: include comments and labels.
-- **List issues**: filter by state and label, retaining issue number, title, body, labels, and comments.
-- **Comment on an issue**: add durable decisions or verification evidence to the issue.
-- **Apply / remove labels**: keep exactly one canonical triage state where applicable.
-- **Close**: include a final comment that states the disposition or implementation evidence.
+A clear user request or an existing PR discussion is sufficient to implement a
+bounded change. Create or update an Issue when the work needs a durable product
+specification, coordination, unresolved decisions, or tracking beyond the PR.
+Do not create a duplicate Issue merely because a skill expects a ticket.
 
-Infer the repository from `git remote -v` when operating inside the clone.
+For a substantive Issue, state the problem, observable outcome, affected owners,
+and acceptance evidence. Add constraints, non-goals, migration, or rollout details
+only when they matter. Read the relevant discussion before changing an existing
+agreement. Keep material decisions in that Issue or the implementing PR, rather
+than copying the same plan into several trackers and documents.
 
-## Pull requests as a triage surface
+## Default: one complete outcome, one PR
 
-**PRs as a request surface: no.** Pull requests are implementation and review surfaces, not feature-request intake.
+A cohesive change includes implementation, affected callers, tests, documentation,
+generated outputs, and deletion of replaced internal paths. Frontend, backend,
+schema, and tests are not separate PRs merely because they are separate directories.
+Likewise, a checklist, TDD cycle, investigation step, or task in a plan is not a PR
+boundary. Continue through the requested outcome rather than stopping after its
+first small slice.
 
-GitHub shares one number space across issues and pull requests, so resolve an ambiguous bare number before acting.
+Split when parts can genuinely be reviewed, delivered, or rolled back independently,
+when a migration requires staged rollout, or when size makes reliable review
+impractical. Explain the reason, dependencies, and completion condition. There is
+no mandatory PR count, line limit, or maximum number of files. Do not fragment a
+hard cut into temporary compatibility layers solely to make smaller diffs.
 
-## When a skill says "publish to the issue tracker"
+Sub-issues, maps, dependencies, assignments, and labels are optional coordination
+tools for genuinely independent work. Do not automatically create a `/wayfinder`
+map, claim a ticket as the session's first write, or limit execution to the first
+unassigned child. Existing project coordination still matters when applicable;
+implementation authorization and scope come from the actual request.
 
-Create a GitHub issue in `AnalyThothAI/tracefold`.
+## PR delivery
 
-## When a skill says "fetch the relevant ticket"
+Use the [PR template](../../.github/pull_request_template.md) as a short review aid:
+what changed, why, and how it was checked. Link a governing Issue when one exists;
+otherwise put the request and acceptance summary in the PR. Omit irrelevant
+fields instead of filling a checklist with invented evidence or repeated `N/A`.
 
-Read the GitHub issue, including comments and labels.
+Report meaningful contract changes and verification gaps. A PR can be submitted
+while CI is pending; only an authorized merge depends on the required checks for
+its current HEAD. PR submission, merge, deployment, and production acceptance are
+separate outcomes.
 
-## Wayfinding operations
-
-Used by `/wayfinder`. A map is one issue and its child issues are tickets.
-
-- **Map**: one issue labelled `wayfinder:map`, containing Notes, Decisions-so-far, and Fog.
-- **Child ticket**: a GitHub sub-issue linked to the map. If sub-issues are unavailable, use a task-list link and a `Part of #<map>` line. Apply the appropriate `wayfinder:<type>` label.
-- **Blocking**: use native issue dependencies. If unavailable, use a `Blocked by: #<n>` line.
-- **Frontier query**: choose the first open, unassigned child in map order with no open blockers.
-- **Claim**: assign the ticket to the driving developer; this is the session's first write.
-- **Resolve**: comment with the answer, close the ticket, and add a durable context pointer to the map.
+Close an Issue only when its stated outcome is met, or explain another disposition.
+Use `Closes #N` only for full completion; partial work should describe what remains.
+[Triage labels](triage-labels.md) assist coordination and are not permission gates.
