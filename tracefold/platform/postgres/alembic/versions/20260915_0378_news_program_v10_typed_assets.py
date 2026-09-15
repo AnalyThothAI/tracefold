@@ -26,7 +26,9 @@ Migration evidence:
 - minimum_supported_source_revision: 20260912_0377
 - lock_level_and_order: maintenance stop; function creation and replacement, then ACCESS EXCLUSIVE
   constraint drop and add, then the view replacement, in one transaction
-- statement_timeout: 120s set locally by the revision (the ADD CONSTRAINT scans every verdict row)
+- statement_timeout: 1800s set locally by the revision: the ADD CONSTRAINT re-validates every verdict row
+  through the canonical-JSON sha256 predicate, and the 2026-09-15 production run of 0378 over 20,453 rows
+  exceeded the 120s the earlier CHECK restatements used
 - lock_timeout: 5s set locally by the revision
 - estimated_rows: `news_verdicts` under the 30-day retention, low tens of thousands
 - estimated_bytes: catalog entries only; no heap rewrite, no index build
@@ -73,7 +75,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
-    op.execute("SET LOCAL statement_timeout = '120s'")
+    op.execute("SET LOCAL statement_timeout = '1800s'")
 
     # The asset shape a v10 verdict must carry. `news_current_triage_verdict_valid` already requires the
     # exact key set and a string-or-null `market_type`, which is what lets every historical row keep
