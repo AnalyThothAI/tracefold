@@ -222,8 +222,9 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # The typed-asset cut cannot roll a v10 verdict back by downgrading the CHECK that admits it.
-    with pytest.raises(RuntimeError, match="news_program_v10_typed_assets_forward_only"):
+    # The task-level review cut cannot be rolled back by downgrading the contract that admits a v7 row:
+    # every review accepted under it would become unreadable through `news_review_records_v1`.
+    with pytest.raises(RuntimeError, match="news_review_v7_task_level_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     assert _table_exists("news_delivery_queue") is True
