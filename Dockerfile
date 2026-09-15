@@ -73,7 +73,7 @@ RUN --mount=type=secret,id=github_token \
     exit 1
 
 RUN /app/.venv/bin/python -c \
-    'from tracefold.news.program.artifact import load_stable_program_artifact; load_stable_program_artifact()'
+    'from tracefold.news.program.artifact import load_stable_program_state; load_stable_program_state()'
 
 RUN /app/.venv/bin/python -c \
     'import sys; from importlib.metadata import version; from nautilus_trader.live.node import TradingNode; assert sys.version_info[:2] == (3, 13); assert version("nautilus-trader") == "1.231.0"; assert TradingNode.__module__ == "nautilus_trader.live.node"'

@@ -14,9 +14,9 @@ import re
 import pytest
 
 from tracefold.news.program.artifact import (
-    build_code_owned_program_artifact,
+    build_code_owned_program_state,
     build_predictor_state,
-    load_stable_program_artifact,
+    load_stable_program_state,
     validate_program_instruction,
 )
 from tracefold.news.program.runtime import (
@@ -32,7 +32,7 @@ _PREDICTORS = ("event_semantics", "taxonomy", "reader_card")
 def test_the_shipped_stable_artifact_is_the_seed_text_itself() -> None:
     """No renderer, so "the optimized bytes are the production bytes" is structural rather than tested."""
 
-    stable = load_stable_program_artifact()
+    stable = load_stable_program_state()
 
     for predictor in _PREDICTORS:
         assert stable.instruction_for(predictor) == seed_instruction(predictor)
@@ -43,7 +43,7 @@ def test_the_shipped_stable_artifact_is_the_seed_text_itself() -> None:
 
 
 def test_the_code_owned_baseline_root_is_the_shipped_stable_root() -> None:
-    assert build_code_owned_program_artifact() == load_stable_program_artifact()
+    assert build_code_owned_program_state() == load_stable_program_state()
 
 
 @pytest.mark.parametrize("predictor", _PREDICTORS)
@@ -86,14 +86,16 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
         "e. The move itself is at least 5% on the day",
         "Securities Investigation Notice",
         "restatement: the same fact as one told entry",
-        "A direction flip versus the told entry is never a restatement.",
+        # #651 §6.3: the seed's own direction reading stopped being an exemption, because
+        # `grounded_restatement` stopped honouring one. The absolute sentence is asserted absent below.
+        "Your own direction reading is not a fact about the world",
         "reader_value is the model-owned editorial intent",
     ):
         assert marker in semantics, marker
     for marker in (
         "Write a faithful Chinese reading of the original headline",
         "every decision-relevant number",
-        "the concrete mechanism, who is exposed, and what changes for them now",
+        "When evidence supports a mechanism, explain who is affected and what changes",
         "Do not open with",
     ):
         assert marker in card, marker
@@ -123,7 +125,40 @@ def test_the_taxonomy_seed_is_rendered_byte_for_byte_from_the_codebook_constants
     """One codebook (#501 D3): the seed, the metric's feedback and the blind drafters read the same text."""
 
     assert seed_instruction("taxonomy") == render_taxonomy_seed_instruction()
-    assert load_stable_program_artifact().taxonomy_instruction == render_taxonomy_seed_instruction()
+    assert load_stable_program_state().instruction_for("taxonomy") == render_taxonomy_seed_instruction()
+
+
+def test_the_novelty_contract_no_longer_exempts_the_model_s_own_direction() -> None:
+    """#651 §6.3: the seed half of the one-chain change, asserted on the bytes the provider is sent.
+
+    `grounded_restatement` stopped honouring a direction flip, so the instruction must stop promising one.
+    The absolute sentence is named here rather than only removed, because the pin over these bytes proves
+    *that* they moved and nothing else proves *what* moved.
+    """
+
+    semantics = seed_instruction("event_semantics")
+
+    assert "A direction flip versus the told entry is never a restatement." not in semantics
+    assert "Your own direction reading is not a fact about the world" in semantics
+    # The #522 calibration the short contract must not have displaced: "a decision-relevant new quantity"
+    # is a progression, and a sharper figure of the quantity already told is not one.
+    assert "a more precise figure of the same fact is still the same fact" in semantics
+    assert "Two different economic events are not one fact because one storyline covers both." in semantics
+    assert "restates must name the told index of the same fact" in semantics
+    for counterexample in (
+        # The #630 pair that shipped twice: one release, two outlets.
+        '"Visa brings onchain credit to its growing stablecoin card business" is restatement/restates 6',
+        # The three-step listing sequence: same notice, other channel, other venue.
+        "The same Upbit notice arriving through another channel is restatement/restates 6",
+        '"Bithumb 新增集群协议（CP）韩元交易对" is progression: another venue listed it',
+        # A real reversal is still a progression, which is the label the policy exemptions answer to.
+        '"该国取消上述加征计划" is progression/restates=-1',
+        # Different economic events inside one storyline.
+        "is new_fact: a different country's release.",
+        "is new_fact: a different traded quantity of the same trade story.",
+        "is new_fact: a different statistical period.",
+    ):
+        assert counterexample in semantics, counterexample
 
 
 def test_the_event_semantics_seed_no_longer_carries_any_taxonomy_label() -> None:
@@ -215,7 +250,7 @@ def test_the_reader_card_seed_asks_for_a_condensed_headline_and_a_required_why()
     card = seed_instruction("reader_card")
     assert "Aim for at most 50 characters and never exceed 60" in card
     assert "Never stop mid-clause to fit the limit: condense first" in card
-    assert "why_zh is required: exactly one plain sentence, never empty and never punctuation alone" in card
+    assert "why_zh is required: one nonempty plain Chinese sentence, at most 140 characters" in card
     assert "Write the headline in Chinese even when the original is entirely English" in card
     assert "If the faithful result is at most 60 characters, do not shorten it further." not in card
 

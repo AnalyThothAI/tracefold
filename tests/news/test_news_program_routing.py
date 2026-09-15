@@ -10,12 +10,13 @@ import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tracefold.news.program import routing as routing_module
-from tracefold.news.program.artifact import ProgramStrategyArtifactV1, build_code_owned_program_artifact
+from tracefold.news.program.artifact import NewsProgramStateV1, build_code_owned_program_state
 from tracefold.news.program.contracts import ProgramCallTrace, ProgramTrace, SemanticJudgeError, TriageContext
 from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity, ScriptedLM
 from tracefold.news.program.module import NativeNewsProgram
 from tracefold.news.program.routing import RoutedSemanticJudge, RouteLMs
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.taxonomy import source_authority_from_evidence
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:
@@ -88,7 +89,7 @@ def _context() -> TriageContext:
 def _audited(
     steps: list[Any],
     *,
-    artifact: ProgramStrategyArtifactV1,
+    artifact: NewsProgramStateV1,
     predictor: str,
     route: str,
 ) -> AuditedConfiguredLM:
@@ -106,7 +107,7 @@ def _audited(
 
 
 def _route(
-    artifact: ProgramStrategyArtifactV1,
+    artifact: NewsProgramStateV1,
     *,
     route: str,
     semantics: list[Any],
@@ -127,7 +128,7 @@ def _route(
 
 
 def test_common_primary_success_is_exactly_three_physical_calls() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(artifact, route="primary", semantics=[_semantics()], cards=[_card()]),
@@ -147,7 +148,7 @@ def test_common_primary_success_is_exactly_three_physical_calls() -> None:
 
 
 def test_route_composition_rejects_unwrapped_base_lm_that_cannot_audit_calls() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     bare = ScriptedLM([_semantics(), _taxonomy(), _card()])
 
     with pytest.raises(TypeError, match="news_program_route_lm_invalid"):
@@ -212,7 +213,7 @@ def test_program_trace_rejects_retired_or_unaddressed_identity(field_name: str, 
 def test_successful_judgment_requires_complete_answer_identity(
     trace_field: str | None, judgment_field: str | None
 ) -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(artifact, route="primary", semantics=[_semantics()], cards=[_card()]),
@@ -230,7 +231,7 @@ def test_successful_judgment_requires_complete_answer_identity(
 
 @pytest.mark.parametrize(("answering_route", "fallback_from"), (("fallback", None), ("primary", "failure")))
 def test_successful_judgment_route_matches_fallback_cause(answering_route: str, fallback_from: str | None) -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(artifact, route="primary", semantics=[_semantics()], cards=[_card()]),
@@ -246,7 +247,7 @@ def test_successful_judgment_route_matches_fallback_cause(answering_route: str, 
 
 
 def test_stock_json_adapter_format_fallback_is_audited_and_route_stays_bounded() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(
@@ -273,7 +274,7 @@ def test_stock_json_adapter_format_fallback_is_audited_and_route_stays_bounded()
 
 
 def test_provider_failure_falls_back_and_restarts_from_event_semantics() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(
@@ -303,7 +304,7 @@ def test_provider_failure_falls_back_and_restarts_from_event_semantics() -> None
     [AssertionError("assertion defect"), RuntimeError("runtime defect"), MemoryError("memory defect")],
 )
 def test_unknown_program_exception_propagates_without_fallback(error: BaseException) -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     primary = _route(artifact, route="primary", semantics=[error], cards=[])
     fallback = _route(artifact, route="fallback", semantics=[_semantics()], cards=[_card()])
     judge = RoutedSemanticJudge(NativeNewsProgram(artifact), primary=primary, fallback=fallback)
@@ -316,7 +317,7 @@ def test_unknown_program_exception_propagates_without_fallback(error: BaseExcept
 
 
 def test_domain_invalid_semantics_fail_closed_without_novelty_default() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(
@@ -338,7 +339,7 @@ def test_domain_invalid_semantics_fail_closed_without_novelty_default() -> None:
 
 
 def test_truncated_provider_answer_remains_provider_success_and_skips_format_retry() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     response = dspy.LMResponse.from_text('{"semantics":', model="scripted/truncated")
     response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
     judge = RoutedSemanticJudge(
@@ -360,7 +361,7 @@ def test_truncated_provider_answer_remains_provider_success_and_skips_format_ret
 
 
 def test_dual_provider_failure_returns_one_complete_partial_trace() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(
@@ -389,7 +390,7 @@ def test_dual_provider_failure_returns_one_complete_partial_trace() -> None:
 
 
 def test_primary_breaker_opens_after_three_retryable_failures_and_skips_a_physical_call() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     primary = _route(
         artifact,
         route="primary",
@@ -417,7 +418,7 @@ def test_primary_breaker_opens_after_three_retryable_failures_and_skips_a_physic
 
 
 def test_compile_mode_without_primary_breaker_attempts_every_independent_case() -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     primary = _route(
         artifact,
         route="primary",
@@ -487,7 +488,7 @@ class _LateLM(_CancelledLM):
 def _wrap_provider_spy(
     delegate: dspy.BaseLM,
     *,
-    artifact: ProgramStrategyArtifactV1,
+    artifact: NewsProgramStateV1,
 ) -> AuditedConfiguredLM:
     return AuditedConfiguredLM(
         delegate,
@@ -502,7 +503,7 @@ def _wrap_provider_spy(
 def test_route_deadline_cancels_the_physical_call_and_closes_one_terminal_receipt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     delegate = _CancelledLM()
     primary = RouteLMs(
         event_semantics=_wrap_provider_spy(delegate, artifact=artifact),
@@ -526,7 +527,7 @@ def test_route_deadline_cancels_the_physical_call_and_closes_one_terminal_receip
 def test_provider_answer_after_deadline_is_reconciled_as_late_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    artifact = build_code_owned_program_artifact()
+    artifact = build_code_owned_program_state()
     delegate = _LateLM(_semantics())
     primary = RouteLMs(
         event_semantics=_wrap_provider_spy(delegate, artifact=artifact),
@@ -545,3 +546,100 @@ def test_provider_answer_after_deadline_is_reconciled_as_late_completion(
     assert caught.value.partial_trace is not None
     assert len(caught.value.partial_trace.calls) == 1
     assert caught.value.partial_trace.calls[0].terminal_disposition == "late_completion"
+
+
+def _taxonomy_only_failure(taxonomies: list[Any]) -> tuple[Any, RouteLMs]:
+    """One judgment whose taxonomy Predictor fails and whose other two Predictors answer."""
+
+    artifact = build_code_owned_program_state()
+    fallback = _route(artifact, route="fallback", semantics=[_semantics()], cards=[_card()])
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(
+            artifact,
+            route="primary",
+            semantics=[_semantics()],
+            taxonomies=taxonomies,
+            cards=[_card()],
+        ),
+        fallback=fallback,
+    )
+    return asyncio.run(judge.judge(_context())), fallback
+
+
+def test_a_taxonomy_provider_failure_keeps_the_card_and_never_restarts_the_route() -> None:
+    """#651 §5.3. The fallback re-runs all three Predictors, so it is the right answer only when the
+    judgment has nothing to publish. A taxonomy failure leaves a complete verdict, a complete card and the
+    code-owned source authority `decide()` reads, so spending a second EventSemantics and a second
+    ReaderCard call on it would buy the reader nothing."""
+
+    judgment, fallback = _taxonomy_only_failure([dspy.LMServerError("unavailable", code="server")])
+
+    assert judgment.trace.answering_route == "primary"
+    assert judgment.fallback_from is None
+    assert fallback.event_semantics._delegate.requests == []
+    assert [(call.predictor, call.terminal_disposition) for call in judgment.trace.calls] == [
+        ("event_semantics", "provider_success"),
+        ("taxonomy", "provider_error"),
+        ("reader_card", "provider_success"),
+    ]
+    assert judgment.verdict.headline_zh == "比特币上线新交易市场"
+    assert judgment.editorial.taxonomy is None
+    assert judgment.editorial.taxonomy_status == "unavailable"
+    assert judgment.editorial.taxonomy_error_code == "news_program_lm_server"
+    # The authority is computed from the evidence and is unaffected by the Predictor that failed.
+    assert judgment.editorial.source_authority == source_authority_from_evidence(_context().evidence)
+    # Per-predictor outcome at judgment altitude: no taxonomy hash, and the code that says why.
+    assert judgment.trace.taxonomy_sha256 is None
+    assert judgment.trace.taxonomy_error_code == "news_program_lm_server"
+    assert judgment.trace.reader_card_sha256 is not None
+
+
+def test_a_truncated_taxonomy_answer_is_named_on_the_judgment_it_did_not_stop() -> None:
+    response = dspy.LMResponse.from_text('{"taxonomy":', model="scripted/truncated")
+    response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
+
+    judgment, fallback = _taxonomy_only_failure([response])
+
+    assert fallback.taxonomy._delegate.requests == []
+    assert judgment.editorial.taxonomy_status == "unavailable"
+    assert judgment.editorial.taxonomy_error_code == "news_program_output_truncated"
+    taxonomy_call = next(call for call in judgment.trace.calls if call.predictor == "taxonomy")
+    assert taxonomy_call.error_code == "news_program_lm_output_truncated"
+    assert taxonomy_call.finish_reason == "length"
+
+
+def test_an_unparseable_taxonomy_answer_costs_the_label_and_nothing_else() -> None:
+    """The adapter's own one format fallback still runs; only the third call is the ReaderCard's."""
+
+    judgment, _ = _taxonomy_only_failure(["not-json", "not-json"])
+
+    assert [(call.predictor, call.attempt, call.terminal_disposition) for call in judgment.trace.calls] == [
+        ("event_semantics", 1, "provider_success"),
+        ("taxonomy", 1, "adapter_parse_error"),
+        ("taxonomy", 2, "adapter_parse_error"),
+        ("reader_card", 1, "provider_success"),
+    ]
+    assert judgment.editorial.taxonomy_error_code == "news_program_adapter_parse_error"
+    assert judgment.usage.physical_call_count == 4
+
+
+def test_a_card_failure_after_a_taxonomy_failure_still_fails_the_whole_judgment() -> None:
+    """The reader's copy is the product. Losing the classification is survivable; losing the card is not."""
+
+    artifact = build_code_owned_program_state()
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(
+            artifact,
+            route="primary",
+            semantics=[_semantics()],
+            taxonomies=[dspy.LMServerError("unavailable", code="server")],
+            cards=[dspy.LMServerError("unavailable", code="server")],
+        ),
+    )
+
+    with pytest.raises(SemanticJudgeError) as caught:
+        asyncio.run(judge.judge(_context()))
+
+    assert caught.value.failing_predictor == "reader_card"

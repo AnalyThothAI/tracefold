@@ -281,9 +281,15 @@ def test_a_percentage_without_a_denominator_is_not_reported() -> None:
 
 
 def test_metric_version_is_pinned() -> None:
-    """Changing this string is a new version and a replay, never an edit to what v1 rows mean."""
+    """Changing this string is a new version and a replay, never an edit to what a stored row means.
 
-    assert REACTION_METRIC_VERSION == "reaction_v1"
+    v2 (#651 §6.2): the anchor, interval, price kind, gap tolerance and aggregation are unchanged, but
+    *which contract* a symbol resolves to now depends on the market the Event's judgment named, so a
+    `reaction_v1` row and a `reaction_v2` row for the same `(event_id, symbol)` can be measurements of two
+    different instruments. They are kept apart rather than reconciled.
+    """
+
+    assert REACTION_METRIC_VERSION == "reaction_v2"
 
 
 # ---------------------------------------------------------------------------- venue adapters

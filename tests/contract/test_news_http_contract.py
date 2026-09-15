@@ -17,6 +17,7 @@ from tracefold.app.http.schemas import news_common as news_common_schemas
 from tracefold.app.http.schemas import status as status_schemas
 from tracefold.news import EVENT_KINDS, MARKET_KINDS
 from tracefold.news.market_review.instruments import InstrumentSearchIdentity
+from tracefold.news.market_review.pricing import REACTION_METRIC_VERSION
 from tracefold.news.models import Admission
 from tracefold.news.storage.feed import _triage_assets
 from tracefold.platform.config.models import Settings
@@ -274,8 +275,9 @@ class _FakePriceRepository:
         self.calls.append(("event_reactions", {"event_id": event_id}))
         return []
 
-    def quotes_for_symbols(self, symbols: Any, **kwargs: Any) -> list[dict[str, Any]]:
-        self.calls.append(("quotes_for_symbols", {"symbols": list(symbols), **kwargs}))
+    def quotes_for_symbols(self, requests: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        symbols = [request.symbol for request in requests]
+        self.calls.append(("quotes_for_symbols", {"symbols": symbols, **kwargs}))
         return [
             {
                 "requested_symbol": symbol,
@@ -308,7 +310,7 @@ class _FakePriceRepository:
     def price_status(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("price_status", kwargs))
         return {
-            "metric_version": "reaction_v1",
+            "metric_version": REACTION_METRIC_VERSION,
             "oldest_due_age_ms": 0,
             "sources": [],
             "fresh_sources": 0,
@@ -583,12 +585,14 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "event_family_zh",
         "change_state",
         "change_state_zh",
-        "source_authority",
-        "source_authority_zh",
         "assertion_status",
         "assertion_status_zh",
     }
-    assert "taxonomy" in news_common_schemas.NewsTriageSummaryData.model_fields
+    # #651 §5.3: the code-owned authority is an editorial field, published beside the classification
+    # rather than inside it, and it survives a taxonomy the model failed to produce.
+    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code", "source_authority", "source_authority_zh"} <= set(
+        news_common_schemas.NewsTriageSummaryData.model_fields
+    )
     assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(status_schemas.NewsStatusData.model_fields) == {
         "state",
@@ -665,6 +669,10 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
         "why_zh": "准入状态发生变化",
     }
     model_editorial = {
+        "source_authority": "issuer_first_party",
+        "source_authority_zh": "发行方一手来源",
+        "taxonomy_status": "available",
+        "taxonomy_error_code": None,
         "taxonomy": {
             "taxonomy_version": "news_taxonomy_v1",
             "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac",
@@ -674,8 +682,6 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
             "event_family_zh": "市场准入",
             "change_state": "effective",
             "change_state_zh": "已生效",
-            "source_authority": "issuer_first_party",
-            "source_authority_zh": "发行方一手来源",
             "assertion_status": "confirmed",
             "assertion_status_zh": "已确认",
         },
@@ -691,14 +697,14 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
     }
     payload = {
         "stage": "triage",
-        "policy_version": "news_triage_policy_v13",
+        "policy_version": "news_triage_policy_v14",
         "judgment_contract_version": "news_judgment_v2",
         "judgment_origin": "model",
         "judgment_sha256": "b" * 64,
         "verdict": verdict,
         "model_editorial": model_editorial,
         "model": "model-v1",
-        "program_version": "news_semantic_program_v9",
+        "program_version": "news_semantic_program_v10",
         "program_sha256": "d" * 64,
         "rule_baseline_decision": "push",
         "final_decision": "push",
@@ -712,8 +718,14 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
     assert validated.judgment_origin == "model"
     assert validated.verdict.assets[0].market_type == "crypto"
     assert _triage_assets(verdict["assets"]) == [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}]
-    with pytest.raises(KeyError):
-        _triage_assets([{"symbol": "BTC", "role": "primary"}])
+    # A verdict written before #651 says nothing about the market, and the projection says so rather than
+    # raising or inventing one: `unknown` is a value the browser can render and nothing can act on.
+    assert _triage_assets([{"symbol": "BTC", "role": "primary"}]) == [
+        {"symbol": "BTC", "market_type": "unknown", "role": "primary"}
+    ]
+    assert _triage_assets([{"symbol": "BTC", "market_type": "token", "role": "primary"}]) == [
+        {"symbol": "BTC", "market_type": "unknown", "role": "primary"}
+    ]
     deterministic = {**payload, "judgment_origin": "oi", "model": None, "model_editorial": None}
     assert event_schemas.NewsVerdictData.model_validate(deterministic).judgment_origin == "oi"
     with pytest.raises(ValueError, match="news_verdict_model_identity_origin_mismatch"):
@@ -1464,7 +1476,7 @@ def test_event_detail_keeps_the_two_market_meanings_in_separate_fields(client) -
 def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     api, _ = client
     data = api.get("/api/news/status", params={"token": TOKEN}).json()["data"]
-    assert data["price"]["metric_version"] == "reaction_v1"
+    assert data["price"]["metric_version"] == REACTION_METRIC_VERSION
     assert data["price"]["sources"] == []
     # The backlog SLO has to be *served*, not merely declared: the envelope drops unset fields, so a schema
     # default with no repository value disappears from the response entirely.

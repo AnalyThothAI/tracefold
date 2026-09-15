@@ -53,7 +53,14 @@ class ProgressionReview(ExactNewsModel):
 
 @runtime_checkable
 class ProgressionVerifier(Protocol):
-    """Optional model-backed capability; delivery never waits for it before the initial send."""
+    """Optional model-backed capability; delivery never waits for it before the initial send.
+
+    It confirms a *claimed* progression after the card has shipped, and it decides nothing about novelty.
+    Novelty is decided before delivery -- since #651 §6.3 a `restatement` of a told entry drops whichever
+    way the model read its direction -- so the only thing an unanswered review here can cost the reader is
+    a badge that stays `pending`. It must never cost them the card, which is why it runs post-delivery and
+    why `test_a_progression_review_that_has_not_answered_cannot_hold_the_first_delivery` exists.
+    """
 
     async def review(
         self,

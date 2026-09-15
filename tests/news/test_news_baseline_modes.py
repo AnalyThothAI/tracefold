@@ -21,7 +21,7 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.baseline import BaselineCase, run_baseline
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.lm import (
     AuditedConfiguredLM,
@@ -131,7 +131,7 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
 
 
 def _runtime(cases: list[BaselineCase], program: RoutedSemanticJudge, **kwargs: Any) -> Any:
-    artifact = kwargs.pop("artifact", None) or load_stable_program_artifact()
+    artifact = kwargs.pop("artifact", None) or load_stable_program_state()
     return run_baseline(cases, mode="runtime_live", artifact=artifact, semantic_judge=program, **kwargs)
 
 
@@ -142,7 +142,7 @@ def _audited_lm(
     route: str,
     model: str | None = None,
 ) -> tuple[AuditedConfiguredLM, ScriptedLM]:
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     model_name = model or f"scripted/{route}-{predictor}"
     delegate = ScriptedLM(steps, model=model_name)
     lm = AuditedConfiguredLM(
@@ -195,7 +195,7 @@ def _judge(
     fallback_semantics: list[Any] | None = None,
     fallback_cards: list[Any] | None = None,
 ) -> tuple[RoutedSemanticJudge, ScriptedLM, ScriptedLM, ScriptedLM | None, ScriptedLM | None]:
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     primary, primary_event, primary_card = _route(
         route="primary", semantics=semantics, cards=cards, taxonomies=taxonomies
     )
@@ -262,7 +262,7 @@ def test_compile_live_fails_where_runtime_live_answers_through_fallback() -> Non
     compiled = run_baseline(
         [case],
         mode="compile_live",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
         semantic_judge=_compile_program(break_card=True),
     )
     assert compiled.population == {"requested_n": 1, "answered_n": 0, "failure_n": 1, "failure_rate": 1.0}
@@ -288,7 +288,7 @@ def test_each_mode_publishes_the_route_facts_only_it_can_know() -> None:
     compiled = run_baseline(
         [case],
         mode="compile_live",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
         semantic_judge=_compile_program(break_card=False),
     )
     # Both live modes publish route facts from the same native Module. compile_live disables the
@@ -314,7 +314,7 @@ def test_runtime_live_consults_the_dedicated_reader_card_endpoint() -> None:
     """The ReaderCard slot is its own model binding, and the baseline must exercise it rather than scoring
     a card the EventSemantics endpoint happened to write."""
 
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     route, semantics_lm, reader_lm = _route(
         route="primary",
         semantics=[{"semantics": _SEMANTICS}],
@@ -447,7 +447,7 @@ def test_the_primary_breaker_carries_across_cases_within_one_run() -> None:
     """
 
     assert PROGRAM_PRIMARY_BREAKER_FAILURES == 3
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     cases = [_case(index) for index in range(1, PROGRAM_PRIMARY_BREAKER_FAILURES + 2)]
     primary_route, primary, _primary_card = _route(
         route="primary",

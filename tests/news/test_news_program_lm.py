@@ -504,3 +504,50 @@ def test_contextvars_isolate_concurrent_judgments() -> None:
     assert first[0] == 1
     assert second[0] == 2
     assert first[1] != second[1]
+
+
+def _audited_for(predictor: str, steps: list[Any], *, ledger: LMCallLedger) -> AuditedConfiguredLM:
+    delegate = ScriptedLM(steps, structured_output="json_schema")
+    return AuditedConfiguredLM(
+        delegate,
+        structured_output="json_schema",
+        runtime_identity=RuntimeModelIdentity.issue(provider="scripted", model=delegate.model),
+        predictor=predictor,
+        route="primary",
+        model_binding="primary",
+        ledger=ledger,
+    )
+
+
+def test_domain_failure_blames_the_named_predictor_not_the_latest_call() -> None:
+    """#651 §5.3: a taxonomy rejection no longer ends the route, so a later ReaderCard call would inherit
+    its terminal disposition if attribution stayed by recency. The caller states the stage instead."""
+
+    ledger = LMCallLedger()
+    taxonomy = _audited_for("taxonomy", [{"answer": {"value": 1}}], ledger=ledger)
+    reader_card = _audited_for("reader_card", [{"answer": {"value": 2}}], ledger=ledger)
+
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
+        _predict(taxonomy)
+        blamed = ledger.domain_failure("news_program_taxonomy_domain_validation_error", predictor="taxonomy")
+        _predict(reader_card)
+        assert ledger.latest_disposition("taxonomy") == "domain_validation_error"
+
+    assert [receipt.predictor for receipt in ledger.receipts] == ["taxonomy", "reader_card"]
+    assert blamed is ledger.receipts[0]
+    assert ledger.receipts[0].terminal_disposition == "domain_validation_error"
+    assert ledger.receipts[0].error_code == "news_program_taxonomy_domain_validation_error"
+    assert ledger.receipts[1].terminal_disposition == "provider_success"
+    assert ledger.receipts[1].error_code is None
+
+
+def test_domain_failure_for_a_predictor_that_never_called_is_refused() -> None:
+    ledger = LMCallLedger()
+    reader_card = _audited_for("reader_card", [{"answer": {"value": 2}}], ledger=ledger)
+
+    with (
+        pytest.raises(dspy.LMConfigurationError, match="news_program_lm_domain_failure_without_call"),
+        ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)),
+    ):
+        _predict(reader_card)
+        ledger.domain_failure("news_program_taxonomy_domain_validation_error", predictor="taxonomy")

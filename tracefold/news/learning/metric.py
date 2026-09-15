@@ -40,8 +40,16 @@ from .objective import (
     DevelopmentEpisode,
     _gold_value,
     _labelled,
+    evidence_text_of,
     production_decision,
+    typed_asset_claims,
+    ungrounded_primaries,
 )
+
+# #651 §8: the taxonomy and asset comparisons are `target_metrics`'s, not this module's. Two
+# implementations of "is this taxonomy right" is how the number an operator reads before a prompt edit
+# stopped being the number GEPA maximizes, and a composite that re-derived them would put it back.
+from .target_metrics import asset_grounding_outcome, classification_score
 from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 
 # v3 (#150): the scored dimension set lost `timeliness`, the policy moved from process-global
@@ -50,7 +58,14 @@ from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 # addresses — but a version label that stays put while the definition moves is a label that lies.
 # v5 (#306 Phase 1): the deterministic ReaderCard copy contract became a scored component and a hard gate,
 # so the card side of this ruler no longer depends on a reviewer having labelled anything.
-METRIC_ID = "tracefold.news.production_action_trade_relevance_v8"
+# v10 (#651 §6.2): `asset_grounding` compares typed `(market_type, symbol, role)` claims instead of a
+# bare symbol set — so a primary/mentioned swap and a wrong market are both visible where they were
+# silently equal — and `ungrounded_primary_asset` no longer zeroes a primary the evidence text or the
+# instrument catalogue grounds when the provider tagged something else.
+# v11 (#651 §8): the taxonomy and asset comparisons moved to `learning/target_metrics.py`, and the
+# taxonomy diagnostic reports that module's masked partial score rather than a plain mean over four axes.
+# The number itself moves on a partial Gold, so the label moves with it.
+METRIC_ID = "tracefold.news.production_action_trade_relevance_v11"
 
 
 # The five components of the candidate-selection score. Code-owned and content-addressed: they are hashed
@@ -87,6 +102,7 @@ LABEL_GROUP: dict[str, str] = {
 # dropped the next new one silently.
 UNGROUPED_LABEL = "not_scored"
 _CARD_LINT_GATES: Final[frozenset[str]] = frozenset(GATE_CHECKS)
+_EVIDENCE_DIMENSIONS: Final[frozenset[str]] = frozenset({"factual_fidelity", "why_support"})
 _DIMENSION_FIELD = {
     "asset_grounding": "assets",
     "direction": "direction",
@@ -175,12 +191,7 @@ def _reader_card_owns_action_feedback(decision: DecisionResult, projection: Mapp
 
 def _observed_value(verdict: Mapping[str, Any], name: str) -> Any:
     if name == "asset_grounding":
-        assets = verdict.get("assets")
-        if not isinstance(assets, Sequence) or isinstance(assets, (str, bytes)):
-            return frozenset()
-        return frozenset(
-            base_symbol(str(dict(asset).get("symbol") or "")) for asset in assets if isinstance(asset, Mapping)
-        )
+        return typed_asset_claims(verdict.get("assets"))
     value = verdict.get(_DIMENSION_FIELD.get(name, ""), _NO_GOLD)
     if name in {"trade_channels", "trade_affected_markets"} and value is not _NO_GOLD:
         return tuple(str(item) for item in value or ())
@@ -289,7 +300,10 @@ def _component_diagnostics(
         else:
             labelled_n = len(component_anchors) + (novelty_n + taxonomy_n if component == "semantics_novelty" else 0)
             gold_scored_n = sum(wanted is not _NO_GOLD for _field, _label, wanted in component_anchors)
-            denominator = sum(label == "pass" or wanted is not _NO_GOLD for _field, label, wanted in component_anchors)
+            denominator = sum(
+                label == "pass" or wanted is not _NO_GOLD or field in _EVIDENCE_DIMENSIONS
+                for field, label, wanted in component_anchors
+            )
             if component == "semantics_novelty":
                 field_n["novelty"] = novelty_n
                 field_n["taxonomy"] = taxonomy_n
@@ -314,19 +328,23 @@ def _component(
     expected: Mapping[str, Any] | None = None,
     judge: Any = None,
     outcomes: list[tuple[str, str]] | None = None,
+    *,
+    evidence_json: str = "",
 ) -> tuple[float | None, int, int, int] | None:
     """Score one Predictor's accepted dimensions, or ``None`` when the reviewer labelled none of them.
 
-    Three branches, in strict order of how much the reviewer actually told us:
+    Accepted anchors and evidence support have distinct meanings:
 
     1. ``pass`` — a retention anchor: keep what the reviewer accepted.
     2. ``fail`` **with gold** — the reviewer stated the correct value, so only that value scores. This is the
-       DSPy-idiomatic case and the only one where the score means "right", not "different".
-    3. ``fail`` **without gold** — visible in corpus/field counts but absent from the effective denominator.
-       It never earns credit merely for changing something.
+       exact-value case; changing a field alone never earns credit.
+    3. Evidence support — factual repairs and rewritten why_support are checked against the original
+       bounded input, without requiring one reference Chinese sentence. Unavailability scores zero.
+    4. Other ``fail`` labels without gold stay outside the denominator. In particular, equivalence
+       cannot establish that a failed why_value became more useful.
 
     Returns ``(score, gold_scored_n, effective_n, labelled_n)``. ``score`` is ``None`` when labels exist but
-    none has an exact scoring anchor.
+    none has an exact, retention or evidence-support scoring anchor.
     """
 
     anchors = _scoring_anchors(dimensions, names, dict(expected or {}))
@@ -336,15 +354,39 @@ def _component(
     hits = 0.0
     gold_scored = 0
     scored_n = 0
+    support_outcome: str | None = None
     for name, label, wanted in anchors:
         field = _DIMENSION_FIELD.get(name)
+        if name in _EVIDENCE_DIMENSIONS and (label == "fail" or name == "why_support"):
+            scored_n += 1
+            if _same_value(field, verdict, production):
+                # An accepted literal answer needs no new judge; repeating a known failure is no repair.
+                hit = label == "pass"
+                outcome = "retention_hit" if hit else "support_miss"
+            else:
+                if support_outcome is None:
+                    support_outcome = _evidence_support(evidence_json, verdict, judge)
+                outcome = support_outcome
+                hit = outcome == "support_hit"
+            hits += hit
+            outcomes.append((name, outcome))
+            continue
         if label == "fail":
             if wanted is not _NO_GOLD:
                 gold_scored += 1
                 scored_n += 1
-                hit = _observed_value(verdict, name) == wanted
+                observed = _observed_value(verdict, name)
+                if name == "asset_grounding":
+                    # Typed claims, compared under #651 §6.2 rather than by set equality: `unknown` on
+                    # either side cannot contradict, and a market both sides state has to agree. The
+                    # comparison itself belongs to `target_metrics`, which is also what the understanding
+                    # ruler asks.
+                    hit, outcome = asset_grounding_outcome(observed, wanted)
+                else:
+                    hit = observed == wanted
+                    outcome = "gold_hit" if hit else "gold_miss"
                 hits += float(hit)
-                outcomes.append((name, "gold_hit" if hit else "gold_miss"))
+                outcomes.append((name, outcome))
                 continue
             outcomes.append((name, "not_scored_no_gold"))
             continue
@@ -359,6 +401,21 @@ def _component(
             outcomes.append((name, "retention_hit" if kept else "retention_miss"))
             continue
     return (hits / scored_n if scored_n else None, gold_scored, scored_n, len(anchors))
+
+
+def _evidence_support(evidence_json: str, verdict: Mapping[str, Any], judge: Any) -> str:
+    """Reuse the sealed judge and its receipts; one unavailable question is distinct from a false answer."""
+
+    verify = getattr(judge, "facts_supported", None)
+    if not evidence_json or not callable(verify):
+        return "support_unavailable"
+    try:
+        assessment = verify(evidence_json, verdict)
+        if assessment.status != "answered" or assessment.verdict is None:
+            return "support_unavailable"
+        return "support_hit" if assessment.verdict.supported_by_evidence else "support_miss"
+    except Exception:
+        return "support_unavailable"
 
 
 def _parse_prediction(
@@ -433,8 +490,7 @@ def accepted_review_metric(
     projection = dict(gold.policy_metric or {})
     dimensions = dict(review.get("dimensions") or {})
     should_push = str(review.get("should_push") or "uncertain")
-    # v4 exact gold. A failed dimension without a stated correct value is visible
-    # in corpus metadata but contributes neither a hit nor a denominator.
+    # Exact corrections remain gold; evidence-supported card repairs need no reference wording.
     expected = dict(review.get("expected") or {})
     gate_facts = dict(projection.get("gate") or {})
     grounded_values = {base_symbol(str(value)) for value in gate_facts.get("grounded_assets") or ()}
@@ -569,16 +625,41 @@ def accepted_review_metric(
     if parsed is None or lint is None:
         return _zero("Return one complete, schema-valid semantic judgment and card.", gate="schema_invalid")
     typed, editorial, judgment, verdict = parsed
-    if not taxonomy_gold_present or editorial.taxonomy is None:
-        return _zero("Return all four accepted taxonomy axes.", gate="schema_invalid")
-    taxonomy = compare_taxonomy(review["taxonomy"], editorial.taxonomy)
-    component_diagnostics["semantics_novelty"]["taxonomy"] = {
-        "score": taxonomy.score,
-        "subject_f1": taxonomy.subject_f1,
-        "missing_subjects": list(taxonomy.missing_subjects),
-        "extra_subjects": list(taxonomy.extra_subjects),
-        "wrong_axes": list(taxonomy.wrong_axes),
-    }
+    # A review that states no taxonomy is not a defective review (#651 §7.2). Under v6 every submission
+    # carried four axes, so "the accepted Gold has no taxonomy" could only mean the corpus was broken and
+    # zeroing the case was right. Under v7 it is the ordinary shape of a reviewer who judged the copy and
+    # nothing else, and zeroing it would charge a candidate for a question nobody asked — under a
+    # `schema_invalid` gate that blames the model for the reviewer's silence. The taxonomy simply is not
+    # scored here; `taxonomy_n` already keeps it out of the denominator.
+    taxonomy = None
+    if taxonomy_gold_present:
+        if editorial.taxonomy is None:
+            # #651 §5.3: the taxonomy Predictor can now fail on its own without costing the reader the card.
+            # That is the right production behavior and it is still a task failure here: this case carries
+            # accepted Gold for all four axes and the candidate answered none of them, so it scores zero and
+            # stays in the denominator. It is a separate gate from `schema_invalid` because the cause is
+            # different and so is the repair -- nothing about the *instruction* produced this, and a
+            # candidate whose taxonomy call keeps failing should be readable as that rather than as a
+            # candidate that emits invalid JSON.
+            return _zero(
+                "The taxonomy call produced no label for this case "
+                f"({editorial.taxonomy_error_code or 'unknown'}). Return all four accepted taxonomy axes.",
+                gate="taxonomy_unavailable",
+                outcomes=(
+                    *((name, "unscored") for name in scored_names),
+                    *((dimension, "taxonomy_unavailable") for dimension in TAXONOMY_TARGET_DIMENSIONS),
+                ),
+            )
+        taxonomy = compare_taxonomy(review["taxonomy"], editorial.taxonomy)
+        component_diagnostics["semantics_novelty"]["taxonomy"] = {
+            # The classification ruler's own partial score, masked to the axes this Gold states, so the
+            # composite reports the same number the classification target is optimized on.
+            "score": classification_score(review["taxonomy"], taxonomy),
+            "subject_f1": taxonomy.subject_f1,
+            "missing_subjects": list(taxonomy.missing_subjects),
+            "extra_subjects": list(taxonomy.extra_subjects),
+            "wrong_axes": list(taxonomy.wrong_axes),
+        }
 
     feedback: list[str] = []
     decision = production_decision(
@@ -608,23 +689,33 @@ def accepted_review_metric(
         else _component(dimensions, _RELEVANCE_DIMENSIONS, observed, production, expected, judge, outcomes)
     )
     semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, observed, production, expected, judge, outcomes)
-    card = _component(dimensions, _CARD_DIMENSIONS, observed, production, expected, judge, outcomes)
+    card = _component(
+        dimensions,
+        _CARD_DIMENSIONS,
+        observed,
+        production,
+        expected,
+        judge,
+        outcomes,
+        evidence_json=gold.card_evidence_json,
+    )
     # The deterministic card checks report beside the reviewer-labelled dimensions, in the same vocabulary,
     # so one `dimension_outcomes` list answers "what did this candidate do" for both kinds of truth.
     outcomes.extend(lint.outcomes)
-    outcomes.extend(
-        (dimension, "taxonomy_hit" if hit else "taxonomy_miss")
-        for dimension, hit in zip(
-            TAXONOMY_TARGET_DIMENSIONS,
-            (
-                taxonomy.subject_f1 == 1.0,
-                taxonomy.event_family_match,
-                taxonomy.change_state_match,
-                taxonomy.assertion_status_match,
-            ),
-            strict=True,
+    if taxonomy is not None:
+        outcomes.extend(
+            (dimension, "taxonomy_hit" if hit else "taxonomy_miss")
+            for dimension, hit in zip(
+                TAXONOMY_TARGET_DIMENSIONS,
+                (
+                    taxonomy.subject_f1 == 1.0,
+                    taxonomy.event_family_match,
+                    taxonomy.change_state_match,
+                    taxonomy.assertion_status_match,
+                ),
+                strict=True,
+            )
         )
-    )
 
     # ---- hard gates: a dangerous miss cannot be averaged away ----
     if should_push == "must_push" and not reaches_reader:
@@ -644,18 +735,13 @@ def accepted_review_metric(
             **decision_metadata,
         )
     if dimensions.get("factual_fidelity") == "fail":
-        evidence_json = gold.card_evidence_json
-        verify_facts = getattr(judge, "facts_supported", None)
-        try:
-            facts_supported = bool(
-                evidence_json and callable(verify_facts) and verify_facts(evidence_json, typed.model_dump(mode="json"))
-            )
-        except Exception:
-            facts_supported = False
-        if not facts_supported:
+        factual_outcome = dict(outcomes).get("factual_fidelity")
+        if factual_outcome != "support_hit":
             return _zero(
                 "The candidate's factual repair could not be verified against the immutable Event evidence.",
-                gate="factual_contradiction",
+                gate="metric_judge_unavailable"
+                if factual_outcome == "support_unavailable"
+                else "factual_contradiction",
                 action=action,
                 outcomes=outcomes,
                 **decision_metadata,
@@ -671,11 +757,14 @@ def accepted_review_metric(
             **decision_metadata,
         )
     # Symbol sets, canonicalized on both sides. Gate grounding carries the provider's raw tag (`XYZ-CL`), and
-    # a raw `.upper()` comparison would zero a candidate that correctly named `CL`.
-    ungrounded = sorted(
-        asset.symbol
-        for asset in typed.assets
-        if asset.role == "primary" and grounded_values and base_symbol(asset.symbol) not in grounded_values
+    # a raw `.upper()` comparison would zero a candidate that correctly named `CL`. Since #651 §5 the
+    # evidence text and the instrument catalogue ground a primary too: the provider tagging a *different*
+    # company is not evidence that the subject the model read out of the headline does not exist.
+    ungrounded = ungrounded_primaries(
+        [asset for asset in typed.assets if asset.role == "primary"],
+        grounded=grounded_values,
+        evidence_text=evidence_text_of(gold.context),
+        catalog_candidates=gold.context.gate.catalog_candidates,
     )
     if ungrounded:
         return _zero(
@@ -725,14 +814,30 @@ def accepted_review_metric(
     else:
         action_score = None
 
+    wrong_market = [name for name, outcome in outcomes if outcome == "known_wrong_market"]
+    if wrong_market:
+        feedback.append(
+            "The accepted answer names the same symbols in a different market; "
+            "state market_type from the evidence, or unknown when it does not establish one."
+        )
     # Novelty is the epoch's whole subject: a candidate that answers `new_fact` for every accepted
     # `restatement` must not score the same as one that gets it right, and on an `uncertain` action label
     # nothing else would notice.
     novelty_score = None if expected_novelty == "uncertain" else float(str(verdict.get("novelty")) == expected_novelty)
     semantics_subscores = [
-        value for value in (semantics[0] if semantics else None, novelty_score, taxonomy.score) if value is not None
+        value
+        for value in (
+            semantics[0] if semantics else None,
+            novelty_score,
+            taxonomy.score if taxonomy is not None else None,
+        )
+        if value is not None
     ]
-    semantics_score = sum(semantics_subscores) / len(semantics_subscores)
+    # `None`, not zero, when nothing in this component was answered (#651 §7.2). Under v6 the taxonomy
+    # was always there to score, so the list could not be empty; a review that judges only the copy now
+    # leaves it so, and a zero would be a failing mark on a question nobody asked. The weighted sum below
+    # already drops an absent component and renormalizes over the ones that are present.
+    semantics_score = sum(semantics_subscores) / len(semantics_subscores) if semantics_subscores else None
     relevance_score = relevance_component[0] if relevance_component else None
     card_score = card[0] if card else None
     # Always present unless the card tripped a gate above or no check applied: this is the whole point of
@@ -776,7 +881,7 @@ def accepted_review_metric(
         and owned != _CARD_DIMENSIONS
     ):
         feedback.append(f"Accepted novelty is {expected_novelty}.")
-    if not taxonomy.exact and owned != _CARD_DIMENSIONS:
+    if taxonomy is not None and not taxonomy.exact and owned != _CARD_DIMENSIONS:
         feedback.append(f"Taxonomy: {taxonomy.feedback}")
     # The lint's own repair instructions, routed to the Predictor that writes the copy. They are the only
     # feedback in this metric that needs no reviewer label at all, which is why they survive `pred_name`
@@ -860,9 +965,15 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
         # v5 (#117) makes the accepted-rubric identity in `gold_source` exact rather than claiming v4 for
         # every caller. A schema label that stays put while the document changes is the same lie
         # `METRIC_ID` bumps to avoid.
-        "schema": "tracefold.news.compile_metric_receipt.v5",
+        "schema": "tracefold.news.compile_metric_receipt.v6",
         "metric_id": METRIC_ID,
         "gold_source": f"news_reviews.payload.expected ({review_rubric_version} exact gold only)",
+        "evidence_support": {
+            "dimensions": sorted(_EVIDENCE_DIMENSIONS),
+            "source": "CompileExample.card_evidence_json (immutable bounded model input)",
+            "unavailable": "failure_as_zero_separate_from_unsupported",
+            "why_value": "accepted_pass_retention_only; fail_without_gold_not_scored",
+        },
         # Which ruler measured the free-text retention anchors. Two runs judged differently are not comparable,
         # and `null` means the strict byte-equality rule that predates #148.
         "semantic_judge": judge.identity if judge is not None else None,
@@ -901,7 +1012,9 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             "must_push_miss",
             "must_hold_send",
             "schema_invalid",
+            "taxonomy_unavailable",
             "factual_contradiction",
+            "metric_judge_unavailable",
             *GATE_CHECKS,
             "ungrounded_primary_asset",
             "background_realtime_send",

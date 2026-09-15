@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from tracefold.news import EventKind
+from tracefold.news import EventKind, SourceAuthority
 
 from .common import ExactApiSchema
 from .news_common import (
@@ -128,8 +128,28 @@ class NewsPresentationVerdictData(ExactApiSchema):
 
 
 class NewsModelEditorialData(ExactApiSchema):
-    taxonomy: NewsTaxonomyData
+    """The editorial sibling of one model verdict, in the current `news_editorial_v3` read shape.
+
+    ``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer
+    and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
+    ``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under
+    `news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row
+    reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3).
+    """
+
+    source_authority: SourceAuthority
+    source_authority_zh: str = ""
+    taxonomy: NewsTaxonomyData | None = None
+    taxonomy_status: Literal["available", "unavailable"] = "available"
+    taxonomy_error_code: str | None = None
     relevance: NewsTradeRelevanceData
+
+    @model_validator(mode="after")
+    def taxonomy_status_matches_taxonomy(self) -> NewsModelEditorialData:
+        available = self.taxonomy_status == "available"
+        if available != (self.taxonomy is not None) or available != (self.taxonomy_error_code is None):
+            raise ValueError("news_model_editorial_taxonomy_status_mismatch")
+        return self
 
 
 class NewsVerdictData(ExactApiSchema):

@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
-from tracefold.news.market_review.pricing import QUOTE_REQUEST_SYMBOL_MAX
+from tracefold.news.market_review.pricing import QUOTE_REQUEST_SYMBOL_MAX, QuoteRequest
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -61,7 +61,10 @@ def get_news_quotes(
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
-        quotes = repos.price.quotes_for_symbols(requested, now_ms=now_ms)
+        # The operator console asks by symbol alone, so the question stays untyped and resolves exactly as
+        # it did before #651 §6.2. A typed answer needs the Event the symbol came from, which this batch
+        # endpoint deliberately does not have -- the card and the Reaction, which do, are typed.
+        quotes = repos.price.quotes_for_symbols([QuoteRequest(symbol) for symbol in requested], now_ms=now_ms)
     return _etagged({"quotes": quotes, "measured_at_ms": now_ms}, request, envelope=_QuotesEnvelope)
 
 

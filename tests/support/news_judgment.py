@@ -15,7 +15,7 @@ from tracefold.news.program.contracts import (
     TradeRelevanceV1,
     canonical_sha,
 )
-from tracefold.news.taxonomy import NewsTaxonomyV1
+from tracefold.news.taxonomy import NewsTaxonomyV1, SourceAuthority
 
 
 def news_taxonomy(**overrides: Any) -> NewsTaxonomyV1:
@@ -24,7 +24,6 @@ def news_taxonomy(**overrides: Any) -> NewsTaxonomyV1:
         "event_family": "other",
         "change_state": "unknown",
         "assertion_status": "unknown",
-        "source_authority": "unknown",
     }
     values.update(overrides)
     return NewsTaxonomyV1.model_validate(values)
@@ -49,13 +48,20 @@ def scored_judgment(
     *,
     relevance: TradeRelevanceV1 | None = None,
     taxonomy: NewsTaxonomyV1 | None = None,
+    source_authority: SourceAuthority = "unknown",
+    taxonomy_error_code: str | None = None,
 ) -> ScoredJudgment:
+    """One `news_editorial_v3` judgment. Naming ``taxonomy_error_code`` is how a test asks for the
+    taxonomy-unavailable judgment the Program now produces when only that Predictor failed."""
+
     typed_verdict = verdict if isinstance(verdict, TriageVerdict) else TriageVerdict.model_validate(verdict)
     return ScoredJudgment.issue(
         verdict=typed_verdict,
         editorial=EditorialEnvelope.issue(
             relevance=relevance or trade_relevance(),
-            taxonomy=taxonomy or news_taxonomy(),
+            source_authority=source_authority,
+            taxonomy=None if taxonomy_error_code is not None else (taxonomy or news_taxonomy()),
+            taxonomy_error_code=taxonomy_error_code,
         ),
     )
 
@@ -93,6 +99,7 @@ def semantic_judgment(
     typed = verdict if isinstance(verdict, TriageVerdict) else TriageVerdict.model_validate(verdict)
     editorial = EditorialEnvelope.issue(
         relevance=trade_relevance(),
+        source_authority="unknown",
         taxonomy=news_taxonomy(),
     )
     calls = tuple(

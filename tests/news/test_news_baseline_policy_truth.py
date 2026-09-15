@@ -12,7 +12,7 @@ from tracefold.news.learning.baseline import BaselineCase, run_baseline
 from tracefold.news.learning.metric import CandidatePrediction, accepted_review_metric, build_compile_example
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
@@ -196,6 +196,6 @@ def test_recorded_scoring_uses_the_complete_shipped_decision() -> None:
         episode=_episode(None),
         recorded_decision_result=recorded_decision("push"),
     )
-    report = run_baseline([case], mode="recorded", artifact=load_stable_program_artifact())
+    report = run_baseline([case], mode="recorded", artifact=load_stable_program_state())
     assert report.cases[0].action == "push"
     assert report.identity["policy_sha256"] is None

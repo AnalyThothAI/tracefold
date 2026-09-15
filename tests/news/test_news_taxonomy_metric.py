@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from tracefold.news.learning.taxonomy_metric import calibrate_taxonomy, compare_taxonomy, summarize_taxonomy
+from tracefold.news.taxonomy import IPTC_CODEBOOK_SHA256
 
 
 def _gold(**updates: Any) -> dict[str, Any]:
@@ -19,7 +20,13 @@ def _gold(**updates: Any) -> dict[str, Any]:
 
 
 def _prediction(**updates: Any) -> dict[str, Any]:
-    value = {**_gold(), "source_authority": "unknown"}
+    """The persisted taxonomy shape: the four axes plus the codebook identity they were labelled against."""
+
+    value = {
+        **_gold(),
+        "taxonomy_version": "news_taxonomy_v1",
+        "codebook_sha256": IPTC_CODEBOOK_SHA256,
+    }
     value.update(updates)
     return value
 
@@ -59,7 +66,6 @@ def test_four_axis_score_and_feedback_come_from_one_comparison() -> None:
             event_family="market_access",
             change_state="reported",
             assertion_status="claimed",
-            source_authority="regulatory_filing",
         ),
     )
 
@@ -90,15 +96,19 @@ def test_a_confusion_the_codebook_does_not_rule_on_carries_definitions_only() ->
     )
 
 
-def test_source_authority_never_changes_the_model_score_or_feedback() -> None:
-    gold = _gold(event_family="financial_results")
-    first = compare_taxonomy(gold, _prediction(event_family="other", source_authority="unknown"))
-    second = compare_taxonomy(
-        gold,
-        _prediction(event_family="other", source_authority="issuer_first_party"),
-    )
+def test_the_persisted_shape_scores_exactly_as_the_four_bare_axes_do() -> None:
+    """The codebook identity travels with a stored label and is not one of the things being compared.
 
-    assert first == second
+    The predecessor of this test proved the same property about `source_authority`, which used to sit in
+    this object; #651 moved it to the editorial envelope, so a taxonomy can no longer carry it at all.
+    What is left to prove is that the two shapes the comparison legitimately receives -- a stored label
+    and a model's four bare axes -- score identically."""
+
+    gold = _gold(event_family="financial_results")
+
+    assert compare_taxonomy(gold, _prediction(event_family="other")) == compare_taxonomy(
+        gold, _gold(event_family="other")
+    )
 
 
 def test_taxonomy_summary_counts_one_vote_per_contract_cluster_and_exposes_blind_spots() -> None:

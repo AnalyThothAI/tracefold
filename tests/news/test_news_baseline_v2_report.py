@@ -17,7 +17,7 @@ from tracefold.news.learning.baseline import (
 from tracefold.news.learning.judge import CardEquivalenceJudge, MetricJudgeEndpoint
 from tracefold.news.learning.objective import _SEMANTICS_DIMENSIONS, DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.lm import ScriptedLM
@@ -78,11 +78,18 @@ def _policy() -> dict[str, Any]:
     }
 
 
-def _case(index: int, *, cluster: str | None = None, should_push: str = "should_push") -> BaselineCase:
+def _case(
+    index: int,
+    *,
+    cluster: str | None = None,
+    should_push: str = "should_push",
+    applicable_targets: tuple[str, ...] = ("classification", "understanding"),
+) -> BaselineCase:
     episode = DevelopmentEpisode(
         case_id=f"{index:064x}",
         cluster_id=cluster or f"{index:064x}",
         stratum="delivered",
+        applicable_targets=applicable_targets,
         context=TriageContext.from_card(
             {**_CARD, "opened_at_ms": 1787000000000 + index * 1000},
             watchlist=(),
@@ -113,7 +120,7 @@ def _case(index: int, *, cluster: str | None = None, should_push: str = "should_
 
 
 def _report(cases: list[BaselineCase]) -> Any:
-    return run_baseline(cases, mode="recorded", artifact=load_stable_program_artifact())
+    return run_baseline(cases, mode="recorded", artifact=load_stable_program_state())
 
 
 class _SilentJudgeLM(MetricJudgeEndpoint):
@@ -146,7 +153,7 @@ def test_recorded_factual_failure_fails_closed_without_a_judge_call() -> None:
     report = run_baseline(
         [recorded],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
         judge=CardEquivalenceJudge(lm),
     )
 
@@ -175,8 +182,9 @@ def test_failures_are_published_as_a_second_score_not_dropped_from_the_first() -
         [answered, _failed_case(_case(2), "provider_timeout")],
         cases=[_case(1), _case(2)],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
         judge=None,
+        answers={},
         strict_scores={},
         latency={},
         route={},
@@ -208,8 +216,9 @@ def test_a_run_that_answered_nothing_still_publishes_its_receipt() -> None:
         [_failed_case(_case(1), "provider_timeout")],
         cases=[_case(1)],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
         judge=None,
+        answers={},
         strict_scores={},
         latency={},
         route={},
@@ -264,7 +273,7 @@ def test_prediction_dimensions_move_with_predictions_while_labels_do_not() -> No
             )
         ],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
     assert kept.review_label_distribution == changed.review_label_distribution
     assert kept.prediction_dimensions == changed.prediction_dimensions, (
@@ -368,7 +377,7 @@ def test_timeliness_is_delivery_owned_and_still_visible_as_a_label() -> None:
 def test_report_identity_pins_program_and_corpus_and_names_no_unused_policy() -> None:
     report = _report([_case(1)])
     identity = report.identity
-    assert identity["program_sha256"] == load_stable_program_artifact().program_sha256
+    assert identity["program_sha256"] == load_stable_program_state().program_sha256
     # Two halves of one identity: the sha addresses the optimizer write-set, the envelope hash addresses
     # the code-owned behavior it runs under. A receipt naming only the first cannot say what executed.
     assert identity["envelope_sha256"] == EXECUTION_ENVELOPE_SHA256
@@ -415,7 +424,7 @@ def test_every_identity_component_moves_the_report_sha() -> None:
     or a receipt could be reused for a run it does not describe.
     """
 
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     base = run_baseline([_case(1)], mode="recorded", artifact=artifact)
     variants: dict[str, str] = {"baseline": base.report_sha256}
     # Policy is covered in `test_news_baseline_modes.py`: `recorded` returns before policy replay, so its
@@ -449,7 +458,7 @@ def test_the_metric_version_label_moves_with_the_metric_definition() -> None:
 
     from tracefold.news.learning.metric import METRIC_ID
 
-    assert METRIC_ID.endswith("_v8")
+    assert METRIC_ID.endswith("_v11")
     assert _report([_case(1)]).identity["metric_id"] == METRIC_ID
 
 
@@ -482,3 +491,58 @@ def test_the_published_policy_hash_is_recomputed_not_forwarded() -> None:
     tampered = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": drifted}))
     with pytest.raises(ValueError, match="news_program_baseline_policy_identity_mismatch"):
         _policy_identity([tampered])
+
+
+def test_the_report_states_a_denominator_and_a_scoreboard_for_each_of_the_three_targets() -> None:
+    """#651 §8: three per-target numbers, each with the population it was measured over.
+
+    The corpus here is applicable to `classification` and `understanding` and to nothing else, and the
+    report has to say so: `explanation` is `not_applicable` on every case rather than a zero, which is the
+    difference between "this candidate explains badly" and "nobody asked it to explain".
+    """
+
+    report = _report([_case(1), _case(2)])
+
+    assert report.schema_id == "tracefold.news.program_baseline_report.v5"
+    targets = report.targets
+    assert set(targets) == {"classification", "understanding", "explanation"}
+    for target, block in targets.items():
+        assert block["schema"] == "tracefold.news.target_denominators.v1"
+        assert block["case_n"] == 2
+        assert block["case_n"] == block["applicable_n"] + block["not_applicable_n"]
+        assert block["applicable_n"] == (
+            block["scored_n"]
+            + block["failure_n"]
+            + block["no_gold_n"]
+            + block["judge_unavailable_n"]
+            + block["retrieval_miss_n"]
+        ), target
+    assert targets["classification"]["applicable_n"] == targets["classification"]["scored_n"] == 2
+    assert targets["explanation"]["applicable_n"] == 0
+    assert targets["explanation"]["not_applicable_n"] == 2
+    assert targets["explanation"]["score"] is None
+    # The native `dspy.Evaluate` aggregate, converted from its percentage in exactly one place.
+    assert targets["classification"]["dspy_evaluate_lower_bound"] == targets["classification"]["score"]
+
+    scoreboard = report.scoreboard
+    assert scoreboard["schema"] == "tracefold.news.product_scoreboard.v1"
+    assert set(scoreboard) == {"schema", "classification", "entities", "explanation", "novelty", "runtime"}
+    assert scoreboard["classification"]["abstention_coverage"] == 0.0
+    assert scoreboard["classification"]["event_family_confusion"]
+    assert scoreboard["explanation"]["value_pending"] is True
+    assert scoreboard["runtime"]["component_failures"] == {"unanswered_n": 0}
+
+
+def test_a_route_failure_is_a_failure_of_every_target_the_case_was_applicable_to() -> None:
+    """Excluding an unanswered case would publish the answered ones as the corpus."""
+
+    case = _case(3)
+    report = run_baseline(
+        [case],
+        mode="recorded",
+        artifact=load_stable_program_state(),
+    )
+    assert report.targets["classification"]["failure_n"] == 0
+
+    failed = _failed_case(case, "program_route_failure", latency_ms=7)
+    assert failed.error_code == "program_route_failure"

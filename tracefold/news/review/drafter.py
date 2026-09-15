@@ -1,4 +1,4 @@
-"""Model-drafted `news_review_v6` rubrics, for an authorized reviewer to accept or reject (#117, #148).
+"""Model-drafted `news_review_v7` rubrics, for an authorized reviewer to accept or reject (#117, #148).
 
 Two facts set the whole shape of this module.
 
@@ -34,9 +34,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal, TypedDict, cast
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_sha
+from ..models import MarketType, market_type_of
 from ..program.contracts import (
     ReaderValue,
     TradeAffectedMarket,
@@ -49,7 +50,7 @@ from ..program.contracts import (
 from ..program.lm import StructuredOutputMode, structured_output_capability
 from ..program.seed import SEED_INSTRUCTIONS
 from ..program.signatures import EventTaxonomySignature
-from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, SourceAuthority
+from ..taxonomy import ModelTaxonomyV1, SourceAuthority
 
 
 class ConfiguredDrafterLM(dspy.LM):  # type: ignore[misc]
@@ -147,6 +148,12 @@ Do NOT judge why_support or why_value. Leave them out of `dimensions` entirely �
 those. Measured against 25 human-reviewed Events you agree with a reviewer 76-88% of the time on the
 dimensions above, but only 42-43% on those two, and 27 of 46 total false failures came from them alone.
 
+explanation: optional, and it is evidence rather than a verdict. `source_spans` are verbatim excerpts copied
+character for character out of the evidence you were shown — at most 8, each one a span that carries a
+decision-relevant claim. `key_facts` are at most 6 short statements a correct card must keep. Propose nothing
+else in this block: the error types, the forbidden claims and the reference wording are the reviewer's, and a
+span you paraphrased instead of copied is refused at submit.
+
 should_push: must_push / should_push / should_hold / must_hold / uncertain — whether a trader needed this.
 Reserve `must_*` for cases where the opposite decision would be a real failure (a security incident missed,
 marketing pushed).
@@ -155,7 +162,10 @@ novelty: new_fact / progression / restatement, judged against the told ledger yo
 `restatement` only when a told entry carries the same fact, and then name that entry's event_id.
 
 expected: ONLY for dimensions you marked fail, state the exact correct value — including every failed typed
-trade-relevance dimension. Leave a field out when you are not confident.
+trade-relevance dimension. Leave a field out when you are not confident. Every asset you state carries
+market_type from crypto / equity / commodity / index / fx / pre_ipo / unknown: a ticker without its market is
+not an answer, because the same three letters name a token and a listed company. Say unknown rather than pick
+a market the evidence does not establish.
 This is the most valuable part of the draft: "wrong" without "and the answer is X" teaches nothing.
 
 Do NOT label taxonomy (subject codes, event family, change state, assertion status) and do not judge the
@@ -167,10 +177,20 @@ reasoning: one short sentence a reviewer can check quickly."""
 
 
 class DraftAsset(BaseModel):
+    """Mirrors `desk.ExpectedAsset`, market included (#651 §6.2)."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     symbol: str = Field(min_length=1, max_length=32)
+    market_type: MarketType
     role: Literal["primary", "mentioned"] = "primary"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _market_is_vocabulary_or_unknown(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {**value, "market_type": market_type_of(value.get("market_type"))}
+        return value
 
 
 class DraftExpected(BaseModel):
@@ -188,6 +208,22 @@ class DraftExpected(BaseModel):
     trade_channels: list[TradeChannel] | None = Field(default=None, max_length=4)
     trade_affected_markets: list[TradeAffectedMarket] | None = Field(default=None, max_length=4)
     reader_value: ReaderValue | None = None
+
+
+class DraftExplanation(BaseModel):
+    """The two halves of `ExplanationCorrectionV1` a model is allowed to propose (#651 §7.2).
+
+    Evidence, not verdicts. Copying a span out of the source and listing the facts a card must keep are
+    extraction tasks, which is what the measured 76-88% agreement covers; deciding whether the card's
+    reasoning *supports* its claim is the 42-43% one, and it stays with the reviewer. The other three
+    fields of the block — forbidden claims, error types, reference wording — are the reviewer's
+    conclusions about a defect, so no drafter writes them.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_spans: list[str] = Field(default_factory=list, max_length=8)
+    key_facts: list[str] = Field(default_factory=list, max_length=6)
 
 
 class DraftNovelty(BaseModel):
@@ -216,19 +252,16 @@ class DraftDimensions(TypedDict, total=False):
     reader_value: DraftDimensionLabel
 
 
-# The five taxonomy dimensions are written by code (#501): Stable's persisted label against the blind draft,
-# axis by axis. `taxonomy_source_authority` is code-owned on both sides and is always a pass when Stable
-# labelled the Event at all.
+# The four taxonomy dimensions are written by code (#501): Stable's persisted label against the blind
+# draft, axis by axis. There is no fifth: `taxonomy_source_authority` compared a code fact with itself and
+# was always `pass`, so #651 deleted it from the rubric rather than keep publishing a constant.
 TAXONOMY_DIMENSION_AXES: Final[tuple[tuple[str, str], ...]] = (
     ("taxonomy_subject_codes", "subject_codes"),
     ("taxonomy_event_family", "event_family"),
     ("taxonomy_change_state", "change_state"),
     ("taxonomy_assertion_status", "assertion_status"),
 )
-TAXONOMY_DIMENSIONS: Final[tuple[str, ...]] = (
-    *(dimension for dimension, _axis in TAXONOMY_DIMENSION_AXES),
-    "taxonomy_source_authority",
-)
+TAXONOMY_DIMENSIONS: Final[tuple[str, ...]] = tuple(dimension for dimension, _axis in TAXONOMY_DIMENSION_AXES)
 
 # What the drafter is allowed to judge, measured rather than assumed. Agreement with a human reviewer over 25
 # Events they both saw: direction 88%, factual_fidelity 84%, headline_fidelity 84%, magnitude 76%,
@@ -240,12 +273,11 @@ DRAFTABLE_DIMENSIONS = frozenset(DraftDimensions.__annotations__) | frozenset(TA
 
 
 class ReviewDimensions(DraftDimensions, total=False):
-    """The rubric dimensions plus the five taxonomy dimensions code writes after the blind drafts."""
+    """The rubric dimensions plus the four taxonomy dimensions code writes after the blind drafts."""
 
     taxonomy_subject_codes: DraftDimensionLabel
     taxonomy_event_family: DraftDimensionLabel
     taxonomy_change_state: DraftDimensionLabel
-    taxonomy_source_authority: DraftDimensionLabel
     taxonomy_assertion_status: DraftDimensionLabel
 
 
@@ -258,6 +290,7 @@ class RubricDraft(BaseModel):
     dimensions: DraftDimensions
     novelty: DraftNovelty
     expected: DraftExpected | None = None
+    explanation: DraftExplanation | None = None
     expected_correction: str = Field(default="", max_length=2_000)
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str = Field(default="", max_length=1_000)
@@ -379,12 +412,10 @@ def taxonomy_dimensions(stable: ModelTaxonomyV1 | Mapping[str, Any] | None, draf
     if stable is None:
         return dict.fromkeys(TAXONOMY_DIMENSIONS, "not_applicable")
     recorded = stable if isinstance(stable, ModelTaxonomyV1) else ModelTaxonomyV1.model_validate(_model_axes(stable))
-    labels = {
+    return {
         dimension: "pass" if getattr(recorded, axis) == getattr(draft, axis) else "fail"
         for dimension, axis in TAXONOMY_DIMENSION_AXES
     }
-    labels["taxonomy_source_authority"] = "pass"
-    return labels
 
 
 def _model_axes(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -455,7 +486,6 @@ def submission_payload(
     draft: ReviewDraft,
     *,
     stable_taxonomy: ModelTaxonomyV1 | Mapping[str, Any] | None,
-    source_authority: SourceAuthority = "unknown",
     draft_author: str = DRAFTER_ID,
 ) -> dict[str, Any]:
     """The `EventRubricSubmission` a reviewer would send after accepting this draft, unchanged.
@@ -488,7 +518,9 @@ def submission_payload(
         # The claim cannot be checked without a target, so it is downgraded rather than dropped: a reviewer
         # still sees the model thought this was a repeat, in the one field they will read.
         novelty = {"judgment": "uncertain", "duplicate_of": ""}
-    taxonomy = NewsTaxonomyV1.issue(draft.taxonomy, source_authority=source_authority)
+    # The four model axes, not the persisted taxonomy (#651 §7.2). `source_authority` is derived from the
+    # evidence by code on the read side; issuing it here made the drafter look like it had labelled it.
+    taxonomy = draft.taxonomy
     # Taxonomy provenance names the blind drafters, never the rubric model, which did not label it.
     taxonomy_review: dict[str, Any] = {
         "label_source": "model_draft",
@@ -511,6 +543,10 @@ def submission_payload(
     }
     if expected:
         payload["expected"] = expected
+    if draft.explanation is not None and (draft.explanation.source_spans or draft.explanation.key_facts):
+        # Proposal only, and the rubric checks it: a span the frozen evidence does not contain is refused
+        # at submit rather than stored as a citation nobody can follow.
+        payload["explanation"] = draft.explanation.model_dump(mode="json")
     if any(label == "fail" for label in dimensions.values()):
         # The rubric refuses a `fail` without one; the drafter cannot invent a reviewer's citation, so it
         # points at the two things it did read.
@@ -620,7 +656,6 @@ _EMPTY_DRAFT = ReviewDraft(
         "taxonomy_subject_codes": "not_applicable",
         "taxonomy_event_family": "not_applicable",
         "taxonomy_change_state": "not_applicable",
-        "taxonomy_source_authority": "not_applicable",
         "taxonomy_assertion_status": "not_applicable",
     },
     novelty=DraftNovelty(judgment="uncertain"),
@@ -639,6 +674,7 @@ __all__ = [
     "TAXONOMY_BLIND_DRAFTER_ID",
     "TAXONOMY_DIMENSIONS",
     "ConfiguredDrafterLM",
+    "DraftExplanation",
     "DraftedReview",
     "ReviewDraft",
     "ReviewDraftBatch",

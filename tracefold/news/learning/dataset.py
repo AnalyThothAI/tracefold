@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter, deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -22,9 +22,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_sha
 from ..events.storyline import NO_STORYLINE_KEY
-from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
+from ..models import TRIAGE_POLICY_VERSION, MarketAsset, TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, TriageContext
 from ..review.desk import (
+    EXPLANATION_DIMENSIONS,
     READER_CONTRACT_SHA256,
     READER_CONTRACT_VERSION,
     REVIEW_RUBRIC_VERSION,
@@ -34,11 +35,12 @@ from ..storage.root import NewsRepository
 from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, source_authority_from_evidence
 from .contracts import (
     LEARNING_PROFILE_ID,
+    LEARNING_TARGETS,
     ArmManifest,
+    CaseProvenance,
     ClosedWindow,
     DatasetCaseRef,
-    epoch_id_for_bundle,
-    is_bundle_sha,
+    LearningTarget,
 )
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt
 from .ledger import LearningLedger
@@ -46,10 +48,16 @@ from .profile import _PROFILE, TRUSTED_ROOT_SHA
 from .projection import _connected_fact_clusters
 from .taxonomy_metric import accepted_taxonomy_gold, calibrate_taxonomy, summarize_taxonomy
 
-DATASET_VERSION: Literal["news_learning_dataset_v3"] = "news_learning_dataset_v3"
-# A window whose tail is still settling is not closed: the outcome loop keeps writing prices for minutes
-# after an Event opens, so freezing to "now" seals cases whose scores change after the file is written.
-SETTLEMENT_GRACE_MS = 10 * 60_000
+# v4 (#651 §9): a corpus is made of evidence and accepted labels. It seals no learning epoch, admits any
+# arm as provenance rather than as a filter, names the `targets` its cases can explain, and carries the
+# per-target counts a readiness answer needs. A v3 corpus is audit only — its `case` rows say nothing
+# about which question a reviewer answered, so every target would read every case as its own evidence.
+DATASET_VERSION: Literal["news_learning_dataset_v4"] = "news_learning_dataset_v4"
+# No global settlement grace (#651 §9). It existed because the outcome loop keeps writing prices for
+# minutes after an Event opens, and a freeze to "now" would seal cases whose *market* numbers moved
+# afterwards. No target scores a price -- price is discovery evidence, never reward -- so the grace
+# delayed every corpus to protect a number none of them read. What genuinely has to settle is named
+# per case instead: a novelty judgment about a told card waits for that card's delivery receipt.
 
 
 class DatasetSpec(BaseModel):
@@ -69,16 +77,17 @@ class DatasetManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     artifact_sha: str
-    dataset_version: Literal["news_learning_dataset_v3"] = DATASET_VERSION
+    dataset_version: Literal["news_learning_dataset_v4"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
-    learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
-    settlement_grace_ms: int
     reader_contract_version: str
+    # The arm that sealed this corpus, kept as provenance. It is no longer the arm every case came from,
+    # and no reader may use it to decide whether a case is admissible.
     agent_cohort: dict[str, str]
+    # Which questions this corpus can answer at all: the union of its cases' `applicable_targets`.
+    targets: tuple[LearningTarget, ...] = ()
     observation_ref: str | None = None
     cases: tuple[DatasetCaseRef, ...]
     seed_receipts: tuple[dict[str, Any], ...] = ()
@@ -90,9 +99,9 @@ class DatasetManifest(BaseModel):
 class DevelopmentCompileExport(BaseModel):
     """Exact read-only corpus projection handed to the offline optimizer.
 
-    It carries the projection root and the epoch it was taken under, rather than leaving each caller to
-    recompute them: the export *is* the corpus receipt, and two callers deriving the same identity two ways
-    is how the two stopped agreeing before.
+    It carries the projection root rather than leaving each caller to recompute it: the export *is* the
+    corpus receipt, and two callers deriving the same identity two ways is how the two stopped agreeing
+    before. It no longer carries an epoch (#651 §9), because nothing downstream compares one.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -101,7 +110,6 @@ class DevelopmentCompileExport(BaseModel):
     dataset_payload: dict[str, Any]
     episodes: tuple[dict[str, Any], ...] = Field(min_length=1)
     episode_projection_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch_started_at_ms: int = Field(ge=0)
 
     @model_validator(mode="after")
     def _root_addresses_these_episodes(self) -> DevelopmentCompileExport:
@@ -138,6 +146,76 @@ class AdmittedCandidate:
     registered_at_ms: int
 
 
+def _event_symbols(event: Mapping[str, Any]) -> tuple[str, ...]:
+    """The symbols one replayed Event names, in the order the live judge reads them."""
+
+    coins = dict(event.get("provider_metadata") or {}).get("coins") or ()
+    return (
+        *(str(value) for value in event.get("grounded_assets") or () if value),
+        *(str(coin.get("symbol")) for coin in coins if isinstance(coin, Mapping) and coin.get("symbol")),
+    )
+
+
+def _referenced_duplicate_event_ids(rows: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    """Every Event a `restatement` review points at, so their receipts can be read in one query."""
+
+    referenced = {
+        str(dict(row.get("novelty") or {}).get("duplicate_of") or "")
+        for row in rows
+        if str(dict(row.get("novelty") or {}).get("judgment") or "") == "restatement"
+    }
+    return tuple(sorted(value for value in referenced if value))
+
+
+def applicable_targets(
+    row: Mapping[str, Any],
+    *,
+    unsettled_event_ids: Collection[str] = (),
+) -> tuple[LearningTarget, ...]:
+    """Which questions one accepted review is evidence for, derived from what it actually labelled.
+
+    This is the whole point of the task-level rubric (#651 §7.2, §9). A v6 review answered every question
+    because the contract made it, so a corpus could hand all three targets all its cases and each target
+    would read fabricated answers as real ones. A v7 review answers what the reviewer knew, and a target
+    may read a case only when the reviewer wrote something that target scores against:
+
+    * `classification` needs the taxonomy — that is the label the four-axis ruler compares.
+    * `understanding` needs a novelty judgment, an accepted asset set, or a push verdict.
+    * `explanation` needs the explanation block, or a verdict on the copy dimensions it scores.
+
+    Nothing is inferred and nothing defaults. A review that labelled only `timeliness` is stored, sealed
+    and explains no target, which is a smaller and truer corpus than one where it silently passed three.
+
+    The one thing a target waits for is a receipt it genuinely depends on: a `restatement` names the card
+    it restates, and until that card's delivery has settled the ledger cannot say whether the reader had
+    actually been told. Only that case's `understanding` waits, and only while the referenced Event's
+    delivery is still in flight — an Event with no delivery row was never told, so there is nothing to
+    wait for. No price outcome is consulted here or anywhere else in eligibility.
+    """
+
+    payload = dict(row.get("payload") or {})
+    dimensions = dict(row.get("dimensions") or {})
+    novelty = dict(row.get("novelty") or {})
+    targets: list[LearningTarget] = []
+    if payload.get("taxonomy"):
+        targets.append("classification")
+    understanding = bool(novelty.get("judgment")) or bool(row.get("should_push"))
+    if not understanding:
+        expected = dict(payload.get("expected") or {})
+        understanding = expected.get("assets") is not None
+    if understanding and _novelty_receipt_ready(novelty, unsettled_event_ids=unsettled_event_ids):
+        targets.append("understanding")
+    if payload.get("explanation") is not None or (set(dimensions) & EXPLANATION_DIMENSIONS):
+        targets.append("explanation")
+    return tuple(target for target in LEARNING_TARGETS if target in targets)
+
+
+def _novelty_receipt_ready(novelty: Mapping[str, Any], *, unsettled_event_ids: Collection[str]) -> bool:
+    if str(novelty.get("judgment") or "") != "restatement":
+        return True
+    return str(novelty.get("duplicate_of") or "") not in unsettled_event_ids
+
+
 class DevelopmentDatasetStore:
     """Frozen corpora: seal one, load one, and project its cases into scorable episodes."""
 
@@ -171,13 +249,11 @@ class DevelopmentDatasetStore:
         *,
         admitted: AdmittedCandidate | None = None,
     ) -> DatasetManifest:
-        self._ledger.assert_active_stable()
-        epoch_started_at_ms = self._ledger.epoch_started_at_ms()
-        if spec.window.from_ms < epoch_started_at_ms:
-            raise ValueError("news_learning_window_precedes_program_epoch")
+        # No active-stable assertion, no epoch floor, no settlement grace (#651 §9). A corpus is frozen
+        # from evidence and accepted labels; which arm is deployed right now is not one of its inputs.
         freeze_as_of_ms = self._ledger.now_ms()
-        if spec.window.to_ms > freeze_as_of_ms - SETTLEMENT_GRACE_MS:
-            raise ValueError("news_learning_window_not_settled")
+        if spec.window.to_ms > freeze_as_of_ms:
+            raise ValueError("news_learning_window_not_closed")
         if spec.role == "validation":
             if not spec.observation_ref:
                 raise ValueError("news_learning_validation_candidate_required")
@@ -194,13 +270,9 @@ class DevelopmentDatasetStore:
         elif spec.observation_ref is not None:
             raise ValueError("news_learning_development_observation_ref_not_allowed")
 
-        cases = self._accepted_cases(
-            spec.window,
-            freeze_as_of_ms=freeze_as_of_ms,
-            epoch_started_at_ms=epoch_started_at_ms,
-        )
-        seed = self._seed_receipts(spec.window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
-        counts = self._dataset_counts(spec, cases)
+        cases = self._accepted_cases(spec.window, freeze_as_of_ms=freeze_as_of_ms)
+        seed = self._history.seed_receipts(from_ms=spec.window.from_ms)
+        counts = self._dataset_counts(spec, cases, freeze_as_of_ms=freeze_as_of_ms)
         episodes = self._project_episodes(cases, seed)
         # Inter-drafter agreement over every dual-labelled cluster the corpus carries (#501 D8). Reported
         # beside the corpus and never a gate: the holdout decides, and an operator reads κ to decide
@@ -223,13 +295,13 @@ class DevelopmentDatasetStore:
             "dataset_version": DATASET_VERSION,
             "role": spec.role,
             "profile_id": spec.profile_id,
-            "learning_epoch": self._ledger.epoch_id(),
-            "learning_epoch_started_at_ms": epoch_started_at_ms,
             "window": spec.window.model_dump(mode="json"),
             "freeze_as_of_ms": freeze_as_of_ms,
-            "settlement_grace_ms": SETTLEMENT_GRACE_MS,
             "reader_contract_version": READER_CONTRACT_VERSION,
             "agent_cohort": self._ledger.agent_cohort(),
+            "targets": [
+                target for target in LEARNING_TARGETS if any(target in case.applicable_targets for case in cases)
+            ],
             "observation_ref": spec.observation_ref,
             "cases": [case.model_dump(mode="json") for case in cases],
             "seed_receipts": seed,
@@ -237,7 +309,6 @@ class DevelopmentDatasetStore:
             "counts": counts,
             "hashes": {
                 "trusted_root_sha": self._trusted_root_sha,
-                "learning_epoch_sha": _sha({"epoch": self._ledger.epoch_id(), "started_at_ms": epoch_started_at_ms}),
                 "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
                 "reader_contract_sha": READER_CONTRACT_SHA256,
                 "agent_bundle_sha": self._stable.bundle_sha,
@@ -251,11 +322,13 @@ class DevelopmentDatasetStore:
         self,
         episodes: Sequence[Mapping[str, Any]],
         cases: Sequence[DatasetCaseRef],
-    ) -> tuple[dict[str, Any], dict[str, int]]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         from .objective import DevelopmentEpisode, build_gepa_objective_plan
 
         typed = tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes)
-        plan = build_gepa_objective_plan(typed)
+        # One plan per target (#651 §9). The split is a property of the question being asked, so a single
+        # plan could only describe one target's halves while claiming to describe the corpus.
+        plans = {target: build_gepa_objective_plan(typed, target) for target in LEARNING_TARGETS}
         reviews = self._ledger.reviews_by_id([case.review_id for case in cases])
         review_by_case = {case.case_id: reviews.get(case.review_id, {}) for case in cases}
 
@@ -280,23 +353,28 @@ class DevelopmentDatasetStore:
             taxonomy_rows: list[dict[str, Any]] = []
             times: list[int] = []
             for episode in representatives.values():
-                gold = ModelTaxonomyV1.model_validate(dict(episode.accepted_review)["taxonomy"])
+                raw_taxonomy = dict(episode.accepted_review).get("taxonomy")
+                # A review may state no taxonomy at all under v7, and the support histogram is over the
+                # labels a corpus *has*. Counting an absence as a label is the fabrication this cut exists
+                # to stop, so such a case contributes to every other counter and to no taxonomy row.
+                gold = None if raw_taxonomy is None else ModelTaxonomyV1.model_validate(raw_taxonomy)
                 authority = source_authority_from_evidence(episode.context.evidence)
-                taxonomy_rows.append(
-                    {
-                        "case_id": episode.case_id,
-                        "cluster_id": episode.cluster_id,
-                        "gold": gold,
-                        "predicted": NewsTaxonomyV1.issue(gold, source_authority=authority),
-                    }
-                )
+                if gold is not None:
+                    taxonomy_rows.append(
+                        {
+                            "case_id": episode.case_id,
+                            "cluster_id": episode.cluster_id,
+                            "gold": gold,
+                            "predicted": NewsTaxonomyV1.issue(gold),
+                        }
+                    )
                 review = dict(review_by_case.get(episode.case_id) or {})
                 provenance = dict(dict(review.get("payload") or {}).get("taxonomy_review") or {})
                 title = episode.context.evidence.title
                 has_cjk = any("\u4e00" <= char <= "\u9fff" for char in title)
                 has_latin = any(char.isascii() and char.isalpha() for char in title)
                 script = "mixed" if has_cjk and has_latin else "cjk" if has_cjk else "latin" if has_latin else "other"
-                counters["subject_count"][str(len(gold.subject_codes))] += 1
+                counters["subject_count"][str(len(gold.subject_codes)) if gold is not None else "unlabelled"] += 1
                 counters["action"][str(episode.accepted_review.get("should_push") or "uncertain")] += 1
                 counters["stratum"][episode.stratum] += 1
                 counters["source_authority"][authority] += 1
@@ -321,19 +399,30 @@ class DevelopmentDatasetStore:
                 },
             }
 
+        # v2 (#651 §9): `train` and `development_selection` are per target, because there is no longer one
+        # split. `full` is the whole corpus and stays where it was.
         distributions = {
-            "schema": "tracefold.news.dataset_distributions.v1",
+            "schema": "tracefold.news.dataset_distributions.v2",
             "full": distribution(typed),
-            "train": distribution(plan.train_episodes),
-            "development_selection": distribution(plan.development_selection_episodes),
+            "by_target": {
+                target: {
+                    "train": distribution(plan.train_episodes),
+                    "development_selection": distribution(plan.development_selection_episodes),
+                }
+                for target, plan in plans.items()
+            },
         }
-        # Diagnostics only (#501): the population is every Gold-bearing cluster, and no floor reads these.
+        # Diagnostics only (#501): the population is every case the target can read, and no floor reads
+        # these numbers.
         objective_counts = {
-            "optimizer_cluster_n": len(plan.optimizer_cluster_ids),
-            "train_optimizer_cluster_n": len({episode.cluster_id for episode in plan.train_episodes}),
-            "development_selection_optimizer_cluster_n": len(
-                {episode.cluster_id for episode in plan.development_selection_episodes}
-            ),
+            "optimizer_cluster_n": {target: len(plan.optimizer_cluster_ids) for target, plan in plans.items()},
+            "train_optimizer_cluster_n": {
+                target: len({episode.cluster_id for episode in plan.train_episodes}) for target, plan in plans.items()
+            },
+            "development_selection_optimizer_cluster_n": {
+                target: len({episode.cluster_id for episode in plan.development_selection_episodes})
+                for target, plan in plans.items()
+            },
         }
         return distributions, objective_counts
 
@@ -378,13 +467,10 @@ class DevelopmentDatasetStore:
     def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
         """Seal the sole read-only development export for the cold compiler."""
 
-        self._ledger.assert_active_stable()
         dataset_payload = self._load_dataset_payload(dataset_sha)
         dataset = self._validate_dataset_payload(dataset_sha, dataset_payload)
         if dataset.role != "development":
             raise ValueError("news_learning_compile_requires_development_dataset")
-        if dataset.agent_cohort != self._ledger.agent_cohort():
-            raise ValueError("news_learning_dataset_agent_cohort_mismatch")
         episodes = self._project_episodes(
             sorted(dataset.cases, key=lambda item: (item.opened_at_ms, item.case_id)),
             dataset.seed_receipts,
@@ -395,7 +481,6 @@ class DevelopmentDatasetStore:
             dataset_payload=dataset_payload,
             episodes=frozen_episodes,
             episode_projection_root_sha256=_sha(list(frozen_episodes)),
-            learning_epoch_started_at_ms=self._ledger.epoch_started_at_ms(),
         )
 
     def baseline_episodes(
@@ -406,8 +491,9 @@ class DevelopmentDatasetStore:
     ) -> tuple[dict[str, Any], ...]:
         """Project accepted reviews in a window for the offline baseline. Freezes nothing, writes nothing.
 
-        The exact active Program bundle is the only current population.  Rows
-        from earlier epochs remain audit evidence and are not projected.
+        Every accepted review the window holds, whichever arm answered the Event (#651 §9). Each case
+        keeps the arm that produced it as provenance, so a report can still say which Program is being
+        described without the population being decided by which one happens to be deployed.
 
         Each episode carries the persisted ``DecisionResult`` projection so a caller can score history as it
         happened instead of as today's ``decide()`` would replay it.  A final-action string is insufficient:
@@ -416,17 +502,13 @@ class DevelopmentDatasetStore:
 
         if limit <= 0:
             raise ValueError("news_program_baseline_limit_invalid")
-        epoch_started_at_ms = self._ledger.epoch_started_at_ms()
-        cases = self._accepted_cases(
-            window,
-            freeze_as_of_ms=self._ledger.now_ms(),
-            epoch_started_at_ms=epoch_started_at_ms,
-        )
+        cases = self._accepted_cases(window, freeze_as_of_ms=self._ledger.now_ms())
         cases = tuple(sorted(cases, key=lambda case: (case.opened_at_ms, case.case_id))[:limit])
         if not cases:
             return ()
-        seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
-        return self._with_recorded_decisions(cases, self._project_episodes(cases, seed))
+        return self._with_recorded_decisions(
+            cases, self._project_episodes(cases, self._history.seed_receipts(from_ms=window.from_ms))
+        )
 
     def _with_recorded_decisions(
         self, cases: Sequence[DatasetCaseRef], episodes: Sequence[Mapping[str, Any]]
@@ -496,15 +578,24 @@ class DevelopmentDatasetStore:
             context = self.build_context(case, state)
             review = dict(case["review"])
             review_payload = dict(review.get("payload") or {})
-            taxonomy_payload = dict(review_payload.get("taxonomy") or {})
-            model_taxonomy = ModelTaxonomyV1.model_validate(
-                {field: taxonomy_payload[field] for field in ModelTaxonomyV1.model_fields if field in taxonomy_payload}
+            raw_taxonomy = review_payload.get("taxonomy")
+            # `None` when the reviewer stated no taxonomy, and it stays `None` through the projection: an
+            # empty `ModelTaxonomyV1` would be a label, and the case is `classification` evidence only if
+            # somebody wrote one.
+            model_taxonomy = (
+                None
+                if not raw_taxonomy
+                else ModelTaxonomyV1.model_validate(
+                    {field: raw_taxonomy[field] for field in ModelTaxonomyV1.model_fields if field in raw_taxonomy}
+                )
             )
             episodes.append(
                 {
                     "case_id": case_ref.case_id,
                     "cluster_id": case_ref.cluster_id,
                     "stratum": case_ref.stratum,
+                    "applicable_targets": list(case_ref.applicable_targets),
+                    "provenance": case_ref.provenance.model_dump(mode="json"),
                     "context": context.model_dump(mode="json"),
                     "policy_metric": self._policy_metric_projection(case, state, context=context),
                     "accepted_review": {
@@ -521,7 +612,14 @@ class DevelopmentDatasetStore:
                         "expected": dict(review_payload.get("expected") or {}),
                         "expected_correction": str(review.get("expected_correction") or ""),
                         "note": str(review.get("note") or ""),
-                        "taxonomy": model_taxonomy.model_dump(mode="json"),
+                        "taxonomy": None if model_taxonomy is None else model_taxonomy.model_dump(mode="json"),
+                        # The reviewer's explanation supervision, verbatim, plus the server-derived state
+                        # that says whether a `why_support` failure carries any (#651 §7.2). `pending`
+                        # cases are visible and counted here and excluded from the explanation train split.
+                        "explanation": review_payload.get("explanation"),
+                        "explanation_supervision": str(
+                            review_payload.get("explanation_supervision") or "not_applicable"
+                        ),
                         # Verbatim provenance (#501): label source, drafter and the blind drafts, so κ is
                         # computable from the sealed corpus alone.
                         "taxonomy_review": dict(review_payload.get("taxonomy_review") or {}),
@@ -547,7 +645,7 @@ class DevelopmentDatasetStore:
                         comparison_fingerprint=str(card.get("comparison_fingerprint") or ""),
                         dedupe_family=str(card.get("dedupe_family") or "general"),
                         grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ()),
-                        assets=tuple(asset.symbol for asset in verdict.assets),
+                        assets=tuple(MarketAsset.of(asset) for asset in verdict.assets),
                         canonical_assets=self._history.canonical_assets(
                             tuple(str(value) for value in card.get("grounded_assets") or ())
                         ),
@@ -619,33 +717,22 @@ class DevelopmentDatasetStore:
 
         return self.development_compile_export(dataset_sha).episodes
 
-    def _accepted_cases(
-        self,
-        window: ClosedWindow,
-        *,
-        freeze_as_of_ms: int,
-        epoch_started_at_ms: int,
-    ) -> tuple[DatasetCaseRef, ...]:
+    def _accepted_cases(self, window: ClosedWindow, *, freeze_as_of_ms: int) -> tuple[DatasetCaseRef, ...]:
         rows = self._repository.accepted_event_reviews_in_window(
-            epoch_started_at_ms=epoch_started_at_ms,
             freeze_as_of_ms=freeze_as_of_ms,
             rubric_versions=REVIEW_RUBRIC_VERSIONS,
             reader_contract_version=READER_CONTRACT_VERSION,
             from_ms=window.from_ms,
             to_ms=window.to_ms,
-            program_version=self._stable.program_version,
-            program_sha256=self._stable.program_sha256,
-            policy_version=TRIAGE_POLICY_VERSION,
-            bundle_sha=self._stable.bundle_sha,
         )
         external = self._repository.accepted_external_miss_reviews_in_window(
-            epoch_started_at_ms=epoch_started_at_ms,
             freeze_as_of_ms=freeze_as_of_ms,
             rubric_versions=REVIEW_RUBRIC_VERSIONS,
             reader_contract_version=READER_CONTRACT_VERSION,
             from_ms=window.from_ms,
             to_ms=window.to_ms,
         )
+        in_flight = self._repository.unsettled_delivery_event_ids(_referenced_duplicate_event_ids([*rows, *external]))
         drafts: list[tuple[DatasetCaseRef, str, str]] = []
         for row in [*rows, *external]:
             subject_kind = str(row["subject_kind"])
@@ -685,6 +772,13 @@ class DevelopmentDatasetStore:
                     if str(row.get("delivery_state") or "") == "sent"
                     else "observed_not_sent"
                 ),
+                applicable_targets=applicable_targets(row, unsettled_event_ids=in_flight),
+                provenance=CaseProvenance(
+                    program_version=str(row.get("program_version") or ""),
+                    program_sha256=str(row.get("program_sha256") or ""),
+                    policy_version=str(row.get("policy_version") or ""),
+                    bundle_sha=str(row.get("bundle_sha") or ""),
+                ),
             )
             novelty = dict(row.get("novelty") or {})
             duplicate_of = (
@@ -704,7 +798,9 @@ class DevelopmentDatasetStore:
         cases.sort(key=lambda case: (case.opened_at_ms, case.case_id))
         return tuple(cases)
 
-    def _dataset_counts(self, spec: DatasetSpec, cases: Sequence[DatasetCaseRef]) -> dict[str, Any]:
+    def _dataset_counts(
+        self, spec: DatasetSpec, cases: Sequence[DatasetCaseRef], *, freeze_as_of_ms: int
+    ) -> dict[str, Any]:
         reviews = self._ledger.reviews_by_id([case.review_id for case in cases])
         gold: set[str] = set()
         boundary: set[str] = set()
@@ -716,13 +812,13 @@ class DevelopmentDatasetStore:
         for case in cases:
             review = reviews.get(case.review_id, {})
             dimensions = dict(review.get("dimensions") or {})
-            # Only reviewer-owned dimensions make a case boundary (#534). The five `taxonomy_*` values are
+            # Only reviewer-owned dimensions make a case boundary (#534). The four `taxonomy_*` values are
             # not judgments: `review.drafter.taxonomy_dimensions` writes them per axis from whether Stable's
-            # taxonomy equals the accepted Gold, and `taxonomy_source_authority` is code-derived and always
-            # `pass` — so counting them as rubric defects turns `retention_clusters_min` into a quota of
-            # Stable taxonomy successes, exactly the "quota of Stable mistakes" #501 deleted from the
-            # profile. Blind Gold agrees with Stable on all four axes ~23-41 % of the time, which on
-            # 2026-09-04 read 259 boundary / 54 retention over 313 accepted cases against 142 retention here.
+            # taxonomy equals the accepted Gold, so counting them as rubric defects would have turned the
+            # old `retention_clusters_min` into a quota of Stable taxonomy successes — exactly the "quota
+            # of Stable mistakes" #501 deleted from the profile, and #651 §9 then deleted outright.
+            # Boundary, retention, negative and safety survive as published diagnostics; nothing gates on
+            # them any more, which is why the split rule can stay as it is rather than being re-argued.
             is_boundary = (
                 case.should_push in {"must_push", "must_hold"}
                 or any(
@@ -744,8 +840,9 @@ class DevelopmentDatasetStore:
                 gold.add(case.cluster_id)
             strata.add(case.stratum)
             days.add(case.opened_at_ms // 86_400_000)
-        # A release cohort is the whole runtime bundle. Mixing model bindings or retrieval identity into a
-        # Program/policy cohort would score a candidate against evidence produced by a different executable arm.
+        # How many live Events the *sealing* arm answered in this window. A denominator for reading the
+        # corpus, not a filter on it: a case produced by a different arm is in the corpus above and is
+        # deliberately not in this count, which is why the count is named after the arm it describes.
         eligible = self._repository.eligible_stable_arm_event_count(
             from_ms=spec.window.from_ms,
             to_ms=spec.window.to_ms,
@@ -757,6 +854,34 @@ class DevelopmentDatasetStore:
         counts: dict[str, Any] = {
             "case_n": len(cases),
             "independent_cluster_n": len({case.cluster_id for case in cases}),
+            # Per target, because "is there enough evidence" has no answer until someone says enough for
+            # what (#651 §9). `explanation_supervision_pending_n` is the visible cost of accepting a
+            # `why_support` failure with no explanation block: stored, counted, and not trainable.
+            "targets": {
+                target: {
+                    "case_n": sum(1 for case in cases if target in case.applicable_targets),
+                    "cluster_n": len({case.cluster_id for case in cases if target in case.applicable_targets}),
+                }
+                for target in LEARNING_TARGETS
+            },
+            "explanation_supervision_pending_n": sum(
+                1
+                for case in cases
+                if str(
+                    dict(dict(reviews.get(case.review_id, {})).get("payload") or {}).get("explanation_supervision")
+                    or ""
+                )
+                == "pending"
+            ),
+            # Accepted reviews this window holds that the current rubric contract cannot read. v6 rows are
+            # audit history and are counted here rather than silently absent.
+            "rubric_ineligible_n": self._repository.accepted_event_reviews_out_of_contract(
+                freeze_as_of_ms=freeze_as_of_ms,
+                rubric_versions=REVIEW_RUBRIC_VERSIONS,
+                reader_contract_version=READER_CONTRACT_VERSION,
+                from_ms=spec.window.from_ms,
+                to_ms=spec.window.to_ms,
+            ),
             "boundary_cluster_n": len(boundary),
             "retention_cluster_n": len(retention),
             "negative_cluster_n": len(negative),
@@ -771,11 +896,14 @@ class DevelopmentDatasetStore:
             "strata": sorted(strata),
             "eligible_event_n": int((eligible or {}).get("n") or 0),
             "eligibility": {
-                "unit": "agent_bundle_sha",
-                "bundle_sha": self._stable.bundle_sha,
-                "program_sha256": self._stable.program_sha256,
-                "policy_version": TRIAGE_POLICY_VERSION,
+                # v2 (#651 §9): the unit is the frozen evidence snapshot plus the accepted label, and the
+                # bundle below describes the *sealing* arm rather than a filter every case had to pass.
+                "unit": "evidence_snapshot_and_accepted_review",
+                "sealing_bundle_sha": self._stable.bundle_sha,
+                "sealing_program_sha256": self._stable.program_sha256,
+                "sealing_policy_version": TRIAGE_POLICY_VERSION,
                 "rubric_versions": list(REVIEW_RUBRIC_VERSIONS),
+                "case_arms": sorted({case.provenance.bundle_sha for case in cases if case.provenance.bundle_sha}),
             },
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }
@@ -787,20 +915,6 @@ class DevelopmentDatasetStore:
             # both arms live and an operator-reported miss has no recorded one.
             counts["primary_cluster_n"] = len(gold)
         return counts
-
-    def _seed_receipts(self, from_ms: int, *, epoch_started_at_ms: int) -> tuple[dict[str, Any], ...]:
-        """The 48 h receipt source the first cases replay against.
-
-        The ledger uses the exact current arm and epoch.
-        """
-
-        return self._history.seed_receipts(
-            from_ms=from_ms,
-            epoch_started_at_ms=epoch_started_at_ms,
-            program_version=self._stable.program_version,
-            program_sha256=self._stable.program_sha256,
-            bundle_sha=self._stable.bundle_sha,
-        )
 
     def build_context(self, case: Mapping[str, Any], state: ArmState) -> TriageContext:
         snapshot = case["snapshot"]
@@ -816,6 +930,7 @@ class DevelopmentDatasetStore:
             told_rows=told_rows,
             now_ms=int(case["opened_at_ms"]),
             queue_lag_ms=0,
+            catalog_candidates=self._history.catalog_candidates(_event_symbols(event)),
         )
 
     def load_case(self, case: DatasetCaseRef) -> dict[str, Any]:
@@ -829,13 +944,15 @@ class DevelopmentDatasetStore:
                 or int(review.get("evidence_version") or 0) != int(case.evidence_version or 0)
             ):
                 raise ValueError("news_learning_review_identity_mismatch")
+            # The arm this case recorded as provenance, not the arm running now (#651 §9). A corpus may
+            # span arms, and each case must load against the exact verdict its reviewer read.
             row = self._repository.review_task_source(
                 event_id=str(case.event_id),
                 evidence_version=int(case.evidence_version or 0),
-                program_version=self._stable.program_version,
-                program_sha256=self._stable.program_sha256,
-                policy_version=TRIAGE_POLICY_VERSION,
-                bundle_sha=self._stable.bundle_sha,
+                program_version=case.provenance.program_version,
+                program_sha256=case.provenance.program_sha256,
+                policy_version=case.provenance.policy_version,
+                bundle_sha=case.provenance.bundle_sha,
             )
             if row is None or row["evidence_sha256"] != case.evidence_sha256:
                 raise ValueError("news_learning_evidence_changed")
@@ -928,38 +1045,16 @@ class DevelopmentDatasetStore:
         """
 
         exact_payload = dict(payload)
-        # Self-agreement, not authorization (#314). An epoch is derived from the bundle that opened it, so
-        # a seal naming an epoch its own `agent_cohort` could not have produced is corrupt whoever reads
-        # it — while a seal that is merely *old* stays valid here and reaches its reader's own honest
-        # refusal. Comparing against the running ledger instead would kill every stale corpus as an epoch
-        # mismatch before `news_learning_dataset_agent_cohort_mismatch` could name the real problem, which
-        # is the mistake this docstring already records once.
-        #
-        # Pre-#314 seals cannot pass this validator at all, and no branch here changes that. Removing the
-        # declared epoch from `_PROFILE` moved `TRUSTED_ROOT_SHA`, which every seal carries and this
-        # function compares below — so a `program_vN` corpus fails as a contract-hash mismatch before any
-        # epoch branch could speak. An earlier draft accepted legacy labels here for the #300 migration
-        # reader; review showed that reader could never reach the branch, and #343 then deleted the
-        # migration path entirely — dead code claiming to enable something is worse than its absence.
-        #
-        # The genesis removed every pre-hard-cut dataset, and the predecessor of this check already
-        # refused one for naming an epoch that was not current.
-        # Carry-forward works from #314 onward, bundle to bundle, which is the case it exists for.
-        sealed_epoch = str(exact_payload.get("learning_epoch") or "")
-        sealed_bundle = (dict(exact_payload.get("agent_cohort") or {})).get("bundle_sha")
-        if not is_bundle_sha(sealed_bundle) or sealed_epoch != epoch_id_for_bundle(str(sealed_bundle)):
-            raise ValueError("news_learning_epoch_mismatch")
-        hashes = dict(exact_payload.get("hashes") or {})
-        expected_epoch_sha = _sha(
-            {"epoch": sealed_epoch, "started_at_ms": exact_payload.get("learning_epoch_started_at_ms")}
-        )
-        if hashes.get("learning_epoch_sha") != expected_epoch_sha:
-            raise ValueError("news_learning_epoch_hash_mismatch")
+        # No epoch self-agreement check any more (#651 §9): a v4 seal names no epoch, so there is nothing
+        # for the label to disagree with. A v3 corpus still fails here, one line lower, as a contract-hash
+        # mismatch — deleting the `development` quotas moved `TRUSTED_ROOT_SHA`, which every seal carries
+        # and this function compares — and that is the honest refusal for it: a v3 corpus's cases cannot
+        # say which question their reviewer answered, so no v4 reader can use one.
         if exact_payload.get("profile_id") != LEARNING_PROFILE_ID:
             raise ValueError("news_learning_profile_mismatch")
+        hashes = dict(exact_payload.get("hashes") or {})
         expected_hashes = {
             "trusted_root_sha": self._trusted_root_sha,
-            "learning_epoch_sha": expected_epoch_sha,
             "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
             "reader_contract_sha": READER_CONTRACT_SHA256,
             # The seal names the arm that made it and must agree with itself; which arm is *acceptable*
@@ -987,10 +1082,10 @@ def _sha(value: Any) -> str:
 
 __all__ = [
     "DATASET_VERSION",
-    "SETTLEMENT_GRACE_MS",
     "AdmittedCandidate",
     "DatasetManifest",
     "DatasetSpec",
     "DevelopmentCompileExport",
     "DevelopmentDatasetStore",
+    "applicable_targets",
 ]

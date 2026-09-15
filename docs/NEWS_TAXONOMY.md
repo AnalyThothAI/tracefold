@@ -17,9 +17,9 @@ independent connected-fact clusters are scored, the result is
 - Codebook SHA: `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`.
 - Source-authority classifier: `news_source_authority_v3`, registry SHA
   `9aa960aa5ff29d08b4a0223c5a745ac767f9161f7862885818d2d0035917da50`.
-- Production Program: `news_semantic_program_v9`, Program SHA
-  `32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a`.
-- Review contract: `news_review_v6`.
+- Production Program: `news_semantic_program_v10`, Program SHA
+  `5454071e2981e09f9672b1fdd0490473072c1fb641292c600856b7659b13107a`.
+- Review contract: `news_review_v7`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured
   reporting-source field. Strategy/provenance routing IDs carry no source
@@ -67,7 +67,11 @@ the typed `ModelTaxonomyV1` schema, which the JSON adapter hands the provider
 as a grammar; the seed text carries only what a schema cannot: definitions,
 precedence rules, the qcode glossary and the boundary examples.
 
-`source_authority` is code-owned:
+`source_authority` is code-owned, and since #651 it is an `EditorialEnvelope`
+field rather than a taxonomy axis: the model never emitted it, and a judgment
+whose taxonomy Predictor failed alone must still carry it, because that is what
+the escalate-corroboration rule reads. The allowlists are unchanged:
+
 
 - `regulatory_filing`: exact recognized regulator/filing provenance.
 - `issuer_first_party`: exact recognized issuer or venue first-party identity.
@@ -94,31 +98,54 @@ Membership is a judgment about corroboration weight, so three categories stay
 out on purpose: personal accounts (analysts, traders, journalists posting under
 their own name), aggregators and relays that restate an origin they do not own,
 and a belligerent's state media, which is a party to the event it reports.
-Policy v13 reads `source_authority` when it decides whether an `escalate` is
+Policy v14 reads `editorial.source_authority` when it decides whether an `escalate` is
 corroborated, and none of those three can carry that weight.
 
 ## Persistence and readers
 
-Model-origin `EditorialEnvelope.v2` requires a complete taxonomy and hashes it
-with TradeRelevance in the same `news_judgment_v2` atom. Ordinary readers accept
-that current marker only. Migration `0336` physically deletes earlier envelopes
-and judgments; no Program, history, review task, learning dataset, release gate,
-API, or Web path decodes or translates their retired shapes.
+Model-origin `EditorialEnvelope.v3` carries `source_authority`, `taxonomy_status`
+and `taxonomy_error_code` beside a `taxonomy` that may be JSON null, and hashes
+all of it with TradeRelevance in the same `news_judgment_v2` atom (#651 §5.3): a
+taxonomy Predictor that fails alone leaves the judgment standing. Envelopes
+written under `news_editorial_v2` keep their nested authority and keep
+validating; the storage read boundary converts, and the worker never writes v2
+again. Migration `0336` physically deletes envelopes and judgments older than
+that; no Program, history, review task, learning dataset, release gate, API, or
+Web path decodes or translates their retired shapes.
 
-The Event detail API and console expose Chinese labels for all five axes, and
-market-review discovery reads versioned `event_family`. ReaderHistory,
+The Event detail API and console expose Chinese labels for the four axes and for
+the envelope's source authority, and render `分类不可用` with the error code when
+`taxonomy_status` is `unavailable`; market-review discovery reads versioned
+`event_family`. ReaderHistory,
 ToldContext, progression, learning replay, and evaluation carry full current
 field names and exact current identities; none accepts a compact or historical
 shape. Structured listing, OI, and liquidation presentation reads code-owned
 `event_kind`; OI and liquidation use their own typed judgments and do not
-fabricate model taxonomy or enter the generic Review v6 queue.
+fabricate model taxonomy or enter the generic Review v7 queue.
 
 ## Gold and GEPA measurement
 
-One explicitly accepted `news_review_v6` taxonomy is Gold. Gold is an
+One explicitly accepted `news_review_v7` taxonomy is Gold. Gold is an
 acceptance state, not a claim that an independent human supplied the label. An
 owner-authorized AI adjudicator may accept an explicitly reviewed subset and is
 recorded as AI, never as human.
+
+Under v7 the taxonomy is **optional** (#651 §7.2). A review that states one must
+state all four axes and carry the four `taxonomy_*` dimensions, and a review
+that states none must carry none of them — a label nobody compared and a
+comparison against a label nobody stated are both answers the corpus cannot
+read. A review with no taxonomy is still a real review of everything else it
+judged; it simply is not classification evidence, which the frozen case records
+as `applicable_targets` without `classification`. That is the point of making it
+optional: v6 forced a reviewer who had noticed a wrong number to invent four
+axes first, and those invented axes then became Gold that a candidate was
+scored against.
+
+The review submission carries the four model axes only. `source_authority` was
+never a reviewer's answer — it is derived from the reporting source by code — so
+#651 removed it from the submitted taxonomy and deleted the
+`taxonomy_source_authority` dimension, which compared a code fact with itself
+and was always `pass`.
 
 Gold is drafted blind, twice (#501 D8). `news learning draft-reviews
 --rubric-model M --taxonomy-models A,B` runs two drafters, each over the
@@ -166,37 +193,44 @@ come from that one comparison; feedback quotes the codebook definition of the
 expected and predicted label and any precedence rule written for that
 confusion, never source authority.
 
-Every case with valid accepted Gold and a replayable Stable answer is an
-optimizer sample (#501 D9); the plan calls it `included`, records whether
-Stable already matched (`stable_exact`), and reports `stable_exact_n` /
-`stable_mismatch_n` as readiness diagnostics. Owner columns and `taxonomy_*`
-dimension labels are audit metadata and grant no optimization authority; since
-#534 the development corpus also ignores every `taxonomy_*` dimension when it
-splits accepted cases into boundary and retention, because those labels are
-written by code from whether Stable matched Gold, so counting them would make
-`retention_clusters_min` a quota of Stable taxonomy successes. The
+Every case with valid accepted Gold is a `classification` optimizer sample
+(#501 D9, #651 §9); the plan calls it `included`, records whether Stable already
+matched (`stable_exact`, `null` when the previous arm left no comparison), and
+reports `stable_exact_n` / `stable_mismatch_n` as readiness diagnostics. A
+missing recorded Stable answer no longer excludes the case, because GEPA scores
+the candidate against Gold and discarding a reviewer's label to protect a
+diagnostic is the wrong trade. Owner columns and `taxonomy_*` dimension labels
+are audit metadata and grant no optimization authority; since #534 the
+development corpus also ignores every `taxonomy_*` dimension when it splits
+accepted cases into boundary and retention, because those labels are written by
+code from whether Stable matched Gold. Those role counts are published
+diagnostics and gate nothing at all since #651 §9 deleted the corpus quotas
+they used to feed. The
 GEPA student is the single `taxonomy` Predict; the admitted candidate is GEPA's
 own `best_idx` when its selection score is strictly above the seed's, otherwise
 the run is `NO_OP`. The held-out measurement is the same scalar over a window
 frozen after registration, which GEPA neither reflected on nor selected against:
-a taxonomy-only candidate's holdout is decided by the four-axis exact rate and
-the axis deltas rather than by blind pairwise preference, because taxonomy reaches
-neither the verdict, the card nor Delivery and both arms would show the reviewer
-the same card. Since #567 each of those deltas is measured per cluster against
-the same elected representatives and reported with its bootstrap 95 % interval
-(the profile's own seed 112, 2,000 replicates), so an axis counts as a regression
-only when its whole interval lies below zero — one cluster of 311 flipping is
-noise, not a release FAIL — and the same issue raised the release profile's
-`mean_total_tokens_growth_pct` guardrail from 0.10 to 0.25, leaving the call and
-provider-cost caps at 0.10. Since #626 the primary metric of this class is
-`four_axis_exact_accuracy`, and the candidate counts as an improvement only when
-that rate's whole interval lies above zero: a card is correctly classified only
-when all four of its axes are, whereas the `taxonomy_overall` mean it replaced
-nets a gain on one axis against a slip on another. That mean and every axis
-interval stay published for the receipt.
+a taxonomy-only candidate's holdout is decided by the classification partial
+score and the axis deltas rather than by blind pairwise preference, because
+taxonomy reaches neither the verdict, the card nor Delivery and both arms would
+show the reviewer the same card. Since #567 each of those deltas is measured per
+cluster against the same elected representatives and reported with its bootstrap
+95 % interval (the profile's own seed 112, 2,000 replicates), so an axis counts
+as a regression only when its whole interval lies below zero — one cluster of 311
+flipping is noise, not a release FAIL — and the same issue raised the release
+profile's `mean_total_tokens_growth_pct` guardrail from 0.10 to 0.25, leaving the
+call and provider-cost caps at 0.10. The primary metric of this class is
+`taxonomy_overall`, which since #651 is `target_metrics.classification_score` —
+the mean over the axes the Gold states — so the number a release turns on is the
+number the classification target is optimized on. `four_axis_exact_accuracy` is a
+published **diagnostic**, not a gate: it answers "what share of cards would a
+reader see correctly classified", and because it is a joint rate over four
+correlated axes it counts one cluster's slip twice, on its own axis and again
+jointly. #626 had made it the gate; the four per-axis regression intervals
+already refuse a candidate that bought a gain by trading an axis away.
 
-The public chain is the existing `news learning readiness` followed by one
-`news learning run`; Dataset forms of `baseline` and standalone `optimize` do
+The public chain is the existing `news learning readiness --target classification` followed by one
+`news learning run --target classification`; Dataset forms of `baseline` and standalone `optimize` do
 not exist. The Candidate still passes the existing evaluator and release path.
 
 ## Non-authority and rollback
@@ -205,11 +239,13 @@ The four model-owned axes (`subject_codes`, `event_family`, `change_state`,
 `assertion_status`) never enter `decide()`, Gate, ReaderCard, Delivery, or
 Trading, and changing them alone must not change any of those. The code-owned
 `source_authority` field is different: since policy v12 (#504) `decide()`
-reads `editorial.taxonomy.source_authority` once, as issued from the evidence,
+reads it once, as issued from the evidence — from `editorial.source_authority`
+since #651 moved it out of the taxonomy object, so that a failed taxonomy call
+cannot take the corroboration fact down with the label —
 as the escalate corroboration fact — an eligible `escalate` from an `unknown`
-source with a single Event member is downgraded to `push`. It is a Gate-side
-evidence fact carried on the taxonomy record, not a model judgment, and it is
-not recomputed inside `decide()`. Since #501 taxonomy is the second of three serial Predictors
+source with a single Event member is downgraded to `push`. It is an
+evidence-side fact carried on the editorial envelope, not a model judgment, and
+it is not recomputed inside `decide()`. Since #501 taxonomy is the second of three serial Predictors
 (`event_semantics -> taxonomy -> reader_card`); the common successful production
 route is exactly three physical model calls, and the taxonomy call reads no
 told ledger. #117's "not a third Predictor" decision is withdrawn by #501: the

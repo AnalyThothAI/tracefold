@@ -13,6 +13,7 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.contracts import EditorialEnvelope, TradeRelevanceV1
 from tracefold.news.review.desk import BlindPairwiseSubmission, EventRubricSubmission, _pairwise_virtual
+from tracefold.news.taxonomy import ModelTaxonomyV1
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -100,7 +101,6 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
         "taxonomy_subject_codes": "pass",
         "taxonomy_event_family": "pass",
         "taxonomy_change_state": "pass",
-        "taxonomy_source_authority": "pass",
         "taxonomy_assertion_status": "pass",
     }
     expected: dict[str, Any] | None = None
@@ -122,7 +122,10 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
         expected = {
             "magnitude": 3,
             "direction": "bullish",
-            "assets": [{"symbol": f"ASSET{index:02d}".ljust(32, "X"), "role": "primary"} for index in range(16)],
+            "assets": [
+                {"symbol": f"ASSET{index:02d}".ljust(32, "X"), "market_type": "equity", "role": "primary"}
+                for index in range(16)
+            ],
             "trade_impact_breadth": "global_systemic",
             "trade_tradability": "second_order",
             "trade_surprise": "material_vs_expectation",
@@ -138,11 +141,13 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
         first_bad_owner="triage_prompt",
         evidence_refs=evidence_refs,
         expected=expected,
-        taxonomy=news_taxonomy(
+        # The four model axes (#651 §7.2). `news_taxonomy()` builds the persisted seven-key shape, whose
+        # `source_authority` is a code fact the reviewer never states and the v7 payload never carries.
+        taxonomy=ModelTaxonomyV1(
+            subject_codes=(),
             event_family="regulatory_legal",
             change_state="reported",
             assertion_status="claimed",
-            source_authority="reputable_secondary",
         ),
         note=note,
     ).model_dump(mode="json")
@@ -185,11 +190,11 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
             affected_markets=("us_equity_broad",),
             reader_value="realtime",
         ),
+        source_authority="reputable_secondary",
         taxonomy=news_taxonomy(
             event_family="regulatory_legal",
             change_state="reported",
             assertion_status="claimed",
-            source_authority="reputable_secondary",
         ),
     ).model_dump(mode="json")
     verdict_corpus = [
@@ -233,6 +238,51 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
                 ]
             )
             assert db_accepts is _python_persisted_form_accepts(EditorialEnvelope, payload)
+    finally:
+        conn.close()
+
+
+def test_the_expected_asset_validator_admits_both_shapes_and_only_a_vocabulary_market() -> None:
+    """#651 §6.2: a reviewer's stated answer carries the market, and history does not.
+
+    `news_current_review_expected_valid` enumerated the asset keys exactly as `{symbol, role}`, so the
+    first accepted review naming a typed asset would have been refused outright. Both shapes are
+    admitted for the same reason every other key-set widening in this schema admits two: the reviews
+    written before the cut are audit truth and are never rewritten. What is *not* admitted is a market
+    outside the vocabulary — the whole point of typing the field is that it is a closed answer.
+    """
+
+    def _expected(assets: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "magnitude": None,
+            "direction": None,
+            "assets": assets,
+            "trade_impact_breadth": None,
+            "trade_tradability": None,
+            "trade_surprise": None,
+            "trade_development_delta": None,
+            "trade_channels": None,
+            "trade_affected_markets": None,
+            "reader_value": None,
+        }
+
+    corpus = [
+        # The shape every review written before #651 carries.
+        (_expected([{"symbol": "SEI", "role": "primary"}]), True),
+        (_expected([{"symbol": "SEI", "market_type": "equity", "role": "primary"}]), True),
+        # `unknown` is a reviewer saying nothing was established, which is a value and not an absence.
+        (_expected([{"symbol": "SEI", "market_type": "unknown", "role": "primary"}]), True),
+        (_expected([{"symbol": "SEI", "market_type": "token", "role": "primary"}]), False),
+        (_expected([{"symbol": "SEI", "market_type": None, "role": "primary"}]), False),
+        (_expected([{"symbol": "SEI", "market_type": "equity", "role": "subject"}]), False),
+        (_expected([{"symbol": "SEI", "market_type": "equity", "role": "primary", "retired": True}]), False),
+    ]
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        for payload, expected_valid in corpus:
+            row = conn.execute("SELECT news_current_review_expected_valid(%s) AS valid", (Jsonb(payload),)).fetchone()
+            assert bool(row["valid"]) is expected_valid, payload
     finally:
         conn.close()
 
@@ -321,7 +371,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             row = conn.execute(
                 """
                     SELECT news_current_review_valid(
-                      'judgment', 'event', 'news_review_v6', 'reader_contract_v2',
+                      'judgment', 'event', 'news_review_v7', 'reader_contract_v3',
                       'event-current', 1, NULL, NULL,
                       %(should_push)s, %(dimensions)s, %(novelty)s,
                       %(first_bad_owner)s, %(evidence_refs)s, %(expected_correction)s, %(note)s,
@@ -360,7 +410,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             row = conn.execute(
                 """
                 SELECT news_current_review_valid(
-                  'judgment', 'pairwise', 'news_review_v6', 'reader_contract_v2',
+                  'judgment', 'pairwise', 'news_review_v7', 'reader_contract_v3',
                   NULL, NULL, NULL, 'pairwise-current',
                   NULL, '{}'::jsonb, '{}'::jsonb, NULL, %(evidence_refs)s, '', %(note)s,
                   %(selection)s, %(payload)s, NULL
@@ -417,7 +467,7 @@ def test_retained_json_validators_meet_native_insert_and_update_budget() -> None
                     CHECK (news_current_liquidation_metadata_valid(liquidation_metadata, true)),
                   selection jsonb NOT NULL,
                   review jsonb NOT NULL CHECK (news_current_review_valid(
-                    'judgment', 'event', 'news_review_v6', 'reader_contract_v2',
+                    'judgment', 'event', 'news_review_v7', 'reader_contract_v3',
                     'event-current', 1, NULL, NULL,
                     review ->> 'should_push', review -> 'dimensions', review -> 'novelty',
                     review ->> 'first_bad_owner', review -> 'evidence_refs',
@@ -444,3 +494,130 @@ def test_retained_json_validators_meet_native_insert_and_update_budget() -> None
             conn.execute("UPDATE current_validator_budget SET review = review")
     finally:
         conn.close()
+
+
+def test_the_editorial_validator_holds_both_written_shapes_and_refuses_an_invented_third() -> None:
+    """#651 §5.3: what `news_verdicts.editorial` is allowed to be, stated at the database.
+
+    Three things have to be true at once. A `news_editorial_v3` judgment whose taxonomy Predictor failed
+    alone is accepted with a JSON-null taxonomy and a `news_program_*` code. A `news_editorial_v2`
+    document -- which the Python contract can no longer even produce -- keeps validating, because every
+    judgment written before this cut carries it, is audit truth, and is never rewritten. And nothing else
+    does: a status that disagrees with the taxonomy beside it, an error code from another vocabulary, or
+    a v2 document wearing the v3 version are all refused.
+    """
+
+    relevance = TradeRelevanceV1(
+        impact_breadth="single_instrument",
+        tradability="direct",
+        surprise="unscheduled",
+        development_delta="state_change",
+        channels=("exchange_access",),
+        affected_markets=("single_asset",),
+        reader_value="realtime",
+    )
+    axes = news_taxonomy(event_family="market_access", change_state="effective").model_dump(mode="json")
+
+    def sealed(payload: dict[str, Any]) -> dict[str, Any]:
+        return payload | {"editorial_sha256": canonical_sha(payload)}
+
+    available = EditorialEnvelope.issue(
+        relevance=relevance, source_authority="issuer_first_party", taxonomy=news_taxonomy()
+    ).model_dump(mode="json")
+    unavailable = EditorialEnvelope.issue(
+        relevance=relevance,
+        source_authority="unknown",
+        taxonomy=None,
+        taxonomy_error_code="news_program_output_truncated",
+    ).model_dump(mode="json")
+    historical_v2 = sealed(
+        {
+            "editorial_contract_version": "news_editorial_v2",
+            "editorial_origin": "model",
+            "relevance": relevance.model_dump(mode="json"),
+            "taxonomy": axes | {"source_authority": "reputable_secondary"},
+        }
+    )
+    accepted = [available, unavailable, historical_v2]
+    refused = [
+        # A status that disagrees with the taxonomy beside it, in both directions.
+        sealed({**unavailable, "taxonomy_status": "available"} | {"taxonomy_error_code": None}),
+        sealed({key: value for key, value in available.items() if key != "editorial_sha256"} | {"taxonomy": None}),
+        # An error code from some other vocabulary, and an empty one.
+        sealed(
+            {key: value for key, value in unavailable.items() if key != "editorial_sha256"}
+            | {"taxonomy_error_code": "boom"}
+        ),
+        sealed(
+            {key: value for key, value in unavailable.items() if key != "editorial_sha256"}
+            | {"taxonomy_error_code": "news_program_"}
+        ),
+        # The v2 body under the v3 version, and the v3 body under the v2 version.
+        sealed(
+            {key: value for key, value in historical_v2.items() if key != "editorial_sha256"}
+            | {"editorial_contract_version": "news_editorial_v3"}
+        ),
+        sealed(
+            {key: value for key, value in available.items() if key != "editorial_sha256"}
+            | {"editorial_contract_version": "news_editorial_v2"}
+        ),
+        # A v2 taxonomy whose authority is outside the vocabulary.
+        sealed(
+            {key: value for key, value in historical_v2.items() if key != "editorial_sha256"}
+            | {"taxonomy": axes | {"source_authority": "a blog"}}
+        ),
+        # A v3 authority outside the vocabulary.
+        sealed(
+            {key: value for key, value in available.items() if key != "editorial_sha256"}
+            | {"source_authority": "a blog"}
+        ),
+        # The seal itself still has to hold.
+        available | {"editorial_sha256": "0" * 64},
+    ]
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        for payload in accepted:
+            row = conn.execute("SELECT news_current_model_editorial_valid(%s) AS valid", (Jsonb(payload),)).fetchone()
+            assert bool(row["valid"]) is True, payload["editorial_contract_version"]
+        for payload in refused:
+            row = conn.execute("SELECT news_current_model_editorial_valid(%s) AS valid", (Jsonb(payload),)).fetchone()
+            assert bool(row["valid"]) is False, payload
+    finally:
+        conn.close()
+
+    # And the Python contract agrees about the two shapes it is allowed to hold.
+    assert _python_persisted_form_accepts(EditorialEnvelope, available) is True
+    assert _python_persisted_form_accepts(EditorialEnvelope, unavailable) is True
+    assert _python_persisted_form_accepts(EditorialEnvelope, historical_v2) is False
+
+
+def test_the_review_taxonomy_validator_admits_the_six_key_shape_this_cut_writes() -> None:
+    """`NewsTaxonomyV1` lost `source_authority`, so `EventRubricSubmission` cannot state one any more.
+
+    Both key sets are admitted for the same reason `0378` admits a reviewer's asset with or without its
+    market: the reviews accepted before the cut carry the authority and are never rewritten.
+    """
+
+    six = news_taxonomy(event_family="market_access", change_state="effective").model_dump(mode="json")
+    conn = connect_postgres_test(read_only=False)
+    try:
+
+        def valid(payload: dict[str, Any]) -> bool:
+            return bool(
+                conn.execute("SELECT news_current_review_taxonomy_valid(%s) AS valid", (Jsonb(payload),)).fetchone()[
+                    "valid"
+                ]
+            )
+
+        assert valid(six) is True
+        assert valid(six | {"source_authority": "regulatory_filing"}) is True
+        assert valid(six | {"source_authority": "a blog"}) is False
+        assert valid(six | {"retired": True}) is False
+        assert valid({key: value for key, value in six.items() if key != "event_family"}) is False
+    finally:
+        conn.close()
+    # A v7 submission states the four model axes only (`ModelTaxonomyV1`); the six-key shape above is what
+    # `NewsTaxonomyV1` persists on the judgment side and what v6 review rows still hold.
+    four = {key: value for key, value in six.items() if key not in {"taxonomy_version", "codebook_sha256"}}
+    assert _python_persisted_form_accepts(ModelTaxonomyV1, four) is True

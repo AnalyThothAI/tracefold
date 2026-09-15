@@ -99,7 +99,6 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
             "taxonomy_subject_codes": "pass",
             "taxonomy_event_family": "fail",
             "taxonomy_change_state": "pass",
-            "taxonomy_source_authority": "pass",
             "taxonomy_assertion_status": "pass",
         },
         "novelty": {"judgment": "new_fact", "duplicate_of": ""},
@@ -127,7 +126,7 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
                         "task_version": "1" * 64,
                         "event_id": "2" * 64,
                         "source_authority": "unknown",
-                        # Stable's own label: the accept step recomputes the five taxonomy_* dimensions
+                        # Stable's own label: the accept step recomputes the four taxonomy_* dimensions
                         # against it, and it disagrees with the draft on exactly `event_family` (#548 PR-B.1).
                         "stable_taxonomy": {**other, "event_family": "market_access"},
                         "draft": draft,
@@ -211,7 +210,7 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
 def test_accept_drafts_refuses_a_batch_written_before_stable_taxonomy_was_carried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#548 PR-B.1. The five taxonomy_* dimensions are recomputed from the entry's `stable_taxonomy`.
+    """#548 PR-B.1. The four taxonomy_* dimensions are recomputed from the entry's `stable_taxonomy`.
 
     A batch written before that field existed can only be copied, and copying is exactly the defect: the
     dimensions it carries were computed against a label the reviewer may since have edited. Both refusals

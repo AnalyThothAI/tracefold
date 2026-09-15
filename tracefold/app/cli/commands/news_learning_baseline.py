@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from tracefold.news.artifact_identity import canonical_json
 
@@ -115,7 +115,12 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
 
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.artifact_identity import canonical_sha
-    from tracefold.news.learning.contracts import LEARNING_PROFILE_ID, dataset_coverage, epoch_id_for_bundle
+    from tracefold.news.learning.contracts import (
+        LEARNING_PROFILE_ID,
+        LEARNING_TARGETS,
+        LearningTarget,
+        dataset_coverage,
+    )
     from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import (
         DevelopmentEpisode,
@@ -127,9 +132,12 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
     from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
     dataset_sha = str(args.development).strip()
+    target = cast(LearningTarget, str(getattr(args, "target", "classification") or "classification"))
+    if target not in LEARNING_TARGETS:
+        raise ValueError(f"news_program_compile_target_unknown:{target}")
     identity: dict[str, Any] = {
         "development_dataset_sha": dataset_sha,
-        "learning_epoch": epoch_id_for_bundle(stable.bundle_sha),
+        "target": target,
         "profile_id": LEARNING_PROFILE_ID,
         "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "execution_envelope_sha256": EXECUTION_ENVELOPE_SHA256,
@@ -144,25 +152,23 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
         "episode_projection_root_sha256": None,
     }
     episodes: tuple[Any, ...] = ()
-    plan = GepaObjectivePlan(blocking_reasons=("dataset_agent_cohort_mismatch",))
+    plan = GepaObjectivePlan(target=target, blocking_reasons=("dataset_not_projectable",))
     # Present on every path for the same reason `identity.episode_count` is: a consumer must read `null`,
-    # not fall off the end of the object. It stays `null` on the `dataset_agent_cohort_mismatch` path even
-    # though the export loaded that payload before refusing, and that is deliberate: those counts —
-    # `eligible_event_n` above all — were measured against a different arm's cohort, and this report's
-    # `identity` names the current stable bundle. Publishing them here would file another arm's corpus
-    # under this arm's name, which is a worse answer than "unknown".
+    # not fall off the end of the object. It stays `null` when the corpus could not be projected at all,
+    # which is deliberate: a seal this code cannot read is a seal whose counts it cannot vouch for, and
+    # "unknown" is a better answer than someone else's numbers under this report's name.
     coverage: dict[str, Any] = dataset_coverage({})
     with postgres_connection(settings) as conn:
         datasets = DevelopmentDatasetStore(conn, stable=stable)
         try:
             export = datasets.development_compile_export(dataset_sha)
         except ValueError as exc:
-            # The one blocker in the #199 §4 vocabulary that has no episodes behind it: a dataset frozen
-            # under a different arm cannot be projected at all. It is a readiness answer, so it is reported
-            # as one — through the same builder, so a consumer never has to parse two report shapes. Every
-            # other refusal (a validation-role SHA, an epoch mismatch, drifted evidence) is an error, not
-            # an insufficiency, and still raises.
-            if "news_learning_dataset_agent_cohort_mismatch" not in str(exc):
+            # A corpus sealed under the previous contract cannot be projected at all, and that is a
+            # readiness answer rather than an error — reported through the same builder so a consumer
+            # never has to parse two report shapes. Since #651 §9 the arm a corpus was frozen under is no
+            # longer a reason to refuse it; what is left here is the contract mismatch a v3 seal raises.
+            # Every other refusal (a validation-role SHA, drifted evidence) is an error and still raises.
+            if "news_learning_dataset_contract_hash_mismatch" not in str(exc):
                 raise
         else:
             episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
@@ -174,8 +180,8 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
             # The exact root a candidate's `ProposalReceipt` records and the release gate re-derives, computed from
             # the same raw projection dicts rather than from the parsed models — same bytes, same address.
             identity["episode_projection_root_sha256"] = canonical_sha(list(export.episodes))
-            plan = build_gepa_objective_plan(episodes)
-    report = build_readiness_report(plan, episodes=episodes, identity=identity, coverage=coverage)
+            plan = build_gepa_objective_plan(episodes, target)
+    report = build_readiness_report(plan, episodes=episodes, identity=identity, coverage=coverage, target=target)
     if str(args.out):
         _write_json(str(args.out), report)
     summary: dict[str, Any] = {key: value for key, value in report.items() if key != "case_dispositions"}
@@ -195,7 +201,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     )
     from tracefold.news.learning.contracts import ClosedWindow
     from tracefold.news.learning.dataset import DevelopmentDatasetStore
-    from tracefold.news.program.artifact import load_program_artifact
+    from tracefold.news.program.artifact import load_program_state
 
     mode = _baseline_mode(args.mode)
     action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
@@ -226,7 +232,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             "ok": False,
             "error": {"code": "news_program_baseline_no_accepted_reviews_in_window", "blocking_reasons": []},
         }
-    artifact = load_program_artifact(stable.program_sha256)
+    artifact = load_program_state(stable.program_sha256)
     semantic_judge, runtime_identity = _baseline_model_route(mode, settings=settings, artifact=artifact)
     judge_model = str(args.semantic_judge).strip()
     judge = None
@@ -275,6 +281,56 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         _write_json(str(args.out), payload)
     summary = {key: value for key, value in payload.items() if key != "cases"}
     summary["cases_written_to"] = str(args.out) or None
+    return 0, {"ok": True, "data": summary}
+
+
+def _handle_learning_judge_calibration(args: Namespace, settings: Any) -> tuple[int, dict[str, Any]]:
+    """Ask one real metric judge the fixed calibration corpus and write the receipt (#651 §7.3).
+
+    Read-only, database-free and unbounded by a corpus: the fourteen pairs are the whole spend, which is
+    what makes this a thing an operator runs *before* committing a run rather than a second evaluation.
+    The judge endpoint is chosen exactly as the baseline's is, because a calibration measured on a
+    different route than the run would attest nothing about that run.
+    """
+
+    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.news.learning.baseline import build_judge
+    from tracefold.news.learning.judge_calibration import (
+        calibration_receipt_sha256,
+        load_calibration_cases,
+        run_judge_calibration,
+    )
+
+    model = str(getattr(args, "model", "") or "")
+    if not model:
+        raise ValueError("news_judge_calibration_requires_model")
+    reflection = getattr(settings.llm, "news_compiler_reflection", None)
+    source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+    if not source.configured:
+        raise ValueError("news_program_baseline_judge_endpoint_not_configured")
+    endpoint = configured_lm_endpoint(
+        settings,
+        model_name=model,
+        api_key=source.api_key,
+        base_url=source.base_url,
+        request_config=source.request,
+    )
+    judge = build_judge(
+        model_name=endpoint.model_name,
+        api_key=endpoint.api_key,
+        api_base=endpoint.api_base,
+        model_kwargs=endpoint.model_kwargs,
+        temperature=0 if endpoint.temperature is None else endpoint.temperature,
+        structured_output=endpoint.structured_output,
+    )
+    receipt = run_judge_calibration(judge, load_calibration_cases())
+    receipt_sha = calibration_receipt_sha256(receipt)
+    payload = {**receipt, "receipt_sha256": receipt_sha}
+    if str(getattr(args, "out", "") or ""):
+        _write_json(str(args.out), payload)
+    summary = {key: value for key, value in payload.items() if key not in {"judge", "disagreements"}}
+    summary["disagreement_n"] = len(receipt["disagreements"])
+    summary["receipt_written_to"] = str(getattr(args, "out", "") or "") or None
     return 0, {"ok": True, "data": summary}
 
 

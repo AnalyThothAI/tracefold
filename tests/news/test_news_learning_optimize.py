@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning import optimizer as optimizer_module
-from tracefold.news.learning.contracts import DevelopmentDatasetRef, OptimizationBudget, PromptPatchV1
+from tracefold.news.learning.contracts import DevelopmentDatasetRef, OptimizationBudget, PromptCandidateV1
 from tracefold.news.learning.objective import build_gepa_objective_plan
 from tracefold.news.learning.optimizer import (
     FrozenDevelopmentDataset,
@@ -20,30 +20,45 @@ from tracefold.news.learning.optimizer import (
     build_task_lm,
     optimize,
 )
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.lm import LMCallContext, LMCallLedger, ScriptedLM
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
 from .test_news_program_gepa_real import _corpus, _episode, _synthetic_compile
 
+# No `learning_epoch` anywhere in this file (#651 §9): a corpus no longer seals one, and a ref no longer
+# carries one. Which corpus and which projection of it are the whole binding.
 _DATASET_PAYLOAD = {
     "role": "development",
-    "learning_epoch": "bundle_00000000",
     "counts": {},
     "cases": [],
 }
 
 
-def _dataset() -> FrozenDevelopmentDataset:
-    episodes = _corpus()
+def _other_target_dataset() -> FrozenDevelopmentDataset:
+    """A frozen corpus whose reviews answered the semantics question and never wrote a taxonomy.
+
+    A review answers only the questions its own Event posed (#651 §9), and `applicable_targets` is the
+    sealed record of which ones those were. This corpus is complete, honest and entirely useless to a
+    classification compile, which is the state the retired corpus-size quotas used to be asked to detect.
+    """
+
+    episodes = tuple(
+        episode.model_copy(
+            update={
+                "applicable_targets": ("understanding",),
+                "accepted_review": {**episode.accepted_review, "taxonomy": None},
+            }
+        )
+        for episode in _corpus()
+    )
     return FrozenDevelopmentDataset.bind(
         ref=DevelopmentDatasetRef(
             development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": _DATASET_PAYLOAD}),
             episode_projection_root_sha256=canonical_sha([episode.model_dump(mode="json") for episode in episodes]),
             episode_count=len(episodes),
-            learning_epoch="bundle_00000000",
-            learning_epoch_started_at_ms=1,
-            review_rubric_version="news_review_v6",
+            review_rubric_version=REVIEW_RUBRIC_VERSION,
         ),
         episodes=episodes,
         dataset_payload=_DATASET_PAYLOAD,
@@ -76,7 +91,11 @@ def _ready_dataset() -> FrozenDevelopmentDataset:
     episodes = tuple(episode_rows)
     payload = {
         **_DATASET_PAYLOAD,
+        # Republished by readiness and gating nothing. The cluster-role counts are what the retired
+        # `development_profile` quotas read; they survive as description because an operator still wants
+        # to know how concentrated a corpus is before spending on it.
         "counts": {
+            "targets": {"classification": {"case_n": 200, "cluster_n": 200}},
             "boundary_cluster_n": 30,
             "retention_cluster_n": 100,
             "negative_cluster_n": 50,
@@ -89,9 +108,7 @@ def _ready_dataset() -> FrozenDevelopmentDataset:
             development_dataset_sha256=canonical_sha({"kind": "dataset", "payload": payload}),
             episode_projection_root_sha256=canonical_sha([episode.model_dump(mode="json") for episode in episodes]),
             episode_count=len(episodes),
-            learning_epoch="bundle_00000000",
-            learning_epoch_started_at_ms=1,
-            review_rubric_version="news_review_v6",
+            review_rubric_version=REVIEW_RUBRIC_VERSION,
         ),
         episodes=episodes,
         dataset_payload=payload,
@@ -224,8 +241,8 @@ def test_report_keeps_spend_that_exceeds_the_per_call_reservation(monkeypatch: p
 
 def _synthetic_result(aggregate_scores: tuple[float, float]) -> Any:
     dataset = _ready_dataset()
-    plan = build_gepa_objective_plan(dataset.episodes)
-    stable = dataset.parent_program.taxonomy_instruction
+    plan = build_gepa_objective_plan(dataset.episodes, "classification")
+    stable = dataset.parent_program.instruction_for("taxonomy")
     val_count = len(plan.development_selection_episodes)
     rows = tuple(dict.fromkeys(range(val_count), score) for score in aggregate_scores)
     task, reflection, _ledger = _learning_models(role="reflection")
@@ -252,14 +269,16 @@ def test_a_seed_that_stays_gepa_best_is_a_no_op_with_public_receipts() -> None:
     assert result.report.schema_version == "news_optimization_run_report_v4"
     assert result.report.reasons == ("news_program_compile_no_program_change",)
     assert result.report.metric is not None
-    selection = result.report.metric["taxonomy_selection_score"]
+    selection = result.report.metric["target_selection_score"]
     assert selection["gepa_best_index"] == 0
     assert selection["admitted"] is False
-    assert selection["delta"]["taxonomy_overall"] == 0.0
+    assert selection["delta"]["target_overall"] == 0.0
     assert result.report.gepa_public_result is not None
     assert result.report.gepa_public_result["admitted"] is False
     assert result.candidate is None
-    assert result.report.objective["schema"] == "tracefold.news.optimization_objective_summary.v4"
+    assert result.report.objective["schema"] == "tracefold.news.optimization_objective_summary.v5"
+    assert result.report.objective["target"] == "classification"
+    assert result.report.objective["target_predictor"] == "taxonomy"
     assert "owner_distribution" not in result.report.objective
     assert result.report.objective["target_predictors"] == ["taxonomy"]
 
@@ -269,18 +288,20 @@ def test_a_strictly_better_gepa_best_advances_with_only_the_taxonomy_instruction
 
     assert result.outcome == "ADVANCE"
     assert result.candidate is not None
-    stable = load_stable_program_artifact()
-    assert result.candidate.patch.taxonomy_instruction != stable.taxonomy_instruction
-    assert result.candidate.patch.event_semantics_instruction == stable.event_semantics_instruction
-    assert result.candidate.patch.reader_card_instruction == stable.reader_card_instruction
+    stable = load_stable_program_state()
+    state = result.candidate.program_state
+    assert state.changed_predictors(stable) == ("taxonomy",)
+    assert state.instruction_for("taxonomy") != stable.instruction_for("taxonomy")
+    assert state.predictor_document("event_semantics") == stable.predictor_document("event_semantics")
+    assert state.predictor_document("reader_card") == stable.predictor_document("reader_card")
     assert result.candidate.budget["auto"] is None
     assert result.candidate.budget["max_metric_calls"] == 40
 
 
 def test_auto_budget_is_carried_into_the_candidate_and_the_optimizer_receipt() -> None:
     dataset = _ready_dataset()
-    plan = build_gepa_objective_plan(dataset.episodes)
-    stable = dataset.parent_program.taxonomy_instruction
+    plan = build_gepa_objective_plan(dataset.episodes, "classification")
+    stable = dataset.parent_program.instruction_for("taxonomy")
     val_count = len(plan.development_selection_episodes)
     task, reflection, _ledger = _learning_models(role="reflection")
 
@@ -309,7 +330,16 @@ def test_auto_budget_is_carried_into_the_candidate_and_the_optimizer_receipt() -
     assert result.report.budget["auto"] == "light" and result.report.budget["max_metric_calls"] is None
 
 
-def test_unready_development_profile_is_a_zero_provider_call_terminal_report() -> None:
+def test_a_corpus_holding_no_evidence_for_the_target_is_a_zero_provider_call_terminal_report() -> None:
+    """The refusal that survives the retired quota gate (#651 §9), and it still costs nothing.
+
+    `development_boundary_cluster_n_insufficient` refused a corpus for being small, which is not a reason
+    it cannot be learned from. What refuses this one is that it holds no evidence for the target at all:
+    every review here answered some other Event's question, so the plan elects nobody and both halves of
+    the split are empty. The property the old test proved is the property this one proves — the answer
+    arrives before an endpoint is touched, let alone paid for.
+    """
+
     touched = False
 
     def forbidden_compile(*_args: object, **_kwargs: object) -> dspy.Module:
@@ -318,7 +348,7 @@ def test_unready_development_profile_is_a_zero_provider_call_terminal_report() -
         raise AssertionError("compile must not run")
 
     result = optimize(
-        _dataset(),
+        _other_target_dataset(),
         OptimizationConfig(
             task_lm=cast(dspy.BaseLM, object()),
             reflection_lm=cast(dspy.BaseLM, object()),
@@ -330,9 +360,13 @@ def test_unready_development_profile_is_a_zero_provider_call_terminal_report() -
 
     assert result.outcome == "REJECTED"
     assert touched is False
-    assert result.report.objective["compilable"] is True
-    assert result.report.objective["development_profile"]["ready"] is False
-    assert "development_boundary_cluster_n_insufficient" in result.report.reasons
+    assert result.report.objective["compilable"] is False
+    assert result.report.objective["exclusion_reasons"] == {"target_not_labelled_by_review": 12}
+    assert "train_empty" in result.report.reasons
+    assert "selection_empty" in result.report.reasons
+    # Neither a corpus-size quota nor a calibration floor may reappear under another name: both refused
+    # corpora for being thin rather than for being unreadable.
+    assert not any("cluster_n_insufficient" in reason for reason in result.report.reasons)
     assert not any("calibration" in reason for reason in result.report.reasons)
     assert result.report.model_identities == {}
     assert result.report.usage["schema"] == "tracefold.news.optimization_usage.v3"
@@ -344,7 +378,7 @@ def test_unready_development_profile_is_a_zero_provider_call_terminal_report() -
 
 
 def test_dataset_ref_cannot_name_a_different_episode_projection() -> None:
-    dataset = _dataset()
+    dataset = _other_target_dataset()
     bad_ref = dataset.ref.model_copy(update={"episode_projection_root_sha256": "f" * 64})
 
     with pytest.raises(ValueError, match="news_learning_optimize_dataset_projection_root_mismatch"):
@@ -357,18 +391,30 @@ def test_dataset_ref_cannot_name_a_different_episode_projection() -> None:
         )
 
 
-def test_prompt_patch_write_set_remains_exactly_three_instructions() -> None:
-    stable = load_stable_program_artifact()
-    instructions = {
-        "event_semantics_instruction": stable.event_semantics_instruction,
-        "taxonomy_instruction": stable.taxonomy_instruction,
-        "reader_card_instruction": stable.reader_card_instruction,
+def test_prompt_candidate_write_set_is_the_whole_program_state() -> None:
+    """#651: the candidate carries a `NewsProgramStateV1` envelope, and only that."""
+
+    stable = load_stable_program_state()
+    values: dict[str, Any] = {
+        "parent_program_sha256": stable.program_sha256,
+        "development_dataset_sha256": "a" * 64,
+        "target_runtime_manifest_sha256": "b" * 64,
+        "state": stable.model_dump(mode="json"),
+        "objective_summary": {},
+        "optimizer": {},
+        "model_identities": {},
+        "budget": {},
+        "usage": {},
+        "created_at_ms": 1,
     }
 
-    assert PromptPatchV1.model_validate(instructions).changes(stable) is False
+    candidate = PromptCandidateV1.issue(**values)
+    assert candidate.schema_version == "news_prompt_candidate_v3"
+    assert candidate.program_state == stable
+    assert candidate.changed_predictors(stable) == ()
     with pytest.raises(ValidationError):
-        PromptPatchV1.model_validate({**instructions, "policy": {"similarity_max": 0.5}})
+        PromptCandidateV1.issue(**{**values, "policy": {"similarity_max": 0.5}})
+    routed = stable.model_dump(mode="json")
+    routed["state"]["taxonomy"]["lm"] = {"model": "openai/somewhere-else"}
     with pytest.raises(ValidationError):
-        PromptPatchV1.model_validate(
-            {key: value for key, value in instructions.items() if key != "taxonomy_instruction"}
-        )
+        PromptCandidateV1.issue(**{**values, "state": routed})

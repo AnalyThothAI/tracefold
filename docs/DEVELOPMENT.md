@@ -159,11 +159,31 @@ serialization, policy, state, replay, budgets, and wiring; it does not establish
 that a candidate classifies or explains real news better.
 
 The native News Program has EventSemantics, Taxonomy, and ReaderCard predictors.
-The current GEPA path optimizes Taxonomy and preserves the other two instructions.
-That describes the implementation, not a permanent ban on a separately designed
-optimization target. Diagnose whether a defect belongs to source evidence,
-classification, reader explanation, deterministic policy, delivery, or evaluation
-before changing a prompt.
+`news learning run --target classification|understanding|explanation` optimizes one
+predictor per run with that target's metric, on that predictor's production primary
+endpoint (no fallback route, route deadline or breaker offline; production adds them).
+The candidate is a `news_program_state_v1` document with only the target predictor's
+native state moved. Reviews may label one task at a time; a dataset case is eligible
+for the targets its accepted labels cover. Diagnose whether a defect belongs to source
+evidence, entity identity, classification, reader explanation, novelty, deterministic
+policy, delivery, or evaluation before changing a prompt.
+
+`tracefold/news/learning/target_metrics.py` is the one owner of all three rulers and
+of the accepted-Gold readers behind them; the optimizer, baseline, release evaluator
+and composite production-action metric import it and none reimplement it. Each ruler
+returns a score, feedback, an `outcome` and its components. The outcome is what lets a
+report state a denominator: `scored`, the candidate's own `schema_failure`,
+`technical_failure` and `taxonomy_unavailable` at zero, and `no_gold`,
+`not_applicable`, `judge_unavailable` and `retrieval_miss` excluded from the mean and
+counted separately. Report `applicable_n`, `scored_n`, `failure_n` and each exclusion;
+a run whose `judge_unavailable` share exceeds `JUDGE_UNAVAILABLE_SHARE_MAX` (0.2) is an
+unavailable explanation evaluation, never a pass.
+
+The explanation ruler's score is `F1(evidence_support, key_facts_covered)`, both asked
+of the metric judge. Measure that judge before trusting what it says: `news learning
+judge-calibration --model MODEL --out FILE` scores it against the fixed perturbation
+corpus and writes a receipt whose sha the metric receipt carries. `why_value` and
+`reference_why_zh` are never scored.
 
 Use [News taxonomy](NEWS_TAXONOMY.md), [review terminology](../CONTEXT.md), the
 owning `tracefold/news/program/` and `tracefold/news/learning/` code, and the relevant

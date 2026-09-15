@@ -1075,7 +1075,7 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1
      -> _normalize_and_validate_semantics -> Taxonomy -> ReaderCard.v2
      -> _assemble -> atomic SemanticJudgment/ScoredJudgment
-     -> policy-v13 decide() -> news_verdicts (editorial + runtime manifest)
+     -> policy-v14 decide() -> news_verdicts (editorial + runtime manifest)
      -> news_delivery_queue row in the same transaction (push/escalate); no broker publish
   -> Deliverer loop (Workers task, 1 s poll): claim a due row with FOR UPDATE SKIP LOCKED,
      one configured-provider attempt per claim (kind first); the row is deleted once
@@ -1335,7 +1335,7 @@ Diagnose News in this order:
    policy. A storyline key reads `asset:<SYM>`, `conflict:<id>`, `actor:<id>`,
    `geo:<id>`, `topic:<id>` or `none`; `tracefold news why` renders the
    registry's `label_zh` for it.
-   A `storyline:<key>:budget` throttle key is the policy-v13 per-storyline
+   A `storyline:<key>:budget` throttle key is the policy-v14 per-storyline
    budget (#504): the reader already received `storyline_budget_max` cards on
    that final storyline key inside `storyline_budget_window_s`, and this one
    was neither a corroborated escalate nor a direction reversal of the newest
@@ -1457,13 +1457,17 @@ Diagnose News in this order:
    every requested case and does not move when the model does. `hard_gates`
    says which gate zeroed a case, and a `metric_error:*` in `failures.by_code`
    is a defect in the corpus or the ruler, not a provider outage. Compare
-   metric-v8 components as well: 45% final action, 35% exact TradeRelevance,
+   metric-v9 components as well: 45% final action, 35% exact TradeRelevance,
    10% semantics/novelty, 10% ReaderCard reviewer anchors and 10% ReaderCard
    lint, each with its effective denominator,
-   weight mass and gold coverage. A failed dimension without exact gold is not
-   scored. `metric_judge` unavailability is a receipted failure-as-zero for its
-   free-text field, not byte-equality fallback.
-   receipts by `report_sha256`, which excludes wall-clock latency so two runs
+   weight mass and gold coverage. Factual repairs and rewritten `why_support`
+   use the existing evidence-support judge without requiring reference copy;
+   `why_value=fail` without gold remains unscored. Read each dimension's
+   `denominator`, `answered_denominator`, `unavailable_n`, `not_scored_n` and
+   `not_labelled`. `metric_judge` unavailability is a receipted failure-as-zero,
+   distinct from an explicit unsupported claim. Lint and accepted-copy
+   equivalence do not establish an increase in explanation usefulness.
+   Identify receipts by `report_sha256`, which excludes wall-clock latency so two runs
    with the same predictions have the same address. The command is read-only —
    one `serve` connection that closes before the first model call, and no write, delivery,
    proposal, acceptance or promotion authority of any kind.
@@ -1483,7 +1487,7 @@ Diagnose News in this order:
    `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
    a complete `optimization_report.json`. Task and reflection are separate
    `ModelExecutionIdentity` values, and calls/cost/tokens/failures are accounted separately
-   before they are summed. The taxonomy optimizer has no judge. Candidate zero inside that GEPA
+   before they are summed. The optimizer has no judge role. Candidate zero inside that GEPA
    run is the only optimization baseline. GEPA's own `best_idx` is admitted when it is strictly above
    candidate zero with a valid instruction; otherwise `NO_OP`. A task answer that reaches `max_tokens` is
    receipted once and scores that example `0`; it does not retry or abort later candidates.
@@ -1495,50 +1499,67 @@ Diagnose News in this order:
    the optimization report does not mirror trajectory or checkpoint state.
    Then `release
    register --candidate prompt_candidate.json` binds it to the active stable and that frozen dataset
-   — re-applying the patch to derive the Program identity and re-deriving the
-   #199 Objective Plan rather than trusting the candidate — and `learning
-   evaluate` runs the gate. A patch a person wrote registers on identical terms:
+   — re-validating and re-hashing the candidate's own `NewsProgramStateV1` document to derive the
+   Program identity, and re-deriving the
+   #199 Objective Plan rather than trusting the candidate — and `release
+   evaluate` runs the gate. A state a person wrote registers on identical terms:
    the generator is audit, never permission.
    Production promotion additionally requires a
-   future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
-   observation, and then `release canary arm` — except for a taxonomy-only
-   candidate, whose holdout PASS promotes directly because shadow and canary
-   both measure reader-facing samples it cannot move; inspect with `canary status`
+   future temporal validation dataset, blind pairwise review
+   and then `release canary arm` — except for a taxonomy-only
+   candidate, whose holdout PASS promotes directly because canary
+   measures reader-facing samples it cannot move; inspect with `canary status`
    and use `canary trip` immediately on a schema/artifact/quality guardrail
    breach. Selector `news_canary_selector_v2` includes queue-high Events, excludes recovery/listing/
    telemetry, and trips on selector, eligibility-profile, rolling-profile or
    runtime-manifest drift. One Event belongs to one arm and runs one assigned Program (normally
    three serial Predictor calls, plus only the traced retry/fallback budget). A
    canary is not an excuse to skip the earlier evidence stages: the evaluator rejects a
-   holdout/shadow/canary request before any Program call unless the preceding
-   stage has a sealed PASS. Validation fixes at most 50 independent cluster
+   holdout/canary request before any Program call unless the preceding
+   stage has a sealed PASS. #651 deleted the shadow stage between holdout and
+   canary: it cold-ran the candidate over a closed window to seal a distribution
+   nobody acted on, and its only consumer was canary eligibility, which now reads
+   the holdout PASS directly. Validation fixes at most 50 independent cluster
    tasks before execution; 100 unresolved human judgments, an empty required
    set, or a common provider outage is `UNKNOWN`, while a candidate-only
    critical error is `FAIL`.
    `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
-   duplicates the reader was spared; `pipeline.reasked_24h` counts Events whose
+   duplicates the reader was spared -- since #651 including the ones whose
+   `direction` had flipped against the told entry they cite, which policy v13
+   let through; `pipeline.reasked_24h` counts Events whose
    full Program was executed again because a card landed while it was thinking
-   (expect a handful per day; a surge means same-key floods). Program v8 fails
-   closed on missing `novelty` or taxonomy. Migration `0336` deletes pre-current
+   (expect a handful per day; a surge means same-key floods). Program v10 still
+   fails closed on missing `novelty`, but no longer on taxonomy: since #651 the
+   taxonomy Predictor is validated on its own, and its failure leaves the
+   judgment standing with `taxonomy=None`, a `taxonomy_failure` code in the
+   trace and the card unchanged. Migration `0336` deletes pre-current
    trace diagnostics; they do not appear in the current status contract.
 8. `tracefold news replay <hits.json>`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-The current evidence eligibility window starts at the deployment timestamp the
-running deployment wrote into `news_learning_epochs` for its own bundle. Find it
-with `WITH agent AS (SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY
-created_at_ms DESC LIMIT 1) SELECT e.epoch_id, e.starts_at_ms FROM
-news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
-newest agent *before* the join, not after: joining the whole appointment history
-and then taking one row reports the previous deployment's epoch when the current
-agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v6` rows from that
-epoch, bound to that exact bundle, enter metric v8, GEPA or release evidence. Every earlier Prompt/Program
-baseline remains readable audit history but cannot enter a dataset or release
-stage. Do not
-interpret a successful migration, a valid Program artifact, or the new
+Evidence eligibility is not a window on the clock (#651 §9). A review enters a
+dataset when its evidence snapshot is frozen and release-eligible, it opened
+inside the window the freeze asked for, and an accepted `news_review_v7` label
+is attached to it — whichever arm answered the Event. The arm is recorded on the
+frozen case as `provenance` and the sealing arm beside the corpus; neither
+admits or refuses a case. `news_review_v6` rows stay readable audit history and
+are counted as `rubric_ineligible_n` rather than silently dropped, because "no
+reviews in this window" and "every review here predates the current rubric" have
+different operator actions behind them.
+
+`news_learning_epochs` is still the runtime's own identity and audit row, and
+the appointed Agent still decides which candidate may be evaluated and which
+blind pair may be judged. Read the running epoch with `WITH agent AS (SELECT
+stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)
+SELECT e.epoch_id, e.starts_at_ms FROM news_learning_epochs e JOIN agent ON
+agent.stable_sha = e.bundle_sha`. Take the newest agent *before* the join, not
+after: joining the whole appointment history and then taking one row reports the
+previous deployment's epoch when the current agent has no row yet, which is
+exactly the case worth diagnosing. Do not
+interpret a successful migration, a valid Program state image, or the
 three-Predictor trace as proof of higher quality. Issue #117 deliberately lands
 the production persistence/read/UI seam before taxonomy denominators exist;
-issue #501 uses them through the existing Review v6, Dataset, Objective, direct taxonomy GEPA metric and
+issue #501 uses them through the existing Review, Dataset, Objective, target ruler and
 release path only.
 
 For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
@@ -1579,11 +1600,16 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
 2. Freeze only current-contract accepted reviews with `news learning freeze
    --role development ...`. Do not reuse or migrate an older Dataset. Accepted
    four-axis taxonomy is part of each existing episode and its projection root.
-3. Run `news learning readiness --development DATASET_SHA --out FILE`. This is
-   a zero-provider-call check. Every Gold-bearing cluster with a replayable
-   Stable answer is `included`; read `taxonomy_gold.stable_exact_n` and
-   `stable_mismatch_n`, the freeze's `counts.calibration` κ, and confirm the
-   connected-fact cluster overlap between halves is zero.
+3. Run `news learning readiness --development DATASET_SHA --target
+   classification --out FILE`. This is a zero-provider-call check, and it
+   answers for one target: every cluster whose accepted review states a taxonomy
+   is `included`, whether or not the previous arm left a comparison. Read
+   `taxonomy_gold.stable_exact_n` and `stable_mismatch_n`, the freeze's
+   `counts.calibration` κ, the `targets` block (`rubric_ineligible_n` and
+   `explanation_supervision_pending_n` say which evidence the window held but
+   could not use), and confirm `objective.blockers` is empty — the whole
+   vocabulary is `train_empty`, `selection_empty`, `input_contract_invalid` and
+   `cluster_leak`.
 4. Run `news learning run --development DATASET_SHA --out NEW_EMPTY_DIR --auto
    light --seed 112 ...` with the remaining budget flags. The reflection model
    (`llm.news_compiler_reflection`) must be a strong model with at least a 128K
@@ -1596,27 +1622,30 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
    through `release register`, offline and holdout, where an instruction that
    only fit the selection set is refused. The run never registers, releases or
    promotes the Candidate.
-5. A *taxonomy-only* candidate — `event_semantics_instruction` and
-   `reader_card_instruction` byte-identical to the parent Stable, only
-   `taxonomy_instruction` different — is judged on that evidence instead of on
+5. A *taxonomy-only* candidate — the state document's `event_semantics` and
+   `reader_card` Predictor documents byte-identical to the parent Stable, only
+   `taxonomy` different, which is what `changed_predictors` reads off the two
+   documents rather than a flag the manifest declares — is judged on that
+   evidence instead of on
    blind pairwise judgments, because both arms hand the reviewer the identical
    card: `news learning freeze --role validation --candidate ...` projects the
    same accepted Gold the development freeze does and publishes
-   `counts.primary_cluster_n`, and `news learning evaluate --stage
+   `counts.primary_cluster_n`, and `news release evaluate --stage
    offline|holdout --live-program` reads, per axis and for `taxonomy_overall`,
    the paired per-cluster candidate-minus-Stable delta and its bootstrap 95 %
    interval under the profile's own `bootstrap` block (seed 112, 2,000
    replicates), published in the evidence as `axis_interval_95` with `delta`,
    `lower`, `upper` and `n`: since #567 an axis is a regression only when its
-   whole interval lies below zero, and since #626 the primary metric for this
-   class is `four_axis_exact_accuracy` — a card is correctly classified only when
-   all four of its axes are, while the `taxonomy_overall` mean nets one axis's
-   gain against another's slip — so the candidate improved only when the exact
-   rate's whole interval lies above zero, the overall mean and every
-   `axis_interval_95` staying published for the receipt. It PASSES on improved
-   with nothing regressed (a holdout PASS advances straight to promotion), FAILS
-   on any regressed axis, and is UNKNOWN — `four_axis_exact_not_improved` — when
-   the exact rate's interval crosses zero, as it still is with empty Gold or
+   whole interval lies below zero, and the primary metric for this class is
+   `taxonomy_overall` — since #651 the classification ruler's own partial score,
+   so the release reads the number the target is optimized on — the candidate
+   improving only when that interval lies above zero.
+   `four_axis_exact_accuracy` stays published as a diagnostic and decides
+   nothing: it is a joint rate over four correlated axes, so #626's use of it as
+   the gate counted one cluster's slip twice. It PASSES on improved with nothing
+   regressed (a holdout PASS advances straight to promotion), FAILS on any
+   regressed axis, and is UNKNOWN — `taxonomy_partial_score_not_improved` — when
+   the partial score's interval crosses zero, as it still is with empty Gold or
    fewer than `primary_clusters_min` Gold-bearing clusters. #567 also moved
    `guardrails.mean_total_tokens_growth_pct` from 0.10 to 0.25 while
    `mean_call_growth_pct` and `mean_provider_cost_growth_pct` stay at 0.10,
@@ -1782,7 +1811,7 @@ SELECT min(a.opened_at_ms) AS oldest_due
   FROM news_event_assets a
   JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
   LEFT JOIN news_event_reactions r
-    ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = 'reaction_v1'
+    ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = 'reaction_v2'
  WHERE a.opened_at_ms <= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 3600000
    AND (r.state IS NULL OR r.state IN ('pending', 'partial'));
 
@@ -1888,6 +1917,27 @@ opportunities or ghost notifications. Existing outcomes keep their old delivery 
 `reference_kind = 'legacy_delivery'` with `reference_price IS NULL`. Their old entry/mark is not
 reinterpreted as a known observation or notification price. The migration is transactional and its
 downgrade is refused; recover by roll-forward or verified backup restore.
+
+`20260915_0378`, `20260915_0379` and `20260915_0380` are the #651 News cut and go
+out as one sequence. Each of the first two drops and re-adds
+`news_verdicts_current_judgment_check`, validating every verdict row in place,
+and each moves an identity the running Workers emit: `0378` takes
+`PROGRAM_VERSION` to `news_semantic_program_v10`, makes the typed asset a
+database fact and moves the Reaction ledger to `reaction_v2`; `0379` takes the
+editorial contract to `news_editorial_v3` and `TRIAGE_POLICY_VERSION` to
+`news_triage_policy_v14`; `0380` replaces the review contract functions for
+`news_review_v7` with `reader_contract_v3`. Old Workers cannot write under the
+new CHECKs and new Workers cannot write under the old ones, so there is no
+overlap window: stop Serve and Workers, drain the News queues, apply the three
+revisions under the existing maintenance gate, then start the matching new
+image. The separate Nautilus runtime writes no `news_*` table and needs no stop
+of its own; a deploy that also carries a Trading schema change keeps the
+`make runtime-down` -> `make up` -> `make runtime-up` order. Nothing is
+rewritten: v8/v9 verdicts, `news_editorial_v2` judgments, `reaction_v1` rows and
+`news_review_v6` reviews stay exactly as written and stay readable, and an Event
+measured before `0378` reports no reaction number until the typed planner has
+measured it again. All three refuse their downgrade; recover by roll-forward or
+verified backup restore.
 
 `20260904_0360` needs no operator step and refuses nothing: it collapses any
 duplicate admission `source_key` to the row every reader already showed. It is

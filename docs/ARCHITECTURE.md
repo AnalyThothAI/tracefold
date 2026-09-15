@@ -79,6 +79,12 @@ App composition and concrete integration collaborators use explicit internal own
 imports where the architecture harness permits them; they do not enlarge public
 exports simply to construct an implementation. Package roots perform no runtime I/O.
 
+`news/learning/target_metrics.py` owns every comparison between a Program answer and an
+accepted review: the three per-target rulers, the typed asset and taxonomy comparisons the
+composite metric also reports, and the outcome vocabulary a denominator is stated in. The
+metric judge (`news/learning/judge.py`) belongs to the metric, never to the Program, and
+cannot change `program_sha256`. A caller passes it in; nothing reads it from ambient state.
+
 `app/workers/wiring/news_to_trading.py` maps the public News OI projection to Trading's
 own row contract field by field. The News read finishes before the Trading transaction
 starts. There is no callback holding both repositories and no cross-context transaction.
@@ -109,9 +115,10 @@ host availability timestamps, and database timestamps describe different clocks;
 do not invent ordering between independent clocks or clamp a measured source time.
 
 News learning artifacts bind the actual Program, execution envelope, policy, review,
-and dataset identities. Runtime bundle changes can start a new eligible cohort;
-retired hand-written epoch numbers are audit history, not the name of today's cohort.
-Read the owning identity and release code when changing those contracts.
+and dataset identities as provenance. Review and dataset eligibility follow the
+evidence snapshot and the accepted labels, not the runtime bundle; runtime bundle
+changes name a cohort for release evidence only. Retired hand-written epoch numbers
+are audit history. Read the owning identity and release code when changing those contracts.
 
 ## Transaction ownership
 
@@ -213,12 +220,26 @@ The public semantic seam is `SemanticJudge.judge(TriageContext) -> SemanticJudgm
 The native DSPy Program executes EventSemantics, Taxonomy, and ReaderCard predictors;
 deterministic assembly and policy own validation and the reader-facing decision.
 A better-looking model answer alone does not establish a better final notification.
+Novelty is the model's claim and the action is the code's: a card the model calls a
+restatement of a ledger entry it was shown is dropped whichever direction it reports,
+because a reported direction is a reading rather than a fact, while a real reversal
+arrives as a progression or new fact and keeps its duplicate and budget exemptions.
 
-The current GEPA path optimizes Taxonomy and preserves the EventSemantics and
-ReaderCard instructions. [News taxonomy](NEWS_TAXONOMY.md) owns classification language;
-program and learning code own signatures, budgets, identity, metrics, and selection.
-This is the current target, not a permanent restriction against designing another
-optimization target in a future scoped change.
+The released Program image is the native DSPy state document
+(`news_program_state_v1`: instructions, demos and Signature state per predictor, no
+model routes) loaded through one path; routes come from operator configuration. A
+learning run names one target — `classification` (Taxonomy), `understanding`
+(EventSemantics) or `explanation` (ReaderCard) — and GEPA moves only that predictor's
+state, on that predictor's own production primary endpoint. Assets carry a typed
+market identity `(market_type, symbol, role)`; Taxonomy may fail on its own
+(`taxonomy_status=unavailable`) while the code-owned `source_authority` on the
+editorial envelope and the reader card survive. A storyline key is recomputed only
+for the judgment that is being produced: the told and receipt ledgers a replay reads
+carry the key their own delivery recorded, because a verdict written before the key
+carried a market would recompute into a key the ledger never held.
+[News taxonomy](NEWS_TAXONOMY.md)
+owns classification language; program and learning code own signatures, budgets,
+identity, metrics, and selection.
 
 Review proposals, explicit acceptance, frozen datasets, optimization, candidate
 registration, evaluation, and production release are distinct actions. An optimizer
@@ -237,7 +258,9 @@ policy or require a card to wait indefinitely.
 
 News market review owns latest quote snapshots and versioned Event reactions.
 Quotes are current display state, not a tick-history ledger; reactions compare an
-Event anchor with a defined observation horizon. Their interpretation, source choice,
+Event anchor with a defined observation horizon and resolve a price contract by the
+judgment's typed market identity (`reaction_v2`): an equity subject measures against an
+equity contract or nothing, never the same-name coin. Their interpretation, source choice,
 coverage, and missing-data behavior belong to the owning versioned implementation.
 The independently bounded Workers loops perform provider I/O without holding a
 transaction and publish their derived views without changing editorial admission.

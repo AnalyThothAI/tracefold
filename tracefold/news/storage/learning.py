@@ -10,6 +10,7 @@ from typing import Any
 # S608 exemption below selects one of two fixed lifecycle columns after validating the target state.
 from ..artifact_identity import canonical_sha
 from ..learning.contracts import epoch_id_for_bundle
+from ..market_review.pricing import REACTION_METRIC_VERSION
 from .sql_values import _dumps
 
 
@@ -62,13 +63,19 @@ class LearningStorage:
         }
 
     def canary_candidate_eligible(self, candidate_manifest_sha: str) -> bool:
+        """Whether a sealed `holdout` PASS exists for this candidate (#651).
+
+        This used to require a `shadow` PASS, and shadow's only consumer was this query. Holdout is the
+        last gate before a reader sees anything and the one whose evidence a release decision reads.
+        """
+
         row = self.conn.execute(
             """
             SELECT 1 AS ok
               FROM news_learning_artifacts
              WHERE kind = 'release_evidence'
                AND payload->>'candidate_sha' = %s
-               AND payload->>'stage' = 'shadow'
+               AND payload->>'stage' = 'holdout'
                AND payload->>'gate_outcome' = 'pass'
              LIMIT 1
             """,
@@ -719,18 +726,19 @@ class LearningStorage:
     def accepted_event_reviews_in_window(
         self,
         *,
-        epoch_started_at_ms: int,
         freeze_as_of_ms: int,
         rubric_versions: Sequence[str],
         reader_contract_version: str,
         from_ms: int,
         to_ms: int,
-        program_version: str,
-        program_sha256: str,
-        policy_version: str,
-        bundle_sha: str,
     ) -> list[dict[str, Any]]:
-        """Accepted event reviews in the current cohort, inside one closed window."""
+        """Accepted event reviews in one closed window, whichever arm answered the Event.
+
+        No epoch floor and no arm filter since #651 §9. The window and the rubric contract are what make a
+        review usable; the arm that produced the Event is selected out of the same row as
+        `program_version` / `program_sha256` / `policy_version` / `agent_assignment.bundle_sha` and
+        recorded as provenance on the frozen case.
+        """
 
         rows = self.conn.execute(
             """
@@ -740,23 +748,21 @@ class LearningStorage:
         JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
        WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
          AND a.release_eligible AND j.release_eligible
-         AND a.created_at_ms >= %s AND j.created_at_ms >= %s
          AND a.created_at_ms <= %s AND j.rubric_version = ANY(%s)
          AND j.reader_contract_version = %s
        ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
     )
     SELECT accepted.*, source.evidence_sha256, source.opened_at_ms,
            source.final_decision, source.delivery_state, source.evidence_release_eligible,
-           source.evidence_snapshot
+           source.evidence_snapshot, source.program_version, source.program_sha256,
+           source.policy_version,
+           COALESCE(source.trace #>> '{agent_assignment,bundle_sha}', '') AS bundle_sha
       FROM accepted
       JOIN news_review_task_source_v1 source
         ON source.event_id = accepted.event_id
        AND source.evidence_version = accepted.evidence_version
      WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s
        AND source.ingest_mode = 'live' AND source.evidence_release_eligible
-       AND source.program_version = %s AND source.program_sha256 = %s
-       AND source.policy_version = %s
-       AND source.trace #>> '{agent_assignment,bundle_sha}' = %s
        AND NOT (
          source.final_decision IN ('push', 'escalate')
          AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
@@ -767,32 +773,62 @@ class LearningStorage:
        ) IS NOT TRUE
     """,
             (
-                epoch_started_at_ms,
-                epoch_started_at_ms,
                 freeze_as_of_ms,
                 list(rubric_versions),
                 reader_contract_version,
                 from_ms,
                 to_ms,
-                program_version,
-                program_sha256,
-                policy_version,
-                bundle_sha,
             ),
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def accepted_event_reviews_out_of_contract(
+        self,
+        *,
+        freeze_as_of_ms: int,
+        rubric_versions: Sequence[str],
+        reader_contract_version: str,
+        from_ms: int,
+        to_ms: int,
+    ) -> int:
+        """Accepted event reviews the window holds that the current rubric contract cannot read.
+
+        Published beside the corpus rather than silently dropped (#651 §9). "Nobody reviewed anything"
+        and "every review in this window was written under the previous rubric" are different answers,
+        and only the second one has an operator action behind it.
+        """
+
+        row = self.conn.execute(
+            """
+    SELECT count(*) AS n FROM (
+      SELECT DISTINCT ON (j.event_id) j.rubric_version, j.reader_contract_version
+        FROM news_review_records_v1 a
+        JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
+        JOIN news_review_task_source_v1 source
+          ON source.event_id = j.event_id AND source.evidence_version = j.evidence_version
+       WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
+         AND a.release_eligible AND j.release_eligible
+         AND a.created_at_ms <= %s
+         AND source.opened_at_ms >= %s AND source.opened_at_ms < %s
+         AND source.ingest_mode = 'live' AND source.evidence_release_eligible
+       ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
+    ) newest
+     WHERE NOT (newest.rubric_version = ANY(%s) AND newest.reader_contract_version = %s)
+    """,
+            (freeze_as_of_ms, from_ms, to_ms, list(rubric_versions), reader_contract_version),
+        ).fetchone()
+        return 0 if row is None else int(row["n"] or 0)
+
     def accepted_external_miss_reviews_in_window(
         self,
         *,
-        epoch_started_at_ms: int,
         freeze_as_of_ms: int,
         rubric_versions: Sequence[str],
         reader_contract_version: str,
         from_ms: int,
         to_ms: int,
     ) -> list[dict[str, Any]]:
-        """Accepted external misses in the current cohort, inside one closed window."""
+        """Accepted external misses inside one closed window. No epoch floor since #651 §9."""
 
         rows = self.conn.execute(
             """
@@ -803,25 +839,40 @@ class LearningStorage:
       JOIN news_external_miss_snapshots x ON x.snapshot_id = j.external_snapshot_id
      WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'external_miss'
        AND a.release_eligible AND j.release_eligible
-       AND a.created_at_ms >= %s AND j.created_at_ms >= %s
        AND a.created_at_ms <= %s AND j.rubric_version = ANY(%s)
        AND j.reader_contract_version = %s
-       AND x.created_at_ms >= %s
        AND x.occurred_at_ms >= %s AND x.occurred_at_ms < %s
      ORDER BY j.external_snapshot_id, a.created_at_ms DESC, a.review_id DESC
     """,
             (
-                epoch_started_at_ms,
-                epoch_started_at_ms,
                 freeze_as_of_ms,
                 list(rubric_versions),
                 reader_contract_version,
-                epoch_started_at_ms,
                 from_ms,
                 to_ms,
             ),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def unsettled_delivery_event_ids(self, event_ids: Sequence[str]) -> frozenset[str]:
+        """Which of these Events have a first delivery in flight -- a row exists and has not settled.
+
+        The one receipt a frozen case may have to wait for (#651 §9). A `restatement` review says the
+        reader had already been told the same fact, and until the referenced card's delivery has settled
+        the told ledger cannot say whether they had. The question is deliberately "is it still in
+        flight", not "did it settle": an Event with no delivery row was never told, so there is nothing
+        to wait for and it is absent from this set.
+        """
+
+        if not event_ids:
+            return frozenset()
+        rows = self.conn.execute(
+            "SELECT event_id FROM news_deliveries "
+            "WHERE kind = 'first' AND event_id = ANY(%s) "
+            "AND (settled_at_ms IS NULL OR state NOT IN ('sent', 'terminal'))",
+            (list(dict.fromkeys(str(value) for value in event_ids)),),
+        ).fetchall()
+        return frozenset(str(row["event_id"]) for row in rows)
 
     def eligible_stable_arm_event_count(
         self,
@@ -988,12 +1039,19 @@ class LearningStorage:
         *,
         event_id: str,
         evidence_version: int,
-        program_version: str,
-        program_sha256: str,
-        policy_version: str,
-        bundle_sha: str,
+        program_version: str = "",
+        program_sha256: str = "",
+        policy_version: str = "",
+        bundle_sha: str = "",
     ) -> dict[str, Any] | None:
-        """Load one frozen Event source by its append-only evidence and Stable identities."""
+        """Load one frozen Event source by its append-only evidence, and optionally by one arm.
+
+        The four arm identities are a filter a caller may pin, and every one of them defaults to unset
+        (#651 §9). The dataset store pins the identities the *case* recorded as provenance, so a corpus
+        spanning two arms still loads each case against the exact verdict its reviewer read; a caller
+        with nothing to pin gets the newest model judgment for that evidence version, which is what the
+        review desk shows.
+        """
 
         row = self.conn.execute(
             """
@@ -1044,10 +1102,10 @@ class LearningStorage:
                        AND x.evidence_version = s.evidence_version
                        AND x.evidence_sha256 = s.evidence_sha256
                        AND x.focus_fact_id = s.focus_fact_id
-                       AND x.program_version = %s
-                       AND x.program_sha256 = %s
-                       AND x.policy_version = %s
-                       AND x.trace #>> '{agent_assignment,bundle_sha}' = %s
+                       AND (%s = '' OR x.program_version = %s)
+                       AND (%s = '' OR x.program_sha256 = %s)
+                       AND (%s = '' OR x.policy_version = %s)
+                       AND (%s = '' OR x.trace #>> '{agent_assignment,bundle_sha}' = %s)
                      ORDER BY x.created_at_ms DESC
                      LIMIT 1
               ) v ON true
@@ -1056,7 +1114,7 @@ class LearningStorage:
                     SELECT max(abs(x.return_1h_bps)) AS max_abs_return_1h_bps
                       FROM news_event_reactions x
                      WHERE x.event_id = e.event_id
-                       AND x.metric_version = 'reaction_v1'
+                       AND x.metric_version = %s
                        AND x.is_primary
               ) reaction ON true
              WHERE s.event_id = %s
@@ -1068,9 +1126,17 @@ class LearningStorage:
             """,
             (
                 program_version,
+                program_version,
+                program_sha256,
                 program_sha256,
                 policy_version,
+                policy_version,
                 bundle_sha,
+                bundle_sha,
+                # The current measurement version, read from the pricing contract rather than pinned as a
+                # literal: historical rows keep their own version and are audit, and this projection reads
+                # exactly one of them (#651 §3).
+                REACTION_METRIC_VERSION,
                 event_id,
                 evidence_version,
             ),
@@ -1243,22 +1309,6 @@ class LearningStorage:
             (task_id, task_version),
         ).fetchall()
         return tuple(dict(row) for row in rows)
-
-    def learning_epoch_row_for_bundle(self, bundle_sha: str) -> dict[str, Any] | None:
-        """The epoch one exact bundle accrues evidence under, or None until that bundle has deployed.
-
-        Keyed on the bundle rather than on an epoch label (#314): the label is a truncation for humans,
-        and two different bundles must never resolve to one epoch because their first eight hex digits
-        collide.
-        """
-
-        row = self.conn.execute(
-            "SELECT epoch_id, starts_at_ms, bundle_sha, envelope_sha256, artifact_schema_version, "
-            "baseline_program_version, baseline_program_sha256, prior_evidence_disposition, reset_reason "
-            "FROM news_learning_epochs WHERE bundle_sha = %s",
-            (bundle_sha,),
-        ).fetchone()
-        return None if row is None else dict(row)
 
     def db_now_ms(self) -> int:
         row = self.conn.execute(

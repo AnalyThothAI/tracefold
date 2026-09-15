@@ -1,0 +1,75 @@
+"""Original model-visible evidence stays bounded and keeps the qualifiers needed for faithful copy."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.card_lint import lint_reader_card
+from tracefold.news.program.artifact import render_model_evidence_json
+from tracefold.news.program.contracts import TriageContext
+from tracefold.news.program.signatures import ReaderCard
+
+_FIXTURE = Path(__file__).parents[1] / "fixtures/news/reader_card_fidelity_cases.json"
+_DOCUMENT = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+_CASES = {case["name"]: case for case in _DOCUMENT["cases"]}
+
+
+@pytest.mark.parametrize("name", tuple(_CASES))
+def test_original_evidence_replays_without_history_or_delivery_fields(name: str) -> None:
+    case = _CASES[name]
+    context = TriageContext.model_validate(case["context"])
+    rendered = render_model_evidence_json(context.reader_card_payload(), predictor="reader_card")
+    assert rendered == case["reader_evidence_json"]
+    payload = json.loads(rendered.splitlines()[1])
+    assert set(payload) == {"event", "gate"}
+    assert payload["event"]["raw_first_line"] == context.evidence.raw_first_line
+    assert len(context.evidence.content) <= 600
+    assert len(context.evidence.raw_first_line) <= 300
+    assert "event_status" not in payload
+    assert "provider_score" not in payload["event"]
+    assert canonical_sha(_DOCUMENT["cases"]) == _DOCUMENT["cases_sha256"]
+
+
+def test_third_party_qualifiers_and_title_only_boundaries_are_preserved() -> None:
+    pons = TriageContext.model_validate(_CASES["pons"]["context"])
+    assert "READY TO TWAP" in pons.evidence.content
+    assert "most of the past week" in pons.evidence.content
+    assert pons.evidence.source == "theunipcs"
+    assert TriageContext.model_validate(_CASES["iren"]["context"]).evidence.content == ""
+    bitget = TriageContext.model_validate(_CASES["bitget"]["context"])
+    assert "Bitget" not in bitget.evidence.title
+    assert bitget.evidence.raw_first_line == "Bitget Announcement:"
+    assert "Bitget Announcement:" in _CASES["bitget"]["reader_evidence_json"]
+
+
+def test_evidence_builder_preserves_qualifiers_inside_its_bounds() -> None:
+    context = TriageContext.from_card(
+        {
+            "event_id": "bounded",
+            "leader_title": "Factory entry is conditional on the grid study" + "x" * 700,
+            "leader_description": "Approval is pending; the advertised rate is 12% APR. " + "x" * 700,
+            "raw_first_line": "Third-party report: " + "x" * 400,
+        },
+        watchlist=(),
+        told_rows=(),
+        now_ms=1,
+        queue_lag_ms=0,
+    )
+    payload = context.reader_card_payload()["event"]
+    assert len(context.evidence.title) == len(context.evidence.content) == 600
+    assert len(context.evidence.raw_first_line) == 300
+    assert "Approval is pending" in json.dumps(payload)
+    assert "12% APR" in json.dumps(payload)
+
+
+@pytest.mark.parametrize("why", ["尚待批准", "获批后产量有望增加", "公司称或将提高产量"])
+def test_short_faithful_or_conditional_copy_does_not_require_padding(why: str) -> None:
+    card = ReaderCard(headline_zh="工厂待批", why_zh=why)
+    lint = lint_reader_card(**card.model_dump(), source_title="Factory approval pending")
+    assert lint.gate == ""
+    assert dict(lint.outcomes)["headline_length"] == "lint_pass"
+    assert dict(lint.outcomes)["banned_filler"] == "lint_pass"

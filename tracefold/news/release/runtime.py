@@ -8,9 +8,9 @@ from typing import Any, Literal
 
 from ..learning.contracts import ArmManifest, CandidateManifest
 from ..program.artifact import (
-    ProgramStrategyArtifactV1,
-    load_program_artifact,
-    load_stable_program_artifact,
+    NewsProgramStateV1,
+    load_program_state,
+    load_stable_program_state,
 )
 from ..program.runtime import PROGRAM_VERSION
 from .canary import canary_identity_mismatch_reason
@@ -52,11 +52,11 @@ def candidate_program_artifact(
     candidate: CandidateManifest,
     stable: ArmManifest,
     *,
-    stable_artifact: ProgramStrategyArtifactV1 | None = None,
-) -> ProgramStrategyArtifactV1:
+    stable_artifact: NewsProgramStateV1 | None = None,
+) -> NewsProgramStateV1:
     """Resolve one candidate only when its bundle and Program lineage match Stable."""
 
-    artifact = stable_artifact or load_stable_program_artifact()
+    artifact = stable_artifact or load_stable_program_state()
     if stable.program_version != PROGRAM_VERSION or artifact.program_sha256 != stable.program_sha256:
         raise ValueError("news_stable_program_manifest_mismatch")
     if candidate.parent_stable_sha != stable.bundle_sha:
@@ -69,7 +69,7 @@ def candidate_program_artifact(
     ):
         raise CandidateArtifactUnavailable("artifact_invalid", "news_candidate_program_parent_mismatch")
     try:
-        return load_program_artifact(arm.program_sha256)
+        return load_program_state(arm.program_sha256)
     except (OSError, ValueError) as exc:
         raise CandidateArtifactUnavailable("artifact_invalid", str(exc)) from exc
 
@@ -80,7 +80,7 @@ def artifact_valid_candidate_bundles(
 ) -> dict[str, str]:
     """Return only candidates whose complete image-carried lineage validates."""
 
-    stable_artifact = load_stable_program_artifact()
+    stable_artifact = load_stable_program_state()
     if stable.program_version != PROGRAM_VERSION or stable_artifact.program_sha256 != stable.program_sha256:
         raise ValueError("news_stable_program_manifest_mismatch")
     shipped: dict[str, str] = {}

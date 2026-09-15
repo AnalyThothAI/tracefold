@@ -566,15 +566,20 @@ class ModelTaxonomyV1(_ExactTaxonomyModel):
 
 
 class NewsTaxonomyV1(ModelTaxonomyV1):
-    """The complete persisted taxonomy, including the code-owned axis."""
+    """The four model-owned axes plus the codebook identity they were labelled against.
+
+    Source authority used to live here too. It never was a taxonomy axis: the model does not emit it,
+    `source_authority_from_evidence` computes it from the evidence, and a taxonomy call that fails does
+    not make the reporting origin unknown. #651 lifts it to `EditorialEnvelope.source_authority`, where
+    a code fact belongs and where `decide()` can still read it when this label is absent entirely.
+    """
 
     taxonomy_version: Literal["news_taxonomy_v1"] = TAXONOMY_VERSION
-    source_authority: SourceAuthority
     codebook_sha256: IPTCCodebookSha = IPTC_CODEBOOK_SHA256
 
     @classmethod
-    def issue(cls, model: ModelTaxonomyV1, *, source_authority: SourceAuthority) -> NewsTaxonomyV1:
-        return cls(**model.model_dump(mode="json"), source_authority=source_authority)
+    def issue(cls, model: ModelTaxonomyV1) -> NewsTaxonomyV1:
+        return cls(**model.model_dump(mode="json"))
 
 
 # v3 (#522) widens coverage and changes one matching rule. The 9 h receipt after the #504 deploy found
@@ -804,9 +809,19 @@ def taxonomy_public(value: Mapping[str, Any] | NewsTaxonomyV1 | None) -> dict[st
         "subject_labels_zh": [IPTC_SUBJECT_LABELS_ZH[code] for code in codes],
         "event_family_zh": EVENT_FAMILY_ZH[taxonomy.event_family],
         "change_state_zh": CHANGE_STATE_ZH[taxonomy.change_state],
-        "source_authority_zh": SOURCE_AUTHORITY_ZH[taxonomy.source_authority],
         "assertion_status_zh": ASSERTION_STATUS_ZH[taxonomy.assertion_status],
     }
+
+
+def source_authority_zh(value: str | None) -> str:
+    """The reader's word for one code-owned source authority.
+
+    Beside `taxonomy_public` rather than inside it: since #651 the authority is an editorial field, and
+    it is present on every judgment -- including the ones whose taxonomy call failed and have no
+    taxonomy to project at all.
+    """
+
+    return SOURCE_AUTHORITY_ZH.get(str(value or ""), str(value or ""))
 
 
 def event_family_zh(value: str | None) -> str:
@@ -845,6 +860,7 @@ __all__ = [
     "render_taxonomy_seed_instruction",
     "source_authority",
     "source_authority_from_evidence",
+    "source_authority_zh",
     "subject_code_precedence_rules",
     "taxonomy_definition",
     "taxonomy_public",

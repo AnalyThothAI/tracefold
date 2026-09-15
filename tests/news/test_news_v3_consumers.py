@@ -233,12 +233,23 @@ class RecordingInstruments:
     """The #75 universe as the consumers see it: empty by default, so the Gate falls back to the `XYZ-` prefix and
     the alias table stays inert — every pre-existing expectation holds unchanged."""
 
-    def __init__(self, *, classes: dict[str, str] | None = None, aliases: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        classes: dict[str, str] | None = None,
+        aliases: dict[str, str] | None = None,
+        candidates: dict[str, tuple[str, ...]] | None = None,
+    ) -> None:
         self.classes = classes or {}
         self.aliases = aliases or {}
+        self.candidates = candidates or {}
 
     def instrument_classes(self) -> dict[str, str]:
         return dict(self.classes)
+
+    def instrument_class_candidates(self, symbols: Any) -> dict[str, tuple[str, ...]]:
+        wanted = {str(symbol).upper().replace("XYZ-", "") for symbol in symbols}
+        return {symbol: classes for symbol, classes in self.candidates.items() if symbol in wanted}
 
     def alias_map(self) -> dict[str, str]:
         return dict(self.aliases)
@@ -260,11 +271,13 @@ class RecordingPrice:
         self.instruments = instruments or {}
         self.error = error
         self.requested: list[list[str]] = []
+        self.requested_markets: list[list[str]] = []
         self.requested_reaction_versions: list[str | None] = []
 
-    def quotes_for_symbols(self, symbols: Any, *, now_ms: int) -> list[dict[str, Any]]:
+    def quotes_for_symbols(self, requests: Any, *, now_ms: int) -> list[dict[str, Any]]:
         del now_ms
-        self.requested.append(list(symbols))
+        self.requested.append([request.symbol for request in requests])
+        self.requested_markets.append([request.market_type for request in requests])
         if self.error is not None:
             raise self.error
         return list(self.quotes)
@@ -276,8 +289,8 @@ class RecordingPrice:
             raise self.error
         return list(self.reactions)
 
-    def instruments_for_symbols(self, symbols: Any) -> dict[str, tuple[PriceInstrument, ...]]:
-        return {symbol: self.instruments[symbol] for symbol in symbols if symbol in self.instruments}
+    def instruments_for_symbols(self, requests: Any) -> dict[Any, tuple[PriceInstrument, ...]]:
+        return {request: self.instruments[request.symbol] for request in requests if request.symbol in self.instruments}
 
 
 class FakeWorkerDatabase:
@@ -757,7 +770,9 @@ def _judgment(
     usage: ProgramUsage | None = None,
 ) -> SemanticJudgment:
     verdict_payload = verdict.model_dump(mode="json") if hasattr(verdict, "model_dump") else dict(verdict)
-    editorial = EditorialEnvelope.issue(relevance=trade_relevance(), taxonomy=news_taxonomy())
+    editorial = EditorialEnvelope.issue(
+        relevance=trade_relevance(), source_authority="unknown", taxonomy=news_taxonomy()
+    )
     default_calls = (
         _program_call(
             predictor="event_semantics",
@@ -1309,7 +1324,7 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
                 "verdict": {
                     "novelty": "new_fact",
                     "restates": -1,
-                    "assets": [{"symbol": "NVDA", "role": "primary"}],
+                    "assets": [{"symbol": "NVDA", "market_type": "equity", "role": "primary"}],
                     "direction": "bullish",
                     "scope": "single_name",
                     "magnitude": 2,
@@ -1896,7 +1911,7 @@ def test_single_name_is_sent_first_then_edited_with_a_fresh_cross_venue_contract
                     "scope": "single_name",
                     "novelty": "new_fact",
                     "headline_zh": "MetaLight（02605.HK）公布中期业绩",
-                    "assets": [{"symbol": "2605", "role": "primary"}],
+                    "assets": [{"symbol": "2605", "market_type": "equity", "role": "primary"}],
                 },
             },
         )
@@ -2093,7 +2108,7 @@ def test_the_untradeable_notice_survives_all_five_catalogues_and_reaches_the_sen
                     "scope": "single_name",
                     "novelty": "new_fact",
                     "headline_zh": "MetaLight（02605.HK）公布中期业绩",
-                    "assets": [{"symbol": "2605", "role": "primary"}],
+                    "assets": [{"symbol": "2605", "market_type": "equity", "role": "primary"}],
                 },
             },
         )
@@ -2175,7 +2190,7 @@ def test_single_name_is_kept_when_even_one_catalogue_check_is_incomplete() -> No
                     "magnitude": 2,
                     "scope": "single_name",
                     "headline_zh": "MetaLight（02605.HK）公布中期业绩",
-                    "assets": [{"symbol": "2605", "role": "primary"}],
+                    "assets": [{"symbol": "2605", "market_type": "equity", "role": "primary"}],
                 },
             },
         )
@@ -2226,7 +2241,10 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
                 "direction": "bullish",
                 "magnitude": 2,
                 "headline_zh": "英伟达",
-                "assets": [{"symbol": "NVDA", "role": "primary"}, {"symbol": "OPENAI", "role": "mentioned"}],
+                "assets": [
+                    {"symbol": "NVDA", "market_type": "equity", "role": "primary"},
+                    {"symbol": "OPENAI", "role": "mentioned"},
+                ],
             },
         }
     )
@@ -2299,8 +2317,8 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
                 "magnitude": 2,
                 "headline_zh": "比特币与以太坊走强",
                 "assets": [
-                    {"symbol": "BTC", "role": "primary"},
-                    {"symbol": "ETH", "role": "primary"},
+                    {"symbol": "BTC", "market_type": "crypto", "role": "primary"},
+                    {"symbol": "ETH", "market_type": "crypto", "role": "primary"},
                 ],
             },
         },
@@ -2393,7 +2411,7 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
                 "direction": "bullish",
                 "magnitude": 2,
                 "headline_zh": "微软事件",
-                "assets": [{"symbol": "MSFT", "role": "primary"}],
+                "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
             },
         },
     )
@@ -2478,7 +2496,7 @@ def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_me
                     "direction": "bullish",
                     "magnitude": 2,
                     "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                    "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
                 },
             },
         )
@@ -2643,7 +2661,7 @@ def test_pending_enrichment_does_not_block_the_next_telegram_initial_send() -> N
                     "direction": "bullish",
                     "magnitude": 2,
                     "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                    "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
                 },
             },
         )
@@ -2714,7 +2732,7 @@ def test_delivery_drain_waits_for_native_edit_before_closing_the_sender() -> Non
                     "direction": "bullish",
                     "magnitude": 2,
                     "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                    "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
                 },
             },
         )
@@ -2776,7 +2794,7 @@ def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admissi
                     "direction": "bullish",
                     "magnitude": 2,
                     "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                    "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
                 },
             },
         )
@@ -2857,7 +2875,7 @@ def _quoted_delivery_news() -> RecordingNews:
                 "audience": "crypto",
                 "headline_zh": "DOGE 现货 ETF 通过",
                 "why_zh": "现货通道打开。",
-                "assets": [{"symbol": "DOGE", "role": "primary", "market_type": "perp"}],
+                "assets": [{"symbol": "DOGE", "role": "primary", "market_type": "crypto"}],
             },
         },
     )
@@ -3213,7 +3231,7 @@ def _model_verdict(**overrides: Any) -> Any:
     base: dict[str, Any] = {
         "novelty": "new_fact",
         "restates": -1,
-        "assets": [{"symbol": "NVDA", "role": "primary"}],
+        "assets": [{"symbol": "NVDA", "market_type": "equity", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 2,
@@ -3276,7 +3294,7 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     assert inserted["program_version"] == PROGRAM_VERSION
     assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
-    assert inserted["model_editorial"]["editorial_contract_version"] == "news_editorial_v2"
+    assert inserted["model_editorial"]["editorial_contract_version"] == "news_editorial_v3"
     assert inserted["model_editorial"]["taxonomy"]["taxonomy_version"] == "news_taxonomy_v1"
     assert inserted["trace"]["agent_assignment"] == {
         "activation_id": activation_id,
@@ -3392,7 +3410,7 @@ def test_triage_told_rows_carry_the_instruments_so_the_listing_exemption_can_fir
                 novelty="restatement",
                 restates=0,
                 magnitude=1,
-                assets=[{"symbol": "BICO", "role": "primary"}],
+                assets=[{"symbol": "BICO", "market_type": "crypto", "role": "primary"}],
                 headline_zh="Upbit 将上线 BICO",
             )
         ]
@@ -3432,11 +3450,13 @@ def test_triage_reader_history_reaches_the_model_and_the_trace_and_grounds_a_res
     assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "restatement"
     assert inserted["verdict"]["novelty"] == "restatement" and inserted["verdict"]["restates"] == 0
     trace = inserted["trace"]
-    assert trace["storyline_key_preliminary"] == "asset:NVDA" and trace["storyline_key"] == "asset:NVDA"
+    # The preliminary key is computed at Gate time with no judgment and therefore no market; the final
+    # key carries the one the verdict named. `same_storyline_key` is what still joins them (#651 §6.2).
+    assert trace["storyline_key_preliminary"] == "asset:NVDA" and trace["storyline_key"] == "asset:equity:NVDA"
     assert trace["told_count"] == 2 and [t["event_id"] for t in trace["told"]] == ["ev-earlier", "ev-other"]
     assert trace["restates_event_id"] == "ev-earlier"
     assert "status_final" in trace and "input_sha256" in trace and "reasked_after_told_change" not in trace
-    assert news.kwargs_of("lock_storyline")["arg0"] == "asset:NVDA"
+    assert news.kwargs_of("lock_storyline")["arg0"] == "asset:equity:NVDA"
     assert bus.published == []
 
 
@@ -4025,7 +4045,7 @@ def test_triage_withholds_a_card_the_reader_already_received() -> None:
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["final_decision"] == "throttled"
-    assert inserted["throttled_by"] == "storyline:asset:NVDA:seen"
+    assert inserted["throttled_by"] == "storyline:asset:equity:NVDA:seen"
     assert bus.published == []
     assert inserted["trace"]["seen_similarity"] >= 0.25
     seen_against = inserted["trace"]["seen_against"]
@@ -4050,7 +4070,7 @@ def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on(
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["final_decision"] == "throttled"
-    assert inserted["throttled_by"] == "storyline:asset:NVDA:seen"
+    assert inserted["throttled_by"] == "storyline:asset:equity:NVDA:seen"
     assert inserted["trace"]["seen_scope"] == "all"
     assert bus.published == []
 
@@ -4753,3 +4773,81 @@ def test_an_ordinary_news_frame_still_opens_an_event_and_never_reaches_the_marke
     assert news.kwargs_of("insert_event")["event_kind"] == "news"
     for writer in ("insert_oi_signal", "insert_market_liquidation", "insert_market_smart_money"):
         assert writer not in news.names(), writer
+
+
+def test_a_progression_review_that_has_not_answered_cannot_hold_the_first_delivery() -> None:
+    """#651 §6.3: novelty decides before the send, and `ProgressionVerifier` decides nothing about it.
+
+    The restatement guard now drops a repeat whichever way the model read its direction, which makes
+    novelty a pre-delivery decision in full. The one model check that runs *after* the send has to stay
+    there: this verifier is entered and never answers, and the receipt is written anyway. What an
+    unanswered review may cost is a badge that stays `pending`; what it may never cost is the card.
+    """
+
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(grounded_assets=[]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bearish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "progression",
+                    "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
+                    "why_zh": "工会行动从劳资协商进入有明确门槛的罢工程序。",
+                    "assets": [],
+                },
+                "trace": {
+                    "told": [
+                        {
+                            "i": 0,
+                            "event_id": "ev-parent",
+                            "tier": "storyline",
+                            "similarity": 0.31,
+                            "headline_zh": "美光工会此前启动劳资协商",
+                            "symbols": ["MU"],
+                            "at_ms": NOW_MS - 150_000,
+                        }
+                    ]
+                },
+            },
+            delivery=lambda *, event_id, kind: (
+                {
+                    "event_id": event_id,
+                    "kind": kind,
+                    "state": "sent",
+                    "delete_state": None,
+                    "receipt": {
+                        "provider": "telegram",
+                        "message_id": 41,
+                        "pushed_at_ms": NOW_MS - 150_000,
+                        "target_sha256": "a" * 64,
+                    },
+                }
+                if event_id == "ev-parent" and kind == "first"
+                else None
+            ),
+        )
+        sender = RecordingEditableSender(order)
+        verifier = BlockingProgressionVerifier(order)
+        consumer = _deliverer(news, sender=sender, progression_verifier=verifier)
+
+        await asyncio.wait_for(consumer.deliver(event_id="ev-strong"), timeout=0.2)
+        # The receipt exists before the review is even entered, and it does not change afterwards.
+        assert news.kwargs_of("settle_delivery")["state"] == "sent"
+        await asyncio.wait_for(verifier.started.wait(), timeout=0.2)
+        assert order == ["prepare", "send", "review"]
+        assert news.kwargs_of("settle_delivery")["state"] == "sent"
+        assert sender.presentations[0].progression_review_state == "pending"
+        assert sender.edited_presentations == []
+        # Released only so the loop can be closed; the assertions above all hold while it is blocked.
+        verifier.release.set()
+        await consumer.close()
+        return news, sender, order
+
+    news, _sender, order = asyncio.run(scenario())
+
+    assert order.index("send") < order.index("review")
+    assert news.kwargs_of("settle_delivery")["state"] == "sent"

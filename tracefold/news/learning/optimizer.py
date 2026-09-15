@@ -1,17 +1,31 @@
-"""The one bounded offline optimizer that can produce a News Prompt candidate.
+"""The one bounded offline optimizer that can produce a News Program candidate.
 
-Public ``dspy.GEPA`` compiles the single ``NativeNewsProgram.taxonomy`` Predict against accepted taxonomy
-Gold (#501). Task and reflection calls share one audited ledger and one physical-call meter. Admission is
-GEPA's own answer: the candidate at ``best_idx`` advances when its selection score is strictly above the
-seed's and its instruction is valid, and otherwise the run is ``NO_OP``. EventSemantics and ReaderCard stay
-byte-identical. The module owns no persistence, activation, canary, or promotion authority. A run ends in
-``NO_OP``, ``REJECTED``, or ``ADVANCE``, and an ``ADVANCE`` candidate is still subject to every downstream
-release gate, which is where a candidate that overfit the selection set is caught.
+Public ``dspy.GEPA`` compiles exactly one native ``NativeNewsProgram`` Predictor against accepted Gold.
+Which one is the run's *target*: ``classification`` optimizes ``taxonomy``, ``understanding`` optimizes
+``event_semantics``, ``explanation`` optimizes ``reader_card``. There is one GEPA assembly, one budget
+meter and one audited ledger for all three; what varies is the metric callable, which is injected as a
+``TargetMetric``, and the frozen example each target renders from the same Objective Plan episodes.
+
+The ``TargetMetric`` interface is stable and deliberately narrow: ``__call__(gold, pred, trace=None,
+pred_name=None, pred_trace=None) -> dspy.Prediction(score, feedback, objective_scores)``. Refining what a
+target *means* by "better" is a change to one metric object and its receipt, never to the assembly below.
+The ``understanding`` and ``explanation`` rulers here are minimal and real — typed validity, accepted
+asset/novelty agreement, and the deterministic ReaderCard lint with accepted-copy retention — and a
+following unit sharpens their scoring semantics against this same interface.
+
+Task and reflection calls share one audited ledger and one physical-call meter. Admission is GEPA's own
+answer: the candidate at ``best_idx`` advances when its selection score is strictly above the seed's and
+its instruction is valid, and otherwise the run is ``NO_OP``. The winner is that Predictor's native
+``dump_state()`` — demos included — merged into the parent state for that Predictor alone; the other two
+stay byte-identical. The module owns no persistence, activation, canary, or promotion authority. A run
+ends in ``NO_OP``, ``REJECTED``, or ``ADVANCE``, and an ``ADVANCE`` candidate is still subject to every
+downstream release gate, which is where a candidate that overfit the selection set is caught.
 """
 
 from __future__ import annotations
 
 import difflib
+import functools
 import hashlib
 import importlib.metadata
 import math
@@ -25,14 +39,14 @@ import dspy  # type: ignore[import-untyped]
 from dspy.teleprompt.gepa.gepa import AUTO_RUN_SETTINGS, DspyGEPAResult  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..artifact_identity import canonical_sha
+from ..artifact_identity import canonical_json, canonical_sha
 from ..program.artifact import (
-    ProgramStrategyArtifactV1,
-    ProgramStrategyPatchV1,
-    load_stable_program_artifact,
+    NewsProgramStateV1,
+    load_stable_program_state,
     render_model_evidence_json,
     validate_program_instruction,
 )
+from ..program.contracts import ReaderCardSemanticView, ScoredJudgment
 from ..program.lm import (
     AuditedConfiguredLM,
     LMCallContext,
@@ -45,20 +59,22 @@ from ..program.lm import (
     program_json_adapter,
 )
 from ..program.module import NativeNewsProgram
-from ..program.runtime import PROGRAM_VERSION, _estimated_tokens
+from ..program.runtime import PREDICTOR_NAMES, PROGRAM_VERSION, PredictorName, _estimated_tokens
+from ..program.signatures import EventSemantics, ReaderCard
 from ..taxonomy import ModelTaxonomyV1
 from .contracts import (
+    LEARNING_TARGETS,
     REFLECTION_MAX_TOKENS,
     REFLECTION_MINIBATCH_SIZE,
     REFLECTION_TIMEOUT_SECONDS,
     DevelopmentDatasetRef,
+    LearningTarget,
     ModelExecutionIdentity,
     OptimizationBudget,
     OptimizationResult,
     OptimizationRunReport,
     OptimizerRole,
     PromptCandidateV1,
-    PromptPatchV1,
 )
 from .metric import _json_safe
 from .objective import (
@@ -69,10 +85,22 @@ from .objective import (
     optimizer_population_identity,
     retrieval_receipt,
 )
-from .taxonomy_metric import TAXONOMY_AXES, compare_taxonomy
+from .target_metrics import (
+    TASK_OUTPUT_INVALID,
+    TASK_OUTPUT_TRUNCATED,
+    ZERO_OBJECTIVES,
+    accepted_assets,
+    accepted_duplicate_of,
+    accepted_explanation,
+    accepted_novelty,
+    bind_target_metric,
+    target_metric_receipt,
+)
 
 # v4 (#501): the population is `included`/`excluded`; no target/control split, no owner distribution.
-OBJECTIVE_SUMMARY_SCHEMA = "tracefold.news.optimization_objective_summary.v4"
+# v5 (#651): the summary names the optimization `target`, because the same corpus now feeds three
+# different Predictors and a candidate that does not say which one it moved is unreadable.
+OBJECTIVE_SUMMARY_SCHEMA = "tracefold.news.optimization_objective_summary.v5"
 # v3 (#456): `metric_calls` is null when GEPA terminates before returning its public result. The physical
 # task/reflection call counters remain exact; zero is reserved for a preflight refusal that ran no metric.
 USAGE_SCHEMA = "tracefold.news.optimization_usage.v3"
@@ -136,9 +164,10 @@ def gepa_metric_call_ceiling(
 
 
 class GepaRunResult(_ExactModel):
-    """The typed patch and compact evidence produced by one public DSPy compile."""
+    """The typed candidate state and compact evidence produced by one public DSPy compile."""
 
-    patch: ProgramStrategyPatchV1
+    target: OptimizationTarget
+    state: NewsProgramStateV1
     metric: dict[str, Any]
     optimizer_config: dict[str, Any]
     public_result: dict[str, Any]
@@ -214,54 +243,34 @@ class GepaNoProgramChange(ValueError):
         self.result = result
 
 
-_TASK_OUTPUT_FAILURE = "news_program_compile_task_model_output_truncated"
-_TASK_OUTPUT_INVALID = "news_program_compile_task_model_output_invalid"
+# The two candidate-local task failures this module converts and `target_metrics` scores at zero.
+_TASK_OUTPUT_FAILURE = TASK_OUTPUT_TRUNCATED
+_TASK_OUTPUT_INVALID = TASK_OUTPUT_INVALID
 
 
-def _zero_taxonomy_objectives() -> dict[str, float]:
-    return {
-        "subject_codes_set_f1": 0.0,
-        "event_family_accuracy": 0.0,
-        "change_state_accuracy": 0.0,
-        "assertion_status_accuracy": 0.0,
-        "four_axis_exact_accuracy": 0.0,
-    }
+# One vocabulary, defined beside the corpus contracts so a caller that only needs the names does not
+# import DSPy to read them (#651 §9).
+OptimizationTarget = LearningTarget
+
+OPTIMIZATION_TARGETS: Final[tuple[OptimizationTarget, ...]] = LEARNING_TARGETS
+
+# One target optimizes one Predictor. Nothing else in this module branches on the target name.
+TARGET_PREDICTOR: Final[dict[OptimizationTarget, PredictorName]] = {
+    "classification": "taxonomy",
+    "understanding": "event_semantics",
+    "explanation": "reader_card",
+}
 
 
-class _LearningTaxonomy(dspy.Module):  # type: ignore[misc]
-    """Keep one candidate-local task failure as one scoreable GEPA example.
+class TargetMetric(Protocol):
+    """The whole interface a target's ruler exposes to the single native GEPA assembly.
 
-    DSPy 3.3.1 drops typed validation failures and re-raises ``LMError`` while capturing GEPA traces
-    (#478). GEPA assumes the batch stayed aligned and indexes past either shortened result. This adapter is
-    the minimal accommodation of that upstream limit, not a process: it preserves the one native Predict
-    and converts only candidate-local truncation and typed validation into Predictions the metric scores
-    at ``failure_score``.
-    """
-
-    def __init__(self, predictor: dspy.Predict) -> None:
-        super().__init__()
-        self.taxonomy = predictor
-
-    def forward(self, evidence_json: str) -> dspy.Prediction:
-        try:
-            return self.taxonomy(evidence_json=evidence_json)
-        except LMOutputTruncatedError:
-            return dspy.Prediction(task_output_failure=_TASK_OUTPUT_FAILURE)
-        except ValidationError as exc:
-            if exc.title != ModelTaxonomyV1.__name__:
-                raise
-            return dspy.Prediction(
-                task_output_failure=_TASK_OUTPUT_INVALID,
-                task_output_feedback=f"Typed ModelTaxonomyV1 is invalid: {exc}",
-            )
-
-
-class _DspyTaxonomyMetric:
-    """The four-axis accepted-Gold ruler used by the single taxonomy Predict.
-
-    Every failure scores the native ``failure_score`` of 0.0 (#501 D5). The v3 metric scored a truncated
-    output at ``-(train+1)`` so it could be told apart later; that sentinel dominated the Pareto front
-    and left candidate zero with an aggregate below every real candidate.
+    `dspy.GEPA` calls a metric as `(gold, pred, trace, pred_name, pred_trace)` and reads `score` and
+    `feedback` off the returned `dspy.Prediction`; the optional `objective_scores` mapping is the per-axis
+    breakdown GEPA aggregates into `val_aggregate_subscores` and this module publishes in the selection
+    receipt. Everything else about a target — which Gold a case must carry, how a typed failure scores,
+    what the feedback says — lives behind this call, so refining one target's scoring semantics is a change
+    to one object rather than to the optimizer.
     """
 
     def __call__(
@@ -271,113 +280,302 @@ class _DspyTaxonomyMetric:
         trace: Any = None,
         pred_name: str | None = None,
         pred_trace: Any = None,
-    ) -> dspy.Prediction:
-        del trace, pred_name, pred_trace
-        expected = getattr(gold, "gold_taxonomy", None)
-        if expected is None:
-            raise TypeError("news_program_compile_taxonomy_gold_missing")
-        if getattr(pred, "task_output_failure", None) == _TASK_OUTPUT_FAILURE:
-            return dspy.Prediction(
-                score=0.0,
-                feedback="output truncated: the candidate did not finish this example's taxonomy JSON.",
-                objective_scores=_zero_taxonomy_objectives(),
-            )
-        if getattr(pred, "task_output_failure", None) == _TASK_OUTPUT_INVALID:
-            return dspy.Prediction(
-                score=0.0,
-                feedback=getattr(pred, "task_output_feedback", "Typed ModelTaxonomyV1 is invalid."),
-                objective_scores=_zero_taxonomy_objectives(),
-            )
+    ) -> dspy.Prediction: ...
+
+
+class _LearningStudent(dspy.Module):  # type: ignore[misc]
+    """One native Predict, plus the minimal accommodation of one reproduced DSPy 3.3.1 limit.
+
+    Reproduced against the installed dspy 3.3.1 rather than assumed (#478, re-checked for #651). GEPA
+    evaluates a candidate through `bootstrap_trace.bootstrap_trace_data`, whose `patched_forward` handles
+    `AdapterParseError` and then re-raises everything else — `except LMError: raise`, and `except
+    Exception: if not capture_crashes: raise`, with `capture_crashes` left at its default. So both of this
+    Program's candidate-local task failures escape the wrapper:
+
+    * `LMOutputTruncatedError` (an `LMError`) when the task model stops mid-JSON, and
+    * a pydantic `ValidationError` when the typed output field does not validate.
+
+    `Evaluate` then records the example as an error, its `prediction` is not the `(prediction, trace)`
+    tuple the caller unpacks, and `bootstrap_trace_data` *drops* that row (`except ValueError: continue`).
+    GEPA receives a trajectory list shorter than the batch it submitted and indexes past the end. The
+    failure is therefore a crashed run, not a low score — which is the opposite of what a candidate-local
+    output failure should mean.
+
+    This wrapper is the narrowest fix: it preserves the one native Predict, converts only those two
+    candidate-local failures into ordinary Predictions, and leaves the metric to score them at
+    `failure_score`. Everything else still propagates, because a provider outage or a budget refusal is a
+    run answer rather than a candidate quality.
+    """
+
+    def __init__(self, predictor: dspy.Predict, *, output_type: type[BaseModel]) -> None:
+        super().__init__()
+        self.predictor = predictor
+        self.output_type = output_type
+
+    def forward(self, **inputs: Any) -> dspy.Prediction:
         try:
-            taxonomy = ModelTaxonomyV1.model_validate(getattr(pred, "taxonomy", None))
-            comparison = compare_taxonomy(expected, taxonomy)
-        except ValueError as exc:
+            return self.predictor(**inputs)
+        except LMOutputTruncatedError:
+            return dspy.Prediction(task_output_failure=_TASK_OUTPUT_FAILURE)
+        except ValidationError as exc:
+            if exc.title != self.output_type.__name__:
+                raise
             return dspy.Prediction(
-                score=0.0,
-                feedback=f"Typed ModelTaxonomyV1 is invalid: {exc}",
-                objective_scores=_zero_taxonomy_objectives(),
+                task_output_failure=_TASK_OUTPUT_INVALID,
+                task_output_feedback=f"Typed {self.output_type.__name__} is invalid: {exc}",
             )
-        objectives = {
-            "subject_codes_set_f1": comparison.subject_f1,
-            "event_family_accuracy": float(comparison.event_family_match),
-            "change_state_accuracy": float(comparison.change_state_match),
-            "assertion_status_accuracy": float(comparison.assertion_status_match),
-            "four_axis_exact_accuracy": float(comparison.exact),
-        }
-        return dspy.Prediction(
-            score=comparison.score,
-            feedback=comparison.feedback,
-            objective_scores=objectives,
-        )
 
 
-def _dspy_taxonomy_example(episode: DevelopmentEpisode) -> dspy.Example:
+# --- the frozen example each target renders, and the plan that binds it to its ruler ---------------
+#
+# The rulers themselves left this module in #651 §8. Three metrics living beside the GEPA assembly is how
+# the taxonomy comparison ended up implemented twice — once here and once in `learning/metric.py` — and a
+# candidate could then be admitted by one number and reported by another. `learning/target_metrics.py` is
+# the single owner; what stays here is the *question*: which frozen inputs and which accepted Gold each
+# target's example carries, which is a property of the corpus rather than of the ruler.
+
+
+def _accepted_copy(review: Mapping[str, Any], field: str) -> str | None:
+    """The accepted Chinese copy for one card field, or None when nobody accepted one."""
+
+    dimension = "headline_fidelity" if field == "headline_zh" else "why_support"
+    if str(dict(review.get("dimensions") or {}).get(dimension) or "") != "fail":
+        return None
+    value = dict(review.get("expected") or {}).get(field)
+    return str(value) if isinstance(value, str) and value.strip() else None
+
+
+def _classification_example(episode: DevelopmentEpisode) -> dspy.Example:
     gold = dict(episode.accepted_review or {}).get("taxonomy")
     if gold is None:
         raise ValueError("news_program_compile_taxonomy_gold_missing")
     return dspy.Example(
         evidence_json=render_model_evidence_json(episode.context.taxonomy_payload(), predictor="taxonomy"),
         gold_taxonomy=gold,
+        applicable_targets=tuple(episode.applicable_targets),
         case_id=episode.case_id,
         cluster_id=episode.cluster_id,
     ).with_inputs("evidence_json")
 
 
-def _taxonomy_metric_receipt(*, review_rubric_version: str) -> dict[str, Any]:
-    return {
-        "schema": "tracefold.news.taxonomy_gepa_metric.v4",
-        "metric_id": "tracefold.news.taxonomy_gepa_direct_v4",
-        "review_rubric_version": review_rubric_version,
-        "scalar": "mean(subject_codes_set_f1,event_family_exact,change_state_exact,assertion_status_exact)",
-        "axes": list(TAXONOMY_AXES),
-        "invalid_prediction_score": 0.0,
-        "truncated_output_score": 0.0,
-        "feedback": "codebook definitions of expected and predicted labels plus the matching precedence rules",
-    }
-
-
-def _instruction_change_receipt(
-    base_program: ProgramStrategyArtifactV1,
+def _understanding_example(
+    episode: DevelopmentEpisode,
     *,
-    winner_instruction: str,
+    cluster_event_ids: Mapping[str, str] | None = None,
+) -> dspy.Example:
+    """The typed-semantics question plus every accepted fact about it, including what the model was shown.
+
+    `gold_told_event_ids` is the frozen ledger in the exact order `restates` indexes, because a
+    restatement's *target* is half its answer and a ruler that cannot see the ledger cannot check it.
+    `gold_cluster_event_ids` are the other Events of this case's connected fact cluster, so a candidate
+    that points at a different member of the same fact is right rather than lucky.
+    """
+
+    review = dict(episode.accepted_review or {})
+    told_event_ids = tuple(str(entry.event_id) for entry in episode.context.told.entries)
+    values: dict[str, Any] = {
+        "evidence_json": render_model_evidence_json(
+            episode.context.event_semantics_payload(), predictor="event_semantics"
+        ),
+        "applicable_targets": tuple(episode.applicable_targets),
+        "gold_told_event_ids": told_event_ids,
+        "case_id": episode.case_id,
+        "cluster_id": episode.cluster_id,
+    }
+    assets = accepted_assets(review)
+    if assets is not None:
+        values["gold_assets"] = assets
+    novelty = accepted_novelty(review)
+    if novelty is not None:
+        values["gold_novelty"] = novelty
+        values["gold_duplicate_of"] = accepted_duplicate_of(review)
+        index = dict(cluster_event_ids or {})
+        values["gold_cluster_event_ids"] = frozenset(
+            event_id for event_id, cluster_id in index.items() if cluster_id == episode.cluster_id
+        )
+    return dspy.Example(**values).with_inputs("evidence_json")
+
+
+def _explanation_example(episode: DevelopmentEpisode) -> dspy.Example:
+    """One frozen ReaderCard question: the bounded evidence plus the semantics the episode recorded.
+
+    `semantics_json` is a ReaderCard input, not something the Predictor decides, so it comes from the
+    episode's own recorded EventSemantics rather than from a live upstream call. An episode with no
+    recorded judgment cannot pose this question and is refused here rather than being scored against an
+    invented semantic view.
+    """
+
+    judgment = episode.production_judgment
+    if judgment is None:
+        raise ValueError("news_program_compile_reader_card_semantics_missing")
+    review = dict(episode.accepted_review or {})
+    explanation = accepted_explanation(review)
+    evidence_json = render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card")
+    values: dict[str, Any] = {
+        "evidence_json": evidence_json,
+        "semantics_json": _recorded_semantics_json(judgment),
+        "source_title": str(episode.context.evidence.title),
+        "applicable_targets": tuple(episode.applicable_targets),
+        "gold_key_facts": explanation["key_facts"],
+        "gold_forbidden_claims": explanation["forbidden_claims"],
+        "gold_error_types": explanation["error_types"],
+        "case_id": episode.case_id,
+        "cluster_id": episode.cluster_id,
+    }
+    for copy_field in ("headline_zh", "why_zh"):
+        accepted = _accepted_copy(review, copy_field)
+        if accepted is not None:
+            values[f"gold_{copy_field}"] = accepted
+    return dspy.Example(**values).with_inputs("evidence_json", "semantics_json")
+
+
+def _recorded_semantics_json(judgment: ScoredJudgment) -> str:
+    """Re-render the episode's recorded semantics in exactly the view the Program feeds ReaderCard."""
+
+    verdict = judgment.verdict
+    relevance = judgment.editorial.relevance
+    view = ReaderCardSemanticView(
+        assets=verdict.assets,
+        direction=verdict.direction,
+        magnitude=verdict.magnitude,
+        novelty=verdict.novelty,
+        restates=verdict.restates,
+        scope=verdict.scope,
+        channels=relevance.channels,
+        affected_markets=relevance.affected_markets,
+    )
+    return canonical_json(view.model_dump(mode="json"))
+
+
+def cluster_event_index(episodes: Sequence[DevelopmentEpisode]) -> dict[str, str]:
+    """Which connected fact cluster each frozen Event belongs to, for the restatement-target check."""
+
+    return {str(episode.context.evidence.event_id): str(episode.cluster_id) for episode in episodes}
+
+
+@dataclass(frozen=True)
+class _TargetPlan:
+    """Everything the single GEPA assembly needs to optimize one Predictor for one target."""
+
+    target: OptimizationTarget
+    predictor: PredictorName
+    output_type: type[BaseModel]
+    metric: TargetMetric
+    example: Callable[[DevelopmentEpisode], dspy.Example]
+    metric_receipt: dict[str, Any]
+    zero_objectives: Callable[[], dict[str, float]]
+
+
+def target_plan(
+    target: OptimizationTarget,
+    *,
+    review_rubric_version: str,
+    judge: Any = None,
+    cluster_event_ids: Mapping[str, str] | None = None,
+    judge_calibration_receipt_sha256: str = "",
+) -> _TargetPlan:
+    """Resolve one target into its Predictor, ruler, example renderer and metric receipt.
+
+    `judge` is the metric-judge route, bound into the ruler here and nowhere else. The offline optimizer
+    has a task endpoint and a reflection endpoint and no third one, so it passes None and the explanation
+    ruler runs its deterministic arm; `baseline` and `CandidateEvaluator` pass the sealed judge they
+    already build, and the receipt below records which of the two this run was scored under.
+    """
+
+    if target not in TARGET_PREDICTOR:
+        raise ValueError(f"news_program_compile_target_unknown:{target}")
+    metric = cast(TargetMetric, bind_target_metric(target, judge))
+    receipt = target_metric_receipt(
+        target,
+        review_rubric_version=review_rubric_version,
+        judge=judge,
+        judge_calibration_receipt_sha256=judge_calibration_receipt_sha256,
+    )
+    if target == "classification":
+        return _TargetPlan(
+            target=target,
+            predictor="taxonomy",
+            output_type=ModelTaxonomyV1,
+            metric=metric,
+            example=_classification_example,
+            metric_receipt=receipt,
+            zero_objectives=ZERO_OBJECTIVES["classification"],
+        )
+    if target == "understanding":
+        return _TargetPlan(
+            target=target,
+            predictor="event_semantics",
+            output_type=EventSemantics,
+            metric=metric,
+            example=functools.partial(_understanding_example, cluster_event_ids=cluster_event_ids),
+            metric_receipt=receipt,
+            zero_objectives=ZERO_OBJECTIVES["understanding"],
+        )
+    return _TargetPlan(
+        target=target,
+        predictor="reader_card",
+        output_type=ReaderCard,
+        metric=metric,
+        example=_explanation_example,
+        metric_receipt=receipt,
+        zero_objectives=ZERO_OBJECTIVES["explanation"],
+    )
+
+
+def _predictor_change_receipt(
+    base_program: NewsProgramStateV1,
+    *,
+    target: OptimizationTarget,
+    predictor: PredictorName,
+    winner_document: Mapping[str, Any],
 ) -> dict[str, Any]:
-    before = base_program.taxonomy_instruction
-    return {
-        "schema": "tracefold.news.taxonomy_instruction_change.v2",
-        "taxonomy": {
+    """What moved, per Predictor, in bytes a reviewer can read before promoting anything."""
+
+    before = base_program.instruction_for(predictor)
+    after = str(winner_document["signature"]["instructions"])
+    before_demos = base_program.demos_for(predictor)
+    after_demos = tuple(dict(demo) for demo in winner_document["demos"])
+    receipt: dict[str, Any] = {
+        "schema": "tracefold.news.predictor_state_change.v1",
+        "target": target,
+        "predictor": predictor,
+        predictor: {
             "before_sha256": hashlib.sha256(before.encode()).hexdigest(),
-            "after_sha256": hashlib.sha256(winner_instruction.encode()).hexdigest(),
-            "changed": winner_instruction != before,
+            "after_sha256": hashlib.sha256(after.encode()).hexdigest(),
+            "changed": after != before or after_demos != before_demos,
             "before_bytes": len(before.encode()),
-            "after_bytes": len(winner_instruction.encode()),
-            "byte_growth": len(winner_instruction.encode()) - len(before.encode()),
+            "after_bytes": len(after.encode()),
+            "byte_growth": len(after.encode()) - len(before.encode()),
             "before_estimated_tokens": _estimated_tokens(before),
-            "after_estimated_tokens": _estimated_tokens(winner_instruction),
-            "estimated_token_growth": _estimated_tokens(winner_instruction) - _estimated_tokens(before),
+            "after_estimated_tokens": _estimated_tokens(after),
+            "estimated_token_growth": _estimated_tokens(after) - _estimated_tokens(before),
+            "before_demo_n": len(before_demos),
+            "after_demo_n": len(after_demos),
             "unified_diff": "\n".join(
                 difflib.unified_diff(
                     before.splitlines(),
-                    winner_instruction.splitlines(),
-                    fromfile="stable/taxonomy",
-                    tofile="winner/taxonomy",
+                    after.splitlines(),
+                    fromfile=f"stable/{predictor}",
+                    tofile=f"winner/{predictor}",
                     lineterm="",
                 )
             ),
         },
-        "event_semantics": {
-            "instruction_sha256": hashlib.sha256(base_program.event_semantics_instruction.encode()).hexdigest(),
-            "unchanged": True,
-        },
-        "reader_card": {
-            "instruction_sha256": hashlib.sha256(base_program.reader_card_instruction.encode()).hexdigest(),
-            "unchanged": True,
-        },
     }
+    for other in PREDICTOR_NAMES:
+        if other == predictor:
+            continue
+        receipt[other] = {
+            "instruction_sha256": hashlib.sha256(base_program.instruction_for(other).encode()).hexdigest(),
+            "demo_n": len(base_program.demos_for(other)),
+            "unchanged": True,
+        }
+    return receipt
 
 
 @dataclass(frozen=True)
 class _GepaAdmission:
-    selected_instruction: str
+    selected_document: dict[str, Any]
     admitted: bool
     selection_receipt: dict[str, Any]
     public_result: dict[str, Any]
@@ -386,7 +584,7 @@ class _GepaAdmission:
 def _admit_public_gepa_candidates(
     *,
     run: DspyGEPAResult,
-    base_instruction: str,
+    base_document: Mapping[str, Any],
     val_count: int,
     metric_calls: int,
 ) -> _GepaAdmission:
@@ -418,7 +616,8 @@ def _admit_public_gepa_candidates(
     best = int(run.best_idx)
     if not 0 <= best < len(scores):
         raise ValueError("news_program_compile_public_result_invalid")
-    best_instruction = _winning_taxonomy_instruction(run.candidates[best])
+    best_document = _winning_predictor_document(run.candidates[best])
+    best_instruction = str(best_document["signature"]["instructions"])
     instruction_valid = True
     try:
         validate_program_instruction(best_instruction)
@@ -426,19 +625,23 @@ def _admit_public_gepa_candidates(
         if _instruction_rejection_code(exc) is None:
             raise
         instruction_valid = False
-    admitted = best != 0 and scores[best] > scores[0] and best_instruction != base_instruction and instruction_valid
-    selected_instruction = best_instruction if admitted else base_instruction
+    # Demos count as a change: a candidate that keeps the seed instruction and attaches few-shot examples
+    # is a different Program, which is exactly what the three-string write-set could not express.
+    changed = best_document != dict(base_document)
+    admitted = best != 0 and scores[best] > scores[0] and changed and instruction_valid
+    selected_document = best_document if admitted else dict(base_document)
     baseline_objectives = {key: float(value) for key, value in objective_scores[0].items()}
     best_objectives = {key: float(value) for key, value in objective_scores[best].items()}
     selection = {
-        "schema": "tracefold.news.taxonomy_selection_score.v3",
-        "candidate_0": {"taxonomy_overall": scores[0], **baseline_objectives},
+        "schema": "tracefold.news.target_selection_score.v4",
+        "candidate_0": {"target_overall": scores[0], **baseline_objectives},
         "gepa_best_index": best,
-        "gepa_best": {"taxonomy_overall": scores[best], **best_objectives},
+        "gepa_best": {"target_overall": scores[best], **best_objectives},
         "gepa_best_instruction_valid": instruction_valid,
+        "gepa_best_demo_n": len(best_document["demos"]),
         "admitted": admitted,
         "delta": {
-            "taxonomy_overall": round(scores[best] - scores[0], 6),
+            "target_overall": round(scores[best] - scores[0], 6),
             **{
                 key: round(best_objectives.get(key, 0.0) - baseline_objectives.get(key, 0.0), 6)
                 for key in sorted(set(baseline_objectives) | set(best_objectives))
@@ -446,7 +649,7 @@ def _admit_public_gepa_candidates(
         },
     }
     return _GepaAdmission(
-        selected_instruction=selected_instruction,
+        selected_document=selected_document,
         admitted=admitted,
         selection_receipt=selection,
         public_result={
@@ -488,18 +691,19 @@ def resolve_auto_metric_calls(auto: str, *, val_count: int) -> int:
 
 def run_gepa(
     *,
-    base_program: ProgramStrategyArtifactV1,
+    base_program: NewsProgramStateV1,
     episodes: Sequence[DevelopmentEpisode],
     task_lm: dspy.BaseLM,
     reflection_lm: Any,
     seed: int,
     review_rubric_version: str,
+    target: OptimizationTarget = "classification",
     auto: str | None = None,
     max_metric_calls: int | None = None,
     compile_fn: Callable[..., dspy.Module] | None = None,
     gepa_log_dir: str | None = None,
 ) -> GepaRunResult:
-    """Optimize only the taxonomy Predictor against accepted Gold."""
+    """Optimize exactly one Predictor — the one this `target` names — against accepted Gold."""
 
     if (auto is None) == (max_metric_calls is None):
         raise ValueError("news_program_compile_budget_requires_exactly_one_of_auto_or_max_metric_calls")
@@ -510,9 +714,9 @@ def run_gepa(
     # One Objective Plan, built here rather than by each caller, so the corpus this optimization sees is the
     # corpus `readiness`, the dataset-bound baseline and `CandidateEvaluator` re-derive from the same frozen
     # episodes.
-    plan = build_gepa_objective_plan(episodes)
+    plan = build_gepa_objective_plan(episodes, target)
     if not plan.optimizer_cluster_ids:
-        raise ValueError("news_program_compile_no_taxonomy_gold_clusters")
+        raise ValueError(f"news_program_compile_no_labelled_clusters:{target}")
     if plan.split is None:
         # Verbatim: the plan records the exact code `_honest_split` refused with, so this stays the failure
         # the caller has always seen rather than a translation of it.
@@ -520,8 +724,16 @@ def run_gepa(
     if plan.blocking_reasons:
         raise ValueError("news_program_compile_objective_blocked:" + ",".join(plan.blocking_reasons))
     split_receipt = plan.split
-    train_examples = [_dspy_taxonomy_example(episode) for episode in plan.train_episodes]
-    val_examples = [_dspy_taxonomy_example(episode) for episode in plan.development_selection_episodes]
+    # The whole frozen corpus, not just the optimized half: a restatement may point at a member of its
+    # fact cluster that lives in the other half, and the ruler has to be able to see that it is the same
+    # fact rather than charge the candidate for naming a different card about it.
+    resolved_target = target_plan(
+        target,
+        review_rubric_version=review_rubric_version,
+        cluster_event_ids=cluster_event_index(episodes),
+    )
+    train_examples = [resolved_target.example(episode) for episode in plan.train_episodes]
+    val_examples = [resolved_target.example(episode) for episode in plan.development_selection_episodes]
     retrieval = retrieval_receipt(episodes)
 
     resolved_metric_calls = (
@@ -535,11 +747,15 @@ def run_gepa(
         seed=seed,
         train_count=len(train_examples),
     )
-    metric = _DspyTaxonomyMetric()
-    metric_receipt = _taxonomy_metric_receipt(review_rubric_version=review_rubric_version)
-    student = _LearningTaxonomy(NativeNewsProgram(base_program).taxonomy)
+    metric = resolved_target.metric
+    metric_receipt = resolved_target.metric_receipt
+    student = _LearningStudent(
+        getattr(NativeNewsProgram(base_program), resolved_target.predictor),
+        output_type=resolved_target.output_type,
+    )
     config_receipt = optimizer_config_receipt(
         constructor=constructor,
+        target=resolved_target,
         resolved_metric_calls=resolved_metric_calls,
         task_lm=task_lm,
         reflection_lm=reflection_lm,
@@ -614,24 +830,24 @@ def run_gepa(
         )
     admission = _admit_public_gepa_candidates(
         run=run,
-        base_instruction=base_program.taxonomy_instruction,
+        base_document=base_program.predictor_document(resolved_target.predictor),
         val_count=len(val_examples),
         metric_calls=metric_calls,
     )
-    patch = ProgramStrategyPatchV1.issue(
-        parent=base_program,
-        event_semantics_instruction=base_program.event_semantics_instruction,
-        taxonomy_instruction=admission.selected_instruction,
-        reader_card_instruction=base_program.reader_card_instruction,
-    )
+    # The one merge: this Predictor's native state replaces the parent's, and the other two are copied
+    # byte for byte by `with_predictor_document`, which re-hashes the whole envelope.
+    state = base_program.with_predictor_document(resolved_target.predictor, admission.selected_document)
     result = GepaRunResult(
-        patch=patch,
+        target=resolved_target.target,
+        state=state,
         metric={
             **metric_receipt,
-            "taxonomy_selection_score": admission.selection_receipt,
-            "instruction_change": _instruction_change_receipt(
+            "target_selection_score": admission.selection_receipt,
+            "predictor_change": _predictor_change_receipt(
                 base_program,
-                winner_instruction=admission.selected_instruction,
+                target=resolved_target.target,
+                predictor=resolved_target.predictor,
+                winner_document=admission.selected_document,
             ),
         },
         optimizer_config=config_receipt,
@@ -649,16 +865,27 @@ def run_gepa(
     return result
 
 
-def _winning_taxonomy_instruction(program: dspy.Module) -> str:
-    """Read the one public Predict from a GEPA candidate."""
+def _winning_predictor_document(program: dspy.Module) -> dict[str, Any]:
+    """Read the one public Predict from a GEPA candidate as its native state document.
+
+    Demos are kept, not refused. Until #651 this raised on any demo, because the three-string write-set
+    had nowhere to carry one — so every candidate GEPA produced with few-shot examples, the ones it is
+    designed to produce, was a crash instead of a candidate.
+    """
 
     predictors = dict(program.named_predictors())
     if len(predictors) != 1:
         raise ValueError("news_program_compile_result_type_invalid")
     predictor = next(iter(predictors.values()))
-    if list(getattr(predictor, "demos", ()) or ()):
-        raise ValueError("news_program_compile_result_write_set_invalid")
-    return str(predictor.signature.instructions)
+    if getattr(predictor, "lm", None) is not None:
+        # A route baked into a candidate would be a second answer to "which endpoint runs this Predictor",
+        # and the one that survives into a released image. Routes come from operator config only.
+        raise ValueError("news_program_compile_result_carries_model_route")
+    document = dict(predictor.dump_state())
+    # Per-call scratch, which `Predict.reset()` empties and a released image never carries.
+    document["traces"] = []
+    document["train"] = []
+    return document
 
 
 def optimizer_constructor(
@@ -705,6 +932,7 @@ def optimizer_constructor(
 def optimizer_config_receipt(
     *,
     constructor: dict[str, Any],
+    target: _TargetPlan,
     resolved_metric_calls: int,
     task_lm: dspy.BaseLM,
     reflection_lm: Any,
@@ -719,13 +947,15 @@ def optimizer_config_receipt(
     scalars.setdefault("auto", None)
     scalars["max_metric_calls"] = int(resolved_metric_calls)
     return {
-        "schema": "tracefold.news.compile_optimizer_config_receipt.v8",
+        "schema": "tracefold.news.compile_optimizer_config_receipt.v9",
+        "target": target.target,
+        "target_predictor": target.predictor,
         "optimizer": {
             "implementation": "dspy.GEPA",
             "dspy_version": importlib.metadata.version("dspy"),
             "gepa_version": importlib.metadata.version("gepa"),
             "adapter": "tracefold.news.program.lm.program_json_adapter",
-            "evaluator": "LearningTaxonomy(NativeNewsProgram.taxonomy) on one explicit task LM",
+            "evaluator": f"LearningStudent(NativeNewsProgram.{target.predictor}) on one explicit task LM",
             "add_format_failure_as_feedback": False,
             "terminal_stopper": "shared_physical_lm_meter_system_failures_only",
             "upstream_fixed_arguments": {"display_progress_bar": True, "raise_on_exception": True},
@@ -896,7 +1126,7 @@ _NUM_RETRIES = 2
 # propagates: laundering a bug into `REJECTED` would retire the traceback that identifies it, and an
 # operator reading a terminal report would see a corpus verdict where there was a broken build.
 _REJECTION_PREFIXES = (
-    "news_program_compile_no_taxonomy_gold_clusters",
+    "news_program_compile_no_labelled_clusters",
     "news_program_compile_objective_blocked",
     "news_program_compile_objective_split_unavailable",
     "news_program_compile_split_",
@@ -1234,7 +1464,7 @@ class FrozenDevelopmentDataset:
 
     ref: DevelopmentDatasetRef
     episodes: tuple[DevelopmentEpisode, ...]
-    parent_program: ProgramStrategyArtifactV1
+    parent_program: NewsProgramStateV1
     target_runtime_manifest_sha256: str
     dataset_payload: Mapping[str, Any]
 
@@ -1261,10 +1491,10 @@ class FrozenDevelopmentDataset:
         episodes: Sequence[DevelopmentEpisode],
         dataset_payload: Mapping[str, Any],
         target_runtime_manifest_sha256: str,
-        parent_program: ProgramStrategyArtifactV1 | None = None,
+        parent_program: NewsProgramStateV1 | None = None,
     ) -> FrozenDevelopmentDataset:
-        parent = parent_program or load_stable_program_artifact()
-        active = load_stable_program_artifact()
+        parent = parent_program or load_stable_program_state()
+        active = load_stable_program_state()
         if parent.program_sha256 != active.program_sha256:
             raise ValueError("news_learning_optimize_parent_must_be_active_stable")
         return cls(
@@ -1287,6 +1517,10 @@ class OptimizationConfig:
     task_lm: dspy.BaseLM
     reflection_lm: dspy.BaseLM
     budget: OptimizationBudget
+    # Which Predictor this run optimizes. One target per run: GEPA selects on one Pareto front, and two
+    # Predictors moving under one selection score would make "which change earned the improvement"
+    # unanswerable from the receipt.
+    target: OptimizationTarget = "classification"
     # Injected so a test can drive the entry point without model spend; production uses `dspy.GEPA.compile`.
     compile_fn: Callable[..., dspy.Module] | None = None
     # Official GEPA state/log directory. The CLI supplies a fresh path under the one run directory.
@@ -1296,7 +1530,12 @@ class OptimizationConfig:
     monotonic: Callable[[], float] = time.monotonic
 
 
-def objective_summary(plan: GepaObjectivePlan, *, episode_projection_root_sha256: str = "") -> dict[str, Any]:
+def objective_summary(
+    plan: GepaObjectivePlan,
+    *,
+    episode_projection_root_sha256: str = "",
+    target: OptimizationTarget = "classification",
+) -> dict[str, Any]:
     """What the Objective Plan decided, in the shape a candidate and a report both carry.
 
     Per-case dispositions are not here: `readiness` publishes those, and a candidate that embedded them
@@ -1307,6 +1546,10 @@ def objective_summary(plan: GepaObjectivePlan, *, episode_projection_root_sha256
     return {
         "schema": OBJECTIVE_SUMMARY_SCHEMA,
         "plan_schema": plan.schema_version,
+        # Which Predictor this population was optimized for. A candidate that does not say so cannot be
+        # re-derived, because the same corpus now answers three different questions.
+        "target": target,
+        "target_predictor": TARGET_PREDICTOR[target],
         # Which projection of the corpus this plan was built from. The frozen dataset pins the case set;
         # the reviews behind those cases can still be edited, so registration re-projects and compares
         # this rather than a count (#202 PR-B).
@@ -1339,7 +1582,10 @@ def plan_blockers(plan: GepaObjectivePlan) -> tuple[str, ...]:
 
     reasons: list[str] = []
     if not plan.optimizer_cluster_ids:
-        reasons.append("news_program_compile_no_taxonomy_gold_clusters")
+        # Named by target since #651 §9: a corpus that holds no evidence this target can read is a
+        # different situation from one that holds none for any target, and an operator acts on the two
+        # differently — the second means go and review, the first means ask a different question.
+        reasons.append(f"news_program_compile_no_labelled_clusters:{plan.target}")
     if plan.split is None:
         reasons.append(plan.split_error or "news_program_compile_objective_split_unavailable")
     reasons.extend(plan.blocking_reasons)
@@ -1350,22 +1596,30 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
     """Run the one bounded GEPA optimization over a frozen corpus and return its terminal state."""
 
     started_at_ms = config.now_ms()
-    plan = build_gepa_objective_plan(dataset.episodes)
+    plan = build_gepa_objective_plan(dataset.episodes, config.target)
     readiness = build_readiness_report(
         plan,
         episodes=dataset.episodes,
         identity={"development_dataset_sha": dataset.ref.development_dataset_sha256},
         coverage=dict(dataset.dataset_payload.get("counts") or {}),
+        target=config.target,
     )
     objective = {
-        **objective_summary(plan, episode_projection_root_sha256=dataset.ref.episode_projection_root_sha256),
+        **objective_summary(
+            plan,
+            episode_projection_root_sha256=dataset.ref.episode_projection_root_sha256,
+            target=config.target,
+        ),
         "compilable": readiness["objective"]["compilable"],
-        "development_profile": readiness["development_profile"],
+        # The per-target readiness block that replaced `development_profile` (#651 §9). It carries this
+        # target's counts and the other two's beside them, so a `REJECTED` receipt says which kind of
+        # evidence the corpus was short of rather than only that it was short of something.
+        "targets": readiness["targets"],
         "train": readiness["train"],
         "development_selection": readiness["development_selection"],
         "taxonomy_gold": readiness["taxonomy_gold"],
     }
-    blockers = (*plan_blockers(plan), *tuple(readiness["development_profile"]["blockers"]))
+    blockers = plan_blockers(plan)
     if blockers:
         return _terminal(
             "REJECTED",
@@ -1416,6 +1670,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             episodes=dataset.episodes,
             task_lm=task_lm,
             reflection_lm=reflection_lm,
+            target=config.target,
             auto=config.budget.auto,
             max_metric_calls=config.budget.max_metric_calls,
             seed=config.budget.seed,
@@ -1502,21 +1757,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             receipts=receipts,
         )
 
-    try:
-        patch = PromptPatchV1.of(run.patch)
-    except ValueError as exc:
-        return _terminal(
-            "REJECTED",
-            dataset=dataset,
-            config=config,
-            objective=objective,
-            identities=identities,
-            usage=usage,
-            reasons=(str(exc),),
-            started_at_ms=started_at_ms,
-            receipts=receipts,
-        )
-    if not patch.changes(dataset.parent_program):
+    if not run.state.changed_predictors(dataset.parent_program):
         return _terminal(
             "NO_OP",
             dataset=dataset,
@@ -1533,7 +1774,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         parent_program_sha256=dataset.parent_program.program_sha256,
         development_dataset_sha256=dataset.ref.development_dataset_sha256,
         target_runtime_manifest_sha256=dataset.target_runtime_manifest_sha256,
-        patch=patch,
+        state=run.state.model_dump(mode="json"),
         objective_summary=objective,
         optimizer=run.optimizer_config,
         model_identities=identities,
@@ -1634,8 +1875,10 @@ def _overspend(usage: Mapping[str, Any], *, budget: OptimizationBudget, elapsed_
 
 __all__ = [
     "OBJECTIVE_SUMMARY_SCHEMA",
+    "OPTIMIZATION_TARGETS",
     "REFLECTION_MAX_TOKENS",
     "REFLECTION_TIMEOUT_SECONDS",
+    "TARGET_PREDICTOR",
     "USAGE_SCHEMA",
     "FrozenDevelopmentDataset",
     "GepaNoProgramChange",
@@ -1644,7 +1887,9 @@ __all__ = [
     "OptimizationBudgetExceeded",
     "OptimizationConfig",
     "OptimizationRunTerminated",
+    "OptimizationTarget",
     "OptimizerRole",
+    "TargetMetric",
     "build_reflection_lm",
     "build_task_lm",
     "gepa_metric_call_ceiling",
@@ -1656,4 +1901,5 @@ __all__ = [
     "require_model_identity",
     "resolve_auto_metric_calls",
     "run_gepa",
+    "target_plan",
 ]

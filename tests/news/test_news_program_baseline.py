@@ -17,21 +17,21 @@ from tracefold.news.learning.baseline import (
 from tracefold.news.learning.metric import CandidatePrediction, MetricOutcome, accepted_review_metric
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.review.desk import EventRubricSubmission
 
+# The four model-owned axes. A review states these and nothing else: `source_authority` is derived from
+# the evidence by code, so since #651 it is neither a submittable field nor a rubric dimension.
 _TAXONOMY = {
     "subject_codes": [],
     "event_family": "other",
     "change_state": "unknown",
     "assertion_status": "unknown",
-    "source_authority": "unknown",
 }
 _TAXONOMY_DIMENSIONS = {
     "taxonomy_subject_codes": "pass",
     "taxonomy_event_family": "pass",
     "taxonomy_change_state": "pass",
-    "taxonomy_source_authority": "pass",
     "taxonomy_assertion_status": "pass",
 }
 
@@ -125,7 +125,7 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
             "expected": expected or {},
             "expected_correction": "",
-            "taxonomy": {key: value for key, value in _TAXONOMY.items() if key != "source_authority"},
+            "taxonomy": _TAXONOMY,
         },
         production_judgment=scored_judgment(_VERDICT),
         policy_metric={
@@ -137,7 +137,7 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
     )
 
 
-def _score(episode: DevelopmentEpisode, verdict: dict[str, Any]) -> MetricOutcome:
+def _score(episode: DevelopmentEpisode, verdict: dict[str, Any], *, judge: Any = None) -> MetricOutcome:
     example = program_metric.build_compile_example(episode)
     projection = dict(example.policy_metric)
     projection["recorded_decision_result"] = recorded_decision("push")
@@ -148,7 +148,102 @@ def _score(episode: DevelopmentEpisode, verdict: dict[str, Any]) -> MetricOutcom
             verdict=judgment.verdict.model_dump(mode="json"),
             editorial=judgment.editorial.model_dump(mode="json"),
         ),
+        judge=judge,
     )
+
+
+@pytest.mark.parametrize("supported", [True, False])
+def test_why_support_repair_is_scored_from_evidence_without_reference_copy(supported: bool) -> None:
+    from tests.news.test_news_program_judge import _ScriptedJudgeLM
+    from tracefold.news.learning.judge import CardEquivalenceJudge
+
+    episode = _episode(dimensions={"why_support": "fail", "why_value": "fail"})
+    lm = _ScriptedJudgeLM(facts_supported=supported)
+    outcome = _score(
+        episode,
+        {**_VERDICT, "why_zh": "发布内容未披露量产排程或交付规模。"},
+        judge=CardEquivalenceJudge(lm),
+    )
+
+    assert outcome.component_denominators["reader_card"] == 1
+    assert outcome.component_scores["reader_card"] == float(supported)
+    assert ("why_support", "support_hit" if supported else "support_miss") in outcome.dimension_outcomes
+    assert ("why_value", "not_scored_no_gold") in outcome.dimension_outcomes
+    assert lm.calls == 1
+
+
+def test_support_unavailability_and_rejected_repair_have_distinct_outcomes() -> None:
+    from tests.news.test_news_program_judge import _ScriptedJudgeLM
+    from tracefold.news.learning.judge import CardEquivalenceJudge
+
+    episode = _episode(dimensions={"factual_fidelity": "fail", "why_support": "fail", "why_value": "fail"})
+    verdict = {**_VERDICT, "why_zh": "发布内容未披露量产排程或交付规模。"}
+    for fail, gate, dimension_outcome in (
+        (True, "metric_judge_unavailable", "support_unavailable"),
+        (False, "factual_contradiction", "support_miss"),
+    ):
+        judge = CardEquivalenceJudge(_ScriptedJudgeLM(fail=fail, facts_supported=False))
+        outcome = _score(episode, verdict, judge=judge)
+        assert outcome.score == 0 and outcome.hard_gate == gate
+        assert outcome.component_denominators["reader_card"] == 2
+        assert ("why_support", dimension_outcome) in outcome.dimension_outcomes
+        assert ("factual_fidelity", dimension_outcome) in outcome.dimension_outcomes
+        assert judge.model_calls == 1, "both dimensions share one question, even when it fails"
+
+
+def test_accepted_identical_why_is_retained_but_repeated_failure_is_not_repaired() -> None:
+    from tests.news.test_news_program_judge import _ScriptedJudgeLM
+    from tracefold.news.learning.judge import CardEquivalenceJudge
+
+    judge = CardEquivalenceJudge(_ScriptedJudgeLM())
+    for label, score in (("pass", 1.0), ("fail", 0.0)):
+        outcome = _score(_episode(dimensions={"why_support": label}), _VERDICT, judge=judge)
+        assert outcome.component_scores["reader_card"] == score
+        assert outcome.component_denominators["reader_card"] == 1
+    assert judge.model_calls == 0
+
+
+def test_dimension_report_keeps_unlabelled_and_unscored_why_visible() -> None:
+    from tracefold.news.learning.baseline import CaseResult, _prediction_dimensions
+
+    common = {
+        "cluster_id": "c",
+        "stratum": "delivered",
+        "score": 0.0,
+        "action": "push",
+        "should_push": "uncertain",
+        "feedback": "",
+    }
+    results = [
+        CaseResult(
+            case_id="a",
+            dimension_outcomes=(("why_support", "support_unavailable"), ("why_value", "not_scored_no_gold")),
+            **common,
+        ),
+        CaseResult(case_id="b", dimension_outcomes=(("why_support", "support_hit"),), **common),
+        CaseResult(case_id="c", **common),
+    ]
+    report = _prediction_dimensions(results)
+    assert report["why_support"]["denominator"] == 2
+    assert report["why_support"]["answered_denominator"] == 1
+    assert report["why_support"]["not_labelled"] == 1
+    assert report["why_support"]["hit_rate"] == 0.5
+    assert report["why_value"]["denominator"] == 0
+    assert report["why_value"]["not_scored_n"] == 1
+    assert report["why_value"]["hit_rate"] is None
+    assert report["factual_fidelity"]["not_labelled"] == 3
+
+
+def test_a_failed_prediction_does_not_turn_an_existing_review_into_an_unlabelled_case() -> None:
+    from tracefold.news.learning.baseline import _prediction_dimensions
+
+    cases = [BaselineCase(episode=_episode(dimensions={"why_support": "fail", "why_value": "fail"}))]
+    report = _prediction_dimensions([], cases=cases)
+    assert report["why_support"]["not_labelled"] == 0
+    assert report["why_support"]["not_evaluated_n"] == 1
+    assert report["why_support"]["denominator"] == 0
+    assert report["why_support"]["hit_rate"] is None
+    assert report["headline_fidelity"]["not_labelled"] == 1
 
 
 def test_optimizer_and_baseline_share_one_metric_object() -> None:
@@ -208,12 +303,12 @@ def test_recorded_mode_scores_the_shipped_action_not_todays_policy() -> None:
     held = run_baseline(
         [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("drop"))],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
     pushed = run_baseline(
         [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
     assert held.cases[0].action == "drop" and pushed.cases[0].action == "push"
     # The reviewer wanted this pushed, so only the pushed arm satisfies the action component.
@@ -238,7 +333,7 @@ def test_recorded_decision_preserves_zero_seen_against_index() -> None:
 def test_baseline_report_is_content_addressable_and_names_its_subject() -> None:
     episode = _episode(dimensions={"factual_fidelity": "pass"})
     cases = [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))]
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     first = run_baseline(cases, mode="recorded", artifact=artifact)
     second = run_baseline(cases, mode="recorded", artifact=artifact)
     assert first.report_sha256 == second.report_sha256
@@ -270,7 +365,7 @@ def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> N
     report = run_baseline(
         [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("push"))],
         mode="recorded",
-        artifact=load_stable_program_artifact(),
+        artifact=load_stable_program_state(),
     )
 
     case = report.cases[0]
@@ -309,7 +404,7 @@ def test_build_baseline_cases_drops_loader_only_keys() -> None:
     assert build_baseline_cases([raw], action_source="policy")[0].recorded_decision_result is None
 
 
-def test_rubric_v6_gold_requires_a_failed_dimension() -> None:
+def test_rubric_v7_gold_requires_a_failed_dimension() -> None:
     base = {
         "kind": "event_rubric",
         "should_push": "should_push",
@@ -341,8 +436,7 @@ def test_rubric_v6_gold_requires_a_failed_dimension() -> None:
         )
 
 
-def test_rubric_v6_submission_without_optional_gold_validates() -> None:
-
+def test_rubric_v7_submission_without_optional_gold_validates() -> None:
     submission = EventRubricSubmission(
         kind="event_rubric",
         should_push="should_hold",
@@ -351,3 +445,46 @@ def test_rubric_v6_submission_without_optional_gold_validates() -> None:
         taxonomy=_TAXONOMY,
     )
     assert submission.expected is None
+
+
+def test_a_technical_taxonomy_failure_against_valid_gold_is_a_counted_zero_not_a_schema_defect() -> None:
+    """#651 §5.3. Production may publish a judgment whose taxonomy Predictor failed alone. Offline that is
+    still a task failure: this case carries accepted Gold for all four axes and the candidate answered
+    none, so it scores zero and stays in the denominator. It gets its own gate because the cause and the
+    repair differ from `schema_invalid` -- no instruction produced it, and a candidate whose taxonomy call
+    keeps failing must be readable as that rather than as one emitting invalid JSON."""
+
+    episode = _episode(dimensions={"why_support": "pass"})
+    example = program_metric.build_compile_example(episode)
+    projection = dict(example.policy_metric)
+    projection["recorded_decision_result"] = recorded_decision("push")
+    unavailable = scored_judgment(_VERDICT, taxonomy_error_code="news_program_output_truncated")
+
+    outcome = accepted_review_metric(
+        dataclasses.replace(example, policy_metric=projection),
+        CandidatePrediction(
+            verdict=unavailable.verdict.model_dump(mode="json"),
+            editorial=unavailable.editorial.model_dump(mode="json"),
+        ),
+    )
+
+    assert outcome.score == 0.0
+    assert outcome.hard_gate == "taxonomy_unavailable"
+    assert "news_program_output_truncated" in outcome.feedback
+    # Counted, not excluded: the accepted Gold this case carries is still in the denominator.
+    assert outcome.gold_scored_n >= 1
+    assert outcome.component_scores["semantics_novelty"] == 0.0
+    assert outcome.component_denominators["semantics_novelty"] >= 1
+    assert ("taxonomy.event_family", "taxonomy_unavailable") in outcome.dimension_outcomes
+    assert ("taxonomy.subject_codes", "taxonomy_unavailable") in outcome.dimension_outcomes
+
+    # The same case with the label present is scored normally, so the gate above is about the failure and
+    # not about the corpus.
+    answered = accepted_review_metric(
+        dataclasses.replace(example, policy_metric=projection),
+        CandidatePrediction(
+            verdict=scored_judgment(_VERDICT).verdict.model_dump(mode="json"),
+            editorial=scored_judgment(_VERDICT).editorial.model_dump(mode="json"),
+        ),
+    )
+    assert answered.hard_gate == ""

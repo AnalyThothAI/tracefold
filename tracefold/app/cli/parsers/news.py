@@ -110,6 +110,15 @@ def add_news_commands(
         help="explain the Objective Plan for a frozen development dataset; 0 model calls, 0 writes",
     )
     learning_readiness.add_argument("--development", required=True, help="development dataset artifact SHA")
+    # Readiness answers for one target, because "is this corpus ready" has no answer until someone says
+    # ready for what (#651 §9). The report still publishes every target's counts, so an operator who
+    # asked the wrong question can see which one to ask instead.
+    learning_readiness.add_argument(
+        "--target",
+        choices=("classification", "understanding", "explanation"),
+        default="classification",
+        help="which Predictor to answer for: taxonomy, event_semantics or reader_card",
+    )
     learning_readiness.add_argument(
         "--out", default="", help="write the readiness report JSON (per-case dispositions live only here)"
     )
@@ -166,9 +175,20 @@ def add_news_commands(
     )
     learning_baseline.add_argument("--limit", type=_positive_int, default=500)
     learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
+    # #651 §7.3: the explanation ruler's score is a model's opinion, so there has to be a command that
+    # measures whether that opinion tracks the perturbation it is supposed to catch. Fourteen synthetic
+    # pairs, no database, no dataset, and a receipt the metric receipt can point at.
+    learning_calibration = learning_subcommands.add_parser(
+        "judge-calibration",
+        help="score the metric judge against the fixed perturbation corpus; writes a receipt, no DB",
+    )
+    learning_calibration.add_argument(
+        "--model", required=True, metavar="MODEL", help="the judge model to measure, e.g. deepseek-v4-pro"
+    )
+    learning_calibration.add_argument("--out", default="", help="write the calibration receipt JSON")
     learning_draft = learning_subcommands.add_parser(
         "draft-reviews",
-        help="propose news_review_v6 rubrics with exact taxonomy Gold (writes a file, never the DB)",
+        help="propose news_review_v7 rubrics with optional taxonomy Gold (writes a file, never the DB)",
     )
     # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
     # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an
@@ -215,6 +235,14 @@ def add_news_commands(
     learning_run.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)
     learning_run.add_argument("--max-wall-clock-seconds", type=_positive_int, default=14_400)
     learning_run.add_argument("--seed", type=_nonnegative_int, default=129)
+    # Which Predictor this run optimizes (#651). One target per run: GEPA selects on one Pareto front, so
+    # two Predictors moving under one selection score would make the receipt unreadable.
+    learning_run.add_argument(
+        "--target",
+        choices=("classification", "understanding", "explanation"),
+        default="classification",
+        help="classification optimizes taxonomy, understanding event_semantics, explanation reader_card",
+    )
     # #202 §11 PR-E. Two command groups, because there are two lifecycles. `news learning` freezes a
     # corpus, explains what GEPA may optimize, scores moving windows and runs the one optimization —
     # none of which can ship anything. `news release` admits a candidate, gathers release evidence and
@@ -224,15 +252,15 @@ def add_news_commands(
     )
     release_subcommands = news_release.add_subparsers(dest="release_command", required=True)
 
-    # One registration, whatever wrote the two instructions (#202 §7). A GEPA candidate and a patch a
-    # person wrote enter here on identical terms: the parent must be the active stable, the dataset must be
-    # the frozen development corpus, the Objective Plan is re-derived here rather than trusted, and what
-    # comes out is a proposal — never a promotion.
+    # One registration, whatever wrote the Program state (#202 §7). A GEPA candidate and a state a person
+    # wrote enter here on identical terms: the parent must be the active stable, the dataset must be the
+    # frozen development corpus, the Objective Plan is re-derived here rather than trusted, and what comes
+    # out is a proposal — never a promotion.
     learning_register = release_subcommands.add_parser(
         "register", help="bind a Prompt candidate to the active stable and a frozen dataset"
     )
     learning_register.add_argument("--development", required=True, help="development dataset artifact SHA")
-    learning_register.add_argument("--candidate", required=True, help="news_prompt_candidate_v2 JSON/YAML")
+    learning_register.add_argument("--candidate", required=True, help="news_prompt_candidate_v3 JSON/YAML")
     learning_register.add_argument(
         "--artifact-root", required=True, help="write the candidate <program-sha>.json artifact document"
     )
@@ -244,41 +272,31 @@ def add_news_commands(
     learning_freeze.add_argument("--to-ms", type=_positive_int, required=True)
     learning_freeze.add_argument("--candidate", default="", help="candidate manifest; required for validation")
     learning_freeze.add_argument("--out", required=True, help="write the dataset manifest")
-    for action, stage in (("evaluate", None), ("shadow", "shadow")):
-        learning_eval = release_subcommands.add_parser(action, help=f"run the {action} release-evidence gate")
-        learning_eval.add_argument("--development", required=True, help="development dataset artifact SHA")
-        learning_eval.add_argument("--validation", default="", help="validation dataset SHA")
-        learning_eval.add_argument("--candidate", required=True, help="candidate manifest JSON/YAML")
-        execution_mode = learning_eval.add_mutually_exclusive_group()
-        if stage is None:
-            learning_eval.add_argument(
-                "--stage",
-                choices=("offline", "holdout", "canary"),
-                default="offline",
-                help="evaluation evidence stage",
-            )
-            execution_mode.add_argument(
-                "--live-program",
-                action="store_true",
-                help="run the assigned Program live and append per-Predictor recordings",
-            )
-            learning_eval.add_argument(
-                "--observation-manifest",
-                default="",
-                help="optional sealed canary observation artifact SHA",
-            )
-        else:
-            learning_eval.add_argument(
-                "--observation-manifest",
-                default="",
-                help="reuse a sealed shadow observation artifact instead of collecting one",
-            )
-            execution_mode.add_argument(
-                "--live-program",
-                action="store_true",
-                help="cold-run the candidate Program over the closed validation window",
-            )
-        learning_eval.add_argument("--out", required=True, help="write the sealed evaluation report")
+    # One evaluation verb and three stages (#651 removed `shadow`). Shadow cold-ran a candidate over a
+    # closed validation window to observe a distribution nobody acted on, and its only consumer was the
+    # canary eligibility check — which now reads the holdout pass directly.
+    learning_eval = release_subcommands.add_parser("evaluate", help="run the evaluate release-evidence gate")
+    learning_eval.add_argument("--development", required=True, help="development dataset artifact SHA")
+    learning_eval.add_argument("--validation", default="", help="validation dataset SHA")
+    learning_eval.add_argument("--candidate", required=True, help="candidate manifest JSON/YAML")
+    execution_mode = learning_eval.add_mutually_exclusive_group()
+    learning_eval.add_argument(
+        "--stage",
+        choices=("offline", "holdout", "canary"),
+        default="offline",
+        help="evaluation evidence stage",
+    )
+    execution_mode.add_argument(
+        "--live-program",
+        action="store_true",
+        help="run the assigned Program live and append per-Predictor recordings",
+    )
+    learning_eval.add_argument(
+        "--observation-manifest",
+        default="",
+        help="optional sealed canary observation artifact SHA",
+    )
+    learning_eval.add_argument("--out", required=True, help="write the sealed evaluation report")
     learning_canary = release_subcommands.add_parser(
         "canary", help="arm, inspect, or stop the durable one-arm production canary"
     )

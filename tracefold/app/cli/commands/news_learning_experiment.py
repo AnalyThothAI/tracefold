@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from tracefold.app.learning_runtime import compose_news_program_runtime
 from tracefold.app.llm import configured_lm_endpoint
@@ -35,21 +35,22 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
     from tracefold.news.learning.contracts import (
         DevelopmentDatasetRef,
         OptimizationBudget,
-        epoch_id_for_bundle,
     )
     from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import DevelopmentEpisode
     from tracefold.news.learning.optimizer import (
+        TARGET_PREDICTOR,
         FrozenDevelopmentDataset,
         OptimizationConfig,
+        OptimizationTarget,
         build_reflection_lm,
         build_task_lm,
         optimize,
     )
-    from tracefold.news.program.artifact import load_stable_program_artifact
+    from tracefold.news.program.artifact import load_stable_program_state
     from tracefold.news.program.lm import LMCallLedger
     from tracefold.news.program.runtime import (
-        PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
+        PROGRAM_PREDICTOR_MAX_TOKENS,
         PROGRAM_ROUTE_DEADLINE_SECONDS,
     )
     from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
@@ -58,7 +59,7 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
     availability = news_model_availability(settings)
     if not availability.program_configured or not availability.triage_model:
         raise ValueError("news_learning_optimize_model_not_configured")
-    parent = load_stable_program_artifact()
+    parent = load_stable_program_state()
     if parent.program_sha256 != stable.program_sha256:
         raise ValueError("news_learning_optimize_stable_program_mismatch")
     # The one database read, before anything is spent, as `serve`. Nothing after this line holds a
@@ -71,8 +72,6 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
             development_dataset_sha256=export.dataset_sha,
             episode_projection_root_sha256=export.episode_projection_root_sha256,
             episode_count=len(export.episodes),
-            learning_epoch=epoch_id_for_bundle(stable.bundle_sha),
-            learning_epoch_started_at_ms=export.learning_epoch_started_at_ms,
             # Declared on the trusted side. The optimizer records the rubric its corpus was accepted
             # under; it never looks one up, so the review plane stays out of its import graph.
             review_rubric_version=REVIEW_RUBRIC_VERSION,
@@ -82,7 +81,19 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
         parent_program=parent,
     )
     composition = compose_news_program_runtime(settings)
-    task = composition.event_semantics_primary
+    # The task endpoint is the *target Predictor's* production primary slot, not one Triage route for every
+    # target (#651). Optimizing ReaderCard against the EventSemantics endpoint would maximize a number that
+    # predicts nothing about the model production actually asks to write the card.
+    declared = str(getattr(args, "target", "classification") or "classification")
+    if declared not in TARGET_PREDICTOR:
+        raise ValueError(f"news_program_compile_target_unknown:{declared}")
+    target = cast(OptimizationTarget, declared)
+    predictor = TARGET_PREDICTOR[target]
+    task = {
+        "event_semantics": composition.event_semantics_primary,
+        "taxonomy": composition.taxonomy_primary,
+        "reader_card": composition.reader_card_primary,
+    }[predictor]
     configured_reflection = getattr(settings.llm, "news_compiler_reflection", None)
     if configured_reflection is None or not bool(getattr(configured_reflection, "configured", False)):
         raise ValueError("news_learning_optimize_reflection_not_configured")
@@ -99,7 +110,7 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
         api_key=task.api_key,
         api_base=task.api_base,
         timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
-        max_tokens=PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
+        max_tokens=PROGRAM_PREDICTOR_MAX_TOKENS[predictor],
         model_kwargs=task.model_kwargs,
         temperature=0 if task.temperature is None else task.temperature,
         structured_output=task.structured_output,
@@ -128,6 +139,7 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
                 max_wall_clock_seconds=float(args.max_wall_clock_seconds),
                 seed=int(args.seed),
             ),
+            target=target,
             gepa_log_dir=str(Path(str(args.out)) / "gepa"),
         ),
     )
@@ -138,6 +150,7 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
         "ok": result.outcome == "ADVANCE",
         "data": {
             "outcome": result.outcome,
+            "target": target,
             "report": str(report_path),
             "report_sha256": result.report.report_sha256,
             "prompt_candidate": candidate_path,

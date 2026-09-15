@@ -133,7 +133,7 @@ class _ManifestBarrierPipeline(_TurnPipeline):
         from psycopg.rows import dict_row
 
         from tracefold.app.repository_session import repositories_for_connection
-        from tracefold.news.program.runtime import PROGRAM_VERSION
+        from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 
         conn = connect(self._dsn, row_factory=dict_row)
         try:
@@ -143,7 +143,7 @@ class _ManifestBarrierPipeline(_TurnPipeline):
                     manifest_sha=RUNTIME_MANIFEST_BARRIER_SHA,
                     stable_bundle_sha="b" * 64,
                     envelope_sha256="e" * 64,
-                    artifact_schema_version="news_program_strategy_artifact_v1",
+                    artifact_schema_version=PROGRAM_SCHEMA_VERSION,
                     program_version=PROGRAM_VERSION,
                     program_sha256="f" * 64,
                     candidate_shas=(),

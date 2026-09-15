@@ -301,15 +301,25 @@ function EventReactions({
  */
 function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
   const taxonomy = triage.taxonomy;
+  // The four classification axes come from their own Predictor, which can fail while the card the reader
+  // is looking at is real (#651 §5.3). When it does, the four cells say so once, with the code, instead of
+  // reading as four Events nobody classified. 来源权威 is code-owned and survives that failure.
+  const unavailable =
+    triage.taxonomy_status === "unavailable"
+      ? `分类不可用（${triage.taxonomy_error_code ?? "未知原因"}）`
+      : "";
   return (
     <FactGrid
       className="news-detail-fact-grid"
       facts={[
-        { label: "事件族", value: taxonomy?.event_family_zh ?? "" },
-        { label: "变化状态", value: taxonomy?.change_state_zh ?? "" },
-        { label: "来源权威", value: taxonomy?.source_authority_zh ?? "" },
-        { label: "断言状态", value: taxonomy?.assertion_status_zh ?? "" },
-        { label: "主题", value: taxonomy?.subject_labels_zh?.join("、") ?? "" },
+        { label: "事件族", value: unavailable || (taxonomy?.event_family_zh ?? "") },
+        { label: "变化状态", value: unavailable ? "" : (taxonomy?.change_state_zh ?? "") },
+        { label: "来源权威", value: triage.source_authority_zh ?? "" },
+        { label: "断言状态", value: unavailable ? "" : (taxonomy?.assertion_status_zh ?? "") },
+        {
+          label: "主题",
+          value: unavailable ? "" : (taxonomy?.subject_labels_zh?.join("、") ?? ""),
+        },
         { label: "范围", value: triage.scope_zh },
         // Confidence used to sit beside the direction, where it competed with the one number that matters
         // there. It is a judgment detail like the rest, so it reads as one (#87).
@@ -501,7 +511,16 @@ function VerdictRecord({ verdict }: { verdict: NewsVerdict }) {
         <KeyValueRow k="verdict_scope" v={verdict.verdict.scope} />
         <KeyValueRow k="verdict_novelty" v={verdict.verdict.novelty} />
         <KeyValueRow k="headline_zh" v={verdict.verdict.headline_zh} />
-        <KeyValueRow k="event_family" v={verdict.model_editorial?.taxonomy.event_family ?? "—"} />
+        <KeyValueRow
+          k="event_family"
+          v={
+            verdict.model_editorial?.taxonomy?.event_family ??
+            (verdict.model_editorial?.taxonomy_status === "unavailable"
+              ? `分类不可用（${verdict.model_editorial.taxonomy_error_code ?? "未知原因"}）`
+              : "—")
+          }
+        />
+        <KeyValueRow k="source_authority" v={verdict.model_editorial?.source_authority ?? "—"} />
         <KeyValueRow k="reader_value" v={verdict.model_editorial?.relevance.reader_value ?? "—"} />
         <KeyValueRow k="evidence_version" v={String(verdict.evidence_version)} />
         <KeyValueRow k="evidence_sha256" v={verdict.evidence_sha256} />

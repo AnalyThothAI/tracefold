@@ -371,15 +371,17 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,run,freeze} ...
+                               {readiness,baseline,judge-calibration,draft-reviews,run,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,run,freeze}
+  {readiness,baseline,judge-calibration,draft-reviews,run,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score a moving-window Program baseline (no sandbox,
                         tariff, or writes)
-    draft-reviews       propose news_review_v6 rubrics with exact taxonomy
+    judge-calibration   score the metric judge against the fixed perturbation
+                        corpus; writes a receipt, no DB
+    draft-reviews       propose news_review_v7 rubrics with optional taxonomy
                         Gold (writes a file, never the DB)
     run                 the one bounded candidate path: readiness -> stock
                         GEPA, into a new empty directory
@@ -394,12 +396,16 @@ options:
 
 ```
 usage: tracefold news learning readiness [-h] --development DEVELOPMENT
+                                         [--target {classification,understanding,explanation}]
                                          [--out OUT]
 
 options:
   -h, --help            show this help message and exit
   --development DEVELOPMENT
                         development dataset artifact SHA
+  --target {classification,understanding,explanation}
+                        which Predictor to answer for: taxonomy,
+                        event_semantics or reader_card
   --out OUT             write the readiness report JSON (per-case dispositions
                         live only here)
 
@@ -449,6 +455,19 @@ options:
 
 ```
 
+## `news learning judge-calibration`
+
+```
+usage: tracefold news learning judge-calibration [-h] --model MODEL
+                                                 [--out OUT]
+
+options:
+  -h, --help     show this help message and exit
+  --model MODEL  the judge model to measure, e.g. deepseek-v4-pro
+  --out OUT      write the calibration receipt JSON
+
+```
+
 ## `news learning draft-reviews`
 
 ```
@@ -488,6 +507,7 @@ usage: tracefold news learning run [-h] --development DEVELOPMENT --out OUT
                                    --max-call-cost-microusd MAX_CALL_COST_MICROUSD
                                    [--max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS]
                                    [--seed SEED]
+                                   [--target {classification,understanding,explanation}]
 
 options:
   -h, --help            show this help message and exit
@@ -502,6 +522,9 @@ options:
   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
   --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
   --seed SEED
+  --target {classification,understanding,explanation}
+                        classification optimizes taxonomy, understanding
+                        event_semantics, explanation reader_card
 
 ```
 
@@ -526,14 +549,13 @@ options:
 ## `news release`
 
 ```
-usage: tracefold news release [-h] {register,evaluate,shadow,canary} ...
+usage: tracefold news release [-h] {register,evaluate,canary} ...
 
 positional arguments:
-  {register,evaluate,shadow,canary}
+  {register,evaluate,canary}
     register            bind a Prompt candidate to the active stable and a
                         frozen dataset
     evaluate            run the evaluate release-evidence gate
-    shadow              run the shadow release-evidence gate
     canary              arm, inspect, or stop the durable one-arm production
                         canary
 
@@ -555,7 +577,7 @@ options:
   --development DEVELOPMENT
                         development dataset artifact SHA
   --candidate CANDIDATE
-                        news_prompt_candidate_v2 JSON/YAML
+                        news_prompt_candidate_v3 JSON/YAML
   --artifact-root ARTIFACT_ROOT
                         write the candidate <program-sha>.json artifact
                         document
@@ -590,32 +612,6 @@ options:
                         recordings
   --observation-manifest OBSERVATION_MANIFEST
                         optional sealed canary observation artifact SHA
-  --out OUT             write the sealed evaluation report
-
-```
-
-## `news release shadow`
-
-```
-usage: tracefold news release shadow [-h] --development DEVELOPMENT
-                                     [--validation VALIDATION]
-                                     --candidate CANDIDATE
-                                     [--observation-manifest OBSERVATION_MANIFEST]
-                                     [--live-program] --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --validation VALIDATION
-                        validation dataset SHA
-  --candidate CANDIDATE
-                        candidate manifest JSON/YAML
-  --observation-manifest OBSERVATION_MANIFEST
-                        reuse a sealed shadow observation artifact instead of
-                        collecting one
-  --live-program        cold-run the candidate Program over the closed
-                        validation window
   --out OUT             write the sealed evaluation report
 
 ```

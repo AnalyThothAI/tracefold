@@ -1730,10 +1730,37 @@ export interface components {
              */
             unknown: number;
         };
-        /** NewsModelEditorialData */
+        /**
+         * NewsModelEditorialData
+         * @description The editorial sibling of one model verdict, in the current `news_editorial_v3` read shape.
+         *
+         *     ``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer
+         *     and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
+         *     ``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under
+         *     `news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row
+         *     reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3).
+         */
         NewsModelEditorialData: {
             relevance: components["schemas"]["NewsTradeRelevanceData"];
-            taxonomy: components["schemas"]["NewsTaxonomyData"];
+            /**
+             * Source Authority
+             * @enum {string}
+             */
+            source_authority: "regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown";
+            /**
+             * Source Authority Zh
+             * @default
+             */
+            source_authority_zh: string;
+            taxonomy?: components["schemas"]["NewsTaxonomyData"] | null;
+            /** Taxonomy Error Code */
+            taxonomy_error_code?: string | null;
+            /**
+             * Taxonomy Status
+             * @default available
+             * @enum {string}
+             */
+            taxonomy_status: "available" | "unavailable";
         };
         /**
          * NewsOutcomeData
@@ -2284,7 +2311,14 @@ export interface components {
             /** Sources */
             sources?: string[];
         };
-        /** NewsTaxonomyData */
+        /**
+         * NewsTaxonomyData
+         * @description The four model-owned classification axes and the codebook they were labelled against.
+         *
+         *     Source authority left this object in #651: it is code-owned, computed from the evidence, and present
+         *     on a judgment whose taxonomy call failed and which therefore has no taxonomy at all. It is published
+         *     beside this one, on the editorial and the Triage summary.
+         */
         NewsTaxonomyData: {
             /**
              * Assertion Status
@@ -2312,13 +2346,6 @@ export interface components {
             event_family: "financial_results" | "guidance_outlook" | "product_service_change" | "corporate_transaction" | "financing_capital_allocation" | "leadership_governance" | "regulatory_legal" | "security_operational_incident" | "market_access" | "market_flow_price" | "macro_policy_data" | "geopolitical_conflict" | "other";
             /** Event Family Zh */
             event_family_zh: string;
-            /**
-             * Source Authority
-             * @enum {string}
-             */
-            source_authority: "regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown";
-            /** Source Authority Zh */
-            source_authority_zh: string;
             /**
              * Subject Codes
              * @default []
@@ -2391,10 +2418,21 @@ export interface components {
              */
             tradability: "direct" | "second_order" | "contextual" | "none";
         };
-        /** NewsTriageAssetData */
+        /**
+         * NewsTriageAssetData
+         * @description One typed asset of a Triage verdict (#651 §6.2).
+         *
+         *     ``market_type`` is the catalogue's instrument-class vocabulary, never a free string: the browser has
+         *     to be able to tell `SEI` the token from `SEI` the listed insurer, and so does anything reading this
+         *     API. Verdicts written before #651 carry `null` or a provider-tag word; the projection normalizes
+         *     those to `unknown` rather than publishing a market nobody established.
+         */
         NewsTriageAssetData: {
-            /** Market Type */
-            market_type?: string | null;
+            /**
+             * Market Type
+             * @enum {string}
+             */
+            market_type: "crypto" | "equity" | "commodity" | "index" | "fx" | "pre_ipo" | "unknown";
             /**
              * Role
              * @enum {string}
@@ -2470,7 +2508,18 @@ export interface components {
              * @default
              */
             scope_zh: string;
+            /** Source Authority */
+            source_authority?: ("regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown") | null;
+            /**
+             * Source Authority Zh
+             * @default
+             */
+            source_authority_zh: string;
             taxonomy?: components["schemas"]["NewsTaxonomyData"] | null;
+            /** Taxonomy Error Code */
+            taxonomy_error_code?: string | null;
+            /** Taxonomy Status */
+            taxonomy_status?: ("available" | "unavailable") | null;
             /** Throttled By */
             throttled_by?: string | null;
             /** Why Zh */

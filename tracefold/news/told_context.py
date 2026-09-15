@@ -8,7 +8,8 @@ from typing import Any, Final, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from .artifact_identity import canonical_sha
-from .models import base_symbol
+from .events.storyline import same_storyline_key
+from .models import MarketAsset, base_symbol, market_assets_overlap
 from .reader_history import (
     READER_HISTORY_SHA256,
     RECENT_HISTORY_MAX,
@@ -43,7 +44,7 @@ TOLD_TIER_ORDER: Final[tuple[ToldTier, ...]] = (
     "fact_similarity",
     "recency",
 )
-TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v4"
+TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v5"
 TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
     {
         "selector": TOLD_SELECTOR_ID,
@@ -71,7 +72,12 @@ TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
             "exact_fingerprint": "exact_fact",
             "canonical_asset_overlap": "asset_overlap",
         },
-        "symbol_primitive": "base_symbol_v1",
+        # #651 §6.2: an asset overlap is `(market_type, base_symbol)` when both sides name a market, and
+        # base symbol alone when either says `unknown` — which every row written before #651 does. The
+        # storyline tier compares keys the same way, so a preliminary untyped key still meets the typed
+        # final key of the cards it is ranked against.
+        "symbol_primitive": "market_asset_v1",
+        "storyline_match": "same_storyline_key_market_aware_v1",
         "similarity_primitive": "pg_trgm_word_trigram_jaccard_v1",
         "similarity_field": "comparison_title",
         "similarity_min": TOLD_FACT_SIMILARITY_MIN,
@@ -142,13 +148,26 @@ class ToldLedgerEntry(_ExactContractModel):
     retrieval_reason: HistoryReason = "recent"
 
 
-def _row_symbols(row: Mapping[str, Any]) -> frozenset[str]:
-    symbols = {base_symbol(str(value)) for value in row.get("grounded_assets") or () if value}
+def _row_assets(row: Mapping[str, Any]) -> frozenset[MarketAsset]:
+    """Every instrument one delivered row was about, typed where the row can say so (#651 §6.2).
+
+    A provider tag carries no market, so it enters as `unknown` and keeps matching on the symbol alone —
+    which is exactly what it did before, and what every row written before #651 will always do. Only the
+    judgment's own assets can contradict, and only when both sides say something.
+    """
+
+    assets = {MarketAsset(base_symbol(str(value)), "unknown") for value in row.get("grounded_assets") or () if value}
     for asset in row.get("assets") or ():
-        symbol = asset.get("symbol") if isinstance(asset, Mapping) else asset
-        if symbol:
-            symbols.add(base_symbol(str(symbol)))
-    return frozenset(symbol for symbol in symbols if symbol)
+        typed = MarketAsset.of(asset)
+        if typed.symbol:
+            assets.add(typed)
+    return frozenset(asset for asset in assets if asset.symbol)
+
+
+def _row_symbols(row: Mapping[str, Any]) -> frozenset[str]:
+    """The bare symbols one row names, which is what the model-visible `symbols` field renders."""
+
+    return frozenset(asset.symbol for asset in _row_assets(row))
 
 
 _Ranked = tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]
@@ -200,7 +219,7 @@ class ToldLedgerSnapshot(_ExactContractModel):
         limit: int = TOLD_MAX,
     ) -> ToldLedgerSnapshot:
         bounded = max(0, min(int(limit), TOLD_MAX))
-        candidate_symbols = frozenset(base_symbol(str(value)) for value in symbols if value)
+        candidate_assets = frozenset(MarketAsset.of(value) for value in symbols if value)
         candidate_title = str(comparison_title or "")
         window = sorted(
             rows,
@@ -222,16 +241,16 @@ class ToldLedgerSnapshot(_ExactContractModel):
             deduped.add(event_id)
             at_ms = int(row.get("at_ms") or 0)
             row_key = str(row.get("storyline_key") or "")
-            row_symbols = _row_symbols(row)
+            row_assets = _row_assets(row)
             score = trigram_similarity(candidate_title, str(row.get("comparison_title") or ""))
             tier: ToldTier
             if row.get("history_scope") == "targeted" and row.get("retrieval_reason") == "exact_fingerprint":
                 tier = "exact_fact"
-            elif row_key and row_key == storyline_key:
+            elif same_storyline_key(storyline_key, row_key):
                 tier = "storyline"
             elif (
                 row.get("history_scope") == "targeted" and row.get("retrieval_reason") == "canonical_asset_overlap"
-            ) or (candidate_symbols and candidate_symbols & row_symbols):
+            ) or (candidate_assets and market_assets_overlap(candidate_assets, row_assets)):
                 tier = "asset_overlap"
             elif score >= TOLD_FACT_SIMILARITY_MIN:
                 tier = "fact_similarity"

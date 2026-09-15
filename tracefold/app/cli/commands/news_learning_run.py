@@ -30,14 +30,15 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
     out = Path(str(args.out))
     _prepare_new_empty_directory(out)
     development = str(args.development).strip()
-    readiness = _readiness(settings, stable, out=out, development=development)
-    blockers = [
-        *list(readiness["objective"]["blockers"]),
-        *list(readiness["development_profile"]["blockers"]),
-    ]
-    if not readiness["objective"]["compilable"] or not readiness["development_profile"]["ready"]:
+    target = str(getattr(args, "target", "classification") or "classification")
+    readiness = _readiness(settings, stable, out=out, development=development, target=target)
+    # One gate, not two (#651 §9): the Objective Plan for this target either has a split to optimize or
+    # names exactly why it does not. The second gate was a corpus-size quota that could refuse a corpus
+    # this target could learn from because a different target's evidence was thin.
+    blockers = list(readiness["objective"]["blockers"])
+    if not readiness["objective"]["compilable"]:
         raise ValueError("news_learning_run_readiness_blocked:" + ",".join(blockers))
-    optimization = _optimize(args, settings, stable, out=out, development=development)
+    optimization = _optimize(args, settings, stable, out=out, development=development, target=target)
 
     candidate = out / _OPTIMIZATION_DIR / _CANDIDATE_FILE
     advance = str(optimization.get("outcome")) == "ADVANCE"
@@ -46,6 +47,7 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
         "data": {
             "out": str(out),
             "outcome": optimization.get("outcome"),
+            "target": target,
             "reasons": list(optimization.get("reasons") or ()),
             "readiness": str(out / _READINESS_FILE),
             "optimization": str(out / _OPTIMIZATION_DIR / _OPTIMIZATION_FILE),
@@ -62,17 +64,21 @@ def _prepare_new_empty_directory(out: Path) -> None:
     out.mkdir(parents=True)
 
 
-def _readiness(settings: Any, stable: Any, *, out: Path, development: str) -> dict[str, Any]:
+def _readiness(settings: Any, stable: Any, *, out: Path, development: str, target: str) -> dict[str, Any]:
     """Compose the existing zero-call readiness handler and read its full report."""
 
     path = out / _READINESS_FILE
-    code, payload = _handle_learning_readiness(Namespace(development=development, out=str(path)), settings, stable)
+    code, payload = _handle_learning_readiness(
+        Namespace(development=development, out=str(path), target=target), settings, stable
+    )
     if code != 0:
         raise ValueError(_error_code(payload, fallback="news_learning_run_readiness_failed"))
     return _read(path)
 
 
-def _optimize(args: Namespace, settings: Any, stable: Any, *, out: Path, development: str) -> dict[str, Any]:
+def _optimize(
+    args: Namespace, settings: Any, stable: Any, *, out: Path, development: str, target: str
+) -> dict[str, Any]:
     """Invoke the internal optimization leg once with the operator's declared budget."""
 
     from .news_learning_experiment import execute_optimization
@@ -90,6 +96,7 @@ def _optimize(args: Namespace, settings: Any, stable: Any, *, out: Path, develop
             max_call_cost_microusd=int(args.max_call_cost_microusd),
             max_wall_clock_seconds=int(args.max_wall_clock_seconds),
             seed=int(args.seed),
+            target=target,
         ),
         settings,
         stable,

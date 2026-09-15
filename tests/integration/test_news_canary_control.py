@@ -12,7 +12,7 @@ from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring import news as workers
-from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.release import runtime as release_runtime
 from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
@@ -77,14 +77,15 @@ def _clone_event(conn, source_event_id: str, *, suffix: str, opened_at_ms: int) 
     return event_id
 
 
-def test_canary_control_requires_shadow_pass_and_keeps_one_event_arm(conn) -> None:
+def test_canary_control_requires_holdout_pass_and_keeps_one_event_arm(conn) -> None:
     candidate_sha = "a" * 64
     candidate_bundle = "b" * 64
     stable_bundle = "c" * 64
     event_id = _open_event(conn)
     release = {
         "candidate_sha": candidate_sha,
-        "stage": "shadow",
+        # #651: the eligibility gate reads the holdout PASS directly; shadow is gone.
+        "stage": "holdout",
         "gate_outcome": "pass",
         "report_sha": "d" * 64,
         "run_sha": "e" * 64,
@@ -203,12 +204,12 @@ def test_canary_arm_rejects_an_invalid_program_artifact_before_writing_activatio
             program_candidate_sha256="b" * 64,
         ),
     )
-    monkeypatch.setattr(release_runtime, "load_stable_program_artifact", lambda: stable_artifact)
+    monkeypatch.setattr(release_runtime, "load_stable_program_state", lambda: stable_artifact)
 
     def reject_artifact(_program_sha256: str):
         raise ValueError("news_program_artifact_hash_mismatch")
 
-    monkeypatch.setattr(release_runtime, "load_program_artifact", reject_artifact)
+    monkeypatch.setattr(release_runtime, "load_program_state", reject_artifact)
     shipped = release_runtime.artifact_valid_candidate_bundles(stable, {candidate_sha: candidate})
     assert shipped == {}
 
@@ -704,7 +705,7 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
         "manifest_sha": "1" * 64,
         "stable_bundle_sha": "2" * 64,
         "envelope_sha256": "4" * 64,
-        "artifact_schema_version": "news_program_strategy_artifact_v1",
+        "artifact_schema_version": PROGRAM_SCHEMA_VERSION,
         "program_version": PROGRAM_VERSION,
         "program_sha256": "5" * 64,
         "candidate_shas": ("3" * 64,),
@@ -743,7 +744,7 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
             manifest_sha="4" * 64,
             stable_bundle_sha="5" * 64,
             envelope_sha256="6" * 64,
-            artifact_schema_version="news_program_strategy_artifact_v1",
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
             program_version=PROGRAM_VERSION,
             program_sha256="7" * 64,
             candidate_shas=(),

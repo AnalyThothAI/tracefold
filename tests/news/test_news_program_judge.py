@@ -22,6 +22,7 @@ from tracefold.news.learning.judge import (
     CardEquivalence,
     CardEquivalenceAssessment,
     CardEquivalenceJudge,
+    FactualEvidenceAssessment,
     FactualEvidenceSupport,
     MetricJudgeEndpoint,
 )
@@ -33,6 +34,7 @@ from tracefold.news.learning.metric import (
     metric_receipt,
 )
 from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity
+from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
 _ACCEPTED = {
     "headline_zh": "BounceBit Chain 授权漏洞转移 2.865 亿枚 BB，决定永久停止运营",
@@ -151,10 +153,21 @@ def _judge(**kwargs: Any) -> CardEquivalenceJudge:
 def test_endpoint_has_two_named_native_predictors() -> None:
     endpoint = _ScriptedJudgeLM()
 
-    assert [name for name, _ in endpoint.named_predictors()] == ["equivalence", "factual_evidence"]
+    assert [name for name, _ in endpoint.named_predictors()] == [
+        "equivalence",
+        "factual_evidence",
+        # #651 §7.3: the explanation ruler's two batched list questions are part of this endpoint, so
+        # they are part of its identity too.
+        "key_facts",
+        "forbidden_claims",
+    ]
     assert endpoint.equivalence.signature.instructions.startswith("You are checking whether a rewritten Chinese")
     assert endpoint.factual_evidence.signature.instructions.startswith(
         "You are checking whether a corrected Chinese news card"
+    )
+    assert endpoint.key_facts.signature.instructions.startswith("You are checking which of a reviewer's must-keep")
+    assert endpoint.forbidden_claims.signature.instructions.startswith(
+        "You are checking whether a Chinese news card asserts any claim"
     )
     assert endpoint.identity["program_sha256"] == JUDGE_PROGRAM_SHA256
     assert endpoint.identity["program"]["max_calls_per_question"] == JUDGE_MAX_CALLS_PER_QUESTION == 2
@@ -185,7 +198,7 @@ def test_concurrent_same_key_misses_share_one_provider_call(route: str) -> None:
     judge = CardEquivalenceJudge(lm, max_model_calls=1)
     callers_ready = threading.Barrier(2)
 
-    def invoke() -> CardEquivalenceAssessment | bool:
+    def invoke() -> CardEquivalenceAssessment | FactualEvidenceAssessment:
         callers_ready.wait(timeout=1)
         if route == "equivalence":
             return judge.equivalence(_ACCEPTED, _REWORDED)
@@ -246,7 +259,15 @@ def test_a_reworded_card_keeps_the_reviewers_pass() -> None:
     names = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 
     without = _component(dimensions, names, _REWORDED, _ACCEPTED, None, None)
-    with_judge = _component(dimensions, names, _REWORDED, _ACCEPTED, None, _judge())
+    with_judge = _component(
+        dimensions,
+        names,
+        _REWORDED,
+        _ACCEPTED,
+        None,
+        _judge(),
+        evidence_json=canonical_json({"source": _ACCEPTED}),
+    )
     assert without is not None and with_judge is not None
     assert without[0] == 0.0, "byte equality gives a reworded card nothing"
     assert with_judge[0] == 1.0
@@ -264,8 +285,30 @@ def test_factual_repair_is_verified_against_immutable_event_evidence() -> None:
     supported = CardEquivalenceJudge(supported_lm).facts_supported(evidence, candidate)
     contradicted = CardEquivalenceJudge(contradicted_lm).facts_supported(evidence, candidate)
 
-    assert supported is True and contradicted is False
+    assert supported.status == contradicted.status == "answered"
+    assert supported.verdict is not None and supported.verdict.supported_by_evidence is True
+    assert contradicted.verdict is not None and contradicted.verdict.supported_by_evidence is False
     assert supported_lm.calls == contradicted_lm.calls == 1
+
+
+def test_support_unavailable_is_not_a_cached_negative_answer() -> None:
+    judge = _judge(fail=True)
+    for _ in range(2):
+        assessment = judge.facts_supported("bounded evidence", _REWORDED)
+        assert assessment.status == "unavailable"
+        assert assessment.verdict is None
+        assert assessment.error_code == "metric_judge_unavailable"
+    assert judge.failures == judge.model_calls == 2
+    assert judge.stats["cache_entries"] == 0
+
+
+def test_an_explicit_unsupported_answer_is_cached() -> None:
+    judge = _judge(facts_supported=False)
+    first = judge.facts_supported("bounded evidence", _UNRELATED)
+    assert judge.facts_supported("bounded evidence", _UNRELATED) == first
+    assert first.status == "answered" and first.verdict is not None
+    assert first.verdict.supported_by_evidence is False
+    assert judge.model_calls == 1 and judge.failures == 0
 
 
 def test_an_unrelated_card_does_not_keep_the_pass() -> None:
@@ -405,8 +448,8 @@ def test_judge_rejects_a_role_binding_that_does_not_match_its_own_ceiling() -> N
 def test_metric_receipt_pins_the_judge_identity() -> None:
     """Two runs judged by different models are not comparable, so the ruler names itself."""
 
-    plain = metric_receipt(bind_metric(None), review_rubric_version="news_review_v6")
-    judged = metric_receipt(bind_metric(_judge()), review_rubric_version="news_review_v6")
+    plain = metric_receipt(bind_metric(None), review_rubric_version=REVIEW_RUBRIC_VERSION)
+    judged = metric_receipt(bind_metric(_judge()), review_rubric_version=REVIEW_RUBRIC_VERSION)
     assert plain["semantic_judge"] is None
     assert judged["semantic_judge"]["judge_id"] == JUDGE_ID
     assert judged["semantic_judge"]["model"] == "scripted/judge"

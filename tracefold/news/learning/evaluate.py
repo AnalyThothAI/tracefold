@@ -20,10 +20,12 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
+import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.storyline import final_storyline_key
+from ..models import MarketAsset
 from ..program.contracts import ProgramCallTrace, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.lm import RecordedLM, RuntimeModelIdentity
@@ -36,6 +38,7 @@ from ..review.desk import (
 from ..storage.root import NewsRepository
 from .contracts import (
     LEARNING_PROFILE_ID,
+    LEARNING_TARGETS,
     ArmManifest,
     CandidateManifest,
     ClosedWindow,
@@ -56,11 +59,10 @@ from .metric import (
 )
 from .objective import (
     _expected_delivery,
-    development_split_profile_counts,
     elect_cluster_representative_case_ids,
     production_decision,
 )
-from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA, development_coverage_blockers
+from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA
 from .projection import (
     _call_cost_microusd,
     _observation_root,
@@ -69,6 +71,17 @@ from .projection import (
     _program_call_identity_complete,
     _program_cost_by_predictor,
     _program_metric,
+)
+from .target_metrics import (
+    accepted_assets,
+    accepted_duplicate_of,
+    accepted_explanation,
+    accepted_novelty,
+    accepted_taxonomy,
+    bind_target_metric,
+    classification_axis_values,
+    classification_score,
+    summarize_target_outcomes,
 )
 from .taxonomy_metric import TaxonomyComparison, accepted_taxonomy_gold, compare_taxonomy, summarize_taxonomy
 
@@ -80,23 +93,55 @@ MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
 ArmJudgeKey = tuple[ArmName, str]
 
+# The axes a release decision reads. `four_axis_exact_accuracy` is deliberately not among them since
+# #651 §8: the share of clusters whose four axes are all right at once is a joint rate over four
+# correlated axes, so one axis slipping moves it twice -- once on its own axis and once here -- and a
+# release could be failed by the same cluster counted twice. It remains published in
+# `summarize_taxonomy`, in the deltas and in the intervals, as the diagnostic an operator reads.
 _TAXONOMY_RELEASE_AXES = (
     "subject_codes_set_f1",
     "event_family_accuracy",
     "change_state_accuracy",
     "assertion_status_accuracy",
-    "four_axis_exact_accuracy",
 )
-_TAXONOMY_INTERVAL_AXES = ("taxonomy_overall", *_TAXONOMY_RELEASE_AXES)
+_TAXONOMY_DIAGNOSTIC_AXES = ("four_axis_exact_accuracy",)
+_TAXONOMY_INTERVAL_AXES = ("taxonomy_overall", *_TAXONOMY_RELEASE_AXES, *_TAXONOMY_DIAGNOSTIC_AXES)
 
 
-def _output_taxonomy(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def _output_editorial(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
     editorial = output.get("editorial")
     if not isinstance(editorial, Mapping):
         scored = output.get("scored_judgment")
         editorial = scored.get("editorial") if isinstance(scored, Mapping) else None
-    taxonomy = editorial.get("taxonomy") if isinstance(editorial, Mapping) else None
+    return editorial if isinstance(editorial, Mapping) else None
+
+
+def _output_taxonomy(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    editorial = _output_editorial(output)
+    taxonomy = editorial.get("taxonomy") if editorial is not None else None
     return taxonomy if isinstance(taxonomy, Mapping) else None
+
+
+def _component_failures(observations: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """Per arm, how many observations lost one Predictor while the judgment still answered (#651 §5.3).
+
+    A taxonomy failure no longer errors the whole judgment, so it would otherwise be invisible in this
+    report: the arm's `error_code` is empty, the card is real, and `_taxonomy_release_evidence` simply
+    drops the case from both arms to keep the comparison paired. That silent drop is exactly the thing an
+    operator has to be able to see -- a candidate whose taxonomy call fails on a quarter of the corpus is
+    not "equal on the axes it answered", it is a candidate with a quarter less evidence.
+    """
+
+    counts = {arm: {"taxonomy": 0} for arm in ("stable", "candidate")}
+    for item in observations:
+        for arm in ("stable", "candidate"):
+            output = item.get(arm)
+            if not isinstance(output, Mapping) or output.get("not_assigned"):
+                continue
+            editorial = _output_editorial(output)
+            if editorial is not None and str(editorial.get("taxonomy_status") or "") == "unavailable":
+                counts[arm]["taxonomy"] += 1
+    return counts
 
 
 def _review_taxonomy(review: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -126,14 +171,18 @@ def _taxonomy_release_evidence(
     Two per-axis readings come out of that one population and they are not interchangeable. `delta` and
     `regressed_axes` are the sign test #501 wrote, and they still decide the axis failure of a candidate
     that also moves a reader-facing Predictor — that class is judged by blind pairwise preference, and the
-    sign test is a cheap veto beside it. `axis_interval_95`, `interval_regressed_axes`,
-    `four_axis_exact_improved` and `taxonomy_overall_improved` are #567's paired bootstrap, and they are
-    the whole decision for a taxonomy-only candidate, whose *only* held-out evidence these axes are.
+    sign test is a cheap veto beside it. `axis_interval_95`, `interval_regressed_axes` and
+    `taxonomy_overall_improved` are #567's paired bootstrap, and they are the whole decision for a
+    taxonomy-only candidate, whose *only* held-out evidence these axes are.
 
-    Which of those two improvement readings admits that candidate is #626's answer: `four_axis_exact`,
-    the share of clusters where all four axes are right at once, because that is the card a reader sees
-    as correctly classified, while the `taxonomy_overall` mean nets one axis's gain against another's
-    slip. Both are published — the mean is receipt evidence, the exact rate is the gate.
+    Which reading admits that candidate moved back to `taxonomy_overall` in #651 §8, and it is now the
+    classification ruler's own partial score — the mean over the axes the Gold states — so the number a
+    release turns on and the number the classification target is optimized on are the same number.
+    `four_axis_exact_improved` stays published as a diagnostic beside it. #626 had made the joint exact
+    rate the gate because it separates from zero on a corpus this size where the mean does not; what it
+    also does is count one cluster's slip twice, on its own axis and again jointly, which is how a
+    candidate that improved four axes could still be blocked. The exact rate answers "what share of cards
+    would a reader see correctly classified"; it is not the ruler.
     """
 
     eligible: list[dict[str, Any]] = []
@@ -208,16 +257,120 @@ def _taxonomy_release_evidence(
     }
 
 
-def _taxonomy_axis_values(comparison: TaxonomyComparison) -> dict[str, float]:
-    """One cluster's score on each published axis, from the one comparison the summary already means over."""
+def _accepted_review_view(review: Mapping[str, Any]) -> dict[str, Any]:
+    """One persisted review row in the shape the accepted-Gold readers expect.
+
+    The ledger row keeps the reviewer's labels at the top level and the correction inside `payload`; the
+    frozen episode projection flattens the two. Flattening here rather than teaching the readers two
+    shapes is what keeps one definition of "what did this reviewer answer" across the optimizer, the
+    baseline and this evaluator.
+    """
+
+    payload = dict(review.get("payload") or {})
+    return {
+        "dimensions": dict(review.get("dimensions") or payload.get("dimensions") or {}),
+        "novelty": dict(review.get("novelty") or payload.get("novelty") or {}),
+        "expected": dict(payload.get("expected") or {}),
+        "explanation": dict(payload.get("explanation") or {}),
+        "taxonomy": payload.get("taxonomy"),
+        "should_push": review.get("should_push") or payload.get("should_push") or "",
+    }
+
+
+def _target_release_evidence(
+    observations: Sequence[Mapping[str, Any]],
+    reviews: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Per arm and per target, how many cases the corpus could ask and what happened to each (#651 §8).
+
+    Published beside the taxonomy axis evidence and read by nobody as a gate. Its job is to make the
+    denominators visible: a candidate whose `classification` scored on 40 of 300 applicable cases and a
+    candidate that scored on 290 are not comparable, and before this the report could not say which one
+    it was describing. `judge_unavailable` is deliberately *counted* rather than scored, so a metric-judge
+    outage reads as an unavailable explanation evaluation instead of a candidate that got worse.
+
+    The rulers run with no judge here: the two live arms already spent their model budget on the Program
+    itself, and adding a third route would make a release decision depend on a provider the run never
+    declared. The explanation rows therefore carry the deterministic arm's bound, which the receipt names.
+    """
+
+    rows: dict[str, dict[str, list[dict[str, Any]]]] = {
+        arm: {target: [] for target in LEARNING_TARGETS} for arm in ("stable", "candidate")
+    }
+    for item in observations:
+        case_ref = dict(item.get("case_ref") or {})
+        review = _accepted_review_view(reviews.get(str(case_ref.get("review_id") or ""), {}))
+        # Sealed with the corpus by `DatasetCaseRef`, so this is the freeze's answer and not a guess. The
+        # fallback covers only the hand-built canary observation shape, which no stage that reaches this
+        # function uses; a corpus that genuinely sealed an empty tuple is `not_applicable` everywhere, and
+        # the rulers say so case by case rather than this line deciding it.
+        applicable = tuple(case_ref.get("applicable_targets") or LEARNING_TARGETS)
+        stratum = str(case_ref.get("stratum") or "")
+        explanation = accepted_explanation(review)
+        assets = accepted_assets(review)
+        novelty = accepted_novelty(review)
+        taxonomy_gold = accepted_taxonomy(review)
+        golds = {
+            "classification": dspy.Example(
+                applicable_targets=applicable,
+                **({} if taxonomy_gold is None else {"gold_taxonomy": taxonomy_gold.model_dump(mode="json")}),
+            ),
+            "understanding": dspy.Example(
+                applicable_targets=applicable,
+                **({} if assets is None else {"gold_assets": assets}),
+                **(
+                    {}
+                    if novelty is None
+                    else {"gold_novelty": novelty, "gold_duplicate_of": accepted_duplicate_of(review)}
+                ),
+            ),
+            "explanation": dspy.Example(
+                applicable_targets=applicable,
+                gold_key_facts=explanation["key_facts"],
+                gold_forbidden_claims=explanation["forbidden_claims"],
+                gold_error_types=explanation["error_types"],
+            ),
+        }
+        for arm in ("stable", "candidate"):
+            output = item.get(arm)
+            if not isinstance(output, Mapping) or output.get("not_assigned"):
+                continue
+            judgment = output.get("scored_judgment")
+            verdict = dict(dict(judgment or {}).get("verdict") or {})
+            editorial = _output_editorial(dict(output)) or {}
+            predictions = {
+                "classification": dspy.Prediction(taxonomy=editorial.get("taxonomy"), editorial=dict(editorial)),
+                "understanding": dspy.Prediction(semantics=verdict or None),
+                "explanation": dspy.Prediction(card=verdict or None),
+            }
+            for target in LEARNING_TARGETS:
+                if judgment is None:
+                    if target in applicable:
+                        rows[arm][target].append({"outcome": "technical_failure", "score": 0.0, "stratum": stratum})
+                    continue
+                outcome = bind_target_metric(target, None)(golds[target], predictions[target])
+                rows[arm][target].append({"outcome": str(outcome.outcome), "score": outcome.score, "stratum": stratum})
+    return {
+        "schema": "tracefold.news.target_release_evidence.v1",
+        "judge_route": "none_deterministic_arm",
+        **{
+            arm: {target: summarize_target_outcomes(rows[arm][target], target=target) for target in LEARNING_TARGETS}
+            for arm in ("stable", "candidate")
+        },
+    }
+
+
+def _taxonomy_axis_values(gold: Any, comparison: TaxonomyComparison) -> dict[str, float]:
+    """One cluster's score on each published axis, from the one comparison the summary already means over.
+
+    `taxonomy_overall` is `target_metrics.classification_score`, not a second mean written here: the
+    release primary and the GEPA scalar have to be the same bytes, which was the whole reason the rulers
+    moved to one owner (#651 §8).
+    """
 
     return {
-        "taxonomy_overall": float(comparison.score),
-        "subject_codes_set_f1": float(comparison.subject_f1),
-        "event_family_accuracy": float(comparison.event_family_match),
-        "change_state_accuracy": float(comparison.change_state_match),
-        "assertion_status_accuracy": float(comparison.assertion_status_match),
-        "four_axis_exact_accuracy": float(comparison.exact),
+        "taxonomy_overall": classification_score(gold, comparison),
+        **classification_axis_values(comparison),
     }
 
 
@@ -240,8 +393,12 @@ def _taxonomy_axis_intervals(
 
     paired: dict[str, list[float]] = {axis: [] for axis in _TAXONOMY_INTERVAL_AXES}
     for stable_row, candidate_row in zip(stable_rows, candidate_rows, strict=True):
-        stable_axes = _taxonomy_axis_values(compare_taxonomy(stable_row["gold"], stable_row["predicted"]))
-        candidate_axes = _taxonomy_axis_values(compare_taxonomy(candidate_row["gold"], candidate_row["predicted"]))
+        stable_axes = _taxonomy_axis_values(
+            stable_row["gold"], compare_taxonomy(stable_row["gold"], stable_row["predicted"])
+        )
+        candidate_axes = _taxonomy_axis_values(
+            candidate_row["gold"], compare_taxonomy(candidate_row["gold"], candidate_row["predicted"])
+        )
         for axis, deltas in paired.items():
             deltas.append(candidate_axes[axis] - stable_axes[axis])
     intervals: dict[str, dict[str, Any] | None] = {}
@@ -280,9 +437,9 @@ def _taxonomy_primary_result(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_taxonomy_overall": evidence["candidate"]["taxonomy_overall"],
         "taxonomy_overall_delta": delta.get("taxonomy_overall"),
         "taxonomy_overall_interval_95": intervals.get("taxonomy_overall"),
-        # Both improvement readings, published side by side: since #626 the four-axis exact rate is the
-        # one the gate below reads and the overall mean is receipt evidence. The interval behind the
-        # exact rate is already in `axis_interval_95`, so it is not repeated as its own key.
+        # Both improvement readings, published side by side: since #651 §8 the classification partial
+        # score is the one the gate below reads and the joint exact rate is the diagnostic. The interval
+        # behind the exact rate is already in `axis_interval_95`, so it is not repeated as its own key.
         "taxonomy_overall_improved": bool(evidence["taxonomy_overall_improved"]),
         "four_axis_exact_improved": bool(evidence["four_axis_exact_improved"]),
         "axis_delta": {axis: delta.get(axis) for axis in _TAXONOMY_RELEASE_AXES},
@@ -304,21 +461,20 @@ def _taxonomy_only_release_codes(
 
     Every reading is the paired per-cluster bootstrap interval, never the sign of a mean. An axis
     REGRESSES only when its interval lies entirely below zero; the candidate IMPROVES only when
-    `four_axis_exact_accuracy`'s interval lies entirely above zero. PASS is improved with no axis
-    regressed, FAIL is any axis regressed, and an exact-rate interval that crosses zero with nothing
-    regressed is UNKNOWN under `four_axis_exact_not_improved`. Empty Gold, or fewer Gold-bearing clusters
-    than the profile's `primary_clusters_min`, stays UNKNOWN as before.
+    `taxonomy_overall`'s interval lies entirely above zero. PASS is improved with no axis regressed, FAIL
+    is any axis regressed, and an overall interval that crosses zero with nothing regressed is UNKNOWN
+    under `taxonomy_partial_score_not_improved`. Empty Gold, or fewer Gold-bearing clusters than the
+    profile's `primary_clusters_min`, stays UNKNOWN as before.
 
-    #626 moved that admission from `taxonomy_overall` to the four-axis exact rate. The overall score is a
-    mean of five per-axis means, so a candidate that fixes many `event_family` mistakes and loses a couple
-    of `change_state` ones nets out near zero on it — which is exactly what candidate `5c559c44…` did over
-    311 clusters: overall +0.0125 with an interval crossing zero, while the share of cards whose four axes
-    were *all* right rose 0.434 → 0.495, interval [+0.003, +0.116]. A card is correctly classified only
-    when every axis on it is correct, so the exact rate is what a reader experiences and the only one of
-    the two that a corpus this size could separate from zero. The overall mean and every axis interval
-    stay published for the receipt; they simply no longer decide. The per-axis regression rule is
-    untouched, `four_axis_exact_accuracy` included: an axis whose whole interval is below zero is still a
-    FAIL, so this admission cannot be bought by trading one axis away.
+    #651 §8 moved that admission back from the four-axis exact rate to `taxonomy_overall`, which is now
+    the classification ruler's own masked partial score. The joint exact rate is a rate over four
+    correlated axes: one cluster flipping `change_state` costs the candidate on `change_state_accuracy`
+    and again on the joint rate, so the same evidence enters the decision twice, and the four regression
+    axes below already refuse a candidate that bought a gain by trading an axis away. #626 chose it
+    because it separated from zero on a 311-cluster corpus where the mean did not — candidate `5c559c44…`
+    read +0.0125 overall with an interval crossing zero against 0.434 → 0.495 exact, [+0.003, +0.116] —
+    and that remains the honest reading of what a reader experiences. It is published for exactly that,
+    beside every axis interval; it is not what the gate reads.
 
     #548 compared the two means directly, which made this class's only evidence a zero-tolerance test:
     candidate `3f7d1e12…` raised four axes and the four-axis exact rate by 6.1 points over 311 clusters
@@ -339,18 +495,24 @@ def _taxonomy_only_release_codes(
         blockers.append("validation_primary_review_insufficient")
     if evidence["interval_regressed_axes"]:
         failures.append("candidate_taxonomy_axis_regression")
-    if not evidence["four_axis_exact_improved"]:
-        blockers.append("four_axis_exact_not_improved")
+    if not evidence["taxonomy_overall_improved"]:
+        blockers.append("taxonomy_partial_score_not_improved")
     return tuple(blockers), tuple(failures)
 
 
 def _next_stage(stage: str, outcome: str, *, taxonomy_only: bool) -> tuple[str, str]:
     """The stage a sealed report recommends next, and the action that reaches it.
 
-    A taxonomy-only holdout PASS advances straight to promotion. Shadow and canary measure reader-facing
-    samples — canary needs eight assigned Events whose cards a reader saw — and this class changes no card
-    a reader can see, so both stages would spend a production window to observe an identical distribution
-    (#548). Every other candidate keeps shadow then canary.
+    A taxonomy-only holdout PASS advances straight to promotion. Canary measures reader-facing samples —
+    it needs eight assigned Events whose cards a reader saw — and this class changes no card a reader can
+    see, so it would spend a production window to observe an identical distribution (#548). Every other
+    candidate goes holdout then canary.
+
+    #651 removed the `shadow` stage between them. It cold-ran the candidate over a closed validation window
+    and sealed a distribution nobody acted on; its only consumer was the canary eligibility check, which now
+    reads the holdout pass directly. Everything shadow measured that a release decision used — schema
+    breaches, degraded rate, latency p95 — canary measures on live assignments, against readers who
+    actually saw the cards.
     """
 
     if outcome == "fail":
@@ -360,9 +522,7 @@ def _next_stage(stage: str, outcome: str, *, taxonomy_only: bool) -> tuple[str, 
     if stage == "offline":
         return "holdout", "advance"
     if stage == "holdout":
-        return "promotion" if taxonomy_only else "shadow", "advance"
-    if stage == "shadow":
-        return "canary", "advance"
+        return "promotion" if taxonomy_only else "canary", "advance"
     return "promotion", "advance"
 
 
@@ -372,7 +532,7 @@ class EvaluationRequest(BaseModel):
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     validation_dataset_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     candidate_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-    stage: Literal["offline", "holdout", "shadow", "canary"]
+    stage: Literal["offline", "holdout", "canary"]
     observation_manifest_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -392,7 +552,7 @@ class EvaluationReport(BaseModel):
     run_state: Literal["running", "complete", "incomplete"]
     gate_outcome: Literal["pass", "fail", "unknown"]
     eligibility: Literal["current", "stale"]
-    next_stage: Literal["holdout", "shadow", "canary", "promotion", "none"]
+    next_stage: Literal["holdout", "canary", "promotion", "none"]
     recommended_action: Literal["advance", "hold", "reject", "rollback"]
     evidence: dict[str, Any]
 
@@ -496,10 +656,13 @@ class CandidateEvaluator:
         ):
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
         candidate = self._registry.load(request.candidate_sha)
-        candidate_plan = self._registry.validate(candidate)
+        # Called for its refusals, not its return value: `validate` re-derives the Objective Plan from the
+        # frozen corpus and rejects a candidate whose declared population the corpus does not support. The
+        # plan itself was only read to feed the corpus-size quotas #651 §9 deleted.
+        self._registry.validate(candidate)
         self._registry.persist(candidate)
-        taxonomy_only = self._registry.is_taxonomy_only(candidate)
-        prior_stage = {"holdout": "offline", "shadow": "holdout", "canary": "shadow"}.get(request.stage)
+        taxonomy_only = self._registry.changed_predictors(candidate) == ("taxonomy",)
+        prior_stage = {"holdout": "offline", "canary": "holdout"}.get(request.stage)
         if prior_stage and not self._registry.has_passed_stage(candidate.candidate_sha, prior_stage):
             raise ValueError(f"news_learning_prior_{prior_stage}_evidence_not_passed")
         if candidate.development_dataset_sha != development.artifact_sha:
@@ -519,27 +682,19 @@ class CandidateEvaluator:
         observation_dimensions: dict[str, Any] | None = None
         observation_manifest_sha = request.observation_manifest_sha
         if not existing:
-            if request.stage in {"shadow", "canary"}:
+            if request.stage == "canary":
                 if request.observation_manifest_sha:
                     observations, observation_dimensions = self._load_production_observations(
                         artifact_sha=request.observation_manifest_sha,
-                        stage=request.stage,
                         dataset=dataset,
                         candidate=candidate,
                     )
                 else:
                     try:
-                        if request.stage == "shadow":
-                            observations, observation_dimensions = await self._run_shadow(
-                                run_sha=run_sha,
-                                dataset=dataset,
-                                candidate=candidate,
-                            )
-                        else:
-                            observations, observation_dimensions = self._collect_canary_observations(
-                                dataset=dataset,
-                                candidate=candidate,
-                            )
+                        observations, observation_dimensions = self._collect_canary_observations(
+                            dataset=dataset,
+                            candidate=candidate,
+                        )
                     except RecordReplayMiss as exc:
                         observations = []
                         execution_errors.append(str(exc))
@@ -562,20 +717,18 @@ class CandidateEvaluator:
             if observations:
                 self._persist_run_cases(run_sha, dataset, observations, stage=request.stage)
                 existing = observations
-            if request.stage in {"shadow", "canary"} and request.observation_manifest_sha is None:
+            if request.stage == "canary" and request.observation_manifest_sha is None:
                 observation_manifest_sha = self._persist_observation_manifest(
                     run_sha=run_sha,
-                    stage=request.stage,
                     dataset=dataset,
                     candidate=candidate,
                     observations=observations,
                     dimensions=observation_dimensions or {},
                 )
-        elif request.stage in {"shadow", "canary"}:
+        elif request.stage == "canary":
             if request.observation_manifest_sha:
                 loaded, observation_dimensions = self._load_production_observations(
                     artifact_sha=request.observation_manifest_sha,
-                    stage=request.stage,
                     dataset=dataset,
                     candidate=candidate,
                 )
@@ -584,7 +737,6 @@ class CandidateEvaluator:
             else:
                 observation_manifest_sha, observation_dimensions = self._generated_observation_manifest(
                     run_sha=run_sha,
-                    stage=request.stage,
                     dataset=dataset,
                     candidate=candidate,
                     observations=existing,
@@ -599,10 +751,6 @@ class CandidateEvaluator:
             observations=existing,
             execution_errors=execution_errors,
             observation_dimensions=observation_dimensions,
-            development_profile_counts={
-                **development.counts,
-                **development_split_profile_counts(candidate_plan),
-            },
             taxonomy_only=taxonomy_only,
         )
         if observation_manifest_sha:
@@ -832,120 +980,6 @@ class CandidateEvaluator:
         )
         return frozenset(case.case_id for case in ranked[:planned])
 
-    async def _run_shadow(
-        self,
-        *,
-        run_sha: str,
-        dataset: DatasetManifest,
-        candidate: CandidateManifest,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Cold-run the candidate over the whole closed production distribution.
-
-        Stable output and delivery are observed production facts. Candidate
-        output uses a private counterfactual reader ledger and can only write
-        learning artifacts/model recordings.
-        """
-
-        rows = self._repository.stable_arm_review_sources(
-            from_ms=dataset.window.from_ms,
-            to_ms=dataset.window.to_ms,
-            bundle_sha=self._stable.bundle_sha,
-            program_version=self._stable.program_version,
-            program_sha256=self._stable.program_sha256,
-        )
-        state = ArmState(deque(Receipt(**receipt) for receipt in dataset.seed_receipts))
-        observations: list[dict[str, Any]] = []
-        for row in rows:
-            opened_at_ms = int(row["opened_at_ms"])
-            state.expire(opened_at_ms)
-            snapshot = dict(row["evidence_snapshot"] or {})
-            focus = dict(snapshot.get("focus_fact") or {})
-            case_id = _sha(
-                {
-                    "shadow": EVALUATOR_VERSION,
-                    "event_id": row["event_id"],
-                    "evidence_version": row["evidence_version"],
-                    "evidence_sha256": row["evidence_sha256"],
-                }
-            )
-            case_ref = {
-                "case_id": case_id,
-                "subject_kind": "event",
-                "event_id": row["event_id"],
-                "evidence_version": row["evidence_version"],
-                "external_snapshot_id": None,
-                "evidence_sha256": row["evidence_sha256"],
-                "review_id": None,
-                "cluster_id": _dataset_fact_cluster(str(focus.get("text") or case_id)),
-                "stratum": "shadow_distribution",
-                "opened_at_ms": opened_at_ms,
-            }
-            case = {"snapshot": snapshot, "opened_at_ms": opened_at_ms}
-            context = self._datasets.build_context(case, state)
-            program_observation = await self._invoke_and_record(
-                run_sha=run_sha,
-                case_id=case_id,
-                arm_name="candidate",
-                arm=candidate.candidate_arm,
-                context=context,
-                trial=1,
-            )
-            if program_observation.get("scored_judgment") is None:
-                candidate_output: dict[str, Any] = {
-                    "error_code": program_observation.get("error_code") or "program_output_missing",
-                    "delivered": False,
-                    "execution": "live",
-                    "delivery": "simulated",
-                    "program": [program_observation],
-                }
-            else:
-                candidate_output = self._apply_policy(
-                    case,
-                    program_observation["scored_judgment"],
-                    state,
-                    candidate.candidate_arm,
-                    context,
-                )
-                candidate_output["execution"] = "live"
-                candidate_output["program"] = [program_observation]
-            if candidate_output.get("delivered"):
-                verdict = dict(candidate_output.get("verdict") or {})
-                state.receipts.append(
-                    receipt_from_output(
-                        event_id=case_id,
-                        at_ms=opened_at_ms,
-                        output=candidate_output,
-                        verdict=verdict,
-                    )
-                )
-            observations.append(
-                {
-                    "case_ref": case_ref,
-                    "stable": _observed_production_output(row),
-                    "candidate": candidate_output,
-                    "comparison": {
-                        "evaluation_stage": "shadow",
-                        "reviewable": False,
-                        "pairing": "observed_stable_vs_candidate_counterfactual",
-                        "outcome_revealed": False,
-                    },
-                }
-            )
-        dimensions = {
-            "input_provenance": "live",
-            "execution": "live",
-            "delivery": "simulated",
-            "review": "none",
-            "dataset_role": "hidden_temporal_holdout",
-            "pairing": "observed_stable_vs_candidate_counterfactual",
-            "outcome_revealed": False,
-            "supported_claims": ["runtime_safety", "distribution", "counterfactual_delivery"],
-            "observation_scope": "all_live_triage_eligible",
-            "window_duration_hours": (dataset.window.to_ms - dataset.window.from_ms) / 3_600_000,
-            "eligible_event_n": len(rows),
-        }
-        return observations, dimensions
-
     def _collect_canary_observations(
         self,
         *,
@@ -1072,7 +1106,7 @@ class CandidateEvaluator:
         snapshot = case["snapshot"]
         event = dict(snapshot.get("card") or {})
         grounded = tuple(str(value) for value in event.get("grounded_assets") or [])
-        primaries = [asset.symbol for asset in verdict.assets if asset.role == "primary"]
+        primaries = [MarketAsset.of(asset) for asset in verdict.assets if asset.role == "primary"]
         storyline = final_storyline_key(
             title=str(event.get("leader_title") or ""),
             headline_zh=verdict.headline_zh,
@@ -1359,17 +1393,19 @@ class CandidateEvaluator:
         observations: Sequence[Mapping[str, Any]],
         execution_errors: Sequence[str],
         observation_dimensions: Mapping[str, Any] | None,
-        development_profile_counts: Mapping[str, Any],
         taxonomy_only: bool,
     ) -> dict[str, Any]:
         blockers: list[str] = []
         failures: list[str] = []
-        if request.stage in {"offline", "holdout"}:
-            blockers.extend(development_coverage_blockers(development_profile_counts))
-        else:
-            prior = "holdout" if request.stage == "shadow" else "shadow"
-            if not self._registry.has_passed_stage(candidate.candidate_sha, prior):
-                blockers.append(f"prior_{prior}_evidence_not_passed")
+        # No corpus-size quota (#651 §9). `development_coverage_blockers` refused a release on how *much*
+        # evidence the development corpus held, in a unit that did not match the question being released:
+        # a candidate is admitted on what the holdout says about it, and a thin development corpus already
+        # shows up as a `NO_OP` optimization rather than as a promoted candidate. The counts stay in the
+        # report below, where an operator reads them.
+        if request.stage not in {"offline", "holdout"} and not self._registry.has_passed_stage(
+            candidate.candidate_sha, "holdout"
+        ):
+            blockers.append("prior_holdout_evidence_not_passed")
         if execution_errors:
             blockers.extend(execution_errors)
         reviews = self._ledger.reviews_by_id(
@@ -1492,8 +1528,20 @@ class CandidateEvaluator:
                 ):
                     critical_regressions.append(str(item["case_ref"]["case_id"]))
         taxonomy_evidence: dict[str, Any] | None = None
+        target_evidence: dict[str, Any] = {}
         if request.stage in {"offline", "holdout"}:
             taxonomy_evidence = _taxonomy_release_evidence(observations, reviews)
+            target_evidence = _target_release_evidence(observations, reviews)
+            # A target whose judge could not answer more than `JUDGE_UNAVAILABLE_SHARE_MAX` of its
+            # applicable cases has not been evaluated, and an un-evaluated target must not read as a pass.
+            # It cannot fire while `judge_route` is `none_deterministic_arm` — the release rulers run
+            # judge-free, so nothing here asks a provider — and it is the gate that has to already exist
+            # the day one is bound, because the alternative is a judge outage published as a measurement.
+            blockers.extend(
+                f"{target}_evaluation_unavailable"
+                for target in LEARNING_TARGETS
+                if any(target_evidence[arm][target]["evaluation_unavailable"] for arm in ("stable", "candidate"))
+            )
             if taxonomy_only:
                 taxonomy_blockers, taxonomy_failures = _taxonomy_only_release_codes(
                     taxonomy_evidence, stage=request.stage
@@ -1557,13 +1605,13 @@ class CandidateEvaluator:
             failures.append("candidate_provider_cost_regression")
         candidate_latency_p95 = _percentile95(candidate_latencies)
         if (
-            request.stage in {"shadow", "canary"}
+            request.stage == "canary"
             and candidate_latency_p95 is not None
             and candidate_latency_p95 > int(_PROFILE["guardrails"]["candidate_latency_p95_ms_max"])
         ):
             failures.append("candidate_latency_slo_regression")
         candidate_bad_rate = candidate_bad_n / candidate_observed_n if candidate_observed_n else None
-        if request.stage in {"shadow", "canary"}:
+        if request.stage == "canary":
             if candidate_schema_errors:
                 failures.append("candidate_schema_contract_breach")
             if candidate_bad_rate is not None and candidate_bad_rate > float(
@@ -1622,17 +1670,16 @@ class CandidateEvaluator:
                     )
                 elif not primary.get("interval_95") or float(primary["interval_95"]["lower"]) <= 0:
                     blockers.append("validation_primary_interval_crosses_zero")
-        elif request.stage in {"shadow", "canary"}:
+        elif request.stage == "canary":
             if observation_hours is None or observation_hours < 24:
-                blockers.append(f"{request.stage}_duration_insufficient")
+                blockers.append("canary_duration_insufficient")
             if not observations:
-                blockers.append(f"{request.stage}_observations_empty")
-            if request.stage == "canary":
-                candidate_assignment_n = int((observation_dimensions or {}).get("candidate_assignment_n") or 0)
-                if candidate_assignment_n < int(_PROFILE["guardrails"]["canary_candidate_min_n"]):
-                    blockers.append("canary_candidate_assignment_n_insufficient")
-                if (observation_dimensions or {}).get("assignment_invariant_breach_event_ids"):
-                    failures.append("canary_one_arm_assignment_invariant_breach")
+                blockers.append("canary_observations_empty")
+            candidate_assignment_n = int((observation_dimensions or {}).get("candidate_assignment_n") or 0)
+            if candidate_assignment_n < int(_PROFILE["guardrails"]["canary_candidate_min_n"]):
+                blockers.append("canary_candidate_assignment_n_insufficient")
+            if (observation_dimensions or {}).get("assignment_invariant_breach_event_ids"):
+                failures.append("canary_one_arm_assignment_invariant_breach")
         if failures:
             outcome = "fail"
         elif blockers:
@@ -1688,6 +1735,10 @@ class CandidateEvaluator:
             "candidate_runtime_observation_n": candidate_observed_n,
             "candidate_degraded_or_error_n": candidate_bad_n,
             "candidate_degraded_or_error_rate": candidate_bad_rate,
+            "component_failures": _component_failures(observations),
+            # Per arm and per target: applicable, scored, failed, and every excluded case named for why
+            # it was excluded (#651 §8). Evidence, not a gate.
+            "targets": target_evidence,
             "critical_regressions": critical_regressions,
             "stability": stability,
             "blockers": blockers,
@@ -1865,11 +1916,10 @@ class CandidateEvaluator:
         self,
         *,
         artifact_sha: str,
-        stage: str,
         dataset: DatasetManifest,
         candidate: CandidateManifest,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        expected_kind = "shadow_observation" if stage == "shadow" else "canary_observation"
+        expected_kind = "canary_observation"
         row = self._repository.learning_artifact(artifact_sha)
         if row is None or str(row["kind"]) != expected_kind:
             raise ValueError("news_learning_production_observation_not_found")
@@ -1907,9 +1957,7 @@ class CandidateEvaluator:
         }
         if not required <= set(dimensions):
             raise ValueError("news_learning_production_observation_dimensions_incomplete")
-        if stage == "shadow" and dimensions.get("delivery") != "simulated":
-            raise ValueError("news_learning_shadow_delivery_must_be_simulated")
-        if stage == "canary" and dimensions.get("delivery") not in {
+        if dimensions.get("delivery") not in {
             "observed",
             "observed_sent",
             "observed_not_sent",
@@ -1921,13 +1969,12 @@ class CandidateEvaluator:
         self,
         *,
         run_sha: str,
-        stage: str,
         dataset: DatasetManifest,
         candidate: CandidateManifest,
         observations: Sequence[Mapping[str, Any]],
         dimensions: Mapping[str, Any],
     ) -> str:
-        kind = "shadow_observation" if stage == "shadow" else "canary_observation"
+        kind = "canary_observation"
         payload = {
             "candidate_sha": candidate.candidate_sha,
             "candidate_bundle_sha": candidate.candidate_arm.bundle_sha,
@@ -1944,12 +1991,11 @@ class CandidateEvaluator:
         self,
         *,
         run_sha: str,
-        stage: str,
         dataset: DatasetManifest,
         candidate: CandidateManifest,
         observations: Sequence[Mapping[str, Any]],
     ) -> tuple[str, dict[str, Any]]:
-        kind = "shadow_observation" if stage == "shadow" else "canary_observation"
+        kind = "canary_observation"
         row = self._repository.newest_observation_manifest(kind=kind, observation_run_sha=run_sha)
         if row is None:
             raise ValueError("news_learning_generated_observation_manifest_missing")
@@ -2082,8 +2128,8 @@ def stable_or_common_execution_unavailability(unavailable_n: int, assigned_pair_
     transient ones cannot bias the verdict — but a mass failure is still an evidence gap, never a vacuous
     PASS. The cap is the same `candidate_degraded_or_error_rate_max` that bounds candidate degradation;
     a second knob would let the two drift apart while guarding one concern. The denominator is assigned
-    pairs, not raw observations: only an assigned pair can produce the numerator, and shadow-shaped
-    corpora carry unassigned rows that would otherwise dilute the reported rate.
+    pairs, not raw observations: only an assigned pair can produce the numerator, and a canary corpus
+    carries unassigned rows that would otherwise dilute the reported rate.
     """
 
     if not unavailable_n:

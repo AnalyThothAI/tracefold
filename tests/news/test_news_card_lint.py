@@ -154,7 +154,7 @@ def test_an_over_long_why_costs_a_point_the_receipt_already_promised() -> None:
 @pytest.mark.parametrize(
     ("check", "headline", "why"),
     [
-        ("headline_length", "花旗推出托管", _GOOD_WHY),
+        ("headline_length", "托管" * 31, _GOOD_WHY),
         ("banned_filler", _GOOD_HEADLINE, "这条托管公告值得关注，对银行板块有影响"),
         ("meta_opening", _GOOD_HEADLINE, "该消息把比特币纳入自营托管，机构客户多了一条合规通道"),
         ("why_single_sentence", _GOOD_HEADLINE, "托管上线了。机构客户多了一条合规持币通道。"),
@@ -197,4 +197,4 @@ def test_the_receipt_publishes_the_gate_split_and_the_tables_themselves() -> Non
     assert receipt["hard_gates"] == list(GATE_CHECKS)
     assert receipt["scored_checks"] == list(SCORED_CHECKS)
     assert "值得关注" in receipt["banned_filler"]
-    assert receipt["headline_chars"] == {"min": 15, "max": 60}
+    assert receipt["headline_chars"] == {"min": 1, "max": 60}

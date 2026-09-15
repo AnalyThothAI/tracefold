@@ -66,12 +66,15 @@ PROGRAM_INSTRUCTION_MAX_BYTES: Final[int] = 32_768
 
 PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS: Final[int] = 8_192
 
-PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_strategy_artifact_v1"
+# v2 (#651): the image is the native `dspy.Module.dump_state()` document rather than three instruction
+# strings, so a GEPA candidate's demos are representable and a released image is loadable by DSPy itself.
+PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_state_v1"
 
-# v9 (#501): taxonomy is its own Predictor between EventSemantics and ReaderCard, so a v8 recording of two
-# calls per route is not a replay of this executor and the three-instruction artifact is a new write-set.
-# #344 (v8) made the same kind of cut when requests started being rendered by DSPy.
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v9"
+# v10 (#651 §6.2): `TriageAsset.market_type` is a required vocabulary value and the Gate shows the model the
+# catalogue's uncollapsed candidates, so a v9 recording answers a different question with a different output
+# contract and is not a replay of this executor. v9 (#501) split taxonomy into its own Predictor; #344 (v8)
+# made the same kind of cut when requests started being rendered by DSPy.
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v10"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.

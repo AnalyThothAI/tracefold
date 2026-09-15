@@ -57,7 +57,7 @@ import tracefold
 import tracefold.trading
 from tracefold.app.cli.main import main as cli_main
 from tracefold.news.events.storyline import load_storyline_registry
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 
 package_root = Path(tracefold.__file__).resolve().parent
 alembic_root = package_root / "platform" / "postgres" / "alembic"
@@ -69,7 +69,7 @@ print(
             "sys_path": [str(entry) for entry in sys.path],
             "cwd": str(Path.cwd()),
             "cli_main_module": cli_main.__module__,
-            "program_sha256": load_stable_program_artifact().program_sha256,
+            "program_sha256": load_stable_program_state().program_sha256,
             "storyline_registry_entries": len(load_storyline_registry().entries),
             "trading_root": str(Path(tracefold.trading.__file__).resolve().parent),
             "alembic_env_py": (alembic_root / "env.py").is_file(),
@@ -264,9 +264,9 @@ def test_the_checkout_is_absent_from_the_isolated_interpreter(isolated_probe: di
 
 def test_installed_distribution_reads_its_own_program_artifact(isolated_probe: dict[str, object]) -> None:
     from tracefold.news.events.storyline import load_storyline_registry
-    from tracefold.news.program.artifact import load_stable_program_artifact
+    from tracefold.news.program.artifact import load_stable_program_state
 
-    assert isolated_probe["program_sha256"] == load_stable_program_artifact().program_sha256
+    assert isolated_probe["program_sha256"] == load_stable_program_state().program_sha256
     # #509: the installed wheel loads and validates the storyline registry from its own package data.
     assert isolated_probe["storyline_registry_entries"] == len(load_storyline_registry().entries)
 

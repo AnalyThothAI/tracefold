@@ -36,6 +36,10 @@ PUBLIC_NEWS_INTERFACE = {
     "EventKind",
     "IPTCCodebookSha",
     "IPTC_SUBJECT_CODES",
+    # #651 §6.2: the one market vocabulary News compares assets under. The HTTP asset schema is typed by
+    # it, so the browser contract and the Program contract cannot disagree about what a market is. The
+    # normalizer and the comparison rule that read it stay private.
+    "MarketType",
     "NEWS_RETRIEVAL_SHA256",
     "NewsTaxonomyV1",
     "NetBuySnapshot",

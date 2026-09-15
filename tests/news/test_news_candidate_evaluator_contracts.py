@@ -10,11 +10,10 @@ import pytest
 
 import tracefold.news.learning.evaluate as candidate_evaluator_module
 from tests.support.news_judgment import news_taxonomy
-from tracefold.news.learning.contracts import PromptPatchV1
-from tracefold.news.learning.evaluate import ArmManifest, development_coverage_blockers
+from tracefold.news.learning.evaluate import ArmManifest
 from tracefold.news.learning.profile import _PROFILE
 from tracefold.news.models import TriageVerdict
-from tracefold.news.program.artifact import ProgramStrategyArtifactV1
+from tracefold.news.program.artifact import NewsProgramStateV1
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.runtime import PROGRAM_VERSION
@@ -315,133 +314,21 @@ def test_observed_non_degraded_program_requires_a_selected_execution() -> None:
         )
 
 
-# Every count the release profile actually asks for, with boundary + retention summing to
-# `independent_cluster_n` the way `_dataset_counts` partitions them — and all of it inside one UTC date.
-# Before #259 this exact corpus was refused for the calendar, and for nothing else.
-_ONE_DAY_SUFFICIENT = {
-    "case_n": 168,
-    "independent_cluster_n": 141,
-    "boundary_cluster_n": 34,
-    "retention_cluster_n": 107,
-    "negative_cluster_n": 55,
-    "safety_cluster_n": 9,
-    "stratum_n": 4,
-    "train_stratum_n": 3,
-    "development_selection_stratum_n": 3,
-    "eligible_event_n": 733,
-    "natural_day_n": 1,
-    "window_duration_hours": 21.0,
-}
+def test_the_release_profile_holds_no_development_corpus_quota_at_all() -> None:
+    """#651 §9: the 30/100/50 cluster floors, the strata minimum and the safety case are gone.
 
-
-def test_a_single_calendar_day_with_real_coverage_is_not_blocked() -> None:
-    """#259: `natural_day_n = 1` is a fact about midnights, not about evidence.
-
-    The counts below are the ones the profile has always asked for and they are all met; the only thing
-    separating this corpus from the pre-#259 refusal is that its 21 hours happened not to cross a UTC
-    boundary. A Development Experiment that cannot start until the calendar catches up is a deployment
-    delay wearing a statistics costume.
+    Written against the key set rather than five deleted names, for the same reason #259 wrote the
+    previous version of this test that way: the failure it guards against is not "somebody restored
+    `boundary_clusters_min`", it is "somebody added `min_cases` and called it a different rule". Whether
+    a corpus can be optimized is now a question about one target's split, and `GepaObjectivePlan`
+    answers it with four structural codes; a profile threshold could only re-introduce the quota that
+    refused a good explanation corpus for holding little taxonomy Gold.
     """
 
-    assert development_coverage_blockers(_ONE_DAY_SUFFICIENT) == ()
-
-
-def test_each_objective_half_must_carry_enough_strata() -> None:
-    thin_selection = {
-        **_ONE_DAY_SUFFICIENT,
-        "development_selection_stratum_n": 2,
-    }
-
-    assert development_coverage_blockers(thin_selection) == (
-        "development_development_selection_stratum_n_insufficient",
-    )
-
-
-def test_three_calendar_dates_are_not_evidence_when_the_corpus_is_thin() -> None:
-    """The mirror case, and the one that shows the old gate measured the wrong variable.
-
-    Four minutes either side of a midnight is three UTC dates by the old count and three restatements of
-    one storyline by any honest one. The refusal has to come from the clusters, and its vocabulary must
-    never name a day again — an operator told to wait for the calendar would wait forever.
-    """
-
-    thin = {
-        **_ONE_DAY_SUFFICIENT,
-        "case_n": 6,
-        "independent_cluster_n": 3,
-        "boundary_cluster_n": 2,
-        "retention_cluster_n": 1,
-        "negative_cluster_n": 1,
-        "safety_cluster_n": 1,
-        "stratum_n": 1,
-        "natural_day_n": 3,
-        "window_duration_hours": 0.067,
-    }
-
-    blockers = development_coverage_blockers(thin)
-
-    assert set(blockers) == {
-        "development_boundary_cluster_n_insufficient",
-        "development_retention_cluster_n_insufficient",
-        "development_negative_cluster_n_insufficient",
-        "development_stratum_n_insufficient",
-    }
-    assert not any("day" in blocker for blocker in blockers)
-
-
-def test_raw_event_volume_is_not_an_effective_sample_size() -> None:
-    """#259 §3: the unit of evidence is the connected fact cluster, not the Event row.
-
-    A busy news day produces thousands of eligible Events and can still carry a handful of separable
-    facts. `eligible_event_n` is reported so an operator can see the window's traffic; it buys nothing.
-    """
-
-    loud = {
-        **_ONE_DAY_SUFFICIENT,
-        "eligible_event_n": 40_000,
-        "case_n": 40_000,
-        "independent_cluster_n": 12,
-        "boundary_cluster_n": 4,
-        "retention_cluster_n": 8,
-        "negative_cluster_n": 3,
-        "stratum_n": 2,
-    }
-
-    assert set(development_coverage_blockers(loud)) == {
-        "development_boundary_cluster_n_insufficient",
-        "development_retention_cluster_n_insufficient",
-        "development_negative_cluster_n_insufficient",
-        "development_stratum_n_insufficient",
-    }
-
-
-def test_a_corpus_with_no_safety_case_is_still_refused() -> None:
-    """The one non-threshold rule in the development profile, unchanged by #259."""
-
-    assert development_coverage_blockers({**_ONE_DAY_SUFFICIENT, "safety_cluster_n": 0}) == (
-        "development_safety_empty",
-    )
-
-
-def test_the_development_profile_admits_no_temporal_gate_at_all() -> None:
-    """#259 §6: `natural_days_min` is gone and nothing age-shaped may take its place.
-
-    Written against the key set rather than one deleted name on purpose: the failure this guards against
-    is not "somebody restored `natural_days_min`", it is "somebody added `stable_age_days` and called it
-    a different rule".
-    """
-
-    development = _PROFILE["development"]
-
-    assert set(development) == {
-        "boundary_clusters_min",
-        "retention_clusters_min",
-        "negative_clusters_min",
-        "strata_min",
-        "safety_required",
-    }
+    assert "development" not in _PROFILE
+    assert set(_PROFILE) == {"profile_id", "validation", "guardrails", "bootstrap", "supported_candidates"}
     assert not any(
-        word in key for key in development for word in ("day", "age", "hour", "duration", "window", "natural")
+        word in key for key in _PROFILE for word in ("boundary", "retention", "negative", "strata", "safety", "cluster")
     )
 
 
@@ -488,7 +375,7 @@ def _observed_judgment_fields(verdict: dict[str, object]) -> dict[str, object]:
         affected_markets=("us_equity_broad",),
         reader_value="realtime",
     )
-    editorial = EditorialEnvelope.issue(relevance=relevance, taxonomy=news_taxonomy())
+    editorial = EditorialEnvelope.issue(relevance=relevance, source_authority="unknown", taxonomy=news_taxonomy())
     scored = ScoredJudgment.issue(
         verdict=TriageVerdict.model_validate(verdict),
         editorial=editorial,
@@ -526,41 +413,46 @@ def test_stable_or_common_execution_blocks_only_past_the_shared_rate_cap() -> No
     assert unavailability(1, 0) == (1.0, True)
 
 
-def _stable_artifact() -> ProgramStrategyArtifactV1:
-    from tracefold.news.program.artifact import load_stable_program_artifact
+def _stable_artifact() -> NewsProgramStateV1:
+    from tracefold.news.program.artifact import load_stable_program_state
 
-    return load_stable_program_artifact()
+    return load_stable_program_state()
 
 
-def _patch(**overrides: str) -> PromptPatchV1:
+def _state(**overrides: str) -> NewsProgramStateV1:
     parent = _stable_artifact()
-    values = {
-        "event_semantics_instruction": parent.event_semantics_instruction,
-        "taxonomy_instruction": parent.taxonomy_instruction,
-        "reader_card_instruction": parent.reader_card_instruction,
-    }
-    values.update(overrides)
-    return PromptPatchV1(**values)
+    instructions = {name: parent.instruction_for(name) for name in ("event_semantics", "taxonomy", "reader_card")}
+    instructions.update(overrides)
+    return NewsProgramStateV1.from_instructions(instructions)
 
 
-def test_taxonomy_only_is_read_off_the_write_set_not_declared() -> None:
+def test_taxonomy_only_is_read_off_the_state_document_not_declared() -> None:
     """#548: the class is the byte difference against the parent, and nothing else says so."""
 
     parent = _stable_artifact()
-    taxonomy_only = _patch(taxonomy_instruction=parent.taxonomy_instruction + "\nPrefer the narrower code.")
+    taxonomy_only = _state(taxonomy=parent.instruction_for("taxonomy") + "\nPrefer the narrower code.")
 
     assert taxonomy_only.changed_predictors(parent) == ("taxonomy",)
-    assert taxonomy_only.is_taxonomy_only(parent)
-    # A write-set that also moves a reader-facing Predictor keeps every pairwise stage.
-    also_reader_card = _patch(
-        taxonomy_instruction=parent.taxonomy_instruction + "\nPrefer the narrower code.",
-        reader_card_instruction=parent.reader_card_instruction + "\nKeep the first clause concrete.",
+    # A state that also moves a reader-facing Predictor keeps every pairwise stage.
+    also_reader_card = _state(
+        taxonomy=parent.instruction_for("taxonomy") + "\nPrefer the narrower code.",
+        reader_card=parent.instruction_for("reader_card") + "\nKeep the first clause concrete.",
     )
     assert also_reader_card.changed_predictors(parent) == ("taxonomy", "reader_card")
-    assert not also_reader_card.is_taxonomy_only(parent)
-    # An unchanged write-set changes nothing and is not this class either.
-    assert not _patch().is_taxonomy_only(parent)
-    assert not _patch().changes(parent)
+    # An unchanged state changes nothing and is not this class either.
+    assert _state().changed_predictors(parent) == ()
+    # A demo attached to the taxonomy Predictor is a change, which the three-string patch could not say.
+    from tracefold.news.program.artifact import predictor_document
+
+    with_demo = parent.with_predictor_document(
+        "taxonomy",
+        predictor_document(
+            "taxonomy",
+            instruction=parent.instruction_for("taxonomy"),
+            demos=[{"evidence_json": "<evidence>", "taxonomy": {"subject_codes": []}}],
+        ),
+    )
+    assert with_demo.changed_predictors(parent) == ("taxonomy",)
 
 
 _GOLD_AXES: dict[str, Any] = {
@@ -579,7 +471,7 @@ def _taxonomy_evidence(pairs: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -
     """The evaluator's own release evidence over one (stable, candidate) answer per independent cluster."""
 
     def arm(axes: dict[str, Any]) -> dict[str, Any]:
-        taxonomy = news_taxonomy(**axes, source_authority="reputable_secondary").model_dump(mode="json")
+        taxonomy = news_taxonomy(**axes).model_dump(mode="json")
         return {"editorial": {"taxonomy": taxonomy}}
 
     observations = [
@@ -633,9 +525,8 @@ def test_one_cluster_slipping_among_many_is_not_a_taxonomy_axis_regression() -> 
     wrong, one cluster loses an assertion status Stable had right, and the rest are already exact. Under
     #548 the single slip made `assertion_status_accuracy` negative and the whole release a FAIL. The
     interval around that delta reaches zero — a corpus this size cannot tell one flipped cluster from
-    noise — so the axis is not a regression, while the candidate makes eleven more cards fully correct
-    than it breaks, so the four-axis exact rate that admits it since #626 clears zero and the holdout
-    passes.
+    noise — so the axis is not a regression, while the candidate raises the classification partial score
+    that admits it since #651 §8 with its whole interval above zero, and the holdout passes.
     """
 
     evidence = _taxonomy_evidence(
@@ -654,8 +545,8 @@ def test_one_cluster_slipping_among_many_is_not_a_taxonomy_axis_regression() -> 
     assert slip["delta"] == pytest.approx(-1 / 40)
     assert slip["lower"] < 0 <= slip["upper"]
     assert evidence["interval_regressed_axes"] == []
-    # Twelve cards become fully correct and one stops being so, so the primary is above zero with its
-    # whole interval above it; here the overall mean agrees, and #626 keeps publishing it for the receipt.
+    # Twelve cards become fully correct and one stops being so, so the diagnostic exact rate is above
+    # zero; the partial score that decides agrees, which is the ordinary case where the two readings do.
     exact = evidence["axis_interval_95"]["four_axis_exact_accuracy"]
     assert exact["delta"] == pytest.approx(11 / 40)
     assert exact["lower"] > 0
@@ -665,14 +556,16 @@ def test_one_cluster_slipping_among_many_is_not_a_taxonomy_axis_regression() -> 
     assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == ((), ())
 
 
-def test_a_holdout_passes_on_the_four_axis_exact_rate_when_the_overall_mean_nets_to_zero() -> None:
-    """#626: the primary of a taxonomy-only candidate is the share of cards whose four axes are all right.
+def test_a_holdout_that_only_moves_the_joint_exact_rate_is_unknown() -> None:
+    """#651 §8: the joint exact rate is published, and it is not what admits a candidate.
 
     This is candidate `5c559c44…` in miniature. Ten cards of forty that Stable got all but one axis right
-    on become fully correct, ten cards neither arm classifies correctly lose a second axis, and
-    `taxonomy_overall` — a mean of five per-axis means — nets those two movements to exactly zero. What a
-    reader gets is ten more correctly classified cards and not one fewer, which is what the exact rate
-    measures and, on this corpus, the only one of the two readings that can be told apart from zero.
+    on become fully correct, ten cards neither arm classifies correctly lose a second axis, and the
+    classification partial score nets those two movements to exactly zero. Ten more correctly classified
+    cards is a real reader gain and the exact rate reports it — but the corpus cannot tell the candidate's
+    *classification quality* from Stable's, and UNKNOWN is what that means. #626 admitted this candidate
+    on the exact rate alone; the cost was that the same axis movement decided twice, once on its own axis
+    and once jointly, which is also how a candidate that improved four axes could be blocked.
     """
 
     evidence = _taxonomy_evidence(
@@ -692,16 +585,20 @@ def test_a_holdout_passes_on_the_four_axis_exact_rate_when_the_overall_mean_nets
     # `assertion_status` both gained and lost ten cards, so no axis regressed and nothing fails.
     assert evidence["axis_interval_95"]["assertion_status_accuracy"]["delta"] == pytest.approx(0.0)
     assert evidence["interval_regressed_axes"] == []
-    assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == ((), ())
+    assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == (
+        ("taxonomy_partial_score_not_improved",),
+        (),
+    )
 
 
-def test_an_overall_gain_that_makes_no_card_fully_correct_leaves_the_holdout_unknown() -> None:
-    """#626: raising the mean without a reader seeing one more correct card is not an improvement.
+def test_a_partial_score_gain_admits_a_candidate_no_card_is_yet_fully_correct_under() -> None:
+    """#651 §8: the classification partial score is the ruler, and a real axis repair is an improvement.
 
-    Ten cards of forty are wrong on two axes and the candidate fixes one of them. `taxonomy_overall` rises
-    by a quarter of those ten with its whole interval above zero — the reading that admitted a candidate
-    until #626 — while every one of those cards stays misclassified, so the exact rate does not move at
-    all and the holdout is UNKNOWN rather than a promotion.
+    Ten cards of forty are wrong on two axes and the candidate fixes one of them. The partial score rises
+    by a quarter of those ten with its whole interval above zero, while every one of those cards is still
+    misclassified so the joint exact rate does not move at all. Under #626 that was UNKNOWN; it is a
+    genuine classification gain on a corpus of cards that need two repairs, and refusing it meant no
+    candidate could ever take the first of the two steps.
     """
 
     evidence = _taxonomy_evidence(
@@ -721,10 +618,7 @@ def test_an_overall_gain_that_makes_no_card_fully_correct_leaves_the_holdout_unk
     }
     assert evidence["four_axis_exact_improved"] is False
     assert evidence["interval_regressed_axes"] == []
-    assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == (
-        ("four_axis_exact_not_improved",),
-        (),
-    )
+    assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == ((), ())
 
 
 def test_an_axis_whose_whole_interval_is_below_zero_is_a_taxonomy_axis_regression() -> None:
@@ -736,16 +630,16 @@ def test_an_axis_whose_whole_interval_is_below_zero_is_a_taxonomy_axis_regressio
 
     interval = evidence["axis_interval_95"]["change_state_accuracy"]
     assert interval["delta"] == -1.0 and interval["upper"] < 0
-    assert evidence["interval_regressed_axes"] == ["change_state_accuracy", "four_axis_exact_accuracy"]
+    # #651 §8: the joint exact rate moved with `change_state` and is no longer one of the axes read.
+    assert evidence["interval_regressed_axes"] == ["change_state_accuracy"]
+    assert evidence["axis_interval_95"]["four_axis_exact_accuracy"]["upper"] < 0
     blockers, failures = candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout")
     assert failures == ("candidate_taxonomy_axis_regression",)
-    # #626: the exact rate is one of the axes the interval rule reads, so a regression on it both fails
-    # the release and refuses the admission the same code now names.
-    assert blockers == ("four_axis_exact_not_improved",)
+    assert blockers == ("taxonomy_partial_score_not_improved",)
 
 
-def test_a_four_axis_exact_interval_that_crosses_zero_leaves_the_holdout_unknown() -> None:
-    """#567, #626: one card gained and one lost in forty is not evidence of an improvement, and not a FAIL."""
+def test_a_partial_score_interval_that_crosses_zero_leaves_the_holdout_unknown() -> None:
+    """#567, #651 §8: one card gained and one lost in forty is not an improvement, and not a FAIL."""
 
     evidence = _taxonomy_evidence(
         [_candidate_fixes_family(), _candidate_breaks_assertion()] + [_exact_pair() for _ in range(38)],
@@ -758,13 +652,13 @@ def test_a_four_axis_exact_interval_that_crosses_zero_leaves_the_holdout_unknown
     assert evidence["taxonomy_overall_improved"] is False
     assert evidence["interval_regressed_axes"] == []
     assert candidate_evaluator_module._taxonomy_only_release_codes(evidence, stage="holdout") == (
-        ("four_axis_exact_not_improved",),
+        ("taxonomy_partial_score_not_improved",),
         (),
     )
 
 
 def test_a_taxonomy_only_holdout_keeps_its_empty_gold_and_cluster_floor_blockers() -> None:
-    """#548's two UNKNOWN blockers survive #567 and #626: the interval decides quality, not adequacy."""
+    """#548's two UNKNOWN blockers survive #567 and #651 §8: the interval decides quality, not adequacy."""
 
     codes = candidate_evaluator_module._taxonomy_only_release_codes
     floor = int(_PROFILE["validation"]["primary_clusters_min"])
@@ -775,7 +669,7 @@ def test_a_taxonomy_only_holdout_keeps_its_empty_gold_and_cluster_floor_blockers
         (),
     )
     assert codes(_taxonomy_evidence([]), stage="holdout") == (
-        ("taxonomy_release_evidence_empty", "four_axis_exact_not_improved"),
+        ("taxonomy_release_evidence_empty", "taxonomy_partial_score_not_improved"),
         (),
     )
     # The 30-cluster floor is the validation profile's, so the offline screen does not read it.
@@ -803,16 +697,15 @@ def test_the_token_guardrail_admits_a_fifth_more_prompt_and_still_refuses_a_thir
         assert regressed([10_000] * 8, [12_000] * 8, growth_pct=cap)
 
 
-def test_a_taxonomy_only_holdout_pass_promotes_without_shadow_or_canary() -> None:
-    """#548: both later stages measure reader-facing samples this class cannot move."""
+def test_a_taxonomy_only_holdout_pass_promotes_without_canary() -> None:
+    """#548: canary measures reader-facing samples this class cannot move. #651 removed shadow."""
 
     next_stage = candidate_evaluator_module._next_stage
 
     assert next_stage("holdout", "pass", taxonomy_only=True) == ("promotion", "advance")
-    assert next_stage("holdout", "pass", taxonomy_only=False) == ("shadow", "advance")
+    assert next_stage("holdout", "pass", taxonomy_only=False) == ("canary", "advance")
     # Every other transition is the one the release plane already had.
     assert next_stage("offline", "pass", taxonomy_only=True) == ("holdout", "advance")
-    assert next_stage("shadow", "pass", taxonomy_only=False) == ("canary", "advance")
     assert next_stage("canary", "pass", taxonomy_only=False) == ("promotion", "advance")
     assert next_stage("holdout", "fail", taxonomy_only=True) == ("none", "reject")
     assert next_stage("canary", "fail", taxonomy_only=False) == ("none", "rollback")

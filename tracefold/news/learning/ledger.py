@@ -11,6 +11,17 @@ not know — that an epoch row has to describe the bundle this process is actual
 evaluation may only proceed against the stable arm the last deployment appointed, and what identity a
 cohort is described by.
 
+Those are release facts, and since #651 §9 they are the *only* thing the epoch decides. Freezing a corpus
+no longer asks any of them: a dataset is made of evidence and accepted labels, and the arm that happened
+to be deployed when a reader read a card is recorded on each case as provenance rather than used to
+admit or refuse it. `assert_active_stable` therefore has exactly one caller left, in the release plane,
+which is where "may this candidate be evaluated against that stable" is a real question. `epoch_started_at_ms`
+read the epoch row back and re-checked every column against the running identity; #651 §12 deletes it,
+because the freeze that used to call it no longer asks when the epoch opened and the check had no other
+caller. Nothing is left unguarded: the row is written by the deployment it describes, the primary key and
+the append-only trigger make a repeat idempotent, and `open_learning_epoch` already refuses an epoch label
+another bundle holds (`news_learning_epoch_id_collision`).
+
 Notably it holds no judge, no Program and no DSPy: an artifact write is not a model call, and a caller
 that only needs to read the epoch should not pay four seconds of import to do it.
 """
@@ -20,7 +31,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..program.runtime import PROGRAM_SCHEMA_VERSION
 from ..review.desk import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION
 from ..storage.root import NewsRepository
 from .contracts import LEARNING_PROGRAM_VERSION, ArmManifest, epoch_id_for_bundle
@@ -67,29 +77,6 @@ class LearningLedger:
 
     def epoch_id(self) -> str:
         return epoch_id_for_bundle(self._stable.bundle_sha)
-
-    def epoch_started_at_ms(self) -> int:
-        """When this bundle's epoch opened, refusing a row that describes a different bundle.
-
-        Every field is compared against today's runtime values, which is new (#314) and is the point: the
-        row is written by the deployment it describes, so there is no longer an "opened with" that may
-        legitimately differ from "running now". A re-issued Program, a changed envelope or a re-slotted
-        model is a different bundle and therefore a different epoch, not a re-issue inside this one.
-        """
-
-        row = self._repository.learning_epoch_row_for_bundle(self._stable.bundle_sha)
-        if row is None:
-            raise ValueError("news_learning_epoch_not_deployed")
-        if (
-            str(row["epoch_id"]) != self.epoch_id()
-            or str(row["envelope_sha256"] or "") != self._stable.envelope_sha256
-            or str(row["artifact_schema_version"]) != PROGRAM_SCHEMA_VERSION
-            or str(row["baseline_program_version"]) != LEARNING_PROGRAM_VERSION
-            or str(row["baseline_program_sha256"]) != self._stable.program_sha256
-            or str(row["prior_evidence_disposition"]) != "audit_only"
-        ):
-            raise ValueError("news_learning_epoch_contract_mismatch")
-        return int(row["starts_at_ms"])
 
     def agent_cohort(self) -> dict[str, str]:
         return {

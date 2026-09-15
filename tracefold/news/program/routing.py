@@ -3,6 +3,17 @@
 DSPy owns Predictor rendering, structured-output fallback and provider I/O.  This
 module owns only the News business boundary: one route deadline, primary breaker,
 full fallback restart, public error projection and durable audit aggregation.
+
+What a route restart is for (#651 §5.3): the fallback re-runs all three Predictors from
+`event_semantics`, so it is the right answer only when the judgment has no answer to publish.
+A semantics failure is that -- ReaderCard reads the semantics, so there is no card without it -- and so
+is a card failure, because the reader's headline and why copy are the product. A taxonomy failure is
+not: the four classification axes describe a card the other two Predictors already produced, and the
+code-owned source authority `decide()` actually reads is computed from the evidence, not from the
+label. The Program therefore returns a complete judgment whose `editorial.taxonomy_status` is
+`unavailable`, this module publishes it, and no second pair of provider calls is spent re-asking two
+Predictors that already answered. The taxonomy receipt keeps its own terminal disposition in the
+ledger, so the partial failure is audit truth rather than silence.
 """
 
 from __future__ import annotations
@@ -98,7 +109,7 @@ class RoutedSemanticJudge:
         ):
             raise ValueError("news_program_route_deadline_invalid")
         self.program = program
-        self.artifact = program.artifact
+        self.state = program.state
         self.primary = primary
         self.fallback = fallback
         self.route_deadline_seconds = route_deadline_seconds
@@ -119,7 +130,7 @@ class RoutedSemanticJudge:
                 raise TypeError("news_program_route_lm_invalid")
             declared_predictor = lm.predictor
             declared_route = lm.route
-            expected_binding = getattr(getattr(self.artifact, predictor).model_bindings, route)
+            expected_binding = getattr(getattr(self.state, predictor).model_bindings, route)
             declared_binding = lm.model_binding
             if (declared_predictor, declared_route, declared_binding) != (predictor, route, expected_binding):
                 raise ValueError("news_program_route_lm_binding_mismatch")
@@ -219,7 +230,7 @@ class RoutedSemanticJudge:
         route_deadline = None if self.route_deadline_seconds is None else route_started + self.route_deadline_seconds
         lm_context = LMCallContext(
             program_version=PROGRAM_VERSION,
-            program_sha256=self.artifact.program_sha256,
+            program_sha256=self.state.program_sha256,
             context_sha256=context_sha,
             deadline_at_monotonic=route_deadline,
         )
@@ -284,10 +295,9 @@ class RoutedSemanticJudge:
         semantics = result.semantics
         taxonomy = result.taxonomy
         card = result.card
-        if semantics is None or taxonomy is None or card is None:  # pragma: no cover - _require_complete
+        if semantics is None or card is None:  # pragma: no cover - _require_complete
             raise RuntimeError("news_program_native_result_incomplete")
         semantics_state = semantics.model_dump(mode="json")
-        taxonomy_state = taxonomy.model_dump(mode="json")
         card_state = card.model_dump(mode="json")
         semantics_sha = canonical_sha(semantics_state)
         validated: dict[str, dict[str, Any]] = {
@@ -296,16 +306,18 @@ class RoutedSemanticJudge:
                 "validated_output": semantics_state,
                 "normalizations": result.normalizations,
             },
-            "taxonomy": {
-                "output_sha256": canonical_sha(taxonomy_state),
-                "validated_output": taxonomy_state,
-            },
             "reader_card": {
                 "upstream_sha256": semantics_sha,
                 "output_sha256": canonical_sha(card_state),
                 "validated_output": card_state,
             },
         }
+        if taxonomy is not None:
+            taxonomy_state = taxonomy.model_dump(mode="json")
+            validated["taxonomy"] = {
+                "output_sha256": canonical_sha(taxonomy_state),
+                "validated_output": taxonomy_state,
+            }
         for predictor, update in validated.items():
             for index in range(len(successful_calls) - 1, -1, -1):
                 call = successful_calls[index]
@@ -368,15 +380,23 @@ class RoutedSemanticJudge:
 
     @staticmethod
     def _require_complete(result: NativeProgramResult) -> None:
+        """Everything a publishable judgment needs. `taxonomy` is deliberately not on the list.
+
+        A judgment without the four classification axes is still a judgment: the verdict, the card and
+        the code-owned source authority are all there, and `editorial.taxonomy_status` says the label is
+        missing and why. A judgment without semantics, a card, a verdict or an envelope is not.
+        """
+
         if (
             result.instruction_rejected is not None
             or result.semantics is None
-            or result.taxonomy is None
             or result.card is None
             or result.verdict is None
             or result.editorial is None
         ):
             raise ProgramOutputError(result.instruction_rejected or "news_program_native_result_incomplete")
+        if (result.taxonomy is None) != (result.editorial.taxonomy is None):
+            raise ProgramOutputError("news_program_native_result_incomplete")
 
     def _record_primary_failure(self) -> None:
         self._primary_failures += 1
@@ -400,9 +420,7 @@ class RoutedSemanticJudge:
         card = result.card
         verdict = result.verdict
         editorial = result.editorial
-        if (
-            semantics is None or taxonomy is None or card is None or verdict is None or editorial is None
-        ):  # pragma: no cover
+        if semantics is None or card is None or verdict is None or editorial is None:  # pragma: no cover
             raise RuntimeError("news_program_native_result_incomplete")
         answering_model = next(
             (
@@ -416,11 +434,12 @@ class RoutedSemanticJudge:
         )
         trace = ProgramTrace(
             program_version=PROGRAM_VERSION,
-            program_sha256=self.artifact.program_sha256,
+            program_sha256=self.state.program_sha256,
             context_sha256=context_sha,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             event_semantics_sha256=canonical_sha(semantics.model_dump(mode="json")),
-            taxonomy_sha256=canonical_sha(taxonomy.model_dump(mode="json")),
+            taxonomy_sha256=None if taxonomy is None else canonical_sha(taxonomy.model_dump(mode="json")),
+            taxonomy_error_code=editorial.taxonomy_error_code,
             reader_card_sha256=canonical_sha(card.model_dump(mode="json")),
             verdict_sha256=canonical_sha(verdict.model_dump(mode="json")),
             editorial_sha256=editorial.editorial_sha256,
@@ -432,7 +451,7 @@ class RoutedSemanticJudge:
             verdict=verdict,
             editorial=editorial,
             program_version=PROGRAM_VERSION,
-            program_sha256=self.artifact.program_sha256,
+            program_sha256=self.state.program_sha256,
             trace=trace,
             usage=ProgramUsage(
                 wall_latency_ms=max(0, round((time.perf_counter() - started) * 1000)),
@@ -452,7 +471,7 @@ class RoutedSemanticJudge:
     ) -> SemanticJudgeError:
         trace = ProgramTrace(
             program_version=PROGRAM_VERSION,
-            program_sha256=self.artifact.program_sha256,
+            program_sha256=self.state.program_sha256,
             context_sha256=context_sha,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             fallback_from=primary_failure.code if primary_failure is not None else None,

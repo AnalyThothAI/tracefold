@@ -8,7 +8,7 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import COMPILE_EPISODE_PROJECTION_SCHEMA
 from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.identity import (
     _material_module_ast_sha,
     _material_symbol_ast_sha,
@@ -21,7 +21,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "a1871900e08426bce34c733ee1ebd0a5d5f1b499d01a9d89485444d81904bf3d"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "19d4f67b64bdcc5ebbf4c42f8eff3d51f24c8dd755b1e94193b544d123811454"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -30,21 +30,32 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "a1871900e08426bce34c733ee1ebd0a5d5f1b499d01a9d
 # instruction is rendered from the codebook constants that gained the running-event counter-examples.
 # #567 moves only the taxonomy instruction: the twelve rules the #534 and #548 reviewers adjudicated by are
 # now codebook constants, so the drafters, the reviewers and the metric's feedback read one text.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "3325a07b458e6834f88ce3d001c8583ef3e64928c96baeddfd6bbeb7565c4c62"
+# #651 moves the EventSemantics instruction: `market_type` is a required vocabulary value and the Gate
+# now shows the model the catalogue's uncollapsed candidates. #651 §6.3 moves it again, and this is the
+# half of that change a hash can hold: the novelty contract lost the absolute "a direction flip is never a
+# restatement" sentence, so the seed and `grounded_restatement` now say the same thing. The pin is separate
+# from `NEWS_STABLE_PROGRAM_SHA256`, which also moved because the image is now the native state document.
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "83aa1b8122d87a9ea58d3c90900ac7cb8a4d8b90c59c691fec9b381efcc05909"
 
-NEWS_STABLE_PROGRAM_SHA256 = "32467582665d454b515137f2325746af55bdb0a9c4c29098afe5bbd5d590db0a"
+# #651 re-pins this over the native DSPy state document rather than three instruction strings. The
+# instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
+# the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
+NEWS_STABLE_PROGRAM_SHA256 = "5454071e2981e09f9672b1fdd0490473072c1fb641292c600856b7659b13107a"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
-# review's taxonomy provenance, including the blind drafts.
-NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v7"
+# review's taxonomy provenance, including the blind drafts. v8 (#651) lets the accepted taxonomy be
+# absent, carries the reviewer's explanation supervision, and names the targets the case is evidence for.
+NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v8"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
     """The intent gate over everything the code decides about a model call.
 
     Editing the request envelope, either output contract, an output schema, the visible-input shape, the
-    route budget, the breaker or the endpoint-capability table turns this red. Re-pinning the line below
+    route budget, the breaker or the endpoint-capability table turns this red. #651 moved it through
+    `module.NativeNewsProgram` and `routing.__module__`: the Program is constructed from the seed defaults
+    and loaded through DSPy's own `load_state`, and routing reads `program.state`. Re-pinning the line below
     *is* the identity migration: there is no `factory_id` to bump, no epoch migration to write and no
     count to keep in step, because the epoch is opened by the deployment that runs under this value and
     named after the bundle that carries it.
@@ -70,12 +81,12 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "policy_version": TRIAGE_POLICY_VERSION,
         "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "metric_id": METRIC_ID,
-        "program_sha256": load_stable_program_artifact().program_sha256,
+        "program_sha256": load_stable_program_state().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v9",
-        "policy_version": "news_triage_policy_v13",
-        "review_rubric_version": "news_review_v6",
-        "metric_id": "tracefold.news.production_action_trade_relevance_v8",
+        "program_version": "news_semantic_program_v10",
+        "policy_version": "news_triage_policy_v14",
+        "review_rubric_version": "news_review_v7",
+        "metric_id": "tracefold.news.production_action_trade_relevance_v11",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
 
@@ -88,7 +99,7 @@ def test_current_predictor_bytes_keep_the_reviewed_instruction_identity() -> Non
     later identity-only edits cannot silently move any of the three.
     """
 
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     bound = {
         predictor: artifact.predictor_state(predictor).instruction
         for predictor in ("event_semantics", "taxonomy", "reader_card")
@@ -138,12 +149,14 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "artifact.render_model_evidence_json",
         "assembly.normalize_restates",
         "assembly.restatement_index_error",
+        "contracts.CatalogCandidate",
         "contracts.EditorialEnvelope",
         "contracts.ProgramTrace",
         "contracts.TriageContext",
         "contracts.TradeRelevanceV1",
         "contracts._canonical_code_set",
         "contracts.aggregate_program_usage",
+        "contracts.catalog_candidates_of",
         "lm.AuditedConfiguredLM",
         "lm.LMCallLedger",
         "lm.LMCallReceipt",
@@ -172,6 +185,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "lm._stable_error_code",
         "lm._usage_values",
         "lm._validate_request_defaults",
+        "lm.active_predictor_disposition",
         "lm.lm_request_identity",
         "lm.lm_request_projection",
         "lm.lm_request_sha256",
@@ -185,6 +199,8 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "module._reader_card_semantic_view",
         "module._rejected",
         "module._relevance_normalizations",
+        "module._taxonomy_call_failure_code",
+        "module._validate_taxonomy",
         "routing.__module__",
         "signatures.EventSemantics",
         "signatures.EventTaxonomySignature",
@@ -229,6 +245,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "order",
         "route_graph",
         "fallback_restart",
+        "partial_failure",
         "deadline_seconds",
         "primary_breaker",
         "call_ceiling",

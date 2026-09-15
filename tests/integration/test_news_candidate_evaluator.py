@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections import Counter, deque
+from collections import deque
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -18,7 +18,7 @@ from tests.support.news_judgment import news_taxonomy
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning import dataset as dataset_module
-from tracefold.news.learning.contracts import PromptCandidateV1, PromptPatchV1, epoch_id_for_bundle
+from tracefold.news.learning.contracts import LearningTarget, PromptCandidateV1, epoch_id_for_bundle
 from tracefold.news.learning.dataset import DevelopmentDatasetStore
 from tracefold.news.learning.evaluate import (
     ArmManifest,
@@ -44,8 +44,8 @@ from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.program.artifact import (
-    apply_program_patch,
-    load_stable_program_artifact,
+    NewsProgramStateV1,
+    load_stable_program_state,
 )
 from tracefold.news.program.contracts import (
     JUDGMENT_CONTRACT_VERSION,
@@ -83,10 +83,19 @@ from tracefold.news.triage_rules import DEFAULT_POLICY
 pytestmark = pytest.mark.integration
 
 NOW = 1_800_000_000_000
+# Every corpus in this file is built from taxonomy Gold, so `classification` is the question its plans,
+# its candidates and its release gate are all about. Named once because a candidate's declared target and
+# the target the gate re-derives its plan for have to be the same value or the comparison is vacuous.
+_FIXTURE_TARGET: LearningTarget = "classification"
 
 
 class _PinnedLedger(LearningLedger):
-    """Pin the DB clock beyond this immutable epoch fixture's closed window."""
+    """Pin the DB clock past the closed window every fixture below freezes.
+
+    A freeze refuses a window it cannot yet see the end of, and that is the only clock question it asks
+    since #651 §9 — there is no settlement grace to wait out any more. The fixtures seal windows that end
+    at `NOW`, so the ledger has to be standing somewhere after it.
+    """
 
     def now_ms(self) -> int:
         return NOW + 20 * 60_000
@@ -138,6 +147,12 @@ def _sha(value: object) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _sha_text(value: str) -> str:
+    """How a dataset seal addresses a bare version string, as `dataset._text_sha` does it."""
+
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def _epoch_started_at_ms(conn: object) -> int:
     row = conn.execute(  # type: ignore[attr-defined]
         "SELECT starts_at_ms FROM news_learning_epochs WHERE bundle_sha = %s",
@@ -159,9 +174,9 @@ def test_the_deployment_that_appoints_an_agent_opens_that_agent_s_epoch(conn) ->
 
     stable = _arm()
     row = conn.execute(
-        "SELECT epoch_id, bundle_sha, envelope_sha256, artifact_schema_version, baseline_program_version, "
-        "baseline_program_sha256, prior_evidence_disposition, reset_reason, program_factory_id "
-        "FROM news_learning_epochs WHERE bundle_sha = %s",
+        "SELECT epoch_id, starts_at_ms, bundle_sha, envelope_sha256, artifact_schema_version, "
+        "baseline_program_version, baseline_program_sha256, prior_evidence_disposition, reset_reason, "
+        "program_factory_id FROM news_learning_epochs WHERE bundle_sha = %s",
         (stable.bundle_sha,),
     ).fetchone()
 
@@ -176,45 +191,31 @@ def test_the_deployment_that_appoints_an_agent_opens_that_agent_s_epoch(conn) ->
     # being handed a value invented to fill it.
     assert row["program_factory_id"] is None
 
-    evaluator = CandidateEvaluator(conn, stable=stable, judges={})
-    assert evaluator._ledger.epoch_started_at_ms() > 0
-
-    # An epoch row that does not describe the running bundle is refused rather than used. The table is
-    # append-only by trigger, so the drift is staged as a second bundle's row read through an arm whose
-    # envelope does not match it.
-    drifted = _arm(program_sha256="d" * 64)
-    conn.execute(
-        "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, bundle_sha, "
-        "envelope_sha256, artifact_schema_version, baseline_program_version, baseline_program_sha256, "
-        "prior_evidence_disposition, reset_reason, created_at_ms) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'audit_only', 'runtime_bundle_identity_change', %s)",
-        (
-            epoch_id_for_bundle(drifted.bundle_sha),
-            row_start := _epoch_started_at_ms(conn),
-            "https://github.com/AnalyThothAI/tracefold/issues/314",
-            drifted.bundle_sha,
-            "0" * 64,
-            PROGRAM_SCHEMA_VERSION,
-            PROGRAM_VERSION,
-            drifted.program_sha256,
-            row_start,
-        ),
-    )
-    with pytest.raises(ValueError, match="news_learning_epoch_contract_mismatch"):
-        CandidateEvaluator(conn, stable=drifted, judges={})._ledger.epoch_started_at_ms()
+    assert int(row["starts_at_ms"]) > 0
 
 
-def test_an_unseen_bundle_has_no_epoch_and_cannot_freeze_evidence(conn) -> None:
-    """The refusal a missing epoch has to produce, now that no migration guarantees one exists."""
+def test_an_unappointed_bundle_may_not_be_evaluated_against(conn) -> None:
+    """The refusal a bundle nobody deployed has to produce.
+
+    It is no longer a refusal to freeze: a corpus is evidence and accepted labels, and asks nothing about
+    deployments (#651 §9). #651 §12 also deleted `LearningLedger.epoch_started_at_ms`, which re-read the
+    epoch row and re-checked every column the startup barrier had just written; nothing called it. What
+    still refuses a bundle the last deployment did not appoint is the release plane's own question, asked
+    once at the top of `evaluate`.
+    """
 
     never_deployed = _arm(program_sha256="e" * 64)
 
-    with pytest.raises(ValueError, match="news_learning_epoch_not_deployed"):
-        CandidateEvaluator(conn, stable=never_deployed, judges={})._ledger.epoch_started_at_ms()
+    with pytest.raises(ValueError, match="news_learning_active_stable_mismatch"):
+        CandidateEvaluator(conn, stable=never_deployed, judges={})._ledger.assert_active_stable()
 
 
 def test_reopening_the_same_bundle_is_idempotent_and_keeps_the_original_start(conn) -> None:
-    """A restart must not move the epoch its evidence is measured from."""
+    """A restart must not move the instant this bundle's own evidence line opened.
+
+    The epoch no longer decides which evidence a freeze may admit (#651 §9). It is the record of when a
+    deployment appointed this bundle, and a restart that moved it would rewrite that record.
+    """
 
     stable = _arm()
     opened_at = _epoch_started_at_ms(conn)
@@ -318,17 +319,29 @@ def _model_taxonomy(editorial: EditorialEnvelope) -> dict[str, object]:
     ).model_dump(mode="json")
 
 
-_STABLE_TAXONOMY_INSTRUCTION = load_stable_program_artifact().taxonomy_instruction
+def _review_taxonomy(**axes: object) -> dict[str, object]:
+    """The taxonomy a `news_review_v7` rubric states: the four model axes, and nothing else.
+
+    Not `news_taxonomy()`, which builds the persisted seven-key shape. `source_authority` is a fact about
+    the publisher that the code derives from the evidence, and `taxonomy_version` / `codebook_sha256` are
+    the contract's own identity — a reviewer states none of the three, so the submission contract now
+    refuses all three rather than accepting a reviewer's copy of them as an answer.
+    """
+
+    return ModelTaxonomyV1.model_validate({"subject_codes": (), **_STABLE_ARM_AXES, **axes}).model_dump(mode="json")
+
+
+_STABLE_TAXONOMY_INSTRUCTION = load_stable_program_state().instruction_for("taxonomy")
 
 
 def _editorial() -> EditorialEnvelope:
     return EditorialEnvelope.issue(
         relevance=_relevance(),
+        source_authority="reputable_secondary",
         taxonomy=news_taxonomy(
             event_family="regulatory_legal",
             change_state="reported",
             assertion_status="claimed",
-            source_authority="reputable_secondary",
         ),
     )
 
@@ -665,7 +678,8 @@ class _TaxonomyArmJudge(_StaticJudge):
         axes = {**self._default_axes, **self._axes_by_title.get(context.evidence.title, {})}
         return EditorialEnvelope.issue(
             relevance=_relevance(),
-            taxonomy=news_taxonomy(**axes, source_authority="reputable_secondary"),
+            source_authority="reputable_secondary",
+            taxonomy=news_taxonomy(**axes),
         )
 
 
@@ -721,10 +735,25 @@ def _judge_call_count(judges: Mapping[object, object]) -> int:
 
 
 def _objective_plan(conn, *, stable: ArmManifest, development_sha: str) -> GepaObjectivePlan:
-    """The plan the release gate will rebuild, asked of the same frozen dataset the fixture froze."""
+    """The plan the release gate will rebuild, asked of the same frozen dataset the fixture froze.
+
+    Always `classification`: every fixture below builds taxonomy Gold, and since #651 a plan that does not
+    name its target describes none of the three questions one corpus now answers. The release gate
+    re-derives the plan for the target the candidate *declares*, so this is the same plan it will build
+    only as long as the fixture's declared summary says `classification` too.
+    """
 
     exported = _datasets(conn, stable).development_compile_export(development_sha)
-    return build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes))
+    return build_gepa_objective_plan(
+        tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes),
+        _FIXTURE_TARGET,
+    )
+
+
+def _fixture_state(**instructions: str) -> dict[str, object]:
+    """One fixture Program state: three complete instructions, no demos, as the release image shape."""
+
+    return NewsProgramStateV1.from_instructions(instructions).model_dump(mode="json")
 
 
 def _prompt_candidate(
@@ -732,11 +761,11 @@ def _prompt_candidate(
     *,
     development_sha: str,
     stable: ArmManifest,
-    patch: PromptPatchV1,
+    state: dict[str, object],
     objective_summary: dict[str, object] | None = None,
     **overrides: object,
 ) -> PromptCandidateV1:
-    """One registered write-set: two advisory instructions, and what they were optimized against.
+    """One registered write-set: a complete Program state, and what it was optimized against.
 
     It replaced a `CompileRecordV1` that carried a sandbox launch receipt, a metered proxy ledger, a
     three-party build attestation and a tariff — none of which said anything about the two instructions.
@@ -746,16 +775,23 @@ def _prompt_candidate(
     """
 
     exported = _datasets(conn, stable).development_compile_export(development_sha)
-    plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes))
+    plan = build_gepa_objective_plan(
+        tuple(DevelopmentEpisode.model_validate(e) for e in exported.episodes),
+        _FIXTURE_TARGET,
+    )
     values: dict[str, object] = {
         "parent_program_sha256": stable.program_sha256,
         "development_dataset_sha256": development_sha,
         "target_runtime_manifest_sha256": stable.runtime_model_bindings_sha256,
-        "patch": patch,
+        "state": state,
         "objective_summary": (
             objective_summary
             if objective_summary is not None
-            else objective_plan_summary(plan, episode_projection_root_sha256=exported.episode_projection_root_sha256)
+            else objective_plan_summary(
+                plan,
+                episode_projection_root_sha256=exported.episode_projection_root_sha256,
+                target=_FIXTURE_TARGET,
+            )
         ),
         "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v8"},
         "model_identities": {"task": {"role": "task"}, "reflection": {"role": "reflection"}},
@@ -787,23 +823,22 @@ def _program_candidate(
     variant: str = "",
     registered_at_ms: int = NOW,
 ) -> CandidateManifest:
-    base = load_stable_program_artifact()
     registered = prompt or _prompt_candidate(
         conn,
         development_sha=development_sha,
         stable=stable,
         # One distinct instruction per cluster and variant, so two fixtures in one test are two different
         # Programs — and two different registration receipts, which the ledger addresses uniquely.
-        patch=PromptPatchV1(
-            event_semantics_instruction=f"A bounded fixture advisory for {cluster_id}{variant}.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep reader language direct and evidence-bound.",
+        state=_fixture_state(
+            event_semantics=f"A bounded fixture advisory for {cluster_id}{variant}.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep reader language direct and evidence-bound.",
         ),
     )
-    # The arm's Program identity is *derived* now, not declared: the release gate re-applies the
-    # registered patch to the running stable and refuses anything else. A fixture that invented a program
-    # SHA was asserting a lineage nobody checked.
-    applied = apply_program_patch(base, registered.patch.applied_to(base))
+    # The arm's Program identity is *derived* now, not declared: the release gate re-hashes the
+    # registered state document and refuses anything else. A fixture that invented a program SHA was
+    # asserting a lineage nobody checked.
+    applied = registered.program_state
     arm_payload = stable.model_dump(mode="json")
     arm_payload.update(
         program_version=program_version or PROGRAM_VERSION,
@@ -883,27 +918,20 @@ def _insert_validation_dataset(
     window_duration_hours: float = 6.0,
     eligible_event_n: int = 1,
 ) -> str:
-    payload = {
-        "dataset_version": "news_learning_dataset_v3",
-        "role": "validation",
-        "profile_id": "news_learning_release_v4",
-        "learning_epoch": epoch_id_for_bundle(_arm().bundle_sha),
-        "learning_epoch_started_at_ms": development.learning_epoch_started_at_ms,
-        "window": {"from_ms": NOW - 6 * 3_600_000, "to_ms": NOW},
-        "freeze_as_of_ms": NOW + 10_000,
-        "settlement_grace_ms": 10 * 60_000,
-        "reader_contract_version": development.reader_contract_version,
-        "agent_cohort": dict(development.agent_cohort),
-        "observation_ref": candidate.candidate_sha,
-        "cases": [case.model_dump(mode="json") for case in development.cases],
-        "seed_receipts": list(development.seed_receipts),
-        "counts": {
+    # The development seal itself, re-roled. Hand-listing the payload keys is how this fixture kept
+    # naming an epoch and a settlement grace no `news_learning_dataset_v4` seal carries; deriving it from
+    # the manifest the freeze just produced means the shape can only ever be the shape production writes,
+    # and what a holdout genuinely differs on is stated below rather than re-transcribed around it.
+    payload = development.model_dump(mode="json", exclude={"artifact_sha"})
+    payload.update(
+        role="validation",
+        observation_ref=candidate.candidate_sha,
+        counts={
             **development.counts,
             "window_duration_hours": window_duration_hours,
             "eligible_event_n": eligible_event_n,
         },
-        "hashes": dict(development.hashes),
-    }
+    )
     artifact_sha = _sha({"kind": "dataset", "payload": payload})
     conn.execute(
         "INSERT INTO news_learning_artifacts "
@@ -1015,16 +1043,17 @@ def _open_event(
         card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
         editorial = EditorialEnvelope.issue(
             relevance=effective_relevance,
+            source_authority="reputable_secondary",
             taxonomy=news_taxonomy(
                 event_family="regulatory_legal",
                 change_state="reported",
                 assertion_status="claimed",
-                source_authority="reputable_secondary",
             ),
         )
+        assert editorial.taxonomy is not None
         semantics["taxonomy"] = editorial.taxonomy.model_dump(
             mode="json",
-            exclude={"taxonomy_version", "source_authority", "codebook_sha256"},
+            exclude={"taxonomy_version", "codebook_sha256"},
         )
         scored = ScoredJudgment.issue(
             verdict=TriageVerdict.model_validate(verdict),
@@ -1303,15 +1332,7 @@ def _accepted_event(
     )
     if taxonomy_mismatch:
         rubric = EventRubricSubmission.model_validate(
-            rubric.model_dump(mode="json")
-            | {
-                "taxonomy": news_taxonomy(
-                    event_family="product_service_change",
-                    change_state="reported",
-                    assertion_status="claimed",
-                    source_authority="reputable_secondary",
-                ).model_dump(mode="json")
-            }
+            rubric.model_dump(mode="json") | {"taxonomy": _review_taxonomy(event_family="product_service_change")}
         )
     with repositories_for_connection(conn).transaction():
         desk.submit(
@@ -1324,6 +1345,17 @@ def _accepted_event(
 
 
 def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_root(conn) -> None:
+    """One accepted operator taxonomy, and the two things a reviewer still may not do with it.
+
+    The source-authority half of this test used to submit a taxonomy whose `source_authority` disagreed
+    with the code the evidence implies, and read back `news_review_taxonomy_source_authority_code_mismatch`.
+    Under `news_review_v7` that desk check is gone because the field it guarded is gone: a submission
+    states the four model axes, and the publisher's authority is derived from the evidence rather than
+    copied out of it by a reviewer. What replaced the check is the submission contract itself, asserted
+    below — a payload that states `source_authority` is refused before it can reach the desk at all, so
+    there is no longer a code a reviewer could disagree with.
+    """
+
     stable = _arm()
     event_id = _open_event(
         conn,
@@ -1335,35 +1367,23 @@ def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_
     )
     desk = ReviewDesk(conn, now_ms=NOW)
     task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
-    taxonomy = news_taxonomy(
-        event_family="product_service_change",
-        change_state="effective",
-        assertion_status="confirmed",
-        source_authority="reputable_secondary",
+    taxonomy = ModelTaxonomyV1.model_validate(
+        _review_taxonomy(
+            event_family="product_service_change",
+            change_state="effective",
+            assertion_status="confirmed",
+        )
     )
     submission = EventRubricSubmission.model_validate(
         _rubric(why="pass").model_dump(mode="json") | {"taxonomy": taxonomy.model_dump(mode="json")}
     )
-    mismatched_source = EventRubricSubmission.model_validate(
-        submission.model_dump(mode="json")
-        | {
-            "taxonomy": news_taxonomy(
-                event_family="product_service_change",
-                change_state="effective",
-                assertion_status="confirmed",
-                source_authority="unknown",
-            ).model_dump(mode="json")
-        }
-    )
-    with (
-        repositories_for_connection(conn).transaction(),
-        pytest.raises(ValueError, match="news_review_taxonomy_source_authority_code_mismatch"),
-    ):
-        desk.submit(
-            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
-            mismatched_source,
-            principal=PRINCIPAL,
-            idempotency_key=str(uuid.uuid4()),
+    # #651 §5.3 retired `news_review_taxonomy_source_authority_code_mismatch`: a submission cannot state
+    # a source authority at all any more, because `NewsTaxonomyV1` has no field for one and
+    # `EventRubricSubmission` forbids extra keys. The reviewer's taxonomy is four axes and a codebook.
+    with pytest.raises(ValueError):
+        EventRubricSubmission.model_validate(
+            submission.model_dump(mode="json")
+            | {"taxonomy": taxonomy.model_dump(mode="json") | {"source_authority": "unknown"}}
         )
     self_draft = EventRubricSubmission.model_validate(
         submission.model_dump(mode="json")
@@ -1421,9 +1441,7 @@ def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_
     export = _datasets(conn, stable).development_compile_export(manifest.artifact_sha)
     assert manifest.counts["case_n"] == manifest.counts["independent_cluster_n"] == 2
     event_episode = next(episode for episode in export.episodes if episode["production_judgment"] is not None)
-    assert event_episode["accepted_review"]["taxonomy"] == taxonomy.model_dump(
-        mode="json", include=set(ModelTaxonomyV1.model_fields)
-    )
+    assert event_episode["accepted_review"]["taxonomy"] == taxonomy.model_dump(mode="json")
     assert export.episode_projection_root_sha256 == canonical_sha(list(export.episodes))
     changed = [dict(episode) for episode in export.episodes]
     changed_event = next(episode for episode in changed if episode["production_judgment"] is not None)
@@ -1435,11 +1453,12 @@ def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_
     assert canonical_sha(changed) != export.episode_projection_root_sha256
 
 
-# Six independent facts, in the order the honest split will see them. #199 turned "a compile needs two
-# clusters" into something stricter: GEPA is handed `target + control` only, both halves of the split need
-# a verified Prompt target, and both still need every required stratum. A corpus of failures alone — which
-# is what this fixture used to be — now produces no split at all, which is the correct answer and not one
-# a release test can build a candidate on.
+# Six independent facts, in the order the honest split will see them. Every one of them carries taxonomy
+# Gold, so under #651 §9 the `classification` population is the whole corpus: a case is evidence for a
+# target when the reviewer labelled what that target scores, and not when a quota or a recorded Stable
+# mismatch says so. What the `target`/`control` roles still decide is whether the stable arm's recorded
+# answer already matched that Gold — `stable_exact`, a readiness diagnostic — which is what gives
+# `test_k3_stability_reports_each_trial_and_pass_k` both a passing and a failing case on one corpus.
 #
 # `held` carries `reader_value=background`, so the frozen policy resolves it to `drop`: a `must_hold` case
 # the stable Program already gets right is what makes `negative_action` a control rather than a failure.
@@ -1505,7 +1524,21 @@ def _accepted_compilable_event(
     return event_ids[0]
 
 
-def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None:
+def test_freeze_dataset_spans_arms_and_records_which_one_answered_each_case(conn) -> None:
+    """#651 §9: a corpus is evidence plus accepted labels, and the arm that answered is provenance.
+
+    This test used to assert the opposite — that a freeze keeps only the Events the exact running bundle
+    produced — which meant every deployment threw away the reviews its predecessor's readers had just
+    finished writing. Nothing about those reviews stopped being true when the bundle moved: a reviewer
+    judged words a reader really saw. So both arms' cases are in the corpus now, and each case names the
+    arm behind it in `provenance`, which is what lets `load_case` pin every case to the exact verdict its
+    reviewer read rather than to whichever verdict is newest.
+
+    The counts keep the distinction the filter used to enforce, in the only place it is honest:
+    `eligible_event_n` and the `eligibility` block describe the *sealing* arm, and `case_arms` publishes
+    every arm the corpus actually spans, so a reader can still say which Program a result is about.
+    """
+
     stable = _arm()
     prior_runtime = _arm(runtime_model_bindings_sha256=_sha({"model_bindings": "retired-four-slot-runtime"}))
     repos = repositories_for_connection(conn)
@@ -1557,10 +1590,26 @@ def test_freeze_dataset_keeps_only_the_exact_stable_runtime_bundle(conn) -> None
         )
     )
 
-    assert [case.event_id for case in development.cases] == [exact_event_id]
-    assert prior_event_id not in {case.event_id for case in development.cases}
+    by_event = {case.event_id: case for case in development.cases}
+    assert set(by_event) == {prior_event_id, exact_event_id}
+    assert by_event[prior_event_id].provenance.bundle_sha == prior_runtime.bundle_sha
+    assert by_event[exact_event_id].provenance.bundle_sha == stable.bundle_sha
+    # Provenance is the whole arm identity, not a label: `load_case` pins all four values, so a case whose
+    # recorded arm did not answer that evidence version would fail to load rather than load the wrong
+    # verdict. Loading both proves the recorded identities are the ones the verdicts carry.
+    for case in development.cases:
+        assert case.provenance.program_version == stable.program_version
+        assert case.provenance.program_sha256 == stable.program_sha256
+        assert case.provenance.policy_version == dataset_module.TRIAGE_POLICY_VERSION
+        assert _datasets(conn, stable).load_case(case)["review"]["review_id"] == case.review_id
+    # The sealing arm answered one of the two live Events in this window; the other arm's Event is in the
+    # corpus above and deliberately outside this denominator, which is why the count is named after the
+    # arm it describes.
     assert development.counts["eligible_event_n"] == 1
-    assert development.counts["eligibility"]["bundle_sha"] == stable.bundle_sha
+    eligibility = development.counts["eligibility"]
+    assert eligibility["unit"] == "evidence_snapshot_and_accepted_review"
+    assert eligibility["sealing_bundle_sha"] == stable.bundle_sha
+    assert eligibility["case_arms"] == sorted({prior_runtime.bundle_sha, stable.bundle_sha})
 
 
 def test_freeze_dataset_includes_undelivered_holds_but_excludes_unsafe_pushes(conn) -> None:
@@ -1621,22 +1670,39 @@ def test_freeze_dataset_includes_undelivered_holds_but_excludes_unsafe_pushes(co
     assert development.counts["eligible_event_n"] == 4
 
 
-def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit_json(conn) -> None:
+def test_a_window_before_the_epoch_freezes_and_a_superseded_seal_is_refused_intact(conn) -> None:
+    """#651 §9: the epoch floor on a freeze window is gone; the contract seal is what still refuses.
+
+    The predecessor asserted two epoch refusals. The first — `news_learning_window_precedes_program_epoch`
+    — is deleted outright and its opposite is asserted here: a review of a card a reader saw before this
+    bundle was deployed is evidence about that card, and dating it against a deployment threw away every
+    accepted review each new bundle inherited. The second refusal survives its epoch: a seal written under
+    a superseded contract is still unreadable, but because the contract identity in `hashes` disagrees,
+    not because a label does. Refusing it still leaves the stored row byte for byte as it was, which is
+    the half of this test that was never about epochs at all — an audit row is evidence, and a reader that
+    cannot use one must not repair it either.
+    """
+
     stable = _arm()
     evaluator = CandidateEvaluator(conn, stable=stable, judges={})
     epoch_started_at_ms = _epoch_started_at_ms(conn)
-    with pytest.raises(ValueError, match="news_learning_window_precedes_program_epoch"):
-        asyncio.run(
-            evaluator._datasets.freeze_dataset(
-                DatasetSpec(
-                    role="development",
-                    window=ClosedWindow(
-                        from_ms=epoch_started_at_ms - 1,
-                        to_ms=epoch_started_at_ms + 1,
-                    ),
-                )
+    before_the_epoch = epoch_started_at_ms - 3_600_000
+    inherited_event_id = _accepted_event(
+        conn,
+        why="pass",
+        hit_id=112031,
+        title="A card the previous deployment's readers were shown and a reviewer judged",
+        published_at_ms=before_the_epoch,
+    )
+    inherited = asyncio.run(
+        evaluator._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=before_the_epoch - 3_600_000, to_ms=epoch_started_at_ms),
             )
         )
+    )
+    assert [case.event_id for case in inherited.cases] == [inherited_event_id]
 
     _accepted_event(conn)
     development = asyncio.run(
@@ -1652,7 +1718,10 @@ def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit
         (development.artifact_sha,),
     ).fetchone()
     old_payload = dict(row["payload"])
-    old_payload.pop("learning_epoch")
+    # What a pre-#651 seal carries: the rubric its reviews were written under. The cases below it are
+    # `news_review_v6` answers, which cannot say which question their reviewer answered, so no v7 reader
+    # may project them however well-formed the rest of the payload looks.
+    old_payload["hashes"] = {**dict(old_payload["hashes"]), "rubric_sha": _sha_text("news_review_v6")}
     old_sha = _sha({"kind": "dataset", "payload": old_payload})
     conn.execute(
         "INSERT INTO news_learning_artifacts "
@@ -1660,7 +1729,7 @@ def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit
         "VALUES (%s, 'dataset', NULL, %s::jsonb, 'legacy-audit', %s)",
         (old_sha, json.dumps(old_payload, sort_keys=True), epoch_started_at_ms - 1),
     )
-    with pytest.raises(ValueError, match="news_learning_epoch_mismatch"):
+    with pytest.raises(ValueError, match="news_learning_dataset_contract_hash_mismatch"):
         evaluator._datasets.development_compile_episodes(old_sha)
     assert (
         conn.execute(
@@ -1671,7 +1740,7 @@ def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit
     )
 
 
-def test_development_compile_episodes_is_current_epoch_read_only_interface(conn) -> None:
+def test_development_compile_episodes_is_a_read_only_projection_of_one_sealed_corpus(conn) -> None:
     _accepted_event(conn)
     stable = _arm()
     evaluator = CandidateEvaluator(conn, stable=stable, judges={})
@@ -1838,15 +1907,15 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
             DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
         )
     )
-    base = load_stable_program_artifact()
+    base = load_stable_program_state()
     registered = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="Written through the repository.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="Written through the repository.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
     )
     written = repositories_for_connection(conn).news.append_proposal_artifact(
@@ -1858,7 +1927,8 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
 
     assert written == registered.candidate_sha256
 
-    applied = apply_program_patch(base, registered.patch.applied_to(base))
+    applied = registered.program_state
+    assert applied.changed_predictors(base) == ("event_semantics", "reader_card")
     candidate = CandidateManifest(
         parent_stable_sha=stable.bundle_sha,
         candidate_arm=ArmManifest.model_validate(
@@ -1886,24 +1956,58 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
     assert evaluator._registry._prompt_candidate(candidate).candidate_sha256 == registered.candidate_sha256
 
 
-def test_active_stable_is_checked_before_freeze_or_model_work(conn) -> None:
+def test_a_stale_stable_still_freezes_but_cannot_spend_one_model_call(conn) -> None:
+    """#651 §9: a freeze asks no question about which arm is deployed; an evaluation asks it first.
+
+    The refusal this test was written for has not weakened, it has moved to the only seam where "may this
+    candidate be compared against that stable" is a real question. Sealing a corpus is not that question:
+    the reviews are the same reviews and the evidence is the same evidence whichever arm the operator
+    happens to be running, and refusing to record them was how a redeployment during a review pass lost
+    the pass. The part that still matters — that a stale arm spends no model budget — is asserted here
+    against `evaluate`, which checks the active stable before it loads so much as a dataset.
+    """
+
     stale = _arm(program_sha256=_sha({"program": "other"}))
     judges = _static_judges(stale)
     evaluator = CandidateEvaluator(conn, stable=stale, judges=judges)
+    _accepted_event(conn, why="pass")
+
+    sealed = asyncio.run(
+        evaluator._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    assert len(sealed.cases) == 1
+    # The seal names the arm that made it, so a reader can still see that this corpus was frozen by an
+    # arm nobody deployed. It is provenance on the artifact, not permission to have written it.
+    assert sealed.agent_cohort["bundle_sha"] == stale.bundle_sha
 
     with pytest.raises(ValueError, match="news_learning_active_stable_mismatch"):
         asyncio.run(
-            evaluator._datasets.freeze_dataset(
-                DatasetSpec(
-                    role="development",
-                    window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            evaluator.evaluate(
+                EvaluationRequest(
+                    development_dataset_sha=sealed.artifact_sha,
+                    candidate_sha="c" * 64,
+                    stage="offline",
                 )
             )
         )
     assert _judge_call_count(judges) == 0
 
 
-def test_v1_active_program_cannot_freeze_or_compile_current_evidence(conn) -> None:
+def test_a_v1_program_may_hold_evidence_but_can_never_be_evaluated_against(conn) -> None:
+    """#651 §9: v1 is refused where a release decision is made, not where evidence is recorded.
+
+    `news_learning_program_v1_unsupported` used to fire inside the freeze, which meant a deployment that
+    had rolled back to v1 for an hour could not even record what its reviewers wrote during that hour.
+    The refusal now lives in `assert_active_stable`, and the two callers left are the release plane's:
+    evaluating a candidate, and admitting one. Both halves are asserted because dropping the second
+    without keeping the first would not be this Issue, it would be admitting a v1 release.
+    """
+
     legacy = _arm(program_version="news_semantic_program_v1")
     with repositories_for_connection(conn).transaction():
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
@@ -1919,18 +2023,40 @@ def test_v1_active_program_cannot_freeze_or_compile_current_evidence(conn) -> No
             now_ms=NOW,
         )
     evaluator = CandidateEvaluator(conn, stable=legacy, judges={})
+    # The predecessor's Event, which is the only kind of evidence a v1 rollback can hold: the verdict
+    # table's own judgment CHECK refuses a v1 judgment outright, so nothing this deployment answers ever
+    # reaches a review. What it inherited is still reviewable, and the freeze seals it.
+    _accepted_event(conn, why="pass")
+
+    sealed = asyncio.run(
+        evaluator._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    assert len(evaluator._datasets.development_compile_episodes(sealed.artifact_sha)) == 1
 
     with pytest.raises(ValueError, match="news_learning_program_v1_unsupported"):
         asyncio.run(
-            evaluator._datasets.freeze_dataset(
-                DatasetSpec(
-                    role="development",
-                    window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            evaluator.evaluate(
+                EvaluationRequest(
+                    development_dataset_sha=sealed.artifact_sha,
+                    candidate_sha="c" * 64,
+                    stage="offline",
                 )
             )
         )
     with pytest.raises(ValueError, match="news_learning_program_v1_unsupported"):
-        evaluator._datasets.development_compile_episodes("f" * 64)
+        evaluator._registry.validate(
+            _program_candidate(
+                conn,
+                stable=legacy,
+                development_sha=sealed.artifact_sha,
+                cluster_id=sealed.cases[0].cluster_id,
+            )
+        )
 
 
 def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
@@ -1973,15 +2099,17 @@ def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
             conn,
             development_sha=development.artifact_sha,
             stable=stable,
-            patch=PromptPatchV1(
-                event_semantics_instruction="An operator wrote this advisory by hand.",
-                taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-                reader_card_instruction="Keep the mechanism concrete.",
+            state=_fixture_state(
+                event_semantics="An operator wrote this advisory by hand.",
+                taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+                reader_card="Keep the mechanism concrete.",
             ),
-            # No optimizer receipt and no objective summary: an external proposal claims nothing about how
-            # it was produced, and registration binds it to the corpus it re-projected.
+            # No optimizer receipt and no declared population: an external proposal claims nothing about
+            # how it was produced, and registration binds it to the corpus it re-projected. It still has
+            # to say which question it is an answer to — since #651 one corpus explains three different
+            # Predictor compiles, so a summary with no target names no population at all.
             optimizer={},
-            objective_summary={},
+            objective_summary={"target": _FIXTURE_TARGET},
         ),
     )
     forged_identity = _program_candidate(
@@ -2056,10 +2184,10 @@ def test_a_candidate_requires_the_exact_persisted_write_set(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction=f"A bounded fixture advisory for {mode}.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics=f"A bounded fixture advisory for {mode}.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
     )
     payload = registered.model_dump(mode="json")
@@ -2163,7 +2291,7 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
 
     from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
 
-    stable_artifact = load_stable_program_artifact()
+    stable_artifact = load_stable_program_state()
     stable = _arm(program_sha256=stable_artifact.program_sha256)
     with repositories_for_connection(conn).transaction():
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
@@ -2255,10 +2383,10 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="Dataset baseline parity.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="Dataset baseline parity.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
     )
     assert exported.episode_projection_root_sha256 == report.identity["episode_projection_root_sha256"]
@@ -2277,7 +2405,7 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
     from tracefold.app.cli.commands import news_learning as news_commands
     from tracefold.app.cli.parser import build_parser
 
-    base = load_stable_program_artifact()
+    base = load_stable_program_state()
     stable = _arm(program_sha256=base.program_sha256)
     with repositories_for_connection(conn).transaction():
         repositories_for_connection(conn).news.register_agent_runtime_manifest(
@@ -2302,17 +2430,17 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="A stale population must never be registered.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="A stale population must never be registered.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
     )
     stale = _prompt_candidate(
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=honest.patch,
+        state=honest.state,
         objective_summary={**honest.objective_summary, "optimizer_case_root_sha256": "0" * 64},
     )
     candidate_path = tmp_path / "candidate.json"
@@ -2380,10 +2508,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
             conn,
             development_sha=development.artifact_sha,
             stable=stable,
-            patch=PromptPatchV1(
-                event_semantics_instruction="Objective tamper baseline.",
-                taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-                reader_card_instruction="Keep the mechanism concrete.",
+            state=_fixture_state(
+                event_semantics="Objective tamper baseline.",
+                taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+                reader_card="Keep the mechanism concrete.",
             ),
         ).objective_summary
     )
@@ -2391,10 +2519,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="A split this corpus never produced.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="A split this corpus never produced.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
         objective_summary={
             **honest_summary,
@@ -2407,10 +2535,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="A legacy objective identity cannot be re-armed.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="A legacy objective identity cannot be re-armed.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
         objective_summary=legacy_summary,
     )
@@ -2418,10 +2546,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(
-            event_semantics_instruction="A representative root this corpus never produced.",
-            taxonomy_instruction=_STABLE_TAXONOMY_INSTRUCTION,
-            reader_card_instruction="Keep the mechanism concrete.",
+        state=_fixture_state(
+            event_semantics="A representative root this corpus never produced.",
+            taxonomy=_STABLE_TAXONOMY_INSTRUCTION,
+            reader_card="Keep the mechanism concrete.",
         ),
         objective_summary={**honest_summary, "optimizer_case_root_sha256": "0" * 64},
     )
@@ -2477,6 +2605,84 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
             )
 
 
+def test_an_offline_evaluation_states_a_denominator_for_each_of_the_three_targets(conn) -> None:
+    """#651 §8: a per-target score with no denominator beside it is not a measurement.
+
+    The corpus here is the frozen development dataset built from real accepted reviews in PostgreSQL, so
+    which target each case is evidence for comes from `applicable_targets` as the freeze sealed it rather
+    than from anything this test states. What the evidence has to say is how many cases each target could
+    ask, how many of those scored, and — one by one, never folded into the failures — how many were
+    excluded and why.
+    """
+
+    from tracefold.news.learning.target_metrics import EXCLUDED_OUTCOMES, FAILURE_OUTCOMES
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=_static_judges(stable, candidate.candidate_arm),
+        candidate_catalog=(candidate,),
+    )
+    report = asyncio.run(
+        evaluator.evaluate(
+            EvaluationRequest(
+                development_dataset_sha=development.artifact_sha,
+                candidate_sha=candidate.candidate_sha,
+                stage="offline",
+            )
+        )
+    )
+
+    targets = report.evidence["targets"]
+    assert targets["schema"] == "tracefold.news.target_release_evidence.v1"
+    # The two arms are scored over the identical population, which is what makes a delta meaningful.
+    assert set(targets) == {"schema", "judge_route", "stable", "candidate"}
+    assert targets["judge_route"] == "none_deterministic_arm"
+    for arm in ("stable", "candidate"):
+        assert set(targets[arm]) == {"classification", "understanding", "explanation"}
+        for target, block in targets[arm].items():
+            assert block["schema"] == "tracefold.news.target_denominators.v1"
+            assert block["target"] == target
+            assert block["case_n"] == len(development.cases)
+            # Every case is in exactly one bucket, and `not_applicable` sits outside the applicable
+            # population rather than inside it as a zero.
+            assert block["case_n"] == block["applicable_n"] + block["not_applicable_n"]
+            assert block["applicable_n"] == (
+                block["scored_n"]
+                + block["failure_n"]
+                + block["no_gold_n"]
+                + block["judge_unavailable_n"]
+                + block["retrieval_miss_n"]
+            )
+            assert block["judge_unavailable_share_max"] == 0.2
+            assert block["evaluation_unavailable"] is False
+            assert set(block["failures"]) <= FAILURE_OUTCOMES
+    # This corpus carries accepted taxonomy Gold, so classification is applicable and scored on it; the
+    # count is what a later run is compared against, and it is published rather than implied.
+    classification = targets["candidate"]["classification"]
+    assert classification["applicable_n"] == len(development.cases)
+    assert classification["scored_n"] == len(development.cases)
+    assert classification["score"] is not None
+    assert "not_applicable" in EXCLUDED_OUTCOMES
+
+
 def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     _accepted_compilable_event(conn)
     stable = _arm()
@@ -2515,7 +2721,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     # #504 D7: the four write-only production regression gates are gone; `must_push_regression` and
     # `stable_hard_gate` remain the release failures that read Gold.
     assert "regression_gates" not in report.evidence
-    assert report.evidence["evaluator_version"] == "news_candidate_evaluator_v7"
+    assert report.evidence["evaluator_version"] == "news_candidate_evaluator_v9"
 
     candidate_stability = report.evidence["stability"]["candidate"]
     assert len(candidate_stability) == len(development.cases) == len(_COMPILABLE_CORPUS)
@@ -3187,17 +3393,20 @@ def test_errored_pair_never_scores_the_blind_pairwise_primary(conn) -> None:
     assert primary["net_preference"] is None
 
 
-def test_one_calendar_day_is_not_a_release_blocker_but_thin_coverage_still_is(conn) -> None:
-    """#259: the development gate reads coverage; the calendar is a diagnostic beside it.
+def test_a_thin_development_corpus_is_not_a_release_blocker_and_is_still_counted(conn) -> None:
+    """#651 §9: the development corpus quotas are gone, and their counts stay as diagnostics.
 
-    This corpus lives inside a single UTC date — as almost every freeze does, since a frozen dataset only
-    admits cases from the *active* Stable bundle and a bundle deployed this morning has no yesterday. The
-    old profile turned that into `development_natural_day_n_insufficient` and made every Stable iteration
-    wait for midnights it had no way to produce. What refuses this corpus now is what was always wrong
-    with it: three accepted reviews cannot carry 30 boundary and 100 retention clusters.
+    This test used to assert that a six-case corpus is refused for holding fewer than 30 boundary and 100
+    retention clusters. The quota measured a quantity in a unit that did not match the question it was
+    answering: a release admits *one candidate*, on what the holdout observed about that candidate, and no
+    number of development clusters is evidence for or against it. What a thin corpus really produces is a
+    `NO_OP` optimization — there was nothing to learn, so nothing was proposed — and that answer is
+    available for free, whereas the quota spent every thin-but-honest corpus's chance to reach it.
 
-    Both halves are asserted on purpose. Dropping the calendar row without keeping the cluster rows would
-    not be this Issue, it would be deleting the gate.
+    So `development_boundary_cluster_n_insufficient` and its four siblings are gone, and what is left
+    blocking this run is the one thing that is genuinely about this candidate: no reviewer has compared
+    the two arms yet. The counts the quota read are still published, which is where an operator reads
+    them — including the per-target counts that say *which question* this corpus can answer at all.
     """
 
     _accepted_compilable_event(conn)
@@ -3211,10 +3420,21 @@ def test_one_calendar_day_is_not_a_release_blocker_but_thin_coverage_still_is(co
             )
         )
     )
-    # The two diagnostics survive the cut: an operator still has to be able to see that this corpus is six
-    # hours of one day, they just cannot be refused for it.
+    # Every count the deleted quotas read is still sealed with the corpus: an operator has to be able to
+    # see that this is six hours of one calendar day carrying six clusters, they just cannot be refused
+    # for it. `targets` is the count the quotas never had — how much of this corpus each of the three
+    # Predictor questions can actually read.
     assert development.counts["natural_day_n"] == 1
     assert development.counts["window_duration_hours"] == 6.0
+    assert development.counts["case_n"] == development.counts["independent_cluster_n"] == len(_COMPILABLE_CORPUS)
+    assert development.counts["boundary_cluster_n"] + development.counts["retention_cluster_n"] == len(
+        _COMPILABLE_CORPUS
+    )
+    assert development.counts["targets"]["classification"] == {
+        "case_n": len(_COMPILABLE_CORPUS),
+        "cluster_n": len(_COMPILABLE_CORPUS),
+    }
+    assert development.counts["rubric_ineligible_n"] == 0
 
     candidate = _program_candidate(
         conn,
@@ -3240,13 +3460,13 @@ def test_one_calendar_day_is_not_a_release_blocker_but_thin_coverage_still_is(co
     )
 
     blockers = set(report.evidence["blockers"])
+    # Nothing about how much evidence this corpus holds blocks the run, by name or by shape.
+    assert not any(blocker.startswith("development_") and blocker.endswith("_insufficient") for blocker in blockers)
     assert not any("natural_day" in blocker for blocker in blockers)
     assert not any(blocker.endswith(("_age_days_insufficient", "_stable_age_insufficient")) for blocker in blockers)
-    assert {
-        "development_boundary_cluster_n_insufficient",
-        "development_retention_cluster_n_insufficient",
-        "development_negative_cluster_n_insufficient",
-    } <= blockers
+    # The one thing still outstanding is evidence about this candidate: no reviewer has read the two arms
+    # against each other yet. `unknown` is therefore still the honest outcome, for a different reason.
+    assert blockers == {"development_pairwise_review_incomplete"}
     assert report.gate_outcome == "unknown"
 
 
@@ -3520,117 +3740,16 @@ def test_holdout_cannot_spend_model_budget_before_offline_pass(conn) -> None:
     assert _judge_call_count(judges) == 0
 
 
-def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -> None:
-    event_id = _accepted_compilable_event(conn, stale_reask=True)
-    stable = _arm()
-    _open_event(
-        conn,
-        hit_id=112002,
-        title="An event produced by a different deployed bundle",
-        bundle_sha=_sha("other-bundle"),
-    )
-    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
-    development = asyncio.run(
-        bootstrap._datasets.freeze_dataset(
-            DatasetSpec(
-                role="development",
-                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
-            )
-        )
-    )
-    candidate = _program_candidate(
-        conn,
-        stable=stable,
-        development_sha=development.artifact_sha,
-        cluster_id=development.cases[0].cluster_id,
-    )
-    validation_sha = _insert_validation_dataset(conn, development=development, candidate=candidate)
-    _insert_stage_pass(conn, candidate_sha=candidate.candidate_sha, stage="holdout")
-    before = conn.execute(
-        "SELECT (SELECT count(*) FROM news_verdicts) AS verdicts, (SELECT count(*) FROM news_deliveries) AS deliveries"
-    ).fetchone()
-    judges = _static_judges(stable, candidate.candidate_arm)
-    evaluator = CandidateEvaluator(
-        conn,
-        stable=stable,
-        judges=judges,
-        candidate_catalog=(candidate,),
-    )
-    report = asyncio.run(
-        evaluator.evaluate(
-            EvaluationRequest(
-                development_dataset_sha=development.artifact_sha,
-                validation_dataset_sha=validation_sha,
-                candidate_sha=candidate.candidate_sha,
-                stage="shadow",
-            )
-        )
-    )
-    after = conn.execute(
-        "SELECT (SELECT count(*) FROM news_verdicts) AS verdicts, (SELECT count(*) FROM news_deliveries) AS deliveries"
-    ).fetchone()
+def test_the_evaluator_refuses_a_shadow_stage_request(conn) -> None:
+    """#651: `shadow` is not a stage any more, and the request contract says so before any Program call."""
 
-    assert after == before
-    assert (
-        len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls)
-        == len(development.cases)
-        == len(_COMPILABLE_CORPUS)
-    )
-    assert report.gate_outcome == "unknown"  # fixture is only six hours, not the required 24
-    assert report.evidence["observation_n"] == len(development.cases) == len(_COMPILABLE_CORPUS)
-    assert report.evidence["evidence_dimensions"]["observation_scope"] == "all_live_triage_eligible"
-    assert report.evidence["observation_manifest_sha"]
-    stored = conn.execute(
-        "SELECT event_id, evaluation_stage, stable_observation, candidate_observation "
-        "FROM news_learning_cases WHERE run_sha = %s AND event_id = %s",
-        (report.run_sha, event_id),
-    ).fetchone()
-    assert stored["event_id"] == event_id
-    assert stored["evaluation_stage"] == "shadow"
-    assert stored["stable_observation"]["delivery"] == "observed_sent"
-    assert stored["candidate_observation"]["delivery"] == "simulated"
-    observed_program = stored["stable_observation"]["program"][0]
-    execution_context_shas = [execution["context_sha256"] for execution in observed_program["executions"]]
-    assert execution_context_shas == [_sha(execution["context"]) for execution in observed_program["executions"]]
-    assert observed_program["trace"]["context_sha256"] == execution_context_shas[1]
-    assert [call["execution_index"] for call in observed_program["calls"]] == [0, 0, 0, 1, 1, 1]
-    assert [call["execution_phase"] for call in observed_program["calls"]] == [
-        *["initial"] * 3,
-        *["stale_reask"] * 3,
-    ]
-    assert [call["execution_status"] for call in observed_program["calls"]] == [
-        *["superseded_stale_ledger"] * 3,
-        *["accepted"] * 3,
-    ]
-    assert [call["recording_call_index"] for call in observed_program["calls"]] == [0, 1, 2, 3, 4, 5]
-    assert [call["execution_context_sha256"] for call in observed_program["calls"]] == [
-        *[execution_context_shas[0]] * 3,
-        *[execution_context_shas[1]] * 3,
-    ]
-    assert observed_program["usage"]["call_count"] == 6
-    assert observed_program["usage"]["physical_call_count"] == 6
-    assert [execution["status"] for execution in observed_program["executions"]] == [
-        "superseded_stale_ledger",
-        "accepted",
-    ]
-    recordings = conn.execute(
-        "SELECT arm, predictor_name FROM news_model_recordings WHERE run_sha = %s ORDER BY call_index",
-        (report.run_sha,),
-    ).fetchall()
-    # One candidate call per Predictor per case, the three Predictors in graph order. Only the candidate is
-    # re-run: the stable arm's calls are what production already recorded.
-    assert [(row["arm"], row["predictor_name"]) for row in recordings] == [
-        *[("candidate", "event_semantics")] * len(_COMPILABLE_CORPUS),
-        *[("candidate", "taxonomy")] * len(_COMPILABLE_CORPUS),
-        *[("candidate", "reader_card")] * len(_COMPILABLE_CORPUS),
-    ]
-    assert Counter(row["arm"] for row in recordings) == Counter({"candidate": 3 * len(_COMPILABLE_CORPUS)})
-    manifest = conn.execute(
-        "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s",
-        (report.evidence["observation_manifest_sha"],),
-    ).fetchone()["payload"]
-    assert manifest["case_n"] == len(development.cases) == len(_COMPILABLE_CORPUS)
-    assert "observations" not in manifest
+    with pytest.raises(ValueError):
+        EvaluationRequest(
+            development_dataset_sha="a" * 64,
+            validation_dataset_sha="b" * 64,
+            candidate_sha="c" * 64,
+            stage="shadow",
+        )
 
 
 @pytest.mark.parametrize("program_matches_assignment", [True, False])
@@ -3653,7 +3772,7 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, progr
         cluster_id=development.cases[0].cluster_id,
     )
     validation_sha = _insert_validation_dataset(conn, development=development, candidate=candidate)
-    _insert_stage_pass(conn, candidate_sha=candidate.candidate_sha, stage="shadow")
+    _insert_stage_pass(conn, candidate_sha=candidate.candidate_sha, stage="holdout")
     repos = repositories_for_connection(conn)
     with repos.transaction():
         repos.news.arm_canary(
@@ -3805,7 +3924,7 @@ def _taxonomy_only_candidate(
 ) -> CandidateManifest:
     """A candidate whose EventSemantics and ReaderCard are the parent's byte for byte (#548)."""
 
-    base = load_stable_program_artifact()
+    base = load_stable_program_state()
     return _program_candidate(
         conn,
         stable=stable,
@@ -3816,12 +3935,12 @@ def _taxonomy_only_candidate(
             conn,
             development_sha=development_sha,
             stable=stable,
-            patch=PromptPatchV1(
-                event_semantics_instruction=base.event_semantics_instruction,
-                taxonomy_instruction=(
-                    f"{base.taxonomy_instruction}\nPrefer the narrower subject code{variant} when both apply."
+            state=_fixture_state(
+                event_semantics=base.instruction_for("event_semantics"),
+                taxonomy=(
+                    f"{base.instruction_for('taxonomy')}\nPrefer the narrower subject code{variant} when both apply."
                 ),
-                reader_card_instruction=base.reader_card_instruction,
+                reader_card=base.instruction_for("reader_card"),
             ),
         ),
     )
@@ -3829,15 +3948,7 @@ def _taxonomy_only_candidate(
 
 def _miss_rubric(event_family: str) -> EventRubricSubmission:
     return EventRubricSubmission.model_validate(
-        _rubric().model_dump(mode="json")
-        | {
-            "taxonomy": news_taxonomy(
-                event_family=event_family,
-                change_state="reported",
-                assertion_status="claimed",
-                source_authority="reputable_secondary",
-            ).model_dump(mode="json")
-        }
+        _rubric().model_dump(mode="json") | {"taxonomy": _review_taxonomy(event_family=event_family)}
     )
 
 
@@ -3924,14 +4035,19 @@ def test_a_taxonomy_only_holdout_is_decided_by_its_per_axis_evidence(conn) -> No
     assert primary["endpoint"] == "taxonomy_axis_evidence"
     assert primary["primary_cluster_n"] == cluster_n >= _PROFILE["validation"]["primary_clusters_min"]
     assert primary["taxonomy_overall_delta"] > 0
-    # #626: what admits this arm is that it makes cards fully correct, not that the mean rose.
+    # #651 §8: what admits this arm is the classification partial score, and the joint exact rate is
+    # published beside it as a diagnostic -- outside `primary["axis_interval_95"]`, which is exactly the
+    # set of axes a regression can be read off.
+    assert primary["taxonomy_overall_improved"] is True
+    assert primary["taxonomy_overall_interval_95"]["lower"] > 0
+    assert "four_axis_exact_accuracy" not in primary["axis_interval_95"]
     assert primary["four_axis_exact_improved"] is True
-    assert primary["axis_interval_95"]["four_axis_exact_accuracy"]["lower"] > 0
+    assert report.evidence["taxonomy"]["axis_interval_95"]["four_axis_exact_accuracy"]["lower"] > 0
     assert primary["regressed_axes"] == []
     assert report.evidence["taxonomy"]["candidate"]["taxonomy_overall"] == 1.0
-    # No pairwise judgment exists and none is demanded; the only thing still short is the development
-    # corpus this fixture deliberately keeps thin, which is a coverage floor and not a holdout endpoint.
-    assert not [code for code in report.evidence["blockers"] if not code.startswith("development_")]
+    # No pairwise judgment exists and none is demanded, and since #651 §9 the thin development corpus
+    # underneath is not a blocker either: nothing at all is outstanding, so the axes alone decide.
+    assert report.evidence["blockers"] == []
     assert report.evidence["failures"] == []
 
     regressing = _taxonomy_only_candidate(
@@ -3970,10 +4086,11 @@ def test_a_taxonomy_only_holdout_is_decided_by_its_per_axis_evidence(conn) -> No
     assert regressed.gate_outcome == "fail"
     assert regressed.recommended_action == "reject"
     assert "candidate_taxonomy_axis_regression" in regressed.evidence["failures"]
-    assert regressed.evidence["primary"]["regressed_axes"] == [
-        "change_state_accuracy",
-        "four_axis_exact_accuracy",
-    ]
+    # The joint exact rate moved with `change_state` and is still reported, but only the four real axes
+    # can fail a release (#651 §8): counting it here made one cluster's slip cost the candidate twice.
+    assert regressed.evidence["primary"]["regressed_axes"] == ["change_state_accuracy"]
+    assert regressed.evidence["taxonomy"]["interval_regressed_axes"] == ["change_state_accuracy"]
+    assert regressed.evidence["taxonomy"]["delta"]["four_axis_exact_accuracy"] < 0
 
 
 def test_a_taxonomy_only_holdout_survives_a_one_cluster_slip_the_bootstrap_cannot_separate(conn) -> None:
@@ -4082,9 +4199,9 @@ def test_a_taxonomy_only_holdout_survives_a_one_cluster_slip_the_bootstrap_canno
     assert primary["taxonomy_overall_improved"] is True
     assert primary["axis_interval_95"]["assertion_status_accuracy"] == intervals["assertion_status_accuracy"]
     assert report.evidence["failures"] == []
-    assert "four_axis_exact_not_improved" not in report.evidence["blockers"]
-    # The thin fixture corpus still misses the development coverage floors; nothing else blocks.
-    assert not [code for code in report.evidence["blockers"] if not code.startswith("development_")]
+    # Nothing blocks at all: the deleted development coverage floors were the only codes this thin
+    # fixture corpus ever tripped, and the holdout's own endpoint is satisfied.
+    assert report.evidence["blockers"] == []
 
 
 def test_a_thin_taxonomy_only_holdout_is_unknown_and_a_reader_facing_one_still_needs_pairwise(conn) -> None:

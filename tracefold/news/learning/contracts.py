@@ -18,16 +18,20 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_json
-from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_program_instruction
-from ..program.runtime import PREDICTOR_NAMES
+from ..program.artifact import NewsProgramStateV1
 from ..triage_rules import DecidePolicy
 
 # v4 (#501): the taxonomy target/control split floors and the 50-cluster calibration gate of v3 are gone;
 # every valid Gold case is an optimizer sample and κ is reported, not gated. The profile is inside
 # `TRUSTED_ROOT_SHA`; this readable name prevents a v3 corpus from being mistaken for one frozen here.
 LEARNING_PROFILE_ID: Literal["news_learning_release_v4"] = "news_learning_release_v4"
-LEARNING_PROGRAM_VERSION = "news_semantic_program_v9"
-PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v2"] = "news_prompt_candidate_v2"
+# The one generation the learning plane may compile for. It moves with `PROGRAM_VERSION`: a candidate
+# compiled against a different output contract is not a candidate for this executor (#651 §6.2).
+LEARNING_PROGRAM_VERSION = "news_semantic_program_v10"
+# v3 (#651): the candidate carries the native `NewsProgramStateV1` envelope instead of three
+# instruction strings, so a GEPA winner's demos travel with it and `changed_predictors` is read off the
+# two state documents rather than declared.
+PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v3"] = "news_prompt_candidate_v3"
 MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
     "tracefold.news.model_execution_identity.v1"
 )
@@ -46,9 +50,21 @@ MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identit
 # v7 (#501): `accepted_review.taxonomy_review` carries the review's provenance verbatim — label source,
 # drafter and the blind drafts — so freeze-time agreement can be computed from the sealed corpus alone.
 # Owner columns remain audit metadata; they no longer decide the optimizer population.
-COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v7"] = (
-    "tracefold.news.development_compile_episode.v7"
+# v8 (#651 §9): `accepted_review.taxonomy` may be absent, `accepted_review.explanation` carries the
+# reviewer's explanation supervision, and the episode names the `applicable_targets` its review is
+# evidence for. A v7 projection cannot answer "which question did this reviewer actually answer", so a
+# plan built from one would hand every target every case — which is exactly the fabricated `pass` the
+# task-level rubric exists to stop.
+COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v8"] = (
+    "tracefold.news.development_compile_episode.v8"
 )
+# What one corpus can explain. A case is evidence for a target when the review actually labelled that
+# target's question, and for no others: taxonomy makes it classification evidence, novelty / expected
+# assets / a push verdict make it understanding evidence, and the explanation block or the copy
+# dimensions make it explanation evidence. One name, read by the dataset store, the Objective Plan, the
+# readiness report and the optimizer, because three vocabularies for one idea is how they drift.
+LearningTarget = Literal["classification", "understanding", "explanation"]
+LEARNING_TARGETS: tuple[LearningTarget, ...] = ("classification", "understanding", "explanation")
 OptimizerRole = Literal["task", "reflection"]
 ModelExecutionRole = Literal["task", "reflection", "metric_judge"]
 # The reflection role's budget is its own. Until #143 both roles were built from the task route's numbers,
@@ -373,8 +389,9 @@ class DevelopmentDatasetRef(BaseModel):
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
-    learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
-    learning_epoch_started_at_ms: int = Field(ge=0)
+    # No `learning_epoch` (#651 §9). The corpus it referred to no longer seals one, and the epoch never
+    # said anything about *this* binding that `development_dataset_sha256` and the projection root do not
+    # say exactly: which corpus, and which projection of it.
     review_rubric_version: str = Field(min_length=1, max_length=64)
 
 
@@ -410,91 +427,29 @@ class OptimizationBudget(BaseModel):
         return self
 
 
-class PromptPatchV1(BaseModel):
-    """The complete three-instruction candidate payload accepted by News release.
-
-    `ProgramStrategyPatchV1` says the same three things bound to a parent, because applying a patch to a
-    Program is the Program package's business and needs the parent to refuse a mismatch. The taxonomy
-    optimizer may change only the taxonomy instruction and copies EventSemantics and ReaderCard
-    byte-identically; retaining all three here makes that equality independently verifiable at
-    registration. The safety bounds are not restated: `validate_program_instruction` is the one
-    implementation, so a candidate cannot be admitted under looser rules than the artifact it becomes.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    event_semantics_instruction: str
-    taxonomy_instruction: str
-    reader_card_instruction: str
-
-    @model_validator(mode="after")
-    def _write_set_is_safe(self) -> PromptPatchV1:
-        for predictor in PREDICTOR_NAMES:
-            validate_program_instruction(self.instruction_for(predictor))
-        return self
-
-    @classmethod
-    def of(cls, patch: ProgramStrategyPatchV1) -> PromptPatchV1:
-        return cls(
-            event_semantics_instruction=patch.event_semantics_instruction,
-            taxonomy_instruction=patch.taxonomy_instruction,
-            reader_card_instruction=patch.reader_card_instruction,
-        )
-
-    def applied_to(self, parent: ProgramStrategyArtifactV1) -> ProgramStrategyPatchV1:
-        """Bind this write-set to the Program it was optimized against."""
-
-        return ProgramStrategyPatchV1.issue(
-            parent=parent,
-            event_semantics_instruction=self.event_semantics_instruction,
-            taxonomy_instruction=self.taxonomy_instruction,
-            reader_card_instruction=self.reader_card_instruction,
-        )
-
-    def instruction_for(self, predictor: str) -> str:
-        return str(getattr(self, f"{predictor}_instruction"))
-
-    def changed_predictors(self, parent: ProgramStrategyArtifactV1) -> tuple[str, ...]:
-        """Exactly which Predictor instructions this write-set rewrites, in Program order."""
-
-        return tuple(
-            predictor
-            for predictor in PREDICTOR_NAMES
-            if self.instruction_for(predictor) != parent.instruction_for(predictor)
-        )
-
-    def changes(self, parent: ProgramStrategyArtifactV1) -> bool:
-        return bool(self.changed_predictors(parent))
-
-    def is_taxonomy_only(self, parent: ProgramStrategyArtifactV1) -> bool:
-        """Whether this candidate can move nothing the reader ever sees (#548).
-
-        EventSemantics and ReaderCard byte-identical to the parent means the verdict, the card and the
-        delivery decision are the parent's on every case, because `taxonomy` feeds none of them. It is
-        derived from the write-set the ledger already carries, never declared: a boolean a caller could
-        set would be a claim about two strings anyone can compare.
-        """
-
-        return self.changed_predictors(parent) == ("taxonomy",)
-
-
 class PromptCandidateV1(BaseModel):
-    """One prompt candidate, whatever produced it.
+    """One Program candidate, whatever produced it.
 
     Provenance is recorded and audited; it grants nothing. Until #202 a candidate's release eligibility came
     from *where it was generated* — inside a sealed compiler image, against a metered proxy — so an
     experiment that found a better instruction had to be reproduced by a container before any gate would
-    look at it. The write-set is two strings; the generator cannot be the authority for them. Registration,
-    independent evaluation, future holdout, shadow, canary and a human promotion are.
+    look at it. The write-set is a state document; the generator cannot be the authority for it.
+    Registration, independent evaluation, future holdout, canary and a human promotion are.
+
+    `state` is the complete `NewsProgramStateV1` envelope the candidate would run under, not a diff.
+    #651 replaced a three-string patch with it because a GEPA winner may carry demos, and a patch shape
+    with nowhere to put them forced the optimizer to refuse exactly the candidates it is meant to produce.
+    Which Predictors moved is then `changed_predictors(parent)` — a comparison of two documents anybody
+    holding both can redo, never a flag the producer sets.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["news_prompt_candidate_v2"] = PROMPT_CANDIDATE_SCHEMA
+    schema_version: Literal["news_prompt_candidate_v3"] = PROMPT_CANDIDATE_SCHEMA
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     target_runtime_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
-    patch: PromptPatchV1
+    state: dict[str, Any]
     objective_summary: dict[str, Any]
     optimizer: dict[str, Any]
     model_identities: dict[str, Any]
@@ -510,12 +465,34 @@ class PromptCandidateV1(BaseModel):
         return cls(**values, candidate_sha256=canonical_sha(payload))
 
     @model_validator(mode="after")
-    def _identity_is_exact_and_carries_no_credential(self) -> PromptCandidateV1:
+    def _identity_is_exact_and_state_is_loadable(self) -> PromptCandidateV1:
         payload = self.model_dump(mode="json", exclude={"candidate_sha256"})
         reject_nonfinite_json(payload, path="prompt_candidate")
         if self.candidate_sha256 != canonical_sha(payload):
             raise ValueError("news_learning_prompt_candidate_hash_mismatch")
+        # The envelope validates itself: instruction bounds, demo fields, no baked model route, and its own
+        # hash. Re-stating any of those here would let a candidate be admitted under looser rules than the
+        # image it becomes.
+        if self.program_state.program_sha256 != str(self.state.get("program_sha256") or ""):
+            raise ValueError("news_learning_prompt_candidate_state_identity_mismatch")
         return self
+
+    @property
+    def program_state(self) -> NewsProgramStateV1:
+        """The candidate's complete Program state, re-validated on every read."""
+
+        try:
+            return NewsProgramStateV1.model_validate(self.state)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("news_learning_prompt_candidate_state_invalid") from exc
+
+    def changed_predictors(self, parent: NewsProgramStateV1) -> tuple[str, ...]:
+        """Exactly which Predictors this candidate rewrites, in Program order."""
+
+        return tuple(self.program_state.changed_predictors(parent))
+
+    def changes(self, parent: NewsProgramStateV1) -> bool:
+        return bool(self.changed_predictors(parent))
 
 
 class OptimizationRunReport(BaseModel):
@@ -590,6 +567,24 @@ class OptimizationResult(BaseModel):
         return self
 
 
+class CaseProvenance(BaseModel):
+    """Which arm produced the Event one frozen case is about.
+
+    Provenance, not a filter (#651 §9). Until this cut a corpus admitted only the running bundle's own
+    Events, so every deployment threw away the evidence reviewers had just finished building. What the
+    arm identity is actually for is reading a result afterwards -- "this case was answered by
+    `program_v9` under `policy_v13`" is a fact a report should carry, and never a reason to refuse a
+    reviewer's judgment about words a reader really saw.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    program_version: str = ""
+    program_sha256: str = ""
+    policy_version: str = ""
+    bundle_sha: str = ""
+
+
 class DatasetCaseRef(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -605,6 +600,10 @@ class DatasetCaseRef(BaseModel):
     should_push: str
     opened_at_ms: int
     delivery_truth: Literal["observed_sent", "observed_not_sent", "unknown"] = "unknown"
+    # Sorted, so the sealed payload is byte-stable. Empty is a real answer: a review that labelled
+    # nothing a target reads is stored, counted and excluded, rather than being given a default.
+    applicable_targets: tuple[LearningTarget, ...] = ()
+    provenance: CaseProvenance = Field(default_factory=CaseProvenance)
 
 
 # The dataset coverage a report publishes, in one fixed order (#259 §5.2). Here rather than beside
@@ -614,6 +613,12 @@ class DatasetCaseRef(BaseModel):
 _COVERAGE_FIELDS: tuple[str, ...] = (
     "case_n",
     "independent_cluster_n",
+    # Per-target case and cluster counts, and the reviews the window held but could not use (#651 §9).
+    # A readiness answer that does not say which target it is about is not an answer, and the two
+    # rejection counts are the difference between "nobody reviewed anything" and "everyone reviewed
+    # under the previous contract".
+    "targets",
+    "rubric_ineligible_n",
     "boundary_cluster_n",
     "retention_cluster_n",
     "negative_cluster_n",
@@ -646,6 +651,7 @@ __all__ = [
     "COMPILE_EPISODE_PROJECTION_SCHEMA",
     "LEARNING_PROFILE_ID",
     "LEARNING_PROGRAM_VERSION",
+    "LEARNING_TARGETS",
     "METRIC_JUDGE_MAX_TOKENS",
     "METRIC_JUDGE_TIMEOUT_SECONDS",
     "MODEL_EXECUTION_IDENTITY_SCHEMA",
@@ -656,9 +662,11 @@ __all__ = [
     "REFLECTION_TIMEOUT_SECONDS",
     "ArmManifest",
     "CandidateManifest",
+    "CaseProvenance",
     "ClosedWindow",
     "DatasetCaseRef",
     "DevelopmentDatasetRef",
+    "LearningTarget",
     "ModelExecutionIdentity",
     "ModelExecutionRole",
     "OptimizationBudget",
@@ -667,7 +675,6 @@ __all__ = [
     "OptimizationRunReport",
     "OptimizerRole",
     "PromptCandidateV1",
-    "PromptPatchV1",
     "ProposalReceipt",
     "dataset_coverage",
     "endpoint_fingerprint",

@@ -13,8 +13,8 @@ from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_sha
-from ..models import TriageAsset, TriageVerdict
-from ..taxonomy import NewsTaxonomyV1
+from ..models import MarketType, TriageAsset, TriageVerdict, base_symbol, market_type_of
+from ..taxonomy import NewsTaxonomyV1, SourceAuthority
 from ..told_context import TOLD_MAX as _TOLD_MAX
 from ..told_context import TOLD_SYMBOLS_MAX as _TOLD_SYMBOLS_MAX
 from ..told_context import ToldLedgerSnapshot as _ToldLedgerSnapshot
@@ -33,6 +33,13 @@ from ..told_context import ToldLedgerSnapshot as _ToldLedgerSnapshot
 # change what the model is allowed to see.
 WATCHLIST_MAX: Final[int] = 64
 GROUNDED_ASSETS_MAX: Final[int] = 16
+# What the catalogue can say about the symbols this Event already carries, bounded (#651 §A). Eight
+# symbols because `GROUNDED_ASSETS_MAX` is the wider evidence list and the candidates are only worth
+# showing for the ones the model is actually choosing between; four classes because the vocabulary has
+# seven and a symbol the catalogue holds under more than four is not a disambiguation the prompt can help
+# with. Bounds, not budgets: an over-long list is truncated, never an error.
+CATALOG_CANDIDATE_SYMBOLS_MAX: Final[int] = 8
+CATALOG_CANDIDATE_CLASSES_MAX: Final[int] = 4
 STRATEGIES_MAX: Final[int] = 16
 TRADE_CODE_SET_MAX: Final[int] = 4
 
@@ -99,7 +106,7 @@ TRADE_AFFECTED_MARKET_ORDER: Final[tuple[TradeAffectedMarket, ...]] = (
     "metals",
     "single_asset",
 )
-EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v2"]] = "news_editorial_v2"
+EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v3"]] = "news_editorial_v3"
 JUDGMENT_CONTRACT_VERSION: Final[Literal["news_judgment_v2"]] = "news_judgment_v2"
 
 
@@ -175,12 +182,29 @@ class ReaderCardSemanticView(_ExactContractModel):
 
 
 class EditorialEnvelope(_ExactContractModel):
-    """The one current editorial sibling persisted atomically with a verdict."""
+    """The one current editorial sibling persisted atomically with a verdict.
 
-    editorial_contract_version: Literal["news_editorial_v2"] = EDITORIAL_CONTRACT_VERSION
+    v3 (#651 §5.3) separates the two things v2 kept in one required object. ``source_authority`` is a
+    code fact: `source_authority_from_evidence` reads it off the frozen evidence, the model never emits
+    it, and it is therefore present on every model judgment whatever the taxonomy Predictor did.
+    ``taxonomy`` is the taxonomy Predictor's answer, and a Predictor can fail on its own -- a truncated
+    completion, a provider refusal, a typed rejection -- without costing the reader the card the other
+    two Predictors produced. ``taxonomy_status`` names which of those two happened and
+    ``taxonomy_error_code`` carries the `news_program_*` code when it is the second.
+
+    The uncorroborated-escalate rule (`triage_rules.decide`) is why the split is not cosmetic: under v2
+    the rule read `taxonomy.source_authority`, so a taxonomy failure would have taken the corroboration
+    evidence down with the label, and the loudest card class would have lost its safety rule to an
+    unrelated model failure.
+    """
+
+    editorial_contract_version: Literal["news_editorial_v3"] = EDITORIAL_CONTRACT_VERSION
     editorial_origin: Literal["model"] = "model"
     relevance: TradeRelevanceV1
-    taxonomy: NewsTaxonomyV1
+    source_authority: SourceAuthority
+    taxonomy: NewsTaxonomyV1 | None = None
+    taxonomy_status: Literal["available", "unavailable"] = "available"
+    taxonomy_error_code: str | None = None
     editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @classmethod
@@ -188,18 +212,28 @@ class EditorialEnvelope(_ExactContractModel):
         cls,
         *,
         relevance: TradeRelevanceV1,
-        taxonomy: NewsTaxonomyV1,
+        source_authority: SourceAuthority,
+        taxonomy: NewsTaxonomyV1 | None = None,
+        taxonomy_error_code: str | None = None,
     ) -> EditorialEnvelope:
         payload = {
             "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
             "editorial_origin": "model",
             "relevance": relevance.model_dump(mode="json"),
-            "taxonomy": taxonomy.model_dump(mode="json"),
+            "source_authority": source_authority,
+            "taxonomy": None if taxonomy is None else taxonomy.model_dump(mode="json"),
+            "taxonomy_status": "available" if taxonomy is not None else "unavailable",
+            "taxonomy_error_code": None if taxonomy is not None else taxonomy_error_code,
         }
         return cls(**payload, editorial_sha256=canonical_sha(payload))
 
     @model_validator(mode="after")
     def _origin_and_identity_are_exact(self) -> EditorialEnvelope:
+        available = self.taxonomy_status == "available"
+        if available != (self.taxonomy is not None) or available != (self.taxonomy_error_code is None):
+            raise ValueError("news_editorial_taxonomy_status_invalid")
+        if not available and not str(self.taxonomy_error_code or "").startswith("news_program_"):
+            raise ValueError("news_editorial_taxonomy_error_code_invalid")
         payload = self.model_dump(mode="json", exclude={"editorial_sha256"})
         if self.editorial_sha256 != canonical_sha(payload):
             raise ValueError("news_editorial_hash_mismatch")
@@ -230,9 +264,67 @@ class FrozenEventEvidence(_ExactContractModel):
     comparison_title: str = Field(default="", max_length=600)
 
 
+class CatalogCandidate(_ExactContractModel):
+    """What the instrument catalogue holds for one symbol this Event already names.
+
+    Code evidence, not an answer. `instrument_classes()` collapses a symbol to one class so the Gate can
+    ask "coin or stock"; that collapse is what makes `SEI` look unambiguous when the catalogue in fact
+    carries a Binance token *and* a NYSE ticker under it. The uncollapsed list is what lets the model see
+    the ambiguity, and what lets code tell an asset it can prove unambiguous from one it cannot.
+    """
+
+    symbol: str = Field(min_length=1, max_length=16)
+    classes: tuple[MarketType, ...] = Field(default=(), max_length=CATALOG_CANDIDATE_CLASSES_MAX)
+
+
+def catalog_candidates_of(
+    candidates: Mapping[str, Sequence[str]] | None,
+    symbols: Sequence[str],
+) -> tuple[CatalogCandidate, ...]:
+    """The bounded candidate rows for the symbols one Event carries, in that Event's own symbol order."""
+
+    if not candidates:
+        return ()
+    rows: list[CatalogCandidate] = []
+    seen: set[str] = set()
+    for value in symbols:
+        symbol = base_symbol(str(value))
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        classes = candidates.get(symbol)
+        if not classes:
+            continue
+        rows.append(
+            CatalogCandidate(
+                symbol=symbol,
+                classes=tuple(dict.fromkeys(market_type_of(item) for item in classes))[:CATALOG_CANDIDATE_CLASSES_MAX],
+            )
+        )
+        if len(rows) >= CATALOG_CANDIDATE_SYMBOLS_MAX:
+            break
+    return tuple(rows)
+
+
+def unambiguous_catalog_class(
+    candidates: Sequence[CatalogCandidate],
+    symbol: str,
+) -> MarketType:
+    """The one market the catalogue proves for a symbol, or ``unknown`` when it holds none or several."""
+
+    base = base_symbol(str(symbol))
+    for candidate in candidates:
+        if candidate.symbol == base:
+            return candidate.classes[0] if len(candidate.classes) == 1 else "unknown"
+    return "unknown"
+
+
 class SemanticGateContext(_ExactContractModel):
     asset_class: str = "none"
     grounded_assets: tuple[str, ...] = Field(default=(), max_length=GROUNDED_ASSETS_MAX)
+    # #651 §A: what the catalogue holds for each symbol already grounded on this Event, uncollapsed. The
+    # Gate's own collapsed `asset_class` stays exactly as it was; this is beside it, not instead of it.
+    catalog_candidates: tuple[CatalogCandidate, ...] = Field(default=(), max_length=CATALOG_CANDIDATE_SYMBOLS_MAX)
     macro_lexicon: bool = False
     pr_template: bool = False
 
@@ -253,6 +345,7 @@ class _ModelVisibleEvent(_ExactContractModel):
 class _ModelVisibleGate(_ExactContractModel):
     asset_class: str
     grounded_assets: tuple[str, ...] = Field(max_length=GROUNDED_ASSETS_MAX)
+    catalog_candidates: tuple[CatalogCandidate, ...] = Field(max_length=CATALOG_CANDIDATE_SYMBOLS_MAX)
     pr_template: bool
 
 
@@ -323,7 +416,16 @@ class TriageContext(_ExactContractModel):
         told_rows: Sequence[Mapping[str, Any]],
         now_ms: int,
         queue_lag_ms: int,
+        catalog_candidates: Mapping[str, Sequence[str]] | None = None,
     ) -> TriageContext:
+        """One immutable question, including what the catalogue currently holds for this Event's symbols.
+
+        ``catalog_candidates`` is resolved at judgment time rather than frozen into the Event's immutable
+        evidence: the catalogue is a living snapshot of what venues list today, and freezing a stale copy
+        of it into evidence would make the model's disambiguation evidence age with the Event instead of
+        with the universe it describes. It is bounded, code-owned, and reproducible for one catalogue.
+        """
+
         metadata = dict(card.get("provider_metadata") or {})
         coins = tuple(
             f"{coin.get('symbol')}:{coin.get('grade') or '-'}"
@@ -354,6 +456,17 @@ class TriageContext(_ExactContractModel):
             gate=SemanticGateContext(
                 asset_class=str(card.get("asset_class") or "none"),
                 grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ())[:GROUNDED_ASSETS_MAX],
+                catalog_candidates=catalog_candidates_of(
+                    catalog_candidates,
+                    [
+                        *(str(value) for value in card.get("grounded_assets") or ()),
+                        *(
+                            str(coin.get("symbol"))
+                            for coin in metadata.get("coins") or ()
+                            if isinstance(coin, Mapping) and coin.get("symbol")
+                        ),
+                    ],
+                ),
                 macro_lexicon=bool(card.get("macro_lexicon")),
                 pr_template=bool(card.get("pr_template"))
                 or str(card.get("admission") or "").startswith("suppressed_pr"),
@@ -390,6 +503,7 @@ class TriageContext(_ExactContractModel):
         return _ModelVisibleGate(
             asset_class=self.gate.asset_class,
             grounded_assets=self.gate.grounded_assets,
+            catalog_candidates=self.gate.catalog_candidates,
             pr_template=self.gate.pr_template,
         )
 
@@ -568,7 +682,7 @@ class ProgramCallTrace(_ExactContractModel):
 
 
 class ProgramTrace(_ExactContractModel):
-    program_version: Literal["news_semantic_program_v9"]
+    program_version: Literal["news_semantic_program_v10"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # The computed identity of everything the code decided about this call — request envelope, output
@@ -578,6 +692,11 @@ class ProgramTrace(_ExactContractModel):
     envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     event_semantics_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     taxonomy_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # Which of the three Predictors answered, at judgment altitude (#651 §5.3). `taxonomy_sha256` is
+    # `None` both when the route never got that far and when the taxonomy call failed on its own while the
+    # other two answered; this names the second case, and it is the same code the persisted
+    # `EditorialEnvelope` carries.
+    taxonomy_error_code: str | None = None
     reader_card_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     verdict_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     editorial_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -691,7 +810,8 @@ class SemanticJudgment(_ExactContractModel):
             or self.trace.answering_route is None
             or self.trace.answering_route != ("fallback" if self.fallback_from else "primary")
             or self.trace.event_semantics_sha256 is None
-            or self.trace.taxonomy_sha256 is None
+            or (self.trace.taxonomy_sha256 is None) != (self.editorial.taxonomy is None)
+            or self.trace.taxonomy_error_code != self.editorial.taxonomy_error_code
             or self.trace.reader_card_sha256 is None
             or self.trace.verdict_sha256 != canonical_sha(self.verdict.model_dump(mode="json"))
             or self.trace.editorial_sha256 != self.editorial.editorial_sha256
@@ -736,6 +856,8 @@ class SemanticJudge(Protocol):
 
 
 __all__ = [
+    "CATALOG_CANDIDATE_CLASSES_MAX",
+    "CATALOG_CANDIDATE_SYMBOLS_MAX",
     "EDITORIAL_CONTRACT_VERSION",
     "GROUNDED_ASSETS_MAX",
     "JUDGMENT_CONTRACT_VERSION",
@@ -743,6 +865,7 @@ __all__ = [
     "TRADE_AFFECTED_MARKET_ORDER",
     "TRADE_CHANNEL_ORDER",
     "WATCHLIST_MAX",
+    "CatalogCandidate",
     "EditorialEnvelope",
     "FrozenEventEvidence",
     "ModelVisibleCardInput",
@@ -761,4 +884,6 @@ __all__ = [
     "TradeRelevanceV1",
     "TriageContext",
     "aggregate_program_usage",
+    "catalog_candidates_of",
+    "unambiguous_catalog_class",
 ]

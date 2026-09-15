@@ -11,7 +11,7 @@
   provider keys from `~/.tracefold/config.yaml` into chat, docs, tests,
   shell history, or source files.
 - Credential-free ReviewDesk datasets, Program artifacts, candidate manifests,
-  model recordings, shadow observations, evaluation reports, and deployment
+  model recordings, canary observations, evaluation reports, and deployment
   receipts are ordinary repository content. The operator may store, commit, or
   publish them, including evidence, prompts, cards, model outputs, and reviewer
   prose. Publication creates no alternate business truth and grants no runtime,
@@ -152,7 +152,7 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 `decide()` and feed ordering remain deterministic.
 
 The only loadable semantic image is one content-addressed
-`news_program_strategy_artifact_v1` JSON document carried in the application
+`news_program_state_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
 holds a schema version and the three complete Predictor instructions;
 `program_sha256` is the canonical hash of exactly those four values, and the
@@ -192,9 +192,9 @@ Everything else the Program runs on — the graph, Signatures, the Adapter, the
 normalizer and assembler, the model route, the token and deadline budgets — is
 code, proved by shipping the image. Its identity travels beside the artifact as
 the computed `envelope_sha256`; `docs/ARCHITECTURE.md` describes the model.
-The taxonomy optimizer may replace only the Taxonomy instruction; it
-copies EventSemantics and ReaderCard byte-identically into the complete candidate,
-so no demo or endpoint path exists to reach a provider. Production candidate
+One run may replace exactly one Predictor's native state -- the one its
+`--target` names -- and copies the other two byte-identically into the complete
+candidate, so no demo or endpoint path exists to reach a provider. Production candidate
 images pass normal code review and are shipped in the registry; a database
 candidate is not executable merely because it was persisted, and Prompt-era
 database fields are audit-only.
@@ -214,24 +214,27 @@ What actually bounds the job is what it holds, and that is now a short list.
 `news learning run` reads one frozen development corpus through the shared application login, closes the
 database before provider work, and then holds two model endpoints plus a typed in-process budget. It has no
 database writer, broker, delivery, canary or promotion credential. Zero-call readiness runs before endpoint
-construction and requires both `objective.compilable` and `development_profile.ready`.
+construction and requires `objective.compilable` for the run's own `--target`.
 
 The task and reflection roles are separate `ModelExecutionIdentity` values. Their endpoint URLs are
 fingerprinted rather than stored, credentials never enter hashes or traces, and bounded provider errors are
 scrubbed. The meter reserves the declared per-call price before a request, settles provider-reported cost
 after it, and records each role's input/output/cached/total tokens, calls, cost, failures and wall-clock time
-in the same report. Reflection alone has the code-owned 32k-token ceiling. The taxonomy optimizer has no
-semantic judge, no ReaderCard call, no tool or code-generation authority, and no private DSPy API.
+in the same report. Reflection alone has the code-owned 32k-token ceiling. The optimizer holds those two endpoints and no
+third one whatever its `--target` is: no semantic judge, no metric judge (the explanation ruler runs its
+deterministic arm there), no tool or code-generation authority, and no private DSPy API. The one task
+endpoint it does hold is the target Predictor's own deployed slot.
 
 Every terminal state writes `news_optimization_run_report_v4`; only `ADVANCE` also writes
-`news_prompt_candidate_v2`. The only mutable field is the Taxonomy instruction. EventSemantics and ReaderCard
+`news_prompt_candidate_v3`. Exactly one Predictor's native state is mutable per run — the one the
+run's `--target` names. The other two Predictors
 are copied byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
 beside the public native GEPA parent/score/subscore state, GEPA best index and Tracefold admitted index.
 Every candidate is compared directly with accepted Gold rather than with another model output, and the
-admitted one is GEPA's own best when strictly above the seed. Registration independently re-applies the
-patch, re-projects the dataset and re-derives Objective Plan v4. Generator provenance grants no release
+admitted one is GEPA's own best when strictly above the seed. Registration independently re-reads the
+state document against the running stable, re-projects the dataset and re-derives Objective Plan v5. Generator provenance grants no release
 authority;
-future holdout, blind pairwise, shadow, canary and manual promotion remain mandatory.
+future holdout, blind pairwise, canary and manual promotion remain mandatory.
 
 Optimization usage v3 distinguishes a proven zero metric count from an unavailable count: preflight
 refusals record `0`, while an interrupted GEPA compile with no public result records `null`. Physical model

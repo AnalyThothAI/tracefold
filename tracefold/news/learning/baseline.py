@@ -45,14 +45,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..artifact_identity import canonical_sha
 from ..models import TriageVerdict
 from ..program.artifact import (
-    ProgramStrategyArtifactV1,
+    NewsProgramStateV1,
     render_model_evidence_json,
 )
 from ..program.contracts import SemanticJudge, TriageContext
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.lm import AuditedConfiguredLM, RuntimeModelIdentity, StructuredOutputMode
 from ..program.runtime import PROGRAM_VERSION
-from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
+from ..review.desk import REVIEW_RUBRIC_VERSION
+from .contracts import (
+    LEARNING_TARGETS,
+    METRIC_JUDGE_MAX_TOKENS,
+    METRIC_JUDGE_TIMEOUT_SECONDS,
+    ModelExecutionIdentity,
+)
 from .judge import CardEquivalenceJudge, MetricJudgeEndpoint
 from .metric import (
     COMPONENT_FIELDS,
@@ -73,9 +79,20 @@ from .objective import (
     retrieval_receipt,
     verify_policy_projection,
 )
+from .target_metrics import (
+    accepted_assets,
+    accepted_duplicate_of,
+    accepted_explanation,
+    accepted_novelty,
+    accepted_taxonomy,
+    bind_target_metric,
+    product_scoreboard,
+    summarize_target_outcomes,
+)
+from .taxonomy_metric import summarize_taxonomy
 
 BaselineMode = Literal["recorded", "compile_live", "runtime_live"]
-BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v3"] = "tracefold.news.program_baseline_report.v3"
+BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v5"] = "tracefold.news.program_baseline_report.v5"
 # Bootstrap convention shared with the release evaluator, so a cluster interval here means the same
 # thing it means there.
 _BOOTSTRAP = {"seed": 112, "replicates": 2_000, "confidence": 0.95}
@@ -124,7 +141,9 @@ class CaseResult(BaseModel):
     latency_ms: int = 0
     error_code: str | None = None
     # Per-dimension outcome of *this* candidate: gold_hit/gold_miss, retention_hit/retention_miss,
-    # ungolded_change/ungolded_unchanged, field_absent.
+    # ungolded_change/ungolded_unchanged, field_absent, and on `asset_grounding` the narrower
+    # `known_wrong_market` -- the candidate named the reviewer's symbols in a market the reviewer
+    # contradicted, which is a different defect from naming the wrong names (#651 §6.2).
     dimension_outcomes: tuple[tuple[str, str], ...] = ()
     # Which hard gate zeroed this case, or "" when none did.
     hard_gate: str = ""
@@ -156,7 +175,7 @@ class BaselineReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal["tracefold.news.program_baseline_report.v3"] = BASELINE_SCHEMA
+    schema_id: Literal["tracefold.news.program_baseline_report.v5"] = BASELINE_SCHEMA
     mode: BaselineMode
     identity: dict[str, Any]
     execution_scope: tuple[str, ...]
@@ -181,6 +200,11 @@ class BaselineReport(BaseModel):
     # a gain on the half the optimizer already saw stand in for a gain on the half it did not.
     subsets: dict[str, Any] = Field(default_factory=dict)
     semantic_judge: dict[str, Any] = Field(default_factory=dict)
+    # Per-target denominators and the product scoreboard (#651 §8). `targets` states, for each of the
+    # three questions, how many cases were applicable, how many scored, how many failed and how many were
+    # excluded and why; `scoreboard` is the projection of the same rows a product owner reads.
+    targets: dict[str, Any] = Field(default_factory=dict)
+    scoreboard: dict[str, Any] = Field(default_factory=dict)
     latency_ms: dict[str, Any] = Field(default_factory=dict)
     route: dict[str, Any] = Field(default_factory=dict)
     cases: tuple[CaseResult, ...] = ()
@@ -464,10 +488,20 @@ def _action_confusion(results: Sequence[CaseResult]) -> dict[str, Any]:
     return summary
 
 
-def _prediction_dimensions(results: Sequence[CaseResult]) -> dict[str, Any]:
+def _prediction_dimensions(
+    results: Sequence[CaseResult], *, cases: Sequence[BaselineCase] | None = None
+) -> dict[str, Any]:
     """What the candidate did, not what the corpus contains."""
 
-    table: dict[str, dict[str, int]] = {}
+    # Empty card dimensions remain visible: no labels is not a measured zero error rate.
+    table: dict[str, dict[str, int]] = {name: {} for name in COMPONENT_FIELDS["reader_card"]}
+    labelled: dict[str, int] = {}
+    if cases is not None:
+        for case in cases:
+            for name, label in case.episode.accepted_review.get("dimensions", {}).items():
+                if label in {"pass", "fail"} and LABEL_GROUP.get(name) in {"event_semantics", "reader_card"}:
+                    labelled[name] = labelled.get(name, 0) + 1
+                    table.setdefault(name, {})
     for result in results:
         for name, outcome in result.dimension_outcomes:
             row = table.setdefault(name, {})
@@ -476,14 +510,30 @@ def _prediction_dimensions(results: Sequence[CaseResult]) -> dict[str, Any]:
     for name, counts in sorted(table.items()):
         total = sum(counts.values())
         hits = sum(value for outcome, value in counts.items() if outcome.endswith("_hit"))
+        unscored = sum(value for outcome, value in counts.items() if outcome.startswith("not_scored"))
+        unavailable = sum(value for outcome, value in counts.items() if outcome.endswith("_unavailable"))
+        denominator = total - unscored
+        labelled_n = max(total, labelled.get(name, 0))
+        population_n = len(results) if cases is None else len(cases)
         summary[name] = {
             **counts,
             "n": total,
-            # The reviewer labelled this dimension on `n` cases and left the rest alone. Publishing the
-            # silence keeps `n` readable: a dimension scored on 40 of 242 cases is a different claim from one
-            # scored on 240, and the rate alone cannot tell them apart.
-            "not_labelled": len(results) - total,
-            "hit_rate": round(hits / total, 6) if total else None,
+            # Route/metric failures did not erase the reviewer's labels. They are unevaluated, not unlabelled.
+            "labelled_n": labelled_n,
+            "not_labelled": population_n - labelled_n,
+            "not_evaluated_n": labelled_n - total,
+            "denominator": denominator,
+            "answered_denominator": denominator - unavailable,
+            "unavailable_n": unavailable,
+            "not_scored_n": unscored,
+            "hit_rate": round(hits / denominator, 6) if denominator else None,
+            "scoring_basis": (
+                "accepted_pass_retention_only_not_value_improvement"
+                if name == "why_value"
+                else "accepted_anchor_or_evidence_support"
+                if name in {"factual_fidelity", "why_support"}
+                else "accepted_anchor"
+            ),
         }
     return summary
 
@@ -574,11 +624,224 @@ async def _run_runtime_route(
     return outcomes
 
 
+def _target_examples(episode: DevelopmentEpisode) -> dict[str, dspy.Example]:
+    """One frozen question per target, carrying every accepted fact the rulers read.
+
+    Built here rather than borrowed from the optimizer's example renderers because the two want opposite
+    behaviour on a case with no Gold: the optimizer refuses to pose a question it cannot score, and a
+    report has to count that case. Every accepted-Gold reader is still `target_metrics`'s, so a review
+    means the same thing in both.
+    """
+
+    review = dict(episode.accepted_review or {})
+    applicable = tuple(episode.applicable_targets)
+    gold_taxonomy = accepted_taxonomy(review)
+    told_event_ids = tuple(str(entry.event_id) for entry in episode.context.told.entries)
+    explanation = accepted_explanation(review)
+    classification = dspy.Example(
+        case_id=episode.case_id,
+        applicable_targets=applicable,
+        **({} if gold_taxonomy is None else {"gold_taxonomy": gold_taxonomy.model_dump(mode="json")}),
+    ).with_inputs("case_id")
+    assets = accepted_assets(review)
+    novelty = accepted_novelty(review)
+    understanding = dspy.Example(
+        case_id=episode.case_id,
+        applicable_targets=applicable,
+        gold_told_event_ids=told_event_ids,
+        **({} if assets is None else {"gold_assets": assets}),
+        **({} if novelty is None else {"gold_novelty": novelty, "gold_duplicate_of": accepted_duplicate_of(review)}),
+    ).with_inputs("case_id")
+    card_evidence = render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card")
+    explanation_example = dspy.Example(
+        case_id=episode.case_id,
+        applicable_targets=applicable,
+        evidence_json=card_evidence,
+        source_title=str(episode.context.evidence.title),
+        gold_key_facts=explanation["key_facts"],
+        gold_forbidden_claims=explanation["forbidden_claims"],
+        gold_error_types=explanation["error_types"],
+    ).with_inputs("case_id")
+    return {
+        "classification": classification,
+        "understanding": understanding,
+        "explanation": explanation_example,
+    }
+
+
+def _target_predictions(prediction: CandidatePrediction) -> dict[str, dspy.Prediction]:
+    """What one candidate answered, split into the three answers the three rulers each score."""
+
+    verdict = dict(prediction.verdict or {})
+    editorial = prediction.editorial if isinstance(prediction.editorial, Mapping) else {}
+    editorial = dict(editorial or {})
+    return {
+        "classification": dspy.Prediction(taxonomy=editorial.get("taxonomy"), editorial=editorial),
+        "understanding": dspy.Prediction(semantics=verdict or None),
+        "explanation": dspy.Prediction(card=verdict or None),
+    }
+
+
+class _StoredAnswers(dspy.Module):  # type: ignore[misc]
+    """The batch `dspy.Evaluate` drives: one already-computed answer per case, looked up by case id.
+
+    The model calls happened before this — `recorded` mode has none and the live modes made theirs inside
+    `_run_runtime_route`, which is also where per-case latency, route and usage are accounted. What is
+    left is a pure metric batch over frozen answers, and that is exactly what `Evaluate` is for.
+    """
+
+    def __init__(self, answers: Mapping[str, dspy.Prediction]) -> None:
+        super().__init__()
+        self._answers = dict(answers)
+
+    def forward(self, *, case_id: str) -> dspy.Prediction:
+        return self._answers[str(case_id)]
+
+
+def _from_percent(aggregate: float) -> float:
+    """`dspy.Evaluate` returns a percentage. Converted to the 0-1 scale here and nowhere else."""
+
+    return round(float(aggregate) / 100.0, 6)
+
+
+def _evaluate_target(
+    target: str,
+    devset: Sequence[dspy.Example],
+    answers: Mapping[str, dspy.Prediction],
+    *,
+    judge: CardEquivalenceJudge | None,
+) -> tuple[list[dict[str, Any]], float]:
+    """Run one target's ruler over the whole batch through native `dspy.Evaluate`.
+
+    The wrapper below is what lets an excluded case reach `Evaluate` at all: its aggregate sums floats, so
+    a `None` score would raise. The float it sees is the run's honest lower bound — every excluded case at
+    zero — and it is published as exactly that beside the denominators-aware mean, which is the same
+    "no single ambiguous number" rule the rest of this report follows.
+    """
+
+    ruler = bind_target_metric(target, judge)
+    captured: dict[str, dspy.Prediction] = {}
+
+    def scoring(gold: dspy.Example, pred: dspy.Prediction, trace: Any = None, **_: Any) -> float:
+        outcome = ruler(gold, pred, trace)
+        captured[str(gold.case_id)] = outcome
+        return 0.0 if outcome.score is None else float(outcome.score)
+
+    evaluation = dspy.Evaluate(
+        devset=list(devset),
+        metric=scoring,
+        num_threads=1,
+        display_progress=False,
+        display_table=False,
+        failure_score=0.0,
+    )(_StoredAnswers(answers))
+    # A row `Evaluate` could not score at all -- the ruler itself raised, and `Evaluate` absorbed it under
+    # its own `failure_score` -- is still a case this run was asked about. Dropping it would shrink the
+    # denominator silently, which is the one thing these counts exist to prevent.
+    rows = [
+        {
+            "case_id": str(example.case_id),
+            "outcome": str(captured[str(example.case_id)].outcome),
+            "score": captured[str(example.case_id)].score,
+            "components": dict(captured[str(example.case_id)].components),
+        }
+        if str(example.case_id) in captured
+        else {
+            "case_id": str(example.case_id),
+            "outcome": "technical_failure",
+            "score": 0.0,
+            "components": {"failure": "news_program_baseline_target_metric_raised"},
+        }
+        for example in devset
+    ]
+    return rows, _from_percent(evaluation.score)
+
+
+def _target_evidence(
+    cases: Sequence[BaselineCase],
+    results: Sequence[CaseResult],
+    *,
+    answers: Mapping[str, CandidatePrediction],
+    judge: CardEquivalenceJudge | None,
+    route: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The per-target denominators and the #651 §8.1 product scoreboard, over one population.
+
+    `answers` is what *this run* answered: the persisted judgment in `recorded`, and the live one the
+    route just produced in the two live modes. Reading the stored judgment in a live mode would score
+    production's answer and publish it under the candidate's name.
+    """
+
+    answered = {result.case_id for result in results if result.answered} & set(answers)
+    strata = {case.episode.case_id: case.episode.stratum for case in cases}
+    examples = {case.episode.case_id: _target_examples(case.episode) for case in cases}
+    predictions = {
+        case.episode.case_id: _target_predictions(answers[case.episode.case_id])
+        for case in cases
+        if case.episode.case_id in answered
+    }
+    rows_by_target: dict[str, list[dict[str, Any]]] = {}
+    targets: dict[str, Any] = {}
+    for target in LEARNING_TARGETS:
+        devset = [examples[case_id][target] for case_id in sorted(predictions)]
+        answers = {case_id: predictions[case_id][target] for case_id in predictions}
+        rows, aggregate = ([], 0.0) if not devset else _evaluate_target(target, devset, answers, judge=judge)
+        # A case the route never answered is a technical failure of this target too: the reader got no
+        # classification, no semantics and no card, and excluding it would publish the answered cases as
+        # the corpus (the same defect `scores.failure_as_zero` exists to stop).
+        rows.extend(
+            {"case_id": case.episode.case_id, "outcome": "technical_failure", "score": 0.0, "components": {}}
+            for case in cases
+            if case.episode.case_id not in answered and target in tuple(case.episode.applicable_targets)
+        )
+        for row in rows:
+            row["stratum"] = strata.get(str(row["case_id"]), "")
+        rows_by_target[target] = rows
+        targets[target] = {
+            **summarize_target_outcomes(rows, target=target),
+            # The native aggregate, converted once in `_from_percent`. It counts every excluded case at
+            # zero, which is why it is named for what it is rather than published as the target's score.
+            "dspy_evaluate_lower_bound": aggregate,
+        }
+    taxonomy_rows = [
+        {
+            "case_id": case.episode.case_id,
+            "cluster_id": case.episode.cluster_id,
+            "gold": gold.model_dump(mode="json"),
+            "predicted": predicted,
+        }
+        for case in cases
+        if case.episode.case_id in predictions
+        for gold in (accepted_taxonomy(dict(case.episode.accepted_review or {})),)
+        if gold is not None
+        for predicted in (getattr(predictions[case.episode.case_id]["classification"], "taxonomy", None),)
+        if isinstance(predicted, Mapping)
+    ]
+    elected = {
+        str(row["cluster_id"]): row for row in sorted(taxonomy_rows, key=lambda row: str(row["case_id"]), reverse=True)
+    }
+    summary = summarize_taxonomy(list(elected.values())) if elected else {}
+    scoreboard = product_scoreboard(
+        rows_by_target,
+        taxonomy_summary=summary,
+        runtime={
+            "component_failures": {"unanswered_n": len(cases) - len(answered)},
+            "physical_call_count": route.get("physical_call_count", 0),
+            "total_tokens": route.get("total_tokens", 0),
+            # A provider that returns no resolvable price makes cost unobservable rather than zero.
+            "cost_unobservable": bool(int(route.get("cost_unknown_n", 0) or 0)),
+            "cost_unknown_n": route.get("cost_unknown_n", 0),
+            "provider_cost_microusd_known": route.get("provider_cost_microusd_known", 0),
+        },
+    )
+    return targets, scoreboard
+
+
 def run_baseline(
     cases: Sequence[BaselineCase],
     *,
     mode: BaselineMode,
-    artifact: ProgramStrategyArtifactV1,
+    artifact: NewsProgramStateV1,
     judge: CardEquivalenceJudge | None = None,
     semantic_judge: SemanticJudge | None = None,
     runtime_identity: Mapping[str, Any] | None = None,
@@ -622,15 +885,20 @@ def run_baseline(
     strict = bind_metric(None) if judge is not None else None
     examples = [_gold_example(case) if mode == "recorded" else build_compile_example(case.episode) for case in cases]
     results: list[CaseResult] = []
+    # What this run answered, per case, in the one shape the per-target rulers read. `recorded` fills it
+    # from the persisted judgment; the live modes fill it from the judgment the route just produced.
+    answers: dict[str, CandidatePrediction] = {}
     strict_scores: dict[str, float] = {}
     latency: dict[str, Any] = {}
     route: dict[str, Any] = {}
 
     if mode == "recorded":
         for case, example in zip(cases, examples, strict=True):
-            outcome = metric(example, _stored_prediction(case))
+            prediction = _stored_prediction(case)
+            answers[case.episode.case_id] = prediction
+            outcome = metric(example, prediction)
             if strict is not None:
-                strict_scores[case.episode.case_id] = float(strict(example, _stored_prediction(case)).score)
+                strict_scores[case.episode.case_id] = float(strict(example, prediction).score)
             results.append(_case_result(case, outcome, latency_ms=0))
 
     else:
@@ -695,6 +963,7 @@ def run_baseline(
                 verdict=judgment.verdict.model_dump(mode="json"),
                 editorial=judgment.editorial.model_dump(mode="json"),
             )
+            answers[case.episode.case_id] = prediction
             try:
                 outcome = metric(example, prediction)
                 if strict is not None:
@@ -755,6 +1024,7 @@ def run_baseline(
         mode=mode,
         artifact=artifact,
         judge=judge,
+        answers=answers,
         strict_scores=strict_scores,
         latency=latency,
         route=route,
@@ -771,8 +1041,9 @@ def _build_report(
     *,
     cases: Sequence[BaselineCase],
     mode: BaselineMode,
-    artifact: ProgramStrategyArtifactV1,
+    artifact: NewsProgramStateV1,
     judge: CardEquivalenceJudge | None,
+    answers: Mapping[str, CandidatePrediction],
     strict_scores: Mapping[str, float],
     latency: Mapping[str, Any],
     route: Mapping[str, Any],
@@ -799,6 +1070,12 @@ def _build_report(
     for result in failed:
         code = str(result.error_code or "unknown")
         failures_by_code[code] = failures_by_code.get(code, 0) + 1
+
+    # #651 §8. Computed before the composite blocks below and published beside them, because the two
+    # answer different questions: the composite is one number for "would this candidate ship the right
+    # action", and these are three numbers for "did it classify, understand and explain correctly", each
+    # with the denominator that says how much of the corpus could ask.
+    targets, scoreboard = _target_evidence(cases, results, answers=answers, judge=judge, route=route)
 
     gold_n = sum(result.gold_scored_n for result in answered)
     labelled_n = sum(result.labelled_n for result in answered)
@@ -862,7 +1139,9 @@ def _build_report(
             "policy_sha256": policy["policy_sha256"],
             "policy_values": policy["policy_values"],
             "policy_source": policy["policy_source"],
-            "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v6"),
+            # The constant, not a literal (#651 §7.2). A pinned string made this receipt claim a rubric
+            # the corpus behind it was no longer accepted under the moment the contract moved.
+            "metric": metric_receipt(bind_metric(judge), review_rubric_version=REVIEW_RUBRIC_VERSION),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
             # `current` is the active release epoch; `frozen_development` is the content-addressed dataset
@@ -892,7 +1171,7 @@ def _build_report(
         # move when the model does; built over `answered` it moved whenever a provider timed out, and an
         # operator reading a changed label distribution concludes the corpus changed under them.
         review_label_distribution=_dimension_tally(cases),
-        prediction_dimensions=_prediction_dimensions(answered),
+        prediction_dimensions=_prediction_dimensions(answered, cases=cases),
         gold_coverage={
             "gold_scored_n": gold_n,
             "labelled_n": labelled_n,
@@ -905,6 +1184,8 @@ def _build_report(
         objective=_objective_receipt(objective) if objective is not None else {},
         subsets=subsets,
         semantic_judge=({**judge.stats, **judge.identity} if judge is not None else {}),
+        targets=targets,
+        scoreboard=scoreboard,
         latency_ms=dict(latency),
         route=dict(route),
         cases=tuple(results),

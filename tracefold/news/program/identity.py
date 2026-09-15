@@ -105,12 +105,18 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
     "artifact.py": ("render_model_evidence_json",),
     "assembly.py": ("normalize_restates", "restatement_index_error"),
     "contracts.py": (
+        # `CatalogCandidate` and the function that builds the list decide what disambiguation evidence
+        # the model is shown and in what order (#651 §A). The visible-input schema alone would not
+        # catch a change to the bounding or the ordering, and an envelope that cannot see the code
+        # choosing the model's evidence is decoration.
+        "CatalogCandidate",
         "EditorialEnvelope",
         "ProgramTrace",
         "TriageContext",
         "TradeRelevanceV1",
         "_canonical_code_set",
         "aggregate_program_usage",
+        "catalog_candidates_of",
     ),
     "lm.py": (
         "LMCallLedger",
@@ -141,6 +147,7 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "_stable_error_code",
         "_usage_values",
         "_validate_request_defaults",
+        "active_predictor_disposition",
         "lm_request_identity",
         "lm_request_projection",
         "lm_request_sha256",
@@ -156,6 +163,10 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "_reader_card_semantic_view",
         "_rejected",
         "_relevance_normalizations",
+        # Which taxonomy-call failures the Program degrades instead of ending the route, and how a
+        # rejected label is turned into `taxonomy_status=unavailable` (#651 §5.3).
+        "_taxonomy_call_failure_code",
+        "_validate_taxonomy",
     ),
     "signatures.py": ("EventSemantics", "EventTaxonomySignature", "ReaderCard"),
     "taxonomy.py": (
@@ -191,13 +202,17 @@ def _golden_inputs(predictor: PredictorName) -> dict[str, str]:
             "provider_metadata": {},
             "queue_priority": "normal",
             "asset_class": "none",
-            "grounded_assets": [],
+            "grounded_assets": ["GOLD"],
             "storyline_key": "golden",
         },
         watchlist=(),
         told_rows=(),
         now_ms=2_000,
         queue_lag_ms=1_000,
+        # A two-class golden candidate, because the ambiguous symbol is the one the field exists for:
+        # an empty list would let the rendered request keep its bytes while the candidate row stopped
+        # being emitted at all (#651 §A).
+        catalog_candidates={"GOLD": ("crypto", "commodity")},
     )
     prepared = _prepare(context)
     if predictor == "event_semantics":
@@ -435,8 +450,20 @@ def execution_envelope() -> dict[str, Any]:
         "route": {
             "model_binding_slots": sorted(_MODEL_BINDING_SLOTS),
             "order": ["primary", "fallback"],
-            "route_graph": ["event_semantics", "normalize_validate", "taxonomy", "reader_card", "assemble"],
+            "route_graph": [
+                "event_semantics",
+                "normalize_validate",
+                "taxonomy",
+                "taxonomy_validate",
+                "reader_card",
+                "assemble",
+            ],
             "fallback_restart": "event_semantics",
+            "partial_failure": {
+                "taxonomy": "editorial_taxonomy_unavailable_no_route_restart",
+                "event_semantics": "route_restart",
+                "reader_card": "route_restart",
+            },
             "deadline_seconds": PROGRAM_ROUTE_DEADLINE_SECONDS,
             "primary_breaker": {
                 "failures": PROGRAM_PRIMARY_BREAKER_FAILURES,
@@ -459,6 +486,10 @@ def execution_envelope() -> dict[str, Any]:
                 "adapter_parse_error_after_format_fallback": "fallback_output_failure",
                 "domain_validation_error": "fallback_output_failure",
                 "output_truncated": "fallback_output_failure_no_format_retry",
+                "taxonomy_provider_error": "taxonomy_unavailable_continue",
+                "taxonomy_adapter_parse_error": "taxonomy_unavailable_continue",
+                "taxonomy_domain_validation_error": "taxonomy_unavailable_continue",
+                "taxonomy_output_truncated": "taxonomy_unavailable_continue",
                 "timeout_cancelled": "fallback_and_primary_breaker",
                 "late_completion": "fallback_and_primary_breaker",
                 "dual_route_failure": "SemanticJudgeError",

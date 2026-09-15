@@ -56,6 +56,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.objective",
         # #437: the existing recorded Dataset baseline invokes one pure taxonomy metric.
         "tracefold.news.learning.taxonomy_metric",
+        # #651 §7.3: `news learning judge-calibration` measures the metric judge against a fixed
+        # perturbation corpus. Pure and database-free, like the taxonomy metric above; the CLI composes
+        # the endpoint and this module asks the questions.
+        "tracefold.news.learning.judge_calibration",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
         "tracefold.news.review.desk",
@@ -180,6 +184,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # News may not name, declares its capability key and owns its tick.
         "tracefold.news.chain_tape",
         "tracefold.news.market_review.loops",
+        # #651 §6.2: the typed quote question. The composition seam builds the `QuoteRequest` values the
+        # News-owned quote port takes, for the same reason `app.http` already reads this module -- the
+        # vocabulary a caller must speak to ask for a price belongs to the pricing domain, and a literal
+        # copy of it at the seam would be a second definition of what a market is.
+        "tracefold.news.market_review.pricing",
         # The database composition adapter constructs narrow callback views from the concrete
         # repositories; no business package imports the App adapter in return.
         "tracefold.news.market_review.instrument_storage",

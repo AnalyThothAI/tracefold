@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Final, Literal
 
 from .artifact_identity import canonical_sha
-from .models import base_symbol
+from .models import MarketAsset, base_symbol
 from .similarity import trigram_similarity
 
 RECENT_HISTORY_WINDOW_MS: Final = 4 * 3_600_000
@@ -34,10 +34,20 @@ READER_HISTORY_CONTRACT: Final = {
         "verdict_stage": "triage",
         "final_decisions": ["push", "escalate"],
     },
+    # Every band is closed at both ends. The lower bound is the window; the upper bound is the read clock
+    # itself (#651 §12): a delivery whose settle stamp is ahead of the stamp this history is read at was
+    # not a card the reader had. In production the two coincide -- the read clock is the wall clock and
+    # nothing settles in the future -- but the evaluator reads the same ledger at a frozen stamp, where
+    # `seed_receipts` bounds both ends and this band used to bound only the lower one. That gap put a
+    # late-settling delivery into the SQL history and not into the replayed one, which is the one thing a
+    # replay may never disagree with production about. The CAS token Triage re-reads under the storyline
+    # lock is deliberately *not* bounded this way, and is not part of this contract: it answers whether the
+    # ledger moved after the snapshot, which is the one question a late-settling card is the answer to.
+    "read_clock": "settled_at_ms < read_clock",
     "windows": {
-        "recent": {"age": "<=", "window_ms": RECENT_HISTORY_WINDOW_MS},
+        "recent": {"age": ">=0_and<=", "window_ms": RECENT_HISTORY_WINDOW_MS},
         "targeted": {"age": ">recent_and<=targeted", "window_ms": TARGETED_HISTORY_WINDOW_MS},
-        "similar": {"age": "<=", "window_ms": SIMILAR_HISTORY_WINDOW_MS},
+        "similar": {"age": ">=0_and<=", "window_ms": SIMILAR_HISTORY_WINDOW_MS},
     },
     "caps": {
         "recent": RECENT_HISTORY_MAX,
@@ -115,7 +125,10 @@ class ReaderHistoryRow:
     comparison_fingerprint: str
     dedupe_family: str
     grounded_assets: tuple[str, ...]
-    assets: tuple[str, ...]
+    # The judgment's own assets, typed (#651 §6.2). `grounded_assets` and `canonical_assets` stay bare
+    # symbols: one is the provider's tag and the other is the Event-asset ledger, and neither carries a
+    # market claim, so neither may pretend to one.
+    assets: tuple[MarketAsset, ...]
     canonical_assets: tuple[str, ...]
     magnitude: int
     direction: str
@@ -133,7 +146,7 @@ class ReaderHistoryRow:
             "comparison_fingerprint": self.comparison_fingerprint,
             "dedupe_family": self.dedupe_family,
             "grounded_assets": list(self.grounded_assets),
-            "assets": list(self.assets),
+            "assets": [{"symbol": asset.symbol, "market_type": asset.market_type} for asset in self.assets],
             "canonical_assets": list(self.canonical_assets),
             "magnitude": self.magnitude,
             "direction": self.direction,
@@ -311,7 +324,7 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
     if missing:
         raise ValueError(f"news_reader_history_fields_missing:{','.join(sorted(missing))}")
     assets = tuple(
-        str(value.get("symbol") if isinstance(value, Mapping) else value)
+        MarketAsset.of(value)
         for value in row["assets"] or ()
         if value and (not isinstance(value, Mapping) or value.get("symbol"))
     )

@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
+from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
 from tracefold.news.card_format import CHANGE_BASIS_LABEL
 from tracefold.news.delivery import (
@@ -31,17 +31,18 @@ from tracefold.news.events.storyline import (
     STORYLINE_REGISTRY_SHA256,
     STORYLINE_REGISTRY_VERSION,
     StorylineRegistry,
-    _symbol_in_text,
     final_storyline_key,
     load_storyline_registry,
     match_storyline,
     preliminary_storyline_key,
     registry_storyline_key,
+    symbol_in_text,
 )
 from tracefold.news.events.titles import extract_title
 from tracefold.news.events.tokens import comparison_tokens, jaccard
 from tracefold.news.market_review.pricing import CHANGE_BASIS_ZH
 from tracefold.news.models import (
+    MarketAsset,
     ReaderMarketMovement,
     ReaderReceipt,
     ReaderTradeTarget,
@@ -695,7 +696,7 @@ def test_preliminary_key_does_not_let_an_unverified_provider_tag_take_a_geopolit
             title=title,
             headline_zh="伊朗在霍尔木兹海峡外袭击另一艘船只",
             scope="single_name",
-            verdict_primaries=["BTC"],
+            verdict_primaries=[MarketAsset("BTC")],
             grounded_assets=["BTC", "CL", "XYZ-CL"],
             dedupe_family="general",
         )
@@ -782,7 +783,7 @@ def test_storyline_keys_follow_the_verdict_before_the_registry() -> None:
             title="Nvidia to invest $100bn",
             headline_zh="",
             scope="single_name",
-            verdict_primaries=["NVDA"],
+            verdict_primaries=[MarketAsset("NVDA")],
             grounded_assets=["NVDA"],
             dedupe_family="general",
         )
@@ -794,7 +795,7 @@ def test_storyline_keys_follow_the_verdict_before_the_registry() -> None:
             title="Bitcoin pauses at $64,000 as rising yields, oil drag equities lower",
             headline_zh="",
             scope="sector",
-            verdict_primaries=["BTC"],
+            verdict_primaries=[MarketAsset("BTC")],
             grounded_assets=["BTC", "CL", "XYZ-CL"],
             dedupe_family="general",
         )
@@ -806,7 +807,7 @@ def test_storyline_keys_follow_the_verdict_before_the_registry() -> None:
             title="FOMC minutes tomorrow",
             headline_zh="",
             scope="macro",
-            verdict_primaries=["BTC"],
+            verdict_primaries=[MarketAsset("BTC")],
             grounded_assets=[],
             dedupe_family="general",
         )
@@ -832,7 +833,7 @@ def test_storyline_keys_follow_the_verdict_before_the_registry() -> None:
                 title="Company reports half-year results",
                 headline_zh="",
                 scope="single_name",
-                verdict_primaries=[symbol],
+                verdict_primaries=[MarketAsset(symbol)],
                 grounded_assets=[],
                 dedupe_family="general",
             )
@@ -1165,8 +1166,10 @@ def test_decide_restatement_drop_is_grounded() -> None:
     # Grounded restatement of entry 0 (same direction) -> drop, named.
     dropped = decide(_verdict(novelty="restatement", restates=0), _FACTS, quiet)
     assert dropped.final == "drop" and dropped.override_rule == "restatement"
-    # Restatement of entry 1 whose direction was bearish while this one is bullish: a flip is never a restatement.
-    assert decide(_verdict(novelty="restatement", restates=1), _FACTS, quiet).final == "push"
+    # Entry 1 was bearish and this card is bullish. #651 §6.3: the flip no longer exempts it. The model said
+    # the reader already has this fact, and its own direction reading is not evidence that they do not.
+    flipped = decide(_verdict(novelty="restatement", restates=1), _FACTS, quiet)
+    assert flipped.final == "drop" and flipped.override_rule == "restatement"
     # Out-of-range index or an empty ledger: the claim is ignored, so a hallucinated restatement cannot drop a card.
     assert decide(_verdict(novelty="restatement", restates=7), _FACTS, quiet).final == "push"
     assert (
@@ -1331,7 +1334,7 @@ def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores
     assert claim.final == "push" and claim.override_rule == "trade_relevance_escalate_uncorroborated"
     assert OVERRIDE_RULE_ZH["trade_relevance_escalate_uncorroborated"]
     # Either corroboration keeps the escalate: a source of known authority, or a second independent arrival.
-    wire = scored_judgment(big, relevance=escalate, taxonomy=news_taxonomy(source_authority="reputable_secondary"))
+    wire = scored_judgment(big, relevance=escalate, source_authority="reputable_secondary")
     assert production_decide(wire, lone, None).final == "escalate"
     merged = production_decide(scored_judgment(big, relevance=escalate), replace(lone, member_count=2), None)
     assert merged.final == "escalate" and merged.override_rule == "trade_relevance_escalate"
@@ -1347,6 +1350,31 @@ def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores
     assert budgeted.override_rule == "trade_relevance_escalate_uncorroborated"
     # A corroborated escalate is the card the budget makes room for.
     assert production_decide(wire, lone, spent, now_ms=_NOW).final == "escalate"
+
+
+def test_the_corroboration_rule_still_fires_when_the_taxonomy_predictor_failed() -> None:
+    """#651 §5.3. `source_authority` is computed from the evidence, not classified by the model, so a
+    judgment whose taxonomy call failed still reaches `decide()` with the corroboration fact intact. Under
+    v13 the rule read it out of the taxonomy object, and such a judgment could not have existed at all."""
+
+    big = _verdict(magnitude=3, scope="macro", assets=[], direction="bearish", headline_zh="伊朗议员称将报复美军")
+    escalate = trade_relevance(reader_value="escalate")
+    lone = replace(_NO_WATCHLIST, member_count=1)
+
+    unclassified = scored_judgment(big, relevance=escalate, taxonomy_error_code="news_program_output_truncated")
+    assert unclassified.editorial.taxonomy is None
+    assert unclassified.editorial.taxonomy_status == "unavailable"
+
+    claim = production_decide(unclassified, lone, None)
+    assert claim.final == "push" and claim.override_rule == "trade_relevance_escalate_uncorroborated"
+
+    corroborated = scored_judgment(
+        big,
+        relevance=escalate,
+        source_authority="reputable_secondary",
+        taxonomy_error_code="news_program_output_truncated",
+    )
+    assert production_decide(corroborated, lone, None).final == "escalate"
 
 
 def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
@@ -1375,7 +1403,7 @@ def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
     corroborated = scored_judgment(
         nameless.model_copy(update={"magnitude": 3}),
         relevance=trade_relevance(reader_value="escalate"),
-        taxonomy=news_taxonomy(source_authority="reputable_secondary"),
+        source_authority="reputable_secondary",
     )
     assert production_decide(corroborated, _NO_WATCHLIST, None).final == "escalate"
     assert decide(nameless, _FACTS, None).override_rule == "watchlist_objective_guard"
@@ -1848,7 +1876,12 @@ def test_card_is_the_reader_contract() -> None:
             "headline_zh": "英伟达千亿美元投资 OpenAI 数据中心",
             "why_zh": "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
             "scope": "single_name",
-            "assets": [{"symbol": "NVDA", "role": "primary"}, {"symbol": "OPENAI", "role": "mentioned"}],
+            "assets": [
+                {"symbol": "NVDA", "market_type": "equity", "role": "primary"},
+                # A company with no ticker is a text subject, never an invented one: it carries no
+                # market and therefore never reaches the card or a quote target (#651 §6.2).
+                {"symbol": "OPENAI", "market_type": "unknown", "role": "mentioned"},
+            ],
         },
         decision="push",
         grounded_assets=["NVDA", "XYZ-NVDA"],
@@ -1895,6 +1928,9 @@ def test_card_is_the_reader_contract() -> None:
         verdict={"direction": "neutral", "magnitude": 2, "headline_zh": "BREAKING: SEC approves spot ETH ETF options"},
         decision="escalate",
         grounded_assets=["ETH"],
+        # Degraded: no model answered, so the card may print only what the catalogue proves on its own
+        # (#651 §6.2). `ETH` is held under one class, so it is provable; an ambiguous tag would not be.
+        catalog_candidates={"ETH": ("crypto",)},
         degraded=True,
     )
     assert degraded["header"]["title"]["content"] == "⚡ BREAKING: SEC approves spot ETH ETF options"
@@ -1906,12 +1942,31 @@ def test_card_is_the_reader_contract() -> None:
     assert "模型" not in json.dumps(degraded, ensure_ascii=False) and "中性" not in json.dumps(
         degraded, ensure_ascii=False
     )
-    # Card assets are the verdict primaries the Gate grounded; the grounded set itself shows when the
-    # model named none. #562 §5 row 9: a wide grounded set is a reason to print the first four, not
-    # none -- five grounded symbols and no named primary used to leave the card with no ticker at all.
-    assert card_assets({"assets": [{"symbol": "CC", "role": "primary"}]}, ["CC"]) == ["CC"]
-    assert card_assets({"assets": []}, ["A", "B", "C", "D", "E"]) == ["A", "B", "C", "D"]
-    assert card_assets({"assets": [{"symbol": "BTC", "role": "primary"}]}, ["BTC", "CL", "XYZ-CL"]) == ["BTC"]
+    # Card assets are this judgment's own typed assets, primaries first, capped at four (#651 §6.2).
+    # The provider tag is no longer a source of tickers for a judgment that answered: sorting the Gate's
+    # grounded set is what printed `CRCL` beside a headline about Visa.
+    assert card_assets({"assets": [{"symbol": "CC", "market_type": "crypto", "role": "primary"}]}, ["CC"]) == [
+        MarketAsset("CC", "crypto")
+    ]
+    # A primary the provider never tagged is still the subject, and is shown.
+    assert card_assets({"assets": [{"symbol": "V", "market_type": "equity", "role": "primary"}]}, ["CRCL"]) == [
+        MarketAsset("V", "equity")
+    ]
+    # Mentions fill the remaining slots after the primaries, in the judgment's own order.
+    assert card_assets(
+        {
+            "assets": [{"symbol": f"M{index}", "market_type": "crypto", "role": "mentioned"} for index in range(5)]
+            + [{"symbol": "P", "market_type": "crypto", "role": "primary"}]
+        },
+        [],
+    ) == [MarketAsset("P", "crypto"), *(MarketAsset(f"M{index}", "crypto") for index in range(3))]
+    # Degraded, with no model asset at all: only a tag the catalogue holds under exactly one class.
+    assert card_assets(
+        {"assets": []}, ["A", "B"], catalog_candidates={"A": ("crypto",), "B": ("crypto", "equity")}
+    ) == [MarketAsset("A", "crypto")]
+    # An untyped asset the catalogue cannot resolve to one market is not shown: the ticker on the card is
+    # also the quote target beside it, and neither may be guessed.
+    assert card_assets({"assets": [{"symbol": "SEI", "role": "primary"}]}, ["SEI"]) == []
 
 
 def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
@@ -1939,6 +1994,9 @@ def _market_lines(**overrides: Any) -> list[str]:
         verdict={"direction": "bearish", "magnitude": 3, "headline_zh": "标题"},
         decision="push",
         grounded_assets=["CL"],
+        # This verdict names no asset, so the only ticker the card may print is one the catalogue proves
+        # unambiguously (#651 §6.2): `CL` is the WTI contract and nothing else.
+        catalog_candidates={"CL": ("commodity",)},
         **overrides,
     )
     return card["elements"][0]["content"].splitlines()
@@ -2203,6 +2261,7 @@ def test_card_marks_a_progression() -> None:
         verdict={"direction": "bearish", "magnitude": 3, "novelty": "progression", "headline_zh": "标题"},
         decision="push",
         grounded_assets=["CL"],
+        catalog_candidates={"CL": ("commodity",)},
     )
     assert card["elements"][0]["content"].splitlines() == ["利空 · 新进展 · 影响重大 · CL · jin10"]
     for quiet in ("new_fact", "restatement", "", None):
@@ -2212,6 +2271,7 @@ def test_card_marks_a_progression() -> None:
             verdict=verdict,
             decision="push",
             grounded_assets=["CL"],
+            catalog_candidates={"CL": ("commodity",)},
         )
         assert card["elements"][0]["content"].splitlines() == ["利空 · 影响重大 · CL · jin10"]
 
@@ -2318,7 +2378,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             title="Johnson & Johnson ($JNJx) Found in OKX",
             headline_zh="强生（$JNJx）出现在 OKX",
             scope="single_name",
-            verdict_primaries=["JNJ"],
+            verdict_primaries=[MarketAsset("JNJ")],
             grounded_assets=["OKB"],
             dedupe_family="general",
         )
@@ -2379,7 +2439,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             title="Iran halts oil exports",
             headline_zh="伊朗停止石油出口",
             scope="macro",
-            verdict_primaries=["XOM"],
+            verdict_primaries=[MarketAsset("XOM")],
             grounded_assets=["XOM"],
             dedupe_family="general",
         )
@@ -2498,7 +2558,7 @@ def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
             title=str(over.get("title", "Some exchange notice")),
             headline_zh="",
             scope="single_name",
-            verdict_primaries=primaries,
+            verdict_primaries=[MarketAsset(symbol) for symbol in primaries],
             grounded_assets=["OKB"],
             dedupe_family="general",
         )
@@ -2515,11 +2575,11 @@ def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
     """`NOT`, `ME`, `ID`, `IO`, `ON` and `AI` are all real provider tags. A case-insensitive match turned "he will
     not sell his stake" into evidence for `asset:NOT` — the exact mis-bucketing this fallback exists to prevent."""
 
-    assert not _symbol_in_text("NOT", "Trump says he will not raise tariffs on Canada")
-    assert not _symbol_in_text("ME", "show me the money")
-    assert not _symbol_in_text("ID", "no id required")
-    assert _symbol_in_text("NOT", "NOT holders vote on the treasury")
-    assert _symbol_in_text("OKB", "强生（$OKB）出现在 OKX")
+    assert not symbol_in_text("NOT", "Trump says he will not raise tariffs on Canada")
+    assert not symbol_in_text("ME", "show me the money")
+    assert not symbol_in_text("ID", "no id required")
+    assert symbol_in_text("NOT", "NOT holders vote on the treasury")
+    assert symbol_in_text("OKB", "强生（$OKB）出现在 OKX")
     assert (
         final_storyline_key(
             title="Musk says he will not sell his stake",

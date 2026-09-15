@@ -15,7 +15,7 @@ from tracefold.app.workers.runtime import CapabilityStates
 from tracefold.app.workers.wiring import news as workers
 from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
 from tracefold.news.learning.evaluate import ArmManifest, CandidateManifest, ProposalReceipt
-from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.lm import (
@@ -28,7 +28,7 @@ from tracefold.news.program.lm import (
     program_json_adapter,
 )
 from tracefold.news.program.resources import candidates as candidate_programs
-from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.program.signatures import EventSemanticsSignature
 from tracefold.news.release import runtime as release_runtime
 from tracefold.news.release.canary import (
@@ -274,7 +274,7 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
     arm = learning_runtime.active_arm_manifest(settings, runtime_composition=composition)
 
     assert composition.program_configured is False
-    assert composition.semantic_judge(load_stable_program_artifact()) is None
+    assert composition.semantic_judge(load_stable_program_state()) is None
     assert composition.progression_verifier() is None
     assert composition.secret_free_slot_identities() == {
         "event_semantics.primary": None,
@@ -325,7 +325,7 @@ def test_compile_baseline_uses_native_module_without_production_availability_con
         }
     )
     composition = learning_runtime.compose_news_program_runtime(settings)
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
 
     def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
         return ScriptedLM([], model=model, **kwargs)
@@ -340,6 +340,68 @@ def test_compile_baseline_uses_native_module_without_production_availability_con
     assert runtime_judge is not None
     assert runtime_judge.route_deadline_seconds == 20
     assert runtime_judge.primary_breaker_enabled is True
+
+
+def _compile_route_models(settings: Any) -> dict[str, str]:
+    """Which model each Predictor's offline compile call would be sent to."""
+
+    composition = learning_runtime.compose_news_program_runtime(settings)
+
+    def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
+        return ScriptedLM([], model=model, **kwargs)
+
+    judge = composition.compile_semantic_judge(load_stable_program_state(), lm_type=scripted_factory)
+    assert judge is not None
+    return {
+        "event_semantics": judge.primary.event_semantics.model,
+        "taxonomy": judge.primary.taxonomy.model,
+        "reader_card": judge.primary.reader_card.model,
+    }
+
+
+def test_compile_binds_each_predictor_to_its_own_production_primary_slot() -> None:
+    """#651: offline compile answers on the endpoints production asks that Predictor on.
+
+    With no dedicated ReaderCard endpoint every slot is the EventSemantics alias, which is what the old
+    single-endpoint binding happened to produce. With one configured, ReaderCard moves and the other two
+    do not — the case the old binding got wrong, because it optimized and scored card copy against a model
+    production never asks to write it.
+    """
+
+    aliased = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "event-model",
+            }
+        }
+    )
+    assert _compile_route_models(aliased) == {
+        "event_semantics": "openai/event-model",
+        "taxonomy": "openai/event-model",
+        "reader_card": "openai/event-model",
+    }
+
+    dedicated = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "event-model",
+                "news_reader_card": {
+                    "model": "card-model",
+                    "api_key": "card-key",
+                    "base_url": "https://card.test/v1",
+                },
+            }
+        }
+    )
+    assert _compile_route_models(dedicated) == {
+        "event_semantics": "openai/event-model",
+        "taxonomy": "openai/event-model",
+        "reader_card": "openai/card-model",
+    }
 
 
 def test_news_runtime_composes_progression_review_from_the_event_model_endpoint() -> None:
@@ -577,7 +639,7 @@ def test_invalid_requested_reader_fallback_disables_the_whole_fallback_route() -
 
 def test_dedicated_reader_endpoint_produces_exact_three_model_trace() -> None:
     created: list[tuple[str, int, ScriptedLM]] = []
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     semantics = {
         "novelty": "new_fact",
         "restates": -1,
@@ -632,7 +694,7 @@ def test_dedicated_reader_endpoint_produces_exact_three_model_trace() -> None:
             }
         }
     )
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     composition = learning_runtime.compose_news_program_runtime(settings)
     judge = composition.semantic_judge(artifact, lm_type=scripted_factory)
     assert judge is not None
@@ -711,7 +773,7 @@ def test_a_candidate_whose_parent_is_not_the_running_stable_never_resolves_an_ar
     def unexpected_load(_sha: str) -> Any:
         raise AssertionError("a mismatched parent must be refused before any artifact is loaded")
 
-    monkeypatch.setattr(release_runtime, "load_program_artifact", unexpected_load)
+    monkeypatch.setattr(release_runtime, "load_program_state", unexpected_load)
 
     with pytest.raises(ValueError, match="news_candidate_program_parent_mismatch"):
         release_runtime.candidate_program_artifact(candidate, stable, stable_artifact=stable_artifact)
@@ -884,12 +946,12 @@ def test_canary_control_excludes_a_manifest_whose_program_artifact_cannot_load(m
         program_sha256="b" * 64,
     )
     stable_artifact = SimpleNamespace(program_sha256=stable_arm.program_sha256)
-    monkeypatch.setattr(release_runtime, "load_stable_program_artifact", lambda: stable_artifact)
+    monkeypatch.setattr(release_runtime, "load_stable_program_state", lambda: stable_artifact)
 
     def reject_artifact(_program_sha256: str) -> Any:
         raise ValueError("news_program_artifact_hash_mismatch")
 
-    monkeypatch.setattr(release_runtime, "load_program_artifact", reject_artifact)
+    monkeypatch.setattr(release_runtime, "load_program_state", reject_artifact)
 
     assert (
         release_runtime.artifact_valid_candidate_bundles(
@@ -912,7 +974,7 @@ def _wire_startup_test(
         program_sha256="b" * 64,
         envelope_sha256=EXECUTION_ENVELOPE_SHA256,
     )
-    stable_artifact = SimpleNamespace(program_sha256="b" * 64, schema_version="news_program_strategy_artifact_v1")
+    stable_artifact = SimpleNamespace(program_sha256="b" * 64, schema_version=PROGRAM_SCHEMA_VERSION)
     stable_program = object()
     progression_verifier = object()
     news = _StartupNewsRepository(
@@ -927,7 +989,7 @@ def _wire_startup_test(
     )
     monkeypatch.setattr(workers, "compose_news_program_runtime", lambda _settings: composition)
     monkeypatch.setattr(workers, "active_arm_manifest", lambda _settings, **_kwargs: stable_arm)
-    monkeypatch.setattr(workers, "load_stable_program_artifact", lambda: stable_artifact)
+    monkeypatch.setattr(workers, "load_stable_program_state", lambda: stable_artifact)
     identity_reads = 0
 
     def read_runtime_identity() -> SimpleNamespace:
@@ -998,7 +1060,7 @@ def test_worker_startup_isolates_bad_candidate_artifact_and_trips_active_activat
     def reject_artifact(_program_sha256: str) -> Any:
         raise ValueError("news_program_artifact_hash_mismatch")
 
-    monkeypatch.setattr(release_runtime, "load_program_artifact", reject_artifact)
+    monkeypatch.setattr(release_runtime, "load_program_state", reject_artifact)
 
     pipeline, news = _wire_startup_test(
         monkeypatch,

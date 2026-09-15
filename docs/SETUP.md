@@ -261,7 +261,7 @@ llm:
     base_url: "https://reader-fallback.example/v1"
     model: "reader-fallback-model"
   # Required only for `news learning run`. Reflection uses this endpoint with
-  # code-owned 32k/300s/temperature-1. The taxonomy optimizer has no judge role.
+  # code-owned 32k/300s/temperature-1. The optimizer has no judge role.
   news_compiler_reflection:
     api_key: "<compiler reflection secret>"
     base_url: "https://reflection.example/v1"
@@ -282,8 +282,8 @@ news:
     # Alternative provider (do not configure both):
     # feishu_webhook_url: "<Feishu v2 webhook>"
     # feishu_signing_secret:
-  policy:                     # policy-v13 duplicate/safety/budget knobs (all optional; these are the defaults)
-    restatement_drop: true      # a restatement of a card the reader already received never pushes
+  policy:                     # policy-v14 duplicate/safety/budget knobs (all optional; these are the defaults)
+    restatement_drop: true      # a restatement of a card the reader already received never pushes, either direction
     similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
     listing_exempt_from_duplicate: true  # exchange listing frames are duplicates only per instrument
     stale_source_max_age_s: 43200  # an x/twitter artifact already older than 12 h on arrival is a replay
@@ -328,7 +328,7 @@ The Gate admits nearly every Item (only recovery replays, law-firm templates
 and unscored or under-80 market frames skip Program execution; exchange
 listing/delisting frames are admitted and judged like any candidate), Triage is
 the semantic filter, and
-`decide()` applies policy v13 to one `ScoredJudgment`. Semantic generation is
+`decide()` applies policy v14 to one `ScoredJudgment`. Semantic generation is
 the code-owned `EventSemantics.v2 -> deterministic
 _normalize_and_validate_semantics -> ReaderCard.v2 -> deterministic _assemble`
 Program; `TradeRelevanceV1` is nested
@@ -342,14 +342,15 @@ macro lexicon, queue lag and watchlist; ReaderCard receives only its reduced
 semantic view and never ToldContext or reader intent. Queue priority remains a
 broker scheduling/audit fact and is absent from reader HTTP/OpenAPI/React.
 
-A change is one candidate kind — a bounded two-instruction Prompt patch:
-record accepted cases with `tracefold news review`, freeze development and
+A change is one candidate kind — a `news_program_state_v1` document that moves
+exactly one Predictor's native state: record accepted cases with
+`tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
-offline, holdout, shadow and canary gates under `tracefold news learning`.
+offline, holdout and canary gates under `tracefold news learning`.
 The optional GEPA workflow reads the frozen development corpus once, runs
 bounded GEPA with no database write, broker, delivery, canary or promotion
-credential, and emits at most a typed patch carrying the two Predictor
-instructions. It requires explicit metric/task/reflection/metric-judge call
+credential, and emits at most one state document carrying the target
+Predictor's optimized `dump_state()` beside the other two unchanged. It requires explicit metric/task/reflection/metric-judge call
 limits, a total and a per-call cost limit and a seed; it cannot register,
 accept, deploy or promote. `tracefold news learning run` is the only candidate
 entry: it writes zero-call readiness and invokes stock GEPA exactly once over
@@ -382,8 +383,8 @@ open activations and records the cut without rewriting or appending the
 prior-factory judgments are audit-only under exact current-bundle eligibility,
 so the factory-v7 cohort starts at zero.
 The production image has one loader only: the content-addressed
-`news_program_strategy_artifact_v1` document executed as
-`news_semantic_program_v9` under `news_triage_policy_v13`. Prior roots remain
+`news_program_state_v1` document executed as
+`news_semantic_program_v10` under `news_triage_policy_v14`. Prior roots remain
 immutable audit history and are not executable by the current image. Rollback
 uses the recorded previous same-schema runtime image, never an alternate
 registry entry or runtime switch.

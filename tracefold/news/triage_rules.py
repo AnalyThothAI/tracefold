@@ -1,4 +1,12 @@
-"""The ordinary model policy and its code-owned degraded fallback."""
+"""The ordinary model policy and its code-owned degraded fallback.
+
+``TRIAGE_POLICY_VERSION`` is ``news_triage_policy_v14`` and stays there across #651 §6.3. The
+direction-flip exemption inside :func:`grounded_restatement` is a behaviour change, and a behaviour change
+normally owes a version -- but v14 was declared earlier in this same change (migration ``0379``) and has
+never run in production, so no stored verdict was ever written under the version it would be distinguished
+from. Bumping again would publish a v15 whose only difference from a never-deployed v14 is a paragraph
+nobody can point at a row for.
+"""
 
 from __future__ import annotations
 
@@ -248,19 +256,27 @@ def _seen_flip(direction: str, seen_directions: Sequence[str], index: int) -> bo
 
 
 def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None) -> bool:
-    """True when the model called this a restatement *of a ledger entry it was actually shown* and the direction did
-    not flip against that entry. An out-of-range ``restates`` (or an empty ledger) is ignored: novelty then counts as
-    new_fact, so a hallucinated restatement can never drop a card."""
+    """True when the model called this a restatement *of a ledger entry it was actually shown*.
+
+    An out-of-range ``restates`` (or an empty ledger) is ignored: novelty then counts as new_fact, so a
+    hallucinated restatement can never drop a card.
+
+    The label decides, and the direction does not (#651 §6.3). This used to exempt a `restatement` whose
+    `direction` had flipped against the cited told entry, on the theory that a reversal cannot be a repeat.
+    But `direction` is the model's own reading of a fact, not a fact about the world. `ec2e5a29` and
+    `727ffc0b` are one Visa onchain-credit release carried by two outlets and the reader received both
+    cards; the model called the second a progression, so the drop it earned it never reached this guard --
+    and had it called it a restatement while reading the direction the other way, the exemption would have
+    delivered it anyway. Correcting the instruction alone could not have stopped that card.
+
+    A real world reversal does not arrive wearing this label at all -- it is a new action, so it arrives as
+    `progression` or `new_fact`, and it is those two that ``_seen_flip`` and ``_budget_exhausted`` still
+    protect against the similarity check and the storyline budget.
+    """
 
     if verdict.novelty != "restatement" or status is None or status.told_count == 0:
         return False
-    if not 0 <= verdict.restates < status.told_count:
-        return False
-    told_direction = status.told_directions[verdict.restates]
-    flipped = (
-        verdict.direction in _DIRECTIONAL and told_direction in _DIRECTIONAL and told_direction != verdict.direction
-    )
-    return not flipped
+    return 0 <= verdict.restates < status.told_count
 
 
 def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, window_ms: int, budget_max: int) -> bool:
@@ -277,6 +293,14 @@ def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, w
     "against any delivered card" let 101 more cards through and 10 escape on one key in one hour. The ``none``
     key is exempt: it is not a storyline but "the registry matched nothing", and counting it withheld Chile's
     GDP print behind an RBNZ decision in the 2026-09-02 replay (#509 D6).
+
+    The key comparison is exact string equality, deliberately, and it is *not* `same_storyline_key`. This
+    counts receipts — how many cards the reader was proven to have received on exactly this key — and the
+    market-aware comparison retrieval uses is inclusive, so borrowing it here would withhold cards on the
+    strength of a card about a different instrument. One consequence is real and bounded: `asset:` keys
+    gained their market in #651 §6.2, so for one budget window after that cutover a card on
+    `asset:crypto:SEI` does not count the cards delivered under the untyped `asset:SEI`, and the budget
+    restarts. Making it not restart is a policy decision and a policy version, not a mechanical one.
     """
 
     if status.key == NO_STORYLINE_KEY:
@@ -366,14 +390,17 @@ def decide(
         final, rule = "drop", "trade_relevance_inconsistent"
 
     # #504 D3: an `escalate` needs corroboration the model cannot supply. `source_authority` is the code-owned
-    # taxonomy field issued once from the evidence (`taxonomy.py`), and `member_count` is the Deduper's count of
+    # editorial field issued once from the evidence (`taxonomy.py`), and `member_count` is the Deduper's count of
     # independent arrivals. Unknown source *and* a single Item is a claim, not a fact the reader should be woken
     # for: 92 of the 126 escalates on 2026-09-02 were exactly that (an Iranian MP's statement on a Telegram
     # channel was the first v9 escalate). The card keeps every other right of a push. Grounded assets are not
     # corroboration: a provider tag proves which instrument is mentioned, not that a second party confirmed it.
+    # #651 §5.3 is why it reads the envelope rather than `editorial.taxonomy.source_authority`: the taxonomy
+    # Predictor can fail on its own now, and the loudest card class must not lose its corroboration rule to a
+    # classification failure that says nothing about who reported the fact.
     if (
         rule == "trade_relevance_escalate"
-        and judgment.editorial.taxonomy.source_authority == "unknown"
+        and judgment.editorial.source_authority == "unknown"
         and facts.member_count <= 1
     ):
         final, rule = "push", "trade_relevance_escalate_uncorroborated"

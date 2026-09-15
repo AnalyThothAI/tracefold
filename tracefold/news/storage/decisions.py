@@ -176,7 +176,14 @@ class DecisionStorage:
     conn: Any
 
     def reader_history_revision(self, *, now_ms: int) -> tuple[int, int, str]:
-        """Return a primitive CAS token for the delivered-card ledger used by Triage."""
+        """Return a primitive CAS token for the delivered-card ledger used by Triage.
+
+        Open above `now_ms` on purpose, unlike the snapshot bands below. This answers "has the ledger
+        changed since I read it", and the change it exists to catch is precisely a card that settled
+        *after* the stamp the snapshot was taken at: Triage refreshes the ledger outside any transaction
+        and re-reads this token inside `lock_storyline`, both at the same stamp, so an upper bound at that
+        stamp would hide the racing delivery from both reads and buy the lost CAS nothing.
+        """
 
         row = self.conn.execute(
             """
@@ -195,17 +202,30 @@ class DecisionStorage:
         return (int(row["row_count"]), int(row["newest_at_ms"]), str(row["greatest_event_id"]))
 
     def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
-        """Reader receipt truth split into the 4 h policy ledger and the bounded semantic candidate bands."""
+        """Reader receipt truth split into the 4 h policy ledger and the bounded semantic candidate bands.
+
+        Every band is closed at both ends against ``now_ms`` (#651 §12). The exact and asset bands always
+        were, because the band split is their upper bound; the recent and similar bands were open above,
+        which is invisible in production -- ``now_ms`` is the wall clock there and nothing settles ahead of
+        it -- and wrong for the evaluator, which reads this same ledger at a frozen stamp. There
+        ``learning/evaluation_history.seed_receipts`` bounds the look-back at both ends, so a delivery that
+        settled after the frozen stamp entered the SQL history and not the replayed one, and the two
+        histories are supposed to be the same ledger read two ways.
+
+        ``reader_history_revision`` above stays open, and the asymmetry is the point: a snapshot may only
+        contain cards the reader had at this stamp, while the CAS token beside it has to notice the card
+        that arrives after it.
+        """
 
         revision = self.reader_history_revision(now_ms=now_ms)
         recent = self.conn.execute(
             _READER_HISTORY_PROJECTION
             + """
              WHERE e.event_id <> %s
-               AND d.settled_at_ms >= %s
+               AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
              ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
             """,
-            (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, RECENT_HISTORY_MAX),
+            (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, int(now_ms), RECENT_HISTORY_MAX),
         ).fetchall()
         if not include_targeted:
             return replace(assemble_reader_history(recent_rows=recent, now_ms=now_ms), ledger_revision=revision)
@@ -306,7 +326,7 @@ class DecisionStorage:
                 FROM news_deliveries d
                WHERE d.kind = 'first' AND d.state = 'sent'
                  AND d.delete_state IS DISTINCT FROM 'deleted'
-                 AND d.settled_at_ms >= %s
+                 AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                  AND d.event_id <> ALL(%s)
             ), delivered_titles AS MATERIALIZED (
               SELECT e.event_id, e.comparison_title, w.settled_at_ms
@@ -325,6 +345,7 @@ class DecisionStorage:
                 + " JOIN band ON band.event_id = e.event_id",
                 (
                     int(now_ms) - SIMILAR_HISTORY_WINDOW_MS,
+                    int(now_ms),
                     spent,
                     comparison_title,
                     comparison_title,
@@ -998,3 +1019,56 @@ def _telegram_receipt(
     if require_edited and parsed.edited_at_ms is None:
         return None
     return parsed
+
+
+# One-time contract conversion at the storage read boundary (#651 §5.3).
+#
+# `news_verdicts.editorial` holds two document shapes and will hold them for as long as the retention
+# window does. `news_editorial_v2` nested the code-owned source authority inside the taxonomy object;
+# `news_editorial_v3` lifts it out, because the taxonomy Predictor can now fail on its own and the
+# authority is not its output. Both are audit truth and neither is rewritten: a stored judgment's
+# `scored_judgment_sha256` addresses the exact document that was persisted, so migrating the rows would
+# invalidate every judgment identity in the ledger.
+#
+# The feed's source-authority filter and the Event detail have to keep answering over that history, so
+# exactly one function converts a stored document into the current read shape, and it lives here, at the
+# boundary that reads the column. This is not a compatibility flag: nothing switches on a version above
+# this line, no writer emits v2, and the conversion is the complete statement of what the older shape
+# meant in current terms. Its SQL sibling is `EDITORIAL_SOURCE_AUTHORITY_SQL`, which the feed filter uses
+# to ask the same question of rows it has not fetched yet.
+#
+# `editorial_sha256` is deliberately absent from the result. It addresses the persisted document, not
+# this projection; re-hashing the converted shape would publish an identity no row carries, and carrying
+# the original would attach an address to bytes it does not describe. The identity stays where it is
+# written -- in the row and in `trace.editorial_sha256`.
+def editorial_read_shape(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """One persisted editorial document in the current v3 read shape, or ``None`` when there is none."""
+
+    if not isinstance(value, Mapping):
+        return None
+    relevance = value.get("relevance")
+    if not isinstance(relevance, Mapping):
+        return None
+    version = str(value.get("editorial_contract_version") or "")
+    taxonomy = value.get("taxonomy")
+    if version == "news_editorial_v3":
+        status = str(value.get("taxonomy_status") or "")
+        error_code = value.get("taxonomy_error_code")
+        return {
+            "relevance": dict(relevance),
+            "source_authority": str(value.get("source_authority") or "unknown"),
+            "taxonomy": dict(taxonomy) if isinstance(taxonomy, Mapping) else None,
+            "taxonomy_status": status if status in {"available", "unavailable"} else "unavailable",
+            "taxonomy_error_code": str(error_code) if error_code else None,
+        }
+    if version != "news_editorial_v2" or not isinstance(taxonomy, Mapping):
+        return None
+    axes = {key: item for key, item in taxonomy.items() if key != "source_authority"}
+    return {
+        "relevance": dict(relevance),
+        "source_authority": str(taxonomy.get("source_authority") or "unknown"),
+        "taxonomy": axes,
+        # A v2 row exists only because its taxonomy validated: the whole judgment failed otherwise.
+        "taxonomy_status": "available",
+        "taxonomy_error_code": None,
+    }

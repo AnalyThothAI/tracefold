@@ -39,6 +39,14 @@ OUTCOME_GROUP_SQL: Final = {
 # PostgreSQL as immutable evidence, and this predicate is what stops the live feed reading them back.
 EVENT_KIND_SQL: Final = ", ".join(f"'{value}'" for value in EVENT_KINDS)
 EDITORIAL_EVENT_SQL: Final = f"e.event_kind IN ({EVENT_KIND_SQL})"
+# Where the code-owned source authority is in one stored editorial document, asked of rows the query has
+# not fetched yet. `news_editorial_v3` writes it beside the relevance; `news_editorial_v2` nested it in the
+# taxonomy object, and those rows are audit truth that is never rewritten (#651 §5.3). This is the SQL half
+# of `storage.decisions.editorial_read_shape` and states the same conversion: a reader filtering by source
+# authority has to get the same answer for a card from before the cut as for one from after it.
+EDITORIAL_SOURCE_AUTHORITY_SQL: Final = (
+    "COALESCE(t.editorial ->> 'source_authority', t.editorial #>> '{taxonomy,source_authority}')"
+)
 ASSET_SEARCH_PREDICATE: Final = (
     "EXISTS (SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = ANY(%s))"
 )
@@ -389,6 +397,7 @@ __all__ = [
     "CURRENT_EVENT_CARD_SQL",
     "EDITORIAL_EVENT_CARD_SQL",
     "EDITORIAL_EVENT_SQL",
+    "EDITORIAL_SOURCE_AUTHORITY_SQL",
     "EVENT_KIND_SQL",
     "EVENT_MEMBERS_SQL",
     "EVENT_VERDICTS_SQL",
