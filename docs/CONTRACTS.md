@@ -96,9 +96,9 @@ task and reflection — is one `ModelExecutionIdentity` holding
 the complete secret-free execution contract; its only digest is
 `endpoint_fingerprint` over the canonical endpoint URL, which is fingerprinted
 rather than stored because it names the host a credential is presented to.
-Reflection has an exact 32k-token ceiling. The taxonomy optimizer has no
-semantic judge; the diagnostic baseline and release evaluator retain their
-separate judge contract.
+Reflection has an exact 32k-token ceiling. The optimizer has no judge role of
+any kind, whichever `--target` it runs; the diagnostic baseline and release
+evaluator retain their separate judge contract.
 `llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
 only valid next to a complete primary triple; issue #65) is a second direct
 endpoint used only when the primary Triage call fails — timeout, transport
@@ -1536,7 +1536,7 @@ episodes from the active epoch. Its moving-window form remains the Program
 metric; its Dataset form is the taxonomy report above.
 `--semantic-judge MODEL` scores free-text retention anchors by meaning instead of
 byte equality (#148) through the same `CardEquivalenceJudge` contract that the
-the diagnostic baseline wires through its separate `metric_judge` role. The taxonomy optimizer has no judge.
+the diagnostic baseline wires through its separate `metric_judge` role. The optimizer has no judge role.
 Judge failure is explicit unavailable, enters the affected
 free-text dimension as zero, and is counted/costed with no byte-equality fallback,
 hidden retry or cache. Magnitude, direction, assets, novelty and every
@@ -1685,9 +1685,11 @@ match the question. `targets` publishes every target's case and cluster counts b
 mean subject set-F1 over every cluster whose accepted review carries two blind drafts; none of it gates.
 
 Readiness makes no task/reflection/judge call and writes nothing except the operator-requested report file.
-Its call envelope names the ceiling of two physical EventSemantics task calls per metric call — the primary
-JSONAdapter attempt plus its one format fallback — and one reflection call per proposal round; the taxonomy
-optimizer has no ReaderCard or semantic-judge envelope. `news learning run` rebuilds
+Its call envelope names the ceiling of two physical task calls per metric call on the target's own
+Predictor — the primary JSONAdapter attempt plus its one format fallback — and one reflection call per
+proposal round. No target carries a judge envelope: the optimizer holds a task endpoint and a reflection
+endpoint and no third one, so it passes no judge and the explanation ruler runs its deterministic arm
+there. `baseline` and `CandidateEvaluator` are what spend the calibrated judge. `news learning run` rebuilds
 the same report before constructing endpoints and refuses unless `objective.compilable` is true.
 CandidateEvaluator re-projects the same plan at registration/evaluation, for the target the candidate's
 own `optimization_objective_summary` declares.
@@ -1711,10 +1713,11 @@ are ineligible for a new dataset, because a v6 row means "every dimension below
 was answered" and a v7 row does not.
 The CLI is two groups, because there are two lifecycles (#202 `11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
-Program and runs the one optimization — `readiness`, `baseline`, `run`,
-`draft-reviews`, `freeze` — and none of them can ship anything.
-There is no taxonomy registration or separate evaluation command.
-Taxonomy Gold is scored directly by the taxonomy GEPA metric during the one `run`; moving-window
+Program, measures the metric judge and runs the one optimization — `readiness`,
+`baseline`, `judge-calibration`, `draft-reviews`, `run`, `freeze` — and none of
+them can ship anything.
+There is no per-target registration or separate evaluation command.
+Gold is scored directly by that target's ruler during the one `run`; moving-window
 `baseline` is diagnostic only. `news release` admits a
 candidate and moves it: `register`,
 `evaluate`, `canary`. The split is what an operator reads off

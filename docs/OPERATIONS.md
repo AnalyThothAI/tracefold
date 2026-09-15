@@ -1487,7 +1487,7 @@ Diagnose News in this order:
    `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
    a complete `optimization_report.json`. Task and reflection are separate
    `ModelExecutionIdentity` values, and calls/cost/tokens/failures are accounted separately
-   before they are summed. The taxonomy optimizer has no judge. Candidate zero inside that GEPA
+   before they are summed. The optimizer has no judge role. Candidate zero inside that GEPA
    run is the only optimization baseline. GEPA's own `best_idx` is admitted when it is strictly above
    candidate zero with a valid instruction; otherwise `NO_OP`. A task answer that reaches `max_tokens` is
    receipted once and scores that example `0`; it does not retry or abort later candidates.
@@ -1556,10 +1556,10 @@ agent.stable_sha = e.bundle_sha`. Take the newest agent *before* the join, not
 after: joining the whole appointment history and then taking one row reports the
 previous deployment's epoch when the current agent has no row yet, which is
 exactly the case worth diagnosing. Do not
-interpret a successful migration, a valid Program artifact, or the new
+interpret a successful migration, a valid Program state image, or the
 three-Predictor trace as proof of higher quality. Issue #117 deliberately lands
 the production persistence/read/UI seam before taxonomy denominators exist;
-issue #501 uses them through the existing Review, Dataset, Objective, direct taxonomy GEPA metric and
+issue #501 uses them through the existing Review, Dataset, Objective, target ruler and
 release path only.
 
 For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
@@ -1622,9 +1622,11 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
    through `release register`, offline and holdout, where an instruction that
    only fit the selection set is refused. The run never registers, releases or
    promotes the Candidate.
-5. A *taxonomy-only* candidate — `event_semantics_instruction` and
-   `reader_card_instruction` byte-identical to the parent Stable, only
-   `taxonomy_instruction` different — is judged on that evidence instead of on
+5. A *taxonomy-only* candidate — the state document's `event_semantics` and
+   `reader_card` Predictor documents byte-identical to the parent Stable, only
+   `taxonomy` different, which is what `changed_predictors` reads off the two
+   documents rather than a flag the manifest declares — is judged on that
+   evidence instead of on
    blind pairwise judgments, because both arms hand the reviewer the identical
    card: `news learning freeze --role validation --candidate ...` projects the
    same accepted Gold the development freeze does and publishes

@@ -192,9 +192,9 @@ Everything else the Program runs on — the graph, Signatures, the Adapter, the
 normalizer and assembler, the model route, the token and deadline budgets — is
 code, proved by shipping the image. Its identity travels beside the artifact as
 the computed `envelope_sha256`; `docs/ARCHITECTURE.md` describes the model.
-The taxonomy optimizer may replace only the Taxonomy instruction; it
-copies EventSemantics and ReaderCard byte-identically into the complete candidate,
-so no demo or endpoint path exists to reach a provider. Production candidate
+One run may replace exactly one Predictor's native state -- the one its
+`--target` names -- and copies the other two byte-identically into the complete
+candidate, so no demo or endpoint path exists to reach a provider. Production candidate
 images pass normal code review and are shipped in the registry; a database
 candidate is not executable merely because it was persisted, and Prompt-era
 database fields are audit-only.
@@ -220,8 +220,10 @@ The task and reflection roles are separate `ModelExecutionIdentity` values. Thei
 fingerprinted rather than stored, credentials never enter hashes or traces, and bounded provider errors are
 scrubbed. The meter reserves the declared per-call price before a request, settles provider-reported cost
 after it, and records each role's input/output/cached/total tokens, calls, cost, failures and wall-clock time
-in the same report. Reflection alone has the code-owned 32k-token ceiling. The taxonomy optimizer has no
-semantic judge, no ReaderCard call, no tool or code-generation authority, and no private DSPy API.
+in the same report. Reflection alone has the code-owned 32k-token ceiling. The optimizer holds those two endpoints and no
+third one whatever its `--target` is: no semantic judge, no metric judge (the explanation ruler runs its
+deterministic arm there), no tool or code-generation authority, and no private DSPy API. The one task
+endpoint it does hold is the target Predictor's own deployed slot.
 
 Every terminal state writes `news_optimization_run_report_v4`; only `ADVANCE` also writes
 `news_prompt_candidate_v3`. Exactly one Predictor's native state is mutable per run — the one the
@@ -230,7 +232,7 @@ are copied byte-identically, and the report publishes before/after hashes, bytes
 beside the public native GEPA parent/score/subscore state, GEPA best index and Tracefold admitted index.
 Every candidate is compared directly with accepted Gold rather than with another model output, and the
 admitted one is GEPA's own best when strictly above the seed. Registration independently re-reads the
-state document against the running stable, re-projects the dataset and re-derives Objective Plan v4. Generator provenance grants no release
+state document against the running stable, re-projects the dataset and re-derives Objective Plan v5. Generator provenance grants no release
 authority;
 future holdout, blind pairwise, canary and manual promotion remain mandatory.
 

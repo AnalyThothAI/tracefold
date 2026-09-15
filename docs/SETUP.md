@@ -261,7 +261,7 @@ llm:
     base_url: "https://reader-fallback.example/v1"
     model: "reader-fallback-model"
   # Required only for `news learning run`. Reflection uses this endpoint with
-  # code-owned 32k/300s/temperature-1. The taxonomy optimizer has no judge role.
+  # code-owned 32k/300s/temperature-1. The optimizer has no judge role.
   news_compiler_reflection:
     api_key: "<compiler reflection secret>"
     base_url: "https://reflection.example/v1"
