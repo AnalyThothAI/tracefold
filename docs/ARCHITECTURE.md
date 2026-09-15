@@ -214,6 +214,10 @@ The public semantic seam is `SemanticJudge.judge(TriageContext) -> SemanticJudgm
 The native DSPy Program executes EventSemantics, Taxonomy, and ReaderCard predictors;
 deterministic assembly and policy own validation and the reader-facing decision.
 A better-looking model answer alone does not establish a better final notification.
+Novelty is the model's claim and the action is the code's: a card the model calls a
+restatement of a ledger entry it was shown is dropped whichever direction it reports,
+because a reported direction is a reading rather than a fact, while a real reversal
+arrives as a progression or new fact and keeps its duplicate and budget exemptions.
 
 The released Program image is the native DSPy state document
 (`news_program_state_v1`: instructions, demos and Signature state per predictor, no
