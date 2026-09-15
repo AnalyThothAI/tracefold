@@ -274,8 +274,9 @@ class _FakePriceRepository:
         self.calls.append(("event_reactions", {"event_id": event_id}))
         return []
 
-    def quotes_for_symbols(self, symbols: Any, **kwargs: Any) -> list[dict[str, Any]]:
-        self.calls.append(("quotes_for_symbols", {"symbols": list(symbols), **kwargs}))
+    def quotes_for_symbols(self, requests: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        symbols = [request.symbol for request in requests]
+        self.calls.append(("quotes_for_symbols", {"symbols": symbols, **kwargs}))
         return [
             {
                 "requested_symbol": symbol,
@@ -698,7 +699,7 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
         "verdict": verdict,
         "model_editorial": model_editorial,
         "model": "model-v1",
-        "program_version": "news_semantic_program_v9",
+        "program_version": "news_semantic_program_v10",
         "program_sha256": "d" * 64,
         "rule_baseline_decision": "push",
         "final_decision": "push",
@@ -712,8 +713,14 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
     assert validated.judgment_origin == "model"
     assert validated.verdict.assets[0].market_type == "crypto"
     assert _triage_assets(verdict["assets"]) == [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}]
-    with pytest.raises(KeyError):
-        _triage_assets([{"symbol": "BTC", "role": "primary"}])
+    # A verdict written before #651 says nothing about the market, and the projection says so rather than
+    # raising or inventing one: `unknown` is a value the browser can render and nothing can act on.
+    assert _triage_assets([{"symbol": "BTC", "role": "primary"}]) == [
+        {"symbol": "BTC", "market_type": "unknown", "role": "primary"}
+    ]
+    assert _triage_assets([{"symbol": "BTC", "market_type": "token", "role": "primary"}]) == [
+        {"symbol": "BTC", "market_type": "unknown", "role": "primary"}
+    ]
     deterministic = {**payload, "judgment_origin": "oi", "model": None, "model_editorial": None}
     assert event_schemas.NewsVerdictData.model_validate(deterministic).judgment_origin == "oi"
     with pytest.raises(ValueError, match="news_verdict_model_identity_origin_mismatch"):

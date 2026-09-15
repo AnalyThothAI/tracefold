@@ -24,6 +24,7 @@ from tracefold.news.market_review.instruments import (
     resolve_base_symbol,
     strip_quote_suffix,
 )
+from tracefold.news.models import MarketAsset
 
 
 def test_normalize_strips_provider_prefix_and_dex_namespace() -> None:
@@ -125,7 +126,7 @@ def test_storyline_key_buckets_one_issuer_together() -> None:
             title="SK Hynix approves buyback",
             headline_zh="SK海力士回购",
             scope="single_name",
-            verdict_primaries=[symbol],
+            verdict_primaries=[MarketAsset(symbol)],
             grounded_assets=[symbol],
             dedupe_family="general",
         )
@@ -142,7 +143,7 @@ def test_final_storyline_key_resolves_aliases_on_both_sides() -> None:
             title="SK Hynix buyback",
             headline_zh="SK海力士回购",
             scope="single_name",
-            verdict_primaries=["SKHX"],
+            verdict_primaries=[MarketAsset("SKHX")],
             grounded_assets=["XYZ-SKHY"],
             dedupe_family="general",
         )

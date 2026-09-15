@@ -41,15 +41,23 @@ def test_reader_history_and_composite_retrieval_identities_are_content_addressed
 
 def test_evaluator_and_production_contexts_share_targeted_history_while_policy_seen_stays_recent() -> None:
     class _Connection:
-        def execute(self, sql: str) -> SimpleNamespace:
-            assert sql == "SELECT alias, base_symbol FROM news_symbol_aliases"
-            return SimpleNamespace(fetchall=lambda: [{"alias": "9988", "base_symbol": "BABA"}])
+        """The two catalogue reads a replayed context makes: the alias table, and the market candidates
+        the Gate evidence carries (#651 §6.2). `9988` is one traded base and the offline and online
+        contexts must resolve it identically or they are not the same question."""
+
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> SimpleNamespace:
+            if sql == "SELECT alias, base_symbol FROM news_symbol_aliases":
+                return SimpleNamespace(fetchall=lambda: [{"alias": "9988", "base_symbol": "BABA"}])
+            if sql.startswith("SELECT alias, base_symbol FROM news_symbol_aliases WHERE alias"):
+                return SimpleNamespace(fetchall=lambda: [{"alias": "9988", "base_symbol": "BABA"}])
+            assert "news_market_instruments" in sql, sql
+            return SimpleNamespace(fetchall=lambda: [{"base_symbol": "BABA", "instrument_class": "equity"}])
 
     policy = DEFAULT_POLICY.as_dict()
     evaluator = CandidateEvaluator(
         _Connection(),
         stable=ArmManifest(
-            program_version="news_semantic_program_v9",
+            program_version="news_semantic_program_v10",
             program_sha256="a" * 64,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             runtime_model_bindings_sha256="b" * 64,
@@ -123,6 +131,7 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
         told_rows=[row.as_told_row() for row in online_history.told_source_rows],
         now_ms=NOW_MS,
         queue_lag_ms=0,
+        catalog_candidates={"9988": ("equity",)},
     )
 
     assert offline.model_dump(mode="json") == online.model_dump(mode="json")

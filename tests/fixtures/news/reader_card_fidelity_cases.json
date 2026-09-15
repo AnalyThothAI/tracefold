@@ -396,7 +396,7 @@
         "now_ms": 1788880141835,
         "queue_lag_ms": 10634
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"it has done $1.3M-$2M+ in DAILY revenue for most of the past week and it hasn't had a SINGLE day below $1.1M in revenue over the last 7 days let that sink in but here's the part i think the market is massively underestimating: THE BUYBACK the $PONS buyback wallet now has almost $3M READY TO TWAP INTO $PONS and it's being replenished from fees faster than it can currently be exhausted this is an absolutely INSANE amount of organic buy pressure and until now, it was difficult to track because the data wasn't readily available so i suggested to @MEADGod that he put the buyback data directly on th\",\"dedupe_family\":\"filing\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"CL:C\",\"XYZ-CL:C\",\"PONS:A\",\"BTW:C\",\"META:C\",\"XYZ-META:C\",\"TREND:-\",\"XYZ-HOOD:A\",\"CAP:-\",\"PUMP:C\"],\"published_at_ms\":1788880141835,\"raw_first_line\":\"$PONS revenue has almost DOUBLED since my last post btw\",\"source\":\"theunipcs\",\"strategies\":[\"1018\"],\"title\":\"$PONS revenue has almost DOUBLED since my last post btw\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"grounded_assets\":[\"HOOD\",\"PONS\",\"XYZ-HOOD\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"it has done $1.3M-$2M+ in DAILY revenue for most of the past week and it hasn't had a SINGLE day below $1.1M in revenue over the last 7 days let that sink in but here's the part i think the market is massively underestimating: THE BUYBACK the $PONS buyback wallet now has almost $3M READY TO TWAP INTO $PONS and it's being replenished from fees faster than it can currently be exhausted this is an absolutely INSANE amount of organic buy pressure and until now, it was difficult to track because the data wasn't readily available so i suggested to @MEADGod that he put the buyback data directly on th\",\"dedupe_family\":\"filing\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"CL:C\",\"XYZ-CL:C\",\"PONS:A\",\"BTW:C\",\"META:C\",\"XYZ-META:C\",\"TREND:-\",\"XYZ-HOOD:A\",\"CAP:-\",\"PUMP:C\"],\"published_at_ms\":1788880141835,\"raw_first_line\":\"$PONS revenue has almost DOUBLED since my last post btw\",\"source\":\"theunipcs\",\"strategies\":[\"1018\"],\"title\":\"$PONS revenue has almost DOUBLED since my last post btw\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"catalog_candidates\":[],\"grounded_assets\":[\"HOOD\",\"PONS\",\"XYZ-HOOD\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": {
         "verdict": {
           "scope": "single_name",
@@ -827,7 +827,7 @@
         "now_ms": 1788865283437,
         "queue_lag_ms": 78584
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"\",\"dedupe_family\":\"general\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"IREN:A\",\"XYZ-IREN:A\"],\"published_at_ms\":1788865283437,\"raw_first_line\":\"IREN’s 2GW Sweetwater Hub Included as Base Load in ERCOT Batch Zero\",\"source\":\"news-history.newsliquid.com\",\"strategies\":[\"1018\"],\"title\":\"IREN’s 2GW Sweetwater Hub Included as Base Load in ERCOT Batch Zero\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"grounded_assets\":[\"IREN\",\"XYZ-IREN\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"\",\"dedupe_family\":\"general\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"IREN:A\",\"XYZ-IREN:A\"],\"published_at_ms\":1788865283437,\"raw_first_line\":\"IREN’s 2GW Sweetwater Hub Included as Base Load in ERCOT Batch Zero\",\"source\":\"news-history.newsliquid.com\",\"strategies\":[\"1018\"],\"title\":\"IREN’s 2GW Sweetwater Hub Included as Base Load in ERCOT Batch Zero\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"catalog_candidates\":[],\"grounded_assets\":[\"IREN\",\"XYZ-IREN\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": {
         "verdict": {
           "scope": "single_name",
@@ -1269,7 +1269,7 @@
         "now_ms": 1788857363360,
         "queue_lag_ms": 4
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"Robinhood: THE BLOCK: 'The chain is now earnings': Bernstein sees 31% upside for Robinhood as fees top Solana, BNB Chain\",\"dedupe_family\":\"filing\",\"engine_type\":\"listing\",\"member_count\":2,\"provider_coins\":[\"BNB:C\",\"SOL:C\",\"XYZ-HOOD:A\",\"HOOD:A\"],\"published_at_ms\":1788857363360,\"raw_first_line\":\"Robinhood: THE BLOCK: 'The chain is now earnings': Bernstein sees 31% upside for Robinhood as fees top Solana, BNB Chain\",\"source\":\"robinhood\",\"strategies\":[\"1018\"],\"title\":\"'The chain is now earnings': Bernstein sees 31% upside for Robinhood as fees top Solana, BNB Chain\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"grounded_assets\":[\"HOOD\",\"XYZ-HOOD\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"Robinhood: THE BLOCK: 'The chain is now earnings': Bernstein sees 31% upside for Robinhood as fees top Solana, BNB Chain\",\"dedupe_family\":\"filing\",\"engine_type\":\"listing\",\"member_count\":2,\"provider_coins\":[\"BNB:C\",\"SOL:C\",\"XYZ-HOOD:A\",\"HOOD:A\"],\"published_at_ms\":1788857363360,\"raw_first_line\":\"Robinhood: THE BLOCK: 'The chain is now earnings': Bernstein sees 31% upside for Robinhood as fees top Solana, BNB Chain\",\"source\":\"robinhood\",\"strategies\":[\"1018\"],\"title\":\"'The chain is now earnings': Bernstein sees 31% upside for Robinhood as fees top Solana, BNB Chain\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"catalog_candidates\":[],\"grounded_assets\":[\"HOOD\",\"XYZ-HOOD\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": {
         "verdict": {
           "scope": "single_name",
@@ -1708,7 +1708,7 @@
         "now_ms": 1788903776683,
         "queue_lag_ms": 46
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"*PLATINUM SAID TO OFFER INGRAM MICRO SHARES AT $27.25-$28.38/EA\",\"dedupe_family\":\"general\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"XPT:A\",\"XYZ-PLATINUM:A\"],\"published_at_ms\":1788903776683,\"raw_first_line\":\"*PLATINUM SAID TO OFFER INGRAM MICRO SHARES AT $27.25-$28.38/EA\",\"source\":\"opennews\",\"strategies\":[\"1018\"],\"title\":\"PLATINUM SAID TO OFFER INGRAM MICRO SHARES AT $27.25-$28.38/EA\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"grounded_assets\":[\"XPT\",\"XYZ-PLATINUM\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"*PLATINUM SAID TO OFFER INGRAM MICRO SHARES AT $27.25-$28.38/EA\",\"dedupe_family\":\"general\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"XPT:A\",\"XYZ-PLATINUM:A\"],\"published_at_ms\":1788903776683,\"raw_first_line\":\"*PLATINUM SAID TO OFFER INGRAM MICRO SHARES AT $27.25-$28.38/EA\",\"source\":\"opennews\",\"strategies\":[\"1018\"],\"title\":\"PLATINUM SAID TO OFFER INGRAM MICRO SHARES AT $27.25-$28.38/EA\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"catalog_candidates\":[],\"grounded_assets\":[\"XPT\",\"XYZ-PLATINUM\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": {
         "verdict": {
           "scope": "single_name",
@@ -2284,7 +2284,7 @@
         "now_ms": 1788903789711,
         "queue_lag_ms": 4
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"*PLATINUM IS SAID TO OFFER INGRAM SHARES AT UP TO 4% DISCOUNT\",\"dedupe_family\":\"general\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"XPT:B+\",\"XYZ-PLATINUM:B+\"],\"published_at_ms\":1788903789711,\"raw_first_line\":\"*PLATINUM IS SAID TO OFFER INGRAM SHARES AT UP TO 4% DISCOUNT\",\"source\":\"opennews\",\"strategies\":[\"1018\"],\"title\":\"PLATINUM IS SAID TO OFFER INGRAM SHARES AT UP TO 4% DISCOUNT\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"grounded_assets\":[\"XPT\",\"XYZ-PLATINUM\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"*PLATINUM IS SAID TO OFFER INGRAM SHARES AT UP TO 4% DISCOUNT\",\"dedupe_family\":\"general\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"XPT:B+\",\"XYZ-PLATINUM:B+\"],\"published_at_ms\":1788903789711,\"raw_first_line\":\"*PLATINUM IS SAID TO OFFER INGRAM SHARES AT UP TO 4% DISCOUNT\",\"source\":\"opennews\",\"strategies\":[\"1018\"],\"title\":\"PLATINUM IS SAID TO OFFER INGRAM SHARES AT UP TO 4% DISCOUNT\"},\"gate\":{\"asset_class\":\"equity_or_commodity\",\"catalog_candidates\":[],\"grounded_assets\":[\"XPT\",\"XYZ-PLATINUM\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": {
         "verdict": {
           "scope": "single_name",
@@ -2843,7 +2843,7 @@
         "now_ms": 1788865473000,
         "queue_lag_ms": 4
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"Bitget Announcement: Notifer: @CexAlerts\",\"dedupe_family\":\"general\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"SPOT:-\",\"PAIR:C\",\"CP:A\",\"SOPH:A\"],\"published_at_ms\":1788865473000,\"raw_first_line\":\"Bitget Announcement:\",\"source\":\"t.me\",\"strategies\":[\"1018\"],\"title\":\"New spot margin trading pair — CP/USDT, SOPH/USDT!\"},\"gate\":{\"asset_class\":\"crypto\",\"grounded_assets\":[\"CP\",\"SOPH\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"Bitget Announcement: Notifer: @CexAlerts\",\"dedupe_family\":\"general\",\"engine_type\":\"news\",\"member_count\":1,\"provider_coins\":[\"SPOT:-\",\"PAIR:C\",\"CP:A\",\"SOPH:A\"],\"published_at_ms\":1788865473000,\"raw_first_line\":\"Bitget Announcement:\",\"source\":\"t.me\",\"strategies\":[\"1018\"],\"title\":\"New spot margin trading pair — CP/USDT, SOPH/USDT!\"},\"gate\":{\"asset_class\":\"crypto\",\"catalog_candidates\":[],\"grounded_assets\":[\"CP\",\"SOPH\"],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": {
         "verdict": {
           "scope": "single_name",
@@ -2946,7 +2946,7 @@
         "now_ms": 1788880200000,
         "queue_lag_ms": 0
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"Aster said the repurchases were completed this quarter and reduced shares outstanding by 3%.\",\"dedupe_family\":\"general\",\"engine_type\":\"unknown\",\"member_count\":1,\"provider_coins\":[],\"published_at_ms\":1788880200000,\"raw_first_line\":\"Aster completed a $12 million share buyback\",\"source\":\"synthetic_test_input\",\"strategies\":[],\"title\":\"Aster completed a $12 million share buyback\"},\"gate\":{\"asset_class\":\"none\",\"grounded_assets\":[],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"Aster said the repurchases were completed this quarter and reduced shares outstanding by 3%.\",\"dedupe_family\":\"general\",\"engine_type\":\"unknown\",\"member_count\":1,\"provider_coins\":[],\"published_at_ms\":1788880200000,\"raw_first_line\":\"Aster completed a $12 million share buyback\",\"source\":\"synthetic_test_input\",\"strategies\":[],\"title\":\"Aster completed a $12 million share buyback\"},\"gate\":{\"asset_class\":\"none\",\"catalog_candidates\":[],\"grounded_assets\":[],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": null,
       "criterion": "Preserve completed execution, $12 million and the stated 3% share reduction; do not demote explicit completion to a plan.",
       "accepted_review": null,
@@ -2994,7 +2994,7 @@
         "now_ms": 1788880200000,
         "queue_lag_ms": 0
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"Aster said closing its plant removed $40 million of annual fixed costs and incurred a $12 million one-time charge.\",\"dedupe_family\":\"general\",\"engine_type\":\"unknown\",\"member_count\":1,\"provider_coins\":[],\"published_at_ms\":1788880200000,\"raw_first_line\":\"Aster cut annual fixed costs by $40 million\",\"source\":\"synthetic_test_input\",\"strategies\":[],\"title\":\"Aster cut annual fixed costs by $40 million\"},\"gate\":{\"asset_class\":\"none\",\"grounded_assets\":[],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"Aster said closing its plant removed $40 million of annual fixed costs and incurred a $12 million one-time charge.\",\"dedupe_family\":\"general\",\"engine_type\":\"unknown\",\"member_count\":1,\"provider_coins\":[],\"published_at_ms\":1788880200000,\"raw_first_line\":\"Aster cut annual fixed costs by $40 million\",\"source\":\"synthetic_test_input\",\"strategies\":[],\"title\":\"Aster cut annual fixed costs by $40 million\"},\"gate\":{\"asset_class\":\"none\",\"catalog_candidates\":[],\"grounded_assets\":[],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": null,
       "criterion": "Explain the supported cost mechanism while preserving annual savings versus a one-time charge.",
       "accepted_review": null,
@@ -3042,12 +3042,12 @@
         "now_ms": 1788880200000,
         "queue_lag_ms": 0
       },
-      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"The quoted 12% APR is variable and before fees; actual returns depend on utilization.\",\"dedupe_family\":\"general\",\"engine_type\":\"unknown\",\"member_count\":1,\"provider_coins\":[],\"published_at_ms\":1788880200000,\"raw_first_line\":\"Harbor advertises 12% APR for its savings pool\",\"source\":\"synthetic_test_input\",\"strategies\":[],\"title\":\"Harbor advertises 12% APR for its savings pool\"},\"gate\":{\"asset_class\":\"none\",\"grounded_assets\":[],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
+      "reader_evidence_json": "<tracefold-untrusted-event-json-v1>\n{\"event\":{\"content\":\"The quoted 12% APR is variable and before fees; actual returns depend on utilization.\",\"dedupe_family\":\"general\",\"engine_type\":\"unknown\",\"member_count\":1,\"provider_coins\":[],\"published_at_ms\":1788880200000,\"raw_first_line\":\"Harbor advertises 12% APR for its savings pool\",\"source\":\"synthetic_test_input\",\"strategies\":[],\"title\":\"Harbor advertises 12% APR for its savings pool\"},\"gate\":{\"asset_class\":\"none\",\"catalog_candidates\":[],\"grounded_assets\":[],\"pr_template\":false}}\n</tracefold-untrusted-event-json-v1>",
       "production_judgment": null,
       "criterion": "Preserve annual, variable and before-fee qualifications; do not claim a 12% daily or guaranteed return.",
       "accepted_review": null,
       "review_queue_available": false
     }
   ],
-  "cases_sha256": "f7099327fcc1fcb2a01d9f66c93dfd5b789131b4c405c668c520a039bd458bc6"
+  "cases_sha256": "d902d3ecace5b6db9c2099c001cccce10db45987bed11267a290b81659b0746f"
 }

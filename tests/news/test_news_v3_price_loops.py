@@ -45,6 +45,7 @@ class _FakePrice:
         self.forgotten: list[str] = []
         self.reactions: list[dict[str, Any]] = []
         self.instruments: dict[str, PriceInstrument] = {}
+        self.requested_markets: list[tuple[str, str]] = []
 
     def plan_quote_targets(self, *, since_ms: int, watchlist: Any = ()) -> dict[str, Any]:
         del since_ms, watchlist
@@ -72,8 +73,13 @@ class _FakePrice:
         del now_ms
         return self._due[:limit]
 
-    def resolve_instruments(self, symbols: Any) -> dict[str, PriceInstrument]:
-        return {symbol: self.instruments[symbol] for symbol in symbols if symbol in self.instruments}
+    def resolve_instruments(self, requests: Any) -> dict[str, PriceInstrument]:
+        self.requested_markets = [(r.symbol, r.market_type) for r in requests]
+        return {
+            request.symbol: self.instruments[request.symbol]
+            for request in requests
+            if request.symbol in self.instruments and request.accepts(self.instruments[request.symbol].instrument_class)
+        }
 
     def upsert_reaction(self, row: Any, *, now_ms: int) -> None:
         del now_ms
@@ -852,6 +858,9 @@ def _due_row(event_id: str, symbol: str = "BTC", **overrides: Any) -> dict[str, 
         "venue": None,
         "venue_symbol": None,
         "instrument_class": None,
+        # What the Event's own judgment says the symbol is (#651 §6.2); `due_reactions` projects it out of
+        # the current verdict, and a pre-#651 verdict says nothing here.
+        "market_type": None,
         "p0": None,
         "p0_at_ms": None,
         "p1": None,

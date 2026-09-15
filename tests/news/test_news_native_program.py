@@ -31,7 +31,7 @@ def _semantics(**updates: Any) -> dict[str, Any]:
     value: dict[str, Any] = {
         "novelty": "new_fact",
         "restates": 4,
-        "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
+        "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 1,
@@ -188,7 +188,7 @@ def test_three_named_predictors_run_in_order_with_exact_instructions_and_bounded
     assert result.verdict.model_dump(mode="json") == {
         "novelty": "new_fact",
         "restates": -1,
-        "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
+        "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 1,
