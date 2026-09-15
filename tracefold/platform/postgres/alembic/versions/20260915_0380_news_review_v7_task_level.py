@@ -34,7 +34,7 @@ Migration evidence:
   locks only, and the one `DROP FUNCTION` removes a function referenced solely from a plpgsql trigger
   body, which resolves its callee at execution time. One transaction, functions before the replacement
   that calls them.
-- statement_timeout: 120s set locally by the revision
+- statement_timeout: 1800s set locally by the revision (same bound as 0378/0379 for one deploy sequence)
 - lock_timeout: 5s set locally by the revision
 - estimated_rows: none scanned; no CHECK is added or revalidated
 - estimated_bytes: catalog entries only
@@ -77,7 +77,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
-    op.execute("SET LOCAL statement_timeout = '120s'")
+    op.execute("SET LOCAL statement_timeout = '1800s'")
 
     # v7 provenance, whose `draft_taxonomy` is the four model axes rather than the persisted taxonomy.
     # `news_current_model_taxonomy_valid` is the predicate `20260902_0351` already wrote for exactly this
