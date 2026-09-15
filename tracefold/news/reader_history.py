@@ -34,10 +34,18 @@ READER_HISTORY_CONTRACT: Final = {
         "verdict_stage": "triage",
         "final_decisions": ["push", "escalate"],
     },
+    # Every band is closed at both ends. The lower bound is the window; the upper bound is the read clock
+    # itself (#651 §12): a delivery whose settle stamp is ahead of the stamp this history is read at was
+    # not a card the reader had. In production the two coincide -- the read clock is the wall clock and
+    # nothing settles in the future -- but the evaluator reads the same ledger at a frozen stamp, where
+    # `seed_receipts` bounds both ends and this band used to bound only the lower one. That gap put a
+    # late-settling delivery into the SQL history and not into the replayed one, which is the one thing a
+    # replay may never disagree with production about.
+    "read_clock": "settled_at_ms < read_clock",
     "windows": {
-        "recent": {"age": "<=", "window_ms": RECENT_HISTORY_WINDOW_MS},
+        "recent": {"age": ">=0_and<=", "window_ms": RECENT_HISTORY_WINDOW_MS},
         "targeted": {"age": ">recent_and<=targeted", "window_ms": TARGETED_HISTORY_WINDOW_MS},
-        "similar": {"age": "<=", "window_ms": SIMILAR_HISTORY_WINDOW_MS},
+        "similar": {"age": ">=0_and<=", "window_ms": SIMILAR_HISTORY_WINDOW_MS},
     },
     "caps": {
         "recent": RECENT_HISTORY_MAX,

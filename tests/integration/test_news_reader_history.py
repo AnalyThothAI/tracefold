@@ -638,14 +638,13 @@ def test_sql_and_replayed_history_select_the_same_told_candidates_for_a_frozen_s
         assert excluded[label] not in {row.event_id for row in sql_rows}, label
         assert excluded[label] not in {receipt.event_id for receipt in state.receipts}, label
 
-    # One row the two sides genuinely read differently, named here rather than papered over: a delivery
-    # that settles *after* the read clock. `seed_receipts` bounds the look-back at both ends; the SQL
-    # recent band bounds it only below, because production reads this ledger at the wall clock, where no
-    # delivery has settled in the future. The divergence is therefore replay-only, and closing it would
-    # mean widening `READER_HISTORY_CONTRACT` -- a retrieval-identity change #651 §6.3 does not open.
-    assert excluded["future"] in {row.event_id for row in sql_rows}
+    # The row the two sides used to read differently, and the reason `READER_HISTORY_CONTRACT` gained its
+    # `read_clock` bound (#651 §12): a delivery that settles *after* the read clock. `seed_receipts` bounds
+    # the look-back at both ends, and the SQL bands now do too, so neither side holds it. Production is
+    # unaffected -- it reads at the wall clock, where nothing has settled in the future -- but a replay
+    # reads at a frozen stamp, and there the open band made the SQL history a ledger the reader never had.
+    assert excluded["future"] not in {row.event_id for row in sql_rows}
     assert excluded["future"] not in {receipt.event_id for receipt in state.receipts}
-    sql_rows = [row for row in sql_rows if row.event_id != excluded["future"]]
 
     sql_ids = [row.event_id for row in sql_rows]
     assert sql_ids == [row.event_id for row in replay_rows]

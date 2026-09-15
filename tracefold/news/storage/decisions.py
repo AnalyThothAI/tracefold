@@ -186,26 +186,35 @@ class DecisionStorage:
               FROM news_deliveries
              WHERE kind = 'first' AND state = 'sent'
                AND delete_state IS DISTINCT FROM 'deleted'
-               AND settled_at_ms >= %s
+               AND settled_at_ms >= %s AND settled_at_ms < %s
             """,
-            (int(now_ms) - TARGETED_HISTORY_WINDOW_MS,),
+            (int(now_ms) - TARGETED_HISTORY_WINDOW_MS, int(now_ms)),
         ).fetchone()
         if row is None:  # pragma: no cover - aggregate queries always return one row
             return (0, 0, "")
         return (int(row["row_count"]), int(row["newest_at_ms"]), str(row["greatest_event_id"]))
 
     def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
-        """Reader receipt truth split into the 4 h policy ledger and the bounded semantic candidate bands."""
+        """Reader receipt truth split into the 4 h policy ledger and the bounded semantic candidate bands.
+
+        Every band is closed at both ends against ``now_ms`` (#651 §12). The exact and asset bands always
+        were, because the band split is their upper bound; the recent and similar bands were open above,
+        which is invisible in production -- ``now_ms`` is the wall clock there and nothing settles ahead of
+        it -- and wrong for the evaluator, which reads this same ledger at a frozen stamp. There
+        ``learning/evaluation_history.seed_receipts`` bounds the look-back at both ends, so a delivery that
+        settled after the frozen stamp entered the SQL history and not the replayed one, and the two
+        histories are supposed to be the same ledger read two ways.
+        """
 
         revision = self.reader_history_revision(now_ms=now_ms)
         recent = self.conn.execute(
             _READER_HISTORY_PROJECTION
             + """
              WHERE e.event_id <> %s
-               AND d.settled_at_ms >= %s
+               AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
              ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
             """,
-            (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, RECENT_HISTORY_MAX),
+            (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, int(now_ms), RECENT_HISTORY_MAX),
         ).fetchall()
         if not include_targeted:
             return replace(assemble_reader_history(recent_rows=recent, now_ms=now_ms), ledger_revision=revision)
@@ -306,7 +315,7 @@ class DecisionStorage:
                 FROM news_deliveries d
                WHERE d.kind = 'first' AND d.state = 'sent'
                  AND d.delete_state IS DISTINCT FROM 'deleted'
-                 AND d.settled_at_ms >= %s
+                 AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                  AND d.event_id <> ALL(%s)
             ), delivered_titles AS MATERIALIZED (
               SELECT e.event_id, e.comparison_title, w.settled_at_ms
@@ -325,6 +334,7 @@ class DecisionStorage:
                 + " JOIN band ON band.event_id = e.event_id",
                 (
                     int(now_ms) - SIMILAR_HISTORY_WINDOW_MS,
+                    int(now_ms),
                     spent,
                     comparison_title,
                     comparison_title,
