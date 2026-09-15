@@ -819,8 +819,20 @@ def bind_target_metric(target: str, judge: Any = None) -> Callable[..., dspy.Pre
     return functools.partial(metric, judge=judge)
 
 
-def target_metric_receipt(target: str, *, review_rubric_version: str, judge: Any = None) -> dict[str, Any]:
-    """What this ruler is, in bytes a later reader can compare two runs with."""
+def target_metric_receipt(
+    target: str,
+    *,
+    review_rubric_version: str,
+    judge: Any = None,
+    judge_calibration_receipt_sha256: str = "",
+) -> dict[str, Any]:
+    """What this ruler is, in bytes a later reader can compare two runs with.
+
+    `judge_calibration_receipt_sha256` is the address of the `news learning judge-calibration` run that
+    checked this judge. It is optional and never defaulted to a hash of nothing: an explanation number
+    published without it is a number whose ruler was not checked, and the receipt says so by carrying an
+    empty string rather than by omitting the field.
+    """
 
     if target not in TARGET_METRIC:
         raise ValueError(f"news_learning_target_unknown:{target}")
@@ -842,6 +854,7 @@ def target_metric_receipt(target: str, *, review_rubric_version: str, judge: Any
         "judge_unavailable_share_max": JUDGE_UNAVAILABLE_SHARE_MAX,
         "judge": None if judge is None else judge.identity,
         "judge_route": "configured" if judge is not None else "none_deterministic_arm",
+        "judge_calibration_receipt_sha256": str(judge_calibration_receipt_sha256 or ""),
         "invalid_prediction_score": 0.0,
         "truncated_output_score": 0.0,
         "why_value_scored": False,

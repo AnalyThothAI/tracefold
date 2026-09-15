@@ -284,6 +284,56 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     return 0, {"ok": True, "data": summary}
 
 
+def _handle_learning_judge_calibration(args: Namespace, settings: Any) -> tuple[int, dict[str, Any]]:
+    """Ask one real metric judge the fixed calibration corpus and write the receipt (#651 §7.3).
+
+    Read-only, database-free and unbounded by a corpus: the fourteen pairs are the whole spend, which is
+    what makes this a thing an operator runs *before* committing a run rather than a second evaluation.
+    The judge endpoint is chosen exactly as the baseline's is, because a calibration measured on a
+    different route than the run would attest nothing about that run.
+    """
+
+    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.news.learning.baseline import build_judge
+    from tracefold.news.learning.judge_calibration import (
+        calibration_receipt_sha256,
+        load_calibration_cases,
+        run_judge_calibration,
+    )
+
+    model = str(getattr(args, "model", "") or "")
+    if not model:
+        raise ValueError("news_judge_calibration_requires_model")
+    reflection = getattr(settings.llm, "news_compiler_reflection", None)
+    source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+    if not source.configured:
+        raise ValueError("news_program_baseline_judge_endpoint_not_configured")
+    endpoint = configured_lm_endpoint(
+        settings,
+        model_name=model,
+        api_key=source.api_key,
+        base_url=source.base_url,
+        request_config=source.request,
+    )
+    judge = build_judge(
+        model_name=endpoint.model_name,
+        api_key=endpoint.api_key,
+        api_base=endpoint.api_base,
+        model_kwargs=endpoint.model_kwargs,
+        temperature=0 if endpoint.temperature is None else endpoint.temperature,
+        structured_output=endpoint.structured_output,
+    )
+    receipt = run_judge_calibration(judge, load_calibration_cases())
+    receipt_sha = calibration_receipt_sha256(receipt)
+    payload = {**receipt, "receipt_sha256": receipt_sha}
+    if str(getattr(args, "out", "") or ""):
+        _write_json(str(args.out), payload)
+    summary = {key: value for key, value in payload.items() if key not in {"judge", "disagreements"}}
+    summary["disagreement_n"] = len(receipt["disagreements"])
+    summary["receipt_written_to"] = str(getattr(args, "out", "") or "") or None
+    return 0, {"ok": True, "data": summary}
+
+
 def _drafter_context(view: Mapping[str, Any]) -> Any:
     """Rebuild the bounded TriageContext from a ReviewDesk evidence view.
 

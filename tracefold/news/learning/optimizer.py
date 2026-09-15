@@ -491,6 +491,7 @@ def target_plan(
     review_rubric_version: str,
     judge: Any = None,
     cluster_event_ids: Mapping[str, str] | None = None,
+    judge_calibration_receipt_sha256: str = "",
 ) -> _TargetPlan:
     """Resolve one target into its Predictor, ruler, example renderer and metric receipt.
 
@@ -503,7 +504,12 @@ def target_plan(
     if target not in TARGET_PREDICTOR:
         raise ValueError(f"news_program_compile_target_unknown:{target}")
     metric = cast(TargetMetric, bind_target_metric(target, judge))
-    receipt = target_metric_receipt(target, review_rubric_version=review_rubric_version, judge=judge)
+    receipt = target_metric_receipt(
+        target,
+        review_rubric_version=review_rubric_version,
+        judge=judge,
+        judge_calibration_receipt_sha256=judge_calibration_receipt_sha256,
+    )
     if target == "classification":
         return _TargetPlan(
             target=target,
