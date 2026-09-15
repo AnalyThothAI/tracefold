@@ -724,7 +724,14 @@ def run_gepa(
     if plan.blocking_reasons:
         raise ValueError("news_program_compile_objective_blocked:" + ",".join(plan.blocking_reasons))
     split_receipt = plan.split
-    resolved_target = target_plan(target, review_rubric_version=review_rubric_version)
+    # The whole frozen corpus, not just the optimized half: a restatement may point at a member of its
+    # fact cluster that lives in the other half, and the ruler has to be able to see that it is the same
+    # fact rather than charge the candidate for naming a different card about it.
+    resolved_target = target_plan(
+        target,
+        review_rubric_version=review_rubric_version,
+        cluster_event_ids=cluster_event_index(episodes),
+    )
     train_examples = [resolved_target.example(episode) for episode in plan.train_episodes]
     val_examples = [resolved_target.example(episode) for episode in plan.development_selection_episodes]
     retrieval = retrieval_receipt(episodes)
