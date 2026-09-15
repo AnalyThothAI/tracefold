@@ -26,16 +26,26 @@ from tracefold.news.review.desk import (
     DeskQuery,
     EventRubricSubmission,
     ExpectedCorrection,
+    ExplanationCorrectionV1,
     ExternalMissSubmission,
     Principal,
     ReviewDesk,
     TaskRef,
 )
+from tracefold.news.taxonomy import ModelTaxonomyV1
 
 pytestmark = pytest.mark.integration
 
 NOW = 1_787_287_000_000
 PRINCIPAL = Principal(subject="operator")
+# The four model axes a `news_review_v7` submission carries. Not `news_taxonomy()`: that helper builds
+# the persisted seven-key shape, whose `source_authority` is a code fact the reviewer never states.
+MODEL_TAXONOMY = ModelTaxonomyV1(
+    subject_codes=(),
+    event_family="regulatory_legal",
+    change_state="reported",
+    assertion_status="claimed",
+)
 ACTIVE_BUNDLE = "1" * 64
 # The epoch the fixture deployment opens (#314): derived from the bundle it appoints, never declared.
 ACTIVE_EPOCH = epoch_id_for_bundle(ACTIVE_BUNDLE)
@@ -220,6 +230,10 @@ def _rubric(
     `magnitude="fail"` is the *typed* failure — a stated correct value the metric can score a repair
     against. `why="fail"` is a copy complaint with no such value; #199 keeps it as an excluded diagnostic
     rather than a target, so a corpus meant to exercise optimization has to fail a typed dimension.
+
+    It states every answer on purpose, which under `news_review_v7` is a choice rather than a
+    requirement: this is the shape a reviewer who knows the whole Event submits, and the partial shapes
+    are exercised by the tests that are about them.
     """
 
     dimensions = {
@@ -231,7 +245,6 @@ def _rubric(
         "taxonomy_subject_codes": "pass",
         "taxonomy_event_family": "pass",
         "taxonomy_change_state": "pass",
-        "taxonomy_source_authority": "pass",
         "taxonomy_assertion_status": "pass",
     }
     if magnitude is not None:
@@ -241,12 +254,7 @@ def _rubric(
         should_push=should_push,  # type: ignore[arg-type]
         dimensions=dimensions,
         novelty={"judgment": "new_fact"},
-        taxonomy=news_taxonomy(
-            event_family="regulatory_legal",
-            change_state="reported",
-            assertion_status="claimed",
-            source_authority="reputable_secondary",
-        ),
+        taxonomy=MODEL_TAXONOMY,
         first_bad_owner=first_bad_owner,  # type: ignore[arg-type]
         expected=ExpectedCorrection(magnitude=3) if magnitude == "fail" else None,
         evidence_refs=["source:sentence:1", "output:why"] if failed else [],
@@ -424,7 +432,16 @@ def test_two_primary_reviewers_are_retained_and_adjudication_requires_an_indepen
         )
 
 
-def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
+def test_coverage_spans_every_arm_and_narrows_only_when_a_cohort_is_named(conn) -> None:
+    """#651 §9: the running bundle is a filter an operator may ask for, never a fence.
+
+    Coverage used to show only the Events the currently appointed Agent had answered. That made every
+    deployment reset the visible corpus to zero, and the Events it hid were exactly the ones reviewers
+    had spent the previous days on -- a review is about the words a reader saw, and those words do not
+    change when a new bundle is appointed. Both arms are in the default funnel now, and `cohort` still
+    narrows to one when an operator is comparing arms deliberately.
+    """
+
     first_bundle, second_bundle = "1" * 64, "2" * 64
     first_event = _open_event(
         conn,
@@ -473,10 +490,13 @@ def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
 
     coverage = desk.open(DeskQuery(view="coverage"), principal=PRINCIPAL)
     by_cohort = {row["cohort"]: row for row in coverage["cohorts"]}
-    assert set(by_cohort) == {first_bundle}
+    assert set(by_cohort) == {first_bundle, second_bundle}
     assert by_cohort[first_bundle]["agent"]["bundle_sha"] == first_bundle
-    assert coverage["funnel"]["total"] == 1
-    assert coverage["funnel"]["accepted"] == 1
+    assert by_cohort[second_bundle]["agent"]["bundle_sha"] == second_bundle
+    assert coverage["funnel"]["total"] == 2
+    assert coverage["funnel"]["accepted"] == 2
+    # Both reviews are release evidence: eligibility is a property of the frozen evidence snapshot, and
+    # both Events carry one. Which arm answered them is recorded on the frozen case, not used here.
     eligibility = conn.execute(
         "SELECT event_id, bool_and(release_eligible) AS release_eligible FROM news_reviews "
         "WHERE event_id = ANY(%s) GROUP BY event_id",
@@ -484,26 +504,35 @@ def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
     ).fetchall()
     assert {row["event_id"]: row["release_eligible"] for row in eligibility} == {
         first_event: True,
-        second_event: False,
+        second_event: True,
     }
     default_queue = ReviewDesk(conn, now_ms=review_now).open(DeskQuery(status="all"), principal=PRINCIPAL)
-    assert {task["event_id"] for task in default_queue["tasks"]} == {first_event}
-    second_queue = ReviewDesk(conn, now_ms=review_now).open(
-        DeskQuery(cohort=second_bundle, status="all"), principal=PRINCIPAL
-    )
-    assert {task["event_id"] for task in second_queue["tasks"]} == {second_event}
+    assert {task["event_id"] for task in default_queue["tasks"]} == {first_event, second_event}
+    for bundle, expected in ((first_bundle, first_event), (second_bundle, second_event)):
+        narrowed = ReviewDesk(conn, now_ms=review_now).open(DeskQuery(cohort=bundle, status="all"), principal=PRINCIPAL)
+        assert {task["event_id"] for task in narrowed["tasks"]} == {expected}
+    narrowed_coverage = desk.open(DeskQuery(view="coverage", cohort=second_bundle), principal=PRINCIPAL)
+    assert {row["cohort"] for row in narrowed_coverage["cohorts"]} == {second_bundle}
 
 
-def test_coverage_epoch_excludes_prior_events_reviews_and_external_misses(conn) -> None:
+def test_coverage_counts_evidence_from_before_the_running_epoch_opened(conn) -> None:
+    """#651 §9: the epoch is runtime identity and audit, and it decides no data eligibility.
+
+    Both Events below are real, delivered and reviewed; the only thing separating them is that one
+    opened a millisecond before the running deployment wrote its epoch row. Clamping the window there
+    threw away hours of accepted review every time Workers restarted, and the review it threw away was
+    the review of the cards a reader had actually just been sent.
+    """
+
     prior_event = _open_event(
         conn,
         hit_id=112013,
-        title="Prior epoch evidence remains visible only through direct audit lookup",
+        title="Evidence from before the epoch opened is corpus truth like any other",
     )
     current_event = _open_event(
         conn,
         hit_id=112014,
-        title="Current epoch evidence is eligible for coverage",
+        title="Evidence from after the epoch opened is eligible for coverage",
     )
     epoch_start = int(
         conn.execute(
@@ -566,7 +595,7 @@ def test_coverage_epoch_excludes_prior_events_reviews_and_external_misses(conn) 
         event_id: {row["review_kind"]: row["release_eligible"] for row in eligibility if row["event_id"] == event_id}
         for event_id in (prior_event, current_event)
     }
-    assert by_event[prior_event] == {"acceptance": False, "judgment": False}
+    assert by_event[prior_event] == {"acceptance": True, "judgment": True}
     assert by_event[current_event] == {"acceptance": True, "judgment": True}
     external_eligibility = conn.execute(
         "SELECT source.source_url, review.review_kind, review.release_eligible "
@@ -596,22 +625,24 @@ def test_coverage_epoch_excludes_prior_events_reviews_and_external_misses(conn) 
         "judgment": True,
     }
     assert by_source["https://example.test/prior-epoch-miss"] == {
-        "acceptance": False,
-        "judgment": False,
+        "acceptance": True,
+        "judgment": True,
     }
 
-    assert coverage["window"]["from_ms"] == epoch_start
+    # The window an operator asked for is the window they get: 24 h back from now, not "back to whenever
+    # this deployment started".
+    assert coverage["window"]["from_ms"] == review_now - 24 * 3_600_000
     assert coverage["status"] == "ready"
     assert coverage["funnel"] == {
-        "received": 1,
-        "replayable": 1,
-        "reviewed": 1,
-        "accepted": 1,
+        "received": 2,
+        "replayable": 2,
+        "reviewed": 2,
+        "accepted": 2,
         "holdout_ready": 0,
-        "total": 1,
-        "external_misses": 1,
+        "total": 2,
+        "external_misses": 2,
     }
-    assert sum(row["events"] for row in coverage["strata"]) == 1
+    assert sum(row["events"] for row in coverage["strata"]) == 2
 
 
 def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_sparse_families(conn) -> None:
@@ -1329,7 +1360,16 @@ def test_current_epoch_proposal_from_inactive_dataset_bundle_is_audit_only(conn)
     assert proposal["status"] == "audit_only"
 
 
-def test_coverage_holdout_denominator_excludes_superseded_epoch_cases(conn) -> None:
+def test_coverage_holdout_denominator_counts_every_sealed_validation_case(conn) -> None:
+    """#651 §9: the holdout funnel counts the blind pairs that exist, whichever arm sealed them.
+
+    It used to count only pairs from a dataset whose `agent_cohort` was the appointed Agent, which meant
+    a deployment landing in the middle of a holdout hid the very judgments the holdout was waiting on
+    and reported the coverage denominator as zero. Whether a pair may still be *submitted* against the
+    running arm is a separate question, and `_pairwise_evidence_disposition` still answers it with the
+    bundle pin -- the two tests below cover that.
+    """
+
     old_dataset_sha, current_dataset_sha = "1" * 64, "2" * 64
     conn.execute(
         """
@@ -1384,11 +1424,20 @@ def test_coverage_holdout_denominator_excludes_superseded_epoch_cases(conn) -> N
 
     coverage = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="coverage"), principal=PRINCIPAL)
 
-    assert coverage["holdout"]["case_n"] == 1
-    assert coverage["holdout"]["cluster_n"] == 1
+    assert coverage["holdout"]["case_n"] == 2
+    assert coverage["holdout"]["cluster_n"] == 2
 
 
-def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_history(conn) -> None:
+def test_a_pair_from_a_superseded_arm_is_listed_but_cannot_be_judged(conn) -> None:
+    """#651 §9: the queue lists what exists; the disposition decides what may be written.
+
+    A blind pair compares one candidate against the stable arm it was registered under, so it stays
+    release evidence about that arm and keeps its bundle pin -- submitting a judgment on a pair whose
+    comparator is no longer running would file an opinion about a system nobody is operating. What it no
+    longer does is disappear from the queue: hiding it made the desk claim there was nothing to review
+    when in fact there was something that could only be read.
+    """
+
     event_id = _open_event(conn)
     source = conn.execute(
         "SELECT evidence_version, evidence_sha256, opened_at_ms FROM news_review_task_source_v1 WHERE event_id = %s",
@@ -1439,7 +1488,10 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
     current_task_id = f"pair.{current_run_sha}.{current_case_id}"
 
     pending = desk.open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)
-    assert [task["task_id"] for task in pending["tasks"]] == [current_task_id]
+    assert {task["task_id"] for task in pending["tasks"]} == {old_task_id, current_task_id}
+    # `cohort` still narrows, which is how an operator asks for only the pairs they may judge.
+    narrowed = desk.open(DeskQuery(mode="pairwise", cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
+    assert [task["task_id"] for task in narrowed["tasks"]] == [current_task_id]
 
     all_tasks = desk.open(DeskQuery(mode="pairwise", status="all"), principal=PRINCIPAL)["tasks"]
     by_id = {task["task_id"]: task for task in all_tasks}
@@ -1464,9 +1516,9 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
               release_eligible, created_at_ms
             ) VALUES
               (%s, 'judgment', 'pairwise', %s, %s, %s,
-               'news_review_v6', 'reader_contract_v2', 'audit-reviewer', %s::jsonb, %s::jsonb, NULL, true, %s),
+               'news_review_v7', 'reader_contract_v2', 'audit-reviewer', %s::jsonb, %s::jsonb, NULL, true, %s),
               (%s, 'acceptance', 'pairwise', %s, %s, %s,
-               'news_review_v6', 'reader_contract_v2', 'audit-reviewer', '{}'::jsonb, '{}'::jsonb, %s, true, %s)
+               'news_review_v7', 'reader_contract_v2', 'audit-reviewer', '{}'::jsonb, '{}'::jsonb, %s, true, %s)
             """,
             (
                 "9" * 64,
@@ -1492,6 +1544,8 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
                 NOW,
             ),
         )
+    # The guard refused the row, so nothing was accepted: a pair whose dataset names a bundle that is no
+    # longer the appointed Agent has no current task source to be judged against.
     assert desk.open(DeskQuery(mode="pairwise", status="accepted"), principal=PRINCIPAL)["tasks"] == []
     historical = {
         task["task_id"]: task
@@ -1520,7 +1574,7 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
     )
 
 
-def test_inactive_bundle_pairwise_task_is_audit_only_inside_current_epoch(conn) -> None:
+def test_a_pair_sealed_by_another_bundle_is_audit_only_however_recent_it_is(conn) -> None:
     event_id = _open_event(conn)
     source = conn.execute(
         "SELECT evidence_version, evidence_sha256, opened_at_ms FROM news_review_task_source_v1 WHERE event_id = %s",
@@ -1555,10 +1609,11 @@ def test_inactive_bundle_pairwise_task_is_audit_only_inside_current_epoch(conn) 
     desk = ReviewDesk(conn, now_ms=NOW)
     task_id = f"pair.{run_sha}.{case_id}"
 
-    assert desk.open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)["tasks"] == []
+    listed = desk.open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)["tasks"]
+    assert [task["task_id"] for task in listed] == [task_id]
+    assert desk.open(DeskQuery(mode="pairwise", cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)["tasks"] == []
     audit_task = desk.open(DeskQuery(mode="pairwise", status="all"), principal=PRINCIPAL)["tasks"][0]
     assert audit_task["task_id"] == task_id
-    assert audit_task["learning_epoch"] == ACTIVE_EPOCH
     assert audit_task["evidence_disposition"] == "audit_only"
     with (
         pytest.raises(ValueError, match="news_review_pairwise_task_audit_only"),
@@ -1684,3 +1739,224 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
         "hypothesis": "修复无证据的 priced-in 判断",
         "exact_diff": exact_diff,
     }
+
+
+def test_a_review_may_answer_the_explanation_alone_and_nothing_else(conn) -> None:
+    """#651 §7.2: the shape a reviewer submits when the card's *why* is the only thing they judged.
+
+    Under v6 this submission was impossible. A reviewer who had read the evidence and concluded the why
+    sentence is unsupported had to also state four taxonomy axes, a novelty judgment and a push verdict
+    before the desk would take it, and all three of those invented answers then counted as accepted truth
+    that a metric would later score a candidate against. Here nothing is stated but the copy verdict and
+    the supervision behind it, the row persists, and the absent answers stay absent in the payload.
+    """
+
+    event_id = _open_event(conn)
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    submission = EventRubricSubmission(
+        dimensions={"why_support": "fail"},
+        evidence_refs=["source:sentence:1"],
+        explanation=ExplanationCorrectionV1(
+            source_spans=["Micron says DRAM contract prices rose again in August"],
+            key_facts=["DRAM 合约价 8 月再次上涨"],
+            forbidden_claims=["涨幅已被市场完全定价"],
+            error_types=["unsupported_cause"],
+        ),
+    )
+
+    with repositories_for_connection(conn).transaction():
+        receipt = desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            submission,
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    row = conn.execute(
+        "SELECT should_push, dimensions, novelty, payload FROM news_review_records_v1 WHERE review_id = %s",
+        (receipt["receipt"]["review_id"],),
+    ).fetchone()
+    assert row["should_push"] is None
+    assert row["novelty"] == {}
+    assert row["dimensions"] == {"why_support": "fail"}
+    assert row["payload"]["taxonomy"] is None
+    assert row["payload"]["explanation_supervision"] == "present"
+    assert row["payload"]["explanation"]["key_facts"] == ["DRAM 合约价 8 月再次上涨"]
+
+    coverage = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="coverage"), principal=PRINCIPAL)
+    assert coverage["funnel"]["accepted"] == 1
+    assert coverage["funnel"]["reviewed"] == 1
+
+
+def test_a_taxonomy_only_and_an_asset_only_review_state_nothing_they_did_not_judge(conn) -> None:
+    """Two more partial shapes, and the guarantee that neither fabricates the other's answer."""
+
+    taxonomy_event = _open_event(conn, hit_id=112101, title="Regulator publishes the final custody rule")
+    asset_event = _open_event(conn, hit_id=112102, title="Micron names the fab the capacity expansion lands in")
+    desk = ReviewDesk(conn, now_ms=NOW)
+
+    taxonomy_task = desk.open(DeskQuery(event=taxonomy_event), principal=PRINCIPAL)["tasks"][0]
+    with repositories_for_connection(conn).transaction():
+        taxonomy_receipt = desk.submit(
+            TaskRef(task_id=taxonomy_task["task_id"], task_version=taxonomy_task["task_version"]),
+            EventRubricSubmission(
+                dimensions={
+                    "taxonomy_subject_codes": "pass",
+                    "taxonomy_event_family": "pass",
+                    "taxonomy_change_state": "pass",
+                    "taxonomy_assertion_status": "pass",
+                },
+                taxonomy=MODEL_TAXONOMY,
+            ),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    asset_task = desk.open(DeskQuery(event=asset_event), principal=PRINCIPAL)["tasks"][0]
+    with repositories_for_connection(conn).transaction():
+        asset_receipt = desk.submit(
+            TaskRef(task_id=asset_task["task_id"], task_version=asset_task["task_version"]),
+            EventRubricSubmission(
+                dimensions={"asset_grounding": "fail"},
+                evidence_refs=["source:sentence:1"],
+                expected=ExpectedCorrection(assets=[{"symbol": "MU", "market_type": "equity", "role": "primary"}]),
+            ),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    rows = {
+        str(row["review_id"]): row
+        for row in conn.execute(
+            "SELECT review_id, should_push, dimensions, novelty, payload FROM news_review_records_v1 "
+            "WHERE review_id = ANY(%s)",
+            ([taxonomy_receipt["receipt"]["review_id"], asset_receipt["receipt"]["review_id"]],),
+        ).fetchall()
+    }
+    taxonomy_row = rows[taxonomy_receipt["receipt"]["review_id"]]
+    asset_row = rows[asset_receipt["receipt"]["review_id"]]
+    assert set(taxonomy_row["dimensions"]) == {
+        "taxonomy_subject_codes",
+        "taxonomy_event_family",
+        "taxonomy_change_state",
+        "taxonomy_assertion_status",
+    }
+    assert taxonomy_row["payload"]["explanation"] is None
+    assert taxonomy_row["payload"]["explanation_supervision"] == "not_applicable"
+    assert asset_row["payload"]["taxonomy"] is None
+    assert asset_row["dimensions"] == {"asset_grounding": "fail"}
+    assert asset_row["payload"]["expected"]["assets"] == [{"symbol": "MU", "market_type": "equity", "role": "primary"}]
+
+
+def test_a_why_support_failure_without_supervision_is_stored_and_flagged_pending(conn) -> None:
+    """#651 §7.2: refusing it would lose the defect; accepting it silently would teach "change something".
+
+    A reviewer who can say the why sentence is wrong but not yet say which facts a correct one keeps has
+    recorded a real observation, and the desk keeps it. What it cannot be is explanation training data,
+    because "wrong" with no "and the answer is X" scores a rewrite into a different wrong sentence exactly
+    as highly as a repair. `explanation_supervision` says which of the two this row is, in the payload,
+    where the freeze and the readiness report both read it.
+    """
+
+    event_id = _open_event(conn)
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+
+    with repositories_for_connection(conn).transaction():
+        receipt = desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            EventRubricSubmission(
+                dimensions={"why_support": "fail", "factual_fidelity": "pass"},
+                evidence_refs=["source:sentence:1"],
+            ),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    payload = conn.execute(
+        "SELECT payload FROM news_review_records_v1 WHERE review_id = %s",
+        (receipt["receipt"]["review_id"],),
+    ).fetchone()["payload"]
+    assert payload["explanation"] is None
+    assert payload["explanation_supervision"] == "pending"
+
+
+def test_a_source_span_the_frozen_evidence_does_not_contain_is_refused(conn) -> None:
+    """A citation nobody can follow is worse than no citation, because it is accepted release evidence.
+
+    The span is checked against the snapshot this task froze rather than against today's Event, so a
+    later evidence version can neither ground nor unground a quotation somebody already accepted.
+    """
+
+    event_id = _open_event(conn)
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
+
+    with (
+        pytest.raises(ValueError, match="news_review_explanation_source_span_not_in_evidence"),
+        repositories_for_connection(conn).transaction(),
+    ):
+        desk.submit(
+            ref,
+            EventRubricSubmission(
+                dimensions={"why_support": "fail"},
+                evidence_refs=["source:sentence:1"],
+                explanation=ExplanationCorrectionV1(source_spans=["Micron cancels the fab entirely"]),
+            ),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+    assert conn.execute("SELECT count(*) AS n FROM news_reviews WHERE event_id = %s", (event_id,)).fetchone()["n"] == 0
+
+    # Whitespace is collapsed on both sides, because a reviewer copying from a rendered card picks up
+    # line breaks the stored text does not have. Nothing else about the excerpt is normalized.
+    with repositories_for_connection(conn).transaction():
+        desk.submit(
+            ref,
+            EventRubricSubmission(
+                dimensions={"why_support": "fail"},
+                evidence_refs=["source:sentence:1"],
+                explanation=ExplanationCorrectionV1(source_spans=["Micron says   DRAM contract\n prices rose"]),
+            ),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+    assert conn.execute("SELECT count(*) AS n FROM news_reviews WHERE event_id = %s", (event_id,)).fetchone()["n"] == 2
+
+
+def test_the_rubric_contract_offers_every_dimension_and_requires_none(conn) -> None:
+    """What the desk tells a reviewer they must answer, which under v7 is only that they answer something."""
+
+    event_id = _open_event(conn)
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+
+    rubric = desk.evidence(TaskRef(task_id=task["task_id"], task_version=task["task_version"]), principal=PRINCIPAL)[
+        "rubric"
+    ]
+
+    assert rubric["rubric_version"] == "news_review_v7"
+    assert rubric["required_dimensions"] == []
+    assert rubric["required_fields"] == ["dimensions"]
+    assert rubric["taxonomy"]["optional"] is True
+    assert "taxonomy_source_authority" not in rubric["dimensions"]
+    assert rubric["explanation"]["applies_to"] == [
+        "factual_fidelity",
+        "headline_fidelity",
+        "why_support",
+        "why_value",
+    ]
+
+    with pytest.raises(ValueError, match="news_review_dimensions_required"):
+        EventRubricSubmission(dimensions={})
+    with pytest.raises(ValueError, match="news_review_taxonomy_required_for_dimension"):
+        EventRubricSubmission(dimensions={"taxonomy_event_family": "pass"})
+    with pytest.raises(ValueError, match="news_review_taxonomy_dimension_required"):
+        EventRubricSubmission(dimensions={"direction": "pass"}, taxonomy=MODEL_TAXONOMY)
+    with pytest.raises(ValueError, match="news_review_explanation_requires_card_dimension"):
+        EventRubricSubmission(
+            dimensions={"direction": "pass"},
+            explanation=ExplanationCorrectionV1(key_facts=["一个事实"]),
+        )
