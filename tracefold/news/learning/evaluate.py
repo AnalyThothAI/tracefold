@@ -1532,6 +1532,16 @@ class CandidateEvaluator:
         if request.stage in {"offline", "holdout"}:
             taxonomy_evidence = _taxonomy_release_evidence(observations, reviews)
             target_evidence = _target_release_evidence(observations, reviews)
+            # A target whose judge could not answer more than `JUDGE_UNAVAILABLE_SHARE_MAX` of its
+            # applicable cases has not been evaluated, and an un-evaluated target must not read as a pass.
+            # It cannot fire while `judge_route` is `none_deterministic_arm` — the release rulers run
+            # judge-free, so nothing here asks a provider — and it is the gate that has to already exist
+            # the day one is bound, because the alternative is a judge outage published as a measurement.
+            blockers.extend(
+                f"{target}_evaluation_unavailable"
+                for target in LEARNING_TARGETS
+                if any(target_evidence[arm][target]["evaluation_unavailable"] for arm in ("stable", "candidate"))
+            )
             if taxonomy_only:
                 taxonomy_blockers, taxonomy_failures = _taxonomy_only_release_codes(
                     taxonomy_evidence, stage=request.stage
