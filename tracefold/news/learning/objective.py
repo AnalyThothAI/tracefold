@@ -268,15 +268,16 @@ def ungrounded_primaries(
 ) -> tuple[str, ...]:
     """Primary symbols that nothing in this Event's evidence names.
 
-    The gate used to be "a primary the provider did not tag scores zero", and on the Visa/CRCL Event that
-    zeroed the *correct* answer: the tag was `CRCL`, the subject was Visa, and a model that read the text
-    and answered `V` was punished for being right (#651 §5). A provider tag is one kind of grounding, not
-    the definition of it. The evidence text naming the symbol as its own token is another, and so is the
-    instrument catalogue holding it for a symbol this Event carries.
+    The gate used to be "a primary the *Gate grounded* nothing for scores zero", and on `727ffc0b` that
+    zeroed the correct answer. The provider tagged `XPL`, `CRCL`, `XYZ-CRCL` and `V`; the Gate grounded
+    only the `CRCL` spellings, because a B+ tag grounds only when the text spells it and the headline
+    says `Visa`, not `V`. So the Event named `V` all along, the model read the subject correctly, and the
+    metric punished it for a grade bar that was answering a different question (#651 §5).
 
-    What stays is the gate that matters: a primary that appears nowhere at all — not tagged, not written,
-    not in the catalogue for anything this Event names — is invented, and an invented subject is not a
-    grading question.
+    Grounding is that other question: does this Event name this symbol at all. A Gate-grounded tag says
+    yes; so does the evidence text spelling it as its own token, and so does the instrument catalogue
+    holding it for a symbol this Event carries. What stays is the gate that matters — a primary that
+    appears nowhere is invented, and an invented subject is not a grading question.
     """
 
     if not grounded:
