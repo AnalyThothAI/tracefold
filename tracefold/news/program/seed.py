@@ -10,7 +10,7 @@ patterns refused any advisory that claimed to outrank them.
 
 None of that governed anything a release process was not already governing. The optimizer's write-set was
 already a typed patch of two strings; a candidate already had to pass a frozen dataset, an independent
-evaluation, a future holdout, shadow, canary and a human promotion before a reader saw it. What the
+evaluation, a future holdout, canary and a human promotion before a reader saw it. What the
 layering bought was the ability to say "the learned part cannot override the reviewed part" *inside the
 prompt* — and the price was that the learned part could only ever be an addendum, blind to the text it was
 appended to and structurally unable to fix a sentence in it. The measured result: the shipped stable

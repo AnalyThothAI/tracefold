@@ -12,11 +12,12 @@ from pydantic import BaseModel
 from ..artifact_identity import canonical_json
 from ..models import TriageVerdict
 from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, source_authority_from_evidence
-from .artifact import ProgramStrategyArtifactV1, render_model_evidence_json, validate_program_instruction
+from .artifact import NewsProgramStateV1, render_model_evidence_json, validate_program_instruction
 from .assembly import normalize_restates, restatement_index_error
 from .contracts import EditorialEnvelope, ProgramNormalizationTrace, ReaderCardSemanticView, TriageContext
 from .lm import mark_active_domain_failure, program_json_adapter
 from .runtime import PREDICTOR_NAMES
+from .seed import seed_instruction
 from .signatures import (
     EventSemantics,
     EventSemanticsSignature,
@@ -216,28 +217,52 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
 
     def __init__(
         self,
-        artifact: ProgramStrategyArtifactV1,
+        state: NewsProgramStateV1,
         *,
         candidate_guard: CandidateGuard | None = None,
     ) -> None:
         super().__init__()
-        if artifact.program_sha256 != artifact.computed_sha256():
-            raise ValueError("news_program_artifact_hash_mismatch")
-        self.artifact = artifact
+        if state.program_sha256 != state.computed_sha256():
+            raise ValueError("news_program_state_hash_mismatch")
+        self.state = state
         self.candidate_guard = candidate_guard
-        # Attribute order is `named_predictors()` order, which is also execution order.
+        # Attribute order is `named_predictors()` order, which is also execution order. Built from the
+        # code-owned seed defaults and then loaded, so a released image goes through DSPy's own
+        # `load_state` rather than a second, Tracefold-shaped construction path.
         self.event_semantics = dspy.Predict(
-            EventSemanticsSignature.with_instructions(artifact.event_semantics_instruction),
-            max_tokens=artifact.event_semantics.max_tokens,
+            EventSemanticsSignature.with_instructions(seed_instruction("event_semantics")),
+            max_tokens=state.event_semantics.max_tokens,
         )
         self.taxonomy = dspy.Predict(
-            EventTaxonomySignature.with_instructions(artifact.taxonomy_instruction),
-            max_tokens=artifact.taxonomy.max_tokens,
+            EventTaxonomySignature.with_instructions(seed_instruction("taxonomy")),
+            max_tokens=state.taxonomy.max_tokens,
         )
         self.reader_card = dspy.Predict(
-            ReaderCardSignature.with_instructions(artifact.reader_card_instruction),
-            max_tokens=artifact.reader_card.max_tokens,
+            ReaderCardSignature.with_instructions(seed_instruction("reader_card")),
+            max_tokens=state.reader_card.max_tokens,
         )
+        self.load_state(state.predictor_documents())
+        self._verify_loaded_state(state)
+
+    def _verify_loaded_state(self, state: NewsProgramStateV1) -> None:
+        """Re-read what DSPy actually loaded and refuse anything the round trip did not reproduce.
+
+        `Signature.load_state` applies saved prefixes and descriptions positionally and leaves the field
+        names, types and ordering to the code Signature, so "the document loaded" and "the document is the
+        Program" are two different statements. This is the second one.
+        """
+
+        loaded = dict(self.named_predictors())
+        if tuple(loaded) != PREDICTOR_NAMES:
+            raise ValueError("news_program_state_predictor_set_invalid")
+        for predictor in PREDICTOR_NAMES:
+            predict = loaded[predictor]
+            if str(predict.signature.instructions) != state.instruction_for(predictor):
+                raise ValueError(f"news_program_state_instruction_not_loaded:{predictor}")
+            if tuple(dict(demo) for demo in predict.demos) != state.demos_for(predictor):
+                raise ValueError(f"news_program_state_demos_not_loaded:{predictor}")
+            if predict.lm is not None:
+                raise ValueError(f"news_program_state_lm_route_forbidden:{predictor}")
 
     def _candidate_rejection(self) -> str | None:
         instructions = tuple(str(getattr(self, name).signature.instructions) for name in PREDICTOR_NAMES)

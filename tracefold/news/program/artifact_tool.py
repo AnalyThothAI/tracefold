@@ -1,4 +1,4 @@
-"""Regenerate the sole packaged stable Program strategy artifact.
+"""Regenerate the sole packaged stable Program state image.
 
 The binary has exactly one executable factory and no second runtime-loadable
 profile.
@@ -15,10 +15,11 @@ from typing import Any
 
 from ..artifact_identity import canonical_json
 from .artifact import (
-    ProgramStrategyArtifactCodec,
-    ProgramStrategyArtifactV1,
+    NewsProgramStateV1,
     _write_exclusive,
-    build_code_owned_program_artifact,
+    build_code_owned_program_state,
+    decode_program_state,
+    encode_program_state,
 )
 from .runtime import PROGRAM_SCHEMA_VERSION
 
@@ -39,10 +40,10 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _write_image(root: Path, artifact: ProgramStrategyArtifactV1) -> Path:
-    document = ProgramStrategyArtifactCodec.encode(artifact)
-    ProgramStrategyArtifactCodec.decode(document)
-    image = root / f"{artifact.program_sha256}.json"
+def _write_image(root: Path, state: NewsProgramStateV1) -> Path:
+    document = encode_program_state(state)
+    decode_program_state(document)
+    image = root / f"{state.program_sha256}.json"
     if image.exists():
         if image.read_text(encoding="utf-8") != document:
             raise ValueError("news_program_artifact_existing_image_mismatch")
@@ -56,11 +57,11 @@ def _write_image(root: Path, artifact: ProgramStrategyArtifactV1) -> Path:
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    ProgramStrategyArtifactCodec.decode(image.read_text(encoding="utf-8"))
+    decode_program_state(image.read_text(encoding="utf-8"))
     return image
 
 
-def regenerate_stable_program_artifact(*, programs_root: Path | None = None) -> str:
+def regenerate_stable_program_state(*, programs_root: Path | None = None) -> str:
     """Atomically replace the one-entry registry with the reviewed root."""
 
     # Resolved from the owning package, not from this module's own location: the registry lives with the
@@ -76,22 +77,22 @@ def regenerate_stable_program_artifact(*, programs_root: Path | None = None) -> 
     if [str(value) for value in registry["images"]] != [old_sha]:
         raise ValueError("news_program_regenerate_with_candidates_forbidden")
 
-    artifact = build_code_owned_program_artifact()
-    new_image = _write_image(root, artifact)
-    _atomic_json(registry_path, {"images": [artifact.program_sha256], "stable": artifact.program_sha256})
+    state = build_code_owned_program_state()
+    new_image = _write_image(root, state)
+    _atomic_json(registry_path, {"images": [state.program_sha256], "stable": state.program_sha256})
     registered = _read_json_object(registry_path)
-    if registered != {"images": [artifact.program_sha256], "stable": artifact.program_sha256}:
+    if registered != {"images": [state.program_sha256], "stable": state.program_sha256}:
         _atomic_json(registry_path, registry)
         raise ValueError("news_program_registry_switch_failed")
-    ProgramStrategyArtifactCodec.decode(new_image.read_text(encoding="utf-8"))
+    decode_program_state(new_image.read_text(encoding="utf-8"))
 
-    if old_sha != artifact.program_sha256:
+    if old_sha != state.program_sha256:
         old_image = root / f"{old_sha}.json"
         previous = _read_json_object(old_image)
         if previous.get("program_sha256") != old_sha or previous.get("schema_version") != PROGRAM_SCHEMA_VERSION:
             raise ValueError("news_program_previous_image_identity_invalid")
         old_image.unlink()
-    return artifact.program_sha256
+    return state.program_sha256
 
 
-__all__ = ["regenerate_stable_program_artifact"]
+__all__ = ["regenerate_stable_program_state"]

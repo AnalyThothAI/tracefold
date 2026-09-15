@@ -175,7 +175,13 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
             # the same raw projection dicts rather than from the parsed models — same bytes, same address.
             identity["episode_projection_root_sha256"] = canonical_sha(list(export.episodes))
             plan = build_gepa_objective_plan(episodes)
-    report = build_readiness_report(plan, episodes=episodes, identity=identity, coverage=coverage)
+    report = build_readiness_report(
+        plan,
+        episodes=episodes,
+        identity=identity,
+        coverage=coverage,
+        target=str(getattr(args, "target", "classification") or "classification"),
+    )
     if str(args.out):
         _write_json(str(args.out), report)
     summary: dict[str, Any] = {key: value for key, value in report.items() if key != "case_dispositions"}
@@ -195,7 +201,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     )
     from tracefold.news.learning.contracts import ClosedWindow
     from tracefold.news.learning.dataset import DevelopmentDatasetStore
-    from tracefold.news.program.artifact import load_program_artifact
+    from tracefold.news.program.artifact import load_program_state
 
     mode = _baseline_mode(args.mode)
     action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
@@ -226,7 +232,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             "ok": False,
             "error": {"code": "news_program_baseline_no_accepted_reviews_in_window", "blocking_reasons": []},
         }
-    artifact = load_program_artifact(stable.program_sha256)
+    artifact = load_program_state(stable.program_sha256)
     semantic_judge, runtime_identity = _baseline_model_route(mode, settings=settings, artifact=artifact)
     judge_model = str(args.semantic_judge).strip()
     judge = None

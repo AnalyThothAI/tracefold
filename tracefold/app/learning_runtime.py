@@ -13,8 +13,8 @@ from tracefold.news import NEWS_RETRIEVAL_SHA256, PROGRESSION_REVIEW_TIMEOUT_SEC
 from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
 from tracefold.news.learning.contracts import ArmManifest
 from tracefold.news.program.artifact import (
-    ProgramStrategyArtifactV1,
-    load_stable_program_artifact,
+    NewsProgramStateV1,
+    load_stable_program_state,
 )
 from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
@@ -96,7 +96,7 @@ class NewsProgramRuntimeComposition:
 
     def semantic_judge(
         self,
-        artifact: ProgramStrategyArtifactV1,
+        state: NewsProgramStateV1,
         *,
         lm_type: Any = dspy.LM,
     ) -> SemanticJudge | None:
@@ -109,29 +109,29 @@ class NewsProgramRuntimeComposition:
         primary = RouteLMs(
             event_semantics=_configured_program_lm(
                 self.event_semantics_primary,
-                max_tokens=artifact.event_semantics.max_tokens,
+                max_tokens=state.event_semantics.max_tokens,
                 timeout=timeout,
                 predictor="event_semantics",
                 route="primary",
-                model_binding=artifact.event_semantics.model_bindings.primary,
+                model_binding=state.event_semantics.model_bindings.primary,
                 lm_type=lm_type,
             ),
             taxonomy=_configured_program_lm(
                 self.taxonomy_primary,
-                max_tokens=artifact.taxonomy.max_tokens,
+                max_tokens=state.taxonomy.max_tokens,
                 timeout=timeout,
                 predictor="taxonomy",
                 route="primary",
-                model_binding=artifact.taxonomy.model_bindings.primary,
+                model_binding=state.taxonomy.model_bindings.primary,
                 lm_type=lm_type,
             ),
             reader_card=_configured_program_lm(
                 self.reader_card_primary,
-                max_tokens=artifact.reader_card.max_tokens,
+                max_tokens=state.reader_card.max_tokens,
                 timeout=timeout,
                 predictor="reader_card",
                 route="primary",
-                model_binding=artifact.reader_card.model_bindings.primary,
+                model_binding=state.reader_card.model_bindings.primary,
                 lm_type=lm_type,
             ),
         )
@@ -140,87 +140,94 @@ class NewsProgramRuntimeComposition:
             fallback = RouteLMs(
                 event_semantics=_configured_program_lm(
                     self.event_semantics_fallback,
-                    max_tokens=artifact.event_semantics.max_tokens,
+                    max_tokens=state.event_semantics.max_tokens,
                     timeout=timeout,
                     predictor="event_semantics",
                     route="fallback",
-                    model_binding=artifact.event_semantics.model_bindings.fallback,
+                    model_binding=state.event_semantics.model_bindings.fallback,
                     lm_type=lm_type,
                 ),
                 taxonomy=_configured_program_lm(
                     self.event_semantics_fallback,
-                    max_tokens=artifact.taxonomy.max_tokens,
+                    max_tokens=state.taxonomy.max_tokens,
                     timeout=timeout,
                     predictor="taxonomy",
                     route="fallback",
-                    model_binding=artifact.taxonomy.model_bindings.fallback,
+                    model_binding=state.taxonomy.model_bindings.fallback,
                     lm_type=lm_type,
                 ),
                 reader_card=_configured_program_lm(
                     self.reader_card_fallback,
-                    max_tokens=artifact.reader_card.max_tokens,
+                    max_tokens=state.reader_card.max_tokens,
                     timeout=timeout,
                     predictor="reader_card",
                     route="fallback",
-                    model_binding=artifact.reader_card.model_bindings.fallback,
+                    model_binding=state.reader_card.model_bindings.fallback,
                     lm_type=lm_type,
                 ),
             )
         return RoutedSemanticJudge(
-            NativeNewsProgram(artifact),
+            NativeNewsProgram(state),
             primary=primary,
             fallback=fallback,
         )
 
     def compile_semantic_judge(
         self,
-        artifact: ProgramStrategyArtifactV1,
+        state: NewsProgramStateV1,
         *,
         lm_type: Any = dspy.LM,
     ) -> SemanticJudge | None:
-        """Bind all three Predictors to the one task endpoint used by offline GEPA.
+        """Bind each Predictor to its own production primary slot, with no fallback route.
 
-        This keeps the production native Module and audited task endpoint but
-        disables the whole-route deadline and cross-case breaker that GEPA does
-        not run. A baseline built here therefore measures the same single-endpoint
-        student without teaching the CLI how to construct model clients.
+        Offline compile and baseline answer on exactly the endpoints production asks that Predictor on:
+        `event_semantics.primary`, the taxonomy alias of it, and `reader_card.primary` — which is a
+        dedicated endpoint when the operator configured one and the EventSemantics alias otherwise. Until
+        #651 all three were pinned to `event_semantics_primary`, so a ReaderCard instruction optimized or
+        scored here was measured against a model production never asks to write the card.
+
+        What offline deliberately does *not* have is the rest of the route: no fallback endpoint, no
+        whole-route deadline (`route_deadline_seconds=None`) and no cross-case primary breaker. Each call
+        still carries its own `PROGRAM_ROUTE_DEADLINE_SECONDS` client timeout, so a hung provider ends one
+        call rather than the run. Production adds the fallback route, the route deadline and the breaker on
+        top of this; a compile that inherited them would attribute a candidate's score to a degraded route
+        it will never run under.
         """
 
         if not self.program_configured:
             return None
-        endpoint = self.event_semantics_primary
         timeout = float(PROGRAM_ROUTE_DEADLINE_SECONDS)
         primary = RouteLMs(
             event_semantics=_configured_program_lm(
-                endpoint,
-                max_tokens=artifact.event_semantics.max_tokens,
+                self.event_semantics_primary,
+                max_tokens=state.event_semantics.max_tokens,
                 timeout=timeout,
                 predictor="event_semantics",
                 route="primary",
-                model_binding=artifact.event_semantics.model_bindings.primary,
+                model_binding=state.event_semantics.model_bindings.primary,
                 lm_type=lm_type,
             ),
             taxonomy=_configured_program_lm(
-                endpoint,
-                max_tokens=artifact.taxonomy.max_tokens,
+                self.taxonomy_primary,
+                max_tokens=state.taxonomy.max_tokens,
                 timeout=timeout,
                 predictor="taxonomy",
                 route="primary",
-                model_binding=artifact.taxonomy.model_bindings.primary,
+                model_binding=state.taxonomy.model_bindings.primary,
                 lm_type=lm_type,
             ),
             reader_card=_configured_program_lm(
-                endpoint,
-                max_tokens=artifact.reader_card.max_tokens,
+                self.reader_card_primary,
+                max_tokens=state.reader_card.max_tokens,
                 timeout=timeout,
                 predictor="reader_card",
                 route="primary",
-                model_binding=artifact.reader_card.model_bindings.primary,
+                model_binding=state.reader_card.model_bindings.primary,
                 lm_type=lm_type,
             ),
         )
         return RoutedSemanticJudge(
-            NativeNewsProgram(artifact),
+            NativeNewsProgram(state),
             primary=primary,
             route_deadline_seconds=None,
             primary_breaker_enabled=False,
@@ -309,7 +316,7 @@ def active_arm_manifest(
 ) -> ArmManifest:
     """Describe the exact stable arm wired into this process."""
 
-    artifact = load_stable_program_artifact()
+    artifact = load_stable_program_state()
     composition = runtime_composition or compose_news_program_runtime(settings)
     policy = settings.news.policy.model_dump(mode="json")
     return ArmManifest(

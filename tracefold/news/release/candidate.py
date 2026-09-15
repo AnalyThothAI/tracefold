@@ -32,7 +32,7 @@ from ..learning.objective import (
     optimizer_population_identity,
 )
 from ..learning.projection import _arm_exact_diff
-from ..program.artifact import apply_program_patch, load_stable_program_artifact
+from ..program.artifact import load_stable_program_state
 from ..storage.root import NewsRepository
 
 
@@ -99,15 +99,15 @@ class CandidateRegistry:
             ),
         )
 
-    def is_taxonomy_only(self, candidate: CandidateManifest) -> bool:
-        """Whether this candidate rewrites the taxonomy instruction and nothing else (#548).
+    def changed_predictors(self, candidate: CandidateManifest) -> tuple[str, ...]:
+        """Exactly which Predictors this candidate rewrites, in Program order (#548, #651).
 
-        Read off the registered write-set and the running stable artifact, the same two documents
-        `validate` re-applies to derive the candidate's Program identity — so the class of a candidate is
+        Read off the registered state document and the running stable state, the same two documents
+        `validate` compares to derive the candidate's Program identity — so the class of a candidate is
         a fact about its bytes rather than a flag on its manifest.
         """
 
-        return self._prompt_candidate(candidate).patch.is_taxonomy_only(load_stable_program_artifact())
+        return self._prompt_candidate(candidate).changed_predictors(load_stable_program_state())
 
     def validate(self, candidate: CandidateManifest) -> GepaObjectivePlan:
         if self._stable.program_version != LEARNING_PROGRAM_VERSION:
@@ -144,10 +144,17 @@ class CandidateRegistry:
             raise ValueError("news_learning_prompt_candidate_dataset_mismatch")
         if prompt.target_runtime_manifest_sha256 != self._stable.runtime_model_bindings_sha256:
             raise ValueError("news_learning_prompt_candidate_runtime_manifest_mismatch")
-        parent_artifact = load_stable_program_artifact()
-        rebuilt = apply_program_patch(parent_artifact, prompt.patch.applied_to(parent_artifact))
+        parent_state = load_stable_program_state()
+        if prompt.parent_program_sha256 != parent_state.program_sha256:
+            raise ValueError("news_learning_prompt_candidate_parent_not_active_stable")
+        # The state document re-validated and re-hashed, not a patch re-applied: `program_state` recomputes
+        # `program_sha256` over the very bytes the arm will load, so a candidate whose declared identity
+        # does not address its own state cannot be admitted.
+        rebuilt = prompt.program_state
         if rebuilt.program_sha256 != candidate.candidate_arm.program_sha256:
             raise ValueError("news_learning_prompt_candidate_program_identity_mismatch")
+        if not rebuilt.changed_predictors(parent_state):
+            raise ValueError("news_learning_prompt_candidate_program_unchanged")
         episodes = list(self._datasets.development_compile_export(candidate.development_dataset_sha).episodes)
         plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes))
         # Not the count: the episodes themselves. `development_compile_export` re-projects them from live

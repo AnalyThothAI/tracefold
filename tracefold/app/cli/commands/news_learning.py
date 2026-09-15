@@ -89,16 +89,15 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             from tracefold.news.learning.contracts import PromptCandidateV1
             from tracefold.news.learning.objective import DevelopmentEpisode, build_gepa_objective_plan
             from tracefold.news.program.artifact import (
-                apply_program_patch,
-                load_stable_program_artifact,
-                write_program_candidate_artifact,
+                load_stable_program_state,
+                write_program_candidate_state,
             )
             from tracefold.news.release.candidate import validate_declared_objective_summary
 
             prompt = PromptCandidateV1.model_validate(_read_json_or_yaml(str(args.candidate)))
-            parent = load_stable_program_artifact()
+            parent = load_stable_program_state()
             # Everything a candidate has to satisfy to be *registrable*, in one place and none of it about
-            # where the text came from (#202 §7). A patch a person wrote and a patch GEPA wrote are
+            # where the state came from (#202 §7). A state a person wrote and a state GEPA wrote are
             # admissible on identical terms; what differs is only whether the candidate carries its own
             # objective summary to be checked against the plan re-derived below.
             if parent.program_sha256 != stable.program_sha256:
@@ -109,7 +108,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 raise ValueError("news_learning_register_runtime_manifest_mismatch")
             if prompt.development_dataset_sha256 != str(args.development):
                 raise ValueError("news_learning_register_dataset_mismatch")
-            candidate_artifact = apply_program_patch(parent, prompt.patch.applied_to(parent))
+            candidate_state = prompt.program_state
+            if not candidate_state.changed_predictors(parent):
+                raise ValueError("news_learning_register_program_unchanged")
             from tracefold.news.learning.dataset import DevelopmentDatasetStore
 
             with postgres_connection(settings) as export_conn:
@@ -128,10 +129,10 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if not plan.optimizer_cluster_ids:
                 raise ValueError("news_program_compile_no_taxonomy_gold_clusters")
             arm_payload = stable.model_dump(mode="json")
-            arm_payload.update(program_sha256=candidate_artifact.program_sha256)
+            arm_payload.update(program_sha256=candidate_state.program_sha256)
             candidate_arm = type(stable).model_validate(arm_payload)
-            artifact_directory = write_program_candidate_artifact(
-                candidate_artifact,
+            artifact_directory = write_program_candidate_state(
+                candidate_state,
                 artifact_root=Path(str(args.artifact_root)),
             )
             with postgres_connection(settings) as conn, conn.transaction():
@@ -164,14 +165,14 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                         "no_auto_promotion",
                     ),
                     program_parent_sha256=parent.program_sha256,
-                    program_candidate_sha256=candidate_artifact.program_sha256,
+                    program_candidate_sha256=candidate_state.program_sha256,
                     prompt_candidate_sha256=prompt.candidate_sha256,
                 )
                 registered = CandidateManifest(
                     parent_stable_sha=stable.bundle_sha,
                     candidate_arm=candidate_arm,
                     hypothesis=str(args.hypothesis)
-                    or "Repair the accepted failure clusters with the registered Prompt patch.",
+                    or "Repair the accepted failure clusters with the registered Program state.",
                     target_dimensions=plan.target_dimensions,
                     development_dataset_sha=str(args.development),
                     proposal_receipt=receipt,
@@ -261,14 +262,11 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if candidate is None:
                 raise ValueError("news_learning_candidate_required")
             observation_manifest = str(getattr(args, "observation_manifest", "") or "") or None
-            if action == "shadow" and observation_manifest is None and not bool(args.live_program):
-                raise ValueError("news_learning_shadow_live_program_confirmation_required")
-            stage = str(args.stage) if action == "evaluate" else action
             request = EvaluationRequest(
                 development_dataset_sha=str(args.development),
                 validation_dataset_sha=str(args.validation) or None,
                 candidate_sha=candidate.candidate_sha,
-                stage=stage,
+                stage=str(args.stage),
                 observation_manifest_sha=observation_manifest,
             )
             judges = _learning_program_judges(

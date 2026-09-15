@@ -45,7 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..artifact_identity import canonical_sha
 from ..models import TriageVerdict
 from ..program.artifact import (
-    ProgramStrategyArtifactV1,
+    NewsProgramStateV1,
     render_model_evidence_json,
 )
 from ..program.contracts import SemanticJudge, TriageContext
@@ -604,7 +604,7 @@ def run_baseline(
     cases: Sequence[BaselineCase],
     *,
     mode: BaselineMode,
-    artifact: ProgramStrategyArtifactV1,
+    artifact: NewsProgramStateV1,
     judge: CardEquivalenceJudge | None = None,
     semantic_judge: SemanticJudge | None = None,
     runtime_identity: Mapping[str, Any] | None = None,
@@ -797,7 +797,7 @@ def _build_report(
     *,
     cases: Sequence[BaselineCase],
     mode: BaselineMode,
-    artifact: ProgramStrategyArtifactV1,
+    artifact: NewsProgramStateV1,
     judge: CardEquivalenceJudge | None,
     strict_scores: Mapping[str, float],
     latency: Mapping[str, Any],

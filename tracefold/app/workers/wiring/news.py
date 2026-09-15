@@ -59,8 +59,8 @@ from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.program.artifact import (
-    ProgramStrategyArtifactV1,
-    load_stable_program_artifact,
+    NewsProgramStateV1,
+    load_stable_program_state,
 )
 from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.runtime import PROGRAM_VERSION
@@ -121,7 +121,7 @@ class _ProgramArms:
 
     judge: SemanticJudge | None
     progression_verifier: ProgressionVerifier | None
-    stable_artifact: ProgramStrategyArtifactV1
+    stable_artifact: NewsProgramStateV1
     stable_bundle_sha: str
     canary_arms: dict[str, CanaryRuntimeArm]
     runtime_manifest: dict[str, Any]
@@ -383,7 +383,7 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
     identity = runtime_identity()
     stable_arm = active_arm_manifest(settings, runtime_composition=runtime_composition)
     compiled_candidates = _compiled_candidate_manifests()
-    stable_artifact = load_stable_program_artifact()
+    stable_artifact = load_stable_program_state()
     if stable_arm.program_version != PROGRAM_VERSION or stable_artifact.program_sha256 != stable_arm.program_sha256:
         raise RuntimeError("news_stable_program_manifest_mismatch")
     semantic_judge = runtime_composition.semantic_judge(stable_artifact)
@@ -463,7 +463,7 @@ def _candidate_runtime_arms(
     compiled_candidates: dict[str, CandidateManifest],
     *,
     runtime_composition: NewsProgramRuntimeComposition,
-    stable_artifact: ProgramStrategyArtifactV1,
+    stable_artifact: NewsProgramStateV1,
     stable_arm: ArmManifest,
 ) -> tuple[dict[str, CanaryRuntimeArm], dict[str, CandidateRuntimeFact]]:
     """Compose candidate Programs and report neutral runtime-stage facts."""

@@ -1,36 +1,51 @@
-"""The content-addressed `ProgramStrategyArtifactV1`, its codec and its registry.
+"""The content-addressed `NewsProgramStateV1`, its one loader and its registry.
 
-An artifact is one complete instruction per Predictor. `program_sha256` is the canonical hash of those three
-texts and the schema version, and nothing else, which is why two compiles that arrive at the same three
-instructions are the same running Program however much they cost, whoever launched them, and whatever
-trajectory they took.
+A Program image is now exactly what DSPy itself calls the state of a `dspy.Module`: the document
+`NativeNewsProgram.dump_state()` returns, keyed by `named_predictors()` name, carrying each Predictor's
+instruction, its demos and its Signature state. `program_sha256` is the canonical hash of that document
+without the `lm` entries, plus the schema and the pinned DSPy version — which is why two compiles that
+arrive at the same instructions *and the same demos* are the same running Program however much they cost,
+whoever launched them, and whatever trajectory they took.
 
-Everything else the Program needs — the native Module, schemas, normalizer, assembler, model route
-and the execution budget — is code, and `identity.compute_execution_identity` hashes what that code
-renders (#314). It used to be declared here instead, as a `factory_id` literal somebody had to remember to
-bump; the artifact carried the literal and hashed it, which made a forgotten bump indistinguishable from
-no change at all.
+Before #651 the image was three instruction strings and nothing else. That shape could not represent a
+GEPA candidate at all: the optimizer is allowed to attach few-shot demos to a Predictor, and an image with
+no place to put them meant every such candidate had to be refused before it could be evaluated. The native
+state document has a place for them, so the release pipeline now carries what the optimizer actually
+produces instead of a projection of it.
 
-Since #306 Phase 2 the instruction *is* the whole reviewed instruction rather than an advisory appended to
-one. There is no Tracefold-owned prompt renderer: `seed.py` holds the reviewed baseline text, an artifact
-carries whatever text is current, and DSPy's public Signature adapter injects `PredictorState.instruction`
-unchanged while rendering the surrounding schema and inputs. A human editing the seed and an optimizer
-proposing a replacement are the same operation on the same string, held to the same bounds by
-`validate_program_instruction` and released through the same candidate/canary pipeline.
+Two things the envelope refuses on the way in, and both are business rules rather than tamper defence:
 
-`module.py` executes an artifact; this module decides what a legal artifact *is*.
+- an `lm` entry that is not null. Model routes are operator-owned configuration resolved by
+  `tracefold.app.learning_runtime`; a route baked into a released image would be a second, stale answer to
+  "which endpoint does this Predictor call".
+- a demo whose fields are not the Signature's, an unknown or missing Predictor name, or an instruction
+  outside `validate_program_instruction`'s bounds. `Signature.load_state` zips saved fields against code
+  fields positionally and ignores the tail, so a document the loader did not check would load silently
+  wrong.
+
+Loading is `NativeNewsProgram(state)`: construct the three Predictors from the code-owned seed defaults,
+`load_state` the envelope over them, then re-read `named_predictors()` and refuse anything the round trip
+did not reproduce. There is no second loader and no second representation.
+
+Everything else the Program needs — the native Module, schemas, normalizer, assembler, model route and the
+execution budget — is code, and `identity.compute_execution_identity` hashes what that code renders (#314).
+
+`module.py` executes a state; this module decides what a legal state *is*.
 """
 
 from __future__ import annotations
 
+import copy
+import importlib.metadata
 import importlib.resources
 import json
 import os
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
+import dspy  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
@@ -51,6 +66,24 @@ from .runtime import (
     _require_nfc,
 )
 from .seed import seed_instruction
+from .signatures import EventSemanticsSignature, EventTaxonomySignature, ReaderCardSignature
+
+# The exact DSPy whose `dump_state` shape this envelope is. Pinned rather than read at validation time: a
+# state written by another version is a different document, and discovering that at load is the point.
+DSPY_STATE_VERSION: Final[str] = "3.3.1"
+
+# Exactly the keys `dspy.Predict.dump_state()` emits in 3.3.1.
+_PREDICTOR_DOCUMENT_KEYS: Final[frozenset[str]] = frozenset({"traces", "train", "demos", "signature", "lm"})
+
+_SIGNATURE_DOCUMENT_KEYS: Final[frozenset[str]] = frozenset({"instructions", "fields"})
+
+_SIGNATURE_FIELD_KEYS: Final[frozenset[str]] = frozenset({"prefix", "description"})
+
+PREDICTOR_SIGNATURES: Final[dict[PredictorName, Any]] = {
+    "event_semantics": EventSemanticsSignature,
+    "taxonomy": EventTaxonomySignature,
+    "reader_card": ReaderCardSignature,
+}
 
 
 def validate_program_instruction(value: str) -> str:
@@ -111,55 +144,118 @@ class PredictorState(_ExactModel):
         return self
 
 
-class ProgramStrategyArtifactV1(_ExactModel):
-    """The complete write-set, and the whole of the *learnable* part of Program identity.
+def predictor_document(
+    predictor: PredictorName,
+    *,
+    instruction: str,
+    demos: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Render one Predictor's native state document through DSPy's own `dump_state`.
 
-    Three texts (#501 added taxonomy), and since #306 Phase 2 each one is the whole prompt for its Predictor
-    rather than an addendum to a rendered stack. #314 removed the other value: a `factory_id` literal
-    naming the code around them. Code identity is computed from the code
-    (`identity.EXECUTION_ENVELOPE_SHA256`), so carrying a declaration of it here only meant an artifact
-    could claim a factory it was not running under. What is left is exactly what a human or an optimizer
-    can write.
+    Never hand-assembled: the document has to be what `dspy.Predict.dump_state()` emits, or the loader's
+    round trip is comparing this repository's guess against DSPy's reality.
     """
 
-    schema_version: Literal["news_program_strategy_artifact_v1"] = "news_program_strategy_artifact_v1"
-    event_semantics_instruction: str
-    taxonomy_instruction: str
-    reader_card_instruction: str
+    predict = dspy.Predict(
+        PREDICTOR_SIGNATURES[predictor].with_instructions(validate_program_instruction(instruction)),
+        max_tokens=PROGRAM_PREDICTOR_MAX_TOKENS[predictor],
+    )
+    predict.demos = [dict(demo) for demo in demos]
+    return dict(predict.dump_state())
+
+
+class NewsProgramStateV1(_ExactModel):
+    """The complete write-set, and the whole of the *learnable* part of Program identity.
+
+    One native DSPy state document plus the three declarations a reader of the file needs to know what it
+    is: the schema, the DSPy version whose `dump_state` shape it carries, and the Predictor names in
+    execution order. Everything an optimizer can write — instructions and demos — is inside `state`;
+    everything code owns is outside it and hashed by `identity.EXECUTION_ENVELOPE_SHA256`.
+    """
+
+    schema_version: Literal["news_program_state_v1"] = "news_program_state_v1"
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dspy_version: Literal["3.3.1"] = DSPY_STATE_VERSION
+    predictors: tuple[PredictorName, ...]
+    state: dict[str, Any]
 
     @classmethod
-    def issue(
-        cls,
-        *,
-        event_semantics_instruction: str,
-        taxonomy_instruction: str,
-        reader_card_instruction: str,
-    ) -> ProgramStrategyArtifactV1:
+    def issue(cls, *, state: Mapping[str, Any]) -> NewsProgramStateV1:
         payload = {
             "schema_version": PROGRAM_SCHEMA_VERSION,
-            "event_semantics_instruction": event_semantics_instruction,
-            "taxonomy_instruction": taxonomy_instruction,
-            "reader_card_instruction": reader_card_instruction,
+            "dspy_version": DSPY_STATE_VERSION,
+            "predictors": list(PREDICTOR_NAMES),
+            "state": copy.deepcopy(dict(state)),
         }
-        return cls(**payload, program_sha256=canonical_sha(payload))
+        return cls(**payload, program_sha256=canonical_sha(_identity_material(payload)))
+
+    @classmethod
+    def from_instructions(cls, instructions: Mapping[PredictorName, str]) -> NewsProgramStateV1:
+        """Build a demo-free state from one complete instruction per Predictor."""
+
+        return cls.issue(
+            state={
+                predictor: predictor_document(predictor, instruction=instructions[predictor])
+                for predictor in PREDICTOR_NAMES
+            }
+        )
 
     @model_validator(mode="after")
-    def _instructions_are_safe_and_identity_is_exact(self) -> ProgramStrategyArtifactV1:
+    def _state_is_loadable_and_identity_is_exact(self) -> NewsProgramStateV1:
+        if tuple(self.predictors) != PREDICTOR_NAMES:
+            raise ValueError("news_program_state_predictors_invalid")
+        if set(self.state) != set(PREDICTOR_NAMES):
+            raise ValueError("news_program_state_predictor_set_invalid")
         for predictor in PREDICTOR_NAMES:
-            validate_program_instruction(self.instruction_for(predictor))
+            _validate_predictor_document(predictor, self.state[predictor])
         if self.program_sha256 != self.computed_sha256():
-            raise ValueError("news_program_artifact_hash_mismatch")
+            raise ValueError("news_program_state_hash_mismatch")
         return self
 
     def computed_sha256(self) -> str:
-        return canonical_sha(self.model_dump(mode="json", exclude={"program_sha256"}))
+        return canonical_sha(_identity_material(self.model_dump(mode="json", exclude={"program_sha256"})))
+
+    def predictor_document(self, predictor: PredictorName) -> dict[str, Any]:
+        return copy.deepcopy(dict(self.state[predictor]))
+
+    def predictor_documents(self) -> dict[str, Any]:
+        """The native document `dspy.Module.load_state` consumes, copied so a loader cannot mutate it."""
+
+        return {predictor: self.predictor_document(predictor) for predictor in PREDICTOR_NAMES}
 
     def instruction_for(self, predictor: PredictorName) -> str:
-        return str(getattr(self, f"{predictor}_instruction"))
+        return str(self.state[predictor]["signature"]["instructions"])
+
+    def demos_for(self, predictor: PredictorName) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(demo) for demo in self.state[predictor]["demos"])
 
     def predictor_state(self, predictor: PredictorName) -> PredictorState:
         return build_predictor_state(predictor, self.instruction_for(predictor))
+
+    def with_predictor_document(
+        self,
+        predictor: PredictorName,
+        document: Mapping[str, Any],
+    ) -> NewsProgramStateV1:
+        """Replace exactly one Predictor's native state, keeping the other two byte-identical.
+
+        The one merge the optimizer performs: a GEPA run optimizes a single Predictor, and what it returns
+        is that Predictor's `dump_state()`. Merging it here rather than in the optimizer keeps "which bytes
+        moved" a property of the document instead of a claim in a receipt.
+        """
+
+        merged = {name: self.predictor_document(name) for name in PREDICTOR_NAMES}
+        merged[predictor] = dict(document)
+        return NewsProgramStateV1.issue(state=merged)
+
+    def changed_predictors(self, parent: NewsProgramStateV1) -> tuple[PredictorName, ...]:
+        """Exactly which Predictors this state rewrites relative to `parent`, in Program order."""
+
+        return tuple(
+            predictor
+            for predictor in PREDICTOR_NAMES
+            if self.predictor_document(predictor) != parent.predictor_document(predictor)
+        )
 
     @property
     def event_semantics(self) -> PredictorState:
@@ -174,45 +270,58 @@ class ProgramStrategyArtifactV1(_ExactModel):
         return self.predictor_state("reader_card")
 
 
-class ProgramStrategyPatchV1(_ExactModel):
-    """The complete and exclusive optimizer write-set crossing the compiler boundary."""
+def _identity_material(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The hashed projection: everything but the `lm` routes, which are operator configuration."""
 
-    schema_version: Literal["news_program_strategy_patch_v1"] = "news_program_strategy_patch_v1"
-    parent_program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    event_semantics_instruction: str
-    taxonomy_instruction: str
-    reader_card_instruction: str
+    state = dict(payload["state"])
+    return {
+        "schema_version": payload["schema_version"],
+        "dspy_version": payload["dspy_version"],
+        "predictors": list(payload["predictors"]),
+        "state": {
+            name: {key: value for key, value in dict(document).items() if key != "lm"}
+            for name, document in state.items()
+        },
+    }
 
-    @classmethod
-    def issue(
-        cls,
-        *,
-        parent: ProgramStrategyArtifactV1,
-        event_semantics_instruction: str,
-        taxonomy_instruction: str,
-        reader_card_instruction: str,
-    ) -> ProgramStrategyPatchV1:
-        return cls(
-            parent_program_sha256=parent.program_sha256,
-            event_semantics_instruction=event_semantics_instruction,
-            taxonomy_instruction=taxonomy_instruction,
-            reader_card_instruction=reader_card_instruction,
-        )
 
-    @model_validator(mode="after")
-    def _write_set_is_safe(self) -> ProgramStrategyPatchV1:
-        for predictor in PREDICTOR_NAMES:
-            validate_program_instruction(self.instruction_for(predictor))
-        return self
-
-    def instruction_for(self, predictor: PredictorName) -> str:
-        return str(getattr(self, f"{predictor}_instruction"))
+def _validate_predictor_document(predictor: PredictorName, document: Any) -> None:
+    if not isinstance(document, Mapping) or set(document) != _PREDICTOR_DOCUMENT_KEYS:
+        raise ValueError(f"news_program_state_predictor_document_invalid:{predictor}")
+    _reject_nonfinite_json(dict(document), path=f"state.{predictor}")
+    if document["lm"] is not None:
+        raise ValueError(f"news_program_state_lm_route_forbidden:{predictor}")
+    # `traces` and `train` are per-call execution scratch that `Predict.reset()` empties. A released image
+    # carrying either would make two identical Programs hash differently for a reason nobody authored.
+    for key in ("traces", "train"):
+        if document[key] != []:
+            raise ValueError(f"news_program_state_scratch_not_empty:{predictor}.{key}")
+    signature = document["signature"]
+    if not isinstance(signature, Mapping) or set(signature) != _SIGNATURE_DOCUMENT_KEYS:
+        raise ValueError(f"news_program_state_signature_invalid:{predictor}")
+    validate_program_instruction(str(signature["instructions"]))
+    code_fields = list(PREDICTOR_SIGNATURES[predictor].fields)
+    fields = signature["fields"]
+    # `Signature.load_state` zips saved fields against code fields positionally with `strict=False`, so a
+    # document with a different field count loads a partially-applied Signature and says nothing.
+    if not isinstance(fields, list) or len(fields) != len(code_fields):
+        raise ValueError(f"news_program_state_signature_fields_invalid:{predictor}")
+    for field in fields:
+        if not isinstance(field, Mapping) or set(field) != _SIGNATURE_FIELD_KEYS:
+            raise ValueError(f"news_program_state_signature_fields_invalid:{predictor}")
+    demos = document["demos"]
+    if not isinstance(demos, list):
+        raise ValueError(f"news_program_state_demos_invalid:{predictor}")
+    allowed = set(code_fields)
+    for demo in demos:
+        if not isinstance(demo, Mapping) or not set(demo) <= allowed:
+            raise ValueError(f"news_program_state_demo_fields_invalid:{predictor}")
 
 
 def build_predictor_state(predictor: PredictorName, instruction: str) -> PredictorState:
     """Bind one Predictor's instruction to its route and budget.
 
-    There is no rendering step left. What the artifact carries is what the provider is sent, which is why
+    There is no rendering step left. What the state carries is what the provider is sent, which is why
     the "optimized bytes equal production bytes" property is now structural rather than something a
     refactor-baseline test had to keep proving.
     """
@@ -239,99 +348,80 @@ def render_model_evidence_json(payload: Mapping[str, Any], *, predictor: Predict
     return f"{_UNTRUSTED_EVENT_OPEN}\n{canonical_json(visible)}\n{_UNTRUSTED_EVENT_CLOSE}"
 
 
-def build_code_owned_program_artifact() -> ProgramStrategyArtifactV1:
-    """Build the reviewed baseline root from the seed texts; callers decide where it may be stored."""
+def build_code_owned_program_state() -> NewsProgramStateV1:
+    """Build the reviewed baseline root from the seed texts, with no demos; callers decide where it goes."""
 
-    return ProgramStrategyArtifactV1.issue(
-        event_semantics_instruction=seed_instruction("event_semantics"),
-        taxonomy_instruction=seed_instruction("taxonomy"),
-        reader_card_instruction=seed_instruction("reader_card"),
+    return NewsProgramStateV1.from_instructions(
+        {predictor: seed_instruction(predictor) for predictor in PREDICTOR_NAMES}
     )
 
 
-def apply_program_patch(
-    parent: ProgramStrategyArtifactV1,
-    patch: ProgramStrategyPatchV1,
-) -> ProgramStrategyArtifactV1:
-    """Apply an untrusted patch through the trusted, closed write-set."""
-
-    active = load_stable_program_artifact()
-    if parent.program_sha256 != active.program_sha256:
-        raise ValueError("news_program_patch_parent_not_active_stable")
-    if patch.parent_program_sha256 != parent.program_sha256:
-        raise ValueError("news_program_patch_parent_identity_mismatch")
-    return ProgramStrategyArtifactV1.issue(
-        event_semantics_instruction=patch.event_semantics_instruction,
-        taxonomy_instruction=patch.taxonomy_instruction,
-        reader_card_instruction=patch.reader_card_instruction,
-    )
+def _json_object(document: str | bytes, *, kind: str) -> dict[str, Any]:
+    try:
+        text = document.decode("utf-8") if isinstance(document, bytes) else document
+        raw = json.loads(text)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"news_program_{kind}_json_invalid") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"news_program_{kind}_must_be_object")
+    # A non-finite float has no canonical JSON form, so it would break the hash rather than attack
+    # anything. Kept for that reason alone.
+    _reject_nonfinite_json(raw)
+    return raw
 
 
-class ProgramStrategyArtifactCodec:
-    """The one artifact representation: canonical JSON out, ordinary JSON in.
+def decode_program_state(document: str | bytes) -> NewsProgramStateV1:
+    """The one reader: ordinary JSON in, a re-verified state envelope out.
 
-    Writing stays canonical because `program_sha256` is a hash of the document and a hash needs one
-    serialization. Reading no longer *enforces* canonicality, rejects duplicate keys, or re-checks that a
-    parse round-trips (#319): those defended against a document somebody tampered with, and in a
-    single-operator system with no adversary the artifact on disk is the one this repository shipped.
-
-    What survives is the check that carries business weight: the hash. `ProgramStrategyArtifactV1`
-    recomputes it on validation, so a file whose bytes do not match its identity still fails to load —
-    that is not tamper-proofing, it is the property the whole cohort model rests on.
+    Reading does not *enforce* canonicality, reject duplicate keys, or re-check that a parse round-trips
+    (#319): those defended against a document somebody tampered with, and in a single-operator system with
+    no adversary the image on disk is the one this repository shipped. What survives is the check that
+    carries business weight — the hash — plus the loadability rules `NewsProgramStateV1` applies, because a
+    document DSPy would load wrong is not a Program.
     """
 
-    @classmethod
-    def _json_object(cls, document: str | bytes, *, kind: str) -> dict[str, Any]:
-        try:
-            text = document.decode("utf-8") if isinstance(document, bytes) else document
-            raw = json.loads(text)
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-            raise ValueError(f"news_program_{kind}_json_invalid") from exc
-        if not isinstance(raw, dict):
-            raise ValueError(f"news_program_{kind}_must_be_object")
-        # A non-finite float has no canonical JSON form, so it would break the hash rather than attack
-        # anything. Kept for that reason alone.
-        _reject_nonfinite_json(raw)
-        return raw
-
-    @classmethod
-    def decode(cls, document: str | bytes) -> ProgramStrategyArtifactV1:
-        raw = cls._json_object(document, kind="artifact")
-        if raw.get("schema_version") != PROGRAM_SCHEMA_VERSION:
-            raise ValueError("news_program_artifact_version_unsupported")
-        try:
-            return ProgramStrategyArtifactV1.model_validate(raw)
-        except ValidationError as exc:
-            raise ValueError("news_program_artifact_schema_invalid") from exc
-
-    @staticmethod
-    def encode(artifact: ProgramStrategyArtifactV1) -> str:
-        payload = artifact.model_dump(mode="json")
-        _reject_nonfinite_json(payload)
-        if artifact.program_sha256 != artifact.computed_sha256():
-            raise ValueError("news_program_artifact_hash_mismatch")
-        return canonical_json(payload) + "\n"
-
-    @classmethod
-    def load(cls, path: str | None = None) -> ProgramStrategyArtifactV1:
-        if path is None:
-            return load_stable_program_artifact()
-        # The path armouring went, but its error *contract* has to stay: the CLI catches
-        # `(ValueError, PermissionError, RuntimeError)` and turns a coded failure into exit 2 with a named
-        # error. A bare `read_text` on a candidate whose artifact root was cleaned out would escape as
-        # `FileNotFoundError` and surface as a traceback instead.
-        try:
-            document = Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            raise ValueError("news_program_artifact_path_invalid") from exc
-        return cls.decode(document)
+    raw = _json_object(document, kind="state")
+    if raw.get("schema_version") != PROGRAM_SCHEMA_VERSION:
+        raise ValueError("news_program_state_version_unsupported")
+    if raw.get("dspy_version") != DSPY_STATE_VERSION:
+        raise ValueError("news_program_state_dspy_version_unsupported")
+    try:
+        return NewsProgramStateV1.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError("news_program_state_schema_invalid") from exc
 
 
-def load_stable_program_artifact() -> ProgramStrategyArtifactV1:
-    """Load and re-verify the immutable code-owned stable artifact."""
+def encode_program_state(state: NewsProgramStateV1) -> str:
+    """Canonical JSON out. Writing stays canonical because `program_sha256` hashes this document."""
+
+    payload = state.model_dump(mode="json")
+    _reject_nonfinite_json(payload)
+    if state.program_sha256 != state.computed_sha256():
+        raise ValueError("news_program_state_hash_mismatch")
+    return canonical_json(payload) + "\n"
+
+
+def read_program_state_document(path: str | None = None) -> NewsProgramStateV1:
+    """Decode one state document from an operator path, or the packaged stable image when none is given."""
+
+    if path is None:
+        return load_stable_program_state()
+    # The path armouring went, but its error *contract* has to stay: the CLI catches
+    # `(ValueError, PermissionError, RuntimeError)` and turns a coded failure into exit 2 with a named
+    # error. A bare `read_text` on a candidate whose artifact root was cleaned out would escape as
+    # `FileNotFoundError` and surface as a traceback instead.
+    try:
+        document = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError("news_program_state_path_invalid") from exc
+    return decode_program_state(document)
+
+
+def load_stable_program_state() -> NewsProgramStateV1:
+    """Load and re-verify the immutable code-owned stable state."""
 
     registry = _load_program_registry()
-    return load_program_artifact(str(registry["stable"]))
+    return load_program_state(str(registry["stable"]))
 
 
 def _programs_resource_root() -> Any:
@@ -351,7 +441,7 @@ def _load_program_registry() -> dict[str, Any]:
         document = registry_resource.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError("news_program_registry_path_invalid") from exc
-    raw = ProgramStrategyArtifactCodec._json_object(document, kind="registry")
+    raw = _json_object(document, kind="registry")
     if set(raw) != {"stable", "images"} or not isinstance(raw["images"], list):
         raise ValueError("news_program_registry_schema_invalid")
     images = [str(value) for value in raw["images"]]
@@ -362,31 +452,31 @@ def _load_program_registry() -> dict[str, Any]:
     return {"stable": str(raw["stable"]), "images": tuple(images)}
 
 
-def load_program_artifact(program_sha256: str) -> ProgramStrategyArtifactV1:
+def load_program_state(program_sha256: str) -> NewsProgramStateV1:
     """Resolve one immutable image from the code-owned registry, never from a user path."""
 
     identity = str(program_sha256)
     registry = _load_program_registry()
     if identity not in registry["images"]:
-        raise ValueError("news_program_artifact_not_registered")
+        raise ValueError("news_program_state_not_registered")
     image = _programs_resource_root().joinpath(f"{identity}.json")
     try:
         document = image.read_text(encoding="utf-8")
     except OSError as exc:
-        raise ValueError("news_program_artifact_path_invalid") from exc
-    artifact = ProgramStrategyArtifactCodec.decode(document)
-    if artifact.program_sha256 != identity:
-        raise ValueError("news_program_artifact_file_identity_mismatch")
-    return artifact
+        raise ValueError("news_program_state_path_invalid") from exc
+    state = decode_program_state(document)
+    if state.program_sha256 != identity:
+        raise ValueError("news_program_state_file_identity_mismatch")
+    return state
 
 
-def write_program_candidate_artifact(artifact: ProgramStrategyArtifactV1, *, artifact_root: Path) -> str:
-    """Persist one already trusted/applied artifact document atomically."""
+def write_program_candidate_state(state: NewsProgramStateV1, *, artifact_root: Path) -> str:
+    """Persist one already trusted state document atomically."""
 
     root = Path(artifact_root)
     root.mkdir(parents=True, exist_ok=True)
-    document = ProgramStrategyArtifactCodec.encode(artifact)
-    destination = root / f"{artifact.program_sha256}.json"
+    document = encode_program_state(state)
+    destination = root / f"{state.program_sha256}.json"
     if destination.exists():
         # Write verification, not tamper defence, and #319's own criterion keeps it: a truncated or
         # older-encoder `<sha>.json` already in the artifact root would otherwise be reported as a
@@ -395,7 +485,7 @@ def write_program_candidate_artifact(artifact: ProgramStrategyArtifactV1, *, art
         if destination.read_text(encoding="utf-8") != document:
             raise ValueError("news_program_compile_artifact_collision")
         return str(destination)
-    temporary = root / f".{artifact.program_sha256}.{uuid.uuid4().hex}.tmp"
+    temporary = root / f".{state.program_sha256}.{uuid.uuid4().hex}.tmp"
     try:
         _write_exclusive(temporary, document)
         os.rename(temporary, destination)
@@ -415,7 +505,7 @@ def _write_exclusive(path: Path, document: str) -> None:
     artifact — that was wrong, and review caught it. Every caller passes a uuid-unique temporary that
     cannot collide, and the destination is published by `os.rename`, which overwrites silently. The
     property that actually protects the destination is the content verification in
-    `write_program_candidate_artifact`, which this commit restores.
+    `write_program_candidate_state`, which this commit restores.
 
     What `O_EXCL` does here is narrower and still worth its one flag: it refuses to write into a
     temporary that somehow already exists rather than truncating it.
@@ -430,3 +520,32 @@ def _write_exclusive(path: Path, document: str) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def assert_installed_dspy_matches_state_version() -> None:
+    """Refuse a process whose installed DSPy is not the version every packaged state was written for."""
+
+    installed = importlib.metadata.version("dspy")
+    if installed != DSPY_STATE_VERSION:
+        raise ValueError(f"news_program_state_dspy_version_unsupported:{installed}")
+
+
+__all__ = [
+    "DSPY_STATE_VERSION",
+    "PREDICTOR_SIGNATURES",
+    "NewsProgramStateV1",
+    "PredictorModelBindings",
+    "PredictorState",
+    "assert_installed_dspy_matches_state_version",
+    "build_code_owned_program_state",
+    "build_predictor_state",
+    "decode_program_state",
+    "encode_program_state",
+    "load_program_state",
+    "load_stable_program_state",
+    "predictor_document",
+    "read_program_state_document",
+    "render_model_evidence_json",
+    "validate_program_instruction",
+    "write_program_candidate_state",
+]
