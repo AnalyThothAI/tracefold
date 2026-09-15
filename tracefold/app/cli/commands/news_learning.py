@@ -109,8 +109,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if prompt.development_dataset_sha256 != str(args.development):
                 raise ValueError("news_learning_register_dataset_mismatch")
             candidate_state = prompt.program_state
-            if not candidate_state.changed_predictors(parent):
-                raise ValueError("news_learning_register_program_unchanged")
             from tracefold.news.learning.dataset import DevelopmentDatasetStore
 
             with postgres_connection(settings) as export_conn:

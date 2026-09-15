@@ -527,7 +527,6 @@ class CandidateEvaluator:
                 if request.observation_manifest_sha:
                     observations, observation_dimensions = self._load_production_observations(
                         artifact_sha=request.observation_manifest_sha,
-                        stage=request.stage,
                         dataset=dataset,
                         candidate=candidate,
                     )
@@ -562,7 +561,6 @@ class CandidateEvaluator:
             if request.stage == "canary" and request.observation_manifest_sha is None:
                 observation_manifest_sha = self._persist_observation_manifest(
                     run_sha=run_sha,
-                    stage=request.stage,
                     dataset=dataset,
                     candidate=candidate,
                     observations=observations,
@@ -572,7 +570,6 @@ class CandidateEvaluator:
             if request.observation_manifest_sha:
                 loaded, observation_dimensions = self._load_production_observations(
                     artifact_sha=request.observation_manifest_sha,
-                    stage=request.stage,
                     dataset=dataset,
                     candidate=candidate,
                 )
@@ -581,7 +578,6 @@ class CandidateEvaluator:
             else:
                 observation_manifest_sha, observation_dimensions = self._generated_observation_manifest(
                     run_sha=run_sha,
-                    stage=request.stage,
                     dataset=dataset,
                     candidate=candidate,
                     observations=existing,
@@ -1745,7 +1741,6 @@ class CandidateEvaluator:
         self,
         *,
         artifact_sha: str,
-        stage: str,
         dataset: DatasetManifest,
         candidate: CandidateManifest,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1787,7 +1782,7 @@ class CandidateEvaluator:
         }
         if not required <= set(dimensions):
             raise ValueError("news_learning_production_observation_dimensions_incomplete")
-        if stage == "canary" and dimensions.get("delivery") not in {
+        if dimensions.get("delivery") not in {
             "observed",
             "observed_sent",
             "observed_not_sent",
@@ -1799,7 +1794,6 @@ class CandidateEvaluator:
         self,
         *,
         run_sha: str,
-        stage: str,
         dataset: DatasetManifest,
         candidate: CandidateManifest,
         observations: Sequence[Mapping[str, Any]],
@@ -1822,7 +1816,6 @@ class CandidateEvaluator:
         self,
         *,
         run_sha: str,
-        stage: str,
         dataset: DatasetManifest,
         candidate: CandidateManifest,
         observations: Sequence[Mapping[str, Any]],

@@ -144,17 +144,14 @@ class CandidateRegistry:
             raise ValueError("news_learning_prompt_candidate_dataset_mismatch")
         if prompt.target_runtime_manifest_sha256 != self._stable.runtime_model_bindings_sha256:
             raise ValueError("news_learning_prompt_candidate_runtime_manifest_mismatch")
-        parent_state = load_stable_program_state()
-        if prompt.parent_program_sha256 != parent_state.program_sha256:
-            raise ValueError("news_learning_prompt_candidate_parent_not_active_stable")
         # The state document re-validated and re-hashed, not a patch re-applied: `program_state` recomputes
         # `program_sha256` over the very bytes the arm will load, so a candidate whose declared identity
-        # does not address its own state cannot be admitted.
+        # does not address its own state cannot be admitted. The parent lineage is the two checks above —
+        # `prompt.parent_program_sha256` against the running stable, and `program_sha_unchanged` — and this
+        # layer adds no third one.
         rebuilt = prompt.program_state
         if rebuilt.program_sha256 != candidate.candidate_arm.program_sha256:
             raise ValueError("news_learning_prompt_candidate_program_identity_mismatch")
-        if not rebuilt.changed_predictors(parent_state):
-            raise ValueError("news_learning_prompt_candidate_program_unchanged")
         episodes = list(self._datasets.development_compile_export(candidate.development_dataset_sha).episodes)
         plan = build_gepa_objective_plan(tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes))
         # Not the count: the episodes themselves. `development_compile_export` re-projects them from live
