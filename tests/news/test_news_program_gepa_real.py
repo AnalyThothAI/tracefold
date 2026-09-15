@@ -496,7 +496,7 @@ def test_real_gepa_uses_one_native_taxonomy_predict_and_returns_public_trajector
     assert result.target == "classification"
     assert result.state.instruction_for("taxonomy") == _ADVISORY
     assert result.state.changed_predictors(stable) == ("taxonomy",)
-    assert result.metric["schema"] == "tracefold.news.taxonomy_gepa_metric.v4"
+    assert result.metric["schema"] == "tracefold.news.target_metric.v1"
     assert result.metric["target_selection_score"]["delta"]["target_overall"] > 0
     assert result.metric["target_selection_score"]["admitted"] is True
     change = result.metric["predictor_change"]
@@ -738,15 +738,15 @@ def _graded_corpus() -> tuple[DevelopmentEpisode, ...]:
             "understanding",
             "semantics",
             _SEMANTICS_ANSWER,
-            "tracefold.news.event_semantics_gepa_typed_v1",
-            "asset_symbol_set_f1",
+            "tracefold.news.target_metrics.v1:understanding",
+            "primary_asset_f1",
             id="understanding",
         ),
         pytest.param(
             "explanation",
             "card",
             _CARD_ANSWER,
-            "tracefold.news.reader_card_gepa_lint_retention_v2",
+            "tracefold.news.target_metrics.v1:explanation",
             "key_facts_covered",
             id="explanation",
         ),
@@ -820,7 +820,8 @@ def test_the_learning_student_is_what_keeps_a_typed_failure_scoreable_on_dspy_33
 
     from dspy.teleprompt.bootstrap_trace import bootstrap_trace_data
 
-    from tracefold.news.learning.optimizer import _ClassificationMetric, _LearningStudent
+    from tracefold.news.learning.optimizer import _LearningStudent
+    from tracefold.news.learning.target_metrics import classification_metric
 
     example = dspy.Example(
         evidence_json="<tracefold-untrusted-event-json-v1>\n{}\n</tracefold-untrusted-event-json-v1>",
@@ -831,7 +832,7 @@ def test_the_learning_student_is_what_keeps_a_typed_failure_scoreable_on_dspy_33
         return bootstrap_trace_data(
             program=program,
             dataset=[example],
-            metric=_ClassificationMetric(),
+            metric=classification_metric,
             raise_on_error=False,
             capture_failed_parses=True,
             failure_score=0.0,

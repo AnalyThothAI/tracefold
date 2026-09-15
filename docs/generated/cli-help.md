@@ -371,14 +371,16 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,run,freeze} ...
+                               {readiness,baseline,judge-calibration,draft-reviews,run,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,run,freeze}
+  {readiness,baseline,judge-calibration,draft-reviews,run,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score a moving-window Program baseline (no sandbox,
                         tariff, or writes)
+    judge-calibration   score the metric judge against the fixed perturbation
+                        corpus; writes a receipt, no DB
     draft-reviews       propose news_review_v7 rubrics with optional taxonomy
                         Gold (writes a file, never the DB)
     run                 the one bounded candidate path: readiness -> stock
@@ -450,6 +452,19 @@ options:
                         already match
   --limit LIMIT
   --out OUT             write the baseline report JSON
+
+```
+
+## `news learning judge-calibration`
+
+```
+usage: tracefold news learning judge-calibration [-h] --model MODEL
+                                                 [--out OUT]
+
+options:
+  -h, --help     show this help message and exit
+  --model MODEL  the judge model to measure, e.g. deepseek-v4-pro
+  --out OUT      write the calibration receipt JSON
 
 ```
 

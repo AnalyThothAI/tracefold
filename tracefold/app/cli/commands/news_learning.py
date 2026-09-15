@@ -11,6 +11,7 @@ from tracefold.platform.config.loader import load_settings
 from .news_learning_baseline import (
     _handle_learning_baseline,
     _handle_learning_draft_reviews,
+    _handle_learning_judge_calibration,
     _handle_learning_readiness,
 )
 from .news_learning_documents import (
@@ -70,6 +71,12 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     now_ms=stamp,
                 )
             return 0, {"ok": True, "data": result}
+
+        if action == "judge-calibration":
+            # Before `active_arm_manifest`: this command measures the *judge*, which belongs to the metric
+            # rather than to the Program, and a host with no armed Stable still has to be able to ask
+            # whether its judge answers the explanation questions correctly.
+            return _handle_learning_judge_calibration(args, settings)
 
         stable = active_arm_manifest(settings)
         if action == "readiness":

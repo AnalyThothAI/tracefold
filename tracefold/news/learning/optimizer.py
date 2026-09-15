@@ -25,6 +25,7 @@ downstream release gate, which is where a candidate that overfit the selection s
 from __future__ import annotations
 
 import difflib
+import functools
 import hashlib
 import importlib.metadata
 import math
@@ -61,7 +62,6 @@ from ..program.module import NativeNewsProgram
 from ..program.runtime import PREDICTOR_NAMES, PROGRAM_VERSION, PredictorName, _estimated_tokens
 from ..program.signatures import EventSemantics, ReaderCard
 from ..taxonomy import ModelTaxonomyV1
-from .card_lint import CARD_LINT_ID, GATE_CHECKS, SCORED_CHECKS, lint_reader_card
 from .contracts import (
     LEARNING_TARGETS,
     REFLECTION_MAX_TOKENS,
@@ -78,16 +78,24 @@ from .contracts import (
 )
 from .metric import _json_safe
 from .objective import (
-    _NO_GOLD,
     DevelopmentEpisode,
     GepaObjectivePlan,
-    _gold_value,
     build_gepa_objective_plan,
     build_readiness_report,
     optimizer_population_identity,
     retrieval_receipt,
 )
-from .taxonomy_metric import TAXONOMY_AXES, compare_taxonomy
+from .target_metrics import (
+    TASK_OUTPUT_INVALID,
+    TASK_OUTPUT_TRUNCATED,
+    ZERO_OBJECTIVES,
+    accepted_assets,
+    accepted_duplicate_of,
+    accepted_explanation,
+    accepted_novelty,
+    bind_target_metric,
+    target_metric_receipt,
+)
 
 # v4 (#501): the population is `included`/`excluded`; no target/control split, no owner distribution.
 # v5 (#651): the summary names the optimization `target`, because the same corpus now feeds three
@@ -235,8 +243,9 @@ class GepaNoProgramChange(ValueError):
         self.result = result
 
 
-_TASK_OUTPUT_FAILURE = "news_program_compile_task_model_output_truncated"
-_TASK_OUTPUT_INVALID = "news_program_compile_task_model_output_invalid"
+# The two candidate-local task failures this module converts and `target_metrics` scores at zero.
+_TASK_OUTPUT_FAILURE = TASK_OUTPUT_TRUNCATED
+_TASK_OUTPUT_INVALID = TASK_OUTPUT_INVALID
 
 
 # One vocabulary, defined beside the corpus contracts so a caller that only needs the names does not
@@ -317,268 +326,13 @@ class _LearningStudent(dspy.Module):  # type: ignore[misc]
             )
 
 
-def _task_output_failure(pred: dspy.Prediction, *, objectives: Mapping[str, float]) -> dspy.Prediction | None:
-    """Score the two candidate-local failures `_LearningStudent` converts, or return None for a real answer."""
-
-    failure = getattr(pred, "task_output_failure", None)
-    if failure == _TASK_OUTPUT_FAILURE:
-        return dspy.Prediction(
-            score=0.0,
-            feedback="output truncated: the candidate did not finish this example's JSON.",
-            objective_scores=dict(objectives),
-        )
-    if failure == _TASK_OUTPUT_INVALID:
-        return dspy.Prediction(
-            score=0.0,
-            feedback=getattr(pred, "task_output_feedback", "Typed output is invalid."),
-            objective_scores=dict(objectives),
-        )
-    return None
-
-
-def _mean(values: Sequence[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
-
-
-def _set_f1(expected: frozenset[str], observed: frozenset[str]) -> float:
-    if not expected and not observed:
-        return 1.0
-    if not expected or not observed:
-        return 0.0
-    overlap = len(expected & observed)
-    if not overlap:
-        return 0.0
-    precision = overlap / len(observed)
-    recall = overlap / len(expected)
-    return 2 * precision * recall / (precision + recall)
-
-
-# --- classification: the four-axis taxonomy ruler --------------------------------------------------
-
-
-def _zero_classification_objectives() -> dict[str, float]:
-    return {
-        "subject_codes_set_f1": 0.0,
-        "event_family_accuracy": 0.0,
-        "change_state_accuracy": 0.0,
-        "assertion_status_accuracy": 0.0,
-        "four_axis_exact_accuracy": 0.0,
-    }
-
-
-class _ClassificationMetric:
-    """The four-axis accepted-Gold ruler used by the `taxonomy` Predict.
-
-    Every failure scores the native ``failure_score`` of 0.0 (#501 D5). The v3 metric scored a truncated
-    output at ``-(train+1)`` so it could be told apart later; that sentinel dominated the Pareto front
-    and left candidate zero with an aggregate below every real candidate.
-    """
-
-    def __call__(
-        self,
-        gold: dspy.Example,
-        pred: dspy.Prediction,
-        trace: Any = None,
-        pred_name: str | None = None,
-        pred_trace: Any = None,
-    ) -> dspy.Prediction:
-        del trace, pred_name, pred_trace
-        expected = getattr(gold, "gold_taxonomy", None)
-        if expected is None:
-            raise TypeError("news_program_compile_taxonomy_gold_missing")
-        zero = _zero_classification_objectives()
-        failure = _task_output_failure(pred, objectives=zero)
-        if failure is not None:
-            return failure
-        try:
-            taxonomy = ModelTaxonomyV1.model_validate(getattr(pred, "taxonomy", None))
-            comparison = compare_taxonomy(expected, taxonomy)
-        except ValueError as exc:
-            return dspy.Prediction(
-                score=0.0,
-                feedback=f"Typed ModelTaxonomyV1 is invalid: {exc}",
-                objective_scores=zero,
-            )
-        objectives = {
-            "subject_codes_set_f1": comparison.subject_f1,
-            "event_family_accuracy": float(comparison.event_family_match),
-            "change_state_accuracy": float(comparison.change_state_match),
-            "assertion_status_accuracy": float(comparison.assertion_status_match),
-            "four_axis_exact_accuracy": float(comparison.exact),
-        }
-        return dspy.Prediction(
-            score=comparison.score,
-            feedback=comparison.feedback,
-            objective_scores=objectives,
-        )
-
-
-def _classification_example(episode: DevelopmentEpisode) -> dspy.Example:
-    gold = dict(episode.accepted_review or {}).get("taxonomy")
-    if gold is None:
-        raise ValueError("news_program_compile_taxonomy_gold_missing")
-    return dspy.Example(
-        evidence_json=render_model_evidence_json(episode.context.taxonomy_payload(), predictor="taxonomy"),
-        gold_taxonomy=gold,
-        case_id=episode.case_id,
-        cluster_id=episode.cluster_id,
-    ).with_inputs("evidence_json")
-
-
-def _classification_metric_receipt(*, review_rubric_version: str) -> dict[str, Any]:
-    return {
-        "schema": "tracefold.news.taxonomy_gepa_metric.v4",
-        "metric_id": "tracefold.news.taxonomy_gepa_direct_v4",
-        "review_rubric_version": review_rubric_version,
-        "scalar": "mean(subject_codes_set_f1,event_family_exact,change_state_exact,assertion_status_exact)",
-        "axes": list(TAXONOMY_AXES),
-        "invalid_prediction_score": 0.0,
-        "truncated_output_score": 0.0,
-        "feedback": "codebook definitions of expected and predicted labels plus the matching precedence rules",
-    }
-
-
-# --- understanding: typed semantics against accepted assets and novelty ----------------------------
-
-_UNDERSTANDING_AXES: Final[tuple[str, ...]] = ("typed_semantics_valid", "asset_symbol_set_f1", "novelty_accuracy")
-
-
-def _zero_understanding_objectives() -> dict[str, float]:
-    return dict.fromkeys(_UNDERSTANDING_AXES, 0.0)
-
-
-def _accepted_assets(review: Mapping[str, Any]) -> frozenset[str] | None:
-    """The accepted asset symbol set for one case, or None when nobody accepted one.
-
-    `asset_grounding` labelled `fail` carries the reviewer's repair in `expected`; labelled `pass` accepts
-    the production judgment verbatim. Anything else — unlabelled, uncertain — has no accepted answer, and
-    inventing one would score a candidate against a question no reviewer answered.
-    """
-
-    label = str(dict(review.get("dimensions") or {}).get("asset_grounding") or "")
-    if label == "fail":
-        gold = _gold_value(dict(review.get("expected") or {}), "asset_grounding")
-        return None if gold is _NO_GOLD else frozenset(gold)
-    return None
-
-
-def _predicted_assets(semantics: EventSemantics) -> frozenset[str]:
-    return frozenset(str(asset.symbol) for asset in semantics.assets)
-
-
-def _accepted_novelty(review: Mapping[str, Any]) -> str | None:
-    judgment = str(dict(review.get("novelty") or {}).get("judgment") or "")
-    return judgment if judgment in {"new_fact", "progression", "restatement"} else None
-
-
-class _UnderstandingMetric:
-    """The `event_semantics` ruler: the typed answer, its assets and its novelty.
-
-    Minimal on purpose and not a placeholder: every axis is an accepted fact the corpus already carries,
-    scored through the same components `learning/metric.py` uses for `asset_grounding` and `novelty`. An
-    axis with no accepted answer on a case is not scored there rather than being scored as a miss — the
-    alternative charges a candidate for a question nobody asked. A following unit refines the weighting and
-    adds the relevance axes; the `TargetMetric` call shape does not move.
-    """
-
-    def __call__(
-        self,
-        gold: dspy.Example,
-        pred: dspy.Prediction,
-        trace: Any = None,
-        pred_name: str | None = None,
-        pred_trace: Any = None,
-    ) -> dspy.Prediction:
-        del trace, pred_name, pred_trace
-        zero = _zero_understanding_objectives()
-        failure = _task_output_failure(pred, objectives=zero)
-        if failure is not None:
-            return failure
-        try:
-            semantics = EventSemantics.model_validate(getattr(pred, "semantics", None))
-        except ValueError as exc:
-            return dspy.Prediction(
-                score=0.0,
-                feedback=f"Typed EventSemantics is invalid: {exc}",
-                objective_scores=zero,
-            )
-        objectives = dict(zero)
-        objectives["typed_semantics_valid"] = 1.0
-        scored: list[float] = [1.0]
-        notes: list[str] = []
-        expected_assets = getattr(gold, "gold_assets", None)
-        if expected_assets is not None:
-            observed = _predicted_assets(semantics)
-            score = _set_f1(frozenset(expected_assets), observed)
-            objectives["asset_symbol_set_f1"] = score
-            scored.append(score)
-            if score < 1.0:
-                notes.append(
-                    f"Accepted assets are {sorted(expected_assets) or 'none'}; you named {sorted(observed) or 'none'}."
-                )
-        expected_novelty = getattr(gold, "gold_novelty", None)
-        if expected_novelty is not None:
-            hit = float(semantics.novelty == expected_novelty)
-            objectives["novelty_accuracy"] = hit
-            scored.append(hit)
-            if not hit:
-                notes.append(f"Accepted novelty is {expected_novelty}; you answered {semantics.novelty}.")
-        return dspy.Prediction(
-            score=_mean(scored),
-            feedback=" ".join(notes) or "The typed semantics match every accepted answer on this case.",
-            objective_scores=objectives,
-        )
-
-
-def _understanding_example(episode: DevelopmentEpisode) -> dspy.Example:
-    review = dict(episode.accepted_review or {})
-    values: dict[str, Any] = {
-        "evidence_json": render_model_evidence_json(
-            episode.context.event_semantics_payload(), predictor="event_semantics"
-        ),
-        "case_id": episode.case_id,
-        "cluster_id": episode.cluster_id,
-    }
-    assets = _accepted_assets(review)
-    if assets is not None:
-        values["gold_assets"] = assets
-    novelty = _accepted_novelty(review)
-    if novelty is not None:
-        values["gold_novelty"] = novelty
-    return dspy.Example(**values).with_inputs("evidence_json")
-
-
-def _understanding_metric_receipt(*, review_rubric_version: str) -> dict[str, Any]:
-    return {
-        "schema": "tracefold.news.event_semantics_gepa_metric.v1",
-        "metric_id": "tracefold.news.event_semantics_gepa_typed_v1",
-        "review_rubric_version": review_rubric_version,
-        "scalar": "mean(typed_semantics_valid,asset_symbol_set_f1?,novelty_accuracy?)",
-        "axes": list(_UNDERSTANDING_AXES),
-        "unlabelled_axis": "not_scored",
-        "invalid_prediction_score": 0.0,
-        "truncated_output_score": 0.0,
-        "feedback": "the accepted asset set and novelty judgment beside what the candidate answered",
-    }
-
-
-# --- explanation: the deterministic card lint plus accepted-copy retention -------------------------
-
-_EXPLANATION_AXES: Final[tuple[str, ...]] = (
-    "typed_card_valid",
-    "card_lint_pass_rate",
-    "headline_retained",
-    "why_retained",
-    # The reviewer's own must-keep facts (#651 §7.2). The other three axes ask whether the card is typed,
-    # clean and identical to an accepted line; this is the first one that asks whether it still says the
-    # thing the fact was about, which is what `why_support` has always been failed for and never had a
-    # label for.
-    "key_facts_covered",
-)
-
-
-def _zero_explanation_objectives() -> dict[str, float]:
-    return dict.fromkeys(_EXPLANATION_AXES, 0.0)
+# --- the frozen example each target renders, and the plan that binds it to its ruler ---------------
+#
+# The rulers themselves left this module in #651 §8. Three metrics living beside the GEPA assembly is how
+# the taxonomy comparison ended up implemented twice — once here and once in `learning/metric.py` — and a
+# candidate could then be admitted by one number and reported by another. `learning/target_metrics.py` is
+# the single owner; what stays here is the *question*: which frozen inputs and which accepted Gold each
+# target's example carries, which is a property of the corpus rather than of the ruler.
 
 
 def _accepted_copy(review: Mapping[str, Any], field: str) -> str | None:
@@ -591,96 +345,55 @@ def _accepted_copy(review: Mapping[str, Any], field: str) -> str | None:
     return str(value) if isinstance(value, str) and value.strip() else None
 
 
-def _retained(accepted: str, candidate: str) -> float:
-    """`judge.facts_supported`'s retention rule with no judge available: exact equality after stripping.
+def _classification_example(episode: DevelopmentEpisode) -> dspy.Example:
+    gold = dict(episode.accepted_review or {}).get("taxonomy")
+    if gold is None:
+        raise ValueError("news_program_compile_taxonomy_gold_missing")
+    return dspy.Example(
+        evidence_json=render_model_evidence_json(episode.context.taxonomy_payload(), predictor="taxonomy"),
+        gold_taxonomy=gold,
+        applicable_targets=tuple(episode.applicable_targets),
+        case_id=episode.case_id,
+        cluster_id=episode.cluster_id,
+    ).with_inputs("evidence_json")
 
-    `metric._retains` asks a sealed equivalence judge whether two differing free texts mean the same, and
-    falls back to literal equality when no judge is configured. The offline optimizer has two endpoints, a
-    task and a reflection one, and no third metric-judge route, so this is that fallback arm verbatim — the
-    same arm every baseline recorded before the judge existed was scored with. It never reports a false
-    retention; it can report a false miss on a paraphrase, which is a bound the following metric unit
-    lifts by handing this ruler a judge.
+
+def _understanding_example(
+    episode: DevelopmentEpisode,
+    *,
+    cluster_event_ids: Mapping[str, str] | None = None,
+) -> dspy.Example:
+    """The typed-semantics question plus every accepted fact about it, including what the model was shown.
+
+    `gold_told_event_ids` is the frozen ledger in the exact order `restates` indexes, because a
+    restatement's *target* is half its answer and a ruler that cannot see the ledger cannot check it.
+    `gold_cluster_event_ids` are the other Events of this case's connected fact cluster, so a candidate
+    that points at a different member of the same fact is right rather than lucky.
     """
 
-    return float(accepted.strip() == candidate.strip())
-
-
-class _ExplanationMetric:
-    """The `reader_card` ruler: typed validity, the code-owned copy lint, and accepted-copy retention.
-
-    Two of its three sources need no reviewer label at all. `lint_reader_card` is the deterministic card
-    contract — banned filler, meta openings, self-description, emoji, URLs, the headline length band and
-    number retention, one `why_zh` sentence — so every case scores something real. Its two `gate` checks
-    (a URL, or copy describing the writer as a model) zero the case the way a must-hold send does, because
-    such copy is not a reader card under any reading of the contract rather than a worse one.
-    """
-
-    def __call__(
-        self,
-        gold: dspy.Example,
-        pred: dspy.Prediction,
-        trace: Any = None,
-        pred_name: str | None = None,
-        pred_trace: Any = None,
-    ) -> dspy.Prediction:
-        del trace, pred_name, pred_trace
-        zero = _zero_explanation_objectives()
-        failure = _task_output_failure(pred, objectives=zero)
-        if failure is not None:
-            return failure
-        try:
-            card = ReaderCard.model_validate(getattr(pred, "card", None))
-        except ValueError as exc:
-            return dspy.Prediction(
-                score=0.0,
-                feedback=f"Typed ReaderCard is invalid: {exc}",
-                objective_scores=zero,
-            )
-        objectives = dict(zero)
-        objectives["typed_card_valid"] = 1.0
-        lint = lint_reader_card(
-            headline_zh=card.headline_zh,
-            why_zh=card.why_zh,
-            source_title=str(getattr(gold, "source_title", "") or ""),
+    review = dict(episode.accepted_review or {})
+    told_event_ids = tuple(str(entry.event_id) for entry in episode.context.told.entries)
+    values: dict[str, Any] = {
+        "evidence_json": render_model_evidence_json(
+            episode.context.event_semantics_payload(), predictor="event_semantics"
+        ),
+        "applicable_targets": tuple(episode.applicable_targets),
+        "gold_told_event_ids": told_event_ids,
+        "case_id": episode.case_id,
+        "cluster_id": episode.cluster_id,
+    }
+    assets = accepted_assets(review)
+    if assets is not None:
+        values["gold_assets"] = assets
+    novelty = accepted_novelty(review)
+    if novelty is not None:
+        values["gold_novelty"] = novelty
+        values["gold_duplicate_of"] = accepted_duplicate_of(review)
+        index = dict(cluster_event_ids or {})
+        values["gold_cluster_event_ids"] = frozenset(
+            event_id for event_id, cluster_id in index.items() if cluster_id == episode.cluster_id
         )
-        if lint.gate:
-            return dspy.Prediction(
-                score=0.0,
-                feedback=" ".join(lint.feedback) or f"Reader card rejected: {lint.gate}.",
-                objective_scores=objectives,
-            )
-        # `score` is None only when no check applied to this card at all, which the lint reports rather
-        # than guessing; an inapplicable contract is not a failed one.
-        lint_rate = 1.0 if lint.score is None else float(lint.score)
-        objectives["card_lint_pass_rate"] = lint_rate
-        scored: list[float] = [1.0, lint_rate]
-        notes: list[str] = list(lint.feedback)
-        for copy_field, axis, value in (
-            ("headline_zh", "headline_retained", card.headline_zh),
-            ("why_zh", "why_retained", card.why_zh),
-        ):
-            accepted = getattr(gold, f"gold_{copy_field}", None)
-            if accepted is None:
-                continue
-            hit = _retained(str(accepted), value)
-            objectives[axis] = hit
-            scored.append(hit)
-            if not hit:
-                notes.append(f"Accepted {copy_field} is: {accepted}")
-        key_facts = tuple(getattr(gold, "gold_key_facts", ()) or ())
-        if key_facts:
-            covered = _key_facts_covered(key_facts, f"{card.headline_zh}\n{card.why_zh}")
-            objectives["key_facts_covered"] = covered
-            scored.append(covered)
-            if covered < 1.0:
-                notes.append(
-                    "The card must keep every one of these facts: " + " | ".join(str(fact) for fact in key_facts)
-                )
-        return dspy.Prediction(
-            score=_mean(scored),
-            feedback=" ".join(notes) or "The card is typed, clean under the copy lint and keeps every accepted line.",
-            objective_scores=objectives,
-        )
+    return dspy.Example(**values).with_inputs("evidence_json")
 
 
 def _explanation_example(episode: DevelopmentEpisode) -> dspy.Example:
@@ -696,10 +409,16 @@ def _explanation_example(episode: DevelopmentEpisode) -> dspy.Example:
     if judgment is None:
         raise ValueError("news_program_compile_reader_card_semantics_missing")
     review = dict(episode.accepted_review or {})
+    explanation = accepted_explanation(review)
+    evidence_json = render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card")
     values: dict[str, Any] = {
-        "evidence_json": render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card"),
+        "evidence_json": evidence_json,
         "semantics_json": _recorded_semantics_json(judgment),
         "source_title": str(episode.context.evidence.title),
+        "applicable_targets": tuple(episode.applicable_targets),
+        "gold_key_facts": explanation["key_facts"],
+        "gold_forbidden_claims": explanation["forbidden_claims"],
+        "gold_error_types": explanation["error_types"],
         "case_id": episode.case_id,
         "cluster_id": episode.cluster_id,
     }
@@ -707,24 +426,7 @@ def _explanation_example(episode: DevelopmentEpisode) -> dspy.Example:
         accepted = _accepted_copy(review, copy_field)
         if accepted is not None:
             values[f"gold_{copy_field}"] = accepted
-    key_facts = tuple(dict(review.get("explanation") or {}).get("key_facts") or ())
-    if key_facts:
-        values["gold_key_facts"] = key_facts
     return dspy.Example(**values).with_inputs("evidence_json", "semantics_json")
-
-
-def _key_facts_covered(key_facts: Sequence[Any], card_text: str) -> float:
-    """Share of the reviewer's must-keep facts the card still states, by literal containment.
-
-    The same bound `_retained` has and for the same reason: the offline optimizer has a task endpoint and
-    a reflection endpoint and no third route to ask a judge with, so containment is the honest rule
-    available here. It never reports a false coverage and can report a false miss on a paraphrase, which
-    is a bound the metric unit that hands this ruler a judge lifts.
-    """
-
-    haystack = " ".join(str(card_text).split())
-    hits = sum(1 for fact in key_facts if " ".join(str(fact).split()) in haystack)
-    return hits / len(key_facts)
 
 
 def _recorded_semantics_json(judgment: ScoredJudgment) -> str:
@@ -745,23 +447,10 @@ def _recorded_semantics_json(judgment: ScoredJudgment) -> str:
     return canonical_json(view.model_dump(mode="json"))
 
 
-def _explanation_metric_receipt(*, review_rubric_version: str) -> dict[str, Any]:
-    return {
-        "schema": "tracefold.news.reader_card_gepa_metric.v2",
-        "metric_id": "tracefold.news.reader_card_gepa_lint_retention_v2",
-        "review_rubric_version": review_rubric_version,
-        "card_lint_id": CARD_LINT_ID,
-        "scalar": "mean(typed_card_valid,card_lint_pass_rate,headline_retained?,why_retained?,key_facts_covered?)",
-        "axes": list(_EXPLANATION_AXES),
-        "gate_checks": list(GATE_CHECKS),
-        "scored_checks": list(SCORED_CHECKS),
-        "unlabelled_axis": "not_scored",
-        "retention_rule": "literal_equality_no_metric_judge",
-        "key_facts_rule": "literal_containment_no_metric_judge",
-        "invalid_prediction_score": 0.0,
-        "truncated_output_score": 0.0,
-        "feedback": "the copy lint's own repair instructions plus any accepted line the card dropped",
-    }
+def cluster_event_index(episodes: Sequence[DevelopmentEpisode]) -> dict[str, str]:
+    """Which connected fact cluster each frozen Event belongs to, for the restatement-target check."""
+
+    return {str(episode.context.evidence.event_id): str(episode.cluster_id) for episode in episodes}
 
 
 @dataclass(frozen=True)
@@ -777,39 +466,59 @@ class _TargetPlan:
     zero_objectives: Callable[[], dict[str, float]]
 
 
-def target_plan(target: OptimizationTarget, *, review_rubric_version: str) -> _TargetPlan:
-    """Resolve one target into its Predictor, ruler, example renderer and metric receipt."""
+def target_plan(
+    target: OptimizationTarget,
+    *,
+    review_rubric_version: str,
+    judge: Any = None,
+    cluster_event_ids: Mapping[str, str] | None = None,
+    judge_calibration_receipt_sha256: str = "",
+) -> _TargetPlan:
+    """Resolve one target into its Predictor, ruler, example renderer and metric receipt.
+
+    `judge` is the metric-judge route, bound into the ruler here and nowhere else. The offline optimizer
+    has a task endpoint and a reflection endpoint and no third one, so it passes None and the explanation
+    ruler runs its deterministic arm; `baseline` and `CandidateEvaluator` pass the sealed judge they
+    already build, and the receipt below records which of the two this run was scored under.
+    """
 
     if target not in TARGET_PREDICTOR:
         raise ValueError(f"news_program_compile_target_unknown:{target}")
+    metric = cast(TargetMetric, bind_target_metric(target, judge))
+    receipt = target_metric_receipt(
+        target,
+        review_rubric_version=review_rubric_version,
+        judge=judge,
+        judge_calibration_receipt_sha256=judge_calibration_receipt_sha256,
+    )
     if target == "classification":
         return _TargetPlan(
             target=target,
             predictor="taxonomy",
             output_type=ModelTaxonomyV1,
-            metric=_ClassificationMetric(),
+            metric=metric,
             example=_classification_example,
-            metric_receipt=_classification_metric_receipt(review_rubric_version=review_rubric_version),
-            zero_objectives=_zero_classification_objectives,
+            metric_receipt=receipt,
+            zero_objectives=ZERO_OBJECTIVES["classification"],
         )
     if target == "understanding":
         return _TargetPlan(
             target=target,
             predictor="event_semantics",
             output_type=EventSemantics,
-            metric=_UnderstandingMetric(),
-            example=_understanding_example,
-            metric_receipt=_understanding_metric_receipt(review_rubric_version=review_rubric_version),
-            zero_objectives=_zero_understanding_objectives,
+            metric=metric,
+            example=functools.partial(_understanding_example, cluster_event_ids=cluster_event_ids),
+            metric_receipt=receipt,
+            zero_objectives=ZERO_OBJECTIVES["understanding"],
         )
     return _TargetPlan(
         target=target,
         predictor="reader_card",
         output_type=ReaderCard,
-        metric=_ExplanationMetric(),
+        metric=metric,
         example=_explanation_example,
-        metric_receipt=_explanation_metric_receipt(review_rubric_version=review_rubric_version),
-        zero_objectives=_zero_explanation_objectives,
+        metric_receipt=receipt,
+        zero_objectives=ZERO_OBJECTIVES["explanation"],
     )
 
 
@@ -1015,7 +724,14 @@ def run_gepa(
     if plan.blocking_reasons:
         raise ValueError("news_program_compile_objective_blocked:" + ",".join(plan.blocking_reasons))
     split_receipt = plan.split
-    resolved_target = target_plan(target, review_rubric_version=review_rubric_version)
+    # The whole frozen corpus, not just the optimized half: a restatement may point at a member of its
+    # fact cluster that lives in the other half, and the ruler has to be able to see that it is the same
+    # fact rather than charge the candidate for naming a different card about it.
+    resolved_target = target_plan(
+        target,
+        review_rubric_version=review_rubric_version,
+        cluster_event_ids=cluster_event_index(episodes),
+    )
     train_examples = [resolved_target.example(episode) for episode in plan.train_episodes]
     val_examples = [resolved_target.example(episode) for episode in plan.development_selection_episodes]
     retrieval = retrieval_receipt(episodes)

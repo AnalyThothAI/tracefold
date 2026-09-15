@@ -127,8 +127,12 @@ def compare_taxonomy(
     )
 
 
-def _model_taxonomy(value: Any) -> ModelTaxonomyV1:
-    """Read one taxonomy as its four model axes, whatever wider shape the caller happened to hold."""
+def model_taxonomy(value: Any) -> ModelTaxonomyV1:
+    """Read one taxonomy as its four model axes, whatever wider shape the caller happened to hold.
+
+    Public because every ruler needs it: the persisted shape carries `taxonomy_version` and
+    `codebook_sha256` beside the four axes, and `ModelTaxonomyV1` forbids extras, so a ruler that
+    validated the stored mapping directly reported a schema failure on a perfectly good label."""
 
     if isinstance(value, ModelTaxonomyV1):
         return ModelTaxonomyV1.model_validate({field: getattr(value, field) for field in ModelTaxonomyV1.model_fields})
@@ -150,8 +154,8 @@ def summarize_taxonomy(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         cluster_id = str(row.get("cluster_id") or "")
         if not case_id or not cluster_id:
             raise ValueError("news_taxonomy_summary_identity_missing")
-        gold = _model_taxonomy(row.get("gold"))
-        predicted = _model_taxonomy(row.get("predicted"))
+        gold = model_taxonomy(row.get("gold"))
+        predicted = model_taxonomy(row.get("predicted"))
         previous = representatives.get(cluster_id)
         if previous is not None and previous[1] != gold:
             raise ValueError(f"news_taxonomy_summary_cluster_conflict:{cluster_id}")
@@ -270,5 +274,6 @@ __all__ = [
     "accepted_taxonomy_gold",
     "calibrate_taxonomy",
     "compare_taxonomy",
+    "model_taxonomy",
     "summarize_taxonomy",
 ]

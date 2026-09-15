@@ -175,6 +175,17 @@ def add_news_commands(
     )
     learning_baseline.add_argument("--limit", type=_positive_int, default=500)
     learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
+    # #651 §7.3: the explanation ruler's score is a model's opinion, so there has to be a command that
+    # measures whether that opinion tracks the perturbation it is supposed to catch. Fourteen synthetic
+    # pairs, no database, no dataset, and a receipt the metric receipt can point at.
+    learning_calibration = learning_subcommands.add_parser(
+        "judge-calibration",
+        help="score the metric judge against the fixed perturbation corpus; writes a receipt, no DB",
+    )
+    learning_calibration.add_argument(
+        "--model", required=True, metavar="MODEL", help="the judge model to measure, e.g. deepseek-v4-pro"
+    )
+    learning_calibration.add_argument("--out", default="", help="write the calibration receipt JSON")
     learning_draft = learning_subcommands.add_parser(
         "draft-reviews",
         help="propose news_review_v7 rubrics with optional taxonomy Gold (writes a file, never the DB)",

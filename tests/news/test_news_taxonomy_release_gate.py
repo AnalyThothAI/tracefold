@@ -52,11 +52,15 @@ def test_release_taxonomy_evidence_blocks_on_any_per_axis_regression() -> None:
     )
 
     assert evidence["schema"] == "tracefold.news.taxonomy_release_evidence.v4"
-    assert evidence["regressed_axes"] == ["event_family_accuracy", "four_axis_exact_accuracy"]
+    # #651 §8: the joint exact rate is no longer one of the axes a release reads. It moved with the same
+    # cluster as `event_family_accuracy` and is still published in the deltas and the intervals, but
+    # counting it here made one cluster's slip cost the candidate twice.
+    assert evidence["regressed_axes"] == ["event_family_accuracy"]
     assert evidence["delta"]["event_family_accuracy"] == -1.0
-    # #567: the same two axes, read as intervals. Every cluster here regressed, so the interval is the
+    assert evidence["delta"]["four_axis_exact_accuracy"] == -1.0
+    # #567: the same axis, read as an interval. Every cluster here regressed, so the interval is the
     # point delta and the taxonomy-only rule reaches the same verdict the sign test does.
-    assert evidence["interval_regressed_axes"] == ["event_family_accuracy", "four_axis_exact_accuracy"]
+    assert evidence["interval_regressed_axes"] == ["event_family_accuracy"]
     assert evidence["axis_interval_95"]["event_family_accuracy"] == {
         "delta": -1.0,
         "lower": -1.0,
@@ -92,8 +96,9 @@ def test_release_taxonomy_evidence_allows_improvement_and_carries_no_control_ver
         "regressed_axes",
         "axis_interval_95",
         "interval_regressed_axes",
+        # #651 §8: the classification partial score is what admits a taxonomy-only candidate, and the
+        # joint exact rate is published beside it as the reader-facing diagnostic.
         "taxonomy_overall_improved",
-        # #626: the reading that admits a taxonomy-only candidate, published beside the mean it replaced.
         "four_axis_exact_improved",
     }
 

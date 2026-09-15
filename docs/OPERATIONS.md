@@ -1631,15 +1631,16 @@ For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
    interval under the profile's own `bootstrap` block (seed 112, 2,000
    replicates), published in the evidence as `axis_interval_95` with `delta`,
    `lower`, `upper` and `n`: since #567 an axis is a regression only when its
-   whole interval lies below zero, and since #626 the primary metric for this
-   class is `four_axis_exact_accuracy` — a card is correctly classified only when
-   all four of its axes are, while the `taxonomy_overall` mean nets one axis's
-   gain against another's slip — so the candidate improved only when the exact
-   rate's whole interval lies above zero, the overall mean and every
-   `axis_interval_95` staying published for the receipt. It PASSES on improved
-   with nothing regressed (a holdout PASS advances straight to promotion), FAILS
-   on any regressed axis, and is UNKNOWN — `four_axis_exact_not_improved` — when
-   the exact rate's interval crosses zero, as it still is with empty Gold or
+   whole interval lies below zero, and the primary metric for this class is
+   `taxonomy_overall` — since #651 the classification ruler's own partial score,
+   so the release reads the number the target is optimized on — the candidate
+   improving only when that interval lies above zero.
+   `four_axis_exact_accuracy` stays published as a diagnostic and decides
+   nothing: it is a joint rate over four correlated axes, so #626's use of it as
+   the gate counted one cluster's slip twice. It PASSES on improved with nothing
+   regressed (a holdout PASS advances straight to promotion), FAILS on any
+   regressed axis, and is UNKNOWN — `taxonomy_partial_score_not_improved` — when
+   the partial score's interval crosses zero, as it still is with empty Gold or
    fewer than `primary_clusters_min` Gold-bearing clusters. #567 also moved
    `guardrails.mean_total_tokens_growth_pct` from 0.10 to 0.25 while
    `mean_call_growth_pct` and `mean_provider_cost_growth_pct` stay at 0.10,

@@ -56,6 +56,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.objective",
         # #437: the existing recorded Dataset baseline invokes one pure taxonomy metric.
         "tracefold.news.learning.taxonomy_metric",
+        # #651 §7.3: `news learning judge-calibration` measures the metric judge against a fixed
+        # perturbation corpus. Pure and database-free, like the taxonomy metric above; the CLI composes
+        # the endpoint and this module asks the questions.
+        "tracefold.news.learning.judge_calibration",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
         "tracefold.news.review.desk",

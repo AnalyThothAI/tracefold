@@ -2628,6 +2628,84 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
             )
 
 
+def test_an_offline_evaluation_states_a_denominator_for_each_of_the_three_targets(conn) -> None:
+    """#651 §8: a per-target score with no denominator beside it is not a measurement.
+
+    The corpus here is the frozen development dataset built from real accepted reviews in PostgreSQL, so
+    which target each case is evidence for comes from `applicable_targets` as the freeze sealed it rather
+    than from anything this test states. What the evidence has to say is how many cases each target could
+    ask, how many of those scored, and — one by one, never folded into the failures — how many were
+    excluded and why.
+    """
+
+    from tracefold.news.learning.target_metrics import EXCLUDED_OUTCOMES, FAILURE_OUTCOMES
+
+    _accepted_compilable_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap._datasets.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=_static_judges(stable, candidate.candidate_arm),
+        candidate_catalog=(candidate,),
+    )
+    report = asyncio.run(
+        evaluator.evaluate(
+            EvaluationRequest(
+                development_dataset_sha=development.artifact_sha,
+                candidate_sha=candidate.candidate_sha,
+                stage="offline",
+            )
+        )
+    )
+
+    targets = report.evidence["targets"]
+    assert targets["schema"] == "tracefold.news.target_release_evidence.v1"
+    # The two arms are scored over the identical population, which is what makes a delta meaningful.
+    assert set(targets) == {"schema", "judge_route", "stable", "candidate"}
+    assert targets["judge_route"] == "none_deterministic_arm"
+    for arm in ("stable", "candidate"):
+        assert set(targets[arm]) == {"classification", "understanding", "explanation"}
+        for target, block in targets[arm].items():
+            assert block["schema"] == "tracefold.news.target_denominators.v1"
+            assert block["target"] == target
+            assert block["case_n"] == len(development.cases)
+            # Every case is in exactly one bucket, and `not_applicable` sits outside the applicable
+            # population rather than inside it as a zero.
+            assert block["case_n"] == block["applicable_n"] + block["not_applicable_n"]
+            assert block["applicable_n"] == (
+                block["scored_n"]
+                + block["failure_n"]
+                + block["no_gold_n"]
+                + block["judge_unavailable_n"]
+                + block["retrieval_miss_n"]
+            )
+            assert block["judge_unavailable_share_max"] == 0.2
+            assert block["evaluation_unavailable"] is False
+            assert set(block["failures"]) <= FAILURE_OUTCOMES
+    # This corpus carries accepted taxonomy Gold, so classification is applicable and scored on it; the
+    # count is what a later run is compared against, and it is published rather than implied.
+    classification = targets["candidate"]["classification"]
+    assert classification["applicable_n"] == len(development.cases)
+    assert classification["scored_n"] == len(development.cases)
+    assert classification["score"] is not None
+    assert "not_applicable" in EXCLUDED_OUTCOMES
+
+
 def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     _accepted_compilable_event(conn)
     stable = _arm()
@@ -3980,9 +4058,14 @@ def test_a_taxonomy_only_holdout_is_decided_by_its_per_axis_evidence(conn) -> No
     assert primary["endpoint"] == "taxonomy_axis_evidence"
     assert primary["primary_cluster_n"] == cluster_n >= _PROFILE["validation"]["primary_clusters_min"]
     assert primary["taxonomy_overall_delta"] > 0
-    # #626: what admits this arm is that it makes cards fully correct, not that the mean rose.
+    # #651 §8: what admits this arm is the classification partial score, and the joint exact rate is
+    # published beside it as a diagnostic -- outside `primary["axis_interval_95"]`, which is exactly the
+    # set of axes a regression can be read off.
+    assert primary["taxonomy_overall_improved"] is True
+    assert primary["taxonomy_overall_interval_95"]["lower"] > 0
+    assert "four_axis_exact_accuracy" not in primary["axis_interval_95"]
     assert primary["four_axis_exact_improved"] is True
-    assert primary["axis_interval_95"]["four_axis_exact_accuracy"]["lower"] > 0
+    assert report.evidence["taxonomy"]["axis_interval_95"]["four_axis_exact_accuracy"]["lower"] > 0
     assert primary["regressed_axes"] == []
     assert report.evidence["taxonomy"]["candidate"]["taxonomy_overall"] == 1.0
     # No pairwise judgment exists and none is demanded, and since #651 §9 the thin development corpus
@@ -4026,10 +4109,11 @@ def test_a_taxonomy_only_holdout_is_decided_by_its_per_axis_evidence(conn) -> No
     assert regressed.gate_outcome == "fail"
     assert regressed.recommended_action == "reject"
     assert "candidate_taxonomy_axis_regression" in regressed.evidence["failures"]
-    assert regressed.evidence["primary"]["regressed_axes"] == [
-        "change_state_accuracy",
-        "four_axis_exact_accuracy",
-    ]
+    # The joint exact rate moved with `change_state` and is still reported, but only the four real axes
+    # can fail a release (#651 §8): counting it here made one cluster's slip cost the candidate twice.
+    assert regressed.evidence["primary"]["regressed_axes"] == ["change_state_accuracy"]
+    assert regressed.evidence["taxonomy"]["interval_regressed_axes"] == ["change_state_accuracy"]
+    assert regressed.evidence["taxonomy"]["delta"]["four_axis_exact_accuracy"] < 0
 
 
 def test_a_taxonomy_only_holdout_survives_a_one_cluster_slip_the_bootstrap_cannot_separate(conn) -> None:

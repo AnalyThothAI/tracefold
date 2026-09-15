@@ -153,10 +153,21 @@ def _judge(**kwargs: Any) -> CardEquivalenceJudge:
 def test_endpoint_has_two_named_native_predictors() -> None:
     endpoint = _ScriptedJudgeLM()
 
-    assert [name for name, _ in endpoint.named_predictors()] == ["equivalence", "factual_evidence"]
+    assert [name for name, _ in endpoint.named_predictors()] == [
+        "equivalence",
+        "factual_evidence",
+        # #651 §7.3: the explanation ruler's two batched list questions are part of this endpoint, so
+        # they are part of its identity too.
+        "key_facts",
+        "forbidden_claims",
+    ]
     assert endpoint.equivalence.signature.instructions.startswith("You are checking whether a rewritten Chinese")
     assert endpoint.factual_evidence.signature.instructions.startswith(
         "You are checking whether a corrected Chinese news card"
+    )
+    assert endpoint.key_facts.signature.instructions.startswith("You are checking which of a reviewer's must-keep")
+    assert endpoint.forbidden_claims.signature.instructions.startswith(
+        "You are checking whether a Chinese news card asserts any claim"
     )
     assert endpoint.identity["program_sha256"] == JUDGE_PROGRAM_SHA256
     assert endpoint.identity["program"]["max_calls_per_question"] == JUDGE_MAX_CALLS_PER_QUESTION == 2
