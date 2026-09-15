@@ -1038,7 +1038,7 @@ figure at all since #553: the `telemetry_received_24h`,
 `telemetry_parsed_24h`, `telemetry_parse_failed_24h` and `telemetry_events_24h`
 counters counted Events, and an OI frame opens none. `/api/news/market`
 reports what the OI Strategy actually did.
-`news.policy` has exactly six v13 keys: `restatement_drop` (true),
+`news.policy` has exactly six v14 keys: `restatement_drop` (true),
 `similarity_max` (0.25), `listing_exempt_from_duplicate` (true),
 `stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older
 than this when the provider pushed it is a replay, withheld as
@@ -1054,8 +1054,13 @@ Trade-relevance eligibility and objective-guard ordering are code-owned, not
 operator thresholds. `direct_surface` requires direct/second-order tradability
 and non-empty channels/markets. `material_change` requires `state_change`, or
 `material_detail` plus direct tradability or an unscheduled/material surprise;
-`realtime_eligible` requires both and magnitude >= 2. After the grounded-
-restatement guard, the generic v10 action order is deterministic
+`realtime_eligible` requires both and magnitude >= 2. The grounded-restatement
+guard drops a `restatement` that cites a told entry the model was shown,
+whatever the two directions are (#651: the model's `direction` is its reading of
+a fact, not a fact, so it cannot decide whether the reader already has it; a
+real reversal arrives as `progression` or `new_fact`, which the same-fact and
+budget exemptions still cover). After that guard, the generic v10 action order
+is deterministic
 listing/telemetry — which since v13 (#523) does not cover a listing frame the
 model marked `reader_value=none`, leaving it to the `reader_value_none` drop —
 grounded watchlist, eligible `reader_value=escalate`, eligible

@@ -134,6 +134,11 @@ def production_decision(
     Recorded mode carries the persisted `DecisionResult` fields; live modes run the same current `decide()`
     function production uses. No caller may replace that action authority with model-owned relevance.
 
+    That split is what makes the #651 §6.3 restatement change replay correctly without a second code path: a
+    live-mode example is scored under the current guard, where a `restatement` drops whatever its direction
+    says, while a recorded row keeps the action the reader actually received under the policy that produced
+    it. A receipt is not re-decided because the rule moved.
+
     ``member_count`` and ``now_ms`` come from the frozen ``TriageContext`` the episode already carries
     (`evidence.member_count`, `now_ms`), so the policy-v12 corroboration and storyline budget replay without a
     new projection root (#504).

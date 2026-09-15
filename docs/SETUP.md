@@ -282,8 +282,8 @@ news:
     # Alternative provider (do not configure both):
     # feishu_webhook_url: "<Feishu v2 webhook>"
     # feishu_signing_secret:
-  policy:                     # policy-v13 duplicate/safety/budget knobs (all optional; these are the defaults)
-    restatement_drop: true      # a restatement of a card the reader already received never pushes
+  policy:                     # policy-v14 duplicate/safety/budget knobs (all optional; these are the defaults)
+    restatement_drop: true      # a restatement of a card the reader already received never pushes, either direction
     similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
     listing_exempt_from_duplicate: true  # exchange listing frames are duplicates only per instrument
     stale_source_max_age_s: 43200  # an x/twitter artifact already older than 12 h on arrival is a replay
@@ -328,7 +328,7 @@ The Gate admits nearly every Item (only recovery replays, law-firm templates
 and unscored or under-80 market frames skip Program execution; exchange
 listing/delisting frames are admitted and judged like any candidate), Triage is
 the semantic filter, and
-`decide()` applies policy v13 to one `ScoredJudgment`. Semantic generation is
+`decide()` applies policy v14 to one `ScoredJudgment`. Semantic generation is
 the code-owned `EventSemantics.v2 -> deterministic
 _normalize_and_validate_semantics -> ReaderCard.v2 -> deterministic _assemble`
 Program; `TradeRelevanceV1` is nested

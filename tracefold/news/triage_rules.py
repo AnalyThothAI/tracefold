@@ -1,4 +1,12 @@
-"""The ordinary model policy and its code-owned degraded fallback."""
+"""The ordinary model policy and its code-owned degraded fallback.
+
+``TRIAGE_POLICY_VERSION`` is ``news_triage_policy_v14`` and stays there across #651 §6.3. The
+direction-flip exemption inside :func:`grounded_restatement` is a behaviour change, and a behaviour change
+normally owes a version -- but v14 was declared earlier in this same change (migration ``0379``) and has
+never run in production, so no stored verdict was ever written under the version it would be distinguished
+from. Bumping again would publish a v15 whose only difference from a never-deployed v14 is a paragraph
+nobody can point at a row for.
+"""
 
 from __future__ import annotations
 
@@ -248,19 +256,24 @@ def _seen_flip(direction: str, seen_directions: Sequence[str], index: int) -> bo
 
 
 def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None) -> bool:
-    """True when the model called this a restatement *of a ledger entry it was actually shown* and the direction did
-    not flip against that entry. An out-of-range ``restates`` (or an empty ledger) is ignored: novelty then counts as
-    new_fact, so a hallucinated restatement can never drop a card."""
+    """True when the model called this a restatement *of a ledger entry it was actually shown*.
+
+    An out-of-range ``restates`` (or an empty ledger) is ignored: novelty then counts as new_fact, so a
+    hallucinated restatement can never drop a card.
+
+    The label decides, and the direction does not (#651 §6.3). This used to exempt a `restatement` whose
+    `direction` had flipped against the cited told entry, on the theory that a reversal cannot be a repeat.
+    But `direction` is the model's own reading of a fact, not a fact about the world: the same Visa onchain
+    credit release read `bullish` by one card and, from another outlet's wording, differently by the next is
+    one fact either way, and the exemption is what pushed `ec2e5a29` and `727ffc0b` to the reader as two.
+    A real world reversal does not arrive wearing this label at all -- it is a new action, so it arrives as
+    `progression` or `new_fact`, and it is those two that ``_seen_flip`` and ``_budget_exhausted`` still
+    protect against the similarity check and the storyline budget.
+    """
 
     if verdict.novelty != "restatement" or status is None or status.told_count == 0:
         return False
-    if not 0 <= verdict.restates < status.told_count:
-        return False
-    told_direction = status.told_directions[verdict.restates]
-    flipped = (
-        verdict.direction in _DIRECTIONAL and told_direction in _DIRECTIONAL and told_direction != verdict.direction
-    )
-    return not flipped
+    return 0 <= verdict.restates < status.told_count
 
 
 def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, window_ms: int, budget_max: int) -> bool:

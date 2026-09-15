@@ -1075,7 +1075,7 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1
      -> _normalize_and_validate_semantics -> Taxonomy -> ReaderCard.v2
      -> _assemble -> atomic SemanticJudgment/ScoredJudgment
-     -> policy-v13 decide() -> news_verdicts (editorial + runtime manifest)
+     -> policy-v14 decide() -> news_verdicts (editorial + runtime manifest)
      -> news_delivery_queue row in the same transaction (push/escalate); no broker publish
   -> Deliverer loop (Workers task, 1 s poll): claim a due row with FOR UPDATE SKIP LOCKED,
      one configured-provider attempt per claim (kind first); the row is deleted once
@@ -1335,7 +1335,7 @@ Diagnose News in this order:
    policy. A storyline key reads `asset:<SYM>`, `conflict:<id>`, `actor:<id>`,
    `geo:<id>`, `topic:<id>` or `none`; `tracefold news why` renders the
    registry's `label_zh` for it.
-   A `storyline:<key>:budget` throttle key is the policy-v13 per-storyline
+   A `storyline:<key>:budget` throttle key is the policy-v14 per-storyline
    budget (#504): the reader already received `storyline_budget_max` cards on
    that final storyline key inside `storyline_budget_window_s`, and this one
    was neither a corroborated escalate nor a direction reversal of the newest
@@ -1524,7 +1524,9 @@ Diagnose News in this order:
    set, or a common provider outage is `UNKNOWN`, while a candidate-only
    critical error is `FAIL`.
    `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
-   duplicates the reader was spared; `pipeline.reasked_24h` counts Events whose
+   duplicates the reader was spared -- since #651 including the ones whose
+   `direction` had flipped against the told entry they cite, which policy v13
+   let through; `pipeline.reasked_24h` counts Events whose
    full Program was executed again because a card landed while it was thinking
    (expect a handful per day; a surge means same-key floods). Program v8 fails
    closed on missing `novelty` or taxonomy. Migration `0336` deletes pre-current

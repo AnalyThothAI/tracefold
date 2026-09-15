@@ -1166,8 +1166,10 @@ def test_decide_restatement_drop_is_grounded() -> None:
     # Grounded restatement of entry 0 (same direction) -> drop, named.
     dropped = decide(_verdict(novelty="restatement", restates=0), _FACTS, quiet)
     assert dropped.final == "drop" and dropped.override_rule == "restatement"
-    # Restatement of entry 1 whose direction was bearish while this one is bullish: a flip is never a restatement.
-    assert decide(_verdict(novelty="restatement", restates=1), _FACTS, quiet).final == "push"
+    # Entry 1 was bearish and this card is bullish. #651 §6.3: the flip no longer exempts it. The model said
+    # the reader already has this fact, and its own direction reading is not evidence that they do not.
+    flipped = decide(_verdict(novelty="restatement", restates=1), _FACTS, quiet)
+    assert flipped.final == "drop" and flipped.override_rule == "restatement"
     # Out-of-range index or an empty ledger: the claim is ignored, so a hallucinated restatement cannot drop a card.
     assert decide(_verdict(novelty="restatement", restates=7), _FACTS, quiet).final == "push"
     assert (
