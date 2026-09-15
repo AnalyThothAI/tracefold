@@ -312,12 +312,13 @@ def _accept_v6_review(conn, event_id: str) -> None:
         "taxonomy_assertion_status": "pass",
     }
     novelty = {"judgment": "new_fact", "duplicate_of": ""}
+    # A v6 row carried `source_authority` inside the taxonomy; since #651 §5.3 the current
+    # `NewsTaxonomyV1` has no such field, so the historical shape is written as the dict production held.
     taxonomy = news_taxonomy(
         event_family="regulatory_legal",
         change_state="reported",
         assertion_status="claimed",
-        source_authority="reputable_secondary",
-    ).model_dump(mode="json")
+    ).model_dump(mode="json") | {"source_authority": "reputable_secondary"}
     payload = {
         "kind": "event_rubric",
         "should_push": "must_push",

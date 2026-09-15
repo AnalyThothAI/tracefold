@@ -617,4 +617,7 @@ def test_the_review_taxonomy_validator_admits_the_six_key_shape_this_cut_writes(
         assert valid({key: value for key, value in six.items() if key != "event_family"}) is False
     finally:
         conn.close()
-    assert _python_persisted_form_accepts(EventRubricSubmission.model_fields["taxonomy"].annotation, six) is True
+    # A v7 submission states the four model axes only (`ModelTaxonomyV1`); the six-key shape above is what
+    # `NewsTaxonomyV1` persists on the judgment side and what v6 review rows still hold.
+    four = {key: value for key, value in six.items() if key not in {"taxonomy_version", "codebook_sha256"}}
+    assert _python_persisted_form_accepts(ModelTaxonomyV1, four) is True
