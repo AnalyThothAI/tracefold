@@ -108,16 +108,14 @@ class EvaluationReaderHistory:
             comparison_title=str(event.get("comparison_title") or ""),
         )
 
-    def seed_receipts(
-        self,
-        *,
-        from_ms: int,
-        epoch_started_at_ms: int,
-        program_version: str,
-        program_sha256: str,
-        bundle_sha: str,
-    ) -> tuple[dict[str, Any], ...]:
-        """Project the same latest delivered verdict production uses into an evaluator receipt source."""
+    def seed_receipts(self, *, from_ms: int) -> tuple[dict[str, Any], ...]:
+        """Project the same latest delivered verdict production uses into an evaluator receipt source.
+
+        Every delivered card in the bounded look-back, whatever arm produced it (#651 §9). The told ledger
+        is the *reader's* ledger: what they had already been shown when the next card arrived is a fact
+        about the deliveries, not about which Program wrote them, and clamping it to one bundle and one
+        epoch meant the first hours after a deploy replayed against an empty history the reader never had.
+        """
 
         rows = self._conn.execute(
             """
@@ -174,17 +172,9 @@ class EvaluationReaderHistory:
                AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
              WHERE d.kind = 'first' AND d.state = 'sent'
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-               AND v.program_version = %s AND v.program_sha256 = %s
-               AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
              ORDER BY d.settled_at_ms, v.event_id
             """,
-            (
-                max(epoch_started_at_ms, from_ms - TARGETED_HISTORY_WINDOW_MS),
-                from_ms,
-                program_version,
-                program_sha256,
-                bundle_sha,
-            ),
+            (from_ms - TARGETED_HISTORY_WINDOW_MS, from_ms),
         ).fetchall()
         return tuple(dict(row) for row in rows)
 

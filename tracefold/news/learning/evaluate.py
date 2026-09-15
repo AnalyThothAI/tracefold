@@ -57,11 +57,11 @@ from .metric import (
 )
 from .objective import (
     _expected_delivery,
-    development_split_profile_counts,
     elect_cluster_representative_case_ids,
     production_decision,
+    target_split_counts,
 )
-from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA, development_coverage_blockers
+from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA
 from .projection import (
     _call_cost_microusd,
     _observation_root,
@@ -595,7 +595,7 @@ class CandidateEvaluator:
             observation_dimensions=observation_dimensions,
             development_profile_counts={
                 **development.counts,
-                **development_split_profile_counts(candidate_plan),
+                **target_split_counts(candidate_plan),
             },
             taxonomy_only=taxonomy_only,
         )
@@ -1244,9 +1244,14 @@ class CandidateEvaluator:
     ) -> dict[str, Any]:
         blockers: list[str] = []
         failures: list[str] = []
-        if request.stage in {"offline", "holdout"}:
-            blockers.extend(development_coverage_blockers(development_profile_counts))
-        elif not self._registry.has_passed_stage(candidate.candidate_sha, "holdout"):
+        # No corpus-size quota (#651 §9). `development_coverage_blockers` refused a release on how *much*
+        # evidence the development corpus held, in a unit that did not match the question being released:
+        # a candidate is admitted on what the holdout says about it, and a thin development corpus already
+        # shows up as a `NO_OP` optimization rather than as a promoted candidate. The counts stay in the
+        # report below, where an operator reads them.
+        if request.stage not in {"offline", "holdout"} and not self._registry.has_passed_stage(
+            candidate.candidate_sha, "holdout"
+        ):
             blockers.append("prior_holdout_evidence_not_passed")
         if execution_errors:
             blockers.extend(execution_errors)

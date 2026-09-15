@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from argparse import Namespace
-from typing import Any, cast
+from typing import Any
 
 from tracefold.platform.config.loader import load_settings
 
@@ -96,7 +96,6 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
     """
 
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news import SourceAuthority
     from tracefold.news.review.desk import EventRubricSubmission, Principal, ReviewDesk, TaskRef
     from tracefold.news.review.drafter import DRAFT_SCHEMA, DRAFTER_ID, ReviewDraft, submission_payload
     from tracefold.platform.postgres.client import transaction
@@ -137,7 +136,7 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
         if exclude and any(task_id.startswith(p) or event_id.startswith(p) for p in exclude):
             skip("excluded")
             continue
-        # The five taxonomy_* dimensions are recomputed from this entry against the possibly edited
+        # The four taxonomy_* dimensions are recomputed from this entry against the possibly edited
         # `draft.taxonomy` (#548 PR-B.1). An entry that does not carry Stable's label cannot be compared,
         # only copied, so it is refused here instead. `null` is a carried answer and passes: Stable never
         # labelled that Event, and every taxonomy axis is `not_applicable`.
@@ -152,7 +151,6 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
             payload = submission_payload(
                 draft,
                 stable_taxonomy=entry.get("stable_taxonomy"),
-                source_authority=cast(SourceAuthority, str(entry.get("source_authority") or "unknown")),
                 draft_author=draft_author,
             )
             payload["first_bad_owner"] = explicit_owner

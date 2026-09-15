@@ -110,6 +110,15 @@ def add_news_commands(
         help="explain the Objective Plan for a frozen development dataset; 0 model calls, 0 writes",
     )
     learning_readiness.add_argument("--development", required=True, help="development dataset artifact SHA")
+    # Readiness answers for one target, because "is this corpus ready" has no answer until someone says
+    # ready for what (#651 §9). The report still publishes every target's counts, so an operator who
+    # asked the wrong question can see which one to ask instead.
+    learning_readiness.add_argument(
+        "--target",
+        choices=("classification", "understanding", "explanation"),
+        default="classification",
+        help="which Predictor to answer for: taxonomy, event_semantics or reader_card",
+    )
     learning_readiness.add_argument(
         "--out", default="", help="write the readiness report JSON (per-case dispositions live only here)"
     )

@@ -44,13 +44,15 @@ from ..taxonomy import (
     IPTC_SUBJECT_CODEBOOK,
     TAXONOMY_VERSION,
     ModelTaxonomyV1,
-    NewsTaxonomyV1,
-    source_authority_from_evidence,
 )
 
-REVIEW_RUBRIC_VERSION = "news_review_v6"
-# Earlier rows remain append-only audit history. Current datasets accept only
-# v6 because taxonomy denominators must never mix contracts.
+REVIEW_RUBRIC_VERSION = "news_review_v7"
+# v7 (#651 §7.2) makes a review task-level: a reviewer answers the questions this Event actually poses
+# and leaves the rest out, instead of having to state a taxonomy, a novelty judgment and a push verdict
+# before one factual defect can be recorded. Earlier rows stay append-only audit history and stay
+# readable through `news_review_records_v1`; they are not eligible for a new dataset, because a v6 row
+# means "every dimension below was answered" and a v7 row does not, so mixing the two contracts would
+# let an absent answer read as a stated one.
 REVIEW_RUBRIC_VERSIONS: tuple[str, ...] = (REVIEW_RUBRIC_VERSION,)
 READER_CONTRACT_VERSION = "reader_contract_v2"
 # This is product truth, not prompt advice.  v2 is the operator-approved
@@ -112,7 +114,6 @@ _DIMENSIONS = {
     "taxonomy_subject_codes",
     "taxonomy_event_family",
     "taxonomy_change_state",
-    "taxonomy_source_authority",
     "taxonomy_assertion_status",
 }
 _NOVELTY = {"new_fact", "progression", "restatement", "uncertain"}
@@ -135,16 +136,23 @@ _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
     "taxonomy_subject_codes": "taxonomy",
     "taxonomy_event_family": "taxonomy",
     "taxonomy_change_state": "taxonomy",
-    "taxonomy_source_authority": "taxonomy",
     "taxonomy_assertion_status": "taxonomy",
 }
 
+# Four, not five (#651 §7.2). Source authority is a code fact derived from the reporting source, so a
+# reviewer labelling it could only restate `source_authority_from_evidence` or be wrong about the
+# registry: the dimension measured the codebook rather than anything the Program decides.
 _TAXONOMY_DIMENSIONS: Final[tuple[str, ...]] = (
     "taxonomy_subject_codes",
     "taxonomy_event_family",
     "taxonomy_change_state",
-    "taxonomy_source_authority",
     "taxonomy_assertion_status",
+)
+
+# The card dimensions an explanation block is evidence about. It is supervision for the copy, so a
+# submission that carries one without judging any copy dimension is describing nothing.
+EXPLANATION_DIMENSIONS: Final[frozenset[str]] = frozenset(
+    {"why_support", "why_value", "factual_fidelity", "headline_fidelity"}
 )
 
 _STRATUM_ZH = {
@@ -222,7 +230,6 @@ _DIMENSION_ZH = {
     "taxonomy_subject_codes": "新闻主题",
     "taxonomy_event_family": "事件家族",
     "taxonomy_change_state": "变化状态",
-    "taxonomy_source_authority": "来源权威",
     "taxonomy_assertion_status": "断言状态",
 }
 _RELEASE_CODE_ZH = {
@@ -367,6 +374,64 @@ class ExpectedCorrection(BaseModel):
     # the must/should distinction the hard gates depend on.
 
 
+ExplanationErrorType = Literal[
+    "entity",
+    "number_unit",
+    "condition",
+    "status_plan_vs_executed",
+    "attribution",
+    "unsupported_cause",
+    "other",
+]
+
+
+class ExplanationCorrectionV1(BaseModel):
+    """What a reviewer knows about the *why* of one card, in a form a ruler can score (#651 §7.2).
+
+    `why_support` has never had gold. "The correct Chinese sentence" is not a label, so a failed
+    `why_support` could only teach "change something", and an optimizer banks that by rewriting one wrong
+    sentence into another. This block states the three things a reviewer actually knows and a metric can
+    check without a second opinion: which spans of the frozen evidence carry the claim, which facts the
+    card must keep, and which assertions it must not make.
+
+    `source_spans` are verbatim excerpts, validated at submit against the task's own evidence, because a
+    span nobody can find in the evidence is not a citation. `reference_why_zh` is explicitly *not* gold:
+    it is one reviewer's phrasing, kept so a later reader can see what they had in mind, and no metric
+    may score equality against it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_spans: list[str] = Field(default_factory=list, max_length=8)
+    key_facts: list[str] = Field(default_factory=list, max_length=6)
+    forbidden_claims: list[str] = Field(default_factory=list, max_length=6)
+    error_types: list[ExplanationErrorType] = Field(default_factory=list, max_length=7)
+    reference_why_zh: str = Field(default="", max_length=500)
+
+    @field_validator("source_spans", "key_facts", "forbidden_claims", mode="after")
+    @classmethod
+    def non_empty_bounded_entries(cls, value: list[str]) -> list[str]:
+        cleaned = [entry.strip() for entry in value]
+        if any(not entry for entry in cleaned):
+            raise ValueError("news_review_explanation_entry_empty")
+        if any(len(entry) > 500 for entry in cleaned):
+            raise ValueError("news_review_explanation_entry_too_long")
+        return cleaned
+
+    @field_validator("error_types", mode="after")
+    @classmethod
+    def distinct_error_types(cls, value: list[ExplanationErrorType]) -> list[ExplanationErrorType]:
+        if len(set(value)) != len(value):
+            raise ValueError("news_review_explanation_duplicate_error_type")
+        return value
+
+    @model_validator(mode="after")
+    def states_something(self) -> ExplanationCorrectionV1:
+        if not (self.source_spans or self.key_facts or self.forbidden_claims or self.error_types):
+            raise ValueError("news_review_explanation_must_state_a_value")
+        return self
+
+
 class TaxonomyReviewProvenanceV1(BaseModel):
     """Who proposed, reviewed, and when needed adjudicated one taxonomy label."""
 
@@ -376,7 +441,10 @@ class TaxonomyReviewProvenanceV1(BaseModel):
     draft_author: str = Field(default="", max_length=128)
     review_role: Literal["primary", "adjudication"] = "primary"
     adjudicates_review_id: str = Field(default="", max_length=64)
-    draft_taxonomy: NewsTaxonomyV1 | None = None
+    # The four model axes the drafter actually proposed. It carried the persisted `NewsTaxonomyV1` until
+    # #651; that shape bundled the code-owned `source_authority`, so a draft record claimed provenance
+    # for an axis no drafter ever labelled.
+    draft_taxonomy: ModelTaxonomyV1 | None = None
     # The blind drafts under their model names (#501 D8). Present only for a model-drafted label; a
     # freeze reads them to report inter-drafter agreement.
     drafts: dict[str, ModelTaxonomyV1] | None = None
@@ -397,25 +465,62 @@ class TaxonomyReviewProvenanceV1(BaseModel):
 
 
 class EventRubricSubmission(BaseModel):
+    """One review of one task, answering only what this task actually poses (#651 §7.2).
+
+    Every field except `dimensions` is optional, and that is the whole change from v6. v6 required a
+    complete taxonomy, a novelty judgment, a push verdict and `factual_fidelity` on every submission, so
+    a reviewer who had noticed one wrong number had to invent four taxonomy axes and a delivery opinion
+    before the defect could be recorded -- and every one of those invented answers then entered the
+    corpus as accepted truth. What a reviewer leaves out is now absent rather than defaulted: nothing
+    downstream may read a missing answer as a `pass`, and `applicable_targets` on the frozen case says
+    which questions this review is evidence for.
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["event_rubric"] = "event_rubric"
-    should_push: ShouldPush
+    should_push: ShouldPush | None = None
     dimensions: dict[str, DimensionResult]
-    novelty: NoveltyJudgment
+    novelty: NoveltyJudgment | None = None
     first_bad_owner: FirstBadOwner | None = None
     evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=32)
     expected: ExpectedCorrection | None = None
-    taxonomy: NewsTaxonomyV1
+    explanation: ExplanationCorrectionV1 | None = None
+    # The four model axes, not the persisted taxonomy: `source_authority` is a code fact and no longer a
+    # thing a reviewer states or a dimension anyone labels.
+    taxonomy: ModelTaxonomyV1 | None = None
     taxonomy_review: TaxonomyReviewProvenanceV1 = Field(default_factory=TaxonomyReviewProvenanceV1)
+    # Server-derived, never accepted from the body: whether this review carries the explanation
+    # supervision a `why_support` failure needs to be trainable. `pending` rows are stored, visible and
+    # countable, and are excluded from the explanation train split rather than silently dropped.
+    explanation_supervision: Literal["present", "pending", "not_applicable"] = "not_applicable"
     expected_correction: str = Field(default="", max_length=2_000)
     note: str = Field(default="", max_length=2_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def derive_explanation_supervision(cls, value: Any) -> Any:
+        """Compute the supervision state here, so a caller cannot declare one the payload contradicts."""
+
+        if not isinstance(value, Mapping):
+            return value
+        dimensions = value.get("dimensions")
+        why_support = dict(dimensions).get("why_support") if isinstance(dimensions, Mapping) else None
+        if value.get("explanation") is not None:
+            state = "present"
+        elif why_support == "fail":
+            state = "pending"
+        else:
+            state = "not_applicable"
+        return {**value, "explanation_supervision": state}
 
     @model_validator(mode="after")
     def validate_rubric(self) -> EventRubricSubmission:
         unknown = set(self.dimensions) - _DIMENSIONS
         if unknown:
             raise ValueError(f"news_review_dimension_unknown:{sorted(unknown)[0]}")
+        if not self.dimensions:
+            raise ValueError("news_review_dimensions_required")
         # Gold is a repair instruction. Stating one for a dimension the reviewer passed would silently move the
         # accepted value, which is the one thing an append-only review plane must never let a submission do.
         if self.expected is not None:
@@ -435,11 +540,18 @@ class EventRubricSubmission(BaseModel):
                     raise ValueError(f"news_review_expected_requires_failed_dimension:{dimension}")
             if self.expected.model_dump(exclude_none=True) == {}:
                 raise ValueError("news_review_expected_must_state_a_value")
-        if "factual_fidelity" not in self.dimensions:
-            raise ValueError("news_review_factual_fidelity_required")
-        missing_taxonomy = set(_TAXONOMY_DIMENSIONS) - set(self.dimensions)
-        if missing_taxonomy:
-            raise ValueError(f"news_review_taxonomy_dimension_required:{sorted(missing_taxonomy)[0]}")
+        # Taxonomy is all-or-nothing, in both directions. A taxonomy without its four dimensions would
+        # publish a label nobody compared; a `taxonomy_*` dimension without the taxonomy would publish a
+        # comparison against an answer the submission never states.
+        taxonomy_dimensions = set(_TAXONOMY_DIMENSIONS) & set(self.dimensions)
+        if self.taxonomy is not None:
+            missing_taxonomy = set(_TAXONOMY_DIMENSIONS) - set(self.dimensions)
+            if missing_taxonomy:
+                raise ValueError(f"news_review_taxonomy_dimension_required:{sorted(missing_taxonomy)[0]}")
+        elif taxonomy_dimensions:
+            raise ValueError(f"news_review_taxonomy_required_for_dimension:{sorted(taxonomy_dimensions)[0]}")
+        if self.explanation is not None and not (set(self.dimensions) & EXPLANATION_DIMENSIONS):
+            raise ValueError("news_review_explanation_requires_card_dimension")
         if self.should_push in {"must_push", "should_push"} and "timeliness" not in self.dimensions:
             raise ValueError("news_review_timeliness_required_for_push")
         if any(value == "fail" for value in self.dimensions.values()) and not self.evidence_refs:
@@ -515,17 +627,27 @@ def _event_queue_statement(
     *,
     lower_ms: int,
     upper_ms: int,
-    cohort_sha: str,
+    cohort_sha: str | None,
     cursor: tuple[int, str] | None,
     limit: int,
 ) -> ReviewReadStatement:
+    """The review queue over one closed window, optionally narrowed to one Agent cohort.
+
+    `cohort_sha` is a filter an operator may ask for, not a fence (#651 §9). It used to be mandatory and
+    defaulted to the running bundle, which meant every deployment emptied the queue: the Events that most
+    needed review were the ones the *previous* arm had answered, and they became unreachable the moment a
+    new arm was appointed.
+    """
+
     filters = [
         "opened_at_ms >= %s",
         "opened_at_ms < %s",
         "ingest_mode = 'live'",
-        "COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') = %s",
     ]
-    params: list[Any] = [int(lower_ms), int(upper_ms), cohort_sha]
+    params: list[Any] = [int(lower_ms), int(upper_ms)]
+    if cohort_sha is not None:
+        filters.append("COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') = %s")
+        params.append(cohort_sha)
     if cursor is not None:
         filters.append("(opened_at_ms, event_id) < (%s, %s)")
         params.extend(cursor)
@@ -556,51 +678,31 @@ def _event_task_statement(event_id: str, *, evidence_version: int | None) -> Rev
     )
 
 
-# Which epoch is current is a join, not a constant (#314). An epoch is opened by the deployment that runs
-# under it and keyed to that deployment's bundle, so the active agent *is* the answer — and a desk that
-# derived it from an imported literal instead would keep reporting a live cohort after the deployment it
-# named had been replaced.
-_CURRENT_EPOCH_CTE = """
-            active_agent AS (
-              SELECT stable_sha
-                FROM news_review_active_agent_v1
-               ORDER BY created_at_ms DESC
-               LIMIT 1
-            ),
-            current_epoch AS (
-              SELECT epoch.epoch_id, epoch.starts_at_ms
-                FROM news_learning_epochs epoch
-                JOIN active_agent ON active_agent.stable_sha = epoch.bundle_sha
-            )"""
+# No current-epoch CTE (#651 §9). `news_learning_epochs` and `news_review_active_agent_v1` remain the
+# runtime's own identity and audit rows, and the release plane still reads them; the review plane does
+# not. A review is about the words a reader saw, and clamping the queue and the coverage funnel to the
+# epoch the running bundle opened meant every deploy reset the visible corpus to zero — the corpus that
+# reviewers had just spent the previous days building.
 
 
-def _epoch_of(stable_sha: str | None) -> str | None:
-    """The epoch label one bundle accrues under, or None when no deployment has been appointed.
-
-    Imported lazily: `CandidateEvaluator` imports the reader/rubric contract from this module, so a
-    module-level import of the learning contracts would close a cycle.
-    """
-
-    from ..learning.contracts import epoch_id_for_bundle
-
-    return None if not stable_sha else epoch_id_for_bundle(stable_sha)
-
-
-def _coverage_statement(*, lower_ms: int, upper_ms: int) -> ReviewReadStatement:
+def _coverage_statement(*, lower_ms: int, upper_ms: int, cohort_sha: str | None) -> ReviewReadStatement:
+    filters = [
+        "source.opened_at_ms >= %s",
+        "source.opened_at_ms < %s",
+        "source.ingest_mode = 'live'",
+    ]
+    params: list[Any] = [int(lower_ms), int(upper_ms)]
+    if cohort_sha is not None:
+        filters.append("COALESCE(source.trace #>> '{agent_assignment,bundle_sha}', '') = %s")
+        params.append(cohort_sha)
     return ReviewReadStatement(
         name="news_review_coverage_source",
         sql=f"""
-            WITH {_CURRENT_EPOCH_CTE}
             SELECT source.*
               FROM news_review_task_source_v1 source
-              JOIN current_epoch ON true
-              JOIN active_agent ON true
-             WHERE source.opened_at_ms >= greatest(%s, current_epoch.starts_at_ms)
-               AND source.opened_at_ms < %s
-               AND source.ingest_mode = 'live'
-               AND COALESCE(source.trace #>> '{{agent_assignment,bundle_sha}}', '') = active_agent.stable_sha
+             WHERE {" AND ".join(filters)}
         """,  # noqa: S608
-        params=(int(lower_ms), int(upper_ms)),
+        params=tuple(params),
     )
 
 
@@ -608,6 +710,7 @@ def _pairwise_queue_statement(
     *,
     proposal: str,
     status: str,
+    cohort_sha: str | None,
     cursor: tuple[int, int, str] | None,
     limit: int,
 ) -> ReviewReadStatement:
@@ -616,23 +719,20 @@ def _pairwise_queue_statement(
     if proposal:
         filters.append("c.run_sha = %s")
         params.append(proposal)
+    if cohort_sha is not None:
+        # An operator's narrowing, not a fence (#651 §9). `pending` and `accepted` used to pin this to
+        # the running bundle, so a deploy mid-holdout hid the very pairs the holdout was waiting on.
+        filters.append("dataset.payload #>> '{agent_cohort,bundle_sha}' = %s")
+        params.append(cohort_sha)
     if cursor is not None:
         filters.append(
             "(CASE WHEN c.dataset_role = 'validation' THEN 0 ELSE 1 END, c.created_at_ms, c.case_id) > (%s, %s, %s)"
         )
         params.extend(cursor)
-    # One current-cohort filter, not two. The dataset's `learning_epoch` is derived from the very bundle
-    # named beside it, so comparing both said the same thing twice (#314).
-    current_cohort = (
-        "dataset.payload #>> '{agent_cohort,bundle_sha}' = "
-        "(SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)"
-    )
     if status == "pending":
         filters.append("accepted_pair.review_id IS NULL")
-        filters.append(current_cohort)
     elif status == "accepted":
         filters.append("accepted_pair.review_id IS NOT NULL")
-        filters.append(current_cohort)
     elif status != "all":
         raise ValueError("news_review_status_invalid")
     params.append(int(limit) + 1)
@@ -926,9 +1026,7 @@ class ReviewDesk:
             single_tasks = [] if task is None else [_task_public(task, accepted=self._latest_accepted(task))]
             return self._queue_response(query, single_tasks, next_cursor=None)
 
-        cohort_sha = _parse_agent_cohort_sha(query.cohort) if query.cohort else self._active_agent_cohort_sha()
-        if cohort_sha is None:
-            return self._queue_response(query, [], next_cursor=None)
+        cohort_sha = _parse_agent_cohort_sha(query.cohort) if query.cohort else None
         decoded = _decode_cursor(query.cursor) if query.cursor else None
         if decoded is None:
             upper_ms, raw_cursor = self._now_ms, None
@@ -983,6 +1081,7 @@ class ReviewDesk:
         statement = _pairwise_queue_statement(
             proposal=query.proposal,
             status=query.status,
+            cohort_sha=_parse_agent_cohort_sha(query.cohort) if query.cohort else None,
             cursor=cursor,
             limit=query.limit,
         )
@@ -1019,7 +1118,6 @@ class ReviewDesk:
 
     def _proposals(self, query: DeskQuery) -> dict[str, Any]:
         active_stable_sha = self._active_agent_cohort_sha()
-        current_epoch = _epoch_of(active_stable_sha)
         candidate_statement = _proposal_candidates_statement(query.limit)
         candidates = self._conn.execute(candidate_statement.sql, candidate_statement.params).fetchall()
         release_statement = _proposal_releases_statement()
@@ -1044,10 +1142,13 @@ class ReviewDesk:
             receipt = dict(manifest.get("proposal_receipt") or {})
             candidate_arm = dict(manifest.get("candidate_arm") or {})
             learning_epoch = str(row.get("learning_epoch") or "") or None
+            # A proposal is release evidence about one arm, so it keeps its bundle pin (#651 §9 moves
+            # data eligibility, not release identity). The epoch label is no longer part of the answer:
+            # a v4 dataset seals no epoch, and comparing a missing label would have made every corpus
+            # frozen after this cut read as another arm's.
             evidence_disposition = (
                 "current"
-                if learning_epoch == current_epoch
-                and active_stable_sha is not None
+                if active_stable_sha is not None
                 and str(manifest.get("parent_stable_sha") or "") == active_stable_sha
                 and str(row.get("dataset_bundle_sha") or "") == active_stable_sha
                 else "audit_only"
@@ -1241,21 +1342,12 @@ class ReviewDesk:
 
     def _coverage(self, query: DeskQuery) -> dict[str, Any]:
         lower = self._now_ms - int(query.hours) * 3_600_000
-        # No current epoch is a real, expected, transient state — not a 500 (#314, sharpened by review).
-        # The first draft keyed this on "no appointed Agent", which was the wrong case: the *guaranteed*
-        # state of every existing database immediately after migration `0321` is an Agent appointed by the
-        # previous deployment whose bundle has no epoch row, because the migration back-fills nothing and
-        # only the Workers startup barrier opens one. Serve can be up before Workers, so that window is
-        # the normal deploy sequence for this release rather than an anomaly. Ask the question the view
-        # actually depends on — is there a current epoch — and answer honestly when there is not.
-        if self._current_epoch_starts_at_ms() is None:
-            return _empty_coverage(
-                message_zh="本次部署尚未开纪元：等 Workers 启动屏障任命运行中的 Agent",
-                from_ms=lower,
-                to_ms=self._now_ms,
-                hours=query.hours,
-            )
-        statement = _coverage_statement(lower_ms=lower, upper_ms=self._now_ms)
+        # No epoch branch any more (#651 §9). Coverage used to refuse to answer until the running
+        # deployment had opened an epoch, and then clamped its window to that epoch's start, so the funnel
+        # read zero for every Event the previous arm had produced. The window an operator asks for is now
+        # the window they get, and `cohort` narrows it only when they ask for one.
+        cohort_sha = _parse_agent_cohort_sha(query.cohort) if query.cohort else None
+        statement = _coverage_statement(lower_ms=lower, upper_ms=self._now_ms, cohort_sha=cohort_sha)
         rows = self._conn.execute(statement.sql, statement.params).fetchall()
         accepted_by_task = self._accepted_event_tasks([str(row["event_id"]) for row in rows])
         cohorts: dict[str, dict[str, Any]] = {}
@@ -1300,22 +1392,14 @@ class ReviewDesk:
             bucket["accepted_pct"] = _pct(k, n)
             bucket["accepted_interval_95"] = _wilson(k, n)
         external = self._conn.execute(
-            f"""
-            WITH {_CURRENT_EPOCH_CTE},
-            window_lower AS (
-              SELECT greatest(%s, current_epoch.starts_at_ms) AS lower_ms FROM current_epoch
-            )
-            SELECT count(source.snapshot_id) AS n, window_lower.lower_ms
-              FROM window_lower
-              LEFT JOIN news_review_external_source_v1 source
-                ON source.occurred_at_ms >= window_lower.lower_ms
+            """
+            SELECT count(source.snapshot_id) AS n
+              FROM news_review_external_source_v1 source
+             WHERE source.occurred_at_ms >= %s
                AND source.occurred_at_ms < %s
-             GROUP BY window_lower.lower_ms
-            """,  # noqa: S608
+            """,
             (lower, self._now_ms),
         ).fetchone()
-        if external is None:
-            raise RuntimeError("news_review_learning_epoch_missing")
         blind = self._conn.execute(
             """
             WITH accepted_pair AS (
@@ -1342,12 +1426,6 @@ class ReviewDesk:
               LEFT JOIN accepted_pair
                 ON accepted_pair.pairwise_case_id = c.run_sha || ':' || c.case_id
              WHERE c.dataset_role = 'validation'
-               AND dataset.payload #>> '{agent_cohort,bundle_sha}' = (
-                 SELECT stable_sha
-                   FROM news_review_active_agent_v1
-                  ORDER BY created_at_ms DESC
-                  LIMIT 1
-               )
             """
         ).fetchone()
         blind_case_n = int(blind["case_n"] or 0)
@@ -1358,7 +1436,7 @@ class ReviewDesk:
             "view": "coverage",
             "status": "ready" if evidence_ready else "insufficient_evidence",
             "message_zh": None if evidence_ready else "证据不足：需要真实 observed evidence 和已接受复盘",
-            "window": {"from_ms": int(external["lower_ms"]), "to_ms": self._now_ms, "hours": query.hours},
+            "window": {"from_ms": lower, "to_ms": self._now_ms, "hours": query.hours},
             "funnel": {
                 "received": received,
                 "replayable": release_eligible,
@@ -1491,10 +1569,7 @@ class ReviewDesk:
         if task.task_version != task_ref.task_version:
             raise ValueError("news_review_task_version_conflict")
         previous = self._latest_accepted(task)
-        card = dict(dict(task.row.get("evidence_snapshot") or {}).get("card") or {})
-        expected_authority = source_authority_from_evidence(card)
-        if submission.taxonomy.source_authority != expected_authority:
-            raise ValueError("news_review_taxonomy_source_authority_code_mismatch")
+        _require_grounded_source_spans(submission, _evidence_text(dict(task.row.get("evidence_snapshot") or {})))
         provenance = submission.taxonomy_review
         if provenance.draft_author and provenance.draft_author == principal.subject:
             raise ValueError("news_review_taxonomy_self_acceptance_forbidden")
@@ -1520,7 +1595,12 @@ class ReviewDesk:
         # The sampling reason never decides acceptance eligibility (#504 D7): a `high_reaction` task was chosen
         # because of a post-event price move, but the reviewer labels `should_push` from the evidence alone, so
         # its accepted review is corpus truth like any other stratum's.
-        release_eligible = bool(task.row.get("evidence_release_eligible")) and self._event_matches_current_release(task)
+        #
+        # Nor does the running bundle (#651 §9). Eligibility is a property of the *evidence*: a frozen,
+        # release-eligible observed snapshot is replayable whichever Program answered it, and which arm
+        # happened to be deployed that hour says nothing about whether the reviewer read the same words.
+        # The arm is recorded as provenance on the frozen case instead.
+        release_eligible = bool(task.row.get("evidence_release_eligible"))
         self._conn.execute(
             """
             INSERT INTO news_reviews (
@@ -1547,7 +1627,7 @@ class ReviewDesk:
                 principal.subject,
                 submission.should_push,
                 _json(submission.dimensions),
-                _json(submission.novelty.model_dump(mode="json")),
+                _json({} if submission.novelty is None else submission.novelty.model_dump(mode="json")),
                 owner,
                 _json(submission.evidence_refs),
                 submission.expected_correction,
@@ -1688,6 +1768,7 @@ class ReviewDesk:
             }
         )
         rubric = submission.rubric
+        _require_grounded_source_spans(rubric, _evidence_text({"title": submission.title, "body": submission.body}))
         owner = rubric.first_bad_owner or _derive_owner(rubric, external=True)
         payload = rubric.model_dump(mode="json")
         review_id = _sha(
@@ -1700,7 +1781,10 @@ class ReviewDesk:
             }
         )
         accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
-        release_eligible = self._timestamp_matches_current_epoch(submission.occurred_at_ms)
+        # The operator's own snapshot is the evidence, and it is written in this transaction, so it is
+        # eligible by construction. It used to be gated on the running epoch (#651 §9 removes that): a
+        # miss the system never saw is not evidence about a bundle in the first place.
+        release_eligible = True
         self._conn.execute(
             """
             INSERT INTO news_external_miss_snapshots (
@@ -1747,7 +1831,7 @@ class ReviewDesk:
                 principal.subject,
                 rubric.should_push,
                 _json(rubric.dimensions),
-                _json(rubric.novelty.model_dump(mode="json")),
+                _json({} if rubric.novelty is None else rubric.novelty.model_dump(mode="json")),
                 owner,
                 _json(rubric.evidence_refs),
                 rubric.expected_correction,
@@ -1865,49 +1949,18 @@ class ReviewDesk:
         if not event_ids:
             return {}
         rows = self._conn.execute(
-            f"""
-            WITH {_CURRENT_EPOCH_CTE}
+            """
             SELECT DISTINCT ON (j.task_id, j.task_version) j.*, a.created_at_ms AS accepted_at_ms
               FROM news_review_records_v1 a
               JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
-              JOIN current_epoch ON true
              WHERE a.review_kind = 'acceptance' AND j.event_id = ANY(%s)
                AND j.reader_contract_version = %s
                AND a.release_eligible AND j.release_eligible
-               AND a.created_at_ms >= current_epoch.starts_at_ms
-               AND j.created_at_ms >= current_epoch.starts_at_ms
              ORDER BY j.task_id, j.task_version, a.created_at_ms DESC, a.review_id DESC
-            """,  # noqa: S608
+            """,
             (list(event_ids), READER_CONTRACT_VERSION),
         ).fetchall()
         return {(str(row["task_id"]), str(row["task_version"])): _review_public(row) for row in rows}
-
-    def _event_matches_current_release(self, task: _VirtualTask) -> bool:
-        row = self._conn.execute(
-            f"""
-            WITH {_CURRENT_EPOCH_CTE}
-            SELECT current_epoch.starts_at_ms, active_agent.stable_sha
-              FROM current_epoch
-              JOIN active_agent ON true
-            """  # noqa: S608
-        ).fetchone()
-        if row is None:
-            return False
-        trace = dict(task.row.get("trace") or {})
-        assigned_bundle = str((trace.get("agent_assignment") or {}).get("bundle_sha") or "")
-        return int(task.row.get("opened_at_ms") or 0) >= int(row["starts_at_ms"]) and assigned_bundle == str(
-            row["stable_sha"]
-        )
-
-    def _current_epoch_starts_at_ms(self) -> int | None:
-        """When the running bundle's epoch opened, or None while no deployment has opened one."""
-
-        row = self._conn.execute(f"WITH {_CURRENT_EPOCH_CTE} SELECT starts_at_ms FROM current_epoch").fetchone()  # noqa: S608
-        return None if row is None else int(row["starts_at_ms"])
-
-    def _timestamp_matches_current_epoch(self, at_ms: int) -> bool:
-        starts_at_ms = self._current_epoch_starts_at_ms()
-        return starts_at_ms is not None and int(at_ms) >= starts_at_ms
 
     def _active_agent_cohort_sha(self) -> str | None:
         statement = _active_agent_statement()
@@ -2060,53 +2113,17 @@ def _pairwise_task_public(task: _VirtualTask, *, accepted: Mapping[str, Any] | N
     }
 
 
-def _empty_coverage(*, message_zh: str, from_ms: int, to_ms: int, hours: int) -> dict[str, Any]:
-    """The coverage view's zero state, in the shape a populated one has.
+def _pairwise_evidence_disposition(row: Mapping[str, Any]) -> str:
+    """Whether a blind pair still judges the arm that is running.
 
-    A consumer keying on `funnel.total` or `holdout.case_n` must read 0, not fall off the end of the
-    object — the same contract `news learning baseline`'s readiness report already holds itself to.
+    A pairwise case is release evidence, not corpus evidence: it compares a candidate against the stable
+    arm it was registered under, so it keeps its bundle pin. What it no longer compares is the epoch
+    label (#651 §9) — a v4 dataset seals none, and requiring one would retire every pair the moment
+    this cut landed.
     """
 
-    return {
-        "view": "coverage",
-        "status": "insufficient_evidence",
-        "message_zh": message_zh,
-        "window": {"from_ms": int(from_ms), "to_ms": int(to_ms), "hours": hours},
-        "funnel": {
-            "received": 0,
-            "replayable": 0,
-            "reviewed": 0,
-            "accepted": 0,
-            "holdout_ready": 0,
-            "total": 0,
-            "external_misses": 0,
-        },
-        "cohorts": [],
-        "strata": [],
-        "holdout": {
-            "status": "insufficient_evidence",
-            "case_n": 0,
-            "cluster_n": 0,
-            "accepted_case_n": 0,
-            "accepted_cluster_n": 0,
-            "coverage_pct": _pct(0, 0),
-            "coverage_interval_95": _wilson(0, 0),
-        },
-        "reader_contract_version": READER_CONTRACT_VERSION,
-        "reader_contract_sha256": READER_CONTRACT_SHA256,
-        "rubric_version": REVIEW_RUBRIC_VERSION,
-    }
-
-
-def _pairwise_evidence_disposition(row: Mapping[str, Any]) -> str:
     active_stable_sha = str(row.get("active_stable_sha") or "")
-    return (
-        "current"
-        if active_stable_sha
-        and row.get("dataset_bundle_sha") == active_stable_sha
-        and row.get("learning_epoch") == _epoch_of(active_stable_sha)
-        else "audit_only"
-    )
+    return "current" if active_stable_sha and row.get("dataset_bundle_sha") == active_stable_sha else "audit_only"
 
 
 def _pairwise_evidence(
@@ -2276,6 +2293,13 @@ def _receipt_public(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The questions this task poses, and which of them a reviewer may leave unanswered.
+
+    Under v7 the list is an offer rather than a requirement (#651 §7.2): a submission has to carry at
+    least one dimension and nothing more, so `required` is empty and every consumer reading this contract
+    must treat an absent answer as absent.
+    """
+
     verdict = row.get("verdict") or {}
     dimensions = ["factual_fidelity", "headline_fidelity", "why_support", "why_value"]
     if verdict.get("assets"):
@@ -2298,17 +2322,27 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
             ]
         )
     return {
+        "rubric_version": REVIEW_RUBRIC_VERSION,
         "should_push_values": ["must_push", "should_push", "should_hold", "must_hold", "uncertain"],
         "dimensions": dimensions,
+        "required_dimensions": [],
+        "required_fields": ["dimensions"],
         "dimension_values": ["pass", "fail", "uncertain", "not_applicable"],
         "novelty_values": sorted(_NOVELTY),
         "first_bad_owner_values": list(FirstBadOwner.__args__),  # type: ignore[attr-defined]
+        "explanation": {
+            "applies_to": sorted(EXPLANATION_DIMENSIONS),
+            "error_types": list(ExplanationErrorType.__args__),  # type: ignore[attr-defined]
+            "source_spans": "verbatim excerpts of this task\u2019s frozen evidence; checked at submit",
+            "required_for": "why_support=fail, to be trainable explanation supervision",
+        },
         "taxonomy": {
             "taxonomy_version": TAXONOMY_VERSION,
             "iptc_upstream_version": IPTC_MEDIA_TOPICS_VERSION,
             "codebook_sha256": IPTC_CODEBOOK_SHA256,
             "subject_codes": [code for code, _label in IPTC_SUBJECT_CODEBOOK],
             "source_authority_owner": "code",
+            "optional": True,
         },
     }
 
@@ -2375,9 +2409,56 @@ def _derive_owner(submission: EventRubricSubmission, *, external: bool = False) 
     for dimension, value in submission.dimensions.items():
         if value == "fail":
             return _OWNER_BY_DIMENSION.get(dimension, "unknown")
-    if submission.novelty.judgment == "restatement":
+    if submission.novelty is not None and submission.novelty.judgment == "restatement":
         return "retrieval"
     return "unknown"
+
+
+def _evidence_text(snapshot: Mapping[str, Any]) -> str:
+    """Every word of one frozen evidence snapshot a reviewer could be quoting, in one haystack.
+
+    Both shapes it is called with are here rather than in two callers: an Event snapshot
+    (`focus_fact` plus `card`) and an external miss (`title` plus `body`). A span is checked against the
+    snapshot the task froze, not against today's Event, so a later evidence version cannot retroactively
+    ground or unground a citation that was accepted.
+    """
+
+    card = dict(snapshot.get("card") or {})
+    focus = dict(snapshot.get("focus_fact") or {})
+    parts = (
+        focus.get("text"),
+        focus.get("context"),
+        card.get("leader_title"),
+        card.get("leader_description"),
+        card.get("raw_first_line"),
+        card.get("comparison_title"),
+        snapshot.get("title"),
+        snapshot.get("body"),
+    )
+    return "\n".join(str(part) for part in parts if part)
+
+
+def _collapse_whitespace(value: str) -> str:
+    return " ".join(str(value).split())
+
+
+def _require_grounded_source_spans(submission: EventRubricSubmission, evidence_text: str) -> None:
+    """Refuse a citation the frozen evidence does not contain.
+
+    A `source_span` exists so the explanation ruler can point at the words that support a claim. A span
+    nobody can find in the evidence supports nothing, and once it is accepted it is corpus truth that a
+    later reader has no way to check -- so this fails at submit rather than at freeze. Whitespace is
+    collapsed on both sides, because a reviewer copying from a rendered card picks up line breaks the
+    stored text does not have; nothing else about the excerpt is normalized.
+    """
+
+    explanation = submission.explanation
+    if explanation is None:
+        return
+    haystack = _collapse_whitespace(evidence_text)
+    for span in explanation.source_spans:
+        if _collapse_whitespace(span) not in haystack:
+            raise ValueError("news_review_explanation_source_span_not_in_evidence")
 
 
 def _review_public(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -2631,14 +2712,21 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
         _event_queue_statement(
             lower_ms=lower,
             upper_ms=int(now_ms),
+            cohort_sha=None,
+            cursor=None,
+            limit=100,
+        ),
+        _event_queue_statement(
+            lower_ms=lower,
+            upper_ms=int(now_ms),
             cohort_sha="0" * 64,
             cursor=None,
             limit=100,
         ),
         _event_task_statement("event", evidence_version=None),
         _event_task_statement("event", evidence_version=1),
-        _coverage_statement(lower_ms=lower, upper_ms=int(now_ms)),
-        _pairwise_queue_statement(proposal="", status="pending", cursor=None, limit=30),
+        _coverage_statement(lower_ms=lower, upper_ms=int(now_ms), cohort_sha=None),
+        _pairwise_queue_statement(proposal="", status="pending", cohort_sha=None, cursor=None, limit=30),
         _proposal_candidates_statement(100),
         _proposal_releases_statement(),
         _proposal_reports_statement(),
@@ -2649,6 +2737,7 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
 
 
 __all__ = [
+    "EXPLANATION_DIMENSIONS",
     "READER_CONTRACT_SHA256",
     "READER_CONTRACT_TEXT",
     "READER_CONTRACT_VERSION",
@@ -2656,6 +2745,7 @@ __all__ = [
     "BlindPairwiseSubmission",
     "DeskQuery",
     "EventRubricSubmission",
+    "ExplanationCorrectionV1",
     "ExternalMissSubmission",
     "Principal",
     "ReviewDesk",

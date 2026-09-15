@@ -35,7 +35,6 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
     from tracefold.news.learning.contracts import (
         DevelopmentDatasetRef,
         OptimizationBudget,
-        epoch_id_for_bundle,
     )
     from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import DevelopmentEpisode
@@ -73,8 +72,6 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
             development_dataset_sha256=export.dataset_sha,
             episode_projection_root_sha256=export.episode_projection_root_sha256,
             episode_count=len(export.episodes),
-            learning_epoch=epoch_id_for_bundle(stable.bundle_sha),
-            learning_epoch_started_at_ms=export.learning_epoch_started_at_ms,
             # Declared on the trusted side. The optimizer records the rubric its corpus was accepted
             # under; it never looks one up, so the review plane stays out of its import graph.
             review_rubric_version=REVIEW_RUBRIC_VERSION,

@@ -14,7 +14,7 @@ evaluation. Those helpers do not participate in population selection or GEPA sco
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,8 +25,7 @@ from ..program.contracts import ScoredJudgment, TriageContext
 from ..taxonomy import ModelTaxonomyV1
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
 from .card_lint import lint_reader_card
-from .contracts import REFLECTION_MINIBATCH_SIZE
-from .profile import development_coverage_blockers
+from .contracts import REFLECTION_MINIBATCH_SIZE, LearningTarget
 from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy, summarize_taxonomy
 
 
@@ -40,6 +39,11 @@ class DevelopmentEpisode(_ExactModel):
     case_id: str = Field(min_length=1)
     cluster_id: str = Field(min_length=1)
     stratum: str = Field(min_length=1)
+    # Which questions this case's review actually answered (#651 §9), derived at freeze time and sealed
+    # with the corpus. Empty is a real answer and means the case explains nothing.
+    applicable_targets: tuple[LearningTarget, ...] = ()
+    # The arm that produced the Event, for reading a result rather than for admitting the case.
+    provenance: dict[str, Any] = Field(default_factory=dict)
     context: TriageContext
     accepted_review: dict[str, Any]
     production_judgment: ScoredJudgment | None = None
@@ -461,7 +465,9 @@ def _retrieval_receipt(episodes: Sequence[DevelopmentEpisode]) -> dict[str, Any]
 # The Objective Plan: what GEPA is allowed to see, and why
 # ---------------------------------------------------------------------------
 
-OBJECTIVE_PLAN_SCHEMA: Literal["tracefold.news.gepa_objective_plan.v4"] = "tracefold.news.gepa_objective_plan.v4"
+# v5 (#651 §9): the plan names its `target`, its population is the cases whose review labelled that
+# target, and `blocking_reasons` carries the four structural codes rather than the corpus-size quotas.
+OBJECTIVE_PLAN_SCHEMA: Literal["tracefold.news.gepa_objective_plan.v5"] = "tracefold.news.gepa_objective_plan.v5"
 TAXONOMY_PREDICTOR: Final = "taxonomy"
 _PUSH_ACTIONS: Final = frozenset({"push", "escalate"})
 _OBJECTIVE_GUARD_ADMISSIONS: Final = frozenset({"listing_deterministic", "telemetry_deterministic"})
@@ -500,7 +506,9 @@ class GepaObjectivePlan(_ExactModel):
     and by the split's case roots below. Everything a receipt needs to state is a bounded id or a count.
     """
 
-    schema_version: Literal["tracefold.news.gepa_objective_plan.v4"] = OBJECTIVE_PLAN_SCHEMA
+    schema_version: Literal["tracefold.news.gepa_objective_plan.v5"] = OBJECTIVE_PLAN_SCHEMA
+    # Which Predictor this plan is about. A plan that does not name it is not an answer (#651 §9).
+    target: LearningTarget = "classification"
     case_n: int = Field(default=0, ge=0)
     cluster_n: int = Field(default=0, ge=0)
     cases: tuple[ObjectiveCase, ...] = ()
@@ -636,8 +644,30 @@ def _owner_identity(review: Mapping[str, Any]) -> tuple[str, str]:
     return (derived, "derived") if derived else ("", "absent")
 
 
-def _taxonomy_classify(episode: DevelopmentEpisode) -> ObjectiveCase:
-    """Include every case with valid accepted taxonomy Gold and a replayable Stable answer (#501 D9)."""
+# One target optimizes one Predictor, and each names the dimensions its ruler moves. `TARGET_PREDICTORS`
+# is here rather than in `optimizer.py` because the plan has to publish it without importing DSPy.
+TARGET_PREDICTORS: Final[dict[str, str]] = {
+    "classification": TAXONOMY_PREDICTOR,
+    "understanding": "event_semantics",
+    "explanation": "reader_card",
+}
+_UNDERSTANDING_TARGET_DIMENSIONS: Final[tuple[str, ...]] = ("asset_grounding", "novelty")
+_EXPLANATION_TARGET_DIMENSIONS: Final[tuple[str, ...]] = ("why_support", "factual_fidelity", "headline_fidelity")
+TARGET_DIMENSIONS: Final[dict[str, tuple[str, ...]]] = {
+    "classification": TAXONOMY_TARGET_DIMENSIONS,
+    "understanding": _UNDERSTANDING_TARGET_DIMENSIONS,
+    "explanation": _EXPLANATION_TARGET_DIMENSIONS,
+}
+
+
+def _classify(episode: DevelopmentEpisode, target: LearningTarget) -> ObjectiveCase:
+    """Decide whether one case is evidence this target can be trained on, and say why when it is not.
+
+    The first question is the one the task-level rubric made answerable (#651 §9): did the reviewer label
+    anything this target scores? `applicable_targets` is sealed with the corpus and says so. Everything
+    after it is an input-contract question -- can this target's example actually be built from the frozen
+    episode -- and it is asked per target because the three read different parts of the same case.
+    """
 
     review = dict(episode.accepted_review or {})
     owner, owner_source = _owner_identity(review)
@@ -652,30 +682,36 @@ def _taxonomy_classify(episode: DevelopmentEpisode) -> ObjectiveCase:
             owner=owner,
             owner_source=owner_source,
             stable_exact=stable_exact,
-            predictors=(TAXONOMY_PREDICTOR,) if included else (),
-            dimensions=TAXONOMY_TARGET_DIMENSIONS if included else (),
+            predictors=(TARGET_PREDICTORS[target],) if included else (),
+            dimensions=TARGET_DIMENSIONS[target] if included else (),
             reason=reason,
         )
 
+    if target not in episode.applicable_targets:
+        return result("excluded", "target_not_labelled_by_review")
+    if target == "classification":
+        try:
+            gold = ModelTaxonomyV1.model_validate(review.get("taxonomy"))
+        except ValueError:
+            return result("excluded", "accepted_taxonomy_gold_invalid")
+        # A missing recorded Stable answer no longer excludes the case (#651 §9). GEPA scores the
+        # *candidate* against Gold; `stable_exact` is a readiness diagnostic, and refusing to train on a
+        # case because the previous arm left no comparison threw away the reviewer's label to protect a
+        # number nothing gates on.
+        predicted = episode.production_judgment.editorial.taxonomy if episode.production_judgment else None
+        exact = None if predicted is None else compare_taxonomy(gold, predicted).exact
+        return result("included", "accepted_taxonomy_gold", stable_exact=exact)
+    if target == "understanding":
+        return result("included", "accepted_semantics_labels")
+    if str(review.get("explanation_supervision") or "") == "pending":
+        # Stored, visible and counted -- and not trainable. A `why_support=fail` with no explanation block
+        # says the copy is wrong and nothing a ruler can check, so training on it would reward any change.
+        return result("excluded", "explanation_supervision_pending")
     if episode.production_judgment is None:
-        return result("excluded", "stable_output_absent")
-    try:
-        gold = ModelTaxonomyV1.model_validate(review.get("taxonomy"))
-    except ValueError:
-        return result("excluded", "accepted_taxonomy_gold_invalid")
-    predicted = episode.production_judgment.editorial.taxonomy
-    if predicted is None:
-        return result("excluded", "recorded_stable_taxonomy_absent")
-    exact = compare_taxonomy(gold, predicted).exact
-    return result("included", "accepted_taxonomy_gold_with_replayable_stable", stable_exact=exact)
-
-
-def _split_blockers(split_error: str) -> tuple[str, ...]:
-    """Translate `_honest_split`'s refusal into the readiness vocabulary, without re-deciding it."""
-
-    if split_error.startswith("news_program_compile_split_requires_two_clusters"):
-        return ("split_requires_two_clusters",)
-    return ("optimizer_split_unavailable",) if split_error else ()
+        # `reader_card` is asked to rewrite a card given the semantics the episode recorded. Without a
+        # recorded judgment there are no semantics to pose the question with.
+        return result("excluded", "reader_card_semantics_absent")
+    return result("included", "accepted_explanation_supervision")
 
 
 def _representative_sort_key(*, case_id: str, strata: frozenset[str], now_ms: int) -> tuple[Any, ...]:
@@ -752,10 +788,32 @@ def _elect_cluster_representatives(
     return result
 
 
-def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObjectivePlan:
-    """Decide, once, which episodes GEPA may train and select on — and why every other one is out."""
+def declared_target(objective_summary: Mapping[str, Any]) -> LearningTarget:
+    """The target a candidate says it optimized, refusing anything this code does not implement.
 
-    cases = tuple(_elect_cluster_representatives([_taxonomy_classify(episode) for episode in episodes], episodes))
+    Read from the declared summary rather than guessed from the changed Predictor: the summary is what the
+    candidate is content-addressed with, and a guess would let a candidate be re-derived against a
+    population it never saw.
+    """
+
+    target = str(objective_summary.get("target") or "")
+    if target not in TARGET_PREDICTORS:
+        raise ValueError(f"news_program_compile_target_unknown:{target}")
+    return cast(LearningTarget, target)
+
+
+def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode], target: LearningTarget) -> GepaObjectivePlan:
+    """Decide, once and for one target, which episodes GEPA may train and select on — and why the rest are out.
+
+    The target is required rather than defaulted (#651 §9). One corpus now explains three different
+    Predictor compiles, its cases are evidence for different subsets of them, and the 70/30 cluster-grouped
+    split is a property of the population being split. A plan that did not name its target could only be
+    right about one of the three while claiming to describe the corpus.
+    """
+
+    if target not in TARGET_PREDICTORS:
+        raise ValueError(f"news_program_compile_target_unknown:{target}")
+    cases = tuple(_elect_cluster_representatives([_classify(episode, target) for episode in episodes], episodes))
     included = tuple(case for case in cases if case.disposition == "included")
     excluded = tuple(case for case in cases if case.disposition == "excluded")
     optimizer_ids = {case.case_id for case in included}
@@ -781,20 +839,32 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
         else:
             train, selection, split = tuple(train_list), tuple(selection_list), receipt
 
+    # Four codes, and they are the only things that block a compile (#651 §9). The quota vocabulary --
+    # `development_boundary_cluster_n_insufficient` and its four siblings -- is gone with the quotas: a
+    # corpus that is merely small is not unreadable, and saying so cost every thin-but-honest corpus its
+    # chance to end in an equally honest `NO_OP`. What is left is what a compile genuinely cannot proceed
+    # without: something to learn from, something to select on, examples the target can actually build,
+    # and two halves that do not share a fact.
     blocking: list[str] = []
-    if not included:
-        blocking.append("no_taxonomy_gold_clusters")
-    blocking.extend(_split_blockers(split_error))
+    if not train:
+        blocking.append("train_empty")
+    if not selection:
+        blocking.append("selection_empty")
+    if included and not optimizer_episodes:
+        blocking.append("input_contract_invalid")
+    if _cluster_leak(train, selection):
+        blocking.append("cluster_leak")
 
     return GepaObjectivePlan(
+        target=target,
         case_n=len(cases),
         cluster_n=len({case.cluster_id for case in cases}),
         cases=cases,
         excluded_case_ids=tuple(case.case_id for case in excluded),
         optimizer_case_ids=tuple(episode.case_id for episode in optimizer_episodes),
         optimizer_cluster_ids=tuple(sorted({case.cluster_id for case in included})),
-        target_predictors=(TAXONOMY_PREDICTOR,) if included else (),
-        target_dimensions=TAXONOMY_TARGET_DIMENSIONS if included else (),
+        target_predictors=(TARGET_PREDICTORS[target],) if included else (),
+        target_dimensions=TARGET_DIMENSIONS[target] if included else (),
         stable_exact_n=sum(1 for case in included if case.stable_exact),
         stable_mismatch_n=sum(1 for case in included if case.stable_exact is False),
         exclusion_reasons=dict(sorted(exclusion_reasons.items())),
@@ -805,6 +875,12 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
         train_episodes=train,
         development_selection_episodes=selection,
     )
+
+
+def _cluster_leak(train: Sequence[DevelopmentEpisode], selection: Sequence[DevelopmentEpisode]) -> tuple[str, ...]:
+    """Connected fact clusters present in both halves. `_honest_split` cannot produce one; a caller can."""
+
+    return tuple(sorted({episode.cluster_id for episode in train} & {episode.cluster_id for episode in selection}))
 
 
 def _expected_delivery(should_push: str) -> bool | None:
@@ -828,7 +904,10 @@ def _expected_delivery(should_push: str) -> bool | None:
 # `stable_mismatch_n` as diagnostics; no owner distribution, no target/control halves.
 # v5 (#651): the report names the optimization `target`, because one corpus now explains three different
 # Predictor compiles and a readiness answer that does not say which one is not an answer.
-READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v5"] = "tracefold.news.gepa_readiness_report.v5"
+# v6 (#651 §9): `development_profile` is gone with the corpus-size quotas it reported, and `targets`
+# takes its place -- per-target case, cluster and split counts, plus the two rejection counts an operator
+# can act on. `ready` per target is the four structural blockers and nothing else.
+READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v6"] = "tracefold.news.gepa_readiness_report.v6"
 # One Predictor evaluation may use JSONAdapter's single format fallback. This is a physical-call ceiling,
 # not the usual successful-path count, so the readiness receipt must reserve both attempts.
 _TASK_CALLS_PER_METRIC_CALL: Final = 2
@@ -853,8 +932,8 @@ def _half_counts(plan: GepaObjectivePlan, half: Sequence[DevelopmentEpisode]) ->
     }
 
 
-def development_split_profile_counts(plan: GepaObjectivePlan) -> dict[str, int]:
-    """Project the two sealed Objective halves into the shared release-profile vocabulary."""
+def target_split_counts(plan: GepaObjectivePlan) -> dict[str, int]:
+    """How many strata each sealed Objective half carries. Published, never compared to a floor."""
 
     return {
         "train_stratum_n": sum(value > 0 for value in _strata_coverage(plan.train_episodes).values()),
@@ -864,13 +943,56 @@ def development_split_profile_counts(plan: GepaObjectivePlan) -> dict[str, int]:
     }
 
 
+def _target_counts(
+    coverage: Mapping[str, Any],
+    *,
+    plan: GepaObjectivePlan,
+    target: LearningTarget,
+) -> dict[str, Any]:
+    """Per-target counts and gaps, with this run's target answered from its own plan.
+
+    The other two targets are answered from the corpus's sealed counts alone: re-deriving their plans here
+    would mean building three splits to print two numbers, and the sealed counts already say how much
+    evidence each target has. `ready` is stated only for the target that was actually planned, because
+    "ready" is a statement about a split and only one split exists in this report.
+    """
+
+    sealed = dict(dict(coverage.get("targets") or {}))
+    rows: dict[str, Any] = {}
+    for name in TARGET_PREDICTORS:
+        row: dict[str, Any] = {
+            "predictor": TARGET_PREDICTORS[name],
+            "planned": name == target,
+            **{key: value for key, value in dict(sealed.get(name) or {}).items()},
+        }
+        if name == target:
+            row.update(
+                ready=plan.optimizer_ready,
+                blockers=list(plan.blocking_reasons),
+                train_case_n=len(plan.train_episodes),
+                development_selection_case_n=len(plan.development_selection_episodes),
+                cluster_leak=list(_cluster_leak(plan.train_episodes, plan.development_selection_episodes)),
+                **target_split_counts(plan),
+            )
+        rows[name] = row
+    return {
+        "schema": "tracefold.news.readiness_targets.v1",
+        "target": target,
+        "by_target": rows,
+        # The two counts an operator can act on: reviews the window held under an older rubric, and
+        # `why_support` failures accepted with no explanation block behind them.
+        "rubric_ineligible_n": coverage.get("rubric_ineligible_n"),
+        "explanation_supervision_pending_n": coverage.get("explanation_supervision_pending_n"),
+    }
+
+
 def build_readiness_report(
     plan: GepaObjectivePlan,
     *,
     episodes: Sequence[DevelopmentEpisode],
     identity: Mapping[str, Any],
     coverage: Mapping[str, Any],
-    target: str = "classification",
+    target: LearningTarget = "classification",
 ) -> dict[str, Any]:
     """Explain a compile before anyone pays for one. No model call, no write, no second projection.
 
@@ -878,16 +1000,15 @@ def build_readiness_report(
     on the same conditions. What it buys is that `insufficient` costs nothing instead of costing a
     container, two endpoints and an operator's evening.
 
-    `coverage` is the frozen dataset's own sealed counts, handed in by the caller that loaded them and
-    republished verbatim. This module decides what GEPA may optimize and never reads a dataset; carrying
-    the block is what lets one report answer both "may this corpus be optimized" and "how much separable
-    evidence is in it, and how concentrated is it in time" (#259 §5.2).
+    It answers for one target (#651 §9). There is no longer a corpus-wide `development_profile.ready`,
+    because there was never a corpus-wide question: 40 reviewed explanation cases and no taxonomy Gold
+    make an excellent explanation corpus and a useless classification one, and the old report called that
+    situation "not ready" without saying ready for what. `targets` reports every target's counts beside
+    this one's, so an operator who asked the wrong question can see which one to ask instead.
     """
 
     train = _half_counts(plan, plan.train_episodes)
     selection = _half_counts(plan, plan.development_selection_episodes)
-    profile_counts = {**dict(coverage), **development_split_profile_counts(plan)}
-    profile_blockers = development_coverage_blockers(profile_counts)
     # One vote per connected fact cluster — the elected representatives, which is exactly the population the
     # freeze summarizes and the optimizer scores. Per-case Gold legitimately differs between media members of
     # one fact (`announced` versus `effective`, a subject-code superset), so summarizing every member would
@@ -896,9 +1017,12 @@ def build_readiness_report(
     gold_rows: list[dict[str, Any]] = []
     for episode in plan.optimizer_episodes:
         predicted = episode.production_judgment.editorial.taxonomy if episode.production_judgment else None
-        if predicted is None:
+        raw_gold = dict(episode.accepted_review or {}).get("taxonomy")
+        # Both sides or neither: a case with no accepted taxonomy states no Gold, and one with no recorded
+        # Stable answer has nothing to compare it against. Under v7 either can be absent (#651 §9).
+        if predicted is None or not raw_gold:
             continue
-        gold = ModelTaxonomyV1.model_validate(dict(episode.accepted_review or {}).get("taxonomy"))
+        gold = ModelTaxonomyV1.model_validate(raw_gold)
         gold_rows.append(
             {
                 "case_id": episode.case_id,
@@ -932,11 +1056,7 @@ def build_readiness_report(
             "target_dimensions": list(plan.target_dimensions),
             "exclusion_reasons": dict(plan.exclusion_reasons),
         },
-        "development_profile": {
-            "ready": not profile_blockers,
-            "blockers": list(profile_blockers),
-            "counts": profile_counts,
-        },
+        "targets": _target_counts(coverage, plan=plan, target=target),
         "taxonomy_gold": {
             "cluster_n": gold_summary["cluster_n"],
             "stable_exact_n": plan.stable_exact_n,
@@ -976,12 +1096,13 @@ __all__ = [
     "ObjectiveCase",
     "build_gepa_objective_plan",
     "build_readiness_report",
-    "development_split_profile_counts",
+    "declared_target",
     "elect_cluster_representative_case_ids",
     "optimizer_population_identity",
     "production_decision",
     "retrieval_receipt",
     "stable_hard_gate",
+    "target_split_counts",
     "verify_policy_projection",
 ]
 

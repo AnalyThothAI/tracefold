@@ -42,35 +42,39 @@ bootstrap interval this profile already declares (`bootstrap`: seed 112, 2,000 r
 rule failed a candidate whose `assertion_status_accuracy` slipped by one cluster in 311 (-0.0032) while
 four axes and the four-axis exact rate rose, which is measurement noise being read as a regression. That
 is an evaluator-semantics change, so `EVALUATOR_VERSION` is `v7` and the trusted root moves with both.
+
+#651 §9 deletes the whole `development` block -- 30 boundary clusters, 100 retention, 50 negative, three
+strata and one safety case -- together with `development_coverage_blockers`. Every one of them was a
+quota on *how much* evidence a corpus held, checked before anyone was allowed to optimize, and the
+quantity was measured in the wrong unit: a corpus of 40 reviewed explanation cases and no taxonomy Gold
+is a perfectly good explanation corpus and was refused as an insufficient classification one. What is
+left is the question that actually has an answer -- does this target have a non-empty train split, a
+non-empty selection split, a valid input contract and no cluster shared across the two -- and that
+question lives in the Objective Plan, per target, because it is a property of the split rather than of
+the profile. A corpus too thin to teach anything still ends in `NO_OP` on its own, which it always did.
+That is a profile-semantics change, so `EVALUATOR_VERSION` is `v9` and the trusted root moves with it.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from typing import Any
 
 from ..review.desk import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .contracts import LEARNING_PROFILE_ID
 
-# #629 changes support scoring and report denominators, not the taxonomy-only budget or guardrails (#622).
-EVALUATOR_VERSION = "news_candidate_evaluator_v8"
+# v9 (#651 §9): the development coverage quotas are gone from the profile, so a report sealed under v9
+# answers readiness per target rather than against one global corpus floor.
+EVALUATOR_VERSION = "news_candidate_evaluator_v9"
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
     # No `learning_epoch` (#314). The profile names the gates a corpus must clear; which epoch a corpus was
     # frozen in is a per-deployment fact carried by the dataset's own `learning_epoch` and `agent_cohort`,
     # and naming it here made a static document claim to know the running bundle.
-    # Coverage, not calendar: independent connected fact clusters by role, the strata both split halves
-    # have to carry, and at least one safety case. #259 deleted `natural_days_min` from this set.
-    "development": {
-        "boundary_clusters_min": 30,
-        "retention_clusters_min": 100,
-        "negative_clusters_min": 50,
-        "strata_min": 3,
-        "safety_required": True,
-    },
+    # No `development` block (#651 §9). The corpus-size quotas it held are deleted rather than lowered:
+    # a threshold nobody can defend in a unit that matches the question is not a safeguard.
     # The only temporal contract in the profile, and it is a *future* one: the holdout window opens after
     # the candidate was registered, runs at least a day, and has to carry real reviewed clusters.
     "validation": {
@@ -108,28 +112,4 @@ TRUSTED_ROOT_SHA = hashlib.sha256(
 ).hexdigest()
 
 
-_DEVELOPMENT_COVERAGE_GATES: tuple[tuple[str, str], ...] = (
-    ("boundary_cluster_n", "boundary_clusters_min"),
-    ("retention_cluster_n", "retention_clusters_min"),
-    ("negative_cluster_n", "negative_clusters_min"),
-    ("stratum_n", "strata_min"),
-    ("train_stratum_n", "strata_min"),
-    ("development_selection_stratum_n", "strata_min"),
-)
-
-
-def development_coverage_blockers(counts: Mapping[str, Any]) -> tuple[str, ...]:
-    """All zero-call development-corpus gates, from sealed counts and the Objective split."""
-
-    requirements = _PROFILE["development"]
-    blockers = [
-        f"development_{field_name}_insufficient"
-        for field_name, threshold_name in _DEVELOPMENT_COVERAGE_GATES
-        if int(counts.get(field_name) or 0) < int(requirements[threshold_name])
-    ]
-    if requirements["safety_required"] and int(counts.get("safety_cluster_n") or 0) == 0:
-        blockers.append("development_safety_empty")
-    return tuple(blockers)
-
-
-__all__ = ["EVALUATOR_VERSION", "TRUSTED_ROOT_SHA", "_PROFILE", "development_coverage_blockers"]
+__all__ = ["EVALUATOR_VERSION", "TRUSTED_ROOT_SHA", "_PROFILE"]

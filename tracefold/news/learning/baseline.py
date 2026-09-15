@@ -52,6 +52,7 @@ from ..program.contracts import SemanticJudge, TriageContext
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.lm import AuditedConfiguredLM, RuntimeModelIdentity, StructuredOutputMode
 from ..program.runtime import PROGRAM_VERSION
+from ..review.desk import REVIEW_RUBRIC_VERSION
 from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 from .judge import CardEquivalenceJudge, MetricJudgeEndpoint
 from .metric import (
@@ -890,7 +891,9 @@ def _build_report(
             "policy_sha256": policy["policy_sha256"],
             "policy_values": policy["policy_values"],
             "policy_source": policy["policy_source"],
-            "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v6"),
+            # The constant, not a literal (#651 §7.2). A pinned string made this receipt claim a rubric
+            # the corpus behind it was no longer accepted under the moment the contract moved.
+            "metric": metric_receipt(bind_metric(judge), review_rubric_version=REVIEW_RUBRIC_VERSION),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
             # `current` is the active release epoch; `frozen_development` is the content-addressed dataset

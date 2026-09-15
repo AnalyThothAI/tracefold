@@ -63,10 +63,12 @@ from ..program.signatures import EventSemantics, ReaderCard
 from ..taxonomy import ModelTaxonomyV1
 from .card_lint import CARD_LINT_ID, GATE_CHECKS, SCORED_CHECKS, lint_reader_card
 from .contracts import (
+    LEARNING_TARGETS,
     REFLECTION_MAX_TOKENS,
     REFLECTION_MINIBATCH_SIZE,
     REFLECTION_TIMEOUT_SECONDS,
     DevelopmentDatasetRef,
+    LearningTarget,
     ModelExecutionIdentity,
     OptimizationBudget,
     OptimizationResult,
@@ -237,9 +239,11 @@ _TASK_OUTPUT_FAILURE = "news_program_compile_task_model_output_truncated"
 _TASK_OUTPUT_INVALID = "news_program_compile_task_model_output_invalid"
 
 
-OptimizationTarget = Literal["classification", "understanding", "explanation"]
+# One vocabulary, defined beside the corpus contracts so a caller that only needs the names does not
+# import DSPy to read them (#651 §9).
+OptimizationTarget = LearningTarget
 
-OPTIMIZATION_TARGETS: Final[tuple[OptimizationTarget, ...]] = ("classification", "understanding", "explanation")
+OPTIMIZATION_TARGETS: Final[tuple[OptimizationTarget, ...]] = LEARNING_TARGETS
 
 # One target optimizes one Predictor. Nothing else in this module branches on the target name.
 TARGET_PREDICTOR: Final[dict[OptimizationTarget, PredictorName]] = {
@@ -565,6 +569,11 @@ _EXPLANATION_AXES: Final[tuple[str, ...]] = (
     "card_lint_pass_rate",
     "headline_retained",
     "why_retained",
+    # The reviewer's own must-keep facts (#651 §7.2). The other three axes ask whether the card is typed,
+    # clean and identical to an accepted line; this is the first one that asks whether it still says the
+    # thing the fact was about, which is what `why_support` has always been failed for and never had a
+    # label for.
+    "key_facts_covered",
 )
 
 
@@ -658,6 +667,15 @@ class _ExplanationMetric:
             scored.append(hit)
             if not hit:
                 notes.append(f"Accepted {copy_field} is: {accepted}")
+        key_facts = tuple(getattr(gold, "gold_key_facts", ()) or ())
+        if key_facts:
+            covered = _key_facts_covered(key_facts, f"{card.headline_zh}\n{card.why_zh}")
+            objectives["key_facts_covered"] = covered
+            scored.append(covered)
+            if covered < 1.0:
+                notes.append(
+                    "The card must keep every one of these facts: " + " | ".join(str(fact) for fact in key_facts)
+                )
         return dspy.Prediction(
             score=_mean(scored),
             feedback=" ".join(notes) or "The card is typed, clean under the copy lint and keeps every accepted line.",
@@ -689,7 +707,24 @@ def _explanation_example(episode: DevelopmentEpisode) -> dspy.Example:
         accepted = _accepted_copy(review, copy_field)
         if accepted is not None:
             values[f"gold_{copy_field}"] = accepted
+    key_facts = tuple(dict(review.get("explanation") or {}).get("key_facts") or ())
+    if key_facts:
+        values["gold_key_facts"] = key_facts
     return dspy.Example(**values).with_inputs("evidence_json", "semantics_json")
+
+
+def _key_facts_covered(key_facts: Sequence[Any], card_text: str) -> float:
+    """Share of the reviewer's must-keep facts the card still states, by literal containment.
+
+    The same bound `_retained` has and for the same reason: the offline optimizer has a task endpoint and
+    a reflection endpoint and no third route to ask a judge with, so containment is the honest rule
+    available here. It never reports a false coverage and can report a false miss on a paraphrase, which
+    is a bound the metric unit that hands this ruler a judge lifts.
+    """
+
+    haystack = " ".join(str(card_text).split())
+    hits = sum(1 for fact in key_facts if " ".join(str(fact).split()) in haystack)
+    return hits / len(key_facts)
 
 
 def _recorded_semantics_json(judgment: ScoredJudgment) -> str:
@@ -712,16 +747,17 @@ def _recorded_semantics_json(judgment: ScoredJudgment) -> str:
 
 def _explanation_metric_receipt(*, review_rubric_version: str) -> dict[str, Any]:
     return {
-        "schema": "tracefold.news.reader_card_gepa_metric.v1",
-        "metric_id": "tracefold.news.reader_card_gepa_lint_retention_v1",
+        "schema": "tracefold.news.reader_card_gepa_metric.v2",
+        "metric_id": "tracefold.news.reader_card_gepa_lint_retention_v2",
         "review_rubric_version": review_rubric_version,
         "card_lint_id": CARD_LINT_ID,
-        "scalar": "mean(typed_card_valid,card_lint_pass_rate,headline_retained?,why_retained?)",
+        "scalar": "mean(typed_card_valid,card_lint_pass_rate,headline_retained?,why_retained?,key_facts_covered?)",
         "axes": list(_EXPLANATION_AXES),
         "gate_checks": list(GATE_CHECKS),
         "scored_checks": list(SCORED_CHECKS),
         "unlabelled_axis": "not_scored",
         "retention_rule": "literal_equality_no_metric_judge",
+        "key_facts_rule": "literal_containment_no_metric_judge",
         "invalid_prediction_score": 0.0,
         "truncated_output_score": 0.0,
         "feedback": "the copy lint's own repair instructions plus any accepted line the card dropped",
@@ -969,9 +1005,9 @@ def run_gepa(
     # One Objective Plan, built here rather than by each caller, so the corpus this optimization sees is the
     # corpus `readiness`, the dataset-bound baseline and `CandidateEvaluator` re-derive from the same frozen
     # episodes.
-    plan = build_gepa_objective_plan(episodes)
+    plan = build_gepa_objective_plan(episodes, target)
     if not plan.optimizer_cluster_ids:
-        raise ValueError("news_program_compile_no_taxonomy_gold_clusters")
+        raise ValueError(f"news_program_compile_no_labelled_clusters:{target}")
     if plan.split is None:
         # Verbatim: the plan records the exact code `_honest_split` refused with, so this stays the failure
         # the caller has always seen rather than a translation of it.
@@ -1841,7 +1877,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
     """Run the one bounded GEPA optimization over a frozen corpus and return its terminal state."""
 
     started_at_ms = config.now_ms()
-    plan = build_gepa_objective_plan(dataset.episodes)
+    plan = build_gepa_objective_plan(dataset.episodes, config.target)
     readiness = build_readiness_report(
         plan,
         episodes=dataset.episodes,
