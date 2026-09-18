@@ -496,9 +496,15 @@ class ReaderCard:
             names.append(f"{label} +{fmt.money(str(member.net_usd))}")
         if len(members) > 3:
             names.append(f"另 {len(members) - 3} 个地址")
+        # A window in which nobody sold prints no sell figure: `money` answers `""` for zero, and
+        # `卖出 ` with nothing after it is a currency mark standing in for a fact.
+        flow = [
+            f"入选地址买入 {bought}" if (bought := fmt.money(str(window.buy_usd))) else "",
+            f"卖出 {sold}" if (sold := fmt.money(str(window.sell_usd))) else "",
+        ]
         return [
             f"30 分钟 · {window.qualified_n} 个合格地址 · 净买入 {fmt.money(str(window.net_usd))}",
-            f"入选地址买入 {fmt.money(str(window.buy_usd))} · 卖出 {fmt.money(str(window.sell_usd))}",
+            " · ".join(part for part in flow if part),
             " · ".join(names),
             _token_age_line(snapshot),
             _participation_line(members),
