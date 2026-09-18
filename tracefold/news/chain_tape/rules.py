@@ -14,7 +14,7 @@ from .contracts import ClassifiedFill
 
 @dataclass(frozen=True, slots=True)
 class WalletRules:
-    """The whole alert, in four numbers.
+    """The whole alert, in three numbers.
 
     There is one window and one quorum. The 5-minute quorum of three that used to sit beside this one
     was a second definition of the same alert: every card had to name the window that had fired, every
