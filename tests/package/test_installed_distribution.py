@@ -232,6 +232,9 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
     # #509: the storyline registry is package data the Gate and Triage read on every Event, so a wheel
     # that dropped it would fail at the first key rather than at import.
     assert f"{DISTRIBUTION_NAME}/news/events/storyline_registry.json" in members
+    # #651: the judge-calibration corpus is what `news learning judge-calibration` scores a judge against, so
+    # the container CLI needs it inside the wheel rather than under an unpackaged tests/ tree.
+    assert f"{DISTRIBUTION_NAME}/news/learning/resources/judge_calibration_cases.json" in members
 
 
 def test_sdist_carries_the_flat_tree_and_no_src_directory(built_distribution: BuiltDistribution) -> None:
