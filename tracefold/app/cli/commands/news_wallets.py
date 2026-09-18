@@ -3,8 +3,8 @@
 Read-only, one bounded window, no provider call and no write. It exists because "there are no alerts"
 is at least four different situations and an empty event list is all of them at once:
 
-* the published roster cannot reach either threshold, so the rule is unsatisfiable;
-* it can, but the addresses have not been monitored long enough to fill a window;
+* the published roster is smaller than the quorum, so the rule is unsatisfiable;
+* it is not, but the addresses have not been monitored long enough to fill the window;
 * the chain facts were collected and never derived, so the detector has not looked at them;
 * an episode and an intent exist and the send queue has not got to them.
 
@@ -20,7 +20,7 @@ import time
 from argparse import Namespace
 from typing import Any
 
-from tracefold.news.chain_tape.rules import FAST_WINDOW_MS, SLOW_WINDOW_MS
+from tracefold.news.wallet_contracts import NET_BUY_WINDOW_MS
 from tracefold.platform.config.loader import load_settings
 
 
@@ -87,41 +87,34 @@ def _roster_funnel(members: list[dict[str, Any]], *, state: dict[str, Any], sett
 def _triggerability(
     members: list[dict[str, Any]], *, state: dict[str, Any], settings: Any, now_ms: int
 ) -> dict[str, Any]:
-    """Whether either window *can* be satisfied by the addresses currently being watched.
+    """Whether the one window *can* be satisfied by the addresses currently being watched.
 
-    Monitoring support is measured against the tape's own scan time, not the host clock: the question
-    is what collection had covered by the last position it committed.
+    Every published address counts towards the quorum, so the pool here is the roster itself; the
+    quality and whale ranks stay in `roster_funnel` as information about the list. Monitoring support
+    is measured against the tape's own scan time, not the host clock: the question is what collection
+    had covered by the last position it committed.
     """
 
-    quality = [member for member in members if member["rank_quality"] is not None]
     reference = state.get("scanned_at_ms") or now_ms
-    windows = []
-    for name, duration, required in (
-        ("5m", FAST_WINDOW_MS, settings.rules.net_buy_fast_n),
-        ("30m", SLOW_WINDOW_MS, settings.rules.net_buy_slow_n),
-    ):
-        supported = sum(
-            1
-            for member in quality
-            if member["monitoring_from_ms"] is not None
-            and int(member["monitoring_from_ms"]) <= int(reference) - duration
-        )
-        windows.append(
-            {
-                "window": name,
-                "required_n": required,
-                "quality_addresses": len(quality),
-                "monitoring_supported": supported,
-                "short_by": max(0, required - supported),
-                "satisfiable": supported >= required,
-            }
-        )
+    required = settings.rules.net_buy_slow_n
+    supported = sum(
+        1
+        for member in members
+        if member["monitoring_from_ms"] is not None
+        and int(member["monitoring_from_ms"]) <= int(reference) - NET_BUY_WINDOW_MS
+    )
     return {
         "measured_at_ms": int(reference),
         "measured_against": "scanned_at_ms" if state.get("scanned_at_ms") else "host_clock",
         "min_net_buy_usd": str(settings.rules.min_net_buy_usd),
         "trigger_max_age_s": settings.rules.trigger_max_age_s,
-        "windows": windows,
+        "window": "30m",
+        "window_ms": NET_BUY_WINDOW_MS,
+        "required_n": required,
+        "roster_addresses": len(members),
+        "monitoring_supported": supported,
+        "short_by": max(0, required - supported),
+        "satisfiable": supported >= required,
     }
 
 

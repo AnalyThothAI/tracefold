@@ -22,6 +22,7 @@ import {
 } from "../../model/marketFacts";
 import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
 import { formatPrice } from "../../model/newsPrice";
+import { walletTokenAge } from "../../model/walletFacts";
 
 import { MarketObservationMetrics, OiEvidence } from "./OiEvidence";
 
@@ -381,15 +382,16 @@ export function GroupDetail({ itemId, token }: { itemId: string; token: string }
 function WalletEventEvidence({ observation }: { observation: NewsMarketObservation }) {
   const snapshot = observation.wallet_snapshot;
   if (!snapshot) return null;
-  const primary = snapshot.fast.matched ? snapshot.fast : snapshot.slow;
+  const window = snapshot.window;
   return (
     <>
       <small className="news-market-detail-label">集中净买入事件</small>
       <TraceList
         entries={[
-          ["主窗口", primary.window],
-          ["合格地址", String(primary.qualified_n)],
-          ["合格地址净买入", formatPrice(primary.net_usd)],
+          ["触发窗口", "30 分钟"],
+          ["合格地址", `${window.qualified_n} / ${window.required_n}`],
+          ["合格地址净买入", formatPrice(window.net_usd)],
+          ["代币年龄", walletTokenAge(snapshot)],
           ["代币合约", snapshot.token],
         ]}
       />

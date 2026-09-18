@@ -139,7 +139,7 @@ def test_the_operators_endpoints_and_list_rules_reach_the_loop(no_proxy_environm
             roster_provider_url="https://roster.example/",
             poll_interval_s=7.5,
             roster={"min_closed_trades": 3, "min_profit_factor": 2.5, "window": "90d", "refresh_interval_s": 600},
-            rules={"net_buy_fast_n": 4, "net_buy_slow_n": 6, "min_net_buy_usd": "1234.5", "trigger_max_age_s": 45},
+            rules={"net_buy_slow_n": 6, "min_net_buy_usd": "1234.5", "trigger_max_age_s": 45},
         ),
         db=object(),  # type: ignore[arg-type]
         capabilities=capabilities,
@@ -159,7 +159,6 @@ def test_the_operators_endpoints_and_list_rules_reach_the_loop(no_proxy_environm
     # The operator's cadence is a runtime parameter, not a decoration on a config page: it has to
     # reach the thing that ticks the loop.
     assert composed.poll_seconds == 7.5
-    assert composed.detector.rules.net_buy_fast_n == 4
     assert str(composed.detector.rules.min_net_buy_usd) == "1234.5"
     assert composed.detector.rules.trigger_max_age_s == 45
     asyncio.run(_close_composition(composed))

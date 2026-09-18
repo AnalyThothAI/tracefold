@@ -83,7 +83,7 @@ def test_a_continuous_tail_of_new_fills_does_not_starve_a_qualified_first_report
     derived below the cutoff, and every turn the collector commits two more fills *above* it.
     """
 
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
     assert len(events(conn)) == 1
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
@@ -114,11 +114,11 @@ def test_evidence_not_yet_derived_inside_the_cutoff_defers_rather_than_sends(con
     the queue behind it carries on.
     """
 
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
-    # A fourth fill committed below the cutoff and not yet derived.
-    add_facts(conn, [fill(4, wallet=4, at=NOW)], stamp=NOW)
+    # A sixth fill committed below the cutoff and not yet derived.
+    add_facts(conn, [fill(6, wallet=6, at=NOW)], stamp=NOW)
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
     sender = Sender()
 
@@ -143,13 +143,13 @@ def test_a_sell_inside_the_cutoff_that_the_stored_snapshot_missed_still_stops_th
     The sell is written and marked derived *without* the detector, so `latest_matched` still says
     true and `latest_snapshot` still shows three qualified wallets. That is the state a detector
     lagging one turn behind the collector leaves behind, and the old send-time check read exactly
-    that stored snapshot. The send-time re-evaluation runs `calculate_windows` over the committed
+    that stored snapshot. The send-time re-evaluation runs `calculate_window` over the committed
     facts instead, so the sell is part of the answer and the card is suppressed with its real reason.
     """
 
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
-    sold = fill(4, wallet=1, kind="sell", usd="1200", at=NOW)
+    sold = fill(6, wallet=1, kind="sell", usd="1200", at=NOW)
     repos = repositories_for_connection(conn)
     with repos.transaction():
         repos.news.chain_tape_record_fills([sold])
@@ -170,7 +170,7 @@ def test_a_sell_inside_the_cutoff_that_the_stored_snapshot_missed_still_stops_th
 
 
 def test_no_committed_cutoff_defers_instead_of_declaring_the_evidence_wrong(conn: Any) -> None:
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
     conn.execute(
         "UPDATE news_market_wallet_tape_state SET scanned_block = NULL, scanned_log = NULL, scanned_at_ms = NULL"
@@ -195,10 +195,10 @@ def test_a_deferred_wallet_card_at_the_queue_head_does_not_block_an_oi_delivery(
     head, and the OI card is sent in the same turn.
     """
 
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
-    add_facts(conn, [fill(4, wallet=4, at=NOW)], stamp=NOW)
+    add_facts(conn, [fill(6, wallet=6, at=NOW)], stamp=NOW)
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
     # Admitted after the wallet observation, so the wallet card is the queue head.
     _oi_item(conn, "oi-behind-the-wallet-card", at_ms=NOW, change_bps=600)
@@ -215,10 +215,10 @@ def test_a_deferred_wallet_card_at_the_queue_head_does_not_block_an_oi_delivery(
 
 
 def test_a_deferred_card_is_not_offered_again_inside_the_same_turn(conn: Any) -> None:
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
-    add_facts(conn, [fill(4, wallet=4, at=NOW)], stamp=NOW)
+    add_facts(conn, [fill(6, wallet=6, at=NOW)], stamp=NOW)
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
     sender = Sender()
 
@@ -234,11 +234,11 @@ def test_a_notification_stage_rejection_reads_as_its_real_reason_not_as_pending(
 
     This is the exact shape the route used to invent `pending` for: the episode is eligible, the
     notification stage refused it, and the refusal left no intent row -- only `stale_trigger` on the
-    track. `episode_already_reported` and `wallet_not_selected` take the same path and are read from
+    track. `episode_already_reported` and a discarded intent take the same path and are read from
     the same column.
     """
 
-    seed(conn, [fill(i, wallet=i, at=NOW - 59_000) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i, at=NOW - 59_000) for i in range(1, 6)])
     run(conn)
     assert len(events(conn)) == 1
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
@@ -258,7 +258,7 @@ def test_a_notification_stage_rejection_reads_as_its_real_reason_not_as_pending(
 
 
 def test_pending_needs_an_unattempted_intent_and_a_next_due(conn: Any) -> None:
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
     sender = Sender()
@@ -282,7 +282,7 @@ def test_pending_needs_an_unattempted_intent_and_a_next_due(conn: Any) -> None:
 
 
 def test_an_episode_the_detector_has_not_been_decided_on_reads_as_awaiting_decision(conn: Any) -> None:
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
 
     repos = repositories_for_connection(conn)
@@ -294,7 +294,7 @@ def test_an_episode_the_detector_has_not_been_decided_on_reads_as_awaiting_decis
 
 
 def test_a_muted_lane_reads_as_not_alerted_with_the_detectors_own_reason(conn: Any) -> None:
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn, enabled=False)
 
     repos = repositories_for_connection(conn)
@@ -315,7 +315,7 @@ def test_the_diagnostic_queries_run_against_the_real_schema_and_count_per_unit(c
     five of anything.
     """
 
-    seed(conn, [fill(i, wallet=i) for i in range(1, 4)])
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
     _cut_off_at(conn, block=1000, log=100, at_ms=NOW)
     sender = Sender()
@@ -329,13 +329,13 @@ def test_the_diagnostic_queries_run_against_the_real_schema_and_count_per_unit(c
     unsent = news.wallet_episode_reasons(from_ms=NOW - 3_600_000, to_ms=NOW + 1)
     queue = news.wallet_send_queue(limit=10)
 
-    assert (coverage["fills"], coverage["receipts"], coverage["wallets"], coverage["tokens"]) == (3, 3, 3, 1)
-    assert (coverage["buys"], coverage["sells"], coverage["transfers_out"]) == (3, 0, 0)
-    assert (coverage["priced"], coverage["unpriced"], coverage["underived"]) == (3, 0, 0)
-    # Two of the three fills were read before the third made the window; only the one that opened the
+    assert (coverage["fills"], coverage["receipts"], coverage["wallets"], coverage["tokens"]) == (5, 5, 5, 1)
+    assert (coverage["buys"], coverage["sells"], coverage["transfers_out"]) == (5, 0, 0)
+    assert (coverage["priced"], coverage["unpriced"], coverage["underived"]) == (5, 0, 0)
+    # Four of the five fills were read before the fifth made the window; only the one that opened the
     # episode carries `selected`. That split is the point of publishing the distribution at all.
     assert {row["reason"] for row in reasons} == {"selected", "conditions_not_met"}
-    assert sum(int(row["fills"]) for row in reasons) == 3
+    assert sum(int(row["fills"]) for row in reasons) == 5
     assert (funnel["episodes"], funnel["intents"], funnel["unavailable"]) == (1, 1, 1)
     assert funnel["sent"] == 0
     assert [row["reason"] for row in unsent] == ["merging_into_prepared_card"]

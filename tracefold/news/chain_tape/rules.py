@@ -1,4 +1,4 @@
-"""Two fixed sliding windows over the same complete receipt facts (#641)."""
+"""One fixed sliding window over the same complete receipt facts (#641, one rule since #649 PR-3)."""
 
 from __future__ import annotations
 
@@ -6,24 +6,29 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
-from typing import Any, Final, Literal
+from typing import Any
 
-from ..wallet_contracts import NetBuyMember, NetBuySnapshot, NetBuyWindow
+from ..wallet_contracts import NET_BUY_WINDOW_MS, NetBuyMember, NetBuySnapshot, NetBuyWindow
 from .contracts import ClassifiedFill
-
-FAST_WINDOW_MS: Final = 300_000
-SLOW_WINDOW_MS: Final = 1_800_000
 
 
 @dataclass(frozen=True, slots=True)
 class WalletRules:
-    net_buy_fast_n: int = 3
+    """The whole alert, in three numbers.
+
+    There is one window and one quorum. The 5-minute quorum of three that used to sit beside this one
+    was a second definition of the same alert: every card had to name the window that had fired, every
+    status read had to publish two thresholds, and a reader who saw neither had no way to tell which
+    of the two had been short. The replay behind #649 PR-3 found 20 episodes in fourteen days under
+    this rule alone, so the second window was not buying coverage either (#649 §1.1, PR-3 §2).
+    """
+
     net_buy_slow_n: int = 5
     min_net_buy_usd: Decimal = Decimal("1000")
     trigger_max_age_s: int = 60
 
     def __post_init__(self) -> None:
-        if min(self.net_buy_fast_n, self.net_buy_slow_n) < 2:
+        if self.net_buy_slow_n < 2:
             raise ValueError("net_buy_n_must_be_at_least_two")
         if not self.min_net_buy_usd.is_finite() or self.min_net_buy_usd <= 0:
             raise ValueError("min_net_buy_usd_must_be_positive")
@@ -40,7 +45,7 @@ def trigger_age_reason(*, event_at_ms: int, received_at_ms: int, now_ms: int, ma
     return None
 
 
-def calculate_windows(
+def calculate_window(
     *,
     fills: Sequence[ClassifiedFill],
     members: Sequence[Mapping[str, Any]],
@@ -53,8 +58,17 @@ def calculate_windows(
     coverage_gap_at_ms: int | None,
     roster_version: int | None,
     rules: WalletRules,
+    token_first_seen_at_ms: int | None,
+    member_episodes: Mapping[str, int],
 ) -> NetBuySnapshot:
-    """No query, price, balance, model or wall clock is needed to evaluate a receipt."""
+    """No query, price, balance, model or wall clock is needed to evaluate a receipt.
+
+    `token_first_seen_at_ms` and `member_episodes` are read facts rather than computed ones -- the
+    tape's earliest movement in this token, and how many episodes each address here was a qualified
+    member of over `PARTICIPATION_WINDOW_MS`. They are carried into the snapshot so the card and the
+    page describe the trigger as it stood, and so a frozen `send_snapshot` keeps saying the same thing
+    a week later (#649 PR-3 §3).
+    """
 
     token = token.lower()
     relevant = tuple(
@@ -62,34 +76,22 @@ def calculate_windows(
         for fill in fills
         if fill.chain_id == chain_id
         and fill.token.lower() == token
-        and cutoff_at_ms - SLOW_WINDOW_MS < fill.event_at_ms <= cutoff_at_ms
+        and cutoff_at_ms - NET_BUY_WINDOW_MS < fill.event_at_ms <= cutoff_at_ms
         and (fill.block_number, fill.log_index) <= (cutoff_block, cutoff_log)
     )
     relevant = tuple({(f.chain_id, f.tx_hash, f.log_index): f for f in relevant}.values())
     roster = {str(member["wallet"]).lower(): member for member in members}
     with localcontext() as context:
         context.prec = 100
-        fast = _window(
+        window = _window(
             relevant,
             roster,
-            window="5m",
-            duration=FAST_WINDOW_MS,
-            required_n=rules.net_buy_fast_n,
-            cutoff_at_ms=cutoff_at_ms,
-            coverage_from_ms=coverage_from_ms,
-            coverage_gap_at_ms=coverage_gap_at_ms,
-            rules=rules,
-        )
-        slow = _window(
-            relevant,
-            roster,
-            window="30m",
-            duration=SLOW_WINDOW_MS,
             required_n=rules.net_buy_slow_n,
             cutoff_at_ms=cutoff_at_ms,
             coverage_from_ms=coverage_from_ms,
             coverage_gap_at_ms=coverage_gap_at_ms,
             rules=rules,
+            member_episodes=member_episodes,
         )
     newest = max(relevant, key=lambda f: (f.block_number, f.log_index), default=None)
     return NetBuySnapshot(
@@ -104,8 +106,8 @@ def calculate_windows(
         min_net_buy_usd=rules.min_net_buy_usd,
         coverage_from_ms=coverage_from_ms,
         coverage_gap_at_ms=coverage_gap_at_ms,
-        fast=fast,
-        slow=slow,
+        token_first_seen_at_ms=token_first_seen_at_ms,
+        window=window,
     )
 
 
@@ -113,15 +115,14 @@ def _window(
     fills: Sequence[ClassifiedFill],
     roster: Mapping[str, Mapping[str, Any]],
     *,
-    window: Literal["5m", "30m"],
-    duration: int,
     required_n: int,
     cutoff_at_ms: int,
     coverage_from_ms: int | None,
     coverage_gap_at_ms: int | None,
     rules: WalletRules,
+    member_episodes: Mapping[str, int],
 ) -> NetBuyWindow:
-    start = cutoff_at_ms - duration
+    start = cutoff_at_ms - NET_BUY_WINDOW_MS
     by_wallet: dict[str, list[ClassifiedFill]] = defaultdict(list)
     for fill in fills:
         if fill.event_at_ms > start:
@@ -138,8 +139,13 @@ def _window(
         unpriced = sum(fill.usd is None for fill in (*buys, *sells))
         transfers = sum(fill.kind == "transfer_out" for fill in movements)
         reasons = []
-        if member is None or member["rank_quality"] is None:
-            reasons.append("not_quality_roster")
+        # Membership of the published roster, and nothing finer. The quality rank and the whale rank
+        # are still stored and still shown, but neither decides whether an address counts towards the
+        # quorum: the provider's seven-day profit factor left one qualifying address out of 147, which
+        # is a rule that cannot fire, and ranking the same addresses differently never made any of
+        # them a different buyer (#649 §2.1, PR-3 §1).
+        if member is None:
+            reasons.append("not_on_roster")
         monitoring = None if member is None else member["monitoring_from_ms"]
         if coverage_from_ms is None or coverage_from_ms > start or monitoring is None or monitoring > start:
             reasons.append("incomplete_monitoring_window")
@@ -166,6 +172,7 @@ def _window(
                 source_profit_factor=None
                 if member is None or member["profit_factor"] is None
                 else str(member["profit_factor"]),
+                recent_episodes=member_episodes.get(wallet, 0),
                 buy_usd=buy_usd,
                 sell_usd=sell_usd,
                 net_usd=net,
@@ -182,7 +189,6 @@ def _window(
     buy_total = sum((row.buy_usd for row in qualified), Decimal(0))
     sell_total = sum((row.sell_usd for row in qualified), Decimal(0))
     return NetBuyWindow(
-        window=window,
         from_ms=start,
         to_ms=cutoff_at_ms,
         required_n=required_n,
@@ -200,20 +206,19 @@ def effective_buy(fills: Sequence[ClassifiedFill], snapshot: NetBuySnapshot) -> 
 
     with localcontext() as context:
         context.prec = 100
-        for window in (snapshot.fast, snapshot.slow):
-            for member in window.members:
-                if not member.qualified:
-                    continue
-                changes = [fill for fill in fills if fill.wallet.lower() == member.wallet]
-                net_change = Decimal(0)
-                has_buy = False
-                for fill in changes:
-                    if fill.usd is not None:
-                        if fill.kind == "buy":
-                            has_buy = True
-                            net_change += fill.usd
-                        elif fill.kind == "sell":
-                            net_change -= fill.usd
-                if has_buy and net_change > 0:
-                    return True
+        for member in snapshot.window.members:
+            if not member.qualified:
+                continue
+            changes = [fill for fill in fills if fill.wallet.lower() == member.wallet]
+            net_change = Decimal(0)
+            has_buy = False
+            for fill in changes:
+                if fill.usd is not None:
+                    if fill.kind == "buy":
+                        has_buy = True
+                        net_change += fill.usd
+                    elif fill.kind == "sell":
+                        net_change -= fill.usd
+            if has_buy and net_change > 0:
+                return True
     return False

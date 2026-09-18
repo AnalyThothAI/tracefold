@@ -29,6 +29,7 @@ from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.news.smart_money import PARSER_VERSION
 from tracefold.news.smart_money import source_key as smart_money_source_key
 from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
+from tracefold.news.wallet_contracts import NetBuySnapshot
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.storage.execution_stream import (
     materialize_execution_observation,
@@ -44,7 +45,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260915_0381"
+HEAD = "20260918_0382"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -135,6 +136,115 @@ def _stamped_revision() -> str | None:
         conn.close()
 
 
+def test_the_one_window_rewrite_keeps_the_surviving_window_and_marks_the_new_facts_unknown() -> None:
+    """#649 PR-3: stored snapshots move to the one-window shape with the code that reads them.
+
+    The snapshot model forbids unknown fields and every reader validates through it, so a row left in
+    the `fast`/`slow` shape would raise on the next turn that touched its episode. What survives is
+    the 30-minute window exactly as it was -- the rule that still exists -- and the two facts that
+    were never recorded for it are `null` rather than a fabricated zero.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260915_0381")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        at_ms = 1_787_542_200_000
+        member = {
+            "wallet": "0x" + "a" * 40,
+            "handle": "buyer",
+            "rank_quality": 1,
+            "roster_version": 3,
+            "roster_known_at_ms": at_ms - 3_600_000,
+            "monitoring_from_ms": at_ms - 3_600_000,
+            "source_closed_trades": 20,
+            "source_profit_factor": "1.8",
+            "buy_usd": "2000",
+            "sell_usd": "0",
+            "net_usd": "2000",
+            "buy_token_raw": "2000",
+            "sell_token_raw": "0",
+            "net_token_raw": "2000",
+            "unpriced_count": 0,
+            "transfer_out_count": 0,
+            "qualified": True,
+            "reasons": [],
+        }
+        window = {
+            "from_ms": at_ms - 1_800_000,
+            "to_ms": at_ms,
+            "required_n": 5,
+            "qualified_n": 1,
+            "buy_usd": "2000",
+            "sell_usd": "0",
+            "net_usd": "2000",
+            "matched": True,
+            "members": [member],
+        }
+        stored = {
+            "chain_id": 4663,
+            "token": "0x" + "b" * 40,
+            "token_symbol": "XYZ",
+            "token_decimals": 18,
+            "cutoff_at_ms": at_ms,
+            "cutoff_block": 1000,
+            "cutoff_log": 7,
+            "roster_version": 3,
+            "min_net_buy_usd": "1000",
+            "coverage_from_ms": at_ms - 3_600_000,
+            "coverage_gap_at_ms": None,
+            "fast": {**window, "window": "5m", "from_ms": at_ms - 300_000, "required_n": 3},
+            "slow": {**window, "window": "30m"},
+        }
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, raw_first_line, description,
+              reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+              first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+            ) VALUES (
+              'two-window-episode', 'news-robinhood-chain', 'two-window-episode', 'XYZ', '', '',
+              'robinhood_chain', %(at)s, %(at)s, '{}'::jsonb, '[]'::jsonb, 'live', 'trace', %(at)s, %(at)s
+            )
+            """,
+            {"at": at_ms},
+        )
+        conn.execute(
+            """
+            INSERT INTO news_market_wallet_events (
+              item_id, chain_id, token, token_symbol, trigger_tx_hash, event_at_ms, received_at_ms,
+              detected_at_ms, last_effective_buy_at_ms, initial_snapshot, latest_snapshot,
+              send_snapshot, latest_matched, change_reason, updated_at_ms, trigger_max_age_s,
+              notification_eligible
+            ) VALUES (
+              'two-window-episode', 4663, %(token)s, 'XYZ', %(tx)s, %(at)s, %(at)s, %(at)s, %(at)s,
+              %(snapshot)s::jsonb, %(snapshot)s::jsonb, %(snapshot)s::jsonb, true, 'triggered',
+              %(at)s, 60, true
+            )
+            """,
+            {"token": stored["token"], "tx": "0x" + "c" * 64, "at": at_ms, "snapshot": json.dumps(stored)},
+        )
+        conn.commit()
+
+        command.upgrade(config, HEAD)
+
+        row = conn.execute(
+            "SELECT initial_snapshot, latest_snapshot, send_snapshot FROM news_market_wallet_events"
+            " WHERE item_id = 'two-window-episode'"
+        ).fetchone()
+        for column in ("initial_snapshot", "latest_snapshot", "send_snapshot"):
+            snapshot = NetBuySnapshot.model_validate(row[column])
+            assert snapshot.window.from_ms == at_ms - 1_800_000 and snapshot.window.required_n == 5
+            assert snapshot.window.matched and snapshot.window.qualified_n == 1
+            assert snapshot.token_first_seen_at_ms is None and snapshot.token_age_ms is None
+            assert [member.recent_episodes for member in snapshot.window.members] == [None]
+            assert "fast" not in row[column] and "slow" not in row[column]
+    finally:
+        conn.close()
+
+
 def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     script = ScriptDirectory.from_config(_config())
     revisions = list(script.walk_revisions())
@@ -142,6 +252,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260915_0381",
         "20260915_0380",
         "20260915_0379",
         "20260915_0378",

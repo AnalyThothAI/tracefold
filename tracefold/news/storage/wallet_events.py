@@ -1,4 +1,4 @@
-"""Wallet episode persistence: complete transactions, two windows and one first intent."""
+"""Wallet episode persistence: complete transactions, one window and one first intent."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ WALLET_PENDING_RECEIPTS_SQL: Final = f"""
 
 # One projection of "what happened to this episode's notification", written once and read by both the
 # list and the detail query (#649 §7.1). `pending` used to be a route-side fallback for "eligible and
-# no error", which made every notification-stage rejection -- `wallet_not_selected`,
+# no error", which made every notification-stage rejection -- `wallet_notifications_disabled`,
 # `episode_already_reported`, a discarded intent -- read as "waiting to be sent" for ever. The three
 # reasons this query used to whitelist had the same effect from the other side: a real terminal reason
 # that was not on the list disappeared and left the fallback to invent `pending`.
@@ -117,6 +117,27 @@ WALLET_DUE_REFERENCES_SQL: Final = """
               FROM news_market_wallet_events
              WHERE reference_price IS NULL AND event_at_ms > %s AND event_at_ms <= %s
              ORDER BY COALESCE(outcome_attempted_at_ms, 0), event_at_ms, item_id LIMIT %s
+        """
+
+# The tape's earliest movement in a token, which is the whole of what this repository knows about the
+# token's age: the collector subscribes to roster addresses, so a token traded by someone else first
+# is older than this says and never younger. The card prints it as an age and labels it as the tape's
+# own first sighting (#649 PR-3 §3).
+WALLET_TOKEN_FIRST_SEEN_SQL: Final = """
+            SELECT min(event_at_ms) AS first_seen_at_ms FROM news_market_wallet_fills
+             WHERE chain_id = %s AND token = %s
+        """
+
+# How many episodes each of these addresses was a *qualified* member of over one window. It reads the
+# episodes' own frozen first snapshots, so the answer is the same fact the cards were sent with, and
+# it counts one episode once however many of its members are being asked about.
+WALLET_MEMBER_EPISODES_SQL: Final = """
+            SELECT lower(m->>'wallet') AS wallet, count(*) AS episodes
+              FROM news_market_wallet_events e
+              CROSS JOIN LATERAL jsonb_array_elements(e.initial_snapshot->'window'->'members') m
+             WHERE e.event_at_ms >= %s AND e.event_at_ms < %s AND e.item_id <> %s
+               AND (m->>'qualified')::boolean AND lower(m->>'wallet') = ANY(%s)
+             GROUP BY 1
         """
 
 WALLET_NOTIFICATION_FUNNEL_SQL: Final = """
@@ -208,6 +229,26 @@ class WalletEventStorage:
             },
         ).fetchall()
         return [_fill(row) for row in rows]
+
+    def wallet_token_first_seen_ms(self, *, chain_id: int, token: str) -> int | None:
+        row = self.conn.execute(WALLET_TOKEN_FIRST_SEEN_SQL, (chain_id, token)).fetchone()
+        return None if row is None or row["first_seen_at_ms"] is None else int(row["first_seen_at_ms"])
+
+    def wallet_member_episodes(
+        self, *, wallets: Sequence[str], from_ms: int, to_ms: int, exclude_item_id: str = ""
+    ) -> dict[str, int]:
+        """Per address, the episodes it qualified in over `[from_ms, to_ms)`. Absent means none.
+
+        `exclude_item_id` is the episode currently being decided: the detector asks before its own
+        episode exists and the sender asks after, and "how often have these addresses done this
+        before" has to be the same number in both places.
+        """
+
+        addresses = sorted({wallet.lower() for wallet in wallets})
+        if not addresses:
+            return {}
+        rows = self.conn.execute(WALLET_MEMBER_EPISODES_SQL, (from_ms, to_ms, exclude_item_id, addresses)).fetchall()
+        return {str(row["wallet"]): int(row["episodes"]) for row in rows}
 
     def wallet_receipt_pending(self, *, chain_id: int, tx_hash: str) -> bool:
         return (

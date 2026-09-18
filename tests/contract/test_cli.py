@@ -398,7 +398,6 @@ class CliTests(unittest.TestCase):
                     "refresh_interval_s": 3600,
                 },
                 "rules": {
-                    "net_buy_fast_n": 3,
                     "net_buy_slow_n": 5,
                     "min_net_buy_usd": 1000.0,
                     "trigger_max_age_s": 60,

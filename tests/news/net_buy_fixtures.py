@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from tracefold.news.chain_tape.contracts import STABLE_CASH_TOKEN, ClassifiedFill
-from tracefold.news.chain_tape.rules import WalletRules, calculate_windows
+from tracefold.news.chain_tape.rules import WalletRules, calculate_window
 from tracefold.news.wallet_contracts import NetBuySnapshot
 
 NOW = 1_789_200_000_000
@@ -75,13 +75,17 @@ def snapshot(fills: Any = None, **kwargs: Any) -> NetBuySnapshot:
         coverage_gap_at_ms=None,
         roster_version=1,
         rules=WalletRules(),
+        # Twenty minutes old at the cutoff, which is the launch-window shape the replay found, and
+        # one prior round per address to fill the card's participation line.
+        token_first_seen_at_ms=NOW - 1_200_000,
+        member_episodes={"0x" + f"{i:040x}": 1 for i in range(1, 11)},
     )
     args.update(kwargs)
-    return calculate_windows(**args)
+    return calculate_window(**args)
 
 
 def unsafe_snapshot(handle: str, symbol: str) -> NetBuySnapshot:
     members = roster()
     for member in members:
         member["handle"] = handle
-    return snapshot([replace(movement(i), token_symbol=symbol) for i in range(1, 4)], members=members)
+    return snapshot([replace(movement(i), token_symbol=symbol) for i in range(1, 6)], members=members)

@@ -15,7 +15,9 @@ from pydantic import ValidationError
 
 from tracefold.platform.config.models import Settings
 
-RETIRED_RULES = frozenset(
+# The pre-#641 exit/crowding rule keys. Their presence is what identifies a config written before
+# that cut, which is the only config whose `trigger_max_age_s` is reset below.
+PRE_641_RULES = frozenset(
     {
         "exit_notifications_enabled",
         "buy_min_usd",
@@ -30,7 +32,10 @@ RETIRED_RULES = frozenset(
         "crowding_premium_late_bps",
     }
 )
-DEFAULTS = {"net_buy_fast_n": 3, "net_buy_slow_n": 5, "min_net_buy_usd": 1000, "trigger_max_age_s": 60}
+# The 5m window's quorum. One window, one quorum: a config that still carries this key is refused by
+# the loader, and this is the offline cut that removes it (#649 PR-3 §2).
+RETIRED_RULES = PRE_641_RULES | frozenset({"net_buy_fast_n"})
+DEFAULTS = {"net_buy_slow_n": 5, "min_net_buy_usd": 1000, "trigger_max_age_s": 60}
 
 
 def migrate(data: dict[str, Any], *, new_rules: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -45,7 +50,7 @@ def migrate(data: dict[str, Any], *, new_rules: dict[str, Any]) -> tuple[dict[st
     if not isinstance(rules, dict):
         raise ValueError("rules_not_mapping")
     retired = sorted(RETIRED_RULES.intersection(rules))
-    is_old = bool(retired) or "digest" in tape
+    is_old = bool(PRE_641_RULES.intersection(rules)) or "digest" in tape
     for key in retired:
         del rules[key]
     removed = ["news.chain_tape.rules." + key for key in retired]
@@ -67,7 +72,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output", type=Path, help="Write a separate file; omission is a redacted dry run.")
-    parser.add_argument("--fast-n", type=int)
     parser.add_argument("--slow-n", type=int)
     parser.add_argument("--min-net-buy-usd", type=str)
     parser.add_argument("--trigger-max-age-s", type=int)
@@ -81,7 +85,6 @@ def main() -> int:
         overrides = {
             key: value
             for key, value in {
-                "net_buy_fast_n": args.fast_n,
                 "net_buy_slow_n": args.slow_n,
                 "min_net_buy_usd": args.min_net_buy_usd,
                 "trigger_max_age_s": args.trigger_max_age_s,

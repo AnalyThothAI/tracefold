@@ -62,10 +62,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.judge_calibration",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
-        # #649 §7.2: `news wallets` reports how many quality addresses have been monitored long enough
-        # to fill each window. The two window widths are the rule's own code-owned constants, and a
-        # literal here would stop meaning the same thing the day the rule changes one.
-        "tracefold.news.chain_tape.rules",
+        # #649 §7.2: `news wallets` reports how many published addresses have been monitored long
+        # enough to fill the window. That width is the product's own code-owned constant, and a literal
+        # here would stop meaning the same thing the day the rule changes it (#649 PR-3 §4).
+        "tracefold.news.wallet_contracts",
         "tracefold.news.review.desk",
         "tracefold.news.program.contracts",
     ),
@@ -127,14 +127,13 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # rebuilds `oi:{event_id}:{metric_version}` to ask whether one Event became a case, and a literal
         # here would stop matching the day `oi_signals` bumps it — silently, as "no case".
         "tracefold.news.oi_signals",
-        # #649 §7.3: `/api/news/wallets` computes "monitored long enough to fill the slow window"
-        # server-side, against the rule's own window width rather than a copy of it.
-        "tracefold.news.chain_tape.rules",
+        # #649 §7.3: `/api/news/wallets` computes "monitored long enough to fill the window"
+        # server-side, against the product's own window width rather than a copy of it. The status
+        # block answers whether the roster can support the quorum at all, over the same span
+        # `rules.py` measures a member against; a literal here would stop matching the day that
+        # constant moved (#649 PR-3 §4).
+        "tracefold.news.wallet_contracts",
         "tracefold.news.review.desk",
-        # #649 §7.3: the two fixed net-buy window lengths. The wallets status block answers whether the
-        # roster can support a 5m or a 30m quorum at all, which is the same span `rules.py` measures a
-        # member against; two literals here would stop matching the day that module changed them.
-        "tracefold.news.chain_tape.rules",
         "tracefold.trading.intent",
     ),
     "app.trading_cli": (

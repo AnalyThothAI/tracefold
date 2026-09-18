@@ -26,7 +26,7 @@ from typing import Any, Final, Literal
 from . import card_format as fmt
 from .market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
-from .wallet_contracts import NetBuySnapshot
+from .wallet_contracts import NetBuyMember, NetBuySnapshot
 
 CardFamily = Literal["news", "oi", "liquidation", "smart_money", "wallet"]
 # The model's own judgment about the news, and `none` for a card that carries no judgment at all --
@@ -107,10 +107,6 @@ _LIQUIDATION_NOTE: Final = "各来源报告金额不相加：没有可信底层�
 # stops being read on the cards that do need it.
 _SMART_MONEY_NOTE: Final = "Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。"
 _SMART_MONEY_UNVERIFIED: Final = "（来源标签，非已核实地址）"
-# What a wallet card's caveat says, and it is about the roster rather than about the trade: the list is
-# hand-curated by the provider and ranked on seven days of its own ledger, which is a short history in a
-# nine-day-old chain (#572 §10).
-
 _NOTE_PREFIX: Final[dict[str, str]] = {"news": "Tracefold", "market": "Tracefold 市场"}
 _NOTE_ID_MAX: Final[dict[str, int]] = {"news": 8, "market": 24}
 
@@ -225,6 +221,45 @@ class ReaderCardMarket:
 
         timeline = (self.opened_action, self.latest_action) if self.action_changes else ()
         return any(entry.action == "close" for entry in (*self.actions, *timeline))
+
+
+def _token_age_line(snapshot: NetBuySnapshot) -> str:
+    """The token's age on one line, with the new-listing label when it earns one, or "unknown".
+
+    The age is measured from the earliest movement the tape holds for this token, which is a bound
+    rather than the chain's own first block: this repository only ever sees roster addresses. The
+    `新盘` label is a label and never a filter -- an older token with the same five buyers is the
+    same alert, and it simply does not carry the label (#649 PR-3 §3).
+    """
+
+    age = snapshot.token_age_ms
+    if age is None:
+        return "代币链上年龄未知（采集内无更早成交）"
+    launch = " · 新盘" if snapshot.new_launch else ""
+    return f"代币链上年龄 {_duration(age)}（采集首见）{launch}"
+
+
+def _participation_line(members: Sequence[NetBuyMember]) -> str:
+    """How often this exact cohort has qualified before, over the participation window.
+
+    Counted in participations rather than in episodes: two of these addresses in one earlier episode
+    is two participations, and calling it "two episodes" would double-count one event. A snapshot
+    written before the count existed says so instead of printing a zero it cannot stand behind.
+    """
+
+    counts = [member.recent_episodes for member in members]
+    known = [count for count in counts if count is not None]
+    if not known:
+        return "近 14 天参与次数未知"
+    return f"这 {len(members)} 个地址近 14 天共参与 {sum(known)} 次集中净买入"
+
+
+def _duration(ms: int) -> str:
+    minutes = ms // 60_000
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours = minutes // 60
+    return f"{hours} 小时" if hours < 24 else f"{hours // 24} 天"
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,14 +469,21 @@ class ReaderCard:
         return []
 
     def _wallet_lines(self, span: str, quote: str) -> list[str]:
+        """One window, one quorum, and the three facts a reader needs to judge it.
+
+        Beyond who bought and how much, a reader deciding whether to care asks two things the window
+        alone cannot answer: how old this token is, and whether these addresses do this often. Both
+        are on the card, from the snapshot the send froze, so the card says the same thing when it is
+        read back a week later (#649 PR-3 §3).
+        """
+
         del span, quote
         snapshot = self.wallet.snapshot
         if snapshot is None:
             return []
-        primary = snapshot.primary
-        minutes = 5 if primary.window == "5m" else 30
+        window = snapshot.window
         members = sorted(
-            (member for member in primary.members if member.qualified),
+            (member for member in window.members if member.qualified),
             key=lambda member: (-(member.net_usd or Decimal(0)), member.wallet),
         )
         names = []
@@ -454,20 +496,21 @@ class ReaderCard:
             names.append(f"{label} +{fmt.money(str(member.net_usd))}")
         if len(members) > 3:
             names.append(f"另 {len(members) - 3} 个地址")
-        lines = [
-            f"{minutes} 分钟 · {primary.qualified_n} 个合格地址 · 净买入 {fmt.money(str(primary.net_usd))}",
-            f"入选地址买入 {fmt.money(str(primary.buy_usd))} · 卖出 {fmt.money(str(primary.sell_usd))}",
-            " · ".join(names),
+        # A window in which nobody sold prints no sell figure: `money` answers `""` for zero, and
+        # `卖出 ` with nothing after it is a currency mark standing in for a fact.
+        flow = [
+            f"入选地址买入 {bought}" if (bought := fmt.money(str(window.buy_usd))) else "",
+            f"卖出 {sold}" if (sold := fmt.money(str(window.sell_usd))) else "",
         ]
-        if snapshot.fast.matched and snapshot.slow.matched:
-            lines.append(f"30 分钟条件也已满足 · {snapshot.slow.qualified_n} 个合格地址")
-        lines.extend(
-            [
-                f"Robinhood Chain · {fmt.clock(primary.from_ms)}–{fmt.clock(primary.to_ms)}",
-                "不同地址不等于独立主体；以上为入选地址的窗口成交。",
-            ]
-        )
-        return lines
+        return [
+            f"30 分钟 · {window.qualified_n} 个合格地址 · 净买入 {fmt.money(str(window.net_usd))}",
+            " · ".join(part for part in flow if part),
+            " · ".join(names),
+            _token_age_line(snapshot),
+            _participation_line(members),
+            f"Robinhood Chain · {fmt.clock(window.from_ms)}–{fmt.clock(window.to_ms)}",
+            "不同地址不等于独立主体；以上为入选地址的窗口成交。",
+        ]
 
     def _reported_line(self) -> str:
         """`来源报告价 $3,120.50 · 已实现 PNL -$412.75`, or nothing when the report carried neither.

@@ -478,8 +478,8 @@ def test_the_smokes_own_observation_and_a_wallet_one_both_answer_two_hundred(app
     assert set(kinds) == {"liquidation", "wallet"}
     assert kinds["liquidation"]["latest"]["title"] == SMOKE_LIQUIDATION
     assert kinds["wallet"]["latest"]["provider"] == "robinhood_chain"
-    assert kinds["wallet"]["latest"]["wallet_snapshot"]["fast"]["qualified_n"] == 5
-    assert kinds["wallet"]["latest"]["wallet_snapshot"]["fast"]["net_usd"] == "6000"
+    assert kinds["wallet"]["latest"]["wallet_snapshot"]["window"]["qualified_n"] == 5
+    assert kinds["wallet"]["latest"]["wallet_snapshot"]["window"]["net_usd"] == "6000"
     # Every kind keeps a summary row, whether or not it reported anything.
     assert [source["market_kind"] for source in body["sources"]] == [
         "oi",
@@ -586,7 +586,7 @@ def test_wallet_events_paging_totals_deep_link_and_old_contract_rejection(app, c
         direct = client.get(f"/api/news/wallets/events/{ids[0]}", headers=AUTH)
         assert direct.status_code == 200, direct.text
         detail = direct.json()["data"]
-        assert detail["event"]["initial_snapshot"]["fast"]["net_usd"] == "6000"
+        assert detail["event"]["initial_snapshot"]["window"]["net_usd"] == "6000"
         # The sampler's t0 stage is the only writer of the baseline, and the detail projects what it
         # wrote -- price, moment and source together, with no horizon receipt yet (#649 §8).
         assert detail["event"]["reference_price"] is None and detail["outcomes"] == []
@@ -629,11 +629,17 @@ def test_wallet_events_paging_totals_deep_link_and_old_contract_rejection(app, c
             "collection_lagging",
             "notifications_enabled",
         }
-        # An empty roster cannot reach either quorum, and the page must say so rather than "no chance
-        # today": the counts, the two thresholds and the verdict are all the server's (#649 §7.3).
-        assert status["thresholds"] == {"fast_n": 3, "slow_n": 5, "sufficient": False}
+        # An empty roster cannot reach the quorum, and the page must say so rather than "no chance
+        # today": the counts, the one threshold and the verdict are all the server's (#649 §7.3).
+        assert status["thresholds"] == {
+            "required_n": 5,
+            "window_ms": 1_800_000,
+            "min_net_buy_usd": "1000",
+            "sufficient": False,
+        }
+        assert status["roster"]["address_count"] == 0
         assert status["roster"]["quality_count"] == status["roster"]["whale_count"] == 0
-        assert status["roster"]["supported_quality_count"] == 0
+        assert status["roster"]["supported_count"] == 0
         assert status["collection_lagging"] is True, "no collection cutoff at all is not a fresh one"
         # Three episodes, none of which reached a channel, and one stated leading reason.
         assert status["funnel"]["events"] == 3 and status["funnel"]["sent"] == 0
@@ -688,17 +694,23 @@ def _roster_and_tape(conn: Any, *, quality: int, whale: int, at_ms: int, monitor
     conn.commit()
 
 
-def test_wallet_status_counts_the_quality_pool_against_both_quorums_rather_than_the_whole_list(app, conn):
-    """147 observed addresses and one qualifying one is 「the list cannot trigger」, not 「no opportunity」."""
+def test_wallet_status_counts_every_published_address_against_the_one_quorum(app, conn):
+    """147 published addresses can trigger; the quality rank is published beside them, not instead."""
 
     now = int(time.time() * 1000)
     _roster_and_tape(conn, quality=1, whale=147, at_ms=now, monitoring_from_ms=now - 3_600_000)
     with TestClient(app) as client:
         status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
+    assert status["roster"]["address_count"] == 147
     assert status["roster"]["quality_count"] == 1
     assert status["roster"]["whale_count"] == 147
-    assert status["roster"]["supported_quality_count"] == 1
-    assert status["thresholds"] == {"fast_n": 3, "slow_n": 5, "sufficient": False}
+    assert status["roster"]["supported_count"] == 147
+    assert status["thresholds"] == {
+        "required_n": 5,
+        "window_ms": 1_800_000,
+        "min_net_buy_usd": "1000",
+        "sufficient": True,
+    }
     assert status["collection_lagging"] is False
     assert status["roster"]["last_success_at_ms"] == status["roster"]["taken_at_ms"]
     # The attempt stamp is the refresh task's, and a refresh that published set both to the same
@@ -710,14 +722,14 @@ def test_wallet_status_counts_the_quality_pool_against_both_quorums_rather_than_
     assert len(status["roster"]["members"]) == 147
 
 
-def test_wallet_status_separates_a_warming_up_pool_from_one_that_is_simply_too_small(app, conn):
+def test_wallet_status_separates_a_warming_up_list_from_one_that_is_simply_too_small(app, conn):
     now = int(time.time() * 1000)
     _roster_and_tape(conn, quality=6, whale=147, at_ms=now, monitoring_from_ms=now - 60_000)
     with TestClient(app) as client:
         status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
-    # Six qualifying addresses, none of which has watched a whole 5m window yet.
-    assert status["roster"]["quality_count"] == 6
-    assert status["roster"]["supported_quality_count"] == 0
+    # 147 published addresses, none of which has watched a whole 30m window yet.
+    assert status["roster"]["address_count"] == 147
+    assert status["roster"]["supported_count"] == 0
     assert status["thresholds"]["sufficient"] is False
 
 
