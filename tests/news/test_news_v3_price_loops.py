@@ -32,7 +32,10 @@ from tracefold.news.market_review.pricing import (
 )
 from tracefold.platform.observability import TelemetryRegistry
 
-ANCHOR = 1_787_000_100_000
+# Three days before the real clock, on a candle boundary plus the same 100 s offset the old literal had.
+# The literal (2026-08-17) aged past `REACTION_HISTORY_MAX_AGE_MS` (30 d) on 2026-09-16 and every
+# reaction-loop case started reporting `history_exhausted` instead of exercising the planner.
+ANCHOR = (now_ms() - 3 * 86_400_000) // 60_000 * 60_000 + 100_000
 
 
 class _FakePrice:
