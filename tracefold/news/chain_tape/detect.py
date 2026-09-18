@@ -9,10 +9,15 @@ from typing import Any
 
 from ..bus import now_ms
 from ..pipeline.admission import admit_market_item, prepare_wallet_observation, wallet_item_id
-from ..wallet_contracts import NetBuySnapshot, WalletEvent
+from ..wallet_contracts import (
+    NET_BUY_WINDOW_MS,
+    PARTICIPATION_WINDOW_MS,
+    NetBuySnapshot,
+    WalletEvent,
+)
 from .contracts import ClassifiedFill
 from .loop import ChainTapeDatabasePort
-from .rules import SLOW_WINDOW_MS, WalletRules, calculate_windows, effective_buy, trigger_age_reason
+from .rules import WalletRules, calculate_window, effective_buy, trigger_age_reason
 from .tape_io import FAILED, TapePasses
 
 
@@ -88,25 +93,32 @@ class NetBuyDetector(TapePasses):
 
         def read(repos: Any) -> Any:
             news = repos.news
-            return (
-                news.chain_tape_state(),
-                news.chain_tape_members(first.roster_version),
-                [
+            subjects = []
+            for token in tokens:
+                fills = news.wallet_window_fills(
+                    chain_id=first.chain_id,
+                    token=token,
+                    from_ms=first.event_at_ms - NET_BUY_WINDOW_MS,
+                    to_ms=first.event_at_ms,
+                    block=cutoff.block_number,
+                    log=cutoff.log_index,
+                )
+                subjects.append(
                     (
                         token,
-                        news.wallet_window_fills(
-                            chain_id=first.chain_id,
-                            token=token,
-                            from_ms=first.event_at_ms - SLOW_WINDOW_MS,
-                            to_ms=first.event_at_ms,
-                            block=cutoff.block_number,
-                            log=cutoff.log_index,
-                        ),
+                        fills,
                         news.wallet_active_event(chain_id=first.chain_id, token=token),
+                        news.wallet_token_first_seen_ms(chain_id=first.chain_id, token=token),
+                        # Only the addresses that moved inside this window are asked about, so the
+                        # count costs one bounded read per token rather than one per roster member.
+                        news.wallet_member_episodes(
+                            wallets=[fill.wallet for fill in fills],
+                            from_ms=first.event_at_ms - PARTICIPATION_WINDOW_MS,
+                            to_ms=first.event_at_ms,
+                        ),
                     )
-                    for token in tokens
-                ],
-            )
+                )
+            return (news.chain_tape_state(), news.chain_tape_members(first.roster_version), subjects)
 
         data = await self._read("news_wallet_net_windows", read, errors)
         if data is FAILED:
@@ -116,9 +128,9 @@ class NetBuyDetector(TapePasses):
         events = []
         updates = []
         reasons: dict[str, str] = {}
-        for token, fills, active_row in subjects:
+        for token, fills, active_row, first_seen, episodes in subjects:
             active = active_row
-            snapshot = calculate_windows(
+            snapshot = calculate_window(
                 fills=fills,
                 members=members,
                 chain_id=first.chain_id,
@@ -130,11 +142,13 @@ class NetBuyDetector(TapePasses):
                 coverage_gap_at_ms=state["gap_at_ms"],
                 roster_version=first.roster_version,
                 rules=self.rules,
+                token_first_seen_at_ms=first_seen,
+                member_episodes=episodes,
             )
             reasons[token] = "conditions_not_met"
             changes = [fill for fill in receipt if fill.token == token]
             increased = effective_buy(changes, snapshot)
-            if active is not None and first.event_at_ms - active["last_effective_buy_at_ms"] >= SLOW_WINDOW_MS:
+            if active is not None and first.event_at_ms - active["last_effective_buy_at_ms"] >= NET_BUY_WINDOW_MS:
                 updates.append(_update(active, snapshot, "inactivity_window", stamp, ended=True))
                 active = None
             if active is not None:
@@ -217,8 +231,8 @@ class NetBuyDetector(TapePasses):
             )
             if data is FAILED:
                 break
-            members, fills = data
-            snapshot = calculate_windows(
+            members, fills, first_seen, episodes = data
+            snapshot = calculate_window(
                 fills=fills,
                 members=members,
                 chain_id=event["chain_id"],
@@ -230,14 +244,16 @@ class NetBuyDetector(TapePasses):
                 coverage_gap_at_ms=state["gap_at_ms"],
                 roster_version=state["roster_version"],
                 rules=self.rules,
+                token_first_seen_at_ms=first_seen,
+                member_episodes=episodes,
             )
-            ended = snapshot.cutoff_at_ms - event["last_effective_buy_at_ms"] >= SLOW_WINDOW_MS
+            ended = snapshot.cutoff_at_ms - event["last_effective_buy_at_ms"] >= NET_BUY_WINDOW_MS
             reason = (
                 "roster_changed"
                 if snapshot.roster_version != event["latest_snapshot"]["roster_version"]
                 else "window_expiry"
             )
-            if state["gap_at_ms"] is not None and state["gap_at_ms"] > snapshot.slow.from_ms:
+            if state["gap_at_ms"] is not None and state["gap_at_ms"] > snapshot.window.from_ms:
                 reason = "collection_gap"
             if not ended and _business(snapshot) == _business(NetBuySnapshot.model_validate(event["latest_snapshot"])):
                 continue
@@ -252,12 +268,21 @@ class NetBuyDetector(TapePasses):
 
 
 def _business(snapshot: NetBuySnapshot) -> dict[str, Any]:
+    """The arithmetic this episode is about, without the position it was read at.
+
+    `recent_episodes` is dropped with the cutoff for the same reason: an address's fourteen-day count
+    changes when some *other* token opens an episode, and that is not a change in this token's window.
+    Leaving it in would rewrite every live episode's snapshot every time anything alerted anywhere.
+    """
+
     value = snapshot.model_dump(mode="json")
     for key in ("cutoff_at_ms", "cutoff_block", "cutoff_log"):
         value.pop(key)
-    for window in ("fast", "slow"):
-        value[window].pop("from_ms")
-        value[window].pop("to_ms")
+    window = value["window"]
+    window.pop("from_ms")
+    window.pop("to_ms")
+    for member in window["members"]:
+        member.pop("recent_episodes")
     return value
 
 
@@ -297,7 +322,7 @@ def _update(
         snapshot.matched,
         reason,
         active["last_effective_buy_at_ms"],
-        active["last_effective_buy_at_ms"] + SLOW_WINDOW_MS if ended else None,
+        active["last_effective_buy_at_ms"] + NET_BUY_WINDOW_MS if ended else None,
     )
 
 
@@ -314,15 +339,22 @@ def _save(news: Any, update: _Update, stamp: int) -> None:
 
 
 def _read_slide(repos: Any, *, event: dict[str, Any], state: dict[str, Any]) -> Any:
+    fills = repos.news.wallet_window_fills(
+        chain_id=event["chain_id"],
+        token=event["token"],
+        from_ms=state["scanned_at_ms"] - NET_BUY_WINDOW_MS,
+        to_ms=state["scanned_at_ms"],
+        block=state["scanned_block"],
+        log=state["scanned_log"],
+    )
     return (
         repos.news.chain_tape_members(state["roster_version"]),
-        repos.news.wallet_window_fills(
-            chain_id=event["chain_id"],
-            token=event["token"],
-            from_ms=state["scanned_at_ms"] - SLOW_WINDOW_MS,
+        fills,
+        repos.news.wallet_token_first_seen_ms(chain_id=event["chain_id"], token=event["token"]),
+        repos.news.wallet_member_episodes(
+            wallets=[fill.wallet for fill in fills],
+            from_ms=state["scanned_at_ms"] - PARTICIPATION_WINDOW_MS,
             to_ms=state["scanned_at_ms"],
-            block=state["scanned_block"],
-            log=state["scanned_log"],
         ),
     )
 

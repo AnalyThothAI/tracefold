@@ -689,8 +689,8 @@ export function newsMarketFixture(overrides: Partial<NewsMarket> = {}): NewsMark
 }
 
 /**
- * The chain wallet tape's own page (#572 PR-3): one roster version, the tape's position, and the two
- * windowed counts the header tiles are built from.
+ * The chain wallet tape's own page (#572 PR-3): one roster version, the tape's position, and the one
+ * window's counts the header tiles are built from.
  */
 export function newsWalletRosterMemberFixture(
   overrides: Partial<NewsWalletRosterMember> = {},
@@ -720,9 +720,10 @@ export function newsWalletsFixture(overrides: Partial<NewsWallets> = {}): NewsWa
       version: 3,
       taken_at_ms: NEWS_NOW_MS - 1_800_000,
       window: "30d",
+      address_count: 26,
       quality_count: 6,
       whale_count: 20,
-      supported_quality_count: 6,
+      supported_count: 26,
       last_attempt_at_ms: null,
       last_success_at_ms: NEWS_NOW_MS - 1_800_000,
       last_error: null,
@@ -746,7 +747,12 @@ export function newsWalletsFixture(overrides: Partial<NewsWallets> = {}): NewsWa
       scanned_log: 2_147_483_647,
       gap_at_ms: null,
     },
-    thresholds: { fast_n: 3, slow_n: 5, sufficient: true },
+    thresholds: {
+      required_n: 5,
+      window_ms: 1_800_000,
+      min_net_buy_usd: "1000",
+      sufficient: true,
+    },
     funnel: {
       window_from_ms: NEWS_NOW_MS - 86_400_000,
       window_to_ms: NEWS_NOW_MS,
@@ -763,7 +769,7 @@ export function newsWalletsFixture(overrides: Partial<NewsWallets> = {}): NewsWa
 }
 
 export function newsWalletSnapshotFixture(): NewsWalletSnapshot {
-  const members: NewsWalletSnapshot["fast"]["members"] = [
+  const members: NewsWalletSnapshot["window"]["members"] = [
     ["5000", "1000", "4000"],
     ["3500", "500", "3000"],
     ["3000", "500", "2500"],
@@ -779,6 +785,7 @@ export function newsWalletSnapshotFixture(): NewsWalletSnapshot {
     monitoring_from_ms: NEWS_NOW_MS - 86_400_000,
     source_closed_trades: 20,
     source_profit_factor: "1.8",
+    recent_episodes: index,
     buy_usd: buy,
     sell_usd: sell,
     net_usd: net,
@@ -802,20 +809,10 @@ export function newsWalletSnapshotFixture(): NewsWalletSnapshot {
     min_net_buy_usd: "1000",
     coverage_from_ms: NEWS_NOW_MS - 86_400_000,
     coverage_gap_at_ms: null,
-    fast: {
-      window: "5m",
-      from_ms: NEWS_NOW_MS - 390_000,
-      to_ms: NEWS_NOW_MS - 90_000,
-      required_n: 3,
-      qualified_n: 4,
-      buy_usd: "14000",
-      sell_usd: "2000",
-      net_usd: "12000",
-      matched: true,
-      members: members.slice(0, 4),
-    },
-    slow: {
-      window: "30m",
+    // Minutes old at the trigger: the episode shape the fourteen-day replay found, and what the
+    // 新盘 label is read off.
+    token_first_seen_at_ms: NEWS_NOW_MS - 1_890_000,
+    window: {
       from_ms: NEWS_NOW_MS - 1_890_000,
       to_ms: NEWS_NOW_MS - 90_000,
       required_n: 5,
@@ -1106,7 +1103,7 @@ export function newsWalletDecimalDetailFixture(): NewsWalletEventDetail {
   event.reference_price = "1.23e-28";
   event.reference_at_ms = event.triggered_at_ms;
   event.reference_source = "recorded";
-  const window = event.latest_snapshot.fast;
+  const window = event.latest_snapshot.window;
   window.members[0] = {
     ...window.members[0],
     buy_usd: "0",

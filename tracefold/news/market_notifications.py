@@ -39,7 +39,7 @@ from functools import partial
 from typing import Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
-from .chain_tape.rules import SLOW_WINDOW_MS, WalletRules, calculate_windows, trigger_age_reason
+from .chain_tape.rules import WalletRules, calculate_window, trigger_age_reason
 from .delivery_contracts import (
     DELIVERY_FAILURE_RETRIABLE,
     DELIVERY_FAILURE_UNKNOWN,
@@ -74,7 +74,7 @@ from .reader_card import (
     reader_news,
     reader_quotes,
 )
-from .wallet_contracts import NetBuySnapshot
+from .wallet_contracts import NET_BUY_WINDOW_MS, PARTICIPATION_WINDOW_MS, NetBuySnapshot
 
 # --- v1 engineering defaults (#553 §4). Not tuned parameters, and not claimed to be optimal. ---
 
@@ -801,7 +801,9 @@ def _decide_wallet(
     observation = observations[0]
     reason = observation.wallet_notification_reason
     if not observation.wallet_notify_eligible:
-        reason = reason or "wallet_not_selected"
+        # The detector records why it refused, and the only refusal it has is the mute. There is no
+        # "selected" step left to fail: any published roster address counts (#649 PR-3 §1).
+        reason = reason or "wallet_notifications_disabled"
     elif observation.wallet_snapshot is None or not observation.wallet_snapshot.matched:
         reason = "invalidated_before_send"
     else:
@@ -960,7 +962,7 @@ def market_reader_card(
         note=ReaderCardNote(id=track.group_key, detail_id=latest.item_id),
         times=ReaderCardTimes(
             event_at_ms=latest.event_at_ms,
-            span_from_ms=latest.wallet_snapshot.primary.from_ms if latest.wallet_snapshot else first.event_at_ms,
+            span_from_ms=latest.wallet_snapshot.window.from_ms if latest.wallet_snapshot else first.event_at_ms,
         ),
     )
 
@@ -1688,7 +1690,7 @@ class MarketNotificationLoop:
           collector inside the window this report is about, the card is **deferred**: nothing is
           decided on half-written facts, and the tail above `C` is nobody's business here.
         * does the same pure function still find a matching window at `C`? This is the one
-          re-evaluation, over `rules.calculate_windows`, with the same roster, the same coverage
+          re-evaluation, over `rules.calculate_window`, with the same roster, the same coverage
           bounds and the same gap the detector reads. A sell or a transfer that landed inside `C` is
           part of that answer; one above it is not. The sender writes no `latest_snapshot` -- the
           snapshot it computes is frozen as `send_snapshot` and nowhere else.
@@ -1726,15 +1728,16 @@ class MarketNotificationLoop:
             cutoff_log=state["scanned_log"],
         ):
             return self._defer(news, due, "evidence_not_derived", now_ms=now_ms)
-        snapshot = calculate_windows(
-            fills=news.wallet_window_fills(
-                chain_id=event["chain_id"],
-                token=event["token"],
-                from_ms=state["scanned_at_ms"] - SLOW_WINDOW_MS,
-                to_ms=state["scanned_at_ms"],
-                block=state["scanned_block"],
-                log=state["scanned_log"],
-            ),
+        fills = news.wallet_window_fills(
+            chain_id=event["chain_id"],
+            token=event["token"],
+            from_ms=state["scanned_at_ms"] - NET_BUY_WINDOW_MS,
+            to_ms=state["scanned_at_ms"],
+            block=state["scanned_block"],
+            log=state["scanned_log"],
+        )
+        snapshot = calculate_window(
+            fills=fills,
             members=news.chain_tape_members(state["roster_version"]),
             chain_id=event["chain_id"],
             token=event["token"],
@@ -1745,6 +1748,13 @@ class MarketNotificationLoop:
             coverage_gap_at_ms=state["gap_at_ms"],
             roster_version=state["roster_version"],
             rules=self.wallet_rules,
+            token_first_seen_at_ms=news.wallet_token_first_seen_ms(chain_id=event["chain_id"], token=event["token"]),
+            member_episodes=news.wallet_member_episodes(
+                wallets=[fill.wallet for fill in fills],
+                from_ms=state["scanned_at_ms"] - PARTICIPATION_WINDOW_MS,
+                to_ms=state["scanned_at_ms"],
+                exclude_item_id=event["item_id"],
+            ),
         )
         if not snapshot.matched:
             return self._suppress(news, due, "invalidated_before_send", now_ms=now_ms)

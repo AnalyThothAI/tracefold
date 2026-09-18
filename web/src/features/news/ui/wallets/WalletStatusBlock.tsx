@@ -11,9 +11,9 @@ import { WalletRosterTable } from "./WalletSupportingTables";
  * Whether an alert could have happened at all, above the list of the ones that did.
  *
  * A reader who opens this page to an empty table has to be able to tell four different things apart:
- * the quality pool cannot reach either quorum, it can but its addresses have not watched a whole
+ * the published list is smaller than the quorum, it is not but its addresses have not watched a whole
  * window yet, the chain cutoff is behind, or nothing qualified. Every number here is the server's —
- * the pool against the two quorums, the monitoring support behind it, the collection cutoff and the
+ * the list against the one quorum, the monitoring support behind it, the collection cutoff and the
  * episode → intent → sent funnel — and this block only chooses which answer leads.
  *
  * Its read is independent of the event list in both directions: a failure here says so and leaves the
@@ -43,7 +43,8 @@ export function WalletStatusBlock({ token }: { token: string }) {
         <summary>名单成员 · {status?.roster.members.length ?? 0}</summary>
         <p className="news-wallets-note">
           来源 {status?.roster.provider ?? "未取得"} · {optionalTime(status?.roster.taken_at_ms)}{" "}
-          取得。 来源表现榜才参与人数门槛；规模榜仅作观察背景。供应商短期统计不是长期策略胜率。
+          取得。 名单内任一地址都计入人数门槛；表现榜与规模榜排名仅作背景说明，不改变触发资格。
+          供应商短期统计不是长期策略胜率。
         </p>
         {status ? <WalletRosterTable members={status.roster.members} /> : null}
       </details>
@@ -63,14 +64,17 @@ function StatusFacts({ status }: { status: NewsWallets }) {
           { label: "链数据截止", value: cutoff },
           { label: "最近成功采集", value: optionalTime(tape?.last_success_at_ms) },
           {
-            label: "质量地址 / 观察地址",
-            value: `${roster.quality_count} / ${roster.whale_count}`,
+            label: "名单地址（表现榜 / 规模榜）",
+            value: `${roster.address_count}（${roster.quality_count} / ${roster.whale_count}）`,
           },
           {
             label: "完整窗口监控支持",
-            value: `${roster.supported_quality_count} / ${roster.quality_count}`,
+            value: `${roster.supported_count} / ${roster.address_count}`,
           },
-          { label: "5m / 30m 门槛", value: `${thresholds.fast_n} / ${thresholds.slow_n}` },
+          {
+            label: "触发门槛",
+            value: `30 分钟 · ${thresholds.required_n} 个地址 · 每地址净买入 $${thresholds.min_net_buy_usd}`,
+          },
           { label: "当前名单", value: thresholds.sufficient ? "足以触发" : "不足以触发" },
           {
             label: "最近完整名单",
@@ -78,9 +82,9 @@ function StatusFacts({ status }: { status: NewsWallets }) {
               ? `v${roster.version} · ${optionalTime(roster.last_success_at_ms)}`
               : "尚未取得",
           },
-          // The provider statistics window both roster endpoints were asked for. It belongs beside
-          // the counts because the quality pool is only as large as this window makes it: on 7d the
-          // same 147 addresses produced two qualifying wallets, on 30d seven (#649 §5.3).
+          // The provider statistics window both roster endpoints were asked for. It no longer decides
+          // who may trigger — every published address does — but it is what the closed-trade counts
+          // and profit factors in the member table below are measured over (#649 §5.3, PR-3 §1).
           { label: "名单统计窗口", value: roster.window },
           {
             label: "24 小时 事件 / 意图 / 已发送",

@@ -241,7 +241,6 @@ async def _wire_news_pipeline(
         # sender re-evaluates the same evidence against the same numbers at the committed collection
         # cutoff (#649 §6.1).
         wallet_rules=WalletRules(
-            net_buy_fast_n=settings.news.chain_tape.rules.net_buy_fast_n,
             net_buy_slow_n=settings.news.chain_tape.rules.net_buy_slow_n,
             min_net_buy_usd=settings.news.chain_tape.rules.min_net_buy_usd,
             trigger_max_age_s=settings.news.chain_tape.rules.trigger_max_age_s,

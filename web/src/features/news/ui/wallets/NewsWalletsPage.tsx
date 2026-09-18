@@ -10,7 +10,9 @@ import {
   parseWalletEventFilters,
   walletDecimal,
   walletNotificationLabel,
+  walletParticipations,
   walletReason,
+  walletTokenAge,
 } from "../../model/walletFacts";
 import { NewsPageHeader } from "../chrome/NewsChrome";
 
@@ -56,7 +58,7 @@ export function NewsWalletsPage({ token }: { token: string }) {
           </ActionButton>
         </div>
         <p className="news-wallets-note">
-          5 分钟 / 30 分钟是触发窗口；历史范围用于查阅事件。一行一轮，包含静音与未发送事件。
+          30 分钟是唯一的触发窗口；历史范围用于查阅事件。一行一轮，包含静音与未发送事件。
         </p>
         {data ? (
           <p className="news-wallets-note">
@@ -79,9 +81,9 @@ export function NewsWalletsPage({ token }: { token: string }) {
                 <table className="news-wallets-table news-wallet-event-list">
                   <thead>
                     <tr>
-                      <th>代币 / 链</th>
-                      <th>首次净买家 5m / 30m</th>
-                      <th>首次主窗口净买入</th>
+                      <th>代币 / 链 / 触发时年龄</th>
+                      <th>首次净买家</th>
+                      <th>首次窗口净买入</th>
                       <th>触发 / 本轮状态</th>
                       <th>通知结果</th>
                     </tr>
@@ -89,12 +91,12 @@ export function NewsWalletsPage({ token }: { token: string }) {
                   <tbody>
                     {data.events.map((event) => {
                       const first = event.initial_snapshot;
-                      const primary = first.fast.matched ? first.fast : first.slow;
+                      const primary = first.window;
                       const latest = event.latest_snapshot;
-                      const otherSell = latest.slow.members.some(
+                      const otherSell = latest.window.members.some(
                         (member) => !member.qualified && member.net_usd?.startsWith("-"),
                       );
-                      const incomplete = latest.slow.members.some((member) =>
+                      const incomplete = latest.window.members.some((member) =>
                         member.reasons.some((reason) =>
                           [
                             "transfer_out_incomplete",
@@ -108,26 +110,27 @@ export function NewsWalletsPage({ token }: { token: string }) {
                       linkParams.set("episode", event.episode_id);
                       return (
                         <tr key={event.episode_id}>
-                          <td data-label="代币 / 链">
+                          <td data-label="代币 / 链 / 触发时年龄">
                             <Link to={`/news/wallets?${linkParams}`}>
                               {event.token_symbol || event.token}
                             </Link>
-                            <small>Robinhood Chain</small>
+                            <small>Robinhood Chain · {walletTokenAge(first)}</small>
                             <code>{event.token}</code>
                           </td>
-                          <td data-label="首次净买家 5m / 30m">
-                            {first.fast.qualified_n} / {first.slow.qualified_n}
+                          <td data-label="首次净买家">
+                            {primary.qualified_n} / {primary.required_n}
+                            <small>{walletParticipations(primary)}</small>
                           </td>
-                          <td data-label="首次主窗口净买入">
+                          <td data-label="首次窗口净买入">
                             ${walletDecimal(primary.net_usd)}
-                            <small>{primary.window} · 入选地址</small>
+                            <small>30 分钟 · 入选地址</small>
                           </td>
                           <td data-label="触发 / 本轮状态">
                             {displayTime(event.triggered_at_ms)}
                             <small>
                               {event.ended_at_ms === null ? "本轮进行中" : "本轮已结束"}
                             </small>
-                            {!latest.fast.matched && !latest.slow.matched ? (
+                            {!latest.window.matched ? (
                               <small>当前人数或净额已不满足条件</small>
                             ) : null}
                             {otherSell ? <small>其他观察地址存在净卖出</small> : null}

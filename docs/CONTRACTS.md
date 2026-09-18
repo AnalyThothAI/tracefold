@@ -692,17 +692,19 @@ every Event this code can open.
   A later alert round may report earlier unclaimed observations as `uncovered`; it never adopts them.
 - `GET /api/news/wallets` returns `roster`, `tape`, `thresholds`, `funnel`,
   `collection_lagging` and `notifications_enabled`. Authentication `token` is its only query
-  parameter. Roster source statistics and quality/whale ranks retain their original meaning;
-  monitoring and scanned-chain state disclose coverage. The roster publishes the quality and whale
-  counts separately — the whale list never stands in for the quality pool — with
-  `supported_quality_count`, the quality addresses whose `monitoring_from_ms` already covers a whole
-  fast window at the collection cutoff, the `window` both provider endpoints were asked for, and the
-  refresh task's own `last_attempt_at_ms` / `last_success_at_ms` / `last_error`. Those three are the
+  parameter. Roster source statistics and quality/whale ranks retain their original meaning as
+  information about the published list; monitoring and scanned-chain state disclose coverage.
+  `address_count` is the pool the quorum is counted against — every published address counts (#649
+  PR-3 §1) — with `supported_count`, the addresses whose `monitoring_from_ms` already covers a whole
+  window at the collection cutoff, `quality_count` / `whale_count` beside them, the `window` both
+  provider endpoints were asked for, and the refresh task's own `last_attempt_at_ms` /
+  `last_success_at_ms` / `last_error`. Those three are the
   `news-wallet-roster` task's record rather than a guess from the collection turn: only a complete
   refresh publishes a version and moves the success stamp, so a provider that has been refusing to
-  answer moves the attempt stamp alone and the published version keeps its own `taken_at_ms`. `thresholds` carries the two window quorums and whether
-  the current pool can reach either. `collection_lagging` is the server's judgement on the chain
-  cutoff and the browser makes no clock comparison of its own. `funnel` counts episodes, intents and
+  answer moves the attempt stamp alone and the published version keeps its own `taken_at_ms`.
+  `thresholds` carries the one rule — `required_n`, `window_ms`, `min_net_buy_usd` — and whether the
+  addresses currently being watched can satisfy it. `collection_lagging` is the server's judgement on
+  the chain cutoff and the browser makes no clock comparison of its own. `funnel` counts episodes, intents and
   sends over its own stated 24-hour window with the leading unsent reason — window counts, never
   accumulated totals, and never summed with each other.
 - `GET /api/news/wallets/events` returns `events`, full-scope `totals`, and a keyset
@@ -716,11 +718,17 @@ every Event this code can open.
   time boundary and descends by block/log. An unknown episode is 404.
   A horizon outcome's `status` is `comparable`, `missing_reference` or `late`. The fourth value the
   column and the wire union used to admit, `unavailable`, had no writer and is removed (#649 §9).
-  Both initial and latest snapshots carry exact decimal strings, original raw quantities,
-  quality membership, exclusions and exact chain cutoff. The first snapshot is immutable.
+  Both initial and latest snapshots carry exact decimal strings, original raw quantities, roster
+  membership, exclusions and exact chain cutoff, plus the two facts the card is built with:
+  `token_first_seen_at_ms` (the tape's earliest movement in the token, which dates it as a bound and
+  never as the chain's first block) and each member's `recent_episodes` (the episodes that address
+  qualified in over the preceding fourteen days; `null` on a snapshot written before the count
+  existed). A snapshot holds one `window` — the 30-minute rule — and the 5-minute window it used to
+  carry beside it is gone from the contract, the rule and the page (#649 PR-3).
+  The first snapshot is immutable.
   Timeline pages never define the totals. Notification status and episode end are separate.
   Price outcomes record target/actual/reference time, source, nullable price/reference/change and
-  `comparable|missing_reference|unavailable|late`; missing never becomes 0%. `reference_price` /
+  `comparable|missing_reference|late`; missing never becomes 0%. `reference_price` /
   `reference_at_ms` / `reference_source` are the episode's t0 baseline, written once by the price
   sampler from the first price really available within its budget and never afterwards; the delay
   from the trigger is the two stamps. An episode that aged past the budget keeps no baseline rather

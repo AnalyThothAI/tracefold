@@ -43,6 +43,10 @@ describe("wallet net-buy events", () => {
     expect(screen.getByRole("heading", { name: "当前变化与缺口" })).toBeVisible();
     expect(screen.getByText("钱包通知已静音")).toBeVisible();
     expect(screen.getByTestId("location")).toHaveTextContent("episode=");
+    // The three facts the one rule's card and this page must both carry (#649 PR-3 §3).
+    expect(screen.getAllByText(/代币年龄 30 分钟 · 新盘/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/近 14 天共参与 15 次/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/\$14,000/).length).toBeGreaterThan(0);
     expect(screen.queryByText("买入观察")).toBeNull();
     expect(screen.queryByText("摘要")).toBeNull();
   });
@@ -129,20 +133,20 @@ describe("wallet net-buy events", () => {
       ),
     );
     renderWallets();
-    expect(await screen.findByText("质量地址 / 观察地址")).toBeVisible();
+    expect(await screen.findByText("名单地址（表现榜 / 规模榜）")).toBeVisible();
     expect(await statusState()).toBe("healthy");
   });
 
-  it("names the production case: one quality address is a list that cannot trigger, not a quiet market", async () => {
+  it("names a list smaller than the one quorum as a list that cannot trigger, not a quiet market", async () => {
     server.use(
       walletsStatus({
-        roster: { quality_count: 1, whale_count: 147, supported_quality_count: 1 },
+        roster: { address_count: 4, quality_count: 1, whale_count: 4, supported_count: 4 },
         thresholds: { sufficient: false },
       }),
     );
     renderWallets();
     expect(
-      await screen.findByText("当前质量地址 1 个，低于 5m 3 个及 30m 5 个门槛；当前名单不足以触发"),
+      await screen.findByText("当前名单地址 4 个，低于 30 分钟 5 个地址的门槛；当前名单不足以触发"),
     ).toBeVisible();
     expect(await statusState()).toBe("roster_insufficient");
     expect(screen.getByRole("region", { name: "名单与采集状态" })).toHaveTextContent("不足以触发");
@@ -152,7 +156,7 @@ describe("wallet net-buy events", () => {
     [
       "warming_up",
       {
-        roster: { quality_count: 6, supported_quality_count: 1 },
+        roster: { address_count: 26, supported_count: 1 },
         thresholds: { sufficient: false },
       },
       /其中 1 个已具备完整窗口监控支持/,

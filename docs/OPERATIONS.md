@@ -1843,16 +1843,30 @@ values. The four rule defaults are:
 
 | Rule | Default | Meaning |
 | --- | --- | --- |
-| `net_buy_fast_n` | 3 | quality addresses in fixed 5m window; minimum 2 |
-| `net_buy_slow_n` | 5 | quality addresses in fixed 30m window; minimum 2 |
+| `net_buy_slow_n` | 5 | published roster addresses in the fixed 30m window; minimum 2 |
 | `min_net_buy_usd` | 1000 | each address's complete window net spend; positive |
 | `trigger_max_age_s` | 60 | chain→receive/detect/first-attempt age; future stamps refused |
 
+There is one window and one quorum. `net_buy_fast_n` — the 5-minute window's quorum — is a **removed
+key**: the loader forbids unknown keys, so a deployment whose `~/.tracefold/config.yaml` still holds
+`net_buy_fast_n: 3` fails to start until the line is deleted. `uv run python
+scripts/migrate_wallet_net_buy_config.py --config ~/.tracefold/config.yaml --output next.yaml`
+removes it offline, and the migration that rewrites stored snapshots to the one-window shape is
+`20260918_0382`; the running image reads the old shape, so Workers and Serve are stopped for that
+deploy as usual.
+
+Any address on the published roster counts towards the quorum. The provider's quality and whale ranks
+are still collected, stored and displayed — they are what the list is built from — but they no longer
+decide who may trigger: on the provider's own seven-day statistics 147 watched addresses held one
+qualifying wallet, which is a rule that cannot fire (#649 §2.1, PR-3 §1). Monitoring support still
+applies per address: an address must have been watched for a whole window before it can complete a
+quorum.
+
 `news.chain_tape.roster` carries two more: `window` (default `30d`) is the provider statistics
 window, passed to both `/api/traders` and `/api/trader/{handle}`, and `refresh_interval_s`
-(default 3600) is how old a published list may be before the refresh task rebuilds it. `window` is a
-statistics window, not a change to what "quality" means — the closed-trade floor, the 1.2 profit
-factor, the top-20 cut and the two net-buy thresholds are unchanged by it. It moved from `7d` to
+(default 3600) is how old a published list may be before the refresh task rebuilds it. `window` is the statistics
+window the list is *selected* with — the closed-trade floor, the 1.2 profit factor and the top-20 cut
+— and it does not change the alert's own threshold. It moved from `7d` to
 `30d` because on a seven-day window the provider's own numbers left one qualifying address against
 thresholds of three and five, which is a rule that cannot fire (#649 §5.3).
 
@@ -1879,14 +1893,15 @@ uv run tracefold news wallets --hours 72   # a wider window for the flow and dec
 | Section | Answers |
 | --- | --- |
 | `roster_funnel` | how many addresses the published version selected, how many cleared the closed-trade floor, how many have a known profit factor, the quality/whale split, and when the refresh task last **attempted** and last **succeeded** — with `refresh_last_error` when the two differ |
-| `triggerability` | per window: the configured `N`, the quality pool, how many of those addresses have been monitored long enough to fill that window, and how many more are needed |
+| `triggerability` | the configured `N`, the published roster's size, how many of those addresses have been monitored long enough to fill the 30-minute window, and how many more are needed |
 | `flow_coverage` | the window's fills, receipts, addresses and tokens counted separately, the buy/sell/transfer split, priced against unpriced, the `derived_reason` distribution, and the oldest underived fill; the tape's lifetime discard totals are labelled as lifetime totals and are not a rate |
 | `decision_and_delivery` | episodes, intents and each delivery state in the window, plus the reasons the unsent ones carry |
 | `send_queue` | the one shared delivery queue in `market_due_delivery` order, with the head's waiting age and due time, across every family |
 
-Read `roster_funnel` first. A `quality` count below both `net_buy_fast_n` and `net_buy_slow_n` means
-the rule is arithmetically unsatisfiable and no amount of chain activity will produce a card: that is
-"this roster cannot trigger", not "there were no opportunities". A `refresh_last_attempt_at_ms` well
+Read `triggerability` first. A `monitoring_supported` count below `net_buy_slow_n` means the rule is
+arithmetically unsatisfiable and no amount of chain activity will produce a card: that is "this roster
+cannot trigger", not "there were no opportunities". `roster_funnel`'s `quality` / `whale` counts
+describe the provider's ranking of the same list and are not what the quorum is counted against. A `refresh_last_attempt_at_ms` well
 ahead of `refresh_last_success_at_ms` means the site has been refusing to answer and the list on the
 page is the last complete one, kept deliberately.
 

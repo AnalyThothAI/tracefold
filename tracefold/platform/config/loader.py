@@ -149,7 +149,6 @@ news:
       top_quality: 20
       top_whale_by_open_cost: 20
     rules:
-      net_buy_fast_n: 3
       net_buy_slow_n: 5
       min_net_buy_usd: 1000
       trigger_max_age_s: 60

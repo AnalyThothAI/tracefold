@@ -784,6 +784,17 @@
             "title": "Reasons",
             "type": "array"
           },
+          "recent_episodes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recent Episodes"
+          },
           "roster_known_at_ms": {
             "anyOf": [
               {
@@ -859,6 +870,7 @@
           "monitoring_from_ms",
           "source_closed_trades",
           "source_profit_factor",
+          "recent_episodes",
           "buy_usd",
           "sell_usd",
           "net_usd",
@@ -914,9 +926,6 @@
             "title": "Cutoff Log",
             "type": "integer"
           },
-          "fast": {
-            "$ref": "#/components/schemas/NetBuyWindow"
-          },
           "min_net_buy_usd": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Min Net Buy Usd",
@@ -933,9 +942,6 @@
             ],
             "title": "Roster Version"
           },
-          "slow": {
-            "$ref": "#/components/schemas/NetBuyWindow"
-          },
           "token": {
             "title": "Token",
             "type": "string"
@@ -951,6 +957,17 @@
             ],
             "title": "Token Decimals"
           },
+          "token_first_seen_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token First Seen At Ms"
+          },
           "token_symbol": {
             "anyOf": [
               {
@@ -961,6 +978,9 @@
               }
             ],
             "title": "Token Symbol"
+          },
+          "window": {
+            "$ref": "#/components/schemas/NetBuyWindow"
           }
         },
         "required": [
@@ -975,14 +995,15 @@
           "min_net_buy_usd",
           "coverage_from_ms",
           "coverage_gap_at_ms",
-          "fast",
-          "slow"
+          "token_first_seen_at_ms",
+          "window"
         ],
         "title": "NetBuySnapshot",
         "type": "object"
       },
       "NetBuyWindow": {
         "additionalProperties": false,
+        "description": "The one window, from its own two ends. There is no window name to choose between any more.",
         "properties": {
           "buy_usd": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -1025,18 +1046,9 @@
           "to_ms": {
             "title": "To Ms",
             "type": "integer"
-          },
-          "window": {
-            "enum": [
-              "5m",
-              "30m"
-            ],
-            "title": "Window",
-            "type": "string"
           }
         },
         "required": [
-          "window",
           "from_ms",
           "to_ms",
           "required_n",
@@ -6744,8 +6756,13 @@
       },
       "NewsWalletRosterData": {
         "additionalProperties": false,
-        "description": "The roster as one version: when it was taken, who was on it, and how the last refresh went.\n\n`quality_count` is the pool the 5m/30m thresholds are counted against; `whale_count` is observation\nbackground and never stands in for it. `supported_quality_count` is the subset whose monitoring\nalready covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago\ncannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.\n\nThe published version and the last refresh attempt are separate on purpose. `taken_at_ms` and\n`last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`\nbelong to the refresh task whether or not it published, so a provider that has been refusing to\nanswer for five hours reads as exactly that rather than as a fresh list (#649 \u00a75.1).",
+        "description": "The roster as one version: when it was taken, who was on it, and how the last refresh went.\n\n`address_count` is the pool the quorum is counted against: every published address counts, and\n`supported_count` is the subset whose monitoring already covers a whole window at the collection\ncutoff -- a wallet the list gained minutes ago cannot complete a quorum yet, and a page that\ncounted it would promise a trigger that cannot fire. `quality_count` and `whale_count` are the\nprovider's own ranks, published as information about the list and no longer as a filter on it\n(#649 PR-3 \u00a71).\n\nThe published version and the last refresh attempt are separate on purpose. `taken_at_ms` and\n`last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`\nbelong to the refresh task whether or not it published, so a provider that has been refusing to\nanswer for five hours reads as exactly that rather than as a fresh list (#649 \u00a75.1).",
         "properties": {
+          "address_count": {
+            "default": 0,
+            "title": "Address Count",
+            "type": "integer"
+          },
           "last_attempt_at_ms": {
             "anyOf": [
               {
@@ -6802,9 +6819,9 @@
             "title": "Quality Count",
             "type": "integer"
           },
-          "supported_quality_count": {
+          "supported_count": {
             "default": 0,
-            "title": "Supported Quality Count",
+            "title": "Supported Count",
             "type": "integer"
           },
           "taken_at_ms": {
@@ -7117,24 +7134,29 @@
       },
       "NewsWalletThresholdsData": {
         "additionalProperties": false,
-        "description": "The two window quorums, and whether the current pool can reach either of them.",
+        "description": "The one rule, and whether the addresses being watched can currently satisfy it.\n\nOne window, one quorum, one per-address floor. The 5m quorum that used to sit beside this one is\ngone from the rule, from this contract and from the page (#649 PR-3 \u00a72).",
         "properties": {
-          "fast_n": {
-            "title": "Fast N",
-            "type": "integer"
+          "min_net_buy_usd": {
+            "title": "Min Net Buy Usd",
+            "type": "string"
           },
-          "slow_n": {
-            "title": "Slow N",
+          "required_n": {
+            "title": "Required N",
             "type": "integer"
           },
           "sufficient": {
             "title": "Sufficient",
             "type": "boolean"
+          },
+          "window_ms": {
+            "title": "Window Ms",
+            "type": "integer"
           }
         },
         "required": [
-          "fast_n",
-          "slow_n",
+          "required_n",
+          "window_ms",
+          "min_net_buy_usd",
           "sufficient"
         ],
         "title": "NewsWalletThresholdsData",
@@ -9341,7 +9363,7 @@
     },
     "/api/news/wallets": {
       "get": {
-        "description": "Whether the current list, the current collection and the send chain can produce an alert at all.\n\nA reader who sees no events needs to tell \"nothing qualified\" from \"nothing could have qualified\",\nand every number that answers that is counted here rather than in the browser: the quality pool\nagainst the two quorums, the monitoring support behind it, how far behind the chain cutoff is, and\nwhat happened to the episodes that did exist.",
+        "description": "Whether the current list, the current collection and the send chain can produce an alert at all.\n\nA reader who sees no events needs to tell \"nothing qualified\" from \"nothing could have qualified\",\nand every number that answers that is counted here rather than in the browser: the published\nroster against the one quorum, the monitoring support behind it, how far behind the chain cutoff\nis, and what happened to the episodes that did exist.",
         "operationId": "get_news_wallets_api_news_wallets_get",
         "responses": {
           "200": {
