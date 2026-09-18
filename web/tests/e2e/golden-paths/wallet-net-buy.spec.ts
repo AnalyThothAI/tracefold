@@ -77,11 +77,12 @@ test("the status block leads the page and says why an untriggerable roster produ
           ...base,
           roster: {
             ...base.roster,
+            address_count: 4,
             quality_count: 1,
-            whale_count: 147,
-            supported_quality_count: 1,
+            whale_count: 4,
+            supported_count: 4,
           },
-          thresholds: { fast_n: 3, slow_n: 5, sufficient: false },
+          thresholds: { ...base.thresholds, sufficient: false },
           funnel: { ...base.funnel, events: 0, intents: 0, sent: 0 },
         },
       }),
@@ -92,9 +93,9 @@ test("the status block leads the page and says why an untriggerable roster produ
   await expect(status).toBeVisible();
   await expect(status).toHaveAttribute("data-status-state", "roster_insufficient");
   await expect(status).toContainText(
-    "当前质量地址 1 个，低于 5m 3 个及 30m 5 个门槛；当前名单不足以触发",
+    "当前名单地址 4 个，低于 30 分钟 5 个地址的门槛；当前名单不足以触发",
   );
-  await expect(status).toContainText("1 / 147");
+  await expect(status).toContainText("4（1 / 4）");
   // It leads the page: the block sits above the episode list rather than under it.
   const events = page.getByRole("region", { name: "集中净买入事件" });
   const [statusTop, eventsTop] = await Promise.all([

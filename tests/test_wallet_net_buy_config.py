@@ -5,8 +5,10 @@ import sys
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from scripts.migrate_wallet_net_buy_config import main, migrate
+from tracefold.platform.config.models import Settings
 
 
 def test_offline_migration_is_idempotent_and_preserves_unrelated_settings():
@@ -17,7 +19,7 @@ def test_offline_migration_is_idempotent_and_preserves_unrelated_settings():
                 "enabled": True,
                 "notifications_enabled": False,
                 "poll_interval_s": 7.5,
-                "rules": {"buy_min_usd": 333, "crowding_n": 9, "trigger_max_age_s": 600},
+                "rules": {"buy_min_usd": 333, "crowding_n": 9, "net_buy_fast_n": 3, "trigger_max_age_s": 600},
                 "digest": {"enabled": True, "interval_s": 14400},
             }
         },
@@ -27,7 +29,9 @@ def test_offline_migration_is_idempotent_and_preserves_unrelated_settings():
     assert source["news"]["chain_tape"]["rules"]["buy_min_usd"] == 333
     assert tape["enabled"] and not tape["notifications_enabled"]
     assert tape["poll_interval_s"] == 7.5 and result["ws_token"] == "private-token"
-    assert tape["rules"] == {"net_buy_fast_n": 3, "net_buy_slow_n": 5, "min_net_buy_usd": 1000, "trigger_max_age_s": 60}
+    # The 5m quorum is one of the removed keys now, and the loader refuses a config that still has it.
+    assert tape["rules"] == {"net_buy_slow_n": 5, "min_net_buy_usd": 1000, "trigger_max_age_s": 60}
+    assert "news.chain_tape.rules.net_buy_fast_n" in removed
     assert "digest" not in tape and removed
     assert migrate(result, new_rules={}) == (result, [])
 
@@ -68,3 +72,17 @@ def test_offline_cli_uses_separate_output_and_redacts_validation_errors(tmp_path
 def test_invalid_hierarchy_is_refused_before_any_output(source):
     with pytest.raises(ValueError):
         migrate(source, new_rules={})
+
+
+def test_the_retired_second_window_quorum_is_a_startup_error_not_a_silent_default():
+    """#649 PR-3 §2: one window, one quorum, and a config that still names the other one fails.
+
+    The loader forbids unknown keys, which is what makes the deletion visible: a deployment whose
+    `~/.tracefold/config.yaml` still holds `net_buy_fast_n: 3` refuses to start rather than running
+    with a key nothing reads.
+    """
+
+    base = {"news": {"chain_tape": {"rules": {"net_buy_slow_n": 5}}}}
+    assert Settings.model_validate(base).news.chain_tape.rules.net_buy_slow_n == 5
+    with pytest.raises(ValidationError, match="net_buy_fast_n"):
+        Settings.model_validate({"news": {"chain_tape": {"rules": {"net_buy_fast_n": 3, "net_buy_slow_n": 5}}}})

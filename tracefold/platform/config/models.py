@@ -444,10 +444,14 @@ class NewsChainTapeRosterSettings(BaseModel):
 
 
 class NewsChainTapeRulesSettings(BaseModel):
-    """Fixed 5m/30m net-buy thresholds; retired keys are explicit configuration errors."""
+    """The one fixed 30m net-buy rule; retired keys are explicit configuration errors.
+
+    `net_buy_fast_n` was the second window's quorum and is now an unknown key: a deployment that still
+    carries it fails to start, which is the intended way to notice that the second window is gone
+    (#649 PR-3 §2).
+    """
 
     model_config = ConfigDict(extra="forbid")
-    net_buy_fast_n: int = Field(default=3, ge=2, le=400)
     net_buy_slow_n: int = Field(default=5, ge=2, le=400)
     min_net_buy_usd: Decimal = Field(default=Decimal("1000"), gt=0, le=Decimal("1e12"), allow_inf_nan=False)
     trigger_max_age_s: int = Field(default=60, ge=1, le=3600)

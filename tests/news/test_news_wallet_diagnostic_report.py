@@ -1,8 +1,8 @@
 """The `news wallets` report's own arithmetic, without a database (#649 §7.2).
 
 The five sections exist to keep four different situations apart, so what is checked here is that they
-stay apart: a roster that cannot reach either threshold reads differently from one whose addresses
-are still warming up, lifetime totals are not folded into the window, and units are never added.
+stay apart: a roster smaller than the one quorum reads differently from one whose addresses are still
+warming up, lifetime totals are not folded into the window, and units are never added.
 """
 
 from __future__ import annotations
@@ -70,27 +70,29 @@ def test_the_roster_funnel_separates_the_last_attempt_from_the_last_complete_lis
     assert report["refresh_last_error"] == "robinhoodtrenches:roster_rate_limited"
 
 
-def test_a_quality_pool_below_both_thresholds_reports_how_many_are_missing() -> None:
-    """Production's 147 watched addresses with one quality address: the rule cannot fire."""
+def test_the_ranks_no_longer_shrink_the_pool_the_quorum_is_counted_against() -> None:
+    """Production's 147 watched addresses with one quality address: now 147 addresses can trigger.
+
+    The rank is still reported, in `roster_funnel`, because it is information about the provider's
+    list. It is no longer what `triggerability` counts (#649 PR-3 §1).
+    """
 
     members = [_member(wallet="a", quality=1, whale=1, closed=40, factor=2.5, monitoring=NOW - 86_400_000)]
     members += [
-        _member(wallet=f"w{index}", quality=None, whale=index, closed=40, factor=None, monitoring=None)
+        _member(wallet=f"w{index}", quality=None, whale=index, closed=40, factor=None, monitoring=NOW - 86_400_000)
         for index in range(2, 148)
     ]
 
     report = _triggerability(members, state={"scanned_at_ms": NOW}, settings=_settings(), now_ms=NOW)
 
-    fast, slow = report["windows"]
-    assert (fast["required_n"], fast["monitoring_supported"], fast["short_by"]) == (3, 1, 2)
-    assert (slow["required_n"], slow["monitoring_supported"], slow["short_by"]) == (5, 1, 4)
-    assert (fast["satisfiable"], slow["satisfiable"]) == (False, False)
-    assert fast["quality_addresses"] == 1
-    assert report["measured_against"] == "scanned_at_ms"
+    assert (report["required_n"], report["roster_addresses"], report["monitoring_supported"]) == (5, 147, 147)
+    assert (report["short_by"], report["satisfiable"]) == (0, True)
+    assert report["window"] == "30m" and report["measured_against"] == "scanned_at_ms"
+    assert _roster_funnel(members, state={}, settings=_settings())["quality"] == 1
 
 
 def test_an_address_still_warming_up_is_short_support_rather_than_absent() -> None:
-    """A quality address monitored for ten minutes supports the 5m window and not the 30m one."""
+    """Five addresses monitored for ten minutes cannot fill a thirty-minute window yet."""
 
     members = [
         _member(wallet=f"q{index}", quality=index, whale=None, closed=40, factor=2.5, monitoring=NOW - 600_000)
@@ -99,10 +101,8 @@ def test_an_address_still_warming_up_is_short_support_rather_than_absent() -> No
 
     report = _triggerability(members, state={"scanned_at_ms": NOW}, settings=_settings(), now_ms=NOW)
 
-    fast, slow = report["windows"]
-    assert (fast["quality_addresses"], fast["monitoring_supported"]) == (5, 5)
-    assert (slow["quality_addresses"], slow["monitoring_supported"]) == (5, 0)
-    assert (fast["satisfiable"], slow["satisfiable"]) == (True, False)
+    assert (report["roster_addresses"], report["monitoring_supported"]) == (5, 0)
+    assert (report["short_by"], report["satisfiable"]) == (5, False)
 
 
 def test_the_host_clock_is_only_the_fallback_when_nothing_has_been_scanned() -> None:
@@ -161,5 +161,5 @@ def test_an_empty_deployment_reports_zeroes_rather_than_failing() -> None:
     assert _roster_funnel([], state={}, settings=_settings())["selected_addresses"] == 0
     assert _send_queue([], now_ms=NOW) == {"waiting": 0, "head": None, "queue": []}
     triggerability = _triggerability([], state={}, settings=_settings(), now_ms=NOW)
-    assert [window["short_by"] for window in triggerability["windows"]] == [3, 5]
+    assert (triggerability["roster_addresses"], triggerability["short_by"]) == (0, 5)
     assert triggerability["min_net_buy_usd"] == str(Decimal("1000"))

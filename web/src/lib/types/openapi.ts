@@ -186,9 +186,9 @@ export interface paths {
          * @description Whether the current list, the current collection and the send chain can produce an alert at all.
          *
          *     A reader who sees no events needs to tell "nothing qualified" from "nothing could have qualified",
-         *     and every number that answers that is counted here rather than in the browser: the quality pool
-         *     against the two quorums, the monitoring support behind it, how far behind the chain cutoff is, and
-         *     what happened to the episodes that did exist.
+         *     and every number that answers that is counted here rather than in the browser: the published
+         *     roster against the one quorum, the monitoring support behind it, how far behind the chain cutoff
+         *     is, and what happened to the episodes that did exist.
          */
         get: operations["get_news_wallets_api_news_wallets_get"];
         put?: never;
@@ -545,6 +545,8 @@ export interface components {
             rank_quality: number | null;
             /** Reasons */
             reasons: string[];
+            /** Recent Episodes */
+            recent_episodes: number | null;
             /** Roster Known At Ms */
             roster_known_at_ms: number | null;
             /** Roster Version */
@@ -578,20 +580,24 @@ export interface components {
             cutoff_block: number;
             /** Cutoff Log */
             cutoff_log: number;
-            fast: components["schemas"]["NetBuyWindow"];
             /** Min Net Buy Usd */
             min_net_buy_usd: string;
             /** Roster Version */
             roster_version: number | null;
-            slow: components["schemas"]["NetBuyWindow"];
             /** Token */
             token: string;
             /** Token Decimals */
             token_decimals: number | null;
+            /** Token First Seen At Ms */
+            token_first_seen_at_ms: number | null;
             /** Token Symbol */
             token_symbol: string | null;
+            window: components["schemas"]["NetBuyWindow"];
         };
-        /** NetBuyWindow */
+        /**
+         * NetBuyWindow
+         * @description The one window, from its own two ends. There is no window name to choose between any more.
+         */
         NetBuyWindow: {
             /** Buy Usd */
             buy_usd: string;
@@ -611,11 +617,6 @@ export interface components {
             sell_usd: string;
             /** To Ms */
             to_ms: number;
-            /**
-             * Window
-             * @enum {string}
-             */
-            window: "5m" | "30m";
         };
         /**
          * NewsAcceptedReviewData
@@ -2772,10 +2773,12 @@ export interface components {
          * NewsWalletRosterData
          * @description The roster as one version: when it was taken, who was on it, and how the last refresh went.
          *
-         *     `quality_count` is the pool the 5m/30m thresholds are counted against; `whale_count` is observation
-         *     background and never stands in for it. `supported_quality_count` is the subset whose monitoring
-         *     already covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago
-         *     cannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.
+         *     `address_count` is the pool the quorum is counted against: every published address counts, and
+         *     `supported_count` is the subset whose monitoring already covers a whole window at the collection
+         *     cutoff -- a wallet the list gained minutes ago cannot complete a quorum yet, and a page that
+         *     counted it would promise a trigger that cannot fire. `quality_count` and `whale_count` are the
+         *     provider's own ranks, published as information about the list and no longer as a filter on it
+         *     (#649 PR-3 §1).
          *
          *     The published version and the last refresh attempt are separate on purpose. `taken_at_ms` and
          *     `last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`
@@ -2783,6 +2786,11 @@ export interface components {
          *     answer for five hours reads as exactly that rather than as a fresh list (#649 §5.1).
          */
         NewsWalletRosterData: {
+            /**
+             * Address Count
+             * @default 0
+             */
+            address_count: number;
             /** Last Attempt At Ms */
             last_attempt_at_ms?: number | null;
             /** Last Error */
@@ -2799,10 +2807,10 @@ export interface components {
              */
             quality_count: number;
             /**
-             * Supported Quality Count
+             * Supported Count
              * @default 0
              */
-            supported_quality_count: number;
+            supported_count: number;
             /** Taken At Ms */
             taken_at_ms?: number | null;
             /**
@@ -2942,15 +2950,20 @@ export interface components {
         };
         /**
          * NewsWalletThresholdsData
-         * @description The two window quorums, and whether the current pool can reach either of them.
+         * @description The one rule, and whether the addresses being watched can currently satisfy it.
+         *
+         *     One window, one quorum, one per-address floor. The 5m quorum that used to sit beside this one is
+         *     gone from the rule, from this contract and from the page (#649 PR-3 §2).
          */
         NewsWalletThresholdsData: {
-            /** Fast N */
-            fast_n: number;
-            /** Slow N */
-            slow_n: number;
+            /** Min Net Buy Usd */
+            min_net_buy_usd: string;
+            /** Required N */
+            required_n: number;
             /** Sufficient */
             sufficient: boolean;
+            /** Window Ms */
+            window_ms: number;
         };
         /** NewsWalletsData */
         NewsWalletsData: {

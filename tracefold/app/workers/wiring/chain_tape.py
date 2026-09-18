@@ -97,7 +97,6 @@ def _wire_chain_tape(
     detector = NetBuyDetector(
         db=tape_db,
         rules=WalletRules(
-            net_buy_fast_n=chain_tape.rules.net_buy_fast_n,
             net_buy_slow_n=chain_tape.rules.net_buy_slow_n,
             min_net_buy_usd=chain_tape.rules.min_net_buy_usd,
             trigger_max_age_s=chain_tape.rules.trigger_max_age_s,

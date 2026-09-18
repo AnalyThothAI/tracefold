@@ -5,7 +5,13 @@ import { useSearchParams } from "react-router-dom";
 
 import { useNewsWalletEventWithToken, type NewsWalletSnapshot } from "../../api/newsQueries";
 import { displayTime, optionalDuration, optionalTime } from "../../model/newsLabels";
-import { walletDecimal, walletNotificationLabel, walletReason } from "../../model/walletFacts";
+import {
+  walletDecimal,
+  walletNotificationLabel,
+  walletParticipations,
+  walletReason,
+  walletTokenAge,
+} from "../../model/walletFacts";
 
 import { WalletFillsTable } from "./WalletSupportingTables";
 
@@ -28,7 +34,7 @@ function EpisodeContent({ token, episodeId }: { token: string; episodeId: string
   if (!data) return <PageState.Loading label="正在按事件标识读取详情" layout="panel" rows={6} />;
   const event = data.event;
   const first = event.initial_snapshot;
-  const primary = first.fast.matched ? first.fast : first.slow;
+  const primary = first.window;
   return (
     <section className="news-wallets-panel news-wallet-event-detail" aria-label="事件详情">
       <div className="news-wallets-toolbar">
@@ -44,8 +50,12 @@ function EpisodeContent({ token, episodeId }: { token: string; episodeId: string
       >
         <h3>发生了什么</h3>
         <p>
-          首次触发 {displayTime(event.triggered_at_ms)} · {primary.window} · {primary.qualified_n}{" "}
-          个合格地址 · 净买入 ${walletDecimal(primary.net_usd)}
+          首次触发 {displayTime(event.triggered_at_ms)} · 30 分钟 · {primary.qualified_n} 个合格地址
+          · 净买入 ${walletDecimal(primary.net_usd)}
+        </p>
+        <p>
+          {walletTokenAge(first)} · 这 {primary.qualified_n} 个地址{walletParticipations(primary)}
+          集中净买入
         </p>
         <p>
           Robinhood Chain · <code>{event.token}</code>
@@ -148,38 +158,37 @@ function EpisodeContent({ token, episodeId }: { token: string; episodeId: string
 }
 
 function Snapshot({ snapshot }: { snapshot: NewsWalletSnapshot }) {
+  const window = snapshot.window;
+  const qualified = window.members.filter((member) => member.qualified);
+  const others = window.members.filter((member) => !member.qualified);
   return (
     <div className="news-wallets-snapshots">
-      {[snapshot.fast, snapshot.slow].map((window) => {
-        const qualified = window.members.filter((member) => member.qualified);
-        const others = window.members.filter((member) => !member.qualified);
-        return (
-          <section key={window.window}>
-            <h4>
-              {window.window} · {window.qualified_n} 个合格地址 ·{" "}
-              {window.matched ? "满足条件" : "未满足条件"}
-            </h4>
-            <p>
-              {displayTime(window.from_ms)} → {displayTime(window.to_ms)} · 至少 {window.required_n}{" "}
-              个地址， 每地址净买入至少 ${walletDecimal(snapshot.min_net_buy_usd)}
-            </p>
-            <p>
-              入选地址买入 ${walletDecimal(window.buy_usd)} · 卖出 ${walletDecimal(window.sell_usd)}{" "}
-              · 净买入 ${walletDecimal(window.net_usd)}
-            </p>
-            <Members members={qualified} />
-            <details>
-              <summary>其他观察地址与未纳入原因 · {others.length}</summary>
-              <Members members={others} />
-            </details>
-          </section>
-        );
-      })}
+      <section>
+        <h4>
+          30 分钟 · {window.qualified_n} 个合格地址 · {window.matched ? "满足条件" : "未满足条件"}
+        </h4>
+        <p>
+          {displayTime(window.from_ms)} → {displayTime(window.to_ms)} · 至少 {window.required_n}{" "}
+          个地址， 每地址净买入至少 ${walletDecimal(snapshot.min_net_buy_usd)}
+        </p>
+        <p>
+          入选地址买入 ${walletDecimal(window.buy_usd)} · 卖出 ${walletDecimal(window.sell_usd)} ·
+          净买入 ${walletDecimal(window.net_usd)}
+        </p>
+        <p className="news-wallets-note">
+          {walletTokenAge(snapshot)} · {walletParticipations(window)}
+        </p>
+        <Members members={qualified} />
+        <details>
+          <summary>其他观察地址与未纳入原因 · {others.length}</summary>
+          <Members members={others} />
+        </details>
+      </section>
     </div>
   );
 }
 
-function Members({ members }: { members: NewsWalletSnapshot["fast"]["members"] }) {
+function Members({ members }: { members: NewsWalletSnapshot["window"]["members"] }) {
   if (!members.length) return <p className="news-wallets-note">此集合没有地址。</p>;
   return (
     <div className="news-wallets-scroll">
@@ -200,7 +209,8 @@ function Members({ members }: { members: NewsWalletSnapshot["fast"]["members"] }
                 <code>{member.wallet}</code>
                 <small>
                   名单版本 {member.roster_version ?? "未知"} · 来源表现榜{" "}
-                  {member.rank_quality ?? "未入榜"}
+                  {member.rank_quality ?? "未入榜"} · 近 14 天参与{" "}
+                  {member.recent_episodes ?? "未知"} 次
                 </small>
                 <small>
                   来源平仓数 {member.source_closed_trades ?? "未知"} · 来源盈亏因子{" "}

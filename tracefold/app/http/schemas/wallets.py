@@ -34,10 +34,12 @@ class NewsWalletRosterMemberData(ExactApiSchema):
 class NewsWalletRosterData(ExactApiSchema):
     """The roster as one version: when it was taken, who was on it, and how the last refresh went.
 
-    `quality_count` is the pool the 5m/30m thresholds are counted against; `whale_count` is observation
-    background and never stands in for it. `supported_quality_count` is the subset whose monitoring
-    already covers a whole fast window at the collection cutoff -- a wallet the list gained minutes ago
-    cannot complete a quorum yet, and a page that counted it would promise a trigger that cannot fire.
+    `address_count` is the pool the quorum is counted against: every published address counts, and
+    `supported_count` is the subset whose monitoring already covers a whole window at the collection
+    cutoff -- a wallet the list gained minutes ago cannot complete a quorum yet, and a page that
+    counted it would promise a trigger that cannot fire. `quality_count` and `whale_count` are the
+    provider's own ranks, published as information about the list and no longer as a filter on it
+    (#649 PR-3 §1).
 
     The published version and the last refresh attempt are separate on purpose. `taken_at_ms` and
     `last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`
@@ -52,9 +54,10 @@ class NewsWalletRosterData(ExactApiSchema):
     # closed-trade count and the profit factor are only comparable over one window, and because moving
     # it from `7d` to `30d` is what made the quality pool reachable at all (#649 §5.3).
     window: str
+    address_count: int = 0
     quality_count: int = 0
     whale_count: int = 0
-    supported_quality_count: int = 0
+    supported_count: int = 0
     last_attempt_at_ms: int | None = None
     last_success_at_ms: int | None = None
     last_error: str | None = None
@@ -94,10 +97,15 @@ class NewsWalletTapeStateData(ExactApiSchema):
 
 
 class NewsWalletThresholdsData(ExactApiSchema):
-    """The two window quorums, and whether the current pool can reach either of them."""
+    """The one rule, and whether the addresses being watched can currently satisfy it.
 
-    fast_n: int
-    slow_n: int
+    One window, one quorum, one per-address floor. The 5m quorum that used to sit beside this one is
+    gone from the rule, from this contract and from the page (#649 PR-3 §2).
+    """
+
+    required_n: int
+    window_ms: int
+    min_net_buy_usd: str
     sufficient: bool
 
 

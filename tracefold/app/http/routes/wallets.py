@@ -8,7 +8,7 @@ from typing import Annotated, Any, Final, Literal
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
-from tracefold.news.chain_tape.rules import FAST_WINDOW_MS, SLOW_WINDOW_MS
+from tracefold.news.wallet_contracts import NET_BUY_WINDOW_MS
 
 from ..dependencies import _authenticated_runtime, _now_ms, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -40,9 +40,9 @@ def get_news_wallets(request: Request) -> Response:
     """Whether the current list, the current collection and the send chain can produce an alert at all.
 
     A reader who sees no events needs to tell "nothing qualified" from "nothing could have qualified",
-    and every number that answers that is counted here rather than in the browser: the quality pool
-    against the two quorums, the monitoring support behind it, how far behind the chain cutoff is, and
-    what happened to the episodes that did exist.
+    and every number that answers that is counted here rather than in the browser: the published
+    roster against the one quorum, the monitoring support behind it, how far behind the chain cutoff
+    is, and what happened to the episodes that did exist.
     """
 
     _validate_query_params(request, supported={"token"})
@@ -58,21 +58,21 @@ def get_news_wallets(request: Request) -> Response:
     cutoff = None if tape is None else tape["scanned_at_ms"]
     coverage_from = None if tape is None else tape["coverage_from_ms"]
     rules = chain_tape.rules
+    supported = _supported(members, cutoff, coverage_from)
     return _etagged(
         {
             "roster": _roster(
                 members,
                 tape,
-                cutoff=cutoff,
-                coverage_from_ms=coverage_from,
                 window=chain_tape.roster.window,
+                supported=supported,
             ),
             "tape": tape,
             "thresholds": {
-                "fast_n": rules.net_buy_fast_n,
-                "slow_n": rules.net_buy_slow_n,
-                "sufficient": _supported(members, cutoff, coverage_from, FAST_WINDOW_MS) >= rules.net_buy_fast_n
-                or _supported(members, cutoff, coverage_from, SLOW_WINDOW_MS) >= rules.net_buy_slow_n,
+                "required_n": rules.net_buy_slow_n,
+                "window_ms": NET_BUY_WINDOW_MS,
+                "min_net_buy_usd": str(rules.min_net_buy_usd),
+                "sufficient": supported >= rules.net_buy_slow_n,
             },
             "funnel": {**funnel, "window_from_ms": since, "window_to_ms": until},
             "collection_lagging": cutoff is None or now - int(cutoff) > COLLECTION_LAG_MS,
@@ -148,7 +148,7 @@ def get_news_wallet_event(
         fills = repos.news.wallet_event_fills(
             chain_id=event["chain_id"],
             token=event["token"],
-            from_ms=event["initial_snapshot"]["slow"]["from_ms"],
+            from_ms=event["initial_snapshot"]["window"]["from_ms"],
             to_ms=until,
             cutoff_block=event["latest_snapshot"]["cutoff_block"],
             cutoff_log=event["latest_snapshot"]["cutoff_log"],
@@ -201,7 +201,7 @@ def _event(row: dict[str, Any]) -> dict[str, Any]:
         "triggered_at_ms": row["event_at_ms"],
         # One projection, computed in SQL beside the facts it reads (#649 §7.1). The route used to
         # invent `pending` here for "eligible and no error", which is how a notification-stage
-        # rejection with no intent -- `wallet_not_selected`, `episode_already_reported`, a discarded
+        # rejection with no intent -- `stale_trigger`, `episode_already_reported`, a discarded
         # intent -- read as "waiting to be sent" for the rest of its life.
         "notification_state": row["notification_state"],
         "notification_reason": row["notification_error"],
@@ -217,9 +217,8 @@ def _roster(
     members: list[dict[str, Any]],
     tape: dict[str, Any] | None,
     *,
-    cutoff: int | None,
-    coverage_from_ms: int | None,
     window: str,
+    supported: int,
 ) -> dict[str, Any]:
     """The published version is the last refresh that actually succeeded; a failed one publishes nothing.
 
@@ -238,9 +237,10 @@ def _roster(
     return {
         **published,
         "window": window,
+        "address_count": len(members),
         "quality_count": sum(member["rank_quality"] is not None for member in members),
         "whale_count": sum(member["rank_whale"] is not None for member in members),
-        "supported_quality_count": _supported(members, cutoff, coverage_from_ms, FAST_WINDOW_MS),
+        "supported_count": supported,
         "last_attempt_at_ms": None if tape is None else tape["roster_last_attempt_at_ms"],
         "last_success_at_ms": None if tape is None else tape["roster_last_success_at_ms"],
         "last_error": None if tape is None else tape["roster_last_error"],
@@ -251,21 +251,21 @@ def _roster(
     }
 
 
-def _supported(members: list[dict[str, Any]], cutoff: int | None, coverage_from_ms: int | None, window_ms: int) -> int:
-    """Quality addresses whose monitoring already covers a whole `window_ms` at the collection cutoff.
+def _supported(members: list[dict[str, Any]], cutoff: int | None, coverage_from_ms: int | None) -> int:
+    """Roster addresses whose monitoring already covers a whole window at the collection cutoff.
 
-    The same test `rules.py` applies to a member inside a window, asked of the roster as a whole: both
-    the address's own `monitoring_from_ms` and the tape's coverage must start before the window does.
+    The same test `rules.py` applies to a member inside the window, asked of the roster as a whole:
+    both the address's own `monitoring_from_ms` and the tape's coverage must start before the window
+    does. Every published address is counted, because every published address counts towards the
+    quorum -- the quality and whale ranks are still published beside this number and no longer decide
+    it (#649 PR-3 §1).
     """
 
     if cutoff is None or coverage_from_ms is None:
         return 0
-    start = int(cutoff) - window_ms
+    start = int(cutoff) - NET_BUY_WINDOW_MS
     if int(coverage_from_ms) > start:
         return 0
     return sum(
-        member["rank_quality"] is not None
-        and member["monitoring_from_ms"] is not None
-        and int(member["monitoring_from_ms"]) <= start
-        for member in members
+        member["monitoring_from_ms"] is not None and int(member["monitoring_from_ms"]) <= start for member in members
     )

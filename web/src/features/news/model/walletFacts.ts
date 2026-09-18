@@ -4,6 +4,7 @@ import {
   type NewsWalletFill,
   type NewsWalletFillKind,
   type NewsWallets,
+  type NewsWalletSnapshot,
 } from "../api/newsQueries";
 
 import { formatPrice } from "./newsPrice";
@@ -14,6 +15,42 @@ export function walletDecimal(value: string | null | undefined): string {
   const amount = Number(value);
   if (!Number.isFinite(amount) || Math.abs(amount) < 0.000001) return value;
   return amount < 0 ? "-" + formatPrice(value.slice(1)) : formatPrice(value);
+}
+
+/** Under an hour on chain at the trigger, a token is labelled a new listing — never filtered out. */
+export const WALLET_NEW_LAUNCH_MAX_AGE_MS = 3_600_000;
+
+/**
+ * How old the token was when the episode triggered, from the tape's own earliest sighting of it.
+ * That sighting is a bound and not the chain's first block — the collector only ever watches roster
+ * addresses — so the label says where the number comes from, and an unseen token stays unknown.
+ */
+export function walletTokenAge(snapshot: NewsWalletSnapshot): string {
+  const seen = snapshot.token_first_seen_at_ms;
+  if (seen == null) return "代币年龄未知";
+  const age = Math.max(0, snapshot.cutoff_at_ms - seen);
+  const minutes = Math.floor(age / 60_000);
+  const text =
+    minutes < 60
+      ? `${minutes} 分钟`
+      : minutes < 1440
+        ? `${Math.floor(minutes / 60)} 小时`
+        : `${Math.floor(minutes / 1440)} 天`;
+  return age < WALLET_NEW_LAUNCH_MAX_AGE_MS ? `代币年龄 ${text} · 新盘` : `代币年龄 ${text}`;
+}
+
+/**
+ * How often this window's qualified addresses have qualified before, over the server's own window.
+ * Participations, not episodes: two of these addresses in one earlier round is two participations,
+ * and a snapshot written before the count existed says it is unknown rather than printing a zero.
+ */
+export function walletParticipations(window: NewsWalletSnapshot["window"]): string {
+  const counts = window.members
+    .filter((member) => member.qualified)
+    .map((member) => member.recent_episodes);
+  const known = counts.filter((count): count is number => count != null);
+  if (!known.length) return "近 14 天参与次数未知";
+  return `近 14 天共参与 ${known.reduce((total, count) => total + count, 0)} 次`;
 }
 
 export function walletFillLabel(kind: NewsWalletFillKind): string {
@@ -60,9 +97,9 @@ export function parseWalletEventFilters(params: URLSearchParams): NewsWalletEven
 
 /**
  * Why this page currently shows what it shows. Every branch is a different answer to "there is no
- * alert": a list that cannot reach either quorum, addresses that have not watched long enough, a
- * collection that is behind, a real absence of qualifying buys, and the three ways the page itself or
- * the send chain can be the reason. The browser decides none of the numbers — it orders the answers.
+ * alert": a list smaller than the quorum, addresses that have not watched long enough, a collection
+ * that is behind, a real absence of qualifying buys, and the three ways the page itself or the send
+ * chain can be the reason. The browser decides none of the numbers — it orders the answers.
  */
 export type WalletStatusState =
   | "unread"
@@ -82,11 +119,9 @@ export function walletStatusState(
   // An unanswered read is never an answer: "nothing has come back yet" is its own state, not health.
   if (!status) return failed ? "query_failed" : "unread";
   if (!status.notifications_enabled) return "notifications_disabled";
-  const { fast_n, slow_n, sufficient } = status.thresholds;
+  const { required_n, sufficient } = status.thresholds;
   if (!sufficient)
-    return status.roster.quality_count < Math.min(fast_n, slow_n)
-      ? "roster_insufficient"
-      : "warming_up";
+    return status.roster.address_count < required_n ? "roster_insufficient" : "warming_up";
   if (status.collection_lagging) return "collection_lagging";
   if (status.funnel.intents > status.funnel.sent) return "send_failed";
   return status.funnel.events === 0 ? "no_match" : "healthy";
@@ -100,14 +135,14 @@ export function walletStatusSentence(
   if (state === "unread") return "正在读取名单与采集状态。";
   if (!status || state === "query_failed") return "名单与采集状态读取失败，事件仍可查阅。";
   const { roster, thresholds, funnel } = status;
-  const quorum = `5m ${thresholds.fast_n} 个及 30m ${thresholds.slow_n} 个门槛`;
+  const quorum = `30 分钟 ${thresholds.required_n} 个地址的门槛`;
   switch (state) {
     case "notifications_disabled":
       return "钱包通知已关闭：仍在采集与记录事件，不会发送任何通知。";
     case "roster_insufficient":
-      return `当前质量地址 ${roster.quality_count} 个，低于 ${quorum}；当前名单不足以触发`;
+      return `当前名单地址 ${roster.address_count} 个，低于 ${quorum}；当前名单不足以触发`;
     case "warming_up":
-      return `质量地址 ${roster.quality_count} 个，其中 ${roster.supported_quality_count} 个已具备完整窗口监控支持；其余仍在预热，尚不足以凑齐 ${quorum}。`;
+      return `名单地址 ${roster.address_count} 个，其中 ${roster.supported_count} 个已具备完整窗口监控支持；其余仍在预热，尚不足以凑齐 ${quorum}。`;
     case "collection_lagging":
       return "链采集落后于当前时间，窗口内的变化可能尚未完整。";
     case "send_failed":
@@ -122,7 +157,7 @@ export function walletStatusSentence(
 export function walletReason(reason: string | null | undefined): string {
   if (!reason) return "未发送";
   const labels: Record<string, string> = {
-    not_quality_roster: "不属于来源表现榜",
+    not_on_roster: "不在已发布名单内",
     incomplete_monitoring_window: "监控尚未覆盖完整窗口",
     collection_gap: "采集覆盖存在缺口",
     unpriced_trade: "存在未计价买卖",
@@ -134,7 +169,6 @@ export function walletReason(reason: string | null | undefined): string {
     stale_trigger: "触发事实已超时",
     future_chain_timestamp: "链时间超前",
     wallet_notifications_disabled: "钱包通知已静音",
-    wallet_not_selected: "本轮未被选为首报",
     episode_already_reported: "本轮已首报，不重复发送",
     merging_into_prepared_card: "正在并入待发送卡片",
     market_sender_unavailable: "发送渠道暂不可用",

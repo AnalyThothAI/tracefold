@@ -52,22 +52,24 @@ def test_hot_token_plan_bounded_replay_and_unchanged_snapshot_have_measured_evid
     stale_token = "0x" + "bb" * 20
     net_zero_token = "0x" + "cc" * 20
     unknown_token = "0x" + "dd" * 20
-    stale = [replace(fill(10000 + i, wallet=i, at=NOW - 100000), token=stale_token) for i in range(1, 4)]
-    hot = [fill(10003 + i, wallet=(i - 1) % 6 + 1, usd="100", raw=100) for i in range(1, 201)]
+    # Every one of these cohorts is five addresses: the quorum is five, so a group stopped by the
+    # count would prove nothing about the exclusion it is here to demonstrate (#649 PR-3 §2).
+    stale = [replace(fill(10000 + i, wallet=i, at=NOW - 100000), token=stale_token) for i in range(1, 6)]
+    hot = [fill(10005 + i, wallet=(i - 1) % 6 + 1, usd="100", raw=100) for i in range(1, 201)]
     negative = []
-    for i in range(1, 4):
+    for i in range(1, 6):
         negative.extend(
             [
-                replace(fill(10203 + i, wallet=i, usd="2000", raw=2000, log=1), token=net_zero_token),
-                replace(fill(10203 + i, wallet=i, kind="sell", usd="1800", raw=2000, log=2), token=net_zero_token),
+                replace(fill(10205 + i, wallet=i, usd="2000", raw=2000, log=1), token=net_zero_token),
+                replace(fill(10205 + i, wallet=i, kind="sell", usd="1800", raw=2000, log=2), token=net_zero_token),
             ]
         )
-    unknown = [replace(fill(10206 + i, wallet=i), token=unknown_token) for i in range(1, 4)]
-    unknown.append(replace(fill(10209, wallet=3, kind="sell", usd=None, raw=1, log=2), token=unknown_token))
+    unknown = [replace(fill(10210 + i, wallet=i), token=unknown_token) for i in range(1, 6)]
+    unknown.append(replace(fill(10215, wallet=5, kind="sell", usd=None, raw=1, log=2), token=unknown_token))
     transfer_token = "0x" + "ee" * 20
-    transferred = [replace(fill(10209 + i, wallet=i), token=transfer_token) for i in range(1, 4)]
+    transferred = [replace(fill(10215 + i, wallet=i), token=transfer_token) for i in range(1, 6)]
     transferred.append(
-        replace(fill(10212, wallet=3, kind="transfer_out", usd=None, raw=1, log=2), token=transfer_token)
+        replace(fill(10220, wallet=5, kind="transfer_out", usd=None, raw=1, log=2), token=transfer_token)
     )
     pending = stale + hot + negative + unknown + transferred
     add_facts(conn, pending, stamp=NOW)
@@ -95,10 +97,10 @@ def test_hot_token_plan_bounded_replay_and_unchanged_snapshot_have_measured_evid
         if result.receipts == 0:
             break
         assert len(durations) < 30
-    assert receipt_count == 212 and opened == 1
+    assert receipt_count == 220 and opened == 1
     assert len(events(conn)) == 1 and events(conn)[0]["token"] == TOKEN
-    assert events(conn)[0]["initial_snapshot"]["fast"]["qualified_n"] == 3
-    assert events(conn)[0]["latest_snapshot"]["fast"]["qualified_n"] == 6
+    assert events(conn)[0]["initial_snapshot"]["window"]["qualified_n"] == 5
+    assert events(conn)[0]["latest_snapshot"]["window"]["qualified_n"] == 6
     before = conn.execute("SELECT xmin::text AS version FROM news_market_wallet_events").fetchone()
     assert run(conn).updated == 0
     assert conn.execute("SELECT xmin::text AS version FROM news_market_wallet_events").fetchone() == before
@@ -117,7 +119,7 @@ def test_hot_token_plan_bounded_replay_and_unchanged_snapshot_have_measured_evid
     report = {
         "scope": "synthetic replay on isolated PostgreSQL; not live frequency, profitability or SLO evidence",
         "source_interval_ms": [NOW - 7200000, NOW],
-        "known_at_roster": "seeded one hour before trigger; 10 quality members; six hot-token participants",
+        "known_at_roster": "seeded one hour before trigger; 10 roster members; six hot-token participants",
         "context_fills": 10000,
         "evaluated_fills": len(pending),
         "complete_receipts": receipt_count,
@@ -126,9 +128,9 @@ def test_hot_token_plan_bounded_replay_and_unchanged_snapshot_have_measured_evid
         "duplicate_new_fills": 0,
         "unchanged_snapshot_writes": 0,
         "unpriced_trades": 1,
-        "net_zero_wallets": 3,
+        "net_zero_wallets": 5,
         "wallets_excluded_by_transfer_out": 1,
-        "stale_trigger_receipts": 3,
+        "stale_trigger_receipts": 5,
         "missing_baselines": 1,
         "comparable_price_outcomes": 0,
         "derivation_reasons": reasons,
