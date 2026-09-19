@@ -7,6 +7,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..evidence import execution_evidence_views
 from ..models import ReaderReceipt, market_type_of
 from ..outcome import (
     audience_zh,
@@ -257,6 +258,27 @@ class FeedStorage:
         )
         latest_triage = next((dict(v) for v in reversed(verdicts) if v["stage"] == "triage"), None)
         latest_editorial = editorial_read_shape((latest_triage or {}).get("editorial"))
+        evidence_inputs = execution_evidence_views(verdicts)
+        selected_inputs = [entry for entry in evidence_inputs if entry["selected"]]
+        last_cutoff = max((entry["cutoff_at_ms"] for entry in selected_inputs), default=None)
+        late_evidence = []
+        if last_cutoff is not None:
+            late_evidence = [
+                dict(row)
+                for row in self.conn.execute(
+                    """
+                SELECT item_id AS material_id, 'provider_payload'::text AS material_kind,
+                       provider_params_available_at_ms AS available_at_ms
+                  FROM news_items WHERE item_id=%s AND provider_params_available_at_ms > %s
+                UNION ALL
+                SELECT document_id AS material_id, 'source_document'::text AS material_kind, available_at_ms
+                  FROM news_evidence_documents WHERE requested_url=%s AND available_at_ms > %s
+                ORDER BY available_at_ms DESC LIMIT 8
+                """,
+                    (card["leader_item_id"], last_cutoff, card.get("leader_url"), last_cutoff),
+                ).fetchall()
+            ]
+
         return {
             "event": event,
             "outcome": outcome.as_dict(),
@@ -275,6 +297,8 @@ class FeedStorage:
             "verdicts": verdict_rows,
             "deliveries": delivery_rows,
             "review": self._review_summary(event_id),
+            "evidence_inputs": evidence_inputs,
+            "late_evidence": late_evidence,
             "evidence_snapshots": [
                 {
                     "event_id": row["event_id"],

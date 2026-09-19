@@ -62,6 +62,8 @@ def _safe_json_state(value: Any) -> Any:
 # The one budget a Predictor instruction has, applied to the whole text. #306 Phase 2 retired the separate
 # 8 KiB advisory ceiling with the layering it bounded: there is no longer an outer instruction and an inner
 # addendum to bound differently, and a human editing `seed.py` is held to exactly what a GEPA proposal is.
+PROGRAM_CONTEXT_UPPER_TOKENS: Final[int] = 131_072
+
 PROGRAM_INSTRUCTION_MAX_BYTES: Final[int] = 32_768
 
 PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS: Final[int] = 8_192
@@ -74,7 +76,7 @@ PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_state_v1"
 # catalogue's uncollapsed candidates, so a v9 recording answers a different question with a different output
 # contract and is not a replay of this executor. v9 (#501) split taxonomy into its own Predictor; #344 (v8)
 # made the same kind of cut when requests started being rendered by DSPy.
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v10"
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v11"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.

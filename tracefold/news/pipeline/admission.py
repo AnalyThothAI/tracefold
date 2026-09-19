@@ -29,6 +29,7 @@ from ..events.minhash import band_keys, minhash_signature
 from ..events.storyline import preliminary_storyline_key
 from ..events.titles import ExtractedTitle, description_after_title, extract_title
 from ..events.tokens import comparison_tokens, jaccard
+from ..evidence import normalized_provider_text, text_sha
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
 from ..source_contracts import (
@@ -98,6 +99,10 @@ class AdmitBatchResult:
 
 @dataclass(frozen=True, slots=True)
 class _PreparedAdmission:
+    provider_params_json: str
+    provider_params_sha256: str
+    evidence_text: str
+    evidence_text_sha256: str
     provider_metadata_json: str
     source_contract: SourceContract
     engine_type: str
@@ -320,6 +325,10 @@ def _prepare_frame(
             )
             prepared.append(
                 _PreparedAdmission(
+                    provider_params_json=canonical_json(event.provider_params),
+                    provider_params_sha256=hashlib.sha256(canonical_json(event.provider_params).encode()).hexdigest(),
+                    evidence_text=normalized_provider_text(event.provider_params),
+                    evidence_text_sha256=text_sha(normalized_provider_text(event.provider_params)),
                     provider_metadata_json=provider_metadata_json,
                     source_contract=source_contract,
                     engine_type=engine_type,
@@ -826,6 +835,10 @@ def admit_item(
         trace_id=trace_id,
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
+        provider_params_json=prepared.provider_params_json,
+        provider_params_sha256=prepared.provider_params_sha256,
+        evidence_text=prepared.evidence_text,
+        evidence_text_sha256=prepared.evidence_text_sha256,
     )
     existing_membership = news.fact_membership(
         item_id=item_id,

@@ -84,6 +84,11 @@ WATCHLIST = frozenset({"BTC", "NVDA"})
 PROGRAM_SHA256 = "9" * 64
 
 
+@pytest.fixture(autouse=True)
+def _fixed_triage_clock(monkeypatch):
+    monkeypatch.setattr("tracefold.news.pipeline.triage.now_ms", lambda: NOW_MS)
+
+
 class FakeBus:
     def __init__(self) -> None:
         self.published: list[BusMessage] = []
@@ -151,6 +156,10 @@ class RecordingNews:
 
         def _call(*args: Any, **kwargs: Any) -> Any:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
+            if name == "evidence_item" and name not in self.responses:
+                return {}
+            if name == "evidence_candidates" and name not in self.responses:
+                return []
             if name == "reader_history" and name not in self.responses:
                 return ReaderHistorySnapshot()  # nothing pushed yet
             if name == "reader_history_revision" and name not in self.responses:

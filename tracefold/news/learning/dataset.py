@@ -661,7 +661,7 @@ class DevelopmentDatasetStore:
                 review,
                 case.get("production_judgment"),
                 told_event_ids=tuple(entry.event_id for entry in context.told.entries),
-                context_exact=bool(case.get("actual_context")),
+                context_exact=bool(case.get("actual_context") and case["actual_context"].get("prepared_evidence")),
             )
             episodes.append(
                 {
@@ -671,7 +671,13 @@ class DevelopmentDatasetStore:
                     "applicable_targets": list(supervision["targets"]),
                     "provenance": {
                         **case_ref.provenance.model_dump(mode="json"),
-                        "context_source": "actual" if case.get("actual_context") else "reconstructed",
+                        "context_source": (
+                            "actual"
+                            if case.get("actual_context") and case["actual_context"].get("prepared_evidence")
+                            else "archived_excerpt_adaptation"
+                            if case.get("actual_context")
+                            else "reconstructed"
+                        ),
                         "history_coverage": "selected_execution"
                         if case.get("actual_context")
                         else "reviewed_cases_only",
@@ -1010,7 +1016,7 @@ class DevelopmentDatasetStore:
         if frozen is not None:
             context = TriageContext.model_validate(frozen)
             if case.get("evaluation_protocol") != "counterfactual_sequence":
-                return context
+                return context.adapt_archived_excerpt()
             event = dict(case["snapshot"]["card"])
             told_rows = [row.as_told_row() for row in self._history.build(case, state).told_source_rows]
             rebuilt = TriageContext.from_card(
@@ -1021,7 +1027,7 @@ class DevelopmentDatasetStore:
                 queue_lag_ms=context.queue_lag_ms,
                 catalog_candidates={row.symbol: row.classes for row in context.gate.catalog_candidates},
             )
-            return context.model_copy(update={"told": rebuilt.told})
+            return context.adapt_archived_excerpt().model_copy(update={"told": rebuilt.told})
         snapshot = case["snapshot"]
         event = dict(snapshot.get("card") or {})
         focus = dict(snapshot.get("focus_fact") or {})

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel
@@ -22,7 +22,7 @@ from .lm import (
     mark_active_domain_failure,
     program_json_adapter,
 )
-from .runtime import PREDICTOR_NAMES
+from .runtime import PREDICTOR_NAMES, PROGRAM_CONTEXT_UPPER_TOKENS, PredictorName
 from .seed import seed_instruction
 from .signatures import (
     EventSemantics,
@@ -66,6 +66,8 @@ class _PreparedRun:
 
 def _prepare(context: TriageContext | Mapping[str, Any]) -> _PreparedRun:
     typed = context if isinstance(context, TriageContext) else TriageContext.model_validate(context)
+    if typed.prepared_evidence is None:
+        raise ValueError("news_program_archived_input_requires_explicit_adaptation")
     return _PreparedRun(
         context=typed,
         semantics_evidence_json=render_model_evidence_json(
@@ -204,6 +206,16 @@ def _assemble(
 ) -> NativeProgramResult:
     try:
         card = ReaderCard.model_validate(raw_card)
+        visible_refs = (
+            {
+                span.ref_id
+                for span in (*context.prepared_evidence.current_evidence, *context.prepared_evidence.related_evidence)
+            }
+            if context.prepared_evidence
+            else set()
+        )
+        if not set(card.source_refs).issubset(visible_refs):
+            raise ValueError("news_program_source_ref_invalid")
         error = restatement_index_error(
             novelty=semantics.novelty,
             restates=semantics.restates,
@@ -291,6 +303,30 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         )
         self.load_state(state.predictor_documents())
         self._verify_loaded_state(state)
+
+    def _check_input_budget(self, prepared: _PreparedRun) -> None:
+        # UTF-8 byte count is a deliberately conservative token upper estimate. It
+        # includes native instructions, demos, JSON schema, evidence and output reserve;
+        # no final slicing is allowed. The extra reserve covers adapter framing and semantics.
+        for name, evidence in (
+            ("event_semantics", prepared.semantics_evidence_json),
+            ("taxonomy", prepared.taxonomy_evidence_json),
+            ("reader_card", prepared.card_evidence_json),
+        ):
+            predictor = getattr(self, name)
+            document = canonical_json(
+                {
+                    "instructions": str(predictor.signature.instructions),
+                    "demos": [dict(demo) for demo in predictor.demos],
+                    "evidence": evidence,
+                    "schema": predictor.signature.model_json_schema(),
+                }
+            )
+            upper = (
+                len(document.encode("utf-8")) + self.state.predictor_state(cast(PredictorName, name)).max_tokens + 8192
+            )
+            if upper > PROGRAM_CONTEXT_UPPER_TOKENS:
+                raise ValueError("news_program_input_budget_exceeded")
 
     def _verify_loaded_state(self, state: NewsProgramStateV1) -> None:
         """Re-read what DSPy actually loaded and refuse anything the round trip did not reproduce.
@@ -407,6 +443,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         if rejection is not None:
             return _rejected(rejection)
         prepared = _prepare(context)
+        self._check_input_budget(prepared)
         with dspy.context(adapter=program_json_adapter()):
             semantics_prediction = self.event_semantics(
                 evidence_json=prepared.semantics_evidence_json,
@@ -442,6 +479,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         if rejection is not None:
             return _rejected(rejection)
         prepared = _prepare(context)
+        self._check_input_budget(prepared)
         with dspy.context(adapter=program_json_adapter()):
             semantics_prediction = await self.event_semantics.acall(
                 evidence_json=prepared.semantics_evidence_json,

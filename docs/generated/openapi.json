@@ -1836,11 +1836,25 @@
           "event": {
             "$ref": "#/components/schemas/NewsEventData"
           },
+          "evidence_inputs": {
+            "items": {
+              "$ref": "#/components/schemas/NewsEvidenceInputData"
+            },
+            "title": "Evidence Inputs",
+            "type": "array"
+          },
           "evidence_snapshots": {
             "items": {
               "$ref": "#/components/schemas/NewsEvidenceSnapshotData"
             },
             "title": "Evidence Snapshots",
+            "type": "array"
+          },
+          "late_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/NewsLateEvidenceData"
+            },
+            "title": "Late Evidence",
             "type": "array"
           },
           "members": {
@@ -2218,6 +2232,111 @@
         "title": "NewsEventReviewSummaryData",
         "type": "object"
       },
+      "NewsEvidenceInputData": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_count": {
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "current_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/NewsEvidenceSpanData"
+            },
+            "title": "Current Evidence",
+            "type": "array"
+          },
+          "cutoff_at_ms": {
+            "title": "Cutoff At Ms",
+            "type": "integer"
+          },
+          "declared_source_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Declared Source Refs",
+            "type": "array"
+          },
+          "document_receipt": {
+            "additionalProperties": true,
+            "title": "Document Receipt",
+            "type": "object"
+          },
+          "document_status": {
+            "title": "Document Status",
+            "type": "string"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "exclusions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclusions",
+            "type": "array"
+          },
+          "execution_index": {
+            "title": "Execution Index",
+            "type": "integer"
+          },
+          "focus_fact_id": {
+            "title": "Focus Fact Id",
+            "type": "string"
+          },
+          "input_version": {
+            "title": "Input Version",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "related_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/NewsEvidenceSpanData"
+            },
+            "title": "Related Evidence",
+            "type": "array"
+          },
+          "selected": {
+            "title": "Selected",
+            "type": "boolean"
+          },
+          "selected_count": {
+            "title": "Selected Count",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_index",
+          "status",
+          "selected",
+          "focus_fact_id",
+          "input_version",
+          "cutoff_at_ms",
+          "current_evidence",
+          "related_evidence",
+          "missing",
+          "exclusions",
+          "document_status",
+          "document_receipt",
+          "candidate_count",
+          "selected_count",
+          "declared_source_refs",
+          "elapsed_ms"
+        ],
+        "title": "NewsEvidenceInputData",
+        "type": "object"
+      },
       "NewsEvidenceSnapshotData": {
         "additionalProperties": false,
         "description": "Current evidence identity only; raw evidence bytes remain in PostgreSQL audit storage.",
@@ -2262,6 +2381,118 @@
           "created_at_ms"
         ],
         "title": "NewsEvidenceSnapshotData",
+        "type": "object"
+      },
+      "NewsEvidenceSpanData": {
+        "additionalProperties": false,
+        "properties": {
+          "available_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At Ms"
+          },
+          "content_sha256": {
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "coverage_status": {
+            "title": "Coverage Status",
+            "type": "string"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "extraction_version": {
+            "title": "Extraction Version",
+            "type": "string"
+          },
+          "material_kind": {
+            "enum": [
+              "current",
+              "related"
+            ],
+            "title": "Material Kind",
+            "type": "string"
+          },
+          "ref_id": {
+            "title": "Ref Id",
+            "type": "string"
+          },
+          "reported_published_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported Published At Ms"
+          },
+          "selection_reason": {
+            "title": "Selection Reason",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "source_artifact_id": {
+            "title": "Source Artifact Id",
+            "type": "string"
+          },
+          "source_item_id": {
+            "title": "Source Item Id",
+            "type": "string"
+          },
+          "span_end": {
+            "title": "Span End",
+            "type": "integer"
+          },
+          "span_start": {
+            "title": "Span Start",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "text_space": {
+            "title": "Text Space",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref_id",
+          "material_kind",
+          "source_item_id",
+          "document_id",
+          "source_artifact_id",
+          "content_sha256",
+          "extraction_version",
+          "text_space",
+          "span_start",
+          "span_end",
+          "text",
+          "source",
+          "url",
+          "reported_published_at_ms",
+          "available_at_ms",
+          "selection_reason",
+          "coverage_status"
+        ],
+        "title": "NewsEvidenceSpanData",
         "type": "object"
       },
       "NewsFeedCountsData": {
@@ -3028,6 +3259,30 @@
           }
         },
         "title": "NewsInstrumentUniverse",
+        "type": "object"
+      },
+      "NewsLateEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "available_at_ms": {
+            "title": "Available At Ms",
+            "type": "integer"
+          },
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_kind": {
+            "title": "Material Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id",
+          "material_kind",
+          "available_at_ms"
+        ],
+        "title": "NewsLateEvidenceData",
         "type": "object"
       },
       "NewsLearningRetentionStatusData": {

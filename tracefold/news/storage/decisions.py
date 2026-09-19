@@ -74,47 +74,38 @@ EXPIRE_DELIVERY_CLAIMS_SQL = """
 """
 
 _READER_HISTORY_PROJECTION = """
-    SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key, e.comparison_title,
-           e.comparison_fingerprint, e.dedupe_family,
-           (v.verdict ->> 'magnitude')::int AS magnitude,
-           v.verdict ->> 'direction' AS direction,
-           COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh') AS headline_zh,
-           v.verdict ->> 'why_zh' AS why_zh,
-           COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
-           COALESCE(v.verdict -> 'assets', '[]'::jsonb) AS assets,
-           COALESCE(
-             (SELECT jsonb_agg(base_symbol ORDER BY base_symbol)
-                FROM (SELECT DISTINCT COALESCE(a.base_symbol, ea.symbol) AS base_symbol
-                        FROM news_event_assets ea
-                        LEFT JOIN news_symbol_aliases a ON a.alias = ea.symbol
-                       WHERE ea.event_id = e.event_id) bases),
-             '[]'::jsonb
-           ) AS canonical_assets
+    SELECT d.event_id, d.settled_at_ms AS at_ms,
+           COALESCE(d.history_context ->> 'storyline_key', '') AS storyline_key,
+           COALESCE(d.history_context ->> 'comparison_title',
+                    d.card #>> '{header,title,content}', '') AS comparison_title,
+           COALESCE(d.history_context ->> 'comparison_fingerprint', '') AS comparison_fingerprint,
+           COALESCE(d.history_context ->> 'dedupe_family', 'general') AS dedupe_family,
+           COALESCE((d.history_context ->> 'magnitude')::int, 0) AS magnitude,
+           COALESCE(d.history_context ->> 'direction', 'unclear') AS direction,
+           COALESCE(NULLIF(d.card #>> '{header,title,content}', ''),
+                    d.history_context ->> 'headline_zh', '') AS headline_zh,
+           COALESCE(d.history_context ->> 'why_zh', '') AS why_zh,
+           COALESCE(d.history_context -> 'grounded_assets', '[]'::jsonb) AS grounded_assets,
+           COALESCE(d.history_context -> 'assets', '[]'::jsonb) AS assets,
+           COALESCE(d.history_context -> 'canonical_assets', '[]'::jsonb) AS canonical_assets,
+           CASE WHEN d.history_context IS NULL THEN 'legacy_receipt_only' ELSE 'delivery_bound' END AS provenance_status
       FROM news_events e
       JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first' AND d.state = 'sent'
                             AND d.delete_state IS DISTINCT FROM 'deleted'
-      JOIN LATERAL (
-        SELECT candidate.*
-          FROM (
-            -- Keep the Event-led primary-key lookup separate from the newest-route sort. Otherwise PostgreSQL
-            -- can walk the stage/time index once per Event and filter every other Event on each walk.
-            SELECT scoped.* FROM news_verdicts scoped
-             WHERE scoped.event_id = e.event_id
-               AND scoped.stage = 'triage'
-               AND scoped.judgment_contract_version = 'news_judgment_v2'
-               AND scoped.final_decision IN ('push', 'escalate')
-             OFFSET 0
-          ) candidate
-         ORDER BY candidate.created_at_ms DESC, candidate.policy_version DESC
-         LIMIT 1
-      ) v ON true
-      JOIN news_event_evidence_snapshots evidence
-        ON evidence.event_id = v.event_id
-       AND evidence.evidence_version = v.evidence_version
-       AND evidence.evidence_sha256 = v.evidence_sha256
-       AND evidence.provenance = 'observed'
-       AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
 """
+
+
+def delivered_history_rows(conn: Any, *, cutoff_at_ms: int) -> tuple[dict[str, Any], ...]:
+    """The evaluator consumes the same bound receipt projection as online retrieval."""
+    rows = conn.execute(
+        _READER_HISTORY_PROJECTION
+        + """
+        WHERE d.settled_at_ms >= %s AND d.settled_at_ms < %s
+        ORDER BY d.settled_at_ms, d.event_id
+        """,
+        (cutoff_at_ms - TARGETED_HISTORY_WINDOW_MS, cutoff_at_ms),
+    ).fetchall()
+    return tuple(dict(row) for row in rows)
 
 
 # #582 §3.3. The News an OI card's instrument already has, in the two numbers that card prints. Here
@@ -154,7 +145,7 @@ MARKET_NEWS_PUSHED_SQL = f"""{_EQUIVALENT_SYMBOLS_CTE}{_READER_HISTORY_PROJECTIO
           WHERE candidate_asset.event_id = e.event_id
             AND candidate_asset.symbol IN (SELECT symbol FROM equivalent_symbols)
        )
-     ORDER BY d.settled_at_ms DESC, v.event_id
+     ORDER BY d.settled_at_ms DESC, d.event_id
      LIMIT %s
 """  # noqa: S608 - the only interpolation is this package's own Event-kind predicate
 # The denominator, and a different question: how many editorial Events named this instrument at all,
@@ -223,7 +214,7 @@ class DecisionStorage:
             + """
              WHERE e.event_id <> %s
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-             ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
+             ORDER BY d.settled_at_ms DESC, d.event_id LIMIT %s
             """,
             (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, int(now_ms), RECENT_HISTORY_MAX),
         ).fetchall()
@@ -242,10 +233,10 @@ class DecisionStorage:
             + """
              CROSS JOIN current_event current
              WHERE e.event_id <> %s
-               AND e.dedupe_family = current.dedupe_family
-               AND e.comparison_fingerprint = current.comparison_fingerprint
+               AND d.history_context ->> 'dedupe_family' = current.dedupe_family
+               AND d.history_context ->> 'comparison_fingerprint' = current.comparison_fingerprint
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-             ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
+             ORDER BY d.settled_at_ms DESC, d.event_id LIMIT %s
             """,
             (
                 event_id,
@@ -276,8 +267,8 @@ class DecisionStorage:
              CROSS JOIN current_event current
              WHERE e.event_id <> current.event_id
                AND NOT (
-                 e.dedupe_family = current.dedupe_family
-                 AND e.comparison_fingerprint = current.comparison_fingerprint
+                 d.history_context ->> 'dedupe_family' = current.dedupe_family
+                 AND d.history_context ->> 'comparison_fingerprint' = current.comparison_fingerprint
                )
                -- The targeted band asks "what *story* about this asset has the reader already been
                -- told", and a deterministic telemetry frame is a measurement rather than a story.
@@ -291,11 +282,11 @@ class DecisionStorage:
                AND e.admission NOT IN ('telemetry_deterministic', 'liquidation_deterministic')
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                AND EXISTS (
-                 SELECT 1 FROM news_event_assets candidate_asset
-                  WHERE candidate_asset.event_id = e.event_id
-                    AND candidate_asset.symbol IN (SELECT symbol FROM equivalent_symbols)
+                 SELECT 1 FROM jsonb_array_elements_text(d.history_context -> 'canonical_assets')
+                   candidate_asset(symbol)
+                  WHERE candidate_asset.symbol IN (SELECT symbol FROM equivalent_symbols)
                )
-             ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
+             ORDER BY d.settled_at_ms DESC, d.event_id LIMIT %s
             """,
             (
                 event_id,
@@ -322,14 +313,15 @@ class DecisionStorage:
             self.conn.execute(
                 """
             WITH delivered AS MATERIALIZED (
-              SELECT d.event_id, d.settled_at_ms
+              SELECT d.event_id, d.settled_at_ms, d.history_context, d.card
                 FROM news_deliveries d
                WHERE d.kind = 'first' AND d.state = 'sent'
                  AND d.delete_state IS DISTINCT FROM 'deleted'
                  AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                  AND d.event_id <> ALL(%s)
             ), delivered_titles AS MATERIALIZED (
-              SELECT e.event_id, e.comparison_title, w.settled_at_ms
+              SELECT e.event_id, COALESCE(w.history_context ->> 'comparison_title',
+                     w.card #>> '{header,title,content}', '') AS comparison_title, w.settled_at_ms
                 FROM delivered w
                 JOIN news_events e ON e.event_id = w.event_id
                WHERE e.admission NOT IN ('telemetry_deterministic', 'liquidation_deterministic')
@@ -793,17 +785,37 @@ class DecisionStorage:
         ).fetchone()
         return dict(row) if row else None
 
-    def begin_delivery(self, *, event_id: str, kind: str, card: Mapping[str, Any], now_ms: int) -> str:
+    def begin_delivery(
+        self, *, event_id: str, kind: str, card: Mapping[str, Any], now_ms: int, history_context_json: str | None = None
+    ) -> str:
         """Returns 'new' when this process owns the send, otherwise the existing state."""
 
         row = self.conn.execute(
             """
-            INSERT INTO news_deliveries (event_id, kind, state, card, attempted_at_ms, created_at_ms)
-            VALUES (%s, %s, 'sending', %s::jsonb, %s, %s)
+            WITH provided AS (SELECT %s::jsonb AS context), supplied AS (
+              SELECT CASE WHEN s.event_id IS NULL THEN context ELSE context || jsonb_build_object(
+                'comparison_title', s.snapshot #> '{card,comparison_title}',
+                'comparison_fingerprint', s.snapshot #> '{card,comparison_fingerprint}',
+                'dedupe_family', s.snapshot #> '{card,dedupe_family}') END AS context
+              FROM provided LEFT JOIN news_event_evidence_snapshots s
+                ON s.event_id=context->>'event_id'
+               AND s.evidence_version=(context->>'evidence_version')::integer
+            ), bound AS (
+              SELECT CASE WHEN context IS NULL THEN NULL ELSE
+                context || jsonb_build_object('canonical_assets', COALESCE((
+                  SELECT jsonb_agg(symbol ORDER BY symbol) FROM (
+                    SELECT DISTINCT COALESCE(a.base_symbol, raw.symbol) AS symbol
+                    FROM jsonb_array_elements_text(context->'canonical_assets') raw(symbol)
+                    LEFT JOIN news_symbol_aliases a ON a.alias=raw.symbol
+                  ) resolved
+                ), '[]'::jsonb)) END AS context FROM supplied
+            )
+            INSERT INTO news_deliveries (event_id, kind, state, card, attempted_at_ms, created_at_ms, history_context)
+            SELECT %s, %s, 'sending', %s::jsonb, %s, %s, context FROM bound
             ON CONFLICT (event_id, kind) DO NOTHING
             RETURNING state
             """,
-            (event_id, kind, _dumps(dict(card)), int(now_ms), int(now_ms)),
+            (history_context_json, event_id, kind, _dumps(dict(card)), int(now_ms), int(now_ms)),
         ).fetchone()
         if row is not None:
             return "new"

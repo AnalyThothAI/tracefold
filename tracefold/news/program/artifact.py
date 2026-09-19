@@ -48,6 +48,7 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
+from ..evidence import EVIDENCE_INPUT_VERSION
 from .runtime import (
     _MODEL_BINDING_SLOTS,
     _UNTRUSTED_EVENT_CLOSE,
@@ -173,6 +174,7 @@ class NewsProgramStateV1(_ExactModel):
     """
 
     schema_version: Literal["news_program_state_v1"] = "news_program_state_v1"
+    evidence_input_version: Literal["news_evidence_input_v1"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     dspy_version: Literal["3.3.1"] = DSPY_STATE_VERSION
     predictors: tuple[PredictorName, ...]
@@ -182,6 +184,7 @@ class NewsProgramStateV1(_ExactModel):
     def issue(cls, *, state: Mapping[str, Any]) -> NewsProgramStateV1:
         payload = {
             "schema_version": PROGRAM_SCHEMA_VERSION,
+            "evidence_input_version": EVIDENCE_INPUT_VERSION,
             "dspy_version": DSPY_STATE_VERSION,
             "predictors": list(PREDICTOR_NAMES),
             "state": copy.deepcopy(dict(state)),
@@ -275,6 +278,7 @@ def _identity_material(payload: Mapping[str, Any]) -> dict[str, Any]:
     state = dict(payload["state"])
     return {
         "schema_version": payload["schema_version"],
+        "evidence_input_version": payload["evidence_input_version"],
         "dspy_version": payload["dspy_version"],
         "predictors": list(payload["predictors"]),
         "state": {

@@ -11,6 +11,7 @@ from ..events.storyline import NO_STORYLINE_KEY
 from ..market_review.instrument_storage import InstrumentsRepository
 from ..models import MarketAsset, base_symbol
 from ..reader_history import TARGETED_HISTORY_WINDOW_MS, ReaderHistorySnapshot, build_reader_history
+from ..storage.decisions import delivered_history_rows
 
 
 @dataclass(slots=True)
@@ -30,6 +31,7 @@ class Receipt:
     # identity the production row carries, or the two overlap rules cannot be the same rule.
     assets: tuple[MarketAsset, ...] = ()
     canonical_assets: tuple[str, ...] = ()
+    provenance_status: str = "delivery_bound"
 
     def __post_init__(self) -> None:
         """Establish the one comparable asset identity here, because two sources build a Receipt.
@@ -48,6 +50,7 @@ class Receipt:
     def as_told_row(self) -> dict[str, Any]:
         return {
             "event_id": self.event_id,
+            "provenance_status": self.provenance_status,
             "at_ms": self.at_ms,
             "storyline_key": self.storyline_key,
             "comparison_title": self.comparison_title,
@@ -125,7 +128,7 @@ class EvaluationReaderHistory:
         )
 
     def seed_receipts(self, *, from_ms: int) -> tuple[dict[str, Any], ...]:
-        """Project the same latest delivered verdict production uses into an evaluator receipt source.
+        """Project the same frozen delivery binding production uses into an evaluator receipt source.
 
         Every delivered card in the bounded look-back, whatever arm produced it (#651 §9). The told ledger
         is the *reader's* ledger: what they had already been shown when the next card arrived is a fact
@@ -133,66 +136,7 @@ class EvaluationReaderHistory:
         epoch meant the first hours after a deploy replayed against an empty history the reader never had.
         """
 
-        rows = self._conn.execute(
-            """
-            SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
-                   COALESCE(e.comparison_title, '') AS comparison_title,
-                   COALESCE(e.comparison_fingerprint, '') AS comparison_fingerprint,
-                   COALESCE(e.dedupe_family, 'general') AS dedupe_family,
-                   COALESCE((v.verdict ->> 'magnitude')::int, 0) AS magnitude,
-                   COALESCE(v.verdict ->> 'direction', 'unclear') AS direction,
-                   COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh', '')
-                     AS headline_zh,
-                   v.verdict ->> 'why_zh' AS why_zh,
-                   COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
-                   -- Symbol *and* market (#651 §6.2). Projecting the symbol alone was what made a
-                   -- replayed receipt unable to tell `SEI` the token from `SEI` the listed insurer while
-                   -- the production row beside it could.
-                   COALESCE(
-                     (SELECT jsonb_agg(jsonb_build_object(
-                               'symbol', asset ->> 'symbol',
-                               'market_type', asset ->> 'market_type'))
-                        FROM jsonb_array_elements(COALESCE(v.verdict -> 'assets', '[]'::jsonb)) AS asset
-                       WHERE asset ->> 'symbol' IS NOT NULL),
-                     '[]'::jsonb
-                   ) AS assets,
-                   COALESCE(
-                     (SELECT jsonb_agg(base_symbol ORDER BY base_symbol)
-                        FROM (SELECT DISTINCT COALESCE(a.base_symbol, ea.symbol) AS base_symbol
-                                FROM news_event_assets ea
-                                LEFT JOIN news_symbol_aliases a ON a.alias = ea.symbol
-                               WHERE ea.event_id = e.event_id) bases),
-                     '[]'::jsonb
-                   ) AS canonical_assets
-              FROM news_deliveries d
-              JOIN news_events e ON e.event_id = d.event_id
-              JOIN LATERAL (
-                SELECT candidate.*
-                  FROM (
-                    SELECT scoped.* FROM news_verdicts scoped
-                     WHERE scoped.event_id = e.event_id
-                       AND scoped.stage = 'triage'
-                       AND scoped.judgment_contract_version = 'news_judgment_v2'
-                       AND scoped.final_decision IN ('push', 'escalate')
-                     OFFSET 0
-                  ) candidate
-                 ORDER BY candidate.created_at_ms DESC, candidate.policy_version DESC
-                 LIMIT 1
-              ) v ON true
-              JOIN LATERAL (
-                SELECT evidence.* FROM news_event_evidence_snapshots evidence
-                 WHERE evidence.event_id = e.event_id
-                 ORDER BY evidence.evidence_version DESC LIMIT 1
-              ) evidence
-                ON evidence.provenance = 'observed'
-               AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-             WHERE d.kind = 'first' AND d.state = 'sent'
-               AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-             ORDER BY d.settled_at_ms, v.event_id
-            """,
-            (from_ms - TARGETED_HISTORY_WINDOW_MS, from_ms),
-        ).fetchall()
-        return tuple(dict(row) for row in rows)
+        return delivered_history_rows(self._conn, cutoff_at_ms=from_ms)
 
 
 def receipt_from_output(*, event_id: str, at_ms: int, output: Mapping[str, Any], verdict: Mapping[str, Any]) -> Receipt:

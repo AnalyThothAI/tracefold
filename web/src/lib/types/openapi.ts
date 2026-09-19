@@ -905,8 +905,12 @@ export interface components {
             /** Deliveries */
             deliveries: components["schemas"]["NewsDeliveryData"][];
             event: components["schemas"]["NewsEventData"];
+            /** Evidence Inputs */
+            evidence_inputs?: components["schemas"]["NewsEvidenceInputData"][];
             /** Evidence Snapshots */
             evidence_snapshots?: components["schemas"]["NewsEvidenceSnapshotData"][];
+            /** Late Evidence */
+            late_evidence?: components["schemas"]["NewsLateEvidenceData"][];
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
             /** Normalization */
@@ -1031,6 +1035,43 @@ export interface components {
              */
             uncertain: boolean;
         };
+        /** NewsEvidenceInputData */
+        NewsEvidenceInputData: {
+            /** Candidate Count */
+            candidate_count: number;
+            /** Current Evidence */
+            current_evidence: components["schemas"]["NewsEvidenceSpanData"][];
+            /** Cutoff At Ms */
+            cutoff_at_ms: number;
+            /** Declared Source Refs */
+            declared_source_refs: string[];
+            /** Document Receipt */
+            document_receipt: {
+                [key: string]: unknown;
+            };
+            /** Document Status */
+            document_status: string;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Exclusions */
+            exclusions: string[];
+            /** Execution Index */
+            execution_index: number;
+            /** Focus Fact Id */
+            focus_fact_id: string;
+            /** Input Version */
+            input_version: string;
+            /** Missing */
+            missing: string[];
+            /** Related Evidence */
+            related_evidence: components["schemas"]["NewsEvidenceSpanData"][];
+            /** Selected */
+            selected: boolean;
+            /** Selected Count */
+            selected_count: number;
+            /** Status */
+            status: string;
+        };
         /**
          * NewsEvidenceSnapshotData
          * @description Current evidence identity only; raw evidence bytes remain in PostgreSQL audit storage.
@@ -1053,6 +1094,46 @@ export interface components {
             provenance: "observed";
             /** Release Eligible */
             release_eligible: boolean;
+        };
+        /** NewsEvidenceSpanData */
+        NewsEvidenceSpanData: {
+            /** Available At Ms */
+            available_at_ms: number | null;
+            /** Content Sha256 */
+            content_sha256: string;
+            /** Coverage Status */
+            coverage_status: string;
+            /** Document Id */
+            document_id: string;
+            /** Extraction Version */
+            extraction_version: string;
+            /**
+             * Material Kind
+             * @enum {string}
+             */
+            material_kind: "current" | "related";
+            /** Ref Id */
+            ref_id: string;
+            /** Reported Published At Ms */
+            reported_published_at_ms: number | null;
+            /** Selection Reason */
+            selection_reason: string;
+            /** Source */
+            source: string;
+            /** Source Artifact Id */
+            source_artifact_id: string;
+            /** Source Item Id */
+            source_item_id: string;
+            /** Span End */
+            span_end: number;
+            /** Span Start */
+            span_start: number;
+            /** Text */
+            text: string;
+            /** Text Space */
+            text_space: string;
+            /** Url */
+            url: string;
         };
         /**
          * NewsFeedCountsData
@@ -1385,6 +1466,15 @@ export interface components {
              * @default 0
              */
             venues: number;
+        };
+        /** NewsLateEvidenceData */
+        NewsLateEvidenceData: {
+            /** Available At Ms */
+            available_at_ms: number;
+            /** Material Id */
+            material_id: string;
+            /** Material Kind */
+            material_kind: string;
         };
         /** NewsLearningRetentionStatusData */
         NewsLearningRetentionStatusData: {

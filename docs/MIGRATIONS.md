@@ -514,3 +514,16 @@ means the same thing an absent column meant.
     current correctness or measured-performance owner. Otherwise remove it. A
     new database role first proves a distinct trust domain; a process name is
     not sufficient justification.
+
+### 20260919_0384: News evidence inputs (#664)
+
+This revision stacks on #663's `20260919_0383`. Stop writers under the existing
+maintenance gate, back up and verify restore before applying. Nullable Item
+material columns and delivery bindings require metadata locks; the time-window
+index scans Events. The migration uses 5-second lock and 120-second statement
+limits and rolls back atomically on failure. Existing payloads, snapshots,
+verdicts, deliveries and accepted reviews are retained; missing material/time is
+not backfilled. The verdict contract permits v11 and optional typed told fields
+while retaining validation of historical versions. No downgrade rewrites facts:
+roll forward or restore the verified backup. Deploy the matching v11 application
+and native state together; changing this file does not authorize deployment.

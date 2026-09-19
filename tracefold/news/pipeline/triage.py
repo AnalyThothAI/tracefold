@@ -15,6 +15,7 @@ from typing import Any, ClassVar, Literal
 from ..artifact_identity import canonical_json, canonical_sha
 from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..events.storyline import final_storyline_key
+from ..evidence import NewsDocumentReader, PreparedEvidence
 from ..models import TRIAGE_POLICY_VERSION, MarketAsset, json_ready
 from ..program.contracts import (
     ScoredJudgment,
@@ -46,6 +47,7 @@ from .triage_audit import (
     _told_trace,
     _usage_from_partial_trace,
 )
+from .triage_evidence import prepare_evidence
 from .triage_history import _novelty_context_sha, _read_history, _recent_seen
 from .triage_route import (
     _ArmSelection,
@@ -156,11 +158,13 @@ class TriageConsumer:
         concurrency: int,
         circuit_failures: int,
         circuit_open_seconds: float,
+        documents: NewsDocumentReader | None = None,
         policy: DecidePolicy = DEFAULT_POLICY,
         stable_bundle_sha: str | None = None,
         canary_arms: Mapping[str, CanaryRuntimeArm] | None = None,
         runtime_manifest: Mapping[str, Any] | None = None,
     ) -> None:
+        self.documents = documents
         self.bus = bus
         self.db = db
         self.judge = judge
@@ -217,7 +221,11 @@ class TriageConsumer:
             "news_triage_circuit_reconcile",
             lambda repos: repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms()),
         )
-        await self.bus.consume(Q_TRIAGE, self.handle, prefetch=self.concurrency, stop_event=stop_event)
+        try:
+            await self.bus.consume(Q_TRIAGE, self.handle, prefetch=self.concurrency, stop_event=stop_event)
+        finally:
+            if self.documents is not None:
+                await self.documents.close()
 
     async def handle(self, message: BusMessage) -> None:
         """Broker orchestration for one Event: load, route, settle, publish.
@@ -250,6 +258,14 @@ class TriageConsumer:
             raise PermanentError("news_event_evidence_v3_required")
         facts = _gate_facts(card, self.watchlist_symbols)
         arm = await self._select_arm(card, event_id=event_id, stamp=stamp)
+        prepared_evidence = await prepare_evidence(
+            self.db, card, catalog=bundle.catalog_candidates, reader=self.documents, clock=now_ms
+        )
+        stamp = prepared_evidence.cutoff_at_ms
+        history = await self.db.read(
+            "news_triage_prepared_history",
+            lambda repos: _read_history(repos.news, event_id=event_id, card=card, now_ms=stamp),
+        )
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         route = self._route_inputs(
             card,
@@ -259,6 +275,7 @@ class TriageConsumer:
             stamp=stamp,
             queue_lag_ms=queue_lag_ms,
             catalog_candidates=bundle.catalog_candidates,
+            prepared_evidence=prepared_evidence,
         )
         trace = _initial_trace(
             route,
@@ -288,7 +305,12 @@ class TriageConsumer:
             settle = replace(settle, history=refreshed_history)
             history_changed = (
                 isinstance(settle.judgment, ScoredJudgment)
-                and _novelty_context_sha(settle.card, refreshed_history, now_ms=settle.stamp)
+                and _novelty_context_sha(
+                    settle.card,
+                    refreshed_history,
+                    now_ms=settle.stamp,
+                    catalog_candidates={row.symbol: row.classes for row in route.context.gate.catalog_candidates},
+                )
                 != settle.novelty_context_sha
             )
             if history_changed:
@@ -358,6 +380,7 @@ class TriageConsumer:
         stamp: int,
         queue_lag_ms: int,
         catalog_candidates: Mapping[str, Sequence[str]],
+        prepared_evidence: PreparedEvidence | None = None,
     ) -> _RouteInputs:
         """The Event as the Program will see it, plus the hashes the persist step compares against.
 
@@ -375,6 +398,7 @@ class TriageConsumer:
             now_ms=stamp,
             queue_lag_ms=queue_lag_ms,
             catalog_candidates=catalog_candidates,
+            prepared_evidence=prepared_evidence,
         )
         return _RouteInputs(
             event_id=event_id,
@@ -665,6 +689,14 @@ class TriageConsumer:
         card, history, event_kind = bundle.card, bundle.history, bundle.event_kind
         if event_kind not in EVENT_KINDS:
             return None
+        prepared_evidence = await prepare_evidence(
+            self.db, card, catalog=bundle.catalog_candidates, reader=self.documents, allow_fetch=False, clock=now_ms
+        )
+        stamp = prepared_evidence.cutoff_at_ms
+        history = await self.db.read(
+            "news_triage_reprepared_history",
+            lambda repos: _read_history(repos.news, event_id=event_id, card=card, now_ms=stamp),
+        )
         refreshed = self._route_inputs(
             card,
             history,
@@ -673,6 +705,7 @@ class TriageConsumer:
             stamp=stamp,
             queue_lag_ms=queue_lag_ms,
             catalog_candidates=bundle.catalog_candidates,
+            prepared_evidence=prepared_evidence,
         )
         if refreshed.prelim_key != route.prelim_key:
             trace["first_storyline_key_preliminary"] = route.prelim_key
@@ -869,7 +902,7 @@ class TriageConsumer:
             return None
         return _TriageBundle(
             card=card,
-            history=_read_history(repos.news, event_id=event_id, card=card, now_ms=stamp),
+            history=ReaderHistorySnapshot(),
             admission=str(routing.get("admission") or ""),
             event_kind=str(routing.get("event_kind") or ""),
             # #651 §A. Read in the same session as the card, so the disambiguation evidence the model is

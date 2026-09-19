@@ -1539,7 +1539,7 @@ def test_told_selector_ranks_the_candidates_own_storyline_above_every_unrelated_
     from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
     same = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="topic:rates") for i in range(10)]
-    unrelated = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(10)]
+    unrelated = [_told_row(f"o{i}", _NOW - 1 - i * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(10)]
 
     entries = _select(unrelated + same).entries
     assert len(entries) == TOLD_MAX
@@ -1564,7 +1564,7 @@ def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
     from tracefold.news.told_context import TOLD_MAX
 
     dense = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="topic:rates") for i in range(TOLD_MAX + 4)]
-    filler = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(3)]
+    filler = [_told_row(f"o{i}", _NOW - 1 - i * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(3)]
     entries = _select(filler + dense).entries
     assert [entry.tier for entry in entries] == ["storyline"] * TOLD_MAX
     # Adding one more unrelated card changes nothing the model sees.
@@ -1577,7 +1577,7 @@ def test_told_selector_overflow_from_a_capped_tier_still_fills_leftover_slots() 
 
     from tracefold.news.told_context import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
 
-    same = [_told_row(f"s{i}", _NOW - i * 60_000, storyline_key="topic:rates") for i in range(TOLD_MAX + 4)]
+    same = [_told_row(f"s{i}", _NOW - 1 - i * 60_000, storyline_key="topic:rates") for i in range(TOLD_MAX + 4)]
     entries = _select(same).entries
     assert len(entries) == TOLD_MAX
     assert [entry.event_id for entry in entries] == [f"s{i}" for i in range(TOLD_MAX)]
@@ -1658,6 +1658,8 @@ def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fac
     visible = {
         "i",
         "ago_min",
+        "assets",
+        "provenance_status",
         "storyline_key",
         "comparison_title",
         "symbols",

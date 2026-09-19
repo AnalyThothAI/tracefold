@@ -44,7 +44,7 @@ TOLD_TIER_ORDER: Final[tuple[ToldTier, ...]] = (
     "fact_similarity",
     "recency",
 )
-TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v5"
+TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v6"
 TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
     {
         "selector": TOLD_SELECTOR_ID,
@@ -65,6 +65,7 @@ TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
             "why_zh",
             "history_scope",
             "retrieval_reason",
+            "provenance_status",
         ],
         "source_max": TOLD_SOURCE_MAX,
         "tier_order": list(TOLD_TIER_ORDER),
@@ -119,6 +120,7 @@ _TOLD_SOURCE_FIELDS: Final = frozenset(
         "why_zh",
         "history_scope",
         "retrieval_reason",
+        "provenance_status",
     }
 )
 
@@ -138,10 +140,12 @@ class ToldLedgerEntry(_ExactContractModel):
     comparison_title: str = ""
     comparison_fingerprint: str = ""
     symbols: tuple[str, ...] = Field(default=(), max_length=TOLD_SYMBOLS_MAX)
+    assets: tuple[MarketAsset, ...] = Field(default=(), max_length=TOLD_SYMBOLS_MAX)
     magnitude: int = Field(ge=0, le=3)
     direction: str
     headline_zh: str = Field(max_length=60)
     why_zh: str = Field(default="", max_length=140)
+    provenance_status: str = "delivery_bound"
     tier: ToldTier = "recency"
     similarity: float = Field(default=0.0, ge=0.0, le=1.0)
     history_scope: HistoryScope = "recent"
@@ -156,11 +160,14 @@ def _row_assets(row: Mapping[str, Any]) -> frozenset[MarketAsset]:
     judgment's own assets can contradict, and only when both sides say something.
     """
 
-    assets = {MarketAsset(base_symbol(str(value)), "unknown") for value in row.get("grounded_assets") or () if value}
-    for asset in row.get("assets") or ():
-        typed = MarketAsset.of(asset)
-        if typed.symbol:
-            assets.add(typed)
+    typed = {MarketAsset.of(value) for value in row.get("assets") or ()}
+    known = {asset.symbol for asset in typed if asset.market_type != "unknown"}
+    assets = {asset for asset in typed if asset.market_type != "unknown" or asset.symbol not in known}
+    assets.update(
+        MarketAsset(base_symbol(str(value)), "unknown")
+        for value in (*tuple(row.get("grounded_assets") or ()), *tuple(row.get("canonical_assets") or ()))
+        if value and base_symbol(str(value)) not in known
+    )
     return frozenset(asset for asset in assets if asset.symbol)
 
 
@@ -213,7 +220,7 @@ class ToldLedgerSnapshot(_ExactContractModel):
         *,
         now_ms: int,
         storyline_key: str,
-        symbols: Sequence[str] = (),
+        symbols: Sequence[str | MarketAsset] = (),
         comparison_title: str = "",
         exclude_event_id: str = "",
         limit: int = TOLD_MAX,
@@ -222,7 +229,7 @@ class ToldLedgerSnapshot(_ExactContractModel):
         candidate_assets = frozenset(MarketAsset.of(value) for value in symbols if value)
         candidate_title = str(comparison_title or "")
         window = sorted(
-            rows,
+            [row for row in rows if int(row.get("at_ms") or 0) < now_ms],
             key=lambda row: (-int(row.get("at_ms") or 0), str(row.get("event_id") or "")),
         )[:TOLD_SOURCE_MAX]
         ranked: list[_Ranked] = []
@@ -243,14 +250,19 @@ class ToldLedgerSnapshot(_ExactContractModel):
             row_key = str(row.get("storyline_key") or "")
             row_assets = _row_assets(row)
             score = trigram_similarity(candidate_title, str(row.get("comparison_title") or ""))
+            known_conflict = any(
+                a.symbol == b.symbol and a.market_type not in (b.market_type, "unknown") and b.market_type != "unknown"
+                for a in candidate_assets
+                for b in row_assets
+            ) and not market_assets_overlap(candidate_assets, row_assets)
             tier: ToldTier
-            if row.get("history_scope") == "targeted" and row.get("retrieval_reason") == "exact_fingerprint":
+            if known_conflict:
+                tier = "recency"
+            elif row.get("history_scope") == "targeted" and row.get("retrieval_reason") == "exact_fingerprint":
                 tier = "exact_fact"
             elif same_storyline_key(storyline_key, row_key):
                 tier = "storyline"
-            elif (
-                row.get("history_scope") == "targeted" and row.get("retrieval_reason") == "canonical_asset_overlap"
-            ) or (candidate_assets and market_assets_overlap(candidate_assets, row_assets)):
+            elif candidate_assets and market_assets_overlap(candidate_assets, row_assets):
                 tier = "asset_overlap"
             elif score >= TOLD_FACT_SIMILARITY_MIN:
                 tier = "fact_similarity"
@@ -274,10 +286,12 @@ class ToldLedgerSnapshot(_ExactContractModel):
                     comparison_title=str(row.get("comparison_title") or "")[:600],
                     comparison_fingerprint=str(row.get("comparison_fingerprint") or ""),
                     symbols=tuple(sorted(_row_symbols(row)))[:TOLD_SYMBOLS_MAX],
+                    assets=tuple(sorted(_row_assets(row), key=lambda asset: asset.key))[:TOLD_SYMBOLS_MAX],
                     magnitude=int(row["magnitude"]),
                     direction=str(row["direction"]),
                     headline_zh=str(row["headline_zh"])[:60],
                     why_zh=str(row["why_zh"])[:140],
+                    provenance_status=str(row.get("provenance_status") or "delivery_bound"),
                     tier=tier,
                     similarity=round(score, 4),
                     history_scope=cast(HistoryScope, str(row.get("history_scope") or "recent")),

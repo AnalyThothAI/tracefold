@@ -266,6 +266,9 @@ class EventStorage:
         market_parse_status: str | None = None,
         market_parse_error: str | None = None,
         provider_params_json: str = "{}",
+        provider_params_sha256: str | None = None,
+        evidence_text: str | None = None,
+        evidence_text_sha256: str | None = None,
     ) -> bool:
         """Insert or merge provenance. Returns True when the Item is new.
 
@@ -286,10 +289,11 @@ class EventStorage:
               reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
               first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id,
               market_kind, market_source_strategy_id, market_parse_status, market_parse_error,
-              provider_params, market_notify_state
+              provider_params, market_notify_state, provider_params_available_at_ms, provider_params_sha256,
+              evidence_text, evidence_text_sha256
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s::jsonb, %s
+              %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s
             )
             ON CONFLICT (item_id) DO UPDATE SET
               provider_metadata = jsonb_set(
@@ -336,6 +340,22 @@ class EventStorage:
               provider_params = CASE
                 WHEN news_items.provider_params = '{}'::jsonb THEN EXCLUDED.provider_params
                 ELSE news_items.provider_params END,
+              provider_params_available_at_ms = CASE WHEN news_items.provider_params = '{}'::jsonb
+                THEN EXCLUDED.provider_params_available_at_ms ELSE news_items.provider_params_available_at_ms END,
+              provider_params_sha256 = CASE WHEN news_items.provider_params = '{}'::jsonb
+                THEN EXCLUDED.provider_params_sha256 ELSE news_items.provider_params_sha256 END,
+              evidence_text = CASE WHEN news_items.provider_params = '{}'::jsonb
+                THEN EXCLUDED.evidence_text ELSE news_items.evidence_text END,
+              evidence_text_sha256 = CASE WHEN news_items.provider_params = '{}'::jsonb
+                THEN EXCLUDED.evidence_text_sha256 ELSE news_items.evidence_text_sha256 END,
+              provider_params_conflict_sha256 = CASE
+                WHEN news_items.provider_params <> '{}'::jsonb AND EXCLUDED.provider_params <> '{}'::jsonb
+                  AND news_items.provider_params <> EXCLUDED.provider_params
+                THEN EXCLUDED.provider_params_sha256 ELSE news_items.provider_params_conflict_sha256 END,
+              provider_params_conflict_at_ms = CASE
+                WHEN news_items.provider_params <> '{}'::jsonb AND EXCLUDED.provider_params <> '{}'::jsonb
+                  AND news_items.provider_params <> EXCLUDED.provider_params
+                THEN EXCLUDED.updated_at_ms ELSE news_items.provider_params_conflict_at_ms END,
               market_notify_state = CASE
                 WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_notify_state
                 ELSE news_items.market_notify_state END,
@@ -366,6 +386,10 @@ class EventStorage:
                 market_parse_error,
                 provider_params_json,
                 _market_notify_state(market_kind, ingest_mode),
+                int(now_ms) if provider_params_sha256 is not None else None,
+                provider_params_sha256,
+                evidence_text,
+                evidence_text_sha256,
             ),
         ).fetchone()
         return bool(row["inserted"])
@@ -910,6 +934,7 @@ class EventStorage:
         card = dict(snapshot.get("card") or {})
         card.update(
             {
+                "focus_fact_method": str(dict(snapshot.get("focus_fact") or {}).get("method") or "whole_item"),
                 "evidence_schema_version": str(snapshot.get("schema_version") or ""),
                 "evidence_version": int(evidence["evidence_version"]),
                 "evidence_sha256": str(evidence["evidence_sha256"]),

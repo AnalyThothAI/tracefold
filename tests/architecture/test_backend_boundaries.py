@@ -226,6 +226,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.storage.trade_plans",
     ),
     "integrations.opennews": ("tracefold.news.opennews",),
+    "integrations.news_documents": ("tracefold.news.evidence",),
     "integrations.rabbitmq": (
         "tracefold.news.bus",
         # #400: the broker owns retry, and the News-owned policy document is what says so. The adapter
@@ -403,6 +404,8 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
         family = "integrations.rabbitmq"
     elif parts == ["tracefold", "integrations", "robinhood_chain"]:
         family = "integrations.robinhood_chain"
+    elif parts == ["tracefold", "integrations", "news_documents"]:
+        family = "integrations.news_documents"
     allowed_imports = PRIVATE_BUSINESS_IMPORT_RULES.get(family or "", ())
     return any(imported == allowed or imported.startswith(f"{allowed}.") for allowed in allowed_imports)
 

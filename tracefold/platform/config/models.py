@@ -302,6 +302,8 @@ class NewsBrokerSettings(BaseModel):
 class NewsTriageSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    documents_enabled: bool = False
+
     concurrency: int = 4
     circuit_failures: int = 3
     circuit_open_seconds: float = 60.0
