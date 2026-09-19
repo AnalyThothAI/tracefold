@@ -21,6 +21,7 @@ spending a run, exactly as `calibrate_taxonomy` is for the codebook.
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -58,7 +59,12 @@ PERTURBATION_CLASSES: Final[tuple[PerturbationClass, ...]] = (
 # corpus cannot see.
 MUST_PASS_CLASSES: Final[frozenset[str]] = frozenset({"faithful_paraphrase", "supported_strong_conclusion"})
 
-_FIXTURE = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "news" / "judge_calibration_cases.json"
+
+def _packaged_cases_text() -> str:
+    """The fixed corpus is a package resource, so the runtime image carries it and the CLI can run in a container."""
+
+    resource = importlib.resources.files("tracefold.news.learning.resources") / "judge_calibration_cases.json"
+    return resource.read_text(encoding="utf-8")
 
 
 class JudgeCalibrationCase(BaseModel):
@@ -95,7 +101,7 @@ class JudgeCalibrationCase(BaseModel):
 def load_calibration_cases(path: Path | None = None) -> tuple[JudgeCalibrationCase, ...]:
     """The fixed corpus, refused rather than defaulted when it does not span all seven classes."""
 
-    payload = json.loads((path or _FIXTURE).read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8") if path is not None else _packaged_cases_text())
     if str(payload.get("schema") or "") != CALIBRATION_CASES_SCHEMA:
         raise ValueError("news_judge_calibration_cases_schema_unknown")
     cases = tuple(JudgeCalibrationCase.model_validate(row) for row in payload.get("cases") or ())
