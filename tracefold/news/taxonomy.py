@@ -565,6 +565,39 @@ class ModelTaxonomyV1(_ExactTaxonomyModel):
         return self
 
 
+class ReviewTaxonomyV1(_ExactTaxonomyModel):
+    """Only axes explicitly labelled by a reviewer; online predictions remain complete."""
+
+    subject_codes: tuple[SubjectCode, ...] | None = Field(default=None, max_length=3)
+    event_family: EventFamily | None = None
+    change_state: ChangeState | None = None
+    assertion_status: AssertionStatus | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def from_complete_label(cls, value: Any) -> Any:
+        return value.model_dump(mode="json") if isinstance(value, ModelTaxonomyV1) else value
+
+    @model_validator(mode="after")
+    def validate_stated_axes(self) -> ReviewTaxonomyV1:
+        stated = self.model_dump(exclude_none=True)
+        if not stated:
+            raise ValueError("news_review_taxonomy_empty")
+        # Reuse the online codebook's canonicalization and cross-code validation.
+        complete = ModelTaxonomyV1.model_validate(
+            {
+                "subject_codes": (),
+                "event_family": "other",
+                "change_state": "unknown",
+                "assertion_status": "unknown",
+                **stated,
+            }
+        )
+        if self.subject_codes is not None:
+            object.__setattr__(self, "subject_codes", complete.subject_codes)
+        return self
+
+
 class NewsTaxonomyV1(ModelTaxonomyV1):
     """The four model-owned axes plus the codebook identity they were labelled against.
 

@@ -231,6 +231,9 @@ def add_news_commands(
     learning_budget.add_argument("--max-metric-calls", type=_positive_int, default=None)
     learning_run.add_argument("--max-task-model-calls", type=_positive_int, required=True)
     learning_run.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
+    learning_run.add_argument("--max-metric-judge-model-calls", type=int, default=0)
+    learning_run.add_argument("--explanation-protocol", choices=("semantic", "proxy"), default="semantic")
+    learning_run.add_argument("--judge-calibration-receipt-sha256", default="")
     learning_run.add_argument("--max-cost-microusd", type=_positive_int, required=True)
     learning_run.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)
     learning_run.add_argument("--max-wall-clock-seconds", type=_positive_int, default=14_400)
@@ -267,6 +270,11 @@ def add_news_commands(
     learning_register.add_argument("--hypothesis", default="", help="what this candidate is expected to repair")
     learning_register.add_argument("--out", required=True, help="write the sealed candidate manifest")
     learning_freeze = learning_subcommands.add_parser("freeze", help="freeze accepted reviews into a dataset")
+    learning_freeze.add_argument(
+        "--evaluation-protocol",
+        choices=("historical_selected_context", "counterfactual_sequence"),
+        default="historical_selected_context",
+    )
     learning_freeze.add_argument("--role", choices=("development", "validation"), required=True)
     learning_freeze.add_argument("--from-ms", type=_nonnegative_int, required=True)
     learning_freeze.add_argument("--to-ms", type=_positive_int, required=True)

@@ -229,13 +229,8 @@ def test_a_corpus_spans_arms_and_reaches_back_past_the_epoch_the_deployment_open
     assert sorted(manifest.counts["eligibility"]["case_arms"]) == sorted({_arm().bundle_sha, other_bundle})
 
 
-def test_a_why_support_failure_without_supervision_is_frozen_counted_and_not_trained_on(conn) -> None:
-    """Visible, not trainable, and the difference is a number an operator can act on.
-
-    "Wrong" with no statement of what a correct card keeps scores a rewrite into a different wrong
-    sentence exactly as highly as a repair, so the case cannot enter the explanation train split. Dropping
-    it silently would hide a real defect the reviewer found, so it is frozen and counted instead.
-    """
+def test_a_why_support_failure_without_key_facts_has_only_support_supervision(conn) -> None:
+    """Frozen evidence can supervise support without inventing coverage labels (#663)."""
 
     supervised = _open_event(conn, hit_id=113201, title="Micron says DRAM contract prices rose again in August")
     pending = _open_event(conn, hit_id=113202, title="Micron raises the capacity plan for the next quarter")
@@ -264,10 +259,24 @@ def test_a_why_support_failure_without_supervision_is_frozen_counted_and_not_tra
         for episode in _datasets(conn, _arm()).development_compile_export(manifest.artifact_sha).episodes
     )
     plan = build_gepa_objective_plan(episodes, "explanation")
-    assert plan.exclusion_reasons == {"explanation_supervision_pending": 1}
+    assert plan.exclusion_reasons == {}
     trained = {episode.case_id for episode in (*plan.train_episodes, *plan.development_selection_episodes)}
+    assert trained == {episode.case_id for episode in episodes}
+    by_event = {str(case.event_id): case.case_id for case in manifest.cases}
     by_case = {episode.case_id: episode for episode in episodes}
-    assert all(by_case[case_id].accepted_review["explanation_supervision"] == "present" for case_id in trained)
+    support_only = by_case[by_event[pending]]
+    assert support_only.accepted_review["supervision"]["mask"] == ["explanation.support"]
+    assert by_case[by_event[supervised]].accepted_review["supervision"]["mask"] == [
+        "explanation.key_facts",
+        "explanation.support",
+    ]
+    # The original missing-block diagnostic remains visible; it is not an applicability mask.
+    assert support_only.accepted_review["explanation_supervision"] == "pending"
+    from tracefold.news.learning.optimizer import _explanation_example
+
+    example = _explanation_example(support_only)
+    assert not example.gold_key_facts
+    assert example.evidence_json
 
 
 def _accept_v6_review(conn, event_id: str) -> None:

@@ -15,6 +15,7 @@ from ..taxonomy import (
     IPTC_SUBJECT_LABELS_EN,
     ModelTaxonomyV1,
     NewsTaxonomyV1,
+    ReviewTaxonomyV1,
     precedence_rules_for,
     subject_code_precedence_rules,
     taxonomy_definition,
@@ -41,21 +42,6 @@ class TaxonomyComparison:
         return self.score == 1.0
 
 
-def accepted_taxonomy_gold(review: Mapping[str, Any]) -> ModelTaxonomyV1 | None:
-    """The four model-owned axes one accepted review carries, or None when it carries no valid Gold.
-
-    One reader, because two places ask the same question of the same column: the freeze counts the
-    Gold-bearing connected fact clusters a holdout can be judged on, and the evaluator scores them.
-    """
-
-    taxonomy = dict(dict(review.get("payload") or {}).get("taxonomy") or {})
-    axes = {field: taxonomy[field] for field in ModelTaxonomyV1.model_fields if field in taxonomy}
-    try:
-        return ModelTaxonomyV1.model_validate(axes)
-    except ValueError:
-        return None
-
-
 def _subject_f1(gold: frozenset[str], predicted: frozenset[str]) -> float:
     if not gold and not predicted:
         return 1.0
@@ -65,12 +51,13 @@ def _subject_f1(gold: frozenset[str], predicted: frozenset[str]) -> float:
 
 
 def compare_taxonomy(
-    gold: ModelTaxonomyV1 | Mapping[str, Any],
+    gold: ModelTaxonomyV1 | ReviewTaxonomyV1 | Mapping[str, Any],
     predicted: ModelTaxonomyV1 | Mapping[str, Any],
 ) -> TaxonomyComparison:
     """Score the four model-owned axes; code-owned source authority is intentionally unread."""
 
-    accepted = gold if isinstance(gold, ModelTaxonomyV1) else ModelTaxonomyV1.model_validate(gold)
+    accepted = gold if isinstance(gold, (ModelTaxonomyV1, ReviewTaxonomyV1)) else ReviewTaxonomyV1.model_validate(gold)
+    stated = accepted.model_dump(exclude_none=True)
     if isinstance(predicted, ModelTaxonomyV1):
         observed = predicted
     elif "taxonomy_version" in predicted:
@@ -79,18 +66,20 @@ def compare_taxonomy(
         observed = NewsTaxonomyV1.model_validate(predicted)
     else:
         observed = ModelTaxonomyV1.model_validate(predicted)
-    gold_subjects = frozenset(accepted.subject_codes)
+    gold_subjects = frozenset(accepted.subject_codes or ())
     predicted_subjects = frozenset(observed.subject_codes)
-    subject_f1 = _subject_f1(gold_subjects, predicted_subjects)
+    subject_f1 = _subject_f1(gold_subjects, predicted_subjects) if "subject_codes" in stated else 1.0
     axis_matches = {
-        "event_family": accepted.event_family == observed.event_family,
-        "change_state": accepted.change_state == observed.change_state,
-        "assertion_status": accepted.assertion_status == observed.assertion_status,
+        "event_family": "event_family" not in stated or accepted.event_family == observed.event_family,
+        "change_state": "change_state" not in stated or accepted.change_state == observed.change_state,
+        "assertion_status": "assertion_status" not in stated or accepted.assertion_status == observed.assertion_status,
     }
-    missing = tuple(sorted(gold_subjects - predicted_subjects))
-    extra = tuple(sorted(predicted_subjects - gold_subjects))
+    missing = tuple(sorted(gold_subjects - predicted_subjects)) if "subject_codes" in stated else ()
+    extra = tuple(sorted(predicted_subjects - gold_subjects)) if "subject_codes" in stated else ()
     wrong_axes = tuple(axis for axis, match in axis_matches.items() if not match)
-    score = round((subject_f1 + sum(axis_matches.values())) / 4, 6)
+    score = round(
+        sum(subject_f1 if axis == "subject_codes" else float(axis_matches[axis]) for axis in stated) / len(stated), 6
+    )
     # Feedback quotes the codebook (#501 D3): the definition of what was expected and of what was
     # predicted, and any precedence rule written for exactly that confusion, so the reflection model
     # reads the rule the seed already states instead of inventing one from the minibatch's titles.
@@ -143,74 +132,73 @@ def model_taxonomy(value: Any) -> ModelTaxonomyV1:
 
 
 def summarize_taxonomy(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Aggregate deterministic taxonomy quality with one vote per connected fact cluster."""
-
-    # Both sides are the four model axes (#651 §7.2). `predicted` used to be validated as the persisted
-    # `NewsTaxonomyV1`, which forced every caller to attach a `source_authority` this summary never reads
-    # — and a review no longer states one at all, because it is a code fact about the reporting source.
-    representatives: dict[str, tuple[str, ModelTaxonomyV1, ModelTaxonomyV1]] = {}
-    for row in rows:
-        case_id = str(row.get("case_id") or "")
-        cluster_id = str(row.get("cluster_id") or "")
-        if not case_id or not cluster_id:
-            raise ValueError("news_taxonomy_summary_identity_missing")
-        gold = model_taxonomy(row.get("gold"))
-        predicted = model_taxonomy(row.get("predicted"))
-        previous = representatives.get(cluster_id)
-        if previous is not None and previous[1] != gold:
-            raise ValueError(f"news_taxonomy_summary_cluster_conflict:{cluster_id}")
-        if previous is None or case_id < previous[0]:
-            representatives[cluster_id] = (case_id, gold, predicted)
-
-    comparisons = [compare_taxonomy(gold, predicted) for _case, gold, predicted in representatives.values()]
-    count = len(comparisons)
-
-    def mean(values: Sequence[float]) -> float | None:
-        return None if not values else round(sum(values) / len(values), 6)
-
-    support_values: dict[str, Counter[str]] = {
-        "subject_codes": Counter(
-            code for _case, gold, _predicted in representatives.values() for code in gold.subject_codes
-        ),
-        "event_family": Counter(gold.event_family for _case, gold, _predicted in representatives.values()),
-        "change_state": Counter(gold.change_state for _case, gold, _predicted in representatives.values()),
-        "assertion_status": Counter(gold.assertion_status for _case, gold, _predicted in representatives.values()),
-    }
-    legal: dict[str, Sequence[str]] = {
+    """Score every labelled case; report cases and independent split groups separately."""
+    legal = {
         "subject_codes": IPTC_SUBJECT_CODES,
         "event_family": EVENT_FAMILIES,
         "change_state": CHANGE_STATES,
         "assertion_status": ASSERTION_STATUSES,
     }
-    confusion: dict[str, list[dict[str, Any]]] = {}
-    for axis in ("event_family", "change_state", "assertion_status"):
-        pairs = Counter(
-            (str(getattr(gold, axis)), str(getattr(predicted, axis)))
-            for _case, gold, predicted in representatives.values()
-        )
-        confusion[axis] = [
-            {"gold": gold, "predicted": predicted, "n": n} for (gold, predicted), n in sorted(pairs.items())
-        ]
+    support: dict[str, Counter[str]] = {axis: Counter() for axis in TAXONOMY_AXES}
+    confusion: dict[str, Counter[tuple[str, str]]] = {axis: Counter() for axis in TAXONOMY_AXES[1:]}
+    values: dict[str, list[float]] = {axis: [] for axis in TAXONOMY_AXES}
+    axis_groups: dict[str, dict[str, list[float]]] = {axis: {} for axis in TAXONOMY_AXES}
+    exact_groups: dict[str, list[float]] = {}
+    overall: list[float] = []
+    exact: list[float] = []
+    groups: dict[str, list[float]] = {}
+    for row in rows:
+        if not row.get("case_id") or not row.get("cluster_id"):
+            raise ValueError("news_taxonomy_summary_identity_missing")
+        raw = row["gold"]
+        raw = raw.model_dump(exclude_none=True) if isinstance(raw, (ModelTaxonomyV1, ReviewTaxonomyV1)) else raw
+        gold = ReviewTaxonomyV1.model_validate(raw)
+        stated = gold.model_dump(exclude_none=True)
+        predicted = model_taxonomy(row["predicted"])
+        comparison = compare_taxonomy(gold, predicted)
+        overall.append(comparison.score)
+        groups.setdefault(str(row["cluster_id"]), []).append(comparison.score)
+        if len(stated) == 4:
+            exact.append(float(comparison.exact))
+            exact_groups.setdefault(str(row["cluster_id"]), []).append(float(comparison.exact))
+        for axis, label in stated.items():
+            if axis == "subject_codes":
+                support[axis].update(label)
+                values[axis].append(comparison.subject_f1)
+            else:
+                support[axis].update([label])
+                observed = str(getattr(predicted, axis))
+                confusion[axis][(label, observed)] += 1
+                values[axis].append(float(label == observed))
+            axis_groups[axis].setdefault(str(row["cluster_id"]), []).append(values[axis][-1])
+
+    def mean(items: Sequence[float]) -> float | None:
+        return round(sum(items) / len(items), 6) if items else None
+
+    def group_mean(items: Mapping[str, Sequence[float]]) -> float | None:
+        return mean([sum(group) / len(group) for group in items.values()])
+
     return {
-        "schema": "tracefold.news.taxonomy_summary.v1",
+        "schema": "tracefold.news.taxonomy_summary.v3",
         "case_n": len(rows),
-        "cluster_n": count,
-        "shadowed_case_n": len(rows) - count,
-        "taxonomy_overall": mean([comparison.score for comparison in comparisons]),
-        "subject_codes_set_f1": mean([comparison.subject_f1 for comparison in comparisons]),
-        "event_family_accuracy": mean([float(comparison.event_family_match) for comparison in comparisons]),
-        "change_state_accuracy": mean([float(comparison.change_state_match) for comparison in comparisons]),
-        "assertion_status_accuracy": mean([float(comparison.assertion_status_match) for comparison in comparisons]),
-        "four_axis_exact_accuracy": mean([float(comparison.exact) for comparison in comparisons]),
-        "support": {
-            axis: {label: counts[label] for label in labels if counts[label]}
-            for axis, labels in legal.items()
-            for counts in (support_values[axis],)
-        },
+        "cluster_n": len(groups),
+        "shadowed_case_n": 0,
+        "taxonomy_overall": group_mean(groups),
+        "case_mean": mean(overall),
+        "group_mean": group_mean(groups),
+        "subject_codes_set_f1": group_mean(axis_groups["subject_codes"]),
+        **{f"{axis}_accuracy": group_mean(axis_groups[axis]) for axis in TAXONOMY_AXES[1:]},
+        "four_axis_exact_accuracy": group_mean(exact_groups),
+        "axis_cluster_n": {axis: len(items) for axis, items in axis_groups.items()},
+        "axis_case_n": {axis: len(items) for axis, items in values.items()},
+        "support": {axis: dict(support[axis]) for axis in legal},
         "zero_support": {
-            axis: [label for label in labels if not support_values[axis][label]] for axis, labels in legal.items()
+            axis: [label for label in labels if not support[axis][label]] for axis, labels in legal.items()
         },
-        "confusion": confusion,
+        "confusion": {
+            axis: [{"gold": gold, "predicted": pred, "n": n} for (gold, pred), n in sorted(pairs.items())]
+            for axis, pairs in confusion.items()
+        },
     }
 
 
@@ -271,7 +259,6 @@ __all__ = [
     "TAXONOMY_AXES",
     "TAXONOMY_TARGET_DIMENSIONS",
     "TaxonomyComparison",
-    "accepted_taxonomy_gold",
     "calibrate_taxonomy",
     "compare_taxonomy",
     "model_taxonomy",

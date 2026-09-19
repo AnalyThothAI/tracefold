@@ -118,7 +118,9 @@ class EvaluationReaderHistory:
             now_ms=int(case["opened_at_ms"]),
             dedupe_family=str(event.get("dedupe_family") or "general"),
             comparison_fingerprint=str(event.get("comparison_fingerprint") or ""),
-            canonical_assets=self.canonical_assets(grounded),
+            canonical_assets=tuple(case["canonical_assets"])
+            if "canonical_assets" in case
+            else self.canonical_assets(grounded),
             comparison_title=str(event.get("comparison_title") or ""),
         )
 

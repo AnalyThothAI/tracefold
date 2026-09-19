@@ -3598,7 +3598,7 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
     first = asyncio.run(evaluator.evaluate(request))
     tasks = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)["tasks"]
     # One page of the pairwise queue — `DeskQuery.limit` defaults to 30 — not the size of the corpus.
-    # The holdout plan pre-registers one representative per fact cluster, and there are 36 of them.
+    # This holdout has 36 cases in 36 independent fact groups.
     assert len(tasks) == 30
     task = tasks[0]
     ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
@@ -4375,24 +4375,14 @@ def test_a_validation_freeze_publishes_its_gold_bearing_primary_clusters(conn) -
 
 # Two wires stating one material fact. `_connected_fact_clusters` unions on normalized text, so these are
 # one connected fact cluster whose two accepted reviews carry different — and individually valid — Gold.
-# Neither family appears anywhere else in these fixtures, so the summary's support proves which member the
-# evaluator elected.
+# Neither family appears elsewhere, so label support proves both members survive evaluation.
 _CONFLICTING_FACT_TITLE = "One material fact two wires stated with different accepted taxonomy Gold"
 _SHADOWED_FAMILY = "geopolitical_conflict"
 _ELECTED_FAMILY = "market_access"
 
 
 def _conflicting_gold_cluster(conn, *, opened_at_ms: int) -> None:
-    """Seal one fact cluster carrying two members whose accepted Gold legitimately differs.
-
-    Production shape (#534): a wire says `announced` and the follow-up says `effective`, or the second
-    member's subject codes are a superset. Both are correct about their own member and the freeze accepts
-    the corpus, because it summarizes one elected representative per cluster. Here the two members differ
-    on `event_family` for the same reason and with the same consequence.
-
-    The later submission is the elected one: both carry `must_push`, so the safety term of
-    `_representative_sort_key` ties and the most recent statement of the fact wins.
-    """
+    """Seal related cases with different labels; neither label supersedes the other."""
 
     desk = ReviewDesk(conn, now_ms=NOW)
     for index, family in enumerate((_SHADOWED_FAMILY, _ELECTED_FAMILY)):
@@ -4411,7 +4401,7 @@ def _conflicting_gold_cluster(conn, *, opened_at_ms: int) -> None:
 
 
 def _conflicting_cluster_members(development) -> tuple[Any, Any]:
-    """The frozen (elected, shadowed) members of the conflicting cluster, by the plan's own preference.
+    """The frozen members of the conflicting cluster, ordered newest first.
 
     The sealed `cluster_id` is the connected component's own hash, not the per-case text hash, so the
     cluster is found by being the one component this corpus gives two members.
@@ -4435,17 +4425,10 @@ def _elected_gold_axes(store: DevelopmentDatasetStore, development, elected: Any
     return axes
 
 
-def test_an_offline_evaluation_elects_one_representative_of_a_conflicting_gold_cluster(conn) -> None:
-    """#548: the freeze sealed this corpus, so the evaluator must not fail closed summarizing it.
+def test_an_offline_evaluation_keeps_both_cases_of_a_conflicting_gold_cluster(conn) -> None:
+    """Both accepted members are scored even when the candidate matches only the later one.
 
-    Before this change `_taxonomy_release_evidence` handed `summarize_taxonomy` one row per case, and two
-    members of one fact carrying different Gold raised `news_taxonomy_summary_cluster_conflict` after every
-    model call had already been paid for. The population is now the Objective Plan's own elected
-    representatives — the same one the readiness report (#534) and the freeze's distributions summarize.
-
-    That the *elected* member is the one scored is not asserted by restating the rule: the candidate arm
-    answers each title with the elected member's Gold, so a perfect candidate score is only reachable if
-    the elected member, and not the shadowed one, is the row the summary compares.
+    The group contributes one mean to the aggregate; per-case label support retains both answers.
     """
 
     _accepted_compilable_event(conn)
@@ -4492,13 +4475,13 @@ def test_an_offline_evaluation_elects_one_representative_of_a_conflicting_gold_c
     # One vote per connected fact cluster, and the *same* vote on both arms: the deltas below subtract two
     # numbers measured over identical cases.
     assert taxonomy["stable"]["cluster_n"] == taxonomy["candidate"]["cluster_n"] == cluster_n
-    assert taxonomy["stable"]["case_n"] == taxonomy["candidate"]["case_n"] == cluster_n
-    assert taxonomy["candidate"]["taxonomy_overall"] == 1.0
-    assert taxonomy["candidate"]["four_axis_exact_accuracy"] == 1.0
+    assert taxonomy["stable"]["case_n"] == taxonomy["candidate"]["case_n"] == cluster_n + 1
+    assert taxonomy["candidate"]["taxonomy_overall"] == round(1 - 0.25 / (2 * cluster_n), 6)
+    assert taxonomy["candidate"]["four_axis_exact_accuracy"] == round(1 - 1 / (2 * cluster_n), 6)
     support = taxonomy["stable"]["support"]["event_family"]
     assert support[_ELECTED_FAMILY] == 1
-    assert _SHADOWED_FAMILY not in support
-    assert _SHADOWED_FAMILY in taxonomy["stable"]["zero_support"]["event_family"]
+    assert support[_SHADOWED_FAMILY] == 1
+    assert _SHADOWED_FAMILY not in taxonomy["stable"]["zero_support"]["event_family"]
     assert taxonomy["candidate"]["support"] == taxonomy["stable"]["support"]
 
     # The shadowed member is not deleted, hidden or re-labelled: it stays a persisted audit fact of this
@@ -4513,7 +4496,7 @@ def test_an_offline_evaluation_elects_one_representative_of_a_conflicting_gold_c
     assert len(persisted) == cluster_n + 1
 
 
-def test_a_taxonomy_only_holdout_elects_one_representative_of_a_conflicting_gold_cluster(conn) -> None:
+def test_a_taxonomy_only_holdout_keeps_both_cases_of_a_conflicting_gold_cluster(conn) -> None:
     """#548: the held-out corpus has the same shape, and its per-axis primary must be reachable.
 
     `d27f0d97…` carries six such clusters, so the holdout would have died exactly where the offline run
@@ -4573,8 +4556,101 @@ def test_a_taxonomy_only_holdout_elects_one_representative_of_a_conflicting_gold
     assert cluster_n >= _PROFILE["validation"]["primary_clusters_min"]
     assert primary["taxonomy_overall_delta"] > 0
     assert primary["regressed_axes"] == []
-    assert report.evidence["taxonomy"]["candidate"]["taxonomy_overall"] == 1.0
+    assert report.evidence["taxonomy"]["candidate"]["taxonomy_overall"] == round(1 - 0.25 / (2 * cluster_n), 6)
     assert report.evidence["taxonomy"]["stable"]["support"]["event_family"][_ELECTED_FAMILY] == 1
-    assert _SHADOWED_FAMILY not in report.evidence["taxonomy"]["stable"]["support"]["event_family"]
+    assert report.evidence["taxonomy"]["stable"]["support"]["event_family"][_SHADOWED_FAMILY] == 1
     assert "validation_primary_review_insufficient" not in report.evidence["blockers"]
     assert report.evidence["failures"] == []
+
+
+def test_freeze_binds_selected_context_and_includes_unreviewed_stream_inputs(conn) -> None:
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.program.contracts import TriageContext
+
+    stable = _arm()
+    event_ids = [
+        _open_event(
+            conn,
+            bundle_sha=stable.bundle_sha,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
+            hit_id=991001 + i,
+            title=("Boeing reports higher airplane deliveries", "Chevron reports offshore oil discovery")[i],
+            published_at_ms=NOW - (60 - i * 10) * 60_000,
+        )
+        for i in range(2)
+    ]
+    selected_contexts = {}
+    for event_id in event_ids:
+        row = dict(conn.execute("SELECT * FROM news_review_task_source_v1 WHERE event_id=%s", (event_id,)).fetchone())
+        snapshot = row["evidence_snapshot"]
+        card = {
+            **snapshot["card"],
+            "evidence_version": row["evidence_version"],
+            "evidence_sha256": row["evidence_sha256"],
+        }
+        context = TriageContext.from_card(
+            card,
+            watchlist=("SEI",),
+            told_rows=[],
+            now_ms=row["verdict_created_at_ms"],
+            queue_lag_ms=1234,
+            catalog_candidates={"SEI": ("equity", "crypto")},
+        )
+        selected_contexts[event_id] = context.model_dump(mode="json")
+        trace = row["trace"]
+        selected = trace["program_execution_index"]
+        execution = trace["program_executions"][selected]
+        execution["context"] = selected_contexts[event_id]
+        execution["context_sha256"] = canonical_sha(execution["context"])
+        execution["trace"]["context_sha256"] = execution["context_sha256"]
+        trace["program_trace"] = execution["trace"]
+        conn.execute("UPDATE news_verdicts SET trace=%s::jsonb WHERE event_id=%s", (json.dumps(trace), event_id))
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_ids[1]), principal=PRINCIPAL)["tasks"][0]
+    with repositories_for_connection(conn).transaction():
+        desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            EventRubricSubmission(dimensions={"asset_grounding": "pass"}, taxonomy={"change_state": "announced"}),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+    store = CandidateEvaluator(conn, stable=stable, judges={})._datasets
+    dataset = asyncio.run(
+        store.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 2 * 3_600_000, to_ms=NOW),
+                evaluation_protocol="counterfactual_sequence",
+            )
+        )
+    )
+    assert dataset.stream_coverage == "complete_post_event"
+    assert {entry["case_ref"]["event_id"] for entry in dataset.input_stream} == set(event_ids)
+    assert sum(bool(entry["case_ref"]["review_id"]) for entry in dataset.input_stream) == 1
+    assert dataset.episodes[0]["context"] == selected_contexts[event_ids[1]]
+    supervision = dataset.episodes[0]["accepted_review"]["supervision"]
+    assert supervision["sources"]["asset_grounding"] == "accepted_recorded_output"
+    assert supervision["mask"] == ["asset_grounding", "taxonomy.change_state"]
+    original = store.development_compile_export(dataset.artifact_sha)
+    # Replacing live lookup proves export resolves sealed artifacts, even when today's context differs.
+    store.load_case = lambda *_: pytest.fail("export consulted mutable review/source")
+    assert store.development_compile_export(dataset.artifact_sha) == original
+
+
+def test_sequence_freeze_reports_missing_context_instead_of_claiming_full_stream(conn) -> None:
+    event_id = _accepted_event(conn)
+    store = CandidateEvaluator(conn, stable=_arm(), judges={})._datasets
+    dataset = asyncio.run(
+        store.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+                evaluation_protocol="counterfactual_sequence",
+            )
+        )
+    )
+    assert dataset.stream_coverage == "incomplete_post_event"
+    assert event_id in dataset.counts["stream"]["missing_event_ids"]
+    assert dataset.episodes[0]["provenance"]["context_source"] == "reconstructed"
+    assert dataset.episodes[0]["accepted_review"]["supervision"]["missing"]["novelty"] == "historical_context_missing"

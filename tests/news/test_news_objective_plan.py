@@ -70,16 +70,20 @@ def test_invalid_gold_or_an_unanswered_target_is_excluded_but_a_missing_stable_a
     assert plan.blocking_reasons == ("train_empty", "selection_empty")
 
 
-def test_connected_fact_cluster_casts_one_optimizer_vote() -> None:
+def test_connected_fact_cluster_retains_cases_in_the_same_split() -> None:
     included = _episode(1, target=True)
     shadow = included.model_copy(update={"case_id": "shadow"})
     other = _episode(2, target=False)
 
     plan = build_gepa_objective_plan((included, shadow, other), "classification")
 
-    assert len(plan.optimizer_case_ids) == 2
+    assert len(plan.optimizer_case_ids) == 3
     assert len({episode.cluster_id for episode in plan.optimizer_episodes}) == 2
-    assert sum(case.reason == "cluster_representative_shadowed" for case in plan.cases) == 1
+    assert not plan.excluded_case_ids
+    assert plan.optimizer_ready
+    assert not (
+        {ep.cluster_id for ep in plan.train_episodes} & {ep.cluster_id for ep in plan.development_selection_episodes}
+    )
 
 
 def test_one_cluster_cannot_be_split_and_blocks_on_two_empty_halves() -> None:
@@ -219,12 +223,8 @@ def test_readiness_reports_halves_and_taxonomy_support_under_retired_quota_count
     }
 
 
-def test_readiness_summarizes_cluster_representatives_when_member_gold_differs() -> None:
-    """#534: media members of one fact carry different accepted Gold; readiness summarizes the elected one.
-
-    The freeze already summarizes one representative per connected fact cluster, so a corpus it sealed must
-    not make `news learning readiness` fail closed on `news_taxonomy_summary_cluster_conflict`.
-    """
+def test_readiness_keeps_members_when_gold_differs() -> None:
+    """Different accepted labels remain scoreable within one split group."""
 
     shadowed = _episode(1, target=True)
     elected = _episode(2, target=False).model_copy(update={"cluster_id": shadowed.cluster_id})
@@ -239,17 +239,16 @@ def test_readiness_summarizes_cluster_representatives_when_member_gold_differs()
     assert report["corpus"]["case_n"] == 3
     assert report["taxonomy_gold"]["cluster_n"] == 2
     assert report["taxonomy_gold"]["cluster_n"] == len(plan.optimizer_cluster_ids)
-    # The elected member's Gold, not the shadowed member's, is the one the summary supports.
-    assert report["taxonomy_gold"]["support"]["event_family"] == {"other": 1, "product_service_change": 1}
+    # Both members contribute label support; independent cluster support stays separate.
+    assert report["taxonomy_gold"]["support"]["event_family"] == {"other": 2, "product_service_change": 1}
     shadowed_case = _case(plan, shadowed.case_id)
-    assert shadowed_case.disposition == "excluded"
-    assert shadowed_case.reason == "cluster_representative_shadowed"
-    assert shadowed.case_id in plan.excluded_case_ids
+    assert shadowed_case.disposition == "included"
+    assert shadowed.case_id in plan.optimizer_case_ids
     assert {case["case_id"] for case in report["case_dispositions"]} == {episode.case_id for episode in episodes}
 
 
-def test_readiness_never_summarizes_two_representatives_of_one_cluster() -> None:
-    """Two conflicting representatives cannot exist: election is by cluster, so the summary sees one each."""
+def test_readiness_counts_all_cases_and_independent_groups_separately() -> None:
+    """All nine cases survive in three independently split groups."""
 
     episodes = tuple(
         _episode(index, target=index % 2 == 1).model_copy(update={"cluster_id": f"cluster-{index % 3}"})
@@ -261,7 +260,8 @@ def test_readiness_never_summarizes_two_representatives_of_one_cluster() -> None
         plan, episodes=episodes, identity={"dataset": "test"}, coverage={}, target="classification"
     )
 
-    assert len(plan.optimizer_case_ids) == len(plan.optimizer_cluster_ids) == 3
+    assert len(plan.optimizer_case_ids) == 9
+    assert len(plan.optimizer_cluster_ids) == 3
     assert report["taxonomy_gold"]["cluster_n"] == 3
-    assert report["objective"]["excluded_case_n"] == 6
-    assert dict(plan.exclusion_reasons) == {"cluster_representative_shadowed": 6}
+    assert report["objective"]["excluded_case_n"] == 0
+    assert dict(plan.exclusion_reasons) == {}

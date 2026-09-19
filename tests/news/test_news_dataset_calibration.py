@@ -37,6 +37,7 @@ class _Repository:
         return {
             "review_id": review_id,
             "subject_kind": "event",
+            "created_at_ms": 1000,
             "event_id": f"event-{index}",
             "evidence_version": 1,
         }

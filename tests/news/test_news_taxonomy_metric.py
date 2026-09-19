@@ -111,7 +111,7 @@ def test_the_persisted_shape_scores_exactly_as_the_four_bare_axes_do() -> None:
     )
 
 
-def test_taxonomy_summary_counts_one_vote_per_contract_cluster_and_exposes_blind_spots() -> None:
+def test_taxonomy_summary_reports_case_and_group_counts_without_discarding_labels() -> None:
     rows = [
         {
             "case_id": "case-b",
@@ -151,44 +151,49 @@ def test_taxonomy_summary_counts_one_vote_per_contract_cluster_and_exposes_blind
 
     assert summary["case_n"] == 3
     assert summary["cluster_n"] == 2
-    assert summary["shadowed_case_n"] == 1
+    assert summary["shadowed_case_n"] == 0
     assert summary["taxonomy_overall"] == 0.625
+    assert summary["case_mean"] == 0.75
+    assert summary["group_mean"] == 0.625
     assert summary["subject_codes_set_f1"] == 0.5
     assert summary["event_family_accuracy"] == 0.5
     assert summary["change_state_accuracy"] == 1.0
     assert summary["assertion_status_accuracy"] == 0.5
     assert summary["four_axis_exact_accuracy"] == 0.5
-    assert summary["support"]["event_family"] == {"financial_results": 1, "market_access": 1}
+    assert summary["support"]["event_family"] == {"financial_results": 2, "market_access": 1}
     assert "guidance_outlook" in summary["zero_support"]["event_family"]
     assert "cancelled" in summary["zero_support"]["change_state"]
     assert "conflicted" in summary["zero_support"]["assertion_status"]
     assert summary["confusion"]["event_family"] == [
-        {"gold": "financial_results", "predicted": "financial_results", "n": 1},
+        {"gold": "financial_results", "predicted": "financial_results", "n": 2},
         {"gold": "market_access", "predicted": "other", "n": 1},
     ]
 
 
-def test_taxonomy_summary_rejects_conflicting_rows_for_one_cluster() -> None:
-    with pytest.raises(ValueError, match="news_taxonomy_summary_cluster_conflict"):
-        summarize_taxonomy(
-            [
-                {
-                    "case_id": "case-a",
-                    "cluster_id": "cluster-1",
-                    "gold": _gold(event_family="other"),
-                    "predicted": _prediction(event_family="other"),
-                },
-                {
-                    "case_id": "case-b",
-                    "cluster_id": "cluster-1",
-                    "gold": _gold(event_family="financial_results"),
-                    "predicted": _prediction(event_family="financial_results"),
-                },
-            ]
-        )
+def test_taxonomy_summary_retains_different_labels_in_one_split_group() -> None:
+    summary = summarize_taxonomy(
+        [
+            {
+                "case_id": "case-a",
+                "cluster_id": "cluster-1",
+                "gold": _gold(event_family="other"),
+                "predicted": _prediction(event_family="other"),
+            },
+            {
+                "case_id": "case-b",
+                "cluster_id": "cluster-1",
+                "gold": _gold(event_family="financial_results"),
+                "predicted": _prediction(event_family="financial_results"),
+            },
+        ]
+    )
+
+    assert summary["case_n"] == 2
+    assert summary["cluster_n"] == 1
+    assert summary["taxonomy_overall"] == 1
 
 
-def test_taxonomy_summary_elects_one_deterministic_prediction_per_cluster() -> None:
+def test_taxonomy_summary_counts_both_predictions_in_the_same_group() -> None:
     summary = summarize_taxonomy(
         [
             {
@@ -207,8 +212,8 @@ def test_taxonomy_summary_elects_one_deterministic_prediction_per_cluster() -> N
     )
 
     assert summary["cluster_n"] == 1
-    assert summary["shadowed_case_n"] == 1
-    assert summary["event_family_accuracy"] == 1.0
+    assert summary["shadowed_case_n"] == 0
+    assert summary["event_family_accuracy"] == 0.5
 
 
 def test_calibration_reports_kappa_and_subject_set_f1_per_contract_cluster() -> None:

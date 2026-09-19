@@ -260,6 +260,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     datasets.freeze_dataset(
                         DatasetSpec(
                             role=str(args.role),
+                            evaluation_protocol=getattr(args, "evaluation_protocol", "historical_selected_context"),
                             window=ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms)),
                             observation_ref=candidate.candidate_sha if candidate is not None else None,
                         ),

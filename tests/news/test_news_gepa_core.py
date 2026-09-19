@@ -262,7 +262,7 @@ def test_budget_meter_records_an_answer_before_rejecting_its_reported_cost() -> 
     assert meter.task_model_calls == 1
     assert meter.task_total_tokens == 18
     assert meter.task_cost_microusd == 3
-    assert meter.actual_cost_microusd == 3
+    assert meter.budget_cost_microusd == 3
 
 
 def test_budget_meter_refuses_every_call_after_a_terminal_error() -> None:

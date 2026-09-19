@@ -25,10 +25,10 @@ downstream release gate, which is where a candidate that overfit the selection s
 from __future__ import annotations
 
 import difflib
-import functools
 import hashlib
 import importlib.metadata
 import math
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -78,6 +78,7 @@ from .contracts import (
 )
 from .metric import _json_safe
 from .objective import (
+    TARGET_PREDICTORS,
     DevelopmentEpisode,
     GepaObjectivePlan,
     build_gepa_objective_plan,
@@ -85,6 +86,7 @@ from .objective import (
     optimizer_population_identity,
     retrieval_receipt,
 )
+from .supervision import project_supervision
 from .target_metrics import (
     TASK_OUTPUT_INVALID,
     TASK_OUTPUT_TRUNCATED,
@@ -93,6 +95,7 @@ from .target_metrics import (
     accepted_duplicate_of,
     accepted_explanation,
     accepted_novelty,
+    accepted_semantics,
     bind_target_metric,
     target_metric_receipt,
 )
@@ -255,11 +258,6 @@ OptimizationTarget = LearningTarget
 OPTIMIZATION_TARGETS: Final[tuple[OptimizationTarget, ...]] = LEARNING_TARGETS
 
 # One target optimizes one Predictor. Nothing else in this module branches on the target name.
-TARGET_PREDICTOR: Final[dict[OptimizationTarget, PredictorName]] = {
-    "classification": "taxonomy",
-    "understanding": "event_semantics",
-    "explanation": "reader_card",
-}
 
 
 class TargetMetric(Protocol):
@@ -335,16 +333,6 @@ class _LearningStudent(dspy.Module):  # type: ignore[misc]
 # target's example carries, which is a property of the corpus rather than of the ruler.
 
 
-def _accepted_copy(review: Mapping[str, Any], field: str) -> str | None:
-    """The accepted Chinese copy for one card field, or None when nobody accepted one."""
-
-    dimension = "headline_fidelity" if field == "headline_zh" else "why_support"
-    if str(dict(review.get("dimensions") or {}).get(dimension) or "") != "fail":
-        return None
-    value = dict(review.get("expected") or {}).get(field)
-    return str(value) if isinstance(value, str) and value.strip() else None
-
-
 def _classification_example(episode: DevelopmentEpisode) -> dspy.Example:
     gold = dict(episode.accepted_review or {}).get("taxonomy")
     if gold is None:
@@ -358,17 +346,12 @@ def _classification_example(episode: DevelopmentEpisode) -> dspy.Example:
     ).with_inputs("evidence_json")
 
 
-def _understanding_example(
-    episode: DevelopmentEpisode,
-    *,
-    cluster_event_ids: Mapping[str, str] | None = None,
-) -> dspy.Example:
+def _understanding_example(episode: DevelopmentEpisode) -> dspy.Example:
     """The typed-semantics question plus every accepted fact about it, including what the model was shown.
 
     `gold_told_event_ids` is the frozen ledger in the exact order `restates` indexes, because a
     restatement's *target* is half its answer and a ruler that cannot see the ledger cannot check it.
-    `gold_cluster_event_ids` are the other Events of this case's connected fact cluster, so a candidate
-    that points at a different member of the same fact is right rather than lucky.
+    Only explicitly accepted duplicate targets can substitute for the exact target.
     """
 
     review = dict(episode.accepted_review or {})
@@ -382,6 +365,13 @@ def _understanding_example(
         "case_id": episode.case_id,
         "cluster_id": episode.cluster_id,
     }
+    review["supervision"] = project_supervision(
+        review,
+        episode.production_judgment.model_dump(mode="json") if episode.production_judgment else None,
+        told_event_ids=told_event_ids,
+    )
+    values["gold_semantics"] = accepted_semantics(review)
+    values["gold_novelty_exclusion"] = review["supervision"]["missing"].get("novelty")
     assets = accepted_assets(review)
     if assets is not None:
         values["gold_assets"] = assets
@@ -389,10 +379,7 @@ def _understanding_example(
     if novelty is not None:
         values["gold_novelty"] = novelty
         values["gold_duplicate_of"] = accepted_duplicate_of(review)
-        index = dict(cluster_event_ids or {})
-        values["gold_cluster_event_ids"] = frozenset(
-            event_id for event_id, cluster_id in index.items() if cluster_id == episode.cluster_id
-        )
+        values["gold_duplicate_targets"] = tuple(review["supervision"]["labels"].get("duplicate_targets", ()))
     return dspy.Example(**values).with_inputs("evidence_json")
 
 
@@ -422,10 +409,6 @@ def _explanation_example(episode: DevelopmentEpisode) -> dspy.Example:
         "case_id": episode.case_id,
         "cluster_id": episode.cluster_id,
     }
-    for copy_field in ("headline_zh", "why_zh"):
-        accepted = _accepted_copy(review, copy_field)
-        if accepted is not None:
-            values[f"gold_{copy_field}"] = accepted
     return dspy.Example(**values).with_inputs("evidence_json", "semantics_json")
 
 
@@ -471,18 +454,15 @@ def target_plan(
     *,
     review_rubric_version: str,
     judge: Any = None,
-    cluster_event_ids: Mapping[str, str] | None = None,
     judge_calibration_receipt_sha256: str = "",
 ) -> _TargetPlan:
     """Resolve one target into its Predictor, ruler, example renderer and metric receipt.
 
-    `judge` is the metric-judge route, bound into the ruler here and nowhere else. The offline optimizer
-    has a task endpoint and a reflection endpoint and no third one, so it passes None and the explanation
-    ruler runs its deterministic arm; `baseline` and `CandidateEvaluator` pass the sealed judge they
-    already build, and the receipt below records which of the two this run was scored under.
+    `judge` is the metric-judge route. Semantic explanation optimization requires it; an explicitly
+    selected proxy experiment omits it. Every consumer records which ruler actually ran.
     """
 
-    if target not in TARGET_PREDICTOR:
+    if target not in TARGET_PREDICTORS:
         raise ValueError(f"news_program_compile_target_unknown:{target}")
     metric = cast(TargetMetric, bind_target_metric(target, judge))
     receipt = target_metric_receipt(
@@ -507,7 +487,7 @@ def target_plan(
             predictor="event_semantics",
             output_type=EventSemantics,
             metric=metric,
-            example=functools.partial(_understanding_example, cluster_event_ids=cluster_event_ids),
+            example=_understanding_example,
             metric_receipt=receipt,
             zero_objectives=ZERO_OBJECTIVES["understanding"],
         )
@@ -698,6 +678,9 @@ def run_gepa(
     seed: int,
     review_rubric_version: str,
     target: OptimizationTarget = "classification",
+    judge: Any = None,
+    explanation_protocol: Literal["semantic", "proxy"] = "semantic",
+    judge_calibration_receipt_sha256: str = "",
     auto: str | None = None,
     max_metric_calls: int | None = None,
     compile_fn: Callable[..., dspy.Module] | None = None,
@@ -705,6 +688,8 @@ def run_gepa(
 ) -> GepaRunResult:
     """Optimize exactly one Predictor — the one this `target` names — against accepted Gold."""
 
+    if target == "explanation" and explanation_protocol == "semantic" and judge is None:
+        raise ValueError("news_program_compile_metric_judge_required")
     if (auto is None) == (max_metric_calls is None):
         raise ValueError("news_program_compile_budget_requires_exactly_one_of_auto_or_max_metric_calls")
     if gepa_log_dir:
@@ -724,13 +709,12 @@ def run_gepa(
     if plan.blocking_reasons:
         raise ValueError("news_program_compile_objective_blocked:" + ",".join(plan.blocking_reasons))
     split_receipt = plan.split
-    # The whole frozen corpus, not just the optimized half: a restatement may point at a member of its
-    # fact cluster that lives in the other half, and the ruler has to be able to see that it is the same
-    # fact rather than charge the candidate for naming a different card about it.
+    # The target consumes accepted duplicate alternatives, never split-group membership.
     resolved_target = target_plan(
         target,
         review_rubric_version=review_rubric_version,
-        cluster_event_ids=cluster_event_index(episodes),
+        judge=judge,
+        judge_calibration_receipt_sha256=judge_calibration_receipt_sha256,
     )
     train_examples = [resolved_target.example(episode) for episode in plan.train_episodes]
     val_examples = [resolved_target.example(episode) for episode in plan.development_selection_episodes]
@@ -747,7 +731,22 @@ def run_gepa(
         seed=seed,
         train_count=len(train_examples),
     )
-    metric = resolved_target.metric
+    metric_errors: list[BaseException] = []
+
+    def metric(
+        gold: Any, pred: Any, trace: Any = None, pred_name: str | None = None, pred_trace: Any = None
+    ) -> dspy.Prediction:
+        if metric_errors:
+            raise metric_errors[0]
+        try:
+            result = resolved_target.metric(gold, pred, trace, pred_name, pred_trace)
+            if result.score is None:
+                raise OptimizationRunTerminated(f"news_program_compile_metric_incomplete:{result.outcome}")
+            return result
+        except Exception as exc:
+            metric_errors.append(exc)
+            raise
+
     metric_receipt = resolved_target.metric_receipt
     student = _LearningStudent(
         getattr(NativeNewsProgram(base_program), resolved_target.predictor),
@@ -764,11 +763,10 @@ def run_gepa(
         train_count=len(train_examples),
         val_count=len(val_examples),
     )
-    stopper = getattr(task_lm, "stopper", None)
-    if not callable(stopper):
+    physical_stopper = getattr(task_lm, "stopper", None)
 
-        def stopper(_state: Any) -> bool:
-            return False
+    def stopper(state: Any) -> bool:
+        return bool(metric_errors) or (bool(physical_stopper(state)) if callable(physical_stopper) else False)
 
     optimizer = dspy.GEPA(
         metric=metric,
@@ -795,8 +793,13 @@ def run_gepa(
     reflection_ledger = getattr(reflection_lm, "ledger", None)
     if not isinstance(task_ledger, LMCallLedger) or reflection_ledger is not task_ledger:
         raise ValueError("news_program_compile_lm_ledger_mismatch")
-    with task_ledger.scope(scope_context), dspy.context(lm=task_lm, adapter=program_json_adapter()):
-        optimized = (compile_fn or optimizer.compile)(student, trainset=train_examples, valset=val_examples)
+    try:
+        with task_ledger.scope(scope_context), dspy.context(lm=task_lm, adapter=program_json_adapter()):
+            optimized = (compile_fn or optimizer.compile)(student, trainset=train_examples, valset=val_examples)
+    finally:
+        # DSPy may catch arbitrary metric exceptions and substitute failure_score.
+        if metric_errors:
+            raise metric_errors[0]
 
     # The learning wrapper translates only task-output truncation into a scored Prediction. A physical budget
     # refusal or systemic provider failure is a run answer, so reconcile it before looking at the returned
@@ -980,7 +983,7 @@ def optimizer_config_receipt(
 
 def _build_learning_lm(
     *,
-    role: Literal["task", "reflection"],
+    role: Literal["task", "reflection", "metric_judge"],
     model_name: str,
     api_key: str,
     api_base: str,
@@ -1170,6 +1173,21 @@ class _BudgetMeter:
         max_wall_clock_seconds: float | None = None,
     ) -> None:
         self.budget = budget
+        self.metric_judge_model_calls = 0
+        self.metric_judge_total_tokens = 0
+        self._lock = threading.RLock()
+        self._reserved_cost = 0
+        self.observed_cost_microusd = 0
+        self.unknown_cost_calls = 0
+        for suffix in (
+            "model_calls",
+            "cost_microusd",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "total_tokens",
+        ):
+            setattr(self, f"metric_judge_{suffix}", 0)
         # Neither the local llama.cpp endpoint nor DeepSeek returns a price litellm can resolve, so
         # `provider_cost_microusd` is `None` for endpoints whose provider cannot price the response. Charge
         # the operator's declared per-call ceiling instead, which stops the run early rather than late.
@@ -1186,7 +1204,7 @@ class _BudgetMeter:
         self.reflection_output_tokens = 0
         self.reflection_cached_tokens = 0
         self.reflection_total_tokens = 0
-        self.actual_cost_microusd = 0
+        self.budget_cost_microusd = 0
         self.imputed_cost_calls = 0
         # DSPy's evaluator converts every Module Exception to `failure_score`. Keep the first run-level
         # failure out of band so a returned Program cannot launder exhaustion into a candidate score.
@@ -1197,28 +1215,28 @@ class _BudgetMeter:
 
     @property
     def total_model_calls(self) -> int:
-        return self.task_model_calls + self.reflection_model_calls
+        return self.task_model_calls + self.reflection_model_calls + self.metric_judge_model_calls
 
     @property
     def elapsed_seconds(self) -> float:
         return self._monotonic() - self._started_monotonic
 
-    def before(self, role: Literal["task", "reflection"]) -> None:
-        self.raise_if_terminal()
-        # The wall clock is checked here, before the call, for the same reason the cost reservation is: the
-        # only bound worth having is one that stops the next request rather than reporting the last one.
-        if self._max_wall_clock_seconds is not None and self.elapsed_seconds >= self._max_wall_clock_seconds:
-            raise self._refuse("news_learning_optimize_wall_clock_exhausted")
-        used = self.task_model_calls if role == "task" else self.reflection_model_calls
-        limit = self.budget.max_task_model_calls if role == "task" else self.budget.max_reflection_model_calls
-        if used >= limit:
-            raise self._refuse(f"news_program_compile_{role}_model_call_budget_exhausted")
-        if self.actual_cost_microusd + self.budget.max_call_cost_microusd > self.budget.max_cost_microusd:
-            raise self._refuse("news_program_compile_cost_reservation_exhausted")
-        if role == "task":
-            self.task_model_calls += 1
-        else:
-            self.reflection_model_calls += 1
+    def before(self, role: Literal["task", "reflection", "metric_judge"]) -> None:
+        with self._lock:
+            self.raise_if_terminal()
+            if self._max_wall_clock_seconds is not None and self.elapsed_seconds >= self._max_wall_clock_seconds:
+                raise self._refuse("news_learning_optimize_wall_clock_exhausted")
+            used = getattr(self, f"{role}_model_calls")
+            limit = getattr(self.budget, f"max_{role}_model_calls")
+            if used >= limit:
+                raise self._refuse(f"news_program_compile_{role}_model_call_budget_exhausted")
+            if (
+                self.budget_cost_microusd + self._reserved_cost + self.budget.max_call_cost_microusd
+                > self.budget.max_cost_microusd
+            ):
+                raise self._refuse("news_program_compile_cost_reservation_exhausted")
+            setattr(self, f"{role}_model_calls", used + 1)
+            self._reserved_cost += self.budget.max_call_cost_microusd
 
     def _refuse(self, code: str) -> OptimizationBudgetExceeded:
         refusal = OptimizationBudgetExceeded(code)
@@ -1227,55 +1245,67 @@ class _BudgetMeter:
 
     def _cost(self, response: dspy.LMResponse | None) -> int:
         if response is not None and response.cost is not None:
-            return max(0, round(float(response.cost) * 1_000_000))
+            cost = max(0, round(float(response.cost) * 1_000_000))
+            self.observed_cost_microusd += cost
+            return cost
+        self.unknown_cost_calls += 1
         if self.imputed_call_cost_microusd is not None:
             self.imputed_cost_calls += 1
             return self.imputed_call_cost_microusd
         raise self._refuse("news_program_compile_provider_cost_unavailable")
 
-    def after(self, role: Literal["task", "reflection"], response: dspy.LMResponse) -> None:
-        input_tokens, output_tokens, cached_tokens, total_tokens = _usage_values(response)
-        self._record_usage(role, input_tokens, output_tokens, cached_tokens, total_tokens)
-        self._settle(role, self._cost(response))
+    def after(self, role: Literal["task", "reflection", "metric_judge"], response: dspy.LMResponse) -> None:
+        with self._lock:
+            input_tokens, output_tokens, cached_tokens, total_tokens = _usage_values(response)
+            self._record_usage(role, input_tokens, output_tokens, cached_tokens, total_tokens)
+            self._settle(role, self._cost(response))
 
-    def after_receipt(self, role: Literal["task", "reflection"], receipt: LMCallReceipt) -> None:
-        self._record_usage(
-            role,
-            receipt.input_tokens,
-            receipt.output_tokens,
-            receipt.cached_tokens,
-            receipt.total_tokens,
-        )
-        cost = receipt.provider_cost_microusd
-        self._settle(role, self._cost(None) if cost is None else cost)
+    def after_receipt(self, role: Literal["task", "reflection", "metric_judge"], receipt: LMCallReceipt) -> None:
+        with self._lock:
+            self._record_usage(
+                role,
+                receipt.input_tokens,
+                receipt.output_tokens,
+                receipt.cached_tokens,
+                receipt.total_tokens,
+            )
+            cost = receipt.provider_cost_microusd
+            if cost is not None:
+                self.observed_cost_microusd += cost
+            self._settle(role, self._cost(None) if cost is None else cost)
 
     def _record_usage(
         self,
-        role: Literal["task", "reflection"],
+        role: Literal["task", "reflection", "metric_judge"],
         input_tokens: int,
         output_tokens: int,
         cached_tokens: int,
         total_tokens: int,
     ) -> None:
-        prefix = "task" if role == "task" else "reflection"
+        prefix = role
         setattr(self, f"{prefix}_input_tokens", getattr(self, f"{prefix}_input_tokens") + input_tokens)
         setattr(self, f"{prefix}_output_tokens", getattr(self, f"{prefix}_output_tokens") + output_tokens)
         setattr(self, f"{prefix}_cached_tokens", getattr(self, f"{prefix}_cached_tokens") + cached_tokens)
         setattr(self, f"{prefix}_total_tokens", getattr(self, f"{prefix}_total_tokens") + total_tokens)
 
-    def after_provider_failure(self, role: Literal["task", "reflection"], *, provider_reached: bool) -> None:
-        if provider_reached:
-            self._settle(role, self._cost(None))
+    def after_provider_failure(
+        self, role: Literal["task", "reflection", "metric_judge"], *, provider_reached: bool
+    ) -> None:
+        with self._lock:
+            if provider_reached:
+                self._settle(role, self._cost(None))
+            else:
+                with self._lock:
+                    self._reserved_cost -= self.budget.max_call_cost_microusd
 
-    def _settle(self, role: Literal["task", "reflection"], cost: int) -> None:
-        self.actual_cost_microusd += cost
-        if role == "task":
-            self.task_cost_microusd += cost
-        else:
-            self.reflection_cost_microusd += cost
+    def _settle(self, role: Literal["task", "reflection", "metric_judge"], cost: int) -> None:
+        with self._lock:
+            self._reserved_cost -= self.budget.max_call_cost_microusd
+            self.budget_cost_microusd += cost
+            setattr(self, f"{role}_cost_microusd", getattr(self, f"{role}_cost_microusd") + cost)
         if cost > self.budget.max_call_cost_microusd:
             raise self._refuse("news_program_compile_call_cost_reservation_exceeded")
-        if self.actual_cost_microusd > self.budget.max_cost_microusd:
+        if self.budget_cost_microusd > self.budget.max_cost_microusd:
             raise self._refuse("news_program_compile_cost_budget_exceeded")
 
     def remember_terminal(self, error: BaseException) -> None:
@@ -1321,7 +1351,9 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
 
     forward_contract = "typed_lm"
 
-    def __init__(self, lm: dspy.BaseLM, *, meter: _BudgetMeter, role: Literal["task", "reflection"]) -> None:
+    def __init__(
+        self, lm: dspy.BaseLM, *, meter: _BudgetMeter, role: Literal["task", "reflection", "metric_judge"]
+    ) -> None:
         super().__init__(
             model=lm.model,
             model_type=getattr(lm, "model_type", "chat"),
@@ -1521,6 +1553,9 @@ class OptimizationConfig:
     # Predictors moving under one selection score would make "which change earned the improvement"
     # unanswerable from the receipt.
     target: OptimizationTarget = "classification"
+    judge: Any = None
+    explanation_protocol: Literal["semantic", "proxy"] = "semantic"
+    judge_calibration_receipt_sha256: str = ""
     # Injected so a test can drive the entry point without model spend; production uses `dspy.GEPA.compile`.
     compile_fn: Callable[..., dspy.Module] | None = None
     # Official GEPA state/log directory. The CLI supplies a fresh path under the one run directory.
@@ -1549,7 +1584,7 @@ def objective_summary(
         # Which Predictor this population was optimized for. A candidate that does not say so cannot be
         # re-derived, because the same corpus now answers three different questions.
         "target": target,
-        "target_predictor": TARGET_PREDICTOR[target],
+        "target_predictor": TARGET_PREDICTORS[target],
         # Which projection of the corpus this plan was built from. The frozen dataset pins the case set;
         # the reviews behind those cases can still be edited, so registration re-projects and compares
         # this rather than a count (#202 PR-B).
@@ -1620,6 +1655,14 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         "taxonomy_gold": readiness["taxonomy_gold"],
     }
     blockers = plan_blockers(plan)
+    if config.target == "explanation" and config.explanation_protocol == "semantic" and config.judge is None:
+        blockers += ("news_program_compile_metric_judge_required",)
+    if (
+        config.target == "explanation"
+        and config.explanation_protocol == "semantic"
+        and config.budget.max_metric_judge_model_calls == 0
+    ):
+        blockers += ("news_program_compile_metric_judge_budget_required",)
     if blockers:
         return _terminal(
             "REJECTED",
@@ -1632,7 +1675,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             started_at_ms=started_at_ms,
         )
 
-    # Before anything is spent: both roles answer under identities they were stamped with, or the run
+    # Before anything is spent: all configured roles answer under identities they were stamped with, or the run
     # does not start. Reconstructing an identity from the object it describes would attest nothing.
     task_identity = require_model_identity(config.task_lm, role="task")
     reflection_identity = require_model_identity(config.reflection_lm, role="reflection")
@@ -1640,6 +1683,10 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         "task": task_identity.model_dump(mode="json"),
         "reflection": reflection_identity.model_dump(mode="json"),
     }
+    if config.judge is not None:
+        identities["metric_judge"] = require_model_identity(config.judge.lm, role="metric_judge").model_dump(
+            mode="json"
+        )
     # The wall clock is checked before each call, not during one: a request already in flight runs to its
     # own attested deadline, and clamping that deadline would break the very role contract
     # `ModelExecutionIdentity` exists to attest. So the worst case is `max_wall_clock_seconds` plus one
@@ -1649,6 +1696,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
     longest_call_seconds = max(
         float(task_identity.timeout_seconds),
         float(reflection_identity.timeout_seconds),
+        float(identities.get("metric_judge", {}).get("timeout_seconds", 0)),
     )
     if config.budget.max_wall_clock_seconds < longest_call_seconds:
         raise ValueError(f"news_learning_optimize_wall_clock_below_call_deadline:{longest_call_seconds:g}")
@@ -1658,6 +1706,8 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         monotonic=config.monotonic,
         max_wall_clock_seconds=config.budget.max_wall_clock_seconds,
     )
+    if config.judge is not None:
+        config.judge.bind_run_budget(meter)
     task_lm = _MeteredLearningLM(config.task_lm, meter=meter, role="task")
     reflection_lm = _MeteredLearningLM(config.reflection_lm, meter=meter, role="reflection")
     budgeted: tuple[Any, ...] = (task_lm, reflection_lm)
@@ -1671,6 +1721,9 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             task_lm=task_lm,
             reflection_lm=reflection_lm,
             target=config.target,
+            judge=config.judge,
+            explanation_protocol=config.explanation_protocol,
+            judge_calibration_receipt_sha256=config.judge_calibration_receipt_sha256,
             auto=config.budget.auto,
             max_metric_calls=config.budget.max_metric_calls,
             seed=config.budget.seed,
@@ -1852,10 +1905,26 @@ def _usage(
         "reflection_output_tokens": meter.reflection_output_tokens if meter else 0,
         "reflection_cached_tokens": meter.reflection_cached_tokens if meter else 0,
         "reflection_total_tokens": meter.reflection_total_tokens if meter else 0,
-        "total_tokens": (meter.task_total_tokens + meter.reflection_total_tokens if meter else 0),
+        "total_tokens": (
+            meter.task_total_tokens + meter.reflection_total_tokens + meter.metric_judge_total_tokens if meter else 0
+        ),
+        **{
+            f"metric_judge_{suffix}": getattr(meter, f"metric_judge_{suffix}") if meter else 0
+            for suffix in (
+                "model_calls",
+                "cost_microusd",
+                "input_tokens",
+                "output_tokens",
+                "cached_tokens",
+                "total_tokens",
+            )
+        },
         "wall_clock_ms": round(meter.elapsed_seconds * 1_000) if meter else 0,
         "imputed_cost_calls": meter.imputed_cost_calls if meter else 0,
-        "actual_cost_microusd": meter.actual_cost_microusd if meter else 0,
+        "budget_cost_microusd": meter.budget_cost_microusd if meter else 0,
+        "observed_cost_microusd": meter.observed_cost_microusd if meter else 0,
+        "unknown_cost_calls": meter.unknown_cost_calls if meter else 0,
+        "actual_cost_microusd": (None if meter.unknown_cost_calls else meter.observed_cost_microusd) if meter else 0,
         "metric_calls": metric_calls,
         "transport_failures": sum(lm.transport_failures for lm in budgeted),
         "transport_retries": sum(lm.transport_retries for lm in budgeted),
@@ -1866,7 +1935,7 @@ def _overspend(usage: Mapping[str, Any], *, budget: OptimizationBudget, elapsed_
     """The bounds the meter cannot stop mid-call: total spend and the clock."""
 
     reasons: list[str] = []
-    if int(usage["actual_cost_microusd"]) > budget.max_cost_microusd:
+    if int(usage["budget_cost_microusd"]) > budget.max_cost_microusd:
         reasons.append("news_program_compile_cost_budget_exceeded")
     if elapsed_seconds > budget.max_wall_clock_seconds:
         reasons.append("news_learning_optimize_wall_clock_exhausted")
@@ -1878,7 +1947,7 @@ __all__ = [
     "OPTIMIZATION_TARGETS",
     "REFLECTION_MAX_TOKENS",
     "REFLECTION_TIMEOUT_SECONDS",
-    "TARGET_PREDICTOR",
+    "TARGET_PREDICTORS",
     "USAGE_SCHEMA",
     "FrozenDevelopmentDataset",
     "GepaNoProgramChange",

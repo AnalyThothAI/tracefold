@@ -79,11 +79,13 @@ from .objective import (
     retrieval_receipt,
     verify_policy_projection,
 )
+from .supervision import project_supervision
 from .target_metrics import (
     accepted_assets,
     accepted_duplicate_of,
     accepted_explanation,
     accepted_novelty,
+    accepted_semantics,
     accepted_taxonomy,
     bind_target_metric,
     product_scoreboard,
@@ -634,14 +636,21 @@ def _target_examples(episode: DevelopmentEpisode) -> dict[str, dspy.Example]:
     """
 
     review = dict(episode.accepted_review or {})
-    applicable = tuple(episode.applicable_targets)
+    review["supervision"] = project_supervision(
+        review,
+        episode.production_judgment.model_dump(mode="json") if episode.production_judgment else None,
+        told_event_ids=tuple(entry.event_id for entry in episode.context.told.entries),
+    )
+    applicable = tuple(review["supervision"]["targets"])
     gold_taxonomy = accepted_taxonomy(review)
     told_event_ids = tuple(str(entry.event_id) for entry in episode.context.told.entries)
     explanation = accepted_explanation(review)
     classification = dspy.Example(
         case_id=episode.case_id,
         applicable_targets=applicable,
-        **({} if gold_taxonomy is None else {"gold_taxonomy": gold_taxonomy.model_dump(mode="json")}),
+        **(
+            {} if gold_taxonomy is None else {"gold_taxonomy": gold_taxonomy.model_dump(mode="json", exclude_none=True)}
+        ),
     ).with_inputs("case_id")
     assets = accepted_assets(review)
     novelty = accepted_novelty(review)
@@ -649,6 +658,9 @@ def _target_examples(episode: DevelopmentEpisode) -> dict[str, dspy.Example]:
         case_id=episode.case_id,
         applicable_targets=applicable,
         gold_told_event_ids=told_event_ids,
+        gold_semantics=accepted_semantics(review),
+        gold_novelty_exclusion=review["supervision"]["missing"].get("novelty"),
+        gold_duplicate_targets=tuple(review["supervision"]["labels"].get("duplicate_targets", ())),
         **({} if assets is None else {"gold_assets": assets}),
         **({} if novelty is None else {"gold_novelty": novelty, "gold_duplicate_of": accepted_duplicate_of(review)}),
     ).with_inputs("case_id")
@@ -677,7 +689,7 @@ def _target_predictions(prediction: CandidatePrediction) -> dict[str, dspy.Predi
     editorial = dict(editorial or {})
     return {
         "classification": dspy.Prediction(taxonomy=editorial.get("taxonomy"), editorial=editorial),
-        "understanding": dspy.Prediction(semantics=verdict or None),
+        "understanding": dspy.Prediction(semantics=verdict or None, relevance=editorial.get("relevance")),
         "explanation": dspy.Prediction(card=verdict or None),
     }
 
@@ -807,7 +819,7 @@ def _target_evidence(
         {
             "case_id": case.episode.case_id,
             "cluster_id": case.episode.cluster_id,
-            "gold": gold.model_dump(mode="json"),
+            "gold": gold.model_dump(mode="json", exclude_none=True),
             "predicted": predicted,
         }
         for case in cases
@@ -817,10 +829,7 @@ def _target_evidence(
         for predicted in (getattr(predictions[case.episode.case_id]["classification"], "taxonomy", None),)
         if isinstance(predicted, Mapping)
     ]
-    elected = {
-        str(row["cluster_id"]): row for row in sorted(taxonomy_rows, key=lambda row: str(row["case_id"]), reverse=True)
-    }
-    summary = summarize_taxonomy(list(elected.values())) if elected else {}
+    summary = summarize_taxonomy(taxonomy_rows) if taxonomy_rows else {}
     scoreboard = product_scoreboard(
         rows_by_target,
         taxonomy_summary=summary,
@@ -1075,7 +1084,9 @@ def _build_report(
     # answer different questions: the composite is one number for "would this candidate ship the right
     # action", and these are three numbers for "did it classify, understand and explain correctly", each
     # with the denominator that says how much of the corpus could ask.
-    targets, scoreboard = _target_evidence(cases, results, answers=answers, judge=judge, route=route)
+    targets, scoreboard = _target_evidence(
+        cases, results, answers=answers, judge=None if mode == "recorded" else judge, route=route
+    )
 
     gold_n = sum(result.gold_scored_n for result in answered)
     labelled_n = sum(result.labelled_n for result in answered)

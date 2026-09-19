@@ -1704,8 +1704,10 @@ explains one frozen development dataset before any provider call. It re-projects
 builds Objective Plan v5 **for that target**. A case is **included** when the frozen case's
 `applicable_targets` names the target — the reviewer labelled something that target scores — and the
 target's example can be built from the episode; owner columns are audit metadata and grant no authority.
-One deterministic representative per connected fact cluster enters the time-ordered, cluster-disjoint
-train/selection split; every other member remains an excluded diagnostic.
+All meaningfully distinct labelled cases enter the time-ordered, cluster-disjoint train/selection split.
+A split group prevents leakage; it does not declare Events interchangeable. Duplicate alternatives must
+be explicitly accepted in `novelty.equivalent_targets`. Taxonomy summaries give each group equal weight
+after averaging its cases, with per-axis case/group denominators and a group bootstrap interval.
 
 The v6 readiness report has no top-level outcome. `objective.compilable` and its blockers describe whether
 this target's population can be optimized, and the blocker vocabulary is exactly `train_empty`,
@@ -1721,17 +1723,22 @@ mean subject set-F1 over every cluster whose accepted review carries two blind d
 Readiness makes no task/reflection/judge call and writes nothing except the operator-requested report file.
 Its call envelope names the ceiling of two physical task calls per metric call on the target's own
 Predictor — the primary JSONAdapter attempt plus its one format fallback — and one reflection call per
-proposal round. No target carries a judge envelope: the optimizer holds a task endpoint and a reflection
-endpoint and no third one, so it passes no judge and the explanation ruler runs its deterministic arm
-there. `baseline` and `CandidateEvaluator` are what spend the calibrated judge. `news learning run` rebuilds
+proposal round. Semantic explanation can ask support, coverage and forbidden-claim questions, each with
+at most two physical attempts; successful identical questions share the judge cache. The run budget
+counts task, reflection and metric_judge physical calls, tokens and reserved cost.
+`--explanation-protocol semantic` requires a configured judge and a positive
+`--max-metric-judge-model-calls`; `--explanation-protocol proxy` explicitly requests literal/lint scoring.
+A judge outage, missing numeric score or budget failure terminates optimization without ADVANCE.
+Unknown billed cost is null, with observed cost and conservative budget estimates reported separately.
+`news learning run` rebuilds
 the same report before constructing endpoints and refuses unless `objective.compilable` is true.
 CandidateEvaluator re-projects the same plan at registration/evaluation, for the target the candidate's
 own `optimization_objective_summary` declares.
 
 Optimizer candidates publish `optimization_objective_summary.v5`, including the target, the episode
-projection root, plan schema, representative population identity, target dimensions and split roots.
+projection root, plan schema, retained population identity, target dimensions and split roots.
 Registration re-derives and compares every field. The current corpus contract is
-`news_learning_dataset_v4`, the current candidate is `news_prompt_candidate_v3`, and historical artifacts
+`news_learning_dataset_v5`, the current candidate is `news_prompt_candidate_v3`, and historical artifacts
 remain audit-only.
 
 `news learning freeze` seals accepted reviews into a content-addressed
@@ -1740,11 +1747,29 @@ and accepted labels (#651 §9): a case needs a frozen, release-eligible observed
 evidence snapshot inside the window and an accepted `news_review_v7` review of
 it, whichever arm answered the Event. The answering arm is recorded on the case
 as `provenance` and the sealing arm beside the corpus; neither admits or refuses
-a case. A `v4` dataset seals no learning epoch, names the `targets` its cases
+a case. A `v5` dataset seals no learning epoch, names the `targets` its cases
 can explain, and counts `rubric_ineligible_n` rather than hiding the accepted
 reviews it could not read. `news_review_v6` rows stay readable audit history and
 are ineligible for a new dataset, because a v6 row means "every dimension below
 was answered" and a v7 row does not.
+The v5 seal references content-addressed `dataset_case` artifacts containing the actual selected
+execution context, original judgment, accepted supervision and policy projection. Export only hydrates
+these artifacts; it never refreshes aliases, catalogue, receipts or reviews. A missing historical context
+is explicitly reconstructed and cannot supply exact historical novelty supervision. The policy projection
+names the declared arm at freeze; it does not claim to recover an unavailable historical policy.
+`freeze --evaluation-protocol historical_selected_context` is the default. The optional
+`counterfactual_sequence` seals every triage input in the window, including unreviewed Events, plus
+pre-window sent receipts. Each arm evolves its own history under `simulated_immediate_success` delivery.
+An unjudged/missing-context input or unmatched reviewed judgment makes the stream incomplete and prevents
+sequence evaluation; post-Event coverage is not acquisition recall.
+
+`learning/supervision.py` owns accepted labels and masks. A pass binds the reviewed original value;
+a fail requires the explicit correction. Unreviewed predictions and should-push labels do not become
+component Gold. Partial `ReviewTaxonomyV1` scores only supplied axes; online `ModelTaxonomyV1` stays complete.
+New expected assets require a valid explicit market enum, including explicit `unknown`. Historical reads
+remain tolerant of absent market metadata. `explanation_supervision` describes correction-block presence;
+only the projected mask determines trainability, so error names alone are diagnostic.
+
 The CLI is two groups, because there are two lifecycles (#202 `11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program, measures the metric judge and runs the one optimization — `readiness`,

@@ -92,6 +92,7 @@ def _optimize(
             max_metric_calls=(None if args.max_metric_calls is None else int(args.max_metric_calls)),
             max_task_model_calls=int(args.max_task_model_calls),
             max_reflection_model_calls=int(args.max_reflection_model_calls),
+            max_metric_judge_model_calls=int(getattr(args, "max_metric_judge_model_calls", 0)),
             max_cost_microusd=int(args.max_cost_microusd),
             max_call_cost_microusd=int(args.max_call_cost_microusd),
             max_wall_clock_seconds=int(args.max_wall_clock_seconds),

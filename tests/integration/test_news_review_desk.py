@@ -1039,6 +1039,22 @@ def test_external_miss_appends_snapshot_and_accepted_judgment_atomically(conn) -
     assert coverage["funnel"]["external_misses"] == 1
 
 
+def test_external_miss_accepts_only_one_explicit_taxonomy_axis(conn) -> None:
+    desk = ReviewDesk(conn, now_ms=NOW)
+    submission = ExternalMissSubmission(
+        source_url="https://example.test/partial-taxonomy",
+        title="A source item with one reviewed taxonomy axis",
+        body="Primary source body",
+        occurred_at_ms=NOW - 10_000,
+        rubric=EventRubricSubmission.model_validate({"dimensions": {}, "taxonomy": {"event_family": "other"}}),
+    )
+    with repositories_for_connection(conn).transaction():
+        desk.submit(None, submission, principal=PRINCIPAL, idempotency_key=str(uuid.uuid4()))
+    row = conn.execute("SELECT payload FROM news_reviews WHERE review_kind = 'judgment'").fetchone()
+    assert row["payload"]["taxonomy"] == {"event_family": "other"}
+    assert row["payload"]["dimensions"] == {}
+
+
 def test_external_miss_rejects_a_future_source_time(conn) -> None:
     db_now = conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
         "now_ms"
@@ -1953,8 +1969,7 @@ def test_the_rubric_contract_offers_every_dimension_and_requires_none(conn) -> N
         EventRubricSubmission(dimensions={})
     with pytest.raises(ValueError, match="news_review_taxonomy_required_for_dimension"):
         EventRubricSubmission(dimensions={"taxonomy_event_family": "pass"})
-    with pytest.raises(ValueError, match="news_review_taxonomy_dimension_required"):
-        EventRubricSubmission(dimensions={"direction": "pass"}, taxonomy=MODEL_TAXONOMY)
+    assert EventRubricSubmission(dimensions={"direction": "pass"}, taxonomy=MODEL_TAXONOMY).taxonomy is not None
     with pytest.raises(ValueError, match="news_review_explanation_requires_card_dimension"):
         EventRubricSubmission(
             dimensions={"direction": "pass"},

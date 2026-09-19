@@ -505,6 +505,9 @@ usage: tracefold news learning run [-h] --development DEVELOPMENT --out OUT
                                    --max-metric-calls MAX_METRIC_CALLS)
                                    --max-task-model-calls MAX_TASK_MODEL_CALLS
                                    --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
+                                   [--max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS]
+                                   [--explanation-protocol {semantic,proxy}]
+                                   [--judge-calibration-receipt-sha256 JUDGE_CALIBRATION_RECEIPT_SHA256]
                                    --max-cost-microusd MAX_COST_MICROUSD
                                    --max-call-cost-microusd MAX_CALL_COST_MICROUSD
                                    [--max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS]
@@ -520,6 +523,9 @@ options:
   --max-metric-calls MAX_METRIC_CALLS
   --max-task-model-calls MAX_TASK_MODEL_CALLS
   --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
+  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
+  --explanation-protocol {semantic,proxy}
+  --judge-calibration-receipt-sha256 JUDGE_CALIBRATION_RECEIPT_SHA256
   --max-cost-microusd MAX_COST_MICROUSD
   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
   --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
@@ -533,12 +539,15 @@ options:
 ## `news learning freeze`
 
 ```
-usage: tracefold news learning freeze [-h] --role {development,validation}
+usage: tracefold news learning freeze [-h]
+                                      [--evaluation-protocol {historical_selected_context,counterfactual_sequence}]
+                                      --role {development,validation}
                                       --from-ms FROM_MS --to-ms TO_MS
                                       [--candidate CANDIDATE] --out OUT
 
 options:
   -h, --help            show this help message and exit
+  --evaluation-protocol {historical_selected_context,counterfactual_sequence}
   --role {development,validation}
   --from-ms FROM_MS
   --to-ms TO_MS

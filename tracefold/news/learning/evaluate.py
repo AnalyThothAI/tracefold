@@ -59,7 +59,6 @@ from .metric import (
 )
 from .objective import (
     _expected_delivery,
-    elect_cluster_representative_case_ids,
     production_decision,
 )
 from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA
@@ -77,13 +76,14 @@ from .target_metrics import (
     accepted_duplicate_of,
     accepted_explanation,
     accepted_novelty,
+    accepted_semantics,
     accepted_taxonomy,
     bind_target_metric,
     classification_axis_values,
     classification_score,
     summarize_target_outcomes,
 )
-from .taxonomy_metric import TaxonomyComparison, accepted_taxonomy_gold, compare_taxonomy, summarize_taxonomy
+from .taxonomy_metric import TaxonomyComparison, compare_taxonomy, summarize_taxonomy
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
 # stop duplicating — and since #314 there is no literal to copy: the value is computed from the code the
@@ -145,8 +145,8 @@ def _component_failures(observations: Sequence[Mapping[str, Any]]) -> dict[str, 
 
 
 def _review_taxonomy(review: Mapping[str, Any]) -> dict[str, Any] | None:
-    gold = accepted_taxonomy_gold(review)
-    return None if gold is None else gold.model_dump(mode="json")
+    gold = accepted_taxonomy(review)
+    return None if gold is None else gold.model_dump(mode="json", exclude_none=True)
 
 
 def _taxonomy_release_evidence(
@@ -159,14 +159,9 @@ def _taxonomy_release_evidence(
     was the same logic that made selection unreachable, and the per-axis delta gate below already refuses
     a candidate that is worse than Stable on any axis.
 
-    The population is one elected representative per connected fact cluster — the same one the Objective
-    Plan optimizes and the freeze summarizes, elected here by the plan's own
-    `elect_cluster_representative_case_ids` (#548). Feeding `summarize_taxonomy` one row per case made it
-    fail closed with `news_taxonomy_summary_cluster_conflict` on corpora the freeze accepted, because two
-    media members of one fact legitimately carry different accepted Gold. Shadowed members stay audit
-    facts in `news_learning_cases`; they cast no second vote here. A case only one arm answered is out of
-    both summaries, so Stable and candidate are compared on identical cases and the deltas below subtract
-    two numbers measured over the same clusters.
+    Every labelled case contributes, including distinct questions within one fact group.
+    Group means and group-resampled paired intervals account for correlated cases. Both arms
+    use identical cases and supplied-axis masks; missing answers stay in execution diagnostics.
 
     Two per-axis readings come out of that one population and they are not interchangeable. `delta` and
     `regressed_axes` are the sign test #501 wrote, and they still decide the axis failure of a candidate
@@ -207,7 +202,6 @@ def _taxonomy_release_evidence(
                 "candidate": candidate,
             }
         )
-    elected = elect_cluster_representative_case_ids(eligible)
     rows: dict[str, list[dict[str, Any]]] = {
         arm: [
             {
@@ -217,7 +211,6 @@ def _taxonomy_release_evidence(
                 "predicted": row[arm],
             }
             for row in eligible
-            if row["case_id"] in elected
         ]
         for arm in ("stable", "candidate")
     }
@@ -268,6 +261,7 @@ def _accepted_review_view(review: Mapping[str, Any]) -> dict[str, Any]:
 
     payload = dict(review.get("payload") or {})
     return {
+        "supervision": dict(review.get("supervision") or {}),
         "dimensions": dict(review.get("dimensions") or payload.get("dimensions") or {}),
         "novelty": dict(review.get("novelty") or payload.get("novelty") or {}),
         "expected": dict(payload.get("expected") or {}),
@@ -304,7 +298,7 @@ def _target_release_evidence(
         # fallback covers only the hand-built canary observation shape, which no stage that reaches this
         # function uses; a corpus that genuinely sealed an empty tuple is `not_applicable` everywhere, and
         # the rulers say so case by case rather than this line deciding it.
-        applicable = tuple(case_ref.get("applicable_targets") or LEARNING_TARGETS)
+        applicable = tuple(case_ref.get("applicable_targets", ()))
         stratum = str(case_ref.get("stratum") or "")
         explanation = accepted_explanation(review)
         assets = accepted_assets(review)
@@ -313,10 +307,19 @@ def _target_release_evidence(
         golds = {
             "classification": dspy.Example(
                 applicable_targets=applicable,
-                **({} if taxonomy_gold is None else {"gold_taxonomy": taxonomy_gold.model_dump(mode="json")}),
+                **(
+                    {}
+                    if taxonomy_gold is None
+                    else {"gold_taxonomy": taxonomy_gold.model_dump(mode="json", exclude_none=True)}
+                ),
             ),
             "understanding": dspy.Example(
                 applicable_targets=applicable,
+                gold_semantics=accepted_semantics(review),
+                gold_told_event_ids=tuple(dict(review.get("supervision") or {}).get("told_event_ids", ())),
+                gold_duplicate_targets=tuple(
+                    dict(dict(review.get("supervision") or {}).get("labels") or {}).get("duplicate_targets", ())
+                ),
                 **({} if assets is None else {"gold_assets": assets}),
                 **(
                     {}
@@ -340,7 +343,7 @@ def _target_release_evidence(
             editorial = _output_editorial(dict(output)) or {}
             predictions = {
                 "classification": dspy.Prediction(taxonomy=editorial.get("taxonomy"), editorial=dict(editorial)),
-                "understanding": dspy.Prediction(semantics=verdict or None),
+                "understanding": dspy.Prediction(semantics=verdict or None, relevance=editorial.get("relevance")),
                 "explanation": dspy.Prediction(card=verdict or None),
             }
             for target in LEARNING_TARGETS:
@@ -370,7 +373,7 @@ def _taxonomy_axis_values(gold: Any, comparison: TaxonomyComparison) -> dict[str
 
     return {
         "taxonomy_overall": classification_score(gold, comparison),
-        **classification_axis_values(comparison),
+        **classification_axis_values(comparison, gold),
     }
 
 
@@ -378,31 +381,24 @@ def _taxonomy_axis_intervals(
     stable_rows: Sequence[Mapping[str, Any]],
     candidate_rows: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, Any] | None]:
-    """Each axis's paired candidate-minus-Stable per-cluster delta and its bootstrap 95 % interval (#567).
-
-    The two row lists are the same elected representatives in the same order, so subtracting them cluster
-    by cluster is a paired measurement: the noise both arms share on a hard cluster cancels instead of
-    entering each arm's mean separately. The mean of these deltas is the axis delta already published —
-    both are means over one identical population — and what is new is the interval around it, resampled by
-    the same `_bootstrap_interval` the blind-pairwise primary uses, under the same profile `bootstrap`
-    block (seed 112, 2,000 replicates, 95 %). There is no second bootstrap and no second seed.
-
-    #548 read the sign of that delta alone, so one cluster flipping on one axis out of 311 was a release
-    FAIL. An interval says whether the corpus can tell that slip from zero.
-    """
-
-    paired: dict[str, list[float]] = {axis: [] for axis in _TAXONOMY_INTERVAL_AXES}
+    """Keep all cases, then bootstrap independent groups with equal group weight."""
+    paired: dict[str, dict[str, list[float]]] = {axis: {} for axis in _TAXONOMY_INTERVAL_AXES}
     for stable_row, candidate_row in zip(stable_rows, candidate_rows, strict=True):
+        if (stable_row["case_id"], stable_row["cluster_id"]) != (candidate_row["case_id"], candidate_row["cluster_id"]):
+            raise ValueError("news_taxonomy_paired_identity_mismatch")
         stable_axes = _taxonomy_axis_values(
             stable_row["gold"], compare_taxonomy(stable_row["gold"], stable_row["predicted"])
         )
         candidate_axes = _taxonomy_axis_values(
             candidate_row["gold"], compare_taxonomy(candidate_row["gold"], candidate_row["predicted"])
         )
-        for axis, deltas in paired.items():
-            deltas.append(candidate_axes[axis] - stable_axes[axis])
+        if stable_axes.keys() != candidate_axes.keys():
+            raise ValueError("news_taxonomy_paired_mask_mismatch")
+        for axis in stable_axes:
+            paired[axis].setdefault(str(stable_row["cluster_id"]), []).append(candidate_axes[axis] - stable_axes[axis])
     intervals: dict[str, dict[str, Any] | None] = {}
-    for axis, deltas in paired.items():
+    for axis, groups in paired.items():
+        deltas = [statistics.mean(values) for values in groups.values()]
         interval = _bootstrap_interval(deltas)
         intervals[axis] = (
             None
@@ -700,7 +696,7 @@ class CandidateEvaluator:
                         execution_errors.append(str(exc))
             else:
                 try:
-                    observations = await self._run_sequential(
+                    observations = await self._run_frozen_cases(
                         run_sha=run_sha,
                         dataset=dataset,
                         candidate=candidate,
@@ -793,7 +789,7 @@ class CandidateEvaluator:
         )
         return EvaluationReport(report_sha=report_sha, **report_payload)
 
-    async def _run_sequential(
+    async def _run_frozen_cases(
         self,
         *,
         run_sha: str,
@@ -807,15 +803,29 @@ class CandidateEvaluator:
         arms: dict[ArmName, ArmManifest] = {"stable": self._stable, "candidate": candidate.candidate_arm}
         review_case_ids = self._review_case_ids(dataset, candidate=candidate)
         observations: list[dict[str, Any]] = []
-        for case_ref in dataset.cases:
-            case = self._datasets.load_case(case_ref)
+        if (
+            dataset.evaluation_protocol == "counterfactual_sequence"
+            and dataset.stream_coverage != "complete_post_event"
+        ):
+            raise ValueError("news_learning_sequence_input_stream_incomplete")
+        inputs = (
+            dataset.input_stream
+            if dataset.evaluation_protocol == "counterfactual_sequence"
+            else tuple(
+                {"case_ref": ref.model_dump(mode="json"), "case": dataset.frozen_cases[ref.case_id]}
+                for ref in dataset.cases
+            )
+        )
+        for entry in inputs:
+            case_ref = DatasetCaseRef.model_validate(entry["case_ref"])
+            case = entry["case"]
             case_outputs: dict[str, dict[str, Any]] = {}
             order: list[ArmName] = ["stable", "candidate"]
             if int(case_ref.case_id[:2], 16) % 2:
                 order.reverse()
             for arm_name in order:
                 state = states[arm_name]
-                state.expire(case_ref.opened_at_ms)
+                state.expire(int(case["opened_at_ms"]))
                 arm = arms[arm_name]
                 # The development pass is the cheap, zero-model policy screen.
                 # A hidden holdout must call the same SemanticJudge separately
@@ -916,8 +926,8 @@ class CandidateEvaluator:
                     verdict = output["verdict"]
                     state.receipts.append(
                         receipt_from_output(
-                            event_id=case_ref.case_id,
-                            at_ms=case_ref.opened_at_ms,
+                            event_id=case_ref.event_id or case_ref.case_id,
+                            at_ms=context.now_ms,
                             output=output,
                             verdict=verdict,
                         )
@@ -930,6 +940,9 @@ class CandidateEvaluator:
                     "stable": case_outputs.get("stable") or {},
                     "candidate": case_outputs.get("candidate") or {},
                     "comparison": {
+                        "evaluation_protocol": dataset.evaluation_protocol,
+                        "stream_coverage": dataset.stream_coverage,
+                        "delivery_assumption": "simulated_immediate_success",
                         "pair_order": pair_order,
                         "blind_task_version": "news_blind_pairwise_v1",
                         "review_eligible": case_ref.case_id in review_case_ids,
@@ -1408,9 +1421,8 @@ class CandidateEvaluator:
             blockers.append("prior_holdout_evidence_not_passed")
         if execution_errors:
             blockers.extend(execution_errors)
-        reviews = self._ledger.reviews_by_id(
-            [str(item["case_ref"]["review_id"]) for item in observations if item["case_ref"].get("review_id")]
-        )
+        dataset = development if request.stage == "offline" else validation
+        reviews = {case.review_id: dataset.frozen_cases[case.case_id]["review"] for case in dataset.cases}
         correctness = {"stable": 0, "candidate": 0, "scored": 0}
         critical_regressions: list[str] = []
         candidate_errors = 0

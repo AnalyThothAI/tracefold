@@ -122,3 +122,20 @@ def test_a_net_improving_candidate_that_flips_one_stable_exact_cluster_is_judged
     # and still vetoes a candidate that also moves a reader-facing Predictor.
     assert evidence["axis_interval_95"]["change_state_accuracy"]["upper"] == 0.0
     assert evidence["interval_regressed_axes"] == []
+
+
+def test_partial_axis_release_scores_only_stated_axis_and_bootstraps_groups() -> None:
+    observations = [
+        _observation(i, stable=_taxonomy(change_state="reported"), candidate=_taxonomy(change_state="announced"))
+        for i in range(3)
+    ]
+    observations[1]["case_ref"]["cluster_id"] = observations[0]["case_ref"]["cluster_id"]
+    reviews = {f"review-{i}": {"payload": {"taxonomy": {"change_state": "announced"}}} for i in range(3)}
+    evidence = _taxonomy_release_evidence(observations, reviews)
+    assert evidence["candidate"]["case_n"] == 3
+    assert evidence["candidate"]["cluster_n"] == 2
+    assert evidence["candidate"]["taxonomy_overall"] == 1
+    assert evidence["stable"]["taxonomy_overall"] == 0
+    assert evidence["axis_interval_95"]["change_state_accuracy"]["n"] == 2
+    assert evidence["axis_interval_95"]["event_family_accuracy"] is None
+    assert evidence["axis_interval_95"]["four_axis_exact_accuracy"] is None

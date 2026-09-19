@@ -341,3 +341,39 @@ def test_retention_function_keeps_its_bounded_batch_contract(conn) -> None:
     with pytest.raises(RaiseException, match="news_learning_retention_batch_invalid"):
         conn.execute("SELECT purge_news_learning_retention(1001)")
     conn.rollback()
+
+
+def test_dataset_case_material_survives_as_long_as_a_retained_root(conn) -> None:
+    now = int(conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint n").fetchone()["n"])
+    materials = [
+        _artifact(
+            conn,
+            label=f"frozen-material-{i}",
+            kind="dataset_case",
+            payload={"case": i},
+            created_at_ms=now - 400 * DAY_MS,
+        )
+        for i in range(3)
+    ]
+    root = _artifact(
+        conn,
+        label="retained-frozen-root",
+        kind="dataset",
+        created_at_ms=now,
+        payload={
+            "episode_refs": [materials[0]],
+            "case_material_refs": {"case": materials[1]},
+            "stream_refs": [materials[2]],
+        },
+    )
+    conn.commit()
+    with repositories_for_connection(conn).transaction():
+        repositories_for_connection(conn).news.purge_learning_retention(batch_size=100)
+    retained = {
+        r["artifact_sha"]
+        for r in conn.execute(
+            "SELECT artifact_sha FROM news_learning_artifacts WHERE artifact_sha=ANY(%s)", ([root, *materials],)
+        ).fetchall()
+    }
+    assert retained == {root, *materials}
+    conn.commit()

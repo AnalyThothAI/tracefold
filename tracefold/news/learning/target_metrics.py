@@ -37,19 +37,18 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..models import Novelty
-from ..taxonomy import ModelTaxonomyV1
+from ..taxonomy import ModelTaxonomyV1, ReviewTaxonomyV1
 from .card_lint import lint_reader_card
 from .objective import (
-    _NO_GOLD,
     TypedAssetClaim,
-    _gold_value,
     asset_claims_match,
     known_wrong_markets,
     typed_asset_claims,
 )
+from .supervision import project_supervision
 from .taxonomy_metric import TAXONOMY_AXES, TaxonomyComparison, compare_taxonomy, model_taxonomy
 
-TARGET_METRICS_ID: Final = "tracefold.news.target_metrics.v1"
+TARGET_METRICS_ID: Final = "tracefold.news.target_metrics.v2"
 
 # The two candidate-local task failures `optimizer._LearningStudent` converts into ordinary Predictions.
 # They live here because the ruler is what decides they are worth zero, and the wrapper is only what
@@ -205,45 +204,29 @@ def _not_applicable(gold: Any, target: str) -> dspy.Prediction | None:
 # and a run to disagree about what a reviewer said.
 
 
-def accepted_taxonomy(review: Mapping[str, Any]) -> ModelTaxonomyV1 | None:
-    """The four model-owned axes one accepted review carries, whichever of its two shapes it is in.
-
-    A persisted `news_review_records_v1` row keeps the label under `payload`; the frozen episode
-    projection lifts it to the top level. Both are the same review, and a reader that knew only one of
-    them silently reported "no Gold" for half the callers.
-    """
-
-    taxonomy = review.get("taxonomy")
-    if taxonomy is None:
-        taxonomy = dict(review.get("payload") or {}).get("taxonomy")
-    axes = dict(taxonomy or {})
-    if not axes:
-        return None
-    try:
-        return ModelTaxonomyV1.model_validate(
-            {field: axes[field] for field in ModelTaxonomyV1.model_fields if field in axes}
-        )
-    except ValueError:
-        return None
+def accepted_taxonomy(review: Mapping[str, Any]) -> ReviewTaxonomyV1 | None:
+    labels = project_supervision(review)["labels"]
+    axes = {key.removeprefix("taxonomy."): value for key, value in labels.items() if key.startswith("taxonomy.")}
+    return ReviewTaxonomyV1.model_validate(axes) if axes else None
 
 
 def accepted_assets(review: Mapping[str, Any]) -> frozenset[TypedAssetClaim] | None:
-    """The accepted typed asset claims for one case, or None when nobody accepted one.
+    assets = project_supervision(review)["labels"].get("asset_grounding")
+    return None if assets is None else typed_asset_claims(assets)
 
-    `asset_grounding` labelled `fail` carries the reviewer's repair in `expected`; labelled `pass` accepts
-    the production judgment verbatim. Anything else — unlabelled, uncertain — has no accepted answer, and
-    inventing one would score a candidate against a question no reviewer answered.
-    """
 
-    label = str(dict(review.get("dimensions") or {}).get("asset_grounding") or "")
-    if label != "fail":
-        return None
-    gold = _gold_value(dict(review.get("expected") or {}), "asset_grounding")
-    return None if gold is _NO_GOLD else frozenset(gold)
+def accepted_semantics(review: Mapping[str, Any]) -> dict[str, Any]:
+    from .supervision import SEMANTIC_FIELDS
+
+    return {
+        name: value
+        for name, value in project_supervision(review)["labels"].items()
+        if name in SEMANTIC_FIELDS and name != "asset_grounding"
+    }
 
 
 def accepted_novelty(review: Mapping[str, Any]) -> str | None:
-    judgment = str(dict(review.get("novelty") or {}).get("judgment") or "")
+    judgment = str(project_supervision(review)["labels"].get("novelty") or "")
     return judgment if judgment in {"new_fact", "progression", "restatement"} else None
 
 
@@ -290,16 +273,23 @@ def zero_classification_objectives() -> dict[str, float]:
     return dict.fromkeys(CLASSIFICATION_AXES, 0.0)
 
 
-def classification_axis_values(comparison: TaxonomyComparison) -> dict[str, float]:
+def classification_axis_values(comparison: TaxonomyComparison, gold: Any = None) -> dict[str, float]:
     """One comparison's value on each published axis, from the one comparison every caller already has."""
 
-    return {
+    values = {
         "subject_codes_set_f1": float(comparison.subject_f1),
         "event_family_accuracy": float(comparison.event_family_match),
         "change_state_accuracy": float(comparison.change_state_match),
         "assertion_status_accuracy": float(comparison.assertion_status_match),
         "four_axis_exact_accuracy": float(comparison.exact),
     }
+    if gold is None:
+        return values
+    stated = _stated_axes(gold)
+    allowed = {_AXIS_BY_FIELD[axis] for axis in stated}
+    if len(stated) == 4:
+        allowed.add("four_axis_exact_accuracy")
+    return {key: value for key, value in values.items() if key in allowed}
 
 
 def _stated_axes(gold: Any) -> tuple[str, ...]:
@@ -312,6 +302,8 @@ def _stated_axes(gold: Any) -> tuple[str, ...]:
     to stop; when the rubric admits partial taxonomy Gold, this is already the rule that scores it.
     """
 
+    if isinstance(gold, ReviewTaxonomyV1):
+        return tuple(gold.model_dump(exclude_none=True))
     if isinstance(gold, ModelTaxonomyV1):
         return TAXONOMY_AXES
     stated = tuple(axis for axis in TAXONOMY_AXES if axis in dict(gold or {}))
@@ -327,13 +319,13 @@ def classification_score(gold: Any, comparison: TaxonomyComparison) -> float:
 
 
 def _subject_codes(taxonomy: Any) -> tuple[str, ...]:
-    if isinstance(taxonomy, ModelTaxonomyV1):
-        return tuple(taxonomy.subject_codes)
+    if isinstance(taxonomy, (ModelTaxonomyV1, ReviewTaxonomyV1)):
+        return tuple(taxonomy.subject_codes or ())
     return tuple(str(code) for code in dict(taxonomy or {}).get("subject_codes") or ())
 
 
 def _axis_label(taxonomy: Any, axis: str) -> str:
-    if isinstance(taxonomy, ModelTaxonomyV1):
+    if isinstance(taxonomy, (ModelTaxonomyV1, ReviewTaxonomyV1)):
         return str(getattr(taxonomy, axis))
     return str(dict(taxonomy or {}).get(axis) or "")
 
@@ -369,7 +361,6 @@ def classification_metric(
     skip = _not_applicable(gold, "classification")
     if skip is not None:
         return skip
-    zero = zero_classification_objectives()
     expected = getattr(gold, "gold_taxonomy", None)
     if expected is None:
         return _result(
@@ -378,6 +369,9 @@ def classification_metric(
             outcome="no_gold",
             components={},
         )
+    zero = {_AXIS_BY_FIELD[axis]: 0.0 for axis in _stated_axes(expected)}
+    if len(_stated_axes(expected)) == 4:
+        zero["four_axis_exact_accuracy"] = 0.0
     failure = _task_output_failure(pred, objectives=zero)
     if failure is not None:
         return failure
@@ -403,8 +397,13 @@ def classification_metric(
             components={"failure": TASK_OUTPUT_INVALID},
             objective_scores=zero,
         )
-    axes = classification_axis_values(comparison)
     stated = _stated_axes(expected)
+    axes = {
+        name: value
+        for name, value in classification_axis_values(comparison).items()
+        if name in {_AXIS_BY_FIELD[axis] for axis in stated}
+        or (len(stated) == 4 and name == "four_axis_exact_accuracy")
+    }
     gold_subjects = frozenset(_subject_codes(expected))
     subject_precision, subject_recall = _set_precision_recall(gold_subjects, frozenset(observed.subject_codes))
     return _result(
@@ -416,10 +415,10 @@ def classification_metric(
             "wrong_axes": list(comparison.wrong_axes),
             "missing_subjects": list(comparison.missing_subjects),
             "extra_subjects": list(comparison.extra_subjects),
-            "subject_f1": _round(comparison.subject_f1),
-            "subject_precision": _round(subject_precision),
-            "subject_recall": _round(subject_recall),
-            "four_axis_exact": bool(comparison.exact),
+            "subject_f1": _round(comparison.subject_f1) if "subject_codes" in stated else None,
+            "subject_precision": _round(subject_precision) if "subject_codes" in stated else None,
+            "subject_recall": _round(subject_recall) if "subject_codes" in stated else None,
+            "four_axis_exact": bool(comparison.exact) if len(stated) == 4 else None,
             "gold_event_family": str(_axis_label(expected, "event_family")),
             "predicted_event_family": str(observed.event_family),
             "axes": {name: _round(value) for name, value in axes.items()},
@@ -486,8 +485,11 @@ def _primaries(claims: frozenset[TypedAssetClaim]) -> frozenset[tuple[str, str]]
     return frozenset((symbol, market) for role, symbol, market in claims if role == "primary")
 
 
-def _roles(claims: frozenset[TypedAssetClaim]) -> dict[str, str]:
-    return {symbol: role for role, symbol, _market in claims}
+def _roles(claims: frozenset[TypedAssetClaim]) -> dict[tuple[str, str], frozenset[str]]:
+    return {
+        (symbol, market): frozenset(r for r, s, m in claims if (s, m) == (symbol, market))
+        for _role, symbol, market in claims
+    }
 
 
 def _role_accuracy(expected: frozenset[TypedAssetClaim], observed: frozenset[TypedAssetClaim]) -> float:
@@ -515,7 +517,7 @@ def _novelty_target_ok(
     restates: int,
     told_event_ids: Sequence[str],
     duplicate_of: str,
-    cluster_event_ids: frozenset[str],
+    equivalent_targets: frozenset[str],
 ) -> tuple[bool, str]:
     """Whether a restatement points at the told entry the reviewer restated.
 
@@ -531,7 +533,7 @@ def _novelty_target_ok(
     named = str(told_event_ids[restates])
     if duplicate_of and named == duplicate_of:
         return True, ""
-    if named in cluster_event_ids:
+    if named in equivalent_targets:
         return True, ""
     return False, (
         f"`restates`={restates} points at told entry {named or '(none)'}; "
@@ -572,11 +574,13 @@ def understanding_metric(
             components={"failure": TASK_OUTPUT_INVALID},
             objective_scores=zero,
         )
-    objectives = dict(zero)
+    objectives: dict[str, float] = {}
     objectives["typed_semantics_valid"] = 1.0
     scored: list[float] = []
     notes: list[str] = []
     components: dict[str, Any] = {"typed_semantics_valid": True}
+    if getattr(gold, "gold_novelty_exclusion", None):
+        components["novelty_excluded"] = gold.gold_novelty_exclusion
 
     expected_assets = getattr(gold, "gold_assets", None)
     if expected_assets is not None:
@@ -621,19 +625,14 @@ def understanding_metric(
     if expected_novelty is not None:
         told_ids = _told_event_ids(gold)
         duplicate_of = str(getattr(gold, "gold_duplicate_of", "") or "")
-        cluster_event_ids = frozenset(str(value) for value in (getattr(gold, "gold_cluster_event_ids", ()) or ()))
-        if str(expected_novelty) == "restatement" and duplicate_of and duplicate_of not in told_ids:
-            # The reviewer's answer was never in the frozen ledger this candidate read, so no answer it
-            # could have given would have been right. Counted, excluded, and never charged to the model.
-            return _result(
-                score=None,
-                feedback=(
-                    f"The restated card {duplicate_of} was not in the {len(told_ids)} entries this Event "
-                    "was shown; retrieval, not the model, decided this case."
-                ),
-                outcome="retrieval_miss",
-                components={**components, "gold_duplicate_of": duplicate_of, "told_n": len(told_ids)},
-            )
+        equivalent_targets = frozenset(str(value) for value in (getattr(gold, "gold_duplicate_targets", ()) or ()))
+        if str(expected_novelty) == "restatement" and not ({duplicate_of} | set(equivalent_targets)) & set(told_ids):
+            components["novelty_excluded"] = "retrieval_miss"
+            components["gold_duplicate_of"] = duplicate_of
+            components["told_n"] = len(told_ids)
+            notes.append(f"Accepted duplicate targets were absent from {len(told_ids)} selected told entries.")
+            expected_novelty = None
+    if expected_novelty is not None:
         label_hit = str(semantics.novelty) == str(expected_novelty)
         novelty = float(label_hit)
         if label_hit and str(expected_novelty) == "restatement":
@@ -641,7 +640,7 @@ def understanding_metric(
                 restates=int(semantics.restates),
                 told_event_ids=told_ids,
                 duplicate_of=duplicate_of,
-                cluster_event_ids=cluster_event_ids,
+                equivalent_targets=equivalent_targets,
             )
             components["restatement_target_correct"] = target_ok
             if not target_ok:
@@ -658,11 +657,33 @@ def understanding_metric(
         if not label_hit:
             notes.append(f"Accepted novelty is {expected_novelty}; you answered {semantics.novelty}.")
 
+    raw_semantics = getattr(pred, "semantics", None)
+    raw_semantics = (
+        raw_semantics.model_dump(mode="json") if isinstance(raw_semantics, BaseModel) else dict(raw_semantics or {})
+    )
+    relevance = dict(raw_semantics.get("relevance") or getattr(pred, "relevance", None) or {})
+    from .supervision import SEMANTIC_FIELDS
+
+    for dimension, expected_value in dict(getattr(gold, "gold_semantics", {}) or {}).items():
+        field = SEMANTIC_FIELDS[dimension]
+        owner = raw_semantics if dimension in {"direction", "magnitude"} else relevance
+        observed_value = owner.get(field)
+        match = (
+            (set(expected_value) == set(observed_value or ()))
+            if dimension in {"trade_channels", "trade_affected_markets"}
+            else observed_value == expected_value
+        )
+        scored.append(float(match))
+        objectives[f"{dimension}_accuracy"] = float(match)
+        components[f"{dimension}_accuracy"] = float(match)
+        if not match:
+            notes.append(f"{dimension}: expected {expected_value!r}; predicted {observed_value!r}.")
+
     if not scored:
         return _result(
             score=None,
             feedback="No accepted asset or novelty answer on this case.",
-            outcome="no_gold",
+            outcome="retrieval_miss" if components.get("novelty_excluded") else "no_gold",
             components=components,
             objective_scores=objectives,
         )
@@ -837,6 +858,11 @@ def explanation_metric(
         objectives["evidence_support"] = support
         components["evidence_support"] = support
         if not support:
+            details = tuple(getattr(assessment.verdict, "unsupported_claims", ())) + tuple(
+                getattr(assessment.verdict, "evidence_gaps", ())
+            )
+            components["unsupported_claims"] = list(getattr(assessment.verdict, "unsupported_claims", ()))
+            notes.extend(details)
             notes.append(
                 "At least one claim in this card is not carried by the evidence; state only what the "
                 "source says, with its condition, status and time basis intact."
@@ -884,7 +910,8 @@ def explanation_metric(
 
     return _result(
         score=_mean(scored),
-        feedback=" ".join(notes) or "The card is supported by the evidence and keeps every fact the reviewer named.",
+        feedback=" ".join(notes)
+        or f"Measured {components['score_basis']}; unmeasured dimensions carry no quality claim.",
         outcome="scored",
         components=components,
         objective_scores=objectives,
@@ -945,8 +972,10 @@ def target_metric_receipt(
         raise ValueError(f"news_learning_target_unknown:{target}")
     scalar = {
         "classification": "mean(stated taxonomy axes)",
-        "understanding": "mean(primary_asset_f1?,asset_role_accuracy?,novelty_accuracy?)",
-        "explanation": "f1(evidence_support,key_facts_covered)",
+        "understanding": "mean(accepted typed asset, novelty, direction, magnitude and relevance dimensions)",
+        "explanation": "f1(support,coverage) or support_only; measured mask per case"
+        if judge is not None
+        else "literal coverage or card lint proxy; no evidence support measurement",
     }[target]
     return {
         "schema": "tracefold.news.target_metric.v1",
@@ -1114,7 +1143,12 @@ def product_scoreboard(
         for row in understanding
         if str(dict(row.get("components") or {}).get("predicted_novelty") or "") == "restatement"
     ]
-    retrieval_misses = sum(1 for row in understanding if str(row.get("outcome")) == "retrieval_miss")
+    retrieval_misses = sum(
+        1
+        for row in understanding
+        if str(row.get("outcome")) == "retrieval_miss"
+        or dict(row.get("components") or {}).get("novelty_excluded") == "retrieval_miss"
+    )
     told_reachable = [row for row in gold_restatements if str(row.get("outcome")) != "retrieval_miss"]
     target_answers = [
         bool(dict(row.get("components") or {}).get("restatement_target_correct"))

@@ -213,8 +213,7 @@ def test_the_rubric_model_output_carries_no_taxonomy_and_no_taxonomy_dimensions(
     assert {name: payload["dimensions"][name] for name in TAXONOMY_DIMENSIONS} == _TAXONOMY_DIMENSIONS_PASS
     # And the rubric itself is what refuses a submission that lacks them.
     stripped = {name: label for name, label in payload["dimensions"].items() if name not in TAXONOMY_DIMENSIONS}
-    with pytest.raises(ValueError, match="news_review_taxonomy_dimension_required:taxonomy_"):
-        EventRubricSubmission(**{**payload, "dimensions": stripped})
+    assert EventRubricSubmission(**{**payload, "dimensions": stripped}).taxonomy is not None
 
 
 def test_model_copied_source_authority_cannot_enter_the_taxonomy_labels() -> None:

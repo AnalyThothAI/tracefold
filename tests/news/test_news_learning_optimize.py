@@ -197,6 +197,20 @@ def test_truncated_reflection_writes_an_exact_terminal_usage_receipt(
         "wall_clock_ms": 250,
         "imputed_cost_calls": 0,
         "actual_cost_microusd": 3,
+        "budget_cost_microusd": 3,
+        "observed_cost_microusd": 3,
+        "unknown_cost_calls": 0,
+        **{
+            f"metric_judge_{field}": 0
+            for field in (
+                "model_calls",
+                "cost_microusd",
+                "input_tokens",
+                "output_tokens",
+                "cached_tokens",
+                "total_tokens",
+            )
+        },
         # GEPA did not return its public result, so the exact number of completed metric evaluations is
         # unavailable. Physical model calls remain exact above; zero would falsely claim no evaluation ran.
         "metric_calls": None,

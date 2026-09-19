@@ -413,6 +413,7 @@ class OptimizationBudget(BaseModel):
     max_metric_calls: int | None = Field(default=None, gt=0)
     max_task_model_calls: int = Field(gt=0)
     max_reflection_model_calls: int = Field(gt=0)
+    max_metric_judge_model_calls: int = Field(default=0, ge=0)
     max_cost_microusd: int = Field(gt=0)
     max_call_cost_microusd: int = Field(gt=0)
     max_wall_clock_seconds: float = Field(gt=0, le=86_400)
