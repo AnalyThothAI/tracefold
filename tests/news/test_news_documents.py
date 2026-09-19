@@ -200,3 +200,10 @@ def test_rate_limit_cools_down_without_another_physical_request():
             finite.close()
 
     asyncio.run(run())
+
+
+def test_retry_after_http_date_is_honored(monkeypatch):
+    monkeypatch.setattr(documents.time, "time", lambda: 0)
+    assert documents.retry_delay("Thu, 01 Jan 1970 02:00:00 GMT") == 7200
+    assert documents.retry_delay("7200") == 7200
+    assert documents.retry_delay("invalid") == 60

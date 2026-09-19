@@ -9,6 +9,8 @@ import ssl
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
+from datetime import UTC
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -30,6 +32,18 @@ from tracefold.news.evidence import (
 from .http_bounds import ResponseTooLarge, read_bounded
 
 EXTRACTOR_VERSION = "trafilatura_2.0.0_precision_v1"
+
+
+def retry_delay(value: str) -> float:
+    if value.isdigit():
+        return max(1, int(value))
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=UTC)
+        return max(1, date.timestamp() - time.time())
+    except (ValueError, TypeError, OverflowError):
+        return 60
 
 
 class UnsafeDocumentURL(ValueError):
@@ -198,6 +212,8 @@ class NewsDocumentClient:
                 acquired = True
                 for redirect in range(DOCUMENT_REDIRECT_MAX + 1):
                     final = public_url(final)
+                    if self.cooldowns.get(urlsplit(final).netloc, 0) > time.monotonic():
+                        return receipt("rate_limited")
                     # Explicit empty Cookie also prevents a response cookie from travelling to the
                     # next URL; no auth/proxy/environment credentials are accepted by this client.
                     requests += 1
@@ -210,7 +226,7 @@ class NewsDocumentClient:
                             continue
                         if response.status_code == 429:
                             retry_after = response.headers.get("retry-after", "")[:100]
-                            delay = min(int(retry_after), 3600) if retry_after.isdigit() else 60
+                            delay = retry_delay(retry_after)
                             self.cooldowns[urlsplit(final).netloc] = time.monotonic() + max(1, delay)
                             while len(self.cooldowns) > 128:
                                 self.cooldowns.popitem(last=False)

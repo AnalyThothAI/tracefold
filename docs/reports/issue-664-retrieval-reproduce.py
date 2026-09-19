@@ -20,7 +20,7 @@ from scripts.regen_db_schema import render_db_schema
 from tests.integration.test_news_evidence_material import admit
 from tests.postgres_test_utils import MigratedPostgresCloneFactory
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.evidence import EvidenceQuery
+from tracefold.news.evidence import EVIDENCE_INPUT_VERSION, EVIDENCE_SELECTION_SHA256, EvidenceQuery, text_sha
 from tracefold.news.models import MarketAsset
 from tracefold.news.storage.evidence import BACKGROUND_CANDIDATES_SQL, background_parameters
 
@@ -97,6 +97,9 @@ try:
                 rows = conn.execute(BACKGROUND_CANDIDATES_SQL, params).fetchall()
                 times.append((time.perf_counter() - begin) * 1000)
             result = dict(
+                query_sha256=text_sha(BACKGROUND_CANDIDATES_SQL),
+                selector_sha256=EVIDENCE_SELECTION_SHA256,
+                input_version=EVIDENCE_INPUT_VERSION,
                 workload="synthetic 25,001 editorial Items/Events, 90-second spacing over 26 days, "
                 "1% matching titles; all share BTC as adversarial asset noise",
                 postgres=conn.execute("SELECT version() AS version").fetchone()["version"],

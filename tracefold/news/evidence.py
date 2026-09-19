@@ -339,6 +339,9 @@ def assemble_evidence(
         else:
             exclusions.append("document_relation_unproven" if matches < 2 else "document_not_selected")
     missing = tuple(sorted({s.coverage_status for s in current if s.coverage_status != "complete"}))
+    conflict_at = item.get("provider_params_conflict_at_ms")
+    if conflict_at is not None and int(conflict_at) <= query.cutoff_at_ms:
+        missing += ("provider_payload_conflict",)
     receipt = {} if document is None else document.model_dump(exclude={"extracted_text"})
     return PreparedEvidence(
         cutoff_at_ms=query.cutoff_at_ms,

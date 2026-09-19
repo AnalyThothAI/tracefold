@@ -62,7 +62,7 @@ def _taxonomy(**updates: Any) -> dict[str, Any]:
     return value
 
 
-def _card() -> dict[str, str]:
+def _card() -> dict[str, Any]:
     return {"headline_zh": "  比特币出现新进展  ", "why_zh": "  值得关注。  ", "source_refs": []}
 
 

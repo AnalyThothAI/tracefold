@@ -566,6 +566,12 @@ function EvidenceInputs({ detail }: { detail: NewsEventDetail }) {
               {input.selected ? "采用的判断" : "其他执行"} · {absoluteTime(input.cutoff_at_ms)} ·{" "}
               {input.status}
             </summary>
+            <details>
+              <summary>输入标识</summary>
+              <p>
+                焦点事实：{input.focus_fact_id}；输入版本：{input.input_version}
+              </p>
+            </details>
             <p>
               背景候选 {input.candidate_count}，选入 {input.selected_count}；原链接：
               {input.document_status}
@@ -600,6 +606,10 @@ function EvidenceInputs({ detail }: { detail: NewsEventDetail }) {
                       ) : null}
                       <details>
                         <summary>选材依据</summary>
+                        <p>
+                          材料：{span.document_id || span.source_item_id}；内容指纹：
+                          {span.content_sha256}
+                        </p>
                         <p>
                           {span.selection_reason} · {span.text_space} [{span.span_start},{" "}
                           {span.span_end})

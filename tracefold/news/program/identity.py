@@ -55,7 +55,7 @@ from .runtime import (
 )
 from .signatures import EventSemantics, EventSemanticsSignature, EventTaxonomySignature, ReaderCardSignature
 
-# v5 (#501): a third Predictor, `taxonomy`, between EventSemantics and ReaderCard.
+# v6 (#664): source-span inputs, typed history provenance and a whole-input budget; still three Predictors.
 EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v6"
 
 _GOLDEN_MODEL: Final[str] = "openai/tracefold-execution-identity"

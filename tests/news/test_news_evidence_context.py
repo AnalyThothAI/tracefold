@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
 from tracefold.news.evidence import (
     CURRENT_CHARS,
     DocumentResult,
@@ -112,3 +117,65 @@ def test_origin_fact_duplicates_do_not_occupy_shortlist_slots():
 def test_future_duplicate_does_not_hide_older_visible_receipt():
     snapshot = assemble_reader_history(recent_rows=[history_row("same", 1001), history_row("same", 999)], now_ms=1000)
     assert [row.at_ms for row in snapshot.told_source_rows] == [999]
+
+
+@pytest.mark.parametrize("status", ["success", "timeout"])
+def test_stale_preparation_never_refetches_and_cached_versions_are_reused(status):
+    from tracefold.news.pipeline.triage_evidence import prepare_evidence
+
+    class Store:
+        cached = None
+
+        def evidence_item(self, item_id):
+            return {
+                "item_id": item_id,
+                "canonical_url": "https://example.org/story",
+                "evidence_text": "Acme acquisition announced.",
+                "provider_params_available_at_ms": 10,
+            }
+
+        def evidence_document(self, url, **kwargs):
+            return self.cached
+
+        def save_evidence_document(self, document):
+            self.cached = document.model_dump()
+
+        def evidence_candidates(self, query):
+            return []
+
+    store = Store()
+
+    class DB:
+        async def read(self, name, fn):
+            return fn(SimpleNamespace(news=store))
+
+        tx = read
+
+    class Reader:
+        calls = 0
+
+        async def read(self, url):
+            self.calls += 1
+            text = "Acme acquisition still awaits approval. " * 4
+            return DocumentResult(
+                status=status,
+                requested_url=url,
+                normalized_url=url,
+                final_url=url,
+                document_id="doc" if status == "success" else "",
+                available_at_ms=15,
+                extracted_text=text,
+                extracted_text_sha256=text_sha(text),
+            )
+
+    async def run():
+        reader = Reader()
+        card = {"event_id": "current", "leader_item_id": "item", "leader_title": "Acme acquisition announced"}
+        first = await prepare_evidence(DB(), card, catalog={}, reader=reader, clock=lambda: 20)
+        second = await prepare_evidence(DB(), card, catalog={}, reader=reader, clock=lambda: 30, allow_fetch=False)
+        assert reader.calls == 1
+        assert first.document_status == status
+        assert second.document_status == ("cache_hit" if status == "success" else "already_attempted")
+        assert first.current_evidence == second.current_evidence
+
+    asyncio.run(run())

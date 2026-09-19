@@ -47,6 +47,12 @@ def upgrade() -> None:
         );
         CREATE INDEX ix_news_evidence_documents_url_time
           ON news_evidence_documents(normalized_url, available_at_ms DESC);
+        CREATE FUNCTION public.reject_news_document_mutation() RETURNS trigger
+          LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'news_document_append_only'; END;
+          $$;
+        CREATE TRIGGER trg_news_document_append_only BEFORE UPDATE OR DELETE ON news_evidence_documents
+          FOR EACH ROW EXECUTE FUNCTION public.reject_news_document_mutation();
         CREATE INDEX ix_news_events_evidence_time
           ON news_events(created_at_ms DESC, event_id);
     """)

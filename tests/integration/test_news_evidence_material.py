@@ -9,13 +9,46 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.evidence import assemble_evidence, query_for, text_sha
+from tracefold.news.evidence import DocumentResult, assemble_evidence, document_identity, query_for, text_sha
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.news.pipeline.triage_evidence import prepare_evidence
 from tracefold.news.program.contracts import TriageContext
 
 pytestmark = pytest.mark.integration
+
+
+def test_document_versions_are_idempotent_append_only_and_time_bounded(postgres_clone_dsn):
+    from psycopg.errors import RaiseException
+
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        url = "https://example.org/story"
+        text = "Original announcement; approval pending."
+        document = DocumentResult(
+            status="success",
+            requested_url=url,
+            normalized_url=url,
+            final_url=url,
+            extracted_text=text,
+            extracted_text_sha256=text_sha(text),
+            response_sha256=text_sha(text),
+            extractor_version="test_v1",
+            document_id=document_identity(url, text_sha(text), "test_v1"),
+            observed_at_ms=1000,
+            available_at_ms=1100,
+            content_type="text/plain",
+        )
+        repos.news.save_evidence_document(document)
+        repos.news.save_evidence_document(document.model_copy(update={"available_at_ms": 9999}))
+        assert repos.news.evidence_document(url, cutoff=1099, since=0) is None
+        assert repos.news.evidence_document(url, cutoff=2000, since=0)["available_at_ms"] == 1100
+        with pytest.raises(RaiseException, match="news_document_append_only"), repos.transaction():
+            conn.execute(
+                "UPDATE news_evidence_documents SET extracted_text='changed' WHERE document_id=%s",
+                (document.document_id,),
+            )
+        assert repos.news.evidence_document(url, cutoff=2000, since=0)["extracted_text"] == text
 
 
 def admit(repos, text: str, *, record: int = 664, stamp: int = 1000):
@@ -67,7 +100,8 @@ def test_raw_payload_late_fill_conflict_and_frozen_spans(postgres_clone_dsn):
         # Simulate a genuine pre-cut empty payload, then fill today. No historical time fabrication.
         conn.execute(
             "UPDATE news_items SET provider_params='{}', provider_params_sha256=NULL, evidence_text=NULL, "
-            "provider_params_available_at_ms=NULL WHERE item_id=%s",
+            "provider_params_available_at_ms=NULL, provider_params_conflict_at_ms=NULL, "
+            "provider_params_conflict_sha256=NULL WHERE item_id=%s",
             (batch.item_id,),
         )
         admit(repos, text, stamp=3000)
@@ -86,6 +120,11 @@ def test_raw_payload_late_fill_conflict_and_frozen_spans(postgres_clone_dsn):
         ).fetchone()
         assert row["provider_params_conflict_at_ms"] == 4000
         assert row["evidence_text"] == item["evidence_text"]
+        conflict = repos.news.evidence_item(batch.item_id)
+        assert (
+            "provider_payload_conflict"
+            in assemble_evidence(card, conflict, query=query_for(card, conflict, cutoff=4001), candidates=[]).missing
+        )
 
 
 def test_unsent_background_is_separate_and_three_predictors_share_frozen_input(postgres_clone_dsn):
@@ -97,6 +136,12 @@ def test_unsent_background_is_separate_and_three_predictors_share_frozen_input(p
 
         class DB:
             async def read(self, name, fn, **kwargs):
+                if name == "news_evidence_background":
+                    # A concurrent merge changes the leader after shortlist selection.
+                    # Loading the selected immutable Item must not follow that new pointer.
+                    conn.execute(
+                        "UPDATE news_events SET leader_item_id=%s WHERE event_id=%s", (b.item_id, a.results[0].event_id)
+                    )
                 return fn(repos)
 
             async def tx(self, name, fn, **kwargs):

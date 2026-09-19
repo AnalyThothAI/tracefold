@@ -41,8 +41,8 @@ The attached [raw EXPLAIN ANALYZE / BUFFERS and timings](issue-664-retrieval-pla
 were obtained on disposable PostgreSQL 18.6 through the production query, after
 ANALYZE: 25,001 Items/Events, 90-second spacing over 26 days, one percent matching
 titles and every Event tagged BTC as deliberately heavy same-asset noise. There
-were 25 warmed samples, 32 returned lightweight candidates, p50 **406.10 ms** and
-p95 **588.27 ms**. No model or network time is included. Concurrent local test
+were 25 warmed samples, 32 returned lightweight candidates, p50 **382.55 ms** and
+p95 **396.72 ms**. No model or network time is included. Concurrent local test
 work and shared host load can affect these timings; this is not a production SLA.
 
 The plan uses scans/hash joins and source/fact deduplication before channel
@@ -63,9 +63,16 @@ inventory. No production DSN is embedded.
 The initial boundary/typed regressions failed before repair. The focused real PG
 material, history and crash/replay suite passed 33 tests. The frontend passed
 245 unit/component/route tests, 23 architecture tests, TypeScript, ESLint and a
-production build. Full hermetic and PG results, installed distribution and
-static/drift checks are recorded in the PR once completed; pending work is not
-reported as passing.
+production build. The final broad hermetic run passed 2,744 tests and 58 subtests (878 outside
+that lane were deselected). Installed wheel/sdist checks passed nine tests;
+Ruff, mypy and static/generated-drift checks passed. The full PG sweep initially
+passed 643 tests and found eight failures, then all failing modules were repaired
+and rerun together (**113 passed**): outdated exact-schema assertions and test deliveries without the new
+send-time binding were updated; #663's merged support-only supervision fix was
+received. Separate final migration/material tests passed 29 tests, including the
+append-only document trigger and unchanged historical data. These are a broad
+sweep plus focused repairs, not a claim that a second full 651-test PG sweep ran.
+The existing RabbitMQ/deploy/e2e/golden lanes were not run locally.
 
 ## Quality experiment: NOT RUN / no promotion claim
 
@@ -103,3 +110,15 @@ are **not measured**. HTTP fixtures establish per-call physical limits, not live
 provider reliability. The term-based relationship selector is an initial
 engineering heuristic and does not prove a retrieved page refers to the same
 state of an event; exclusions and attributed source text remain inspectable.
+
+## Recorded engineering identities
+
+- Input: `news_evidence_input_v1`; selector: `660ff010c04bd8b627f9cd77e1c7e5b0ab4e67ebcb4c0a7cb937e235299a0c8d`.
+- Retrieval: `c4dcdbca782509eaf76fa00b3dd60c197d4dcba1390f7209ae820d6d61488d84`.
+- Native state: `8454b864af18f0031f6069cb925c86820ac1a5a01f01f66c0f2c9bb3856d37d1`.
+- Envelope: `a1c7875f7a488dd24e94443984190e6da1e6a595505206cf6862c1b0b2cea160`.
+- Query: `5d38ce452f92c88dd9233bad4a6ee2b652fcd6afd4b2f23eec6998679ceedf66`.
+
+The PG JSON receipt binds the exact query and selector independently of the
+program state. Model/prompt/metric identities for a real paired experiment have
+not been frozen because that experiment has not run.
