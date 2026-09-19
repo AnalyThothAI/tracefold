@@ -4,8 +4,10 @@ Forward-only additive cut from 0383. Stop writers during migration; ACCESS EXCLU
 locks news_items then news_deliveries for metadata-only nullable additions. Existing
 material/timestamps are NOT backfilled. New tables/indexes start empty; the bounded
 time-window index scans news_events once under the maintenance gate. lock_timeout=5s,
-statement_timeout=120s. Failure rolls back atomically; roll forward or restore the
+statement_timeout=600s. Failure rolls back atomically; roll forward or restore the
 verified pre-cut backup. Old snapshots/reviews/executions remain readable archives.
+The existing judgment CHECK hashes full historical evidence JSON; a restored
+production ledger of 26,615 verdicts exceeds the former 120-second scan budget.
 Test target: PostgreSQL 18; no production application is authorized by this revision.
 """
 
@@ -19,7 +21,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
-    op.execute("SET LOCAL statement_timeout = '120s'")
+    op.execute("SET LOCAL statement_timeout = '600s'")
     op.execute("""
         ALTER TABLE news_items
           ADD COLUMN provider_params_available_at_ms bigint,
