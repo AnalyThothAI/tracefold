@@ -309,7 +309,10 @@ def evidence_text_of(context: Any) -> str:
     """Every bounded string of an Event the model was allowed to read a symbol out of."""
 
     evidence = context.evidence
-    return " ".join((evidence.title, evidence.raw_first_line, evidence.content))
+    prepared = context.prepared_evidence
+    if prepared is None:
+        return " ".join((evidence.title, evidence.raw_first_line, evidence.content))  # archive audit only
+    return " ".join((evidence.title, *(span.text for span in prepared.current_evidence)))
 
 
 def _gold_value(expected: Mapping[str, Any], name: str) -> Any:

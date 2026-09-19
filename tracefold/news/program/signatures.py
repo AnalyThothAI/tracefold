@@ -80,6 +80,7 @@ def _carries_han(value: str) -> bool:
 
 
 class ReaderCard(_ExactModel):
+    source_refs: tuple[str, ...] = Field(default=(), max_length=12)
     headline_zh: str = Field(min_length=1, max_length=60)
     why_zh: str = Field(default="", min_length=1, max_length=140)
 
@@ -98,7 +99,7 @@ class EventSemanticsSignature(dspy.Signature):  # type: ignore[misc]
     """Interpret one bounded Event against the selected reader-history ledger."""
 
     evidence_json: str = dspy.InputField(
-        desc="Canonical bounded Event, gate, and event_status JSON inside Tracefold's untrusted-data delimiters."
+        desc="Delimited current_evidence, related_evidence, Event preview, gate and event_status JSON."
     )
     semantics: EventSemantics = dspy.OutputField(desc="The exact typed semantic interpretation of this Event.")
 
@@ -106,9 +107,7 @@ class EventSemanticsSignature(dspy.Signature):  # type: ignore[misc]
 class EventTaxonomySignature(dspy.Signature):  # type: ignore[misc]
     """Classify one bounded Event under news_taxonomy_v1 from its evidence alone."""
 
-    evidence_json: str = dspy.InputField(
-        desc="Canonical bounded Event and gate JSON inside Tracefold's untrusted-data delimiters; no told ledger."
-    )
+    evidence_json: str = dspy.InputField(desc="Delimited current_evidence and Event preview/gate JSON; no told ledger.")
     taxonomy: ModelTaxonomyV1 = dspy.OutputField(desc="The exact typed four-axis taxonomy of this Event.")
 
 
@@ -116,7 +115,7 @@ class ReaderCardSignature(dspy.Signature):  # type: ignore[misc]
     """Write factual reader copy from bounded Event evidence and accepted semantics."""
 
     evidence_json: str = dspy.InputField(
-        desc="Canonical bounded Event and gate JSON inside Tracefold's untrusted-data delimiters; no told ledger."
+        desc="Delimited current_evidence, related_evidence and Event preview/gate JSON; no told ledger."
     )
     semantics_json: str = dspy.InputField(desc="Canonical ReaderCardSemanticView JSON from EventSemantics.")
     card: ReaderCard = dspy.OutputField(desc="The exact typed Chinese reader card.")

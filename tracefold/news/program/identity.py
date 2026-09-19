@@ -42,6 +42,7 @@ from .runtime import (
     _UNTRUSTED_EVENT_CLOSE,
     _UNTRUSTED_EVENT_OPEN,
     _VISIBLE_INPUT,
+    PROGRAM_CONTEXT_UPPER_TOKENS,
     PROGRAM_JUDGMENT_MAX_CALLS,
     PROGRAM_PREDICTOR_MAX_CALLS,
     PROGRAM_PREDICTOR_MAX_TOKENS,
@@ -55,7 +56,7 @@ from .runtime import (
 from .signatures import EventSemantics, EventSemanticsSignature, EventTaxonomySignature, ReaderCardSignature
 
 # v5 (#501): a third Predictor, `taxonomy`, between EventSemantics and ReaderCard.
-EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v5"
+EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v6"
 
 _GOLDEN_MODEL: Final[str] = "openai/tracefold-execution-identity"
 _GOLDEN_INSTRUCTION: Final[str] = "<golden-instruction>"
@@ -447,6 +448,7 @@ def execution_envelope() -> dict[str, Any]:
             "projection_schema": LM_REQUEST_PROJECTION_SCHEMA,
         },
         "assembly": _assembly_surface(),
+        "input_budget": {"utf8_byte_upper_bound": PROGRAM_CONTEXT_UPPER_TOKENS, "reserve": 8192},
         "route": {
             "model_binding_slots": sorted(_MODEL_BINDING_SLOTS),
             "order": ["primary", "fallback"],

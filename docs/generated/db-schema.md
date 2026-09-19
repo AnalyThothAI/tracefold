@@ -80,6 +80,7 @@
 | `delete_error_code` | `TEXT` | True | `None` |
 | `delete_attempted_at_ms` | `BIGINT` | True | `None` |
 | `delete_settled_at_ms` | `BIGINT` | True | `None` |
+| `history_context` | `JSONB` | True | `None` |
 
 ## `news_delivery_queue`
 
@@ -205,6 +206,24 @@
 | `event_kind` | `TEXT` | False | `None` |
 | `source_contract_reason` | `TEXT` | True | `None` |
 
+## `news_evidence_documents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `document_id` | `TEXT` | False | `None` |
+| `requested_url` | `TEXT` | False | `None` |
+| `final_url` | `TEXT` | False | `None` |
+| `normalized_url` | `TEXT` | False | `None` |
+| `response_sha256` | `TEXT` | False | `None` |
+| `extracted_text_sha256` | `TEXT` | False | `None` |
+| `extractor_version` | `TEXT` | False | `None` |
+| `extracted_text` | `TEXT` | False | `None` |
+| `reported_published_at_ms` | `BIGINT` | True | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `available_at_ms` | `BIGINT` | False | `None` |
+| `content_type` | `TEXT` | False | `None` |
+| `extraction_status` | `TEXT` | False | `None` |
+
 ## `news_external_miss_snapshots`
 
 | Column | Type | Nullable | Default |
@@ -262,6 +281,12 @@
 | `market_notify_state` | `TEXT` | True | `None` |
 | `market_notify_group_key` | `TEXT` | True | `None` |
 | `market_notify_delivery_key` | `TEXT` | True | `None` |
+| `provider_params_available_at_ms` | `BIGINT` | True | `None` |
+| `provider_params_sha256` | `TEXT` | True | `None` |
+| `evidence_text` | `TEXT` | True | `None` |
+| `evidence_text_sha256` | `TEXT` | True | `None` |
+| `provider_params_conflict_sha256` | `TEXT` | True | `None` |
+| `provider_params_conflict_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_learning_artifacts`
 

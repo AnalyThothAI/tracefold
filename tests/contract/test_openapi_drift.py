@@ -215,6 +215,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "deliveries",
         "review",
         "evidence_snapshots",
+        "evidence_inputs",
+        "late_evidence",
         "reader_receipt",
         "normalization",
         # #88: the event-level aggregate and every per-asset Reaction with the closes behind it.

@@ -253,6 +253,51 @@ class NewsTimelineStepData(ExactApiSchema):
     facts: dict[str, Any] = Field(default_factory=dict)
 
 
+class NewsEvidenceSpanData(ExactApiSchema):
+    ref_id: str
+    material_kind: Literal["current", "related"]
+    source_item_id: str
+    document_id: str
+    source_artifact_id: str
+    content_sha256: str
+    extraction_version: str
+    text_space: str
+    span_start: int
+    span_end: int
+    text: str
+    source: str
+    url: str
+    reported_published_at_ms: int | None
+    available_at_ms: int | None
+    selection_reason: str
+    coverage_status: str
+
+
+class NewsEvidenceInputData(ExactApiSchema):
+    execution_index: int
+    status: str
+    selected: bool
+    focus_fact_id: str
+    input_version: str
+    cutoff_at_ms: int
+    current_evidence: list[NewsEvidenceSpanData]
+    related_evidence: list[NewsEvidenceSpanData]
+    missing: list[str]
+    exclusions: list[str]
+    document_status: str
+    document_receipt: dict[str, Any]
+    candidate_count: int
+    selected_count: int
+    declared_source_refs: list[str]
+    elapsed_ms: int
+
+
+class NewsLateEvidenceData(ExactApiSchema):
+    material_id: str
+    material_kind: str
+    available_at_ms: int
+
+
 class NewsEventDetailData(ExactApiSchema):
     event: NewsEventData
     outcome: NewsOutcomeData
@@ -262,6 +307,8 @@ class NewsEventDetailData(ExactApiSchema):
     verdicts: list[NewsVerdictData]
     deliveries: list[NewsDeliveryData]
     review: NewsEventReviewSummaryData
+    late_evidence: list[NewsLateEvidenceData] = Field(default_factory=list)
+    evidence_inputs: list[NewsEvidenceInputData] = Field(default_factory=list)
     evidence_snapshots: list[NewsEvidenceSnapshotData] = Field(default_factory=list)
     reader_receipt: NewsReaderReceiptData
     normalization: list[NewsSymbolNormalizationData] = Field(default_factory=list)

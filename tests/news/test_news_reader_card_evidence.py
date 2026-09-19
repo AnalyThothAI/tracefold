@@ -21,12 +21,14 @@ _CASES = {case["name"]: case for case in _DOCUMENT["cases"]}
 @pytest.mark.parametrize("name", tuple(_CASES))
 def test_original_evidence_replays_without_history_or_delivery_fields(name: str) -> None:
     case = _CASES[name]
-    context = TriageContext.model_validate(case["context"])
+    archived = TriageContext.model_validate(case["context"])
+    context = archived.adapt_archived_excerpt()
     rendered = render_model_evidence_json(context.reader_card_payload(), predictor="reader_card")
-    assert rendered == case["reader_evidence_json"]
+    assert rendered != case["reader_evidence_json"]  # explicit v11 study, not historical v10 replay
+    assert context.prepared_evidence.missing == ("legacy_excerpt_only",)
     payload = json.loads(rendered.splitlines()[1])
-    assert set(payload) == {"event", "gate"}
-    assert payload["event"]["raw_first_line"] == context.evidence.raw_first_line
+    assert set(payload) == {"event", "gate", "current_evidence", "related_evidence"}
+    assert context.evidence.raw_first_line in "\n".join(span["text"] for span in payload["current_evidence"])
     assert len(context.evidence.content) <= 600
     assert len(context.evidence.raw_first_line) <= 300
     assert "event_status" not in payload
@@ -59,7 +61,7 @@ def test_evidence_builder_preserves_qualifiers_inside_its_bounds() -> None:
         now_ms=1,
         queue_lag_ms=0,
     )
-    payload = context.reader_card_payload()["event"]
+    payload = context.reader_card_payload()
     assert len(context.evidence.title) == len(context.evidence.content) == 600
     assert len(context.evidence.raw_first_line) == 300
     assert "Approval is pending" in json.dumps(payload)
@@ -69,7 +71,7 @@ def test_evidence_builder_preserves_qualifiers_inside_its_bounds() -> None:
 @pytest.mark.parametrize("why", ["尚待批准", "获批后产量有望增加", "公司称或将提高产量"])
 def test_short_faithful_or_conditional_copy_does_not_require_padding(why: str) -> None:
     card = ReaderCard(headline_zh="工厂待批", why_zh=why)
-    lint = lint_reader_card(**card.model_dump(), source_title="Factory approval pending")
+    lint = lint_reader_card(**card.model_dump(exclude={"source_refs"}), source_title="Factory approval pending")
     assert lint.gate == ""
     assert dict(lint.outcomes)["headline_length"] == "lint_pass"
     assert dict(lint.outcomes)["banned_filler"] == "lint_pass"

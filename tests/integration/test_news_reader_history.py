@@ -150,7 +150,22 @@ def _persist_sent_triage_card(
         direction=direction,
         headline_zh=headline_zh,
     )
-    assert repos.news.begin_delivery(event_id=event_id, kind="first", card={}, now_ms=at_ms - 1) == "new"
+    event = repos.news.event_card(event_id)
+    verdict = repos.news.latest_verdict(event_id=event_id, stage="triage")
+    bound = {
+        key: event.get(key)
+        for key in ("storyline_key", "comparison_title", "comparison_fingerprint", "dedupe_family", "grounded_assets")
+    }
+    bound.update(
+        {key: verdict["verdict"].get(key) for key in ("magnitude", "direction", "headline_zh", "why_zh", "assets")}
+    )
+    bound["canonical_assets"] = list(EvaluationReaderHistory(repos.news.conn).canonical_assets([symbol]))
+    assert (
+        repos.news.begin_delivery(
+            event_id=event_id, kind="first", card={}, now_ms=at_ms - 1, history_context_json=json.dumps(bound)
+        )
+        == "new"
+    )
     assert repos.news.settle_delivery(
         event_id=event_id,
         kind="first",
@@ -254,7 +269,7 @@ def test_a_telemetry_card_never_becomes_a_targeted_asset_candidate(conn) -> None
     conn.commit()
 
 
-def test_evaluator_does_not_recall_a_verdict_only_asset_that_production_cannot_join(conn) -> None:
+def test_sent_asset_binding_survives_later_grounding_removal(conn) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():
         prior = _admit(
@@ -291,7 +306,7 @@ def test_evaluator_does_not_recall_a_verdict_only_asset_that_production_cannot_j
                 "dedupe_family": "general",
                 "grounded_assets": [],
                 "assets": ["BABA"],
-                "canonical_assets": [],
+                "canonical_assets": ["BABA"],
                 "magnitude": 2,
                 "direction": "bearish",
                 "headline_zh": "无关发行人提交例行文件",
@@ -303,7 +318,11 @@ def test_evaluator_does_not_recall_a_verdict_only_asset_that_production_cannot_j
         canonical_assets=("BABA",),
     )
 
-    assert production.targeted_told_rows == evaluator.targeted_told_rows == ()
+    assert (
+        [r.event_id for r in production.targeted_told_rows]
+        == [r.event_id for r in evaluator.targeted_told_rows]
+        == [prior]
+    )
     conn.commit()
 
 
@@ -336,6 +355,7 @@ def test_reader_history_exact_target_requires_a_settled_sent_receipt(conn) -> No
                 symbol="NVDA",
                 ts=f"2026-08-25T0{index}:00:00+08:00",
             )
+            conn.execute("UPDATE news_events SET comparison_fingerprint=%s WHERE event_id=%s", ("f" * 64, event_id))
             _persist_sent_triage_card(
                 repos,
                 event_id=event_id,
@@ -346,6 +366,12 @@ def test_reader_history_exact_target_requires_a_settled_sent_receipt(conn) -> No
         conn.execute(
             "UPDATE news_events SET comparison_fingerprint=%s WHERE event_id = ANY(%s)",
             ("f" * 64, [current, *states.values()]),
+        )
+        # Bind the fixture's shared fingerprint at send time as well as on the current candidate.
+        conn.execute(
+            "UPDATE news_deliveries SET history_context=jsonb_set(history_context, "
+            "'{comparison_fingerprint}', to_jsonb(%s::text)) WHERE event_id=ANY(%s)",
+            ("f" * 64, list(states.values())),
         )
         conn.execute(
             "UPDATE news_deliveries SET state='sending', settled_at_ms=NULL WHERE event_id=%s",

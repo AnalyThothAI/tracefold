@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from ..program.contracts import TriageContext
@@ -25,13 +25,20 @@ def _recent_seen(history: ReaderHistorySnapshot) -> list[dict[str, Any]]:
     return [row.as_told_row() for row in history.recent_seen_rows]
 
 
-def _novelty_context_sha(card: Mapping[str, Any], history: ReaderHistorySnapshot, *, now_ms: int) -> str:
+def _novelty_context_sha(
+    card: Mapping[str, Any],
+    history: ReaderHistorySnapshot,
+    *,
+    now_ms: int,
+    catalog_candidates: Mapping[str, Sequence[str]] | None = None,
+) -> str:
     context = TriageContext.from_card(
         card,
         watchlist=(),
         told_rows=[row.as_told_row() for row in history.told_source_rows],
         now_ms=now_ms,
         queue_lag_ms=0,
+        catalog_candidates=catalog_candidates,
     )
     return context.novelty_context_sha256()
 

@@ -165,6 +165,7 @@ function EventDocument({
       </Card>
 
       <ReviewSummary detail={detail} />
+      <EvidenceInputs detail={detail} />
 
       <div className="news-detail-grid">
         <Card
@@ -546,5 +547,73 @@ function DeliveryRecord({ delivery }: { delivery: NewsDelivery }) {
         <pre className="news-json">{JSON.stringify(delivery.receipt, null, 2)}</pre>
       ) : null}
     </section>
+  );
+}
+
+function EvidenceInputs({ detail }: { detail: NewsEventDetail }) {
+  const inputs = detail.evidence_inputs ?? [];
+  return (
+    <Card aria-label="本次判断的证据" title="本次判断的证据" hint="按实际执行冻结；引用是模型声明">
+      {(detail.late_evidence ?? []).map((row) => (
+        <p key={row.material_id}>后到材料 · {absoluteTime(row.available_at_ms)} · 未参与该次判断</p>
+      ))}
+      {inputs.length === 0 ? (
+        <EmptyNote>该历史记录没有保存选材回执。</EmptyNote>
+      ) : (
+        inputs.map((input, index) => (
+          <details key={`${input.execution_index}-${index}`} open={input.selected}>
+            <summary>
+              {input.selected ? "采用的判断" : "其他执行"} · {absoluteTime(input.cutoff_at_ms)} ·{" "}
+              {input.status}
+            </summary>
+            <p>
+              背景候选 {input.candidate_count}，选入 {input.selected_count}；原链接：
+              {input.document_status}
+            </p>
+            {input.missing.length ? <p>材料缺口：{input.missing.join("、")}</p> : null}
+            {input.exclusions.length ? <p>未选入：{input.exclusions.join("、")}</p> : null}
+            {(
+              [
+                ["当前证据", input.current_evidence],
+                ["相关背景", input.related_evidence],
+              ] as const
+            ).map(([label, spans]) => (
+              <section key={label} aria-label={label}>
+                <h3>{label}</h3>
+                {spans.length === 0 ? (
+                  <p>没有选入材料。</p>
+                ) : (
+                  spans.map((span) => (
+                    <blockquote key={span.ref_id}>
+                      <p>{span.text}</p>
+                      <footer>
+                        {span.ref_id} · {span.source || "来源未明"} · {span.coverage_status}
+                      </footer>
+                      <p>
+                        来源声明：{optionalTime(span.reported_published_at_ms)}；系统可用：
+                        {optionalTime(span.available_at_ms)}
+                      </p>
+                      {validExternalUrl(span.url) ? (
+                        <a href={validExternalUrl(span.url)!} target="_blank" rel="noreferrer">
+                          查看来源
+                        </a>
+                      ) : null}
+                      <details>
+                        <summary>选材依据</summary>
+                        <p>
+                          {span.selection_reason} · {span.text_space} [{span.span_start},{" "}
+                          {span.span_end})
+                        </p>
+                      </details>
+                    </blockquote>
+                  ))
+                )}
+              </section>
+            ))}
+            <p>模型声明引用：{input.declared_source_refs.join("、") || "未声明"}</p>
+          </details>
+        ))
+      )}
+    </Card>
   );
 }

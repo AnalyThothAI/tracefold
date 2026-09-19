@@ -63,7 +63,7 @@ def _taxonomy(**updates: Any) -> dict[str, Any]:
 
 
 def _card() -> dict[str, str]:
-    return {"headline_zh": "  比特币出现新进展  ", "why_zh": "  值得关注。  "}
+    return {"headline_zh": "  比特币出现新进展  ", "why_zh": "  值得关注。  ", "source_refs": []}
 
 
 def _context() -> TriageContext:
@@ -144,6 +144,23 @@ def _lms() -> tuple[_ScriptedLM, _ScriptedLM, _ScriptedLM]:
         _ScriptedLM({"taxonomy": _taxonomy()}),
         _ScriptedLM({"card": _card()}),
     )
+
+
+def test_card_cannot_claim_an_unseen_source_reference() -> None:
+    program = NativeNewsProgram(build_code_owned_program_state())
+    event_lm, taxonomy_lm, _ = _lms()
+    card_lm = _ScriptedLM({"card": {**_card(), "source_refs": ["not-visible"]}})
+    with pytest.raises(ValueError, match="news_program_source_ref_invalid"):
+        program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
+
+
+def test_input_budget_rejects_before_any_physical_call(monkeypatch) -> None:
+    program = NativeNewsProgram(build_code_owned_program_state())
+    event_lm, taxonomy_lm, card_lm = _lms()
+    monkeypatch.setattr(native_program_module, "PROGRAM_CONTEXT_UPPER_TOKENS", 32)
+    with pytest.raises(ValueError, match="news_program_input_budget_exceeded"):
+        program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
+    assert event_lm.calls == taxonomy_lm.calls == card_lm.calls == []
 
 
 def _run_sync() -> tuple[NativeNewsProgram, NativeProgramResult, _ScriptedLM, _ScriptedLM, _ScriptedLM]:

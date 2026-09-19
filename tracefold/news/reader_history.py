@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Final, Literal
 
 from .artifact_identity import canonical_sha
+from .evidence import EVIDENCE_SELECTION_SHA256
 from .models import MarketAsset, base_symbol
 from .similarity import trigram_similarity
 
@@ -25,7 +26,7 @@ TARGETED_ASSET_MAX: Final = 24
 # 32, measured on the 143 labelled duplicate pairs of the 2026-09-01 audit: pg_trgm top-16 over 24 h recalls
 # 98, top-32 recalls 110, top-64 117. The 16 rows the Program sees come out of a pool of 128 + 8 + 24 + 32.
 SIMILAR_TITLE_MAX: Final = 32
-READER_HISTORY_ID: Final = "news_reader_history_v3"
+READER_HISTORY_ID: Final = "news_reader_history_v4"
 READER_HISTORY_CONTRACT: Final = {
     "reader_history": READER_HISTORY_ID,
     "truth": {
@@ -34,7 +35,7 @@ READER_HISTORY_CONTRACT: Final = {
         "verdict_stage": "triage",
         "final_decisions": ["push", "escalate"],
     },
-    # Every band is closed at both ends. The lower bound is the window; the upper bound is the read clock
+    # Bands include the lower window bound and exclude the read clock.
     # itself (#651 §12): a delivery whose settle stamp is ahead of the stamp this history is read at was
     # not a card the reader had. In production the two coincide -- the read clock is the wall clock and
     # nothing settles in the future -- but the evaluator reads the same ledger at a frozen stamp, where
@@ -45,9 +46,9 @@ READER_HISTORY_CONTRACT: Final = {
     # ledger moved after the snapshot, which is the one question a late-settling card is the answer to.
     "read_clock": "settled_at_ms < read_clock",
     "windows": {
-        "recent": {"age": ">=0_and<=", "window_ms": RECENT_HISTORY_WINDOW_MS},
+        "recent": {"age": ">0_and<=", "window_ms": RECENT_HISTORY_WINDOW_MS},
         "targeted": {"age": ">recent_and<=targeted", "window_ms": TARGETED_HISTORY_WINDOW_MS},
-        "similar": {"age": ">=0_and<=", "window_ms": SIMILAR_HISTORY_WINDOW_MS},
+        "similar": {"age": ">0_and<=", "window_ms": SIMILAR_HISTORY_WINDOW_MS},
     },
     "caps": {
         "recent": RECENT_HISTORY_MAX,
@@ -101,6 +102,7 @@ _READER_HISTORY_ROW_FIELDS: Final = frozenset(
         "why_zh",
         "history_scope",
         "retrieval_reason",
+        "provenance_status",
     }
 )
 
@@ -110,6 +112,7 @@ def news_retrieval_sha256(*, told_selector_sha256: str) -> str:
 
     return canonical_sha(
         {
+            "evidence_selection_sha256": EVIDENCE_SELECTION_SHA256,
             "reader_history_sha256": READER_HISTORY_SHA256,
             "told_selector_sha256": str(told_selector_sha256),
         }
@@ -134,12 +137,14 @@ class ReaderHistoryRow:
     direction: str
     headline_zh: str
     why_zh: str
+    provenance_status: str = "delivery_bound"
     scope: HistoryScope = "recent"
     reason: HistoryReason = "recent"
 
     def as_told_row(self) -> dict[str, Any]:
         return {
             "event_id": self.event_id,
+            "provenance_status": self.provenance_status,
             "at_ms": self.at_ms,
             "storyline_key": self.storyline_key,
             "comparison_title": self.comparison_title,
@@ -200,7 +205,7 @@ def build_reader_history(
     boundary, cap, ordering and deduplication rules to both.
     """
 
-    converted = _deduped_rows(rows)
+    converted = _deduped_rows(rows, cutoff=now_ms)
     recent_cutoff, target_cutoff = _history_cutoffs(now_ms)
     current_assets = frozenset(base_symbol(str(symbol)) for symbol in canonical_assets if symbol)
     targeted = [row for row in converted if _is_targeted(row, recent_cutoff, target_cutoff)]
@@ -213,7 +218,7 @@ def build_reader_history(
     asset = [
         row for row in targeted if row.event_id not in exact_ids and current_assets.intersection(row.canonical_assets)
     ]
-    recent = [row for row in converted if _is_recent(row, recent_cutoff)]
+    recent = [row for row in converted if _is_recent(row, recent_cutoff, now_ms)]
     return assemble_reader_history(
         recent_rows=recent,
         exact_rows=exact if include_targeted else (),
@@ -243,18 +248,18 @@ def assemble_reader_history(
     recent_cutoff, target_cutoff = _history_cutoffs(now_ms)
     similar_cutoff = int(now_ms) - SIMILAR_HISTORY_WINDOW_MS
     recent = sorted(
-        (row for row in _deduped_rows(recent_rows) if _is_recent(row, recent_cutoff)),
+        (row for row in _deduped_rows(recent_rows, cutoff=now_ms) if _is_recent(row, recent_cutoff, now_ms)),
         key=_newest_first,
     )
     exact = sorted(
-        (row for row in _deduped_rows(exact_rows) if _is_targeted(row, recent_cutoff, target_cutoff)),
+        (row for row in _deduped_rows(exact_rows, cutoff=now_ms) if _is_targeted(row, recent_cutoff, target_cutoff)),
         key=_newest_first,
     )
     exact_ids = {row.event_id for row in exact}
     asset = sorted(
         (
             row
-            for row in _deduped_rows(asset_rows)
+            for row in _deduped_rows(asset_rows, cutoff=now_ms)
             if _is_targeted(row, recent_cutoff, target_cutoff) and row.event_id not in exact_ids
         ),
         key=_newest_first,
@@ -266,8 +271,8 @@ def assemble_reader_history(
     candidate_title = str(comparison_title or "")
     scored = []
     if candidate_title:
-        for row in _deduped_rows(similar_rows):
-            if row.event_id in spent or row.at_ms < similar_cutoff:
+        for row in _deduped_rows(similar_rows, cutoff=now_ms):
+            if row.event_id in spent or not similar_cutoff <= row.at_ms < now_ms:
                 continue
             score = trigram_similarity(candidate_title, row.comparison_title)
             if score > 0.0:
@@ -293,10 +298,12 @@ def assemble_reader_history(
     )
 
 
-def _deduped_rows(rows: Sequence[Mapping[str, Any] | ReaderHistoryRow]) -> tuple[ReaderHistoryRow, ...]:
+def _deduped_rows(rows: Sequence[Mapping[str, Any] | ReaderHistoryRow], *, cutoff: int) -> tuple[ReaderHistoryRow, ...]:
     by_event: dict[str, ReaderHistoryRow] = {}
     for value in rows:
         row = value if isinstance(value, ReaderHistoryRow) else _history_row(value)
+        if row.at_ms >= cutoff:
+            continue
         prior = by_event.get(row.event_id)
         if row.event_id and (prior is None or _newest_first(row) < _newest_first(prior)):
             by_event[row.event_id] = row
@@ -307,8 +314,8 @@ def _history_cutoffs(now_ms: int) -> tuple[int, int]:
     return int(now_ms) - RECENT_HISTORY_WINDOW_MS, int(now_ms) - TARGETED_HISTORY_WINDOW_MS
 
 
-def _is_recent(row: ReaderHistoryRow, recent_cutoff: int) -> bool:
-    return row.at_ms >= recent_cutoff
+def _is_recent(row: ReaderHistoryRow, recent_cutoff: int, now_ms: int) -> bool:
+    return recent_cutoff <= row.at_ms < now_ms
 
 
 def _is_targeted(row: ReaderHistoryRow, recent_cutoff: int, target_cutoff: int) -> bool:
@@ -319,7 +326,7 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
     unexpected = set(row).difference(_READER_HISTORY_ROW_FIELDS)
     if unexpected:
         raise ValueError(f"news_reader_history_fields_unexpected:{','.join(sorted(unexpected))}")
-    required = _READER_HISTORY_ROW_FIELDS.difference({"history_scope", "retrieval_reason"})
+    required = _READER_HISTORY_ROW_FIELDS.difference({"history_scope", "retrieval_reason", "provenance_status"})
     missing = required.difference(row)
     if missing:
         raise ValueError(f"news_reader_history_fields_missing:{','.join(sorted(missing))}")
@@ -332,6 +339,7 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
     canonical = tuple(sorted({base_symbol(str(value)) for value in row["canonical_assets"] or () if value}))
     return ReaderHistoryRow(
         event_id=str(row["event_id"]),
+        provenance_status=str(row.get("provenance_status") or "delivery_bound"),
         at_ms=int(row["at_ms"]),
         storyline_key=str(row["storyline_key"]),
         comparison_title=str(row["comparison_title"]),

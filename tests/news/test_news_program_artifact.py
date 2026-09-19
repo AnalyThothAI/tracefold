@@ -53,6 +53,7 @@ def test_program_identity_is_the_schema_the_dspy_version_and_the_native_state() 
 
     assert set(stable.model_dump()) == {
         "schema_version",
+        "evidence_input_version",
         "program_sha256",
         "dspy_version",
         "predictors",
@@ -201,6 +202,7 @@ def test_identity_ignores_the_lm_entry_but_nothing_else() -> None:
     assert stable.program_sha256 == canonical_sha(
         {
             "schema_version": payload["schema_version"],
+            "evidence_input_version": payload["evidence_input_version"],
             "dspy_version": payload["dspy_version"],
             "predictors": payload["predictors"],
             "state": without_lm["state"],
