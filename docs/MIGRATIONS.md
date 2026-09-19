@@ -520,8 +520,10 @@ means the same thing an absent column meant.
 This revision stacks on #663's `20260919_0383`. Stop writers under the existing
 maintenance gate, back up and verify restore before applying. Nullable Item
 material columns and delivery bindings require metadata locks; the time-window
-index scans Events. The migration uses 5-second lock and 120-second statement
-limits and rolls back atomically on failure. Existing payloads, snapshots,
+index scans Events. The migration uses 5-second lock and 600-second statement
+limits and rolls back atomically on failure. The statement budget includes
+revalidating the historical judgment CHECK, which hashes full evidence JSON; the
+26,615-verdict production restore exceeded the initial 120-second budget. Existing payloads, snapshots,
 verdicts, deliveries and accepted reviews are retained; missing material/time is
 not backfilled. The verdict contract permits v11 and optional typed told fields
 while retaining validation of historical versions. No downgrade rewrites facts:
