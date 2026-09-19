@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.identity import comparison_title as normalize_comparison_title
 from ..market_review.storage import MarketReviewCohort, PriceRepository
-from ..models import MarketType, market_type_of
+from ..models import MarketType
 from ..outcome import decision_zh
 from ..program.contracts import (
     TRADE_AFFECTED_MARKET_ORDER,
@@ -44,6 +44,7 @@ from ..taxonomy import (
     IPTC_SUBJECT_CODEBOOK,
     TAXONOMY_VERSION,
     ModelTaxonomyV1,
+    ReviewTaxonomyV1,
 )
 
 REVIEW_RUBRIC_VERSION = "news_review_v7"
@@ -302,13 +303,18 @@ class NoveltyJudgment(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     judgment: Literal["new_fact", "progression", "restatement", "uncertain"]
+    equivalent_targets: tuple[str, ...] = Field(default=(), max_length=32)
     duplicate_of: str = Field(default="", max_length=128)
 
     @model_validator(mode="after")
     def require_duplicate_for_restatement(self) -> NoveltyJudgment:
         if self.judgment == "restatement" and not self.duplicate_of.strip():
             raise ValueError("news_review_duplicate_of_required")
-        if self.judgment != "restatement" and self.duplicate_of.strip():
+        if any(
+            not target.strip() or target != target.strip() or len(target) > 128 for target in self.equivalent_targets
+        ):
+            raise ValueError("news_review_equivalent_target_invalid")
+        if self.judgment != "restatement" and (self.duplicate_of.strip() or self.equivalent_targets):
             raise ValueError("news_review_duplicate_of_not_allowed")
         return self
 
@@ -327,13 +333,6 @@ class ExpectedAsset(BaseModel):
     symbol: str = Field(min_length=1, max_length=32)
     market_type: MarketType
     role: Literal["primary", "mentioned"] = "primary"
-
-    @model_validator(mode="before")
-    @classmethod
-    def _market_is_vocabulary_or_unknown(cls, value: Any) -> Any:
-        if isinstance(value, Mapping):
-            return {**value, "market_type": market_type_of(value.get("market_type"))}
-        return value
 
 
 class ExpectedCorrection(BaseModel):
@@ -496,7 +495,7 @@ class EventRubricSubmission(BaseModel):
     explanation: ExplanationCorrectionV1 | None = None
     # The four model axes, not the persisted taxonomy: `source_authority` is a code fact and no longer a
     # thing a reviewer states or a dimension anyone labels.
-    taxonomy: ModelTaxonomyV1 | None = None
+    taxonomy: ReviewTaxonomyV1 | None = None
     taxonomy_review: TaxonomyReviewProvenanceV1 = Field(default_factory=TaxonomyReviewProvenanceV1)
     # Server-derived, never accepted from the body: whether this review carries the explanation
     # supervision a `why_support` failure needs to be trainable. `pending` rows are stored, visible and
@@ -527,7 +526,7 @@ class EventRubricSubmission(BaseModel):
         unknown = set(self.dimensions) - _DIMENSIONS
         if unknown:
             raise ValueError(f"news_review_dimension_unknown:{sorted(unknown)[0]}")
-        if not self.dimensions:
+        if not self.dimensions and self.taxonomy is None and self.novelty is None and self.should_push is None:
             raise ValueError("news_review_dimensions_required")
         # Gold is a repair instruction. Stating one for a dimension the reviewer passed would silently move the
         # accepted value, which is the one thing an append-only review plane must never let a submission do.
@@ -548,16 +547,10 @@ class EventRubricSubmission(BaseModel):
                     raise ValueError(f"news_review_expected_requires_failed_dimension:{dimension}")
             if self.expected.model_dump(exclude_none=True) == {}:
                 raise ValueError("news_review_expected_must_state_a_value")
-        # Taxonomy is all-or-nothing, in both directions. A taxonomy without its four dimensions would
-        # publish a label nobody compared; a `taxonomy_*` dimension without the taxonomy would publish a
-        # comparison against an answer the submission never states.
-        taxonomy_dimensions = set(_TAXONOMY_DIMENSIONS) & set(self.dimensions)
-        if self.taxonomy is not None:
-            missing_taxonomy = set(_TAXONOMY_DIMENSIONS) - set(self.dimensions)
-            if missing_taxonomy:
-                raise ValueError(f"news_review_taxonomy_dimension_required:{sorted(missing_taxonomy)[0]}")
-        elif taxonomy_dimensions:
-            raise ValueError(f"news_review_taxonomy_required_for_dimension:{sorted(taxonomy_dimensions)[0]}")
+        stated = set(self.taxonomy.model_dump(exclude_none=True)) if self.taxonomy else set()
+        for dimension in set(_TAXONOMY_DIMENSIONS) & set(self.dimensions):
+            if dimension.removeprefix("taxonomy_") not in stated:
+                raise ValueError(f"news_review_taxonomy_required_for_dimension:{dimension}")
         if self.explanation is not None and not (set(self.dimensions) & EXPLANATION_DIMENSIONS):
             raise ValueError("news_review_explanation_requires_card_dimension")
         if self.should_push in {"must_push", "should_push"} and "timeliness" not in self.dimensions:
@@ -1591,6 +1584,23 @@ class ReviewDesk:
         owner = submission.first_bad_owner or _derive_owner(submission)
         created_at = self._db_now_ms()
         payload = submission.model_dump(mode="json")
+        if submission.taxonomy is not None:
+            from ..learning.taxonomy_metric import compare_taxonomy
+
+            observed = dict(task.row.get("model_editorial") or {}).get("taxonomy")
+            stated = submission.taxonomy.model_dump(exclude_none=True, mode="json")
+            payload["taxonomy"] = stated
+            comparison = compare_taxonomy(submission.taxonomy, observed) if observed else None
+            for axis in stated:
+                wrong = comparison is None or (
+                    comparison.subject_f1 < 1 if axis == "subject_codes" else axis in comparison.wrong_axes
+                )
+                payload["dimensions"][f"taxonomy_{axis}"] = "fail" if wrong else "pass"
+        payload["reviewed_source"] = {
+            **dict(task.row),
+            "verdict_evidence_version": dict(task.row.get("trace") or {}).get("evidence_version"),
+            "focus_fact_id": dict(dict(task.row.get("evidence_snapshot") or {}).get("focus_fact") or {}).get("fact_id"),
+        }
         review_id = _sha(
             {
                 "kind": "judgment",
@@ -1636,7 +1646,7 @@ class ReviewDesk:
                 READER_CONTRACT_VERSION,
                 principal.subject,
                 submission.should_push,
-                _json(submission.dimensions),
+                _json(payload["dimensions"]),
                 _json({} if submission.novelty is None else submission.novelty.model_dump(mode="json")),
                 owner,
                 _json(submission.evidence_refs),
@@ -1781,6 +1791,8 @@ class ReviewDesk:
         _require_grounded_source_spans(rubric, _evidence_text({"title": submission.title, "body": submission.body}))
         owner = rubric.first_bad_owner or _derive_owner(rubric, external=True)
         payload = rubric.model_dump(mode="json")
+        if rubric.taxonomy is not None:
+            payload["taxonomy"] = rubric.taxonomy.model_dump(mode="json", exclude_none=True)
         review_id = _sha(
             {
                 "kind": "external_miss_judgment",
@@ -2041,6 +2053,8 @@ def _virtual_task(row: Mapping[str, Any]) -> _VirtualTask:
             "identity": identity,
             "evidence_sha256": row["evidence_sha256"],
             "verdict": row.get("verdict"),
+            "judgment_sha256": row.get("judgment_sha256"),
+            "selected_context_sha256": dict(row.get("trace") or {}).get("selected_context_sha256"),
             "final_decision": row.get("final_decision"),
             "delivery_state": row.get("delivery_state"),
             "delivery_card": row.get("delivery_card"),

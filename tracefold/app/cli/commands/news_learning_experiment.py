@@ -39,7 +39,7 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
     from tracefold.news.learning.dataset import DevelopmentDatasetStore
     from tracefold.news.learning.objective import DevelopmentEpisode
     from tracefold.news.learning.optimizer import (
-        TARGET_PREDICTOR,
+        TARGET_PREDICTORS,
         FrozenDevelopmentDataset,
         OptimizationConfig,
         OptimizationTarget,
@@ -85,10 +85,10 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
     # target (#651). Optimizing ReaderCard against the EventSemantics endpoint would maximize a number that
     # predicts nothing about the model production actually asks to write the card.
     declared = str(getattr(args, "target", "classification") or "classification")
-    if declared not in TARGET_PREDICTOR:
+    if declared not in TARGET_PREDICTORS:
         raise ValueError(f"news_program_compile_target_unknown:{declared}")
     target = cast(OptimizationTarget, declared)
-    predictor = TARGET_PREDICTOR[target]
+    predictor = TARGET_PREDICTORS[target]
     task = {
         "event_semantics": composition.event_semantics_primary,
         "taxonomy": composition.taxonomy_primary,
@@ -124,16 +124,32 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
         structured_output=reflection.structured_output,
         ledger=ledger,
     )
+    judge = None
+    if target == "explanation" and getattr(args, "explanation_protocol", "semantic") == "semantic":
+        from tracefold.news.learning.baseline import build_judge
+
+        judge = build_judge(
+            model_name=reflection.model_name,
+            api_key=reflection.api_key,
+            api_base=reflection.api_base,
+            model_kwargs=reflection.model_kwargs,
+            structured_output=reflection.structured_output,
+            temperature=0 if reflection.temperature is None else reflection.temperature,
+        )
     result = optimize(
         dataset,
         OptimizationConfig(
             task_lm=task_lm,
             reflection_lm=reflection_lm,
+            judge=judge,
+            explanation_protocol=getattr(args, "explanation_protocol", "semantic"),
+            judge_calibration_receipt_sha256=getattr(args, "judge_calibration_receipt_sha256", ""),
             budget=OptimizationBudget(
                 auto=getattr(args, "auto", None),
                 max_metric_calls=(None if args.max_metric_calls is None else int(args.max_metric_calls)),
                 max_task_model_calls=int(args.max_task_model_calls),
                 max_reflection_model_calls=int(args.max_reflection_model_calls),
+                max_metric_judge_model_calls=int(getattr(args, "max_metric_judge_model_calls", 0)),
                 max_cost_microusd=int(args.max_cost_microusd),
                 max_call_cost_microusd=int(args.max_call_cost_microusd),
                 max_wall_clock_seconds=float(args.max_wall_clock_seconds),

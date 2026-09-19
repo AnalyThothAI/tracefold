@@ -218,13 +218,13 @@ def test_a_restatement_pointing_at_the_wrong_told_card_scores_zero_on_novelty() 
     assert "event-b" in wrong.feedback
 
 
-def test_a_restatement_pointing_at_another_member_of_the_same_fact_cluster_is_right() -> None:
+def test_a_restatement_pointing_at_an_explicitly_accepted_equivalent_target_is_right() -> None:
     result = understanding_metric(
         dspy.Example(
             gold_novelty="restatement",
             gold_duplicate_of="event-b",
             gold_told_event_ids=("event-c", "event-b"),
-            gold_cluster_event_ids=frozenset({"event-b", "event-c"}),
+            gold_duplicate_targets=frozenset({"event-b", "event-c"}),
         ),
         dspy.Prediction(semantics=_semantics(novelty="restatement", restates=0)),
     )
@@ -257,7 +257,7 @@ def test_the_same_symbol_in_the_wrong_market_is_a_known_wrong_market_and_scores_
     assert result.components["known_wrong_market"] == ["SEI/crypto"]
     assert result.components["primary_f1"] == 0.0
     assert result.components["primary_precision"] == result.components["primary_recall"] == 0.0
-    assert result.score == 0.5  # the typed primary F1 is zero; the role of the one shared symbol is right
+    assert result.score == 0.0  # Wrong market is a different instrument, including its role.
     assert "wrong market" in result.feedback
 
 

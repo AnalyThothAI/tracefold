@@ -219,7 +219,9 @@ def test_concurrent_same_key_misses_share_one_provider_call(route: str) -> None:
         "model_calls": 1,
         "cache_entries": 1,
         "failures": 0,
-        "actual_cost_microusd": 0,
+        "actual_cost_microusd": None,
+        "observed_cost_microusd": 0,
+        "unknown_cost_calls": 1,
     }
 
 
@@ -248,7 +250,9 @@ def test_concurrent_different_keys_cannot_overrun_model_call_budget() -> None:
         "model_calls": 1,
         "cache_entries": 1,
         "failures": 1,
-        "actual_cost_microusd": 0,
+        "actual_cost_microusd": None,
+        "observed_cost_microusd": 0,
+        "unknown_cost_calls": 1,
     }
 
 
@@ -378,7 +382,9 @@ def test_a_judge_failure_is_explicitly_unavailable_and_never_cached() -> None:
         "model_calls": 2,
         "cache_entries": 0,
         "failures": 2,
-        "actual_cost_microusd": 0,
+        "actual_cost_microusd": None,
+        "observed_cost_microusd": 0,
+        "unknown_cost_calls": 2,
     }
 
 
@@ -402,7 +408,9 @@ def test_json_format_fallback_spends_one_global_admission_per_physical_call() ->
         "model_calls": 1,
         "cache_entries": 0,
         "failures": 1,
-        "actual_cost_microusd": 0,
+        "actual_cost_microusd": None,
+        "observed_cost_microusd": 0,
+        "unknown_cost_calls": 1,
     }
 
     allowed_lm = _ScriptedJudgeLM(steps=["not-json", answer])

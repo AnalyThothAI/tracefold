@@ -518,9 +518,9 @@ def test_the_report_states_a_denominator_and_a_scoreboard_for_each_of_the_three_
             + block["retrieval_miss_n"]
         ), target
     assert targets["classification"]["applicable_n"] == targets["classification"]["scored_n"] == 2
-    assert targets["explanation"]["applicable_n"] == 0
-    assert targets["explanation"]["not_applicable_n"] == 2
-    assert targets["explanation"]["score"] is None
+    assert targets["explanation"]["applicable_n"] == 2
+    assert targets["explanation"]["not_applicable_n"] == 0
+    assert targets["explanation"]["scored_n"] == 2
     # The native `dspy.Evaluate` aggregate, converted from its percentage in exactly one place.
     assert targets["classification"]["dspy_evaluate_lower_bound"] == targets["classification"]["score"]
 

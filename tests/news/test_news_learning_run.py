@@ -120,7 +120,8 @@ def test_run_parser_is_the_only_candidate_route_and_keeps_explicit_budgets() -> 
     # the population, so a parser that did not supply it would leave that choice to a `getattr` fallback.
     assert args.target == "classification"
     assert args.auto is None and args.max_metric_calls == 120
-    assert not hasattr(args, "max_metric_judge_model_calls")
+    assert args.max_metric_judge_model_calls == 0
+    assert args.explanation_protocol == "semantic"
     for absent in ("semantic_judge", "dataset", "mode", "max_baseline_model_cases"):
         assert not hasattr(args, absent), absent
 

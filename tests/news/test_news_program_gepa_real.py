@@ -283,14 +283,16 @@ def _run_synthetic_gepa(
     target: str = "classification",
 ) -> GepaRunResult:
     task, reflection, _task, _reflection, _ledger = _models()
-    val_count = len(build_gepa_objective_plan(_corpus(), target).development_selection_episodes)
+    corpus = _corpus() if target == "classification" else _graded_corpus()
+    val_count = len(build_gepa_objective_plan(corpus, target).development_selection_episodes)
     rows = validation_subscores or tuple(dict.fromkeys(range(val_count), score) for score in aggregate_scores)
     return run_gepa(
         base_program=load_stable_program_state(),
-        episodes=_corpus(),
+        episodes=corpus,
         task_lm=task,
         reflection_lm=reflection,
         target=target,
+        explanation_protocol="proxy",
         auto=auto,
         max_metric_calls=None if auto else 40,
         seed=456,
@@ -355,7 +357,12 @@ def test_gepa_best_strictly_above_the_seed_advances_only_the_target_predictor(ta
     assert result.metric["predictor_change"]["predictor"] == predictor
     assert result.public_result["gepa_best_index"] == 2
     assert result.public_result["admitted"] is True
-    assert result.optimizer_cluster_ids == build_gepa_objective_plan(_corpus(), target).optimizer_cluster_ids
+    assert (
+        result.optimizer_cluster_ids
+        == build_gepa_objective_plan(
+            _corpus() if target == "classification" else _graded_corpus(), target
+        ).optimizer_cluster_ids
+    )
 
 
 def test_gepa_demos_travel_with_the_winning_candidate() -> None:
@@ -738,7 +745,7 @@ def _graded_corpus() -> tuple[DevelopmentEpisode, ...]:
             "understanding",
             "semantics",
             _SEMANTICS_ANSWER,
-            "tracefold.news.target_metrics.v1:understanding",
+            "tracefold.news.target_metrics.v2:understanding",
             "primary_asset_f1",
             id="understanding",
         ),
@@ -746,7 +753,7 @@ def _graded_corpus() -> tuple[DevelopmentEpisode, ...]:
             "explanation",
             "card",
             _CARD_ANSWER,
-            "tracefold.news.target_metrics.v1:explanation",
+            "tracefold.news.target_metrics.v2:explanation",
             "key_facts_covered",
             id="explanation",
         ),
@@ -770,6 +777,7 @@ def test_real_gepa_runs_end_to_end_for_every_target_without_a_network(
             task_lm=task,
             reflection_lm=reflection,
             target=target,
+            explanation_protocol="proxy",
             max_metric_calls=12,
             seed=456,
             review_rubric_version=REVIEW_RUBRIC_VERSION,

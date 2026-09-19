@@ -18,10 +18,10 @@ from concurrent.futures import Future
 from typing import Any, Literal, TypeVar, cast
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..program.lm import LMCallContext, LMCallLedger, LMCallReceipt, program_json_adapter
+from ..program.lm import LMCallContext, LMCallLedger, LMCallReceipt, LMDelegateProgramError, program_json_adapter
 from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v5"
@@ -30,6 +30,11 @@ JUDGE_MAX_CALLS_PER_QUESTION = 2
 
 _T = TypeVar("_T")
 _M = TypeVar("_M", bound=BaseModel)
+
+
+class JudgeOutputInvalid(ValueError):
+    """A typed judge response cannot answer the requested bounded question."""
+
 
 _INSTRUCTION = """You are checking whether a rewritten Chinese news card preserved what a human reviewer had
 already accepted about the original. You are NOT judging which card is better written.
@@ -63,7 +68,9 @@ executed flow; conditional admission is not a supply guarantee; a forecast is no
 balance is not buyback volume; chain fees are not company revenue; an annual rate is not a daily return.
 Return false for an invented causal link or transaction structure, or any unsupported strengthening of the
 source. Specific limits of the supplied evidence are valid explanations; do not demand an extra mechanism
-when it would require invented facts. Do not use outside knowledge."""
+when it would require invented facts. Do not use outside knowledge. Quote unsupported clauses in
+unsupported_claims and name missing support in evidence_gaps; identify the specific error in error_types.
+Keep each diagnostic under 500 characters, at most eight per list."""
 
 
 _KEY_FACTS_INSTRUCTION = """You are checking which of a reviewer's must-keep facts a Chinese news card still
@@ -142,6 +149,9 @@ class FactualEvidenceSupport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     supported_by_evidence: bool
+    unsupported_claims: tuple[str, ...] = Field(default=(), max_length=8)
+    evidence_gaps: tuple[str, ...] = Field(default=(), max_length=8)
+    error_types: tuple[str, ...] = Field(default=(), max_length=8)
 
 
 class FactualEvidenceAssessment(BaseModel):
@@ -261,6 +271,39 @@ _UNAVAILABLE = CardEquivalenceAssessment(
 )
 
 
+class _QuestionLM(dspy.BaseLM):  # type: ignore[misc]
+    """Do not let JSONAdapter's format fallback swallow a provider implementation defect."""
+
+    forward_contract = "typed_lm"
+
+    def __init__(self, lm: dspy.BaseLM) -> None:
+        super().__init__(lm.model, cache=False, num_retries=0, **dict(lm.kwargs or {}))
+        self.delegate = lm
+        self.defect: Exception | None = None
+
+    @property
+    def supported_params(self) -> frozenset[str]:
+        return frozenset(self.delegate.supported_params)
+
+    @property
+    def supports_response_schema(self) -> bool:
+        return bool(self.delegate.supports_response_schema)
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        if self.defect is not None:
+            raise self.defect
+        try:
+            return cast(dspy.LMResponse, self.delegate(request))
+        except LMDelegateProgramError as exc:
+            self.defect = exc.original
+            raise self.defect from None
+        except dspy.LMError:
+            raise
+        except Exception as exc:
+            self.defect = exc
+            raise
+
+
 class MetricJudgeEndpoint(dspy.Module):  # type: ignore[misc]
     """Two native structured judge Predictors over one explicitly configured LM."""
 
@@ -362,7 +405,7 @@ class MetricJudgeEndpoint(dspy.Module):  # type: ignore[misc]
         if len(answer.answers) != expected_n:
             if ledger.receipts:
                 ledger.domain_failure("news_program_compile_metric_judge_claim_length_invalid")
-            raise ValueError("news_program_compile_metric_judge_claim_length_invalid")
+            raise JudgeOutputInvalid("news_program_compile_metric_judge_claim_length_invalid")
         return answer
 
     def _ask(
@@ -379,8 +422,13 @@ class MetricJudgeEndpoint(dspy.Module):  # type: ignore[misc]
             program_sha256=self.identity_sha256,
             context_sha256=canonical_sha({"question": question, "values": values}),
         )
+        question_lm = _QuestionLM(self.lm)
         with ledger.scope(context), dspy.context(adapter=program_json_adapter()):
-            prediction = predictor(lm=self.lm, **dict(values))
+            try:
+                prediction = predictor(lm=question_lm, **dict(values))
+            finally:
+                if question_lm.defect is not None:
+                    raise question_lm.defect
             try:
                 raw = prediction.verdict
                 return raw if isinstance(raw, output_model) else output_model.model_validate(raw)
@@ -428,7 +476,18 @@ class CardEquivalenceJudge:
         self.calls = 0
         self.model_calls = 0
         self.failures = 0
-        self.actual_cost_microusd = 0
+        self.observed_cost_microusd = 0
+        self.unknown_cost_calls = 0
+        self._run_budget: Any = None
+
+    def bind_run_budget(self, meter: Any) -> None:
+        if self._run_budget is not None or self.model_calls:
+            raise ValueError("news_metric_judge_budget_already_bound")
+        self._run_budget = meter
+
+    @property
+    def actual_cost_microusd(self) -> int | None:
+        return None if self.unknown_cost_calls else self.observed_cost_microusd
 
     @property
     def identity(self) -> dict[str, Any]:
@@ -491,7 +550,7 @@ class CardEquivalenceJudge:
         }
 
     @property
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, int | None]:
         with self._lock:
             return {
                 "attempts": self.calls,
@@ -499,6 +558,8 @@ class CardEquivalenceJudge:
                 "cache_entries": len(self._cache) + len(self._factual_cache) + len(self._claim_cache),
                 "failures": self.failures,
                 "actual_cost_microusd": self.actual_cost_microusd,
+                "observed_cost_microusd": self.observed_cost_microusd,
+                "unknown_cost_calls": self.unknown_cost_calls,
             }
 
     def equivalence(self, accepted: Mapping[str, Any], candidate: Mapping[str, Any]) -> CardEquivalenceAssessment:
@@ -609,10 +670,15 @@ class CardEquivalenceJudge:
         )
         try:
             result = invoke(ledger)
-        except Exception:
-            self._settle(ledger.receipts)
+        except dspy.LMConfigurationError as exc:
+            if str(exc.message) != "news_metric_judge_model_call_budget_exhausted":
+                raise
             return False, None
-        if not self._settle(ledger.receipts):
+        except (dspy.LMError, dspy.AdapterParseError, ValidationError, JudgeOutputInvalid):
+            return False, None
+        finally:
+            accounted = self._settle(ledger.receipts)
+        if not accounted:
             return False, None
         return True, result
 
@@ -622,12 +688,26 @@ class CardEquivalenceJudge:
         with self._lock:
             if self._max_model_calls is not None and self._admitted_model_calls >= self._max_model_calls:
                 raise dspy.LMConfigurationError("news_metric_judge_model_call_budget_exhausted")
+            if self._run_budget is not None:
+                self._run_budget.before("metric_judge")
             self._admitted_model_calls += 1
 
     def _settle(self, receipts: tuple[LMCallReceipt, ...]) -> bool:
         with self._lock:
             self.model_calls += len(receipts)
-            self.actual_cost_microusd += sum(int(receipt.provider_cost_microusd or 0) for receipt in receipts)
+            self.observed_cost_microusd += sum(
+                receipt.provider_cost_microusd for receipt in receipts if receipt.provider_cost_microusd is not None
+            )
+            self.unknown_cost_calls += sum(receipt.provider_cost_microusd is None for receipt in receipts)
+        if self._run_budget is not None:
+            first_error = None
+            for receipt in receipts:
+                try:
+                    self._run_budget.after_receipt("metric_judge", receipt)
+                except Exception as exc:
+                    first_error = first_error or exc
+            if first_error is not None:
+                raise first_error
         return bool(receipts) and (
             all(receipt.total_tokens > 0 for receipt in receipts) or not self._require_exact_accounting
         )

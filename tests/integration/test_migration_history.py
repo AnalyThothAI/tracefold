@@ -45,7 +45,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260918_0382"
+HEAD = "20260919_0383"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -252,6 +252,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260918_0382",
         "20260915_0381",
         "20260915_0380",
         "20260915_0379",
@@ -337,7 +338,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
 
     # The task-level review cut cannot be rolled back by downgrading the contract that admits a v7 row:
     # every review accepted under it would become unreadable through `news_review_records_v1`.
-    with pytest.raises(RuntimeError, match="news_review_v7_task_level_forward_only"):
+    with pytest.raises(RuntimeError, match="news_review_partial_bound_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     command.stamp(config, "20260915_0379")

@@ -2481,3 +2481,20 @@ For an ordinary migration or production cutover:
 6. start one writer per current model, then verify readiness, broker queue
    movement, and unchanged-payload zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
+
+
+### Issue 663 learning correctness cut
+
+Migration `20260919_0383` admits partial review taxonomy and immutable per-case dataset artifacts.
+Coordinate the application cut with the normal maintenance/migration procedure. Do not migrate an
+active deployment merely to run an offline experiment. Existing reviews remain append-only; old dataset
+seals are audit-only and must be frozen anew under v5 before comparison.
+
+For explanation optimization explicitly budget `--max-metric-judge-model-calls` together with task,
+reflection, total cost, per-call reservation and wall clock. The default semantic protocol requires a
+judge; use `--explanation-protocol proxy` only for a named proxy experiment. A calibration receipt from
+an earlier judge prompt/schema remains historical evidence and does not attest a changed judge.
+
+The engineering audit and quality-campaign boundary for this cut are recorded in
+[issue 663 evidence audit](reports/issue-663-evidence-audit.md). No activation, label acceptance or
+unbounded model spend is implied by freezing or testing these changes.

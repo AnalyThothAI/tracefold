@@ -22,10 +22,11 @@ from ..artifact_identity import canonical_sha
 from ..events.storyline import final_storyline_key, symbol_in_text
 from ..models import MarketAsset, MarketType, base_symbol, same_market_asset
 from ..program.contracts import ScoredJudgment, TriageContext
-from ..taxonomy import ModelTaxonomyV1
+from ..taxonomy import ReviewTaxonomyV1
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
 from .card_lint import lint_reader_card
 from .contracts import REFLECTION_MINIBATCH_SIZE, LearningTarget
+from .supervision import project_supervision
 from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy, summarize_taxonomy
 
 
@@ -375,21 +376,16 @@ def _honest_split(
     which is also the only ordering that resembles how the Program meets news.
     """
 
-    representatives: dict[str, DevelopmentEpisode] = {}
+    groups: dict[str, list[DevelopmentEpisode]] = {}
     for episode in episodes:
-        cluster = episode.cluster_id
-        if cluster in representatives:
-            raise ValueError("news_program_compile_split_requires_one_representative_per_cluster")
-        representatives[cluster] = episode
-    # The Event's own time, not its position in the export: the receipt has to be reproducible from the
-    # sealed data, not from the order it happened to arrive in.
-    ordered = sorted(representatives, key=lambda cluster: (representatives[cluster].context.now_ms, cluster))
+        groups.setdefault(episode.cluster_id, []).append(episode)
+    ordered = sorted(groups, key=lambda cluster: (min(ep.context.now_ms for ep in groups[cluster]), cluster))
     cut = max(1, min(len(ordered) - 1, round(len(ordered) * _TRAIN_SHARE))) if len(ordered) > 1 else 0
     if cut <= 0:
         raise ValueError("news_program_compile_split_requires_two_clusters")
     train_roots, val_roots = ordered[:cut], ordered[cut:]
-    train = [representatives[cluster] for cluster in train_roots]
-    val = [representatives[cluster] for cluster in val_roots]
+    train = [episode for cluster in train_roots for episode in groups[cluster]]
+    val = [episode for cluster in val_roots for episode in groups[cluster]]
 
     coverage: dict[str, dict[str, int]] = {}
     for name, half in (("train", train), ("development_selection", val)):
@@ -404,12 +400,11 @@ def _honest_split(
     if train_ids & val_ids or set(train_roots) & set(val_roots):
         raise ValueError("news_program_compile_split_not_disjoint")
     receipt = {
-        "schema": "tracefold.news.compile_split_receipt.v3",
+        "schema": "tracefold.news.compile_split_receipt.v4",
         "policy": {
             "share": _TRAIN_SHARE,
-            "unit": "connected_fact_cluster_representative",
-            "representative_n_per_cluster": 1,
-            "representative_order": ["safety_strength_desc", "event_time_desc", "case_id"],
+            "unit": "connected_fact_cluster",
+            "sample_weight": "one_per_retained_case",
             "split_order": ["event_time", "cluster_id"],
         },
         "train": {
@@ -429,7 +424,7 @@ def _honest_split(
         "disjointness": {
             "shared_case_ids": 0,
             "shared_clusters": 0,
-            "proof": "one elected representative per connected fact cluster; clusters are never divided",
+            "proof": "all cases retained; connected fact clusters are never divided",
         },
     }
     return train, val, receipt
@@ -448,12 +443,13 @@ def _retrieval_receipt(episodes: Sequence[DevelopmentEpisode]) -> dict[str, Any]
         novelty = dict(review.get("novelty") or {})
         if str(novelty.get("judgment") or "") != "restatement":
             continue
-        target = str(novelty.get("duplicate_of") or "")
+        targets = {str(novelty.get("duplicate_of") or ""), *novelty.get("equivalent_targets", ())}
+        targets.discard("")
         source = {str(row.get("event_id") or "") for row in (episode.policy_metric.get("seen") or ())}
-        if not target or target not in source:
+        if not targets or not targets & source:
             continue  # outside the bounded window: not a retrieval failure
         considered += 1
-        hit = next((entry for entry in episode.context.told.entries if entry.event_id == target), None)
+        hit = next((entry for entry in episode.context.told.entries if entry.event_id in targets), None)
         if hit is not None:
             recalled += 1
             ranks.append(hit.i)
@@ -493,6 +489,8 @@ class ObjectiveCase(_ExactModel):
 
     case_id: str = Field(min_length=1)
     cluster_id: str = Field(min_length=1)
+    supervision_mask: tuple[str, ...] = ()
+    unscorable_reasons: dict[str, str] = Field(default_factory=dict)
     stratum: str = Field(min_length=1)
     disposition: Disposition
     owner: str = ""
@@ -688,6 +686,8 @@ def _classify(episode: DevelopmentEpisode, target: LearningTarget) -> ObjectiveC
             case_id=episode.case_id,
             cluster_id=episode.cluster_id,
             stratum=episode.stratum,
+            supervision_mask=tuple(supervision["mask"]),
+            unscorable_reasons=dict(supervision["missing"]),
             disposition=disposition,
             owner=owner,
             owner_source=owner_source,
@@ -697,11 +697,18 @@ def _classify(episode: DevelopmentEpisode, target: LearningTarget) -> ObjectiveC
             reason=reason,
         )
 
-    if target not in episode.applicable_targets:
+    supervision = project_supervision(
+        review,
+        episode.production_judgment.model_dump(mode="json") if episode.production_judgment else None,
+        told_event_ids=tuple(entry.event_id for entry in episode.context.told.entries),
+    )
+    if target == "classification" and supervision["missing"].get("taxonomy"):
+        return result("excluded", "accepted_taxonomy_gold_invalid")
+    if target not in supervision["targets"]:
         return result("excluded", "target_not_labelled_by_review")
     if target == "classification":
         try:
-            gold = ModelTaxonomyV1.model_validate(review.get("taxonomy"))
+            gold = ReviewTaxonomyV1.model_validate(review.get("taxonomy"))
         except ValueError:
             return result("excluded", "accepted_taxonomy_gold_invalid")
         # A missing recorded Stable answer no longer excludes the case (#651 §9). GEPA scores the
@@ -713,89 +720,11 @@ def _classify(episode: DevelopmentEpisode, target: LearningTarget) -> ObjectiveC
         return result("included", "accepted_taxonomy_gold", stable_exact=exact)
     if target == "understanding":
         return result("included", "accepted_semantics_labels")
-    if str(review.get("explanation_supervision") or "") == "pending":
-        # Stored, visible and counted -- and not trainable. A `why_support=fail` with no explanation block
-        # says the copy is wrong and nothing a ruler can check, so training on it would reward any change.
-        return result("excluded", "explanation_supervision_pending")
     if episode.production_judgment is None:
         # `reader_card` is asked to rewrite a card given the semantics the episode recorded. Without a
         # recorded judgment there are no semantics to pose the question with.
         return result("excluded", "reader_card_semantics_absent")
     return result("included", "accepted_explanation_supervision")
-
-
-def _representative_sort_key(*, case_id: str, strata: frozenset[str], now_ms: int) -> tuple[Any, ...]:
-    """The single order a connected fact cluster's representative is elected by.
-
-    Safety first, then the most recent statement of the fact, then the case id. One function and not one
-    per caller: the Objective Plan, the freeze it feeds and the release evaluator have to score the same
-    member of a cluster, and a second ordering would let them silently disagree (#548).
-    """
-
-    return (-int("safety" in strata), -int(now_ms), case_id)
-
-
-def _representative_order(case: ObjectiveCase, episode: DevelopmentEpisode) -> tuple[Any, ...]:
-    """Stable preference for the one optimizer example a connected fact cluster may contribute."""
-
-    return _representative_sort_key(
-        case_id=case.case_id, strata=_episode_strata(episode), now_ms=episode.context.now_ms
-    )
-
-
-def elect_cluster_representative_case_ids(cases: Sequence[Mapping[str, Any]]) -> frozenset[str]:
-    """The one case id per connected fact cluster this plan would score, elected from raw corpus rows.
-
-    `build_gepa_objective_plan` elects over typed episodes it already projected. The release evaluator
-    holds dataset case refs and accepted `news_reviews` rows instead, and calls this so both reduce a
-    corpus to the *same* population under `_representative_sort_key`. Each row carries `case_id`,
-    `cluster_id`, `now_ms` (when the fact opened) and `review` (the accepted review row).
-
-    Per-case Gold legitimately differs between media members of one fact — `announced` versus `effective`,
-    a subject-code superset — so a taxonomy summary over every member fails closed on a corpus the freeze
-    accepted (#534, #548). Shadowed members stay audit facts in the corpus; they cast no second vote.
-    """
-
-    elected: dict[str, tuple[tuple[Any, ...], str]] = {}
-    for row in cases:
-        case_id = str(row.get("case_id") or "")
-        key = _representative_sort_key(
-            case_id=case_id,
-            strata=_review_strata(dict(row.get("review") or {})),
-            now_ms=int(row.get("now_ms") or 0),
-        )
-        cluster_id = str(row.get("cluster_id") or "")
-        current = elected.get(cluster_id)
-        if current is None or key < current[0]:
-            elected[cluster_id] = (key, case_id)
-    return frozenset(case_id for _key, case_id in elected.values())
-
-
-def _elect_cluster_representatives(
-    classified: Sequence[ObjectiveCase],
-    episodes: Sequence[DevelopmentEpisode],
-) -> list[ObjectiveCase]:
-    """Keep one included case per connected fact cluster; retain every other case as audit evidence."""
-
-    eligible: dict[str, list[int]] = {}
-    for index, (case, _episode) in enumerate(zip(classified, episodes, strict=True)):
-        if case.disposition == "included":
-            eligible.setdefault(case.cluster_id, []).append(index)
-
-    elected = {
-        min(indexes, key=lambda index: _representative_order(classified[index], episodes[index]))
-        for indexes in eligible.values()
-    }
-    result = list(classified)
-    for indexes in eligible.values():
-        for index in indexes:
-            if index in elected:
-                continue
-            case = result[index]
-            result[index] = case.model_copy(
-                update={"disposition": "excluded", "reason": "cluster_representative_shadowed"}
-            )
-    return result
 
 
 def declared_target(objective_summary: Mapping[str, Any]) -> LearningTarget:
@@ -823,7 +752,7 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode], target: Le
 
     if target not in TARGET_PREDICTORS:
         raise ValueError(f"news_program_compile_target_unknown:{target}")
-    cases = tuple(_elect_cluster_representatives([_classify(episode, target) for episode in episodes], episodes))
+    cases = tuple(_classify(episode, target) for episode in episodes)
     included = tuple(case for case in cases if case.disposition == "included")
     excluded = tuple(case for case in cases if case.disposition == "excluded")
     optimizer_ids = {case.case_id for case in included}
@@ -1032,7 +961,7 @@ def build_readiness_report(
         # Stable answer has nothing to compare it against. Under v7 either can be absent (#651 §9).
         if predicted is None or not raw_gold:
             continue
-        gold = ModelTaxonomyV1.model_validate(raw_gold)
+        gold = ReviewTaxonomyV1.model_validate(raw_gold)
         gold_rows.append(
             {
                 "case_id": episode.case_id,
@@ -1091,6 +1020,11 @@ def build_readiness_report(
                 len(plan.development_selection_episodes) * _TASK_CALLS_PER_METRIC_CALL
             ),
             "reflection_model_calls_per_proposal_round": 1,
+            "metric_judge_model_calls_per_metric_call_max": 6 if target == "explanation" else 0,
+            "metric_judge_note": (
+                "semantic explanation: support, coverage and forbidden claims; "
+                "two physical attempts each; successful questions cached"
+            ),
         },
         "case_dispositions": [case.model_dump(mode="json") for case in plan.cases],
     }
@@ -1107,7 +1041,6 @@ __all__ = [
     "build_gepa_objective_plan",
     "build_readiness_report",
     "declared_target",
-    "elect_cluster_representative_case_ids",
     "optimizer_population_identity",
     "production_decision",
     "retrieval_receipt",

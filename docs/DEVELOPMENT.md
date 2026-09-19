@@ -168,8 +168,8 @@ for the targets its accepted labels cover. Diagnose whether a defect belongs to 
 evidence, entity identity, classification, reader explanation, novelty, deterministic
 policy, delivery, or evaluation before changing a prompt.
 
-`tracefold/news/learning/target_metrics.py` is the one owner of all three rulers and
-of the accepted-Gold readers behind them; the optimizer, baseline, release evaluator
+`tracefold/news/learning/supervision.py` owns accepted labels and per-dimension masks;
+`tracefold/news/learning/target_metrics.py` owns all three rulers and their Gold readers; the optimizer, baseline, release evaluator
 and composite production-action metric import it and none reimplement it. Each ruler
 returns a score, feedback, an `outcome` and its components. The outcome is what lets a
 report state a denominator: `scored`, the candidate's own `schema_failure`,
@@ -177,7 +177,9 @@ report state a denominator: `scored`, the candidate's own `schema_failure`,
 `not_applicable`, `judge_unavailable` and `retrieval_miss` excluded from the mean and
 counted separately. Report `applicable_n`, `scored_n`, `failure_n` and each exclusion;
 a run whose `judge_unavailable` share exceeds `JUDGE_UNAVAILABLE_SHARE_MAX` (0.2) is an
-unavailable explanation evaluation, never a pass.
+unavailable explanation evaluation, never a pass. GEPA is stricter: every planned metric call must
+produce a numeric score; a judge outage or missing score terminates the run before candidate selection.
+The metric judge shares the run budget with task and reflection, including format fallback calls.
 
 The explanation ruler's score is `F1(evidence_support, key_facts_covered)`, both asked
 of the metric judge. Measure that judge before trusting what it says: `news learning

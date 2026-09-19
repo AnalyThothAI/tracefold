@@ -1034,6 +1034,28 @@ class LearningStorage:
         ).fetchone()
         return None if row is None else dict(row)
 
+    def learning_input_sources(self, *, from_ms: int, to_ms: int) -> list[dict[str, Any]]:
+        """All post-Event news inputs in a window, including unreviewed and unjudged inputs."""
+        rows = self.conn.execute(
+            """
+            SELECT e.event_id AS stream_event_id, e.opened_at_ms,
+                   v.created_at_ms AS verdict_created_at_ms, v.evidence_version,
+                   v.evidence_sha256, v.verdict, v.editorial AS model_editorial,
+                   v.scored_judgment_sha256 AS judgment_sha256, v.trace,
+                   v.degraded, v.error_code AS verdict_error_code, s.snapshot AS evidence_snapshot
+              FROM news_events e
+              LEFT JOIN news_verdicts v ON v.event_id = e.event_id AND v.stage = 'triage'
+                   AND v.created_at_ms >= %s AND v.created_at_ms < %s
+              LEFT JOIN news_event_evidence_snapshots s ON s.event_id = v.event_id
+                   AND s.evidence_version = v.evidence_version
+             WHERE e.event_kind = 'news' AND
+                   (v.event_id IS NOT NULL OR (e.opened_at_ms >= %s AND e.opened_at_ms < %s))
+             ORDER BY COALESCE(v.created_at_ms, e.opened_at_ms), e.event_id, v.evidence_version
+            """,
+            (from_ms, to_ms, from_ms, to_ms),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def review_task_source(
         self,
         *,
@@ -1043,6 +1065,7 @@ class LearningStorage:
         program_sha256: str = "",
         policy_version: str = "",
         bundle_sha: str = "",
+        as_of_ms: int | None = None,
     ) -> dict[str, Any] | None:
         """Load one frozen Event source by its append-only evidence, and optionally by one arm.
 
@@ -1102,6 +1125,7 @@ class LearningStorage:
                        AND x.evidence_version = s.evidence_version
                        AND x.evidence_sha256 = s.evidence_sha256
                        AND x.focus_fact_id = s.focus_fact_id
+                       AND (%s::bigint IS NULL OR x.created_at_ms <= %s)
                        AND (%s = '' OR x.program_version = %s)
                        AND (%s = '' OR x.program_sha256 = %s)
                        AND (%s = '' OR x.policy_version = %s)
@@ -1125,6 +1149,8 @@ class LearningStorage:
                AND e.event_kind = 'news'
             """,
             (
+                as_of_ms,
+                as_of_ms,
                 program_version,
                 program_version,
                 program_sha256,
