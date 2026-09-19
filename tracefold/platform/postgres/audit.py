@@ -87,6 +87,7 @@ NEWS_TABLES = (
     "news_ingest_state",
     "news_opennews_incidents",
     "news_items",
+    "news_evidence_documents",
     "news_events",
     "news_event_members",
     "news_event_bands",

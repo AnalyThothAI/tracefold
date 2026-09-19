@@ -554,6 +554,8 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "deliveries",
         "review",
         "evidence_snapshots",
+        "evidence_inputs",
+        "late_evidence",
         "reader_receipt",
         "normalization",
         # #88: the event-level aggregate plus every per-asset Reaction, with the closes they came from.

@@ -106,6 +106,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "news_current_event_archive_guard" not in functions
     assert {"model_decision", "novelty_defaulted"}.isdisjoint(news_verdict_columns)
     assert news_delivery_columns == {
+        "history_context",
         "event_id",
         "kind",
         "state",
@@ -178,7 +179,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260919_0383"
+    assert version == latest_migration_version() == "20260919_0384"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -203,7 +204,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260919_0383"
+    assert version == latest_migration_version() == "20260919_0384"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

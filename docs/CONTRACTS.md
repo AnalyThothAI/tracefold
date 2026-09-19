@@ -987,7 +987,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v6`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v2`,
-`news_semantic_program_v10`,
+`news_semantic_program_v11`,
 `news_triage_policy_v14`, `news_delivery_card_v11`, artifact schema
 `news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and
@@ -998,6 +998,61 @@ judgment CHECK that validates those rows. The epoch is the running bundle's
 (`bundle_<sha8>`) and is not a declared version. The exact Program identity is
 its content SHA plus `envelope_sha256`, not the display version alone; see
 `docs/ARCHITECTURE.md` for the identity model.
+
+Issue #664 adds `news_evidence_input_v1` to the single online graph. Before the
+first Predictor, Triage prepares one immutable `PreparedEvidence`: current
+source spans, separately attributed related editorial facts, and the existing
+sent-only reader ledger. Taxonomy sees current spans only; ReaderCard sees
+current and related spans; EventSemantics additionally sees typed told entries.
+Preview fields in archived evidence remain audit data, not a second online
+prefix-only input. ReaderCard's optional `source_refs` (at most 12) must be a
+subset of visible refs. These are model declarations, not proof of support.
+
+Editorial Admission preserves the canonical provider JSON, payload/text hashes,
+and first actual availability. Replays cannot overwrite nonempty material;
+a conflicting payload records its hash and observed time. Empty legacy payloads
+may fill later, using that later time. Spans address Unicode codepoint offsets
+in `news_items.evidence_text`, immutable extracted document text, or explicitly
+named archived preview text. Selection has a 6,000-character current allowance
+and 2,400 related characters across at most four source/fact-deduplicated facts;
+truncation and legacy gaps are explicit. Numbered facts exclude sibling entries.
+Background recall has separate explicit-origin, entity-plus-event-term and title
+similarity channels, capped at 8/24/32 identities before a 64-candidate merge;
+non-explicit recall uses a 30-day half-open time window. Full text is loaded
+only for the final four identities. These are engineering bounds, not measured
+relevance or latency guarantees.
+
+`news.triage.documents_enabled` defaults to false. When enabled, an ordinary
+short source (under 800 characters) with an original URL can get one bounded
+HTTP preparation before freeze: two seconds total, two concurrent physical
+reads/extractions, two redirects, two MiB, 100,000 extracted characters, no
+retries. DNS answers must all be public and the connection pins the validated
+IP; redirects repeat validation. No credentials, environment proxy, browser,
+PDF rendering, login or crawling is used. Trafilatura 2.0.0 extracts HTML in the
+process-owned bounded finite-operation resource; timed-out physical work retains
+its permit. Immutable successful versions cache for one hour, and 429 responses
+hold a bounded process-local host cooldown. The page remains an attributed
+candidate; term overlap is not independent verification. Unsupported/timeout/
+rate-limited results are receipts; database failures remain infrastructure errors.
+Stale re-asks never initiate another HTTP fetch. Settled Events remain settled.
+
+The frozen execution carries hashes, refs, cutoff, selector/query identity,
+counts, exclusions, preparation elapsed time and HTTP receipt. The native input
+budget conservatively counts UTF-8 bytes of instructions, demos, schema and
+input plus output/framing reserve; exceeding 131,072 rejects the call without
+silent slicing. `envelope.v6` binds this budget. Read-only Event details and
+`news why` expose `evidence_inputs` and `late_evidence`; neither runs retrieval,
+HTTP nor a model. Old executions remain readable; explicitly adapting an old
+excerpt for a new-input study is labelled `archived_excerpt_adaptation`, never
+exact historical replay. Review/Gold labels are preserved.
+
+New deliveries freeze history facts, typed assets and canonical aliases from
+the actual send attempt in `news_deliveries.history_context`. Later Event,
+alias or verdict changes do not rewrite that receipt. Unbound legacy receipts
+are marked `legacy_receipt_only`, with unknown judgment provenance instead of
+a guessed latest verdict. Online and learning use the same projection. Evidence
+rows at/after a history cutoff are excluded before deduplication; the separate
+reader-history CAS revision intentionally still sees later writes.
 
 Liquidations are a market family, not a composed admission (#553). Strategy
 `2000` and Strategy `2083` both route to `liquidation_v1` on their id alone, and
@@ -1013,7 +1068,7 @@ completeness and throttle assumptions. Its current `complete=false` is a
 material fact.
 
 `NewsProgramStateV1` is the only executable semantic configuration, and it is
-one canonical JSON document — `schema_version`, `dspy_version`, the `predictors`
+one canonical JSON document — `schema_version`, `evidence_input_version`, `dspy_version`, the `predictors`
 in execution order, the native `state` DSPy's own `dump_state()` produced, and
 the `program_sha256` over all of it except the `lm` routes, which are operator
 configuration and never image state (#651 §6.1). Everything an optimizer can

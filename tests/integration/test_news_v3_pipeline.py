@@ -32,6 +32,7 @@ NEWS_TABLES = {
     "news_ingest_state",
     "news_opennews_incidents",
     "news_items",
+    "news_evidence_documents",
     "news_events",
     "news_event_members",
     "news_event_bands",
@@ -168,7 +169,8 @@ def test_deduper_is_idempotent_and_merges_exact_and_near(conn) -> None:
 def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     repos = repositories_for_connection(conn)
     row = conn.execute(
-        "SELECT event_id, storyline_key, grounded_assets, admission, opened_at_ms"
+        "SELECT event_id, storyline_key, grounded_assets, admission, opened_at_ms, "
+        "comparison_title, comparison_fingerprint, dedupe_family"
         " FROM news_events WHERE admission='candidate' AND queue_priority='normal' ORDER BY opened_at_ms LIMIT 1"
     ).fetchone()
     assert row is not None
@@ -287,7 +289,16 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     # preliminary storyline's own cards are fetched even when the global limit would not reach them.
     later = now_ms + 1000
     with repos.transaction():
-        assert repos.news.begin_delivery(event_id=row["event_id"], kind="first", card={}, now_ms=now_ms + 10) == "new"
+        assert (
+            repos.news.begin_delivery(
+                event_id=row["event_id"],
+                kind="first",
+                card={},
+                now_ms=now_ms + 10,
+                history_context_json=json.dumps({**dict(row), **verdict.model_dump(mode="json")}),
+            )
+            == "new"
+        )
         assert repos.news.settle_delivery(
             event_id=row["event_id"],
             kind="first",
@@ -301,7 +312,16 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     ).recent_seen_rows
     with repos.transaction():
         conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
-        assert repos.news.begin_delivery(event_id=row["event_id"], kind="first", card={}, now_ms=now_ms + 10) == "new"
+        assert (
+            repos.news.begin_delivery(
+                event_id=row["event_id"],
+                kind="first",
+                card={},
+                now_ms=now_ms + 10,
+                history_context_json=json.dumps({**dict(row), **verdict.model_dump(mode="json")}),
+            )
+            == "new"
+        )
         assert repos.news.settle_delivery(
             event_id=row["event_id"],
             kind="first",
@@ -611,9 +631,12 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         )
         assert repos.news.begin_delivery(event_id=sent_event, kind="first", card=degraded_card, now_ms=10_100) == "new"
     # A sending reservation is not a receipt.
-    assert not repos.news.reader_history(
-        event_id="candidate-reader-history", now_ms=10_150, include_targeted=False
-    ).recent_seen_rows
+    assert sent_event not in {
+        row.event_id
+        for row in repos.news.reader_history(
+            event_id="candidate-reader-history", now_ms=10_150, include_targeted=False
+        ).recent_seen_rows
+    }
     with repos.transaction():
         assert repos.news.settle_delivery(
             event_id=sent_event, kind="first", state="sent", receipt={"ok": True}, error_code=None, now_ms=10_200
@@ -626,7 +649,9 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         for row in repos.news.reader_history(
             event_id="candidate-reader-history", now_ms=10_300, include_targeted=False
         ).recent_seen_rows
+        if row.event_id in {sent_event, ambiguous_event}
     ]
+    assert told[0]["provenance_status"] == "legacy_receipt_only"
     assert len(told) == 1 and told[0]["event_id"] == sent_event and told[0]["headline_zh"] == "实际降级卡片"
     sent_detail = repos.news.event_detail(sent_event)
     ambiguous_detail = repos.news.event_detail(ambiguous_event)
@@ -1948,7 +1973,16 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
             )
             assert (
                 repos.news.begin_delivery(
-                    event_id=event_id, kind="first", card={"event_id": event_id}, now_ms=now_ms - 35 * 60_000 + offset
+                    event_id=event_id,
+                    kind="first",
+                    card={"event_id": event_id},
+                    now_ms=now_ms - 35 * 60_000 + offset,
+                    history_context_json=json.dumps(
+                        {
+                            "storyline_key": keys[event_id],
+                            **repos.news.latest_verdict(event_id=event_id, stage="triage")["verdict"],
+                        }
+                    ),
                 )
                 == "new"
             )

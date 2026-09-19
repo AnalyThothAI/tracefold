@@ -1569,7 +1569,16 @@ def _news_event(
             return event_id
         _persist_verdict(repos, event_id=event_id, symbol=symbol, headline_zh=headline_zh, at_ms=settled_at_ms - 1)
         card = {"header": {"title": {"content": delivered_title}}} if delivered_title is not None else {}
-        assert repos.news.begin_delivery(event_id=event_id, kind="first", card=card, now_ms=settled_at_ms - 1) == "new"
+        assert (
+            repos.news.begin_delivery(
+                event_id=event_id,
+                kind="first",
+                card=card,
+                now_ms=settled_at_ms - 1,
+                history_context_json=json.dumps({"headline_zh": headline_zh}),
+            )
+            == "new"
+        )
         assert repos.news.settle_delivery(
             event_id=event_id,
             kind="first",
@@ -2069,7 +2078,7 @@ def test_the_pushed_news_read_counts_only_cards_a_reader_actually_received(conn:
     assert answer["total"] == 3
 
 
-def test_a_delivered_card_without_a_frozen_title_falls_back_to_the_verdict_headline(conn: Any) -> None:
+def test_a_delivered_card_without_a_rendered_title_uses_its_bound_verdict_headline(conn: Any) -> None:
     """The same COALESCE reader history reads, so both surfaces name a card the same way."""
 
     _news_event(

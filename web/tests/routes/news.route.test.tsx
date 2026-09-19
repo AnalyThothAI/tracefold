@@ -12,6 +12,75 @@ describe("news route", () => {
 
   beforeEach(() => setupAppRouteTest(mockAppRoutes));
 
+  it("shows frozen current evidence, background and later material separately without writes", async () => {
+    setupAppRouteTest((mock) => {
+      mockAppRoutes(mock);
+      const base = mock.getApiImpl;
+      mock.getApiImpl = async (path, options) => {
+        if (path !== "/api/news/events/evt-global-policy") return base(path, options);
+        const span = {
+          ref_id: "c1",
+          material_kind: "current",
+          text: "此次协议仍待批准。",
+          source_item_id: "item",
+          document_id: "",
+          source_artifact_id: "source",
+          content_sha256: "a".repeat(64),
+          extraction_version: "provider_plaintext_v1",
+          text_space: "news_items.evidence_text",
+          span_start: 0,
+          span_end: 10,
+          source: "Reuters",
+          url: "https://example.org/story",
+          reported_published_at_ms: 1000,
+          available_at_ms: 2000,
+          selection_reason: "current_focus",
+          coverage_status: "complete",
+        };
+        return {
+          ok: true,
+          data: {
+            ...newsEventDetailFixture(),
+            evidence_inputs: [
+              {
+                execution_index: 0,
+                status: "succeeded",
+                selected: true,
+                focus_fact_id: "fact",
+                input_version: "news_evidence_input_v1",
+                cutoff_at_ms: 3000,
+                current_evidence: [span],
+                related_evidence: [
+                  { ...span, ref_id: "r1.1", material_kind: "related", text: "此前宣布收购计划。" },
+                ],
+                missing: [],
+                exclusions: [],
+                document_status: "disabled",
+                document_receipt: {},
+                candidate_count: 2,
+                selected_count: 1,
+                declared_source_refs: ["c1"],
+                elapsed_ms: 1,
+              },
+            ],
+            late_evidence: [
+              { material_id: "late", material_kind: "provider_payload", available_at_ms: 4000 },
+            ],
+          },
+        };
+      };
+    });
+    renderAppRoute("/news/events/evt-global-policy");
+    expect(await screen.findByText("此次协议仍待批准。")).toBeInTheDocument();
+    expect(screen.getByText("此前宣布收购计划。")).toBeInTheDocument();
+    expect(screen.getByText(/未参与该次判断/)).toBeInTheDocument();
+    expect(screen.getByText("模型声明引用：c1")).toBeInTheDocument();
+    expect(apiMock.readApi).toHaveBeenCalledWith(
+      "/api/news/events/evt-global-policy",
+      expect.any(Object),
+    );
+  });
+
   it("uses the topbar as the sole search entry and synchronizes it with URL q", async () => {
     renderAppRoute("/news?q=bitcoin");
 

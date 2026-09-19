@@ -43,6 +43,8 @@ def explain_event(repos: Any, event_id: str) -> dict[str, Any] | None:
             for s in (detail.get("timeline") or [])
         ],
         "chain": chain,
+        "evidence_inputs": list(detail.get("evidence_inputs") or []),
+        "late_evidence": list(detail.get("late_evidence") or []),
     }
 
 

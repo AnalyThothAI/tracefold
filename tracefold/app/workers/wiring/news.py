@@ -43,6 +43,7 @@ from tracefold.app.workers.wiring.market_review import (
     _quote_snapshot_loop,
 )
 from tracefold.integrations.feishu import FeishuNewsPushSender
+from tracefold.integrations.news_documents import NewsDocumentClient
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.integrations.telegram import TelegramNewsPushSender
 from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
@@ -624,6 +625,9 @@ def _compose_news_pipeline(
                 bus=bus,
                 db=news_db,
                 judge=arms.judge,
+                documents=NewsDocumentClient(finite_operations=finite)
+                if settings.news.triage.documents_enabled
+                else None,
                 program_version=PROGRAM_VERSION,
                 program_sha256=arms.stable_artifact.program_sha256,
                 watchlist_symbols=watchlist_symbols,

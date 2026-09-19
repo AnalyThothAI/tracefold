@@ -13,7 +13,8 @@ from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_sha
-from ..models import MarketType, TriageAsset, TriageVerdict, base_symbol, market_type_of
+from ..evidence import PreparedEvidence, VisibleEvidenceSpan, assemble_evidence, query_for
+from ..models import MarketAsset, MarketType, TriageAsset, TriageVerdict, base_symbol, market_type_of
 from ..taxonomy import NewsTaxonomyV1, SourceAuthority
 from ..told_context import TOLD_MAX as _TOLD_MAX
 from ..told_context import TOLD_SYMBOLS_MAX as _TOLD_SYMBOLS_MAX
@@ -334,8 +335,6 @@ class _ModelVisibleEvent(_ExactContractModel):
     strategies: tuple[str, ...] = Field(max_length=STRATEGIES_MAX)
     engine_type: str
     title: str = Field(max_length=600)
-    raw_first_line: str = Field(max_length=300)
-    content: str = Field(max_length=600)
     published_at_ms: int = Field(ge=0)
     member_count: int = Field(ge=1)
     dedupe_family: str
@@ -350,11 +349,13 @@ class _ModelVisibleGate(_ExactContractModel):
 
 
 class _ModelVisibleToldEntry(_ExactContractModel):
+    provenance_status: str
     i: int = Field(ge=0)
     ago_min: int = Field(ge=0)
     storyline_key: str
     comparison_title: str = Field(max_length=600)
     symbols: tuple[str, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
+    assets: tuple[MarketAsset, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
     magnitude: int = Field(ge=0, le=3)
     direction: str
     headline_zh: str = Field(max_length=60)
@@ -370,6 +371,8 @@ class _ModelVisibleEventStatus(_ExactContractModel):
 class ModelVisibleSemanticsInput(_ExactContractModel):
     """Exact bounded JSON shape visible to ``EventSemantics``: current evidence plus the selected ledger."""
 
+    current_evidence: tuple[VisibleEvidenceSpan, ...] = Field(max_length=12)
+    related_evidence: tuple[VisibleEvidenceSpan, ...] = Field(max_length=24)
     event: _ModelVisibleEvent
     gate: _ModelVisibleGate
     event_status: _ModelVisibleEventStatus
@@ -382,6 +385,8 @@ class ModelVisibleCardInput(_ExactContractModel):
     step that can re-read old cards can re-interpret them.  The boundary is the schema, not a prompt reminder.
     """
 
+    current_evidence: tuple[VisibleEvidenceSpan, ...] = Field(max_length=12)
+    related_evidence: tuple[VisibleEvidenceSpan, ...] = Field(max_length=24)
     event: _ModelVisibleEvent
     gate: _ModelVisibleGate
 
@@ -393,6 +398,7 @@ class ModelVisibleTaxonomyInput(_ExactContractModel):
     and a classifier that could read it could be taught to label by what was already sent.
     """
 
+    current_evidence: tuple[VisibleEvidenceSpan, ...] = Field(max_length=12)
     event: _ModelVisibleEvent
     gate: _ModelVisibleGate
 
@@ -401,6 +407,7 @@ class TriageContext(_ExactContractModel):
     """One immutable question at the semantic-judgment Seam."""
 
     evidence: FrozenEventEvidence
+    prepared_evidence: PreparedEvidence | None = None
     gate: SemanticGateContext
     watchlist: tuple[str, ...] = Field(default=(), max_length=WATCHLIST_MAX)
     told: _ToldLedgerSnapshot
@@ -417,6 +424,7 @@ class TriageContext(_ExactContractModel):
         now_ms: int,
         queue_lag_ms: int,
         catalog_candidates: Mapping[str, Sequence[str]] | None = None,
+        prepared_evidence: PreparedEvidence | None = None,
     ) -> TriageContext:
         """One immutable question, including what the catalogue currently holds for this Event's symbols.
 
@@ -433,7 +441,14 @@ class TriageContext(_ExactContractModel):
             if isinstance(coin, Mapping) and coin.get("symbol")
         )[:10]
         storyline_key = str(card.get("storyline_key") or "")
+        candidates = catalog_candidates_of(
+            catalog_candidates, tuple(str(value) for value in card.get("grounded_assets") or ())
+        )
+        prepared = prepared_evidence or assemble_evidence(
+            card, {}, query=query_for(card, {}, cutoff=now_ms), candidates=()
+        )
         return cls(
+            prepared_evidence=prepared,
             evidence=FrozenEventEvidence(
                 event_id=str(card.get("event_id") or ""),
                 evidence_version=int(card.get("evidence_version") or 0),
@@ -476,13 +491,43 @@ class TriageContext(_ExactContractModel):
                 told_rows,
                 now_ms=now_ms,
                 storyline_key=storyline_key,
-                symbols=tuple(str(value) for value in card.get("grounded_assets") or ()),
+                symbols=tuple(
+                    MarketAsset(str(value), unambiguous_catalog_class(candidates, str(value)))
+                    for value in card.get("grounded_assets") or ()
+                ),
                 comparison_title=str(card.get("comparison_title") or ""),
                 exclude_event_id=str(card.get("event_id") or ""),
             ),
             now_ms=int(now_ms),
             queue_lag_ms=max(0, int(queue_lag_ms)),
         )
+
+    def adapt_archived_excerpt(self) -> TriageContext:
+        """Explicit input-study conversion using only archived previews, never today's database.
+
+        This answers a new v11 question and must not be called exact v10 replay.
+        Existing serialized executions and accepted labels are never rewritten.
+        """
+        if self.prepared_evidence is not None:
+            return self
+        card = {
+            "event_id": self.evidence.event_id,
+            "focus_fact_id": self.evidence.focus_fact_id,
+            "leader_title": self.evidence.title,
+            "raw_first_line": self.evidence.raw_first_line,
+            "leader_description": self.evidence.content,
+        }
+        prepared = assemble_evidence(card, {}, query=query_for(card, {}, cutoff=self.now_ms), candidates=())
+        return self.model_copy(update={"prepared_evidence": prepared})
+
+    def _visible_evidence(self, kind: str) -> tuple[VisibleEvidenceSpan, ...]:
+        if self.prepared_evidence is None:
+            # Historical archives explicitly lack the prepared input. No today's material lookup.
+            return ()
+        spans = (
+            self.prepared_evidence.current_evidence if kind == "current" else self.prepared_evidence.related_evidence
+        )
+        return tuple(span.visible() for span in spans)
 
     def _visible_event(self) -> _ModelVisibleEvent:
         event = self.evidence
@@ -491,8 +536,6 @@ class TriageContext(_ExactContractModel):
             strategies=event.strategies,
             engine_type=event.engine_type,
             title=event.title,
-            raw_first_line=event.raw_first_line,
-            content=event.content,
             published_at_ms=event.published_at_ms,
             member_count=event.member_count,
             dedupe_family=event.dedupe_family,
@@ -512,6 +555,8 @@ class TriageContext(_ExactContractModel):
 
         return ModelVisibleSemanticsInput(
             event=self._visible_event(),
+            current_evidence=self._visible_evidence("current"),
+            related_evidence=self._visible_evidence("related"),
             gate=self._visible_gate(),
             event_status=_ModelVisibleEventStatus(
                 storyline_key=self.told.storyline_key,
@@ -519,10 +564,12 @@ class TriageContext(_ExactContractModel):
                 told=tuple(
                     _ModelVisibleToldEntry(
                         i=entry.i,
+                        provenance_status=entry.provenance_status,
                         ago_min=entry.ago_min,
                         storyline_key=entry.storyline_key,
                         comparison_title=entry.comparison_title,
                         symbols=entry.symbols,
+                        assets=entry.assets,
                         magnitude=entry.magnitude,
                         direction=entry.direction,
                         headline_zh=entry.headline_zh,
@@ -536,12 +583,19 @@ class TriageContext(_ExactContractModel):
     def taxonomy_payload(self) -> dict[str, Any]:
         """Bounded evidence only. Taxonomy classifies what this Event says, never what was already told."""
 
-        return ModelVisibleTaxonomyInput(event=self._visible_event(), gate=self._visible_gate()).model_dump(mode="json")
+        return ModelVisibleTaxonomyInput(
+            event=self._visible_event(), gate=self._visible_gate(), current_evidence=self._visible_evidence("current")
+        ).model_dump(mode="json")
 
     def reader_card_payload(self) -> dict[str, Any]:
         """Bounded evidence only. The card is written from what this Event says, not from what was told."""
 
-        return ModelVisibleCardInput(event=self._visible_event(), gate=self._visible_gate()).model_dump(mode="json")
+        return ModelVisibleCardInput(
+            event=self._visible_event(),
+            gate=self._visible_gate(),
+            current_evidence=self._visible_evidence("current"),
+            related_evidence=self._visible_evidence("related"),
+        ).model_dump(mode="json")
 
     def selected_context_sha256(self) -> str:
         """Identity of exactly what the model was shown. Audit and replay identity."""
@@ -565,6 +619,7 @@ class TriageContext(_ExactContractModel):
                     "comparison_title": entry.comparison_title,
                     "comparison_fingerprint": entry.comparison_fingerprint,
                     "symbols": list(entry.symbols),
+                    "assets": [{"symbol": a.symbol, "market_type": a.market_type} for a in entry.assets],
                     "magnitude": entry.magnitude,
                     "direction": entry.direction,
                     "headline_zh": entry.headline_zh,
@@ -682,7 +737,7 @@ class ProgramCallTrace(_ExactContractModel):
 
 
 class ProgramTrace(_ExactContractModel):
-    program_version: Literal["news_semantic_program_v10"]
+    program_version: Literal["news_semantic_program_v11"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # The computed identity of everything the code decided about this call — request envelope, output

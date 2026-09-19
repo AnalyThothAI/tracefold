@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Final, Protocol, runtime_checkable
 
+from ..artifact_identity import canonical_json, canonical_sha
 from ..bus import DeferError, PermanentError, TransientError, now_ms
 from ..delivery import card_assets, news_reader_card, reader_market_movements, reader_trade_targets
 from ..delivery_contracts import DELIVERY_FAILURE_RETRIABLE, classify_delivery_failure, retry_after_ms
@@ -795,9 +796,37 @@ class DelivererLoop:
                 market_movements=reader_market_movements(shown_symbols, quotes),
             )
         )
+        history_context_json = canonical_json(
+            {
+                "event_id": event_id,
+                "storyline_key": str(card.get("storyline_key") or ""),
+                "comparison_title": str(card.get("comparison_title") or ""),
+                "comparison_fingerprint": str(card.get("comparison_fingerprint") or ""),
+                "dedupe_family": str(card.get("dedupe_family") or "general"),
+                "grounded_assets": list(card.get("grounded_assets") or ()),
+                "canonical_assets": sorted(
+                    {base_symbol(str(value)) for value in card.get("grounded_assets") or ()}
+                    | {base_symbol(str(value.get("symbol") or "")) for value in tv.get("assets") or ()}
+                ),
+                "assets": list(tv.get("assets") or ()),
+                "magnitude": int(tv.get("magnitude") or 0),
+                "direction": str(tv.get("direction") or "unclear"),
+                "headline_zh": str(tv.get("headline_zh") or ""),
+                "why_zh": str(tv.get("why_zh") or ""),
+                "policy_version": str(triage_row.get("policy_version") or ""),
+                "evidence_version": triage_row.get("evidence_version"),
+                "evidence_sha256": triage_row.get("evidence_sha256"),
+                "focus_fact_id": triage_row.get("focus_fact_id"),
+                "verdict_sha256": canonical_sha(tv),
+                "judgment_sha256": triage_row.get("judgment_sha256"),
+                "program_execution_index": dict(triage_row.get("trace") or {}).get("program_execution_index"),
+            }
+        )
         state = await self.db.tx(
             "news_delivery_begin",
-            lambda repos: repos.news.begin_delivery(event_id=event_id, kind=kind, card=card_payload, now_ms=stamp),
+            lambda repos: repos.news.begin_delivery(
+                event_id=event_id, kind=kind, card=card_payload, now_ms=stamp, history_context_json=history_context_json
+            ),
         )
         if state != "new":
             if state == "sending":

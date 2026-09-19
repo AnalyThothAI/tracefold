@@ -2498,3 +2498,16 @@ an earlier judge prompt/schema remains historical evidence and does not attest a
 The engineering audit and quality-campaign boundary for this cut are recorded in
 [issue 663 evidence audit](reports/issue-663-evidence-audit.md). No activation, label acceptance or
 unbounded model spend is implied by freezing or testing these changes.
+
+### Optional original-link evidence preparation
+
+`news.triage.documents_enabled=false` keeps the full local-material and background
+path active without external document reads. Enable only with the matching #664
+schema/application; the finite executor is process-owned and shutdown drains its
+physical work. In an Event's evidence panel or `news why`, inspect document status,
+physical request count, missing material and selection exclusions separately.
+A timeout, unsupported page or rate limit is not an empty database query result.
+Disable the setting to stop new reads; stored documents and frozen executions
+remain auditable. Later material does not automatically edit or resend a card.
+See [the #664 engineering receipt](reports/issue-664-evidence-context.md) for
+measured local checks and the separate, unrun model-quality experiment.
