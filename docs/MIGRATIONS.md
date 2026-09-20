@@ -529,3 +529,20 @@ not backfilled. The verdict contract permits v11 and optional typed told fields
 while retaining validation of historical versions. No downgrade rewrites facts:
 roll forward or restore the verified backup. Deploy the matching v11 application
 and native state together; changing this file does not authorize deployment.
+
+
+### 20260920_0385: Local News evidence (#668)
+
+Adds v12 to the existing stored-judgment constraint and a GiST trigram index on
+`news_events.comparison_title`. The synthetic 25,001-row audit showed the old
+similarity plan reading 6,401 recent Events for 64 raw candidates. This index
+supports bounded nearest-title retrieval; it does not promise a production latency.
+All historical Program versions, frozen executions and the 0384 webpage table remain.
+
+Run behind the normal stopped-writer migration gate: `news_events` takes a SHARE
+lock while building the index, then `news_verdicts` takes ACCESS EXCLUSIVE while
+validating the replacement CHECK. Lock timeout is 5 seconds and statement timeout
+600 seconds. There is no row rewrite or backfill. Production index-build duration
+and ledger validation at production scale remain unmeasured. Failure rolls back
+atomically; recover by rolling forward or restoring a verified backup. Downgrade
+refuses. Remove the retired webpage configuration key before the new image starts.

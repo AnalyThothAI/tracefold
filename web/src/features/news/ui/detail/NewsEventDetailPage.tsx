@@ -573,9 +573,12 @@ function EvidenceInputs({ detail }: { detail: NewsEventDetail }) {
               </p>
             </details>
             <p>
-              背景候选 {input.candidate_count}，选入 {input.selected_count}；原链接：
-              {input.document_status}
+              背景候选 {input.candidate_count}，选入 {input.selected_count}
+              {input.document_status ? `；历史网页记录：${input.document_status}` : ""}
             </p>
+            {input.reference_issues?.includes("empty_source_refs") ? (
+              <p>引用关联：模型未声明来源片段</p>
+            ) : null}
             {input.missing.length ? <p>材料缺口：{input.missing.join("、")}</p> : null}
             {input.exclusions.length ? <p>未选入：{input.exclusions.join("、")}</p> : null}
             {(

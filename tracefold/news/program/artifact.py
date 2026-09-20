@@ -174,7 +174,7 @@ class NewsProgramStateV1(_ExactModel):
     """
 
     schema_version: Literal["news_program_state_v1"] = "news_program_state_v1"
-    evidence_input_version: Literal["news_evidence_input_v1"]
+    evidence_input_version: Literal["news_evidence_input_v2"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     dspy_version: Literal["3.3.1"] = DSPY_STATE_VERSION
     predictors: tuple[PredictorName, ...]

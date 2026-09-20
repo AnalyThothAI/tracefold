@@ -270,12 +270,9 @@ class FeedStorage:
                 SELECT item_id AS material_id, 'provider_payload'::text AS material_kind,
                        provider_params_available_at_ms AS available_at_ms
                   FROM news_items WHERE item_id=%s AND provider_params_available_at_ms > %s
-                UNION ALL
-                SELECT document_id AS material_id, 'source_document'::text AS material_kind, available_at_ms
-                  FROM news_evidence_documents WHERE requested_url=%s AND available_at_ms > %s
                 ORDER BY available_at_ms DESC LIMIT 8
                 """,
-                    (card["leader_item_id"], last_cutoff, card.get("leader_url"), last_cutoff),
+                    (card["leader_item_id"], last_cutoff),
                 ).fetchall()
             ]
 

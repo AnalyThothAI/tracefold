@@ -257,7 +257,7 @@ class NewsEvidenceSpanData(ExactApiSchema):
     ref_id: str
     material_kind: Literal["current", "related"]
     source_item_id: str
-    document_id: str
+    document_id: str | None = None
     source_artifact_id: str
     content_sha256: str
     extraction_version: str
@@ -284,11 +284,12 @@ class NewsEvidenceInputData(ExactApiSchema):
     related_evidence: list[NewsEvidenceSpanData]
     missing: list[str]
     exclusions: list[str]
-    document_status: str
-    document_receipt: dict[str, Any]
+    document_status: str | None = None
+    document_receipt: dict[str, Any] | None = None
     candidate_count: int
     selected_count: int
     declared_source_refs: list[str]
+    reference_issues: list[str]
     elapsed_ms: int
 
 

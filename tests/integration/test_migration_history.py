@@ -45,7 +45,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260919_0384"
+HEAD = "20260920_0385"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -252,6 +252,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260919_0384",
         "20260919_0383",
         "20260918_0382",
         "20260915_0381",
@@ -339,7 +340,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
 
     # The task-level review cut cannot be rolled back by downgrading the contract that admits a v7 row:
     # every review accepted under it would become unreadable through `news_review_records_v1`.
-    with pytest.raises(RuntimeError, match="news_evidence_material_forward_only"):
+    with pytest.raises(RuntimeError, match="news_local_evidence_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     command.stamp(config, "20260915_0379")
@@ -2451,3 +2452,37 @@ def test_the_catalogue_freshness_answer_survives_the_move_off_the_row() -> None:
         assert renamed is not None
     finally:
         conn.close()
+
+
+def test_local_evidence_migration_preserves_v11_verdict_and_archive(monkeypatch):
+    from contextlib import closing
+
+    from tests.integration import test_news_reader_history as history
+    from tests.integration.test_news_evidence_material import admit
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260919_0384")
+    monkeypatch.setattr(history, "SEMANTIC_PROGRAM_VERSION", "news_semantic_program_v11")
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        event_id = admit(repos, "BTC acquisition remains pending approval.").results[0].event_id
+        history._persist_triage_verdict(repos, event_id=event_id, at_ms=2000, symbol="BTC")
+        conn.execute("""INSERT INTO news_evidence_documents
+            (document_id, requested_url, final_url, normalized_url, response_sha256, extracted_text_sha256,
+             extractor_version, extracted_text, observed_at_ms, available_at_ms, content_type, extraction_status)
+            VALUES ('old', 'https://archive.invalid', 'https://archive.invalid', 'https://archive.invalid',
+                    'response', 'text', 'old', 'Pending approval', 1, 1, 'text/plain', 'success')""")
+        before = conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall()
+        assert before[0]["row"]["program_version"] == "news_semantic_program_v11"
+    command.upgrade(config, "head")
+    command.upgrade(config, "head")
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        assert conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall() == before
+        assert (
+            conn.execute("SELECT extracted_text FROM news_evidence_documents WHERE document_id='old'").fetchone()[
+                "extracted_text"
+            ]
+            == "Pending approval"
+        )
+        assert conn.execute("SELECT to_regclass('ix_news_events_evidence_title') AS index").fetchone()["index"]

@@ -1,4 +1,4 @@
-"""Prepare local material, optionally read one source URL, then freeze as-of inputs."""
+"""Freeze bounded local material once, outside the model and without external reads."""
 
 from __future__ import annotations
 
@@ -7,15 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from ..bus import now_ms
-from ..evidence import (
-    DOCUMENT_CACHE_MS,
-    DocumentResult,
-    NewsDocumentReader,
-    PreparedEvidence,
-    assemble_evidence,
-    query_for,
-    shortlist,
-)
+from ..evidence import PreparedEvidence, assemble_evidence, frozen_members, query_for, select_members, shortlist
 from ..models import MarketAsset, market_type_of
 from .runtime import NewsDatabasePort
 
@@ -25,62 +17,56 @@ async def prepare_evidence(
     card: Mapping[str, Any],
     *,
     catalog: Mapping[str, Sequence[str]],
-    reader: NewsDocumentReader | None,
-    allow_fetch: bool = True,
     clock: Callable[[], int] = now_ms,
 ) -> PreparedEvidence:
     started = time.monotonic()
-    item = await db.read(
-        "news_evidence_current", lambda repos: repos.news.evidence_item(str(card.get("leader_item_id") or ""))
-    )
-    document = None
-    status = "not_needed"
-    url = str(item.get("canonical_url") or "")
-    text = str(item.get("evidence_text") or "")
-    if len(text) < 800 and url and card.get("focus_fact_method") != "explicit_numbered":
-        read_at = clock()
-        cached = await db.read(
-            "news_evidence_document_cache",
-            lambda repos: repos.news.evidence_document(url, cutoff=read_at, since=read_at - DOCUMENT_CACHE_MS),
-        )
-        if cached:
-            document, status = DocumentResult.model_validate(cached), "cache_hit"
-        elif reader is not None and allow_fetch:
-            document = await reader.read(url)
-            status = document.status
-            if status == "success":
-                await db.tx("news_evidence_document_save", lambda repos: repos.news.save_evidence_document(document))
-        else:
-            status = "disabled" if reader is None else "already_attempted"
-    elif not url:
-        status = "no_url"
     cutoff = clock()
+    members, exclusions = frozen_members(card)
+    metadata = await db.read(
+        "news_evidence_member_metadata",
+        lambda repos: repos.news.evidence_member_metadata([row["item_id"] for row in members]),
+    )
+    selected_members = select_members(members, metadata, cutoff=cutoff)
+    material = await db.read(
+        "news_evidence_current",
+        lambda repos: repos.news.evidence_material([row["item_id"] for row in selected_members]),
+    )
+    by_id = {row["item_id"]: row for row in material}
+    current = [{**row, **by_id.get(row["item_id"], {})} for row in selected_members]
+    item = current[0]
     assets = tuple(
         MarketAsset(
-            str(symbol), market_type_of(classes[0]) if len(classes := catalog.get(str(symbol), ())) == 1 else "unknown"
+            str(symbol),
+            market_type_of(classes[0])
+            if len(classes := catalog.get(str(symbol), ())) == 1
+            else market_type_of(card.get("asset_class")),
         )
         for symbol in card.get("grounded_assets") or ()
     )
     query = query_for(card, item, cutoff=cutoff, assets=assets)
     candidates = await db.read("news_evidence_candidates", lambda repos: repos.news.evidence_candidates(query))
-    selected = shortlist(candidates)
-    material = (
-        await db.read(
-            "news_evidence_background",
-            lambda repos: repos.news.evidence_background_material([row["item_id"] for row in selected]),
+    selected = shortlist(candidates, query=query)
+    background = (
+        (
+            await db.read(
+                "news_evidence_background",
+                lambda repos: repos.news.evidence_material([row["item_id"] for row in selected]),
+            )
         )
         if selected
         else []
     )
-    by_id = {row["item_id"]: row for row in material}
+    by_id = {row["item_id"]: row for row in background}
     ordered = [{**row, **by_id[row["item_id"]]} for row in selected if row["item_id"] in by_id]
+    if len(members) > len(selected_members):
+        exclusions += ("member_duplicate_or_material_cap",)
     prepared = assemble_evidence(
         card,
         item,
         query=query,
         candidates=ordered,
-        document=document,
-        document_status=status,
+        members=current[1:],
+        exclusions=exclusions,
         elapsed_ms=int((time.monotonic() - started) * 1000),
     )
-    return prepared.model_copy(update={"candidate_count": len(candidates)})
+    return prepared.model_copy(update={"candidate_count": len(candidates), "member_candidate_count": len(members)})

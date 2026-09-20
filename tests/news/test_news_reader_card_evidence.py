@@ -75,3 +75,21 @@ def test_short_faithful_or_conditional_copy_does_not_require_padding(why: str) -
     assert lint.gate == ""
     assert dict(lint.outcomes)["headline_length"] == "lint_pass"
     assert dict(lint.outcomes)["banned_filler"] == "lint_pass"
+
+
+@pytest.mark.parametrize("case", _DOCUMENT["semantic_diagnostics"], ids=lambda case: case["name"])
+def test_semantic_diagnostics_are_not_claimed_as_structural_validation(case):
+    from tracefold.news.evidence import assemble_evidence, query_for
+
+    card = {"leader_title": case["source"]}
+    item = {"item_id": case["name"], "evidence_text": case["source"], "provider_params_available_at_ms": 1}
+    prepared = assemble_evidence(card, item, query=query_for(card, item, cutoff=2), candidates=[])
+    context = TriageContext.from_card(
+        card, watchlist=(), told_rows=(), now_ms=2, queue_lag_ms=0, prepared_evidence=prepared
+    )
+    output = ReaderCard(source_refs=("c1",), headline_zh=case["headline_zh"], why_zh=case["why_zh"])
+    # A structurally valid, visible c1 can still contradict its source. These cases
+    # belong to semantic evaluation; they must not create a regex-based refusal gate.
+    assert output.source_refs[0] in {s.ref_id for s in prepared.current_evidence}
+    assert context.reader_card_payload()["current_evidence"][0]["text"] == case["source"]
+    assert case["expected_boundary"]
