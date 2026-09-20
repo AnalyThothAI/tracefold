@@ -1046,11 +1046,11 @@ export interface components {
             /** Declared Source Refs */
             declared_source_refs: string[];
             /** Document Receipt */
-            document_receipt: {
+            document_receipt?: {
                 [key: string]: unknown;
-            };
+            } | null;
             /** Document Status */
-            document_status: string;
+            document_status?: string | null;
             /** Elapsed Ms */
             elapsed_ms: number;
             /** Exclusions */
@@ -1063,6 +1063,8 @@ export interface components {
             input_version: string;
             /** Missing */
             missing: string[];
+            /** Reference Issues */
+            reference_issues: string[];
             /** Related Evidence */
             related_evidence: components["schemas"]["NewsEvidenceSpanData"][];
             /** Selected */
@@ -1104,7 +1106,7 @@ export interface components {
             /** Coverage Status */
             coverage_status: string;
             /** Document Id */
-            document_id: string;
+            document_id?: string | null;
             /** Extraction Version */
             extraction_version: string;
             /**

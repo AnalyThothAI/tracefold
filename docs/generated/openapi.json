@@ -2258,13 +2258,27 @@
             "type": "array"
           },
           "document_receipt": {
-            "additionalProperties": true,
-            "title": "Document Receipt",
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Receipt"
           },
           "document_status": {
-            "title": "Document Status",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Status"
           },
           "elapsed_ms": {
             "title": "Elapsed Ms",
@@ -2294,6 +2308,13 @@
               "type": "string"
             },
             "title": "Missing",
+            "type": "array"
+          },
+          "reference_issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reference Issues",
             "type": "array"
           },
           "related_evidence": {
@@ -2327,11 +2348,10 @@
           "related_evidence",
           "missing",
           "exclusions",
-          "document_status",
-          "document_receipt",
           "candidate_count",
           "selected_count",
           "declared_source_refs",
+          "reference_issues",
           "elapsed_ms"
         ],
         "title": "NewsEvidenceInputData",
@@ -2406,8 +2426,15 @@
             "type": "string"
           },
           "document_id": {
-            "title": "Document Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
           },
           "extraction_version": {
             "title": "Extraction Version",
@@ -2477,7 +2504,6 @@
           "ref_id",
           "material_kind",
           "source_item_id",
-          "document_id",
           "source_artifact_id",
           "content_sha256",
           "extraction_version",

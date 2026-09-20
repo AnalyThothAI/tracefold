@@ -505,7 +505,7 @@ class TriageContext(_ExactContractModel):
     def adapt_archived_excerpt(self) -> TriageContext:
         """Explicit input-study conversion using only archived previews, never today's database.
 
-        This answers a new v11 question and must not be called exact v10 replay.
+        This answers a new v12 question and must not be called exact historical replay.
         Existing serialized executions and accepted labels are never rewritten.
         """
         if self.prepared_evidence is not None:
@@ -737,7 +737,7 @@ class ProgramCallTrace(_ExactContractModel):
 
 
 class ProgramTrace(_ExactContractModel):
-    program_version: Literal["news_semantic_program_v11"]
+    program_version: Literal["news_semantic_program_v12"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # The computed identity of everything the code decided about this call — request envelope, output

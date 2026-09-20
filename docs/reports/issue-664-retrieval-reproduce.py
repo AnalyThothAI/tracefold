@@ -110,7 +110,7 @@ try:
                 plan=plan,
                 timings_ms=times,
             )
-            Path("docs/reports/issue-664-retrieval-plan.json").write_text(
+            Path(os.environ.get("TRACEFOLD_RETRIEVAL_REPORT", "docs/reports/issue-664-retrieval-plan.json")).write_text(
                 json.dumps(result, ensure_ascii=False, indent=2) + "\n"
             )
             print({k: v for k, v in result.items() if k not in ("plan", "timings_ms")})

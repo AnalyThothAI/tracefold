@@ -987,7 +987,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v6`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v2`,
-`news_semantic_program_v11`,
+`news_semantic_program_v12`,
 `news_triage_policy_v14`, `news_delivery_card_v11`, artifact schema
 `news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and
@@ -999,52 +999,53 @@ judgment CHECK that validates those rows. The epoch is the running bundle's
 its content SHA plus `envelope_sha256`, not the display version alone; see
 `docs/ARCHITECTURE.md` for the identity model.
 
-Issue #664 adds `news_evidence_input_v1` to the single online graph. Before the
-first Predictor, Triage prepares one immutable `PreparedEvidence`: current
-source spans, separately attributed related editorial facts, and the existing
-sent-only reader ledger. Taxonomy sees current spans only; ReaderCard sees
-current and related spans; EventSemantics additionally sees typed told entries.
-Preview fields in archived evidence remain audit data, not a second online
-prefix-only input. ReaderCard's optional `source_refs` (at most 12) must be a
-subset of visible refs. These are model declarations, not proof of support.
+Issue #668 uses `news_evidence_input_v2` in the single online graph. Preparation fixes
+one availability cutoff before reading local persisted material. EventSemantics sees
+current/related/told; Taxonomy sees current; ReaderCard sees current/related and
+accepted semantics, never told. ReaderCard retains its three output fields. Visible
+refs must exist; legal refs attest only citation linkage, not semantic truth. Empty
+refs remain visible as `empty_source_refs` diagnostics and do not force rejection.
 
-Editorial Admission preserves the canonical provider JSON, payload/text hashes,
-and first actual availability. Replays cannot overwrite nonempty material;
-a conflicting payload records its hash and observed time. Empty legacy payloads
-may fill later, using that later time. Spans address Unicode codepoint offsets
-in `news_items.evidence_text`, immutable extracted document text, or explicitly
-named archived preview text. Selection has a 6,000-character current allowance
-and 2,400 related characters across at most four source/fact-deduplicated facts;
-truncation and legacy gaps are explicit. Numbered facts exclude sibling entries.
-Background recall has separate explicit-origin, entity-plus-event-term and title
-similarity channels, capped at 8/24/32 identities before a 64-candidate merge;
-non-explicit recall uses a 30-day half-open time window. Full text is loaded
-only for the final four identities. These are engineering bounds, not measured
-relevance or latency guarantees.
+The exact Event snapshot supplies frozen member item/fact identities. Stable ordering
+keeps the leader and caps member candidates at 16. One metadata batch uses available
+body hashes to deduplicate, then one batch loads at most four selected bodies. Same
+URL, source or fact summary does not equate different complete bodies. Missing or
+late body text falls back to frozen fact text with an explicit gap; no past availability
+is fabricated. Source authority, Event identity, admission and delivery policy do not
+change with member count. Late membership belongs to the next normal evidence round.
 
-`news.triage.documents_enabled` defaults to false. When enabled, an ordinary
-short source (under 800 characters) with an original URL can get one bounded
-HTTP preparation before freeze: two seconds total, two concurrent physical
-reads/extractions, two redirects, two MiB, 100,000 extracted characters, no
-retries. DNS answers must all be public and the connection pins the validated
-IP; redirects repeat validation. No credentials, environment proxy, browser,
-PDF rendering, login or crawling is used. Trafilatura 2.0.0 extracts HTML in the
-process-owned bounded finite-operation resource; timed-out physical work retains
-its permit. Immutable successful versions cache for one hour, and 429 responses
-hold a bounded process-local host cooldown. The page remains an attributed
-candidate; term overlap is not independent verification. Unsupported/timeout/
-rate-limited results are receipts; database failures remain infrastructure errors.
-Stale re-asks never initiate another HTTP fetch. Settled Events remain settled.
+All current members share 6,000 characters and 12 spans; related material shares
+2,400 characters, four materials and 24 spans. Focus sentences and local event
+qualifications precede boilerplate. Exact sentence duplicates do not consume budgets;
+negation, numbers, units, attribution and conflicting states remain intact. Numbered
+facts expose only the matching fact and shared preamble, or the frozen fact if it cannot
+be located. Every span retains source, hash, text space and exact Unicode offsets.
+Related materials consume actual lengths rather than fixed 600-character quotas.
 
-The frozen execution carries hashes, refs, cutoff, selector/query identity,
-counts, exclusions, preparation elapsed time and HTTP receipt. The native input
-budget conservatively counts UTF-8 bytes of instructions, demos, schema and
-input plus output/framing reserve; exceeding 131,072 rejects the call without
-silent slicing. `envelope.v6` binds this budget. Read-only Event details and
-`news why` expose `evidence_inputs` and `late_evidence`; neither runs retrieval,
-HTTP nor a model. Old executions remain readable; explicitly adapting an old
-excerpt for a new-input study is labelled `archived_excerpt_adaptation`, never
-exact historical replay. Review/Gold labels are preserved.
+Historical retrieval uses explicit source, entity/event-term and trigram channels.
+All channels have a 30-day half-open time window, first cap raw identities at 64,
+then deduplicate and cap at 8/24/32; the merged candidate cap remains 64. This bounds
+returned intermediates, not the number of rows PostgreSQL may inspect. Known typed
+identity conflicts are checked at merge, including explicit-source and similarity
+candidates; unknown provider tags do not erase known conflicts. Shared subjects or
+generic announcement words alone are insufficient. Only the final shortlist bodies
+are loaded. Earlier unsent background never becomes sent-only told.
+
+News evidence preparation has no webpage reader, cache query, HTTP/DNS request or
+operator enable switch. URLs remain local identifiers and display links. Provider
+intake/recovery, model calls and delivery retain their existing network behavior.
+Migration 0384 and its append-only webpage table remain historical archives; no new
+execution reads or writes that table. Detail pages render old document receipts and
+spans directly from frozen executions. The late-material read consults local Items only.
+
+The frozen execution carries refs, cutoff, selector/query identity, candidate/member
+counts, missing reasons, exclusions and elapsed time. Native `envelope.v7` retains the
+131,072-token conservative UTF-8 byte upper bound including instructions, schema,
+demos, input and output reserve; there is no final silent slicing. Archived v11 inputs
+remain unchanged. Learning reanalysis explicitly adapts frozen previews and labels
+`archived_excerpt_adaptation`; it neither claims exact replay nor loads today's text.
+Review/Gold labels remain unchanged. Migration 0385 admits v12 under the existing
+stored-judgment constraint without changing the historical rows.
 
 New deliveries freeze history facts, typed assets and canonical aliases from
 the actual send attempt in `news_deliveries.history_context`. Later Event,

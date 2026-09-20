@@ -156,8 +156,8 @@ class RecordingNews:
 
         def _call(*args: Any, **kwargs: Any) -> Any:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
-            if name == "evidence_item" and name not in self.responses:
-                return {}
+            if name in {"evidence_material", "evidence_member_metadata"} and name not in self.responses:
+                return []
             if name == "evidence_candidates" and name not in self.responses:
                 return []
             if name == "reader_history" and name not in self.responses:

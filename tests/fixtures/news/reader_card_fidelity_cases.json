@@ -3049,5 +3049,58 @@
       "review_queue_available": false
     }
   ],
-  "cases_sha256": "d902d3ecace5b6db9c2099c001cccce10db45987bed11267a290b81659b0746f"
+  "cases_sha256": "d902d3ecace5b6db9c2099c001cccce10db45987bed11267a290b81659b0746f",
+  "semantic_diagnostics": [
+    {
+      "name": "flow_direction",
+      "source": "Investors deposited $5 million into the fund.",
+      "headline_zh": "投资者从基金撤出500万美元",
+      "why_zh": "资金流出基金。",
+      "expected_boundary": "Deposits are inflows, not withdrawals."
+    },
+    {
+      "name": "split_affordability",
+      "source": "A 10-for-1 stock split makes each share more affordable. Fees are unchanged.",
+      "headline_zh": "公司拆股降低交易费用",
+      "why_zh": "每股更易负担意味着手续费下降。",
+      "expected_boundary": "Affordability is not a fee reduction."
+    },
+    {
+      "name": "amount_unit",
+      "source": "The company reported revenue of $2.5 million for the quarter.",
+      "headline_zh": "公司季度收入为25亿美元",
+      "why_zh": "季度营收达到25亿美元。",
+      "expected_boundary": "Keep 2.5 million and the quarterly basis."
+    },
+    {
+      "name": "pending_approval",
+      "source": "The agreement is non-binding and has not received regulatory approval.",
+      "headline_zh": "协议已获监管批准",
+      "why_zh": "监管已批准该有约束力的协议。",
+      "expected_boundary": "Approval is pending and the agreement is non-binding."
+    },
+    {
+      "name": "claimed_confirmed",
+      "source": "An analyst claims the factory has doubled output; the company has not confirmed this.",
+      "headline_zh": "公司确认工厂产量翻倍",
+      "why_zh": "公司已证实产量增加一倍。",
+      "expected_boundary": "Keep analyst attribution and lack of confirmation."
+    },
+    {
+      "name": "legal_ref_opposite",
+      "source": "Acme will not pay a dividend this quarter.",
+      "headline_zh": "Acme本季将派息",
+      "why_zh": "公司宣布本季派发股息。",
+      "expected_boundary": "A visible c1 does not prove the opposite assertion."
+    },
+    {
+      "name": "normal_control",
+      "source": "Acme says its factory opens on 30 June, subject to approval.",
+      "headline_zh": "Acme称工厂拟于6月30日投产",
+      "why_zh": "投产仍以获批为前提。",
+      "expected_boundary": "Faithful attribution, date and condition.",
+      "faithful": true
+    }
+  ],
+  "semantic_diagnostic_status": "Diagnostic fixtures only; not accepted Gold, calibrated judge labels or measured model quality."
 }

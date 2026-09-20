@@ -18,11 +18,11 @@ from tracefold.news.program.identity import (
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
-# #664: v11 binds separated source spans, typed told provenance, declared refs and input budget.
+# #668: v12 binds local-only multi-member source spans and the unchanged three-Predictor budget.
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "a1c7875f7a488dd24e94443984190e6da1e6a595505206cf6862c1b0b2cea160"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "d386ec57a6218d3ac1352ebaa43c269308b3b964added6c02736ddc436ec47b6"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -36,12 +36,12 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "a1c7875f7a488dd24e94443984190e6da1e6a595505206
 # half of that change a hash can hold: the novelty contract lost the absolute "a direction flip is never a
 # restatement" sentence, so the seed and `grounded_restatement` now say the same thing. The pin is separate
 # from `NEWS_STABLE_PROGRAM_SHA256`, which also moved because the image is now the native state document.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "367150ce74b758dc04888737a8c7e07b185a3b1038ed3d13e1544d08728c3813"
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "81dc12423df3d80de595ee349a04e6f4a630f09a3cd2f8ea34f9890f9408ffef"
 
 # #651 re-pins this over the native DSPy state document rather than three instruction strings. The
 # instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
 # the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
-NEWS_STABLE_PROGRAM_SHA256 = "8454b864af18f0031f6069cb925c86820ac1a5a01f01f66c0f2c9bb3856d37d1"
+NEWS_STABLE_PROGRAM_SHA256 = "4d60f9a048db6c4d0cf751df1c0a067bc9cab64d0b6aed8a9517137a3fb1f93a"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
@@ -84,7 +84,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_state().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v11",
+        "program_version": "news_semantic_program_v12",
         "policy_version": "news_triage_policy_v14",
         "review_rubric_version": "news_review_v7",
         "metric_id": "tracefold.news.production_action_trade_relevance_v11",

@@ -55,8 +55,8 @@ from .runtime import (
 )
 from .signatures import EventSemantics, EventSemanticsSignature, EventTaxonomySignature, ReaderCardSignature
 
-# v6 (#664): source-span inputs, typed history provenance and a whole-input budget; still three Predictors.
-EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v6"
+# v7 (#668): local-only multi-member evidence; unchanged three-Predictor call budget.
+EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v7"
 
 _GOLDEN_MODEL: Final[str] = "openai/tracefold-execution-identity"
 _GOLDEN_INSTRUCTION: Final[str] = "<golden-instruction>"

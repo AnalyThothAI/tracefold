@@ -72,11 +72,12 @@ PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS: Final[int] = 8_192
 # strings, so a GEPA candidate's demos are representable and a released image is loadable by DSPy itself.
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_state_v1"
 
+# v12 (#668) hard-cuts webpage fields from local-only prepared inputs.
 # v10 (#651 §6.2): `TriageAsset.market_type` is a required vocabulary value and the Gate shows the model the
 # catalogue's uncollapsed candidates, so a v9 recording answers a different question with a different output
 # contract and is not a replay of this executor. v9 (#501) split taxonomy into its own Predictor; #344 (v8)
 # made the same kind of cut when requests started being rendered by DSPy.
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v11"
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v12"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.

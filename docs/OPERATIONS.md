@@ -2499,15 +2499,16 @@ The engineering audit and quality-campaign boundary for this cut are recorded in
 [issue 663 evidence audit](reports/issue-663-evidence-audit.md). No activation, label acceptance or
 unbounded model spend is implied by freezing or testing these changes.
 
-### Optional original-link evidence preparation
+### Local News evidence preparation
 
-`news.triage.documents_enabled=false` keeps the full local-material and background
-path active without external document reads. Enable only with the matching #664
-schema/application; the finite executor is process-owned and shutdown drains its
-physical work. In an Event's evidence panel or `news why`, inspect document status,
-physical request count, missing material and selection exclusions separately.
-A timeout, unsupported page or rate limit is not an empty database query result.
-Disable the setting to stop new reads; stored documents and frozen executions
-remain auditable. Later material does not automatically edit or resend a card.
-See [the #664 engineering receipt](reports/issue-664-evidence-context.md) for
-measured local checks and the separate, unrun model-quality experiment.
+News prepares only persisted local Items and frozen Event members. There is no
+webpage setting or cache path. Remove the retired `news.triage.documents_enabled`
+key from operator configuration before starting the new image; it is not a supported
+compatibility switch. Existing webpage rows and frozen execution records remain intact.
+
+Inspect the evidence panel or `news why` for the actual source spans, availability
+cutoff, missing material, excluded candidates and declared refs. A citation link does
+not establish factual truth. Empty refs are diagnostic and do not create a new drop
+policy. Missing material uses the frozen fact; a database failure remains an error.
+Later material does not automatically edit or resend a card. v11 reanalysis uses frozen
+previews with explicit adaptation provenance; exact replay never consults live material.

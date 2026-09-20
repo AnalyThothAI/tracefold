@@ -941,6 +941,10 @@ class EventStorage:
                 "focus_fact_id": str(evidence["focus_fact_id"]),
                 "evidence_provenance": str(evidence["provenance"]),
                 "evidence_release_eligible": bool(evidence["release_eligible"]),
+                "evidence_members": [
+                    {key: member[key] for key in ("item_id", "fact_id", "fact_text", "joined_at_ms")}
+                    for member in snapshot.get("members") or ()
+                ],
             }
         )
         return card

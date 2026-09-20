@@ -15,7 +15,7 @@ from typing import Any, ClassVar, Literal
 from ..artifact_identity import canonical_json, canonical_sha
 from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..events.storyline import final_storyline_key
-from ..evidence import NewsDocumentReader, PreparedEvidence
+from ..evidence import PreparedEvidence
 from ..models import TRIAGE_POLICY_VERSION, MarketAsset, json_ready
 from ..program.contracts import (
     ScoredJudgment,
@@ -158,13 +158,11 @@ class TriageConsumer:
         concurrency: int,
         circuit_failures: int,
         circuit_open_seconds: float,
-        documents: NewsDocumentReader | None = None,
         policy: DecidePolicy = DEFAULT_POLICY,
         stable_bundle_sha: str | None = None,
         canary_arms: Mapping[str, CanaryRuntimeArm] | None = None,
         runtime_manifest: Mapping[str, Any] | None = None,
     ) -> None:
-        self.documents = documents
         self.bus = bus
         self.db = db
         self.judge = judge
@@ -221,11 +219,7 @@ class TriageConsumer:
             "news_triage_circuit_reconcile",
             lambda repos: repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms()),
         )
-        try:
-            await self.bus.consume(Q_TRIAGE, self.handle, prefetch=self.concurrency, stop_event=stop_event)
-        finally:
-            if self.documents is not None:
-                await self.documents.close()
+        await self.bus.consume(Q_TRIAGE, self.handle, prefetch=self.concurrency, stop_event=stop_event)
 
     async def handle(self, message: BusMessage) -> None:
         """Broker orchestration for one Event: load, route, settle, publish.
@@ -258,9 +252,7 @@ class TriageConsumer:
             raise PermanentError("news_event_evidence_v3_required")
         facts = _gate_facts(card, self.watchlist_symbols)
         arm = await self._select_arm(card, event_id=event_id, stamp=stamp)
-        prepared_evidence = await prepare_evidence(
-            self.db, card, catalog=bundle.catalog_candidates, reader=self.documents, clock=now_ms
-        )
+        prepared_evidence = await prepare_evidence(self.db, card, catalog=bundle.catalog_candidates, clock=now_ms)
         stamp = prepared_evidence.cutoff_at_ms
         history = await self.db.read(
             "news_triage_prepared_history",
@@ -689,9 +681,7 @@ class TriageConsumer:
         card, history, event_kind = bundle.card, bundle.history, bundle.event_kind
         if event_kind not in EVENT_KINDS:
             return None
-        prepared_evidence = await prepare_evidence(
-            self.db, card, catalog=bundle.catalog_candidates, reader=self.documents, allow_fetch=False, clock=now_ms
-        )
+        prepared_evidence = await prepare_evidence(self.db, card, catalog=bundle.catalog_candidates, clock=now_ms)
         stamp = prepared_evidence.cutoff_at_ms
         history = await self.db.read(
             "news_triage_reprepared_history",

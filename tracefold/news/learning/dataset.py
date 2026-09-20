@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from ..artifact_identity import canonical_sha
 from ..events.storyline import NO_STORYLINE_KEY
+from ..evidence import EVIDENCE_INPUT_VERSION
 from ..models import TRIAGE_POLICY_VERSION, MarketAsset, TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, TriageContext
 from ..review.desk import (
@@ -661,7 +662,11 @@ class DevelopmentDatasetStore:
                 review,
                 case.get("production_judgment"),
                 told_event_ids=tuple(entry.event_id for entry in context.told.entries),
-                context_exact=bool(case.get("actual_context") and case["actual_context"].get("prepared_evidence")),
+                context_exact=bool(
+                    case.get("actual_context")
+                    and dict(case["actual_context"].get("prepared_evidence") or {}).get("input_version")
+                    == EVIDENCE_INPUT_VERSION
+                ),
             )
             episodes.append(
                 {
@@ -673,7 +678,11 @@ class DevelopmentDatasetStore:
                         **case_ref.provenance.model_dump(mode="json"),
                         "context_source": (
                             "actual"
-                            if case.get("actual_context") and case["actual_context"].get("prepared_evidence")
+                            if (
+                                case.get("actual_context")
+                                and dict(case["actual_context"].get("prepared_evidence") or {}).get("input_version")
+                                == EVIDENCE_INPUT_VERSION
+                            )
                             else "archived_excerpt_adaptation"
                             if case.get("actual_context")
                             else "reconstructed"
@@ -1014,7 +1023,13 @@ class DevelopmentDatasetStore:
     def build_context(self, case: Mapping[str, Any], state: ArmState) -> TriageContext:
         frozen = case.get("frozen_context") or case.get("actual_context")
         if frozen is not None:
-            context = TriageContext.model_validate(frozen)
+            archived = dict(frozen)
+            prepared = dict(archived.get("prepared_evidence") or {})
+            if prepared.get("input_version") == "news_evidence_input_v1":
+                # Reanalysis is an explicit preview adaptation, never exact replay of v11.
+                # Keep the original frozen execution intact; no material lookup is allowed.
+                archived["prepared_evidence"] = None
+            context = TriageContext.model_validate(archived)
             if case.get("evaluation_protocol") != "counterfactual_sequence":
                 return context.adapt_archived_excerpt()
             event = dict(case["snapshot"]["card"])
@@ -1152,14 +1167,19 @@ class DevelopmentDatasetStore:
         index = trace.get("program_execution_index")
         if index is None:
             return None
+        frozen = trace["program_executions"][index]["context"]
+        archived = dict(frozen)
+        legacy_prepared = dict(archived.get("prepared_evidence") or {}).get("input_version") == "news_evidence_input_v1"
+        if legacy_prepared:
+            archived["prepared_evidence"] = None
         try:
-            context = TriageContext.model_validate(trace["program_executions"][index]["context"])
+            context = TriageContext.model_validate(archived)
         except ValidationError:
             # A verified recording with an old/incomplete context is reconstructable, never exact.
             return None
         if context.evidence.evidence_sha256 != row["evidence_sha256"]:
             raise ValueError("news_learning_selected_context_evidence_mismatch")
-        return context.model_dump(mode="json")
+        return dict(frozen) if legacy_prepared else context.model_dump(mode="json")
 
     def _load_dataset_payload(self, artifact_sha: str) -> dict[str, Any]:
         row = self._repository.learning_artifact(artifact_sha, kind="dataset")
