@@ -129,12 +129,45 @@ def observation_ledger_statement(*, since_ns: int, limit: int) -> tuple[str, dic
     return sql, {"since": int(since_ns), "limit": int(limit)}
 
 
+# A fill's contribution to realized PnL, in one place for both reads below. A fill carries its own
+# commission since #680; a fill without one, or with one charged in anything but the quote currency,
+# makes that entry's realized result unknown rather than silently gross.
+_FILL_FOLD = """
+                 sum((fill.summary ->> 'last_quantity')::numeric)
+                    FILTER (WHERE fill.summary ->> 'leg' = 'entry') AS entry_quantity,
+                 sum((fill.summary ->> 'last_quantity')::numeric * (fill.summary ->> 'last_price')::numeric)
+                    FILTER (WHERE fill.summary ->> 'leg' = 'entry') AS entry_notional,
+                 min(fill.occurred_at_ns) FILTER (WHERE fill.summary ->> 'leg' = 'entry') AS entry_filled_at_ns,
+                 sum((fill.summary ->> 'last_quantity')::numeric)
+                    FILTER (WHERE fill.summary ->> 'leg' <> 'entry') AS exit_quantity,
+                 sum((fill.summary ->> 'last_quantity')::numeric * (fill.summary ->> 'last_price')::numeric)
+                    FILTER (WHERE fill.summary ->> 'leg' <> 'entry') AS exit_notional,
+                 sum((fill.summary ->> 'commission')::numeric) AS fees,
+                 bool_and(fill.summary ->> 'commission_currency' = 'USDT'
+                          AND fill.summary ->> 'commission' IS NOT NULL) AS fees_known
+"""
+
+
+def _realized_pnl(direction: str, fills: str) -> str:
+    """Net realized PnL of one entry: exit minus entry notional, signed by direction, less every fee.
+
+    Known only for a fully closed entry whose every fill carries a quote-currency commission.
+    """
+
+    return f"""CASE WHEN {fills}.entry_quantity > 0
+                     AND {fills}.exit_quantity = {fills}.entry_quantity
+                     AND {fills}.fees_known
+                THEN (CASE WHEN {direction} = 'short' THEN -1 ELSE 1 END)
+                     * ({fills}.exit_notional - {fills}.entry_notional) - {fills}.fees
+           END"""
+
+
 def console_executions_statement(
     *, since_ns: int, limit: int, case_id: str | None = None
 ) -> tuple[str, dict[str, Any]]:
-    """One row per entry identity: plans supply lifecycle, observations supply known history."""
+    """One row per entry identity: plans supply lifecycle, observations supply what the venue did."""
 
-    sql = """
+    sql = f"""
         WITH signal_entry AS (
           SELECT 'signal'::text AS source,
                  signal_id AS entry_id,
@@ -207,135 +240,86 @@ def console_executions_statement(
                  (array_agg(observation.summary ->> 'reason' ORDER BY observation.seq DESC)
                     FILTER (WHERE observation.normalized_kind = 'order'
                               AND observation.summary ->> 'leg' = 'entry'
-                              AND observation.summary ->> 'status' = 'rejected'))[1]
+                              AND observation.summary ->> 'status' IN ('rejected', 'denied')))[1]
                    AS order_reject_reason,
-                 min(observation.occurred_at_ns)
-                    FILTER (WHERE observation.normalized_kind = 'fill'
-                              AND observation.summary ->> 'leg' = 'entry')
-                   AS entry_filled_at_ns,
                  min(observation.occurred_at_ns)
                     FILTER (WHERE observation.normalized_kind = 'position'
                               AND observation.summary ->> 'status' = 'closed')
                    AS position_closed_at_ns,
-                 sum((observation.summary ->> 'last_quantity')::numeric)
-                    FILTER (WHERE observation.normalized_kind = 'fill'
-                              AND observation.summary ->> 'leg' = 'entry')
-                   AS fill_quantity,
-                 sum((observation.summary ->> 'last_quantity')::numeric
-                     * (observation.summary ->> 'last_price')::numeric)
-                    FILTER (WHERE observation.normalized_kind = 'fill'
-                              AND observation.summary ->> 'leg' = 'entry')
-                   AS fill_notional,
-                 sum((observation.summary ->> 'last_quantity')::numeric)
-                    FILTER (WHERE observation.normalized_kind = 'fill'
-                              AND observation.summary ->> 'leg' IN ('exit', 'protection')) AS exit_fill_quantity,
-                 (array_agg(observation.account_slot ORDER BY observation.seq DESC)
-                    FILTER (WHERE observation.account_slot IS NOT NULL))[1] AS observed_account_slot,
                  (array_agg(observation.summary ->> 'trigger_price' ORDER BY observation.seq DESC)
                     FILTER (WHERE observation.normalized_kind = 'protection'
-                              AND observation.summary ->> 'trigger_price' IS NOT NULL))[1]
+                              AND observation.summary ->> 'trigger_price' IS NOT NULL
+                              AND observation.summary ->> 'leg' IS DISTINCT FROM 'take_profit'))[1]
                    AS stop_trigger_price,
-                 (array_agg(observation.summary ORDER BY observation.seq DESC)
+                 (array_agg(observation.summary ->> 'trigger_price' ORDER BY observation.seq DESC)
+                    FILTER (WHERE observation.normalized_kind = 'protection'
+                              AND observation.summary ->> 'trigger_price' IS NOT NULL
+                              AND observation.summary ->> 'leg' = 'take_profit'))[1]
+                   AS take_profit_trigger_price,
+                 (array_agg(observation.summary ->> 'status' ORDER BY observation.seq DESC)
                     FILTER (WHERE observation.normalized_kind = 'position'))[1]
-                   AS position_summary
+                   AS position_status
             FROM entry_window entry
             LEFT JOIN trading_execution_observations observation
-                   ON coalesce(observation.signal_id, observation.command_id) = entry.entry_id
+                   ON (observation.signal_id = entry.entry_id OR observation.command_id = entry.entry_id)
                   AND observation.normalized_kind
-                      IN ('signal_disposition', 'control_disposition',
-                          'order', 'fill', 'protection', 'position')
+                      IN ('signal_disposition', 'control_disposition', 'order', 'protection', 'position')
            GROUP BY entry.source, entry.entry_id, entry.case_id, entry.market_key, entry.direction,
                     entry.observed_at_ns, entry.expires_at_ns
         )
         SELECT folded.source, folded.entry_id, folded.case_id, folded.market_key, folded.direction,
                folded.observed_at_ns, folded.expires_at_ns, disposition_reason, order_status, order_reject_reason,
-               coalesce(entry_filled_at_ns, plan.opened_at_ns) AS entry_filled_at_ns,
+               coalesce(fills.entry_filled_at_ns, plan.opened_at_ns) AS entry_filled_at_ns,
                coalesce(position_closed_at_ns, plan.terminal_at_ns) AS position_closed_at_ns,
-               trim_scale(fill_quantity)::text AS fill_quantity,
-               trim_scale(fill_notional / NULLIF(fill_quantity, 0))::text AS fill_avg_price,
-               stop_trigger_price,
-               CASE WHEN plan.status = 'closed' THEN 'closed'
-                    ELSE position_summary ->> 'status' END AS position_status,
-               position_summary ->> 'exit_price' AS exit_price,
-               position_summary ->> 'realized_pnl_usd' AS realized_pnl_usd,
-               position_summary ->> 'realized_pnl_usd' IS NOT NULL AS pnl_known,
-               coalesce(plan.exit_reason, position_summary ->> 'exit_reason') AS exit_reason,
+               trim_scale(fills.entry_quantity)::text AS fill_quantity,
+               trim_scale(fills.entry_notional / NULLIF(fills.entry_quantity, 0))::text AS fill_avg_price,
+               stop_trigger_price, take_profit_trigger_price,
+               CASE WHEN plan.status = 'closed' THEN 'closed' ELSE position_status END AS position_status,
+               trim_scale(fills.exit_notional / NULLIF(fills.exit_quantity, 0))::text AS exit_price,
+               trim_scale({_realized_pnl("folded.direction", "fills")})::text AS realized_pnl_usd,
+               CASE WHEN fills.fees_known THEN trim_scale(fills.fees)::text END AS fees_usd,
+               plan.exit_reason,
                plan.status AS plan_status, plan.stop_distance_bps, plan.exit_policy_id,
                plan.take_profit_bps, plan.max_holding_ns,
                plan.account_slot, plan.runtime_mode_at_creation, plan.instrument_id,
                plan.entry_client_order_id, trim_scale(plan.risk_budget_usd)::text AS risk_budget_usd,
                plan.max_leverage_at_creation,
-               integrity.gap_reason IS NULL AS history_complete, integrity.gap_reason,
                CASE WHEN coalesce(position_closed_at_ns, plan.terminal_at_ns) IS NOT NULL
-                         AND coalesce(entry_filled_at_ns, plan.opened_at_ns) IS NOT NULL
+                         AND coalesce(fills.entry_filled_at_ns, plan.opened_at_ns) IS NOT NULL
                     THEN greatest(0, coalesce(position_closed_at_ns, plan.terminal_at_ns)
-                         - coalesce(entry_filled_at_ns, plan.opened_at_ns)) END AS duration_ns
+                         - coalesce(fills.entry_filled_at_ns, plan.opened_at_ns)) END AS duration_ns
           FROM folded
           LEFT JOIN trading_trade_plans plan ON plan.entry_id = folded.entry_id
           CROSS JOIN LATERAL (
-            SELECT CASE
-              WHEN plan.history_gap_reason IS NOT NULL THEN plan.history_gap_reason
-              WHEN EXISTS (SELECT 1 FROM trading_execution_observations gap
-                    WHERE gap.account_slot = coalesce(plan.account_slot, folded.observed_account_slot)
-                      AND gap.normalized_kind = 'audit_gap'
-                      AND gap.observed_at_ns >= coalesce(plan.created_at_ns, folded.observed_at_ns)
-                      AND gap.occurred_at_ns <= coalesce(
-                           position_closed_at_ns, plan.terminal_at_ns, 9223372036854775807))
-                THEN 'audit_gap'
-              WHEN (plan.opened_at_ns IS NOT NULL OR position_summary IS NOT NULL)
-                    AND (fill_quantity IS NULL OR fill_quantity <= 0) THEN 'entry_fill_missing'
-              WHEN plan.status = 'closed' AND position_closed_at_ns IS NULL THEN 'close_observation_missing'
-              WHEN position_closed_at_ns IS NOT NULL
-                    AND (exit_fill_quantity IS NULL OR exit_fill_quantity <> fill_quantity)
-                THEN 'exit_fills_incomplete'
-              ELSE NULL END AS gap_reason
-          ) integrity
+            SELECT {_FILL_FOLD}
+              FROM trading_execution_observations fill
+             WHERE (fill.signal_id = folded.entry_id OR fill.command_id = folded.entry_id)
+               AND fill.normalized_kind = 'fill'
+          ) fills
          ORDER BY folded.observed_at_ns DESC, folded.entry_id DESC
          LIMIT %(limit)s
-    """
+    """  # noqa: S608 -- module-owned fragments; every value stays bound
     return sql, {"since": int(since_ns), "limit": int(limit), "case_id": case_id}
 
 
 def console_realized_totals_statement(
     *, account_slot: str, day_start_ns: int, day_end_ns: int
 ) -> tuple[str, dict[str, Any]]:
-    """Known realized PnL and missingness, counting closed identities once."""
+    """Realized PnL folded from the fill journal, over every plan this slot opened and closed."""
 
-    sql = """
-        WITH closing AS (
-          SELECT DISTINCT ON (coalesce(signal_id, command_id))
-                 coalesce(signal_id, command_id) AS entry_id, occurred_at_ns, summary
-            FROM trading_execution_observations
-           WHERE account_slot = %(slot)s AND (signal_id IS NOT NULL OR command_id IS NOT NULL)
-             AND normalized_kind = 'position' AND summary ->> 'status' = 'closed'
-           ORDER BY coalesce(signal_id, command_id), seq DESC
-        ), terminal_plans AS (
-          SELECT entry_id, opened_at_ns, created_at_ns, terminal_at_ns, history_gap_reason
-            FROM trading_trade_plans
-           WHERE account_slot = %(slot)s AND terminal_at_ns IS NOT NULL AND opened_at_ns IS NOT NULL
-        ), closed AS (
-          SELECT coalesce(plan.entry_id, closing.entry_id) AS entry_id,
-                 coalesce(closing.occurred_at_ns, plan.terminal_at_ns) AS closed_at_ns,
-                 (closing.summary ->> 'realized_pnl_usd')::numeric AS pnl,
-                 plan.history_gap_reason IS NULL AND closing.entry_id IS NOT NULL
-                   AND fills.entry_quantity > 0 AND fills.exit_quantity = fills.entry_quantity
-                   AND NOT EXISTS (SELECT 1 FROM trading_execution_observations gap
-                        WHERE gap.account_slot = %(slot)s AND gap.normalized_kind = 'audit_gap'
-                          AND gap.observed_at_ns >= coalesce(plan.created_at_ns, fills.entry_at_ns)
-                          AND gap.occurred_at_ns <= coalesce(closing.occurred_at_ns, plan.terminal_at_ns))
-                   AS history_complete
-            FROM terminal_plans plan FULL JOIN closing ON closing.entry_id = plan.entry_id
+    sql = f"""
+        WITH closed AS (
+          SELECT plan.terminal_at_ns AS closed_at_ns,
+                 {_realized_pnl("plan.direction", "fills")} AS pnl
+            FROM trading_trade_plans plan
             CROSS JOIN LATERAL (
-              SELECT min(occurred_at_ns) FILTER (WHERE summary ->> 'leg' = 'entry') AS entry_at_ns,
-                     sum((summary ->> 'last_quantity')::numeric)
-                       FILTER (WHERE summary ->> 'leg' = 'entry') AS entry_quantity,
-                     sum((summary ->> 'last_quantity')::numeric)
-                       FILTER (WHERE summary ->> 'leg' IN ('exit', 'protection')) AS exit_quantity
+              SELECT {_FILL_FOLD}
                 FROM trading_execution_observations fill
-               WHERE fill.account_slot = %(slot)s
-                 AND coalesce(fill.signal_id, fill.command_id) = coalesce(plan.entry_id, closing.entry_id)
+               WHERE fill.account_slot = plan.account_slot
+                 AND (fill.signal_id = plan.entry_id OR fill.command_id = plan.entry_id)
                  AND fill.normalized_kind = 'fill'
             ) fills
+           WHERE plan.account_slot = %(slot)s AND plan.terminal_at_ns IS NOT NULL AND plan.opened_at_ns IS NOT NULL
         )
         SELECT trim_scale(sum(pnl) FILTER (WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s))::text
                  AS realized_known_today_usd,
@@ -347,13 +331,9 @@ def console_realized_totals_statement(
                count(pnl) AS pnl_known_total,
                count(*) FILTER (WHERE pnl IS NULL AND closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
                  AS pnl_missing_today,
-               count(*) FILTER (WHERE pnl IS NULL) AS pnl_missing_total,
-               coalesce(bool_and(pnl IS NOT NULL AND history_complete)
-                 FILTER (WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s), true)
-                 AS pnl_complete_today,
-               coalesce(bool_and(pnl IS NOT NULL AND history_complete), true) AS pnl_complete_total
+               count(*) FILTER (WHERE pnl IS NULL) AS pnl_missing_total
           FROM closed
-    """
+    """  # noqa: S608 -- module-owned fragments; every value stays bound
     return sql, {"slot": str(account_slot), "day_start": int(day_start_ns), "day_end": int(day_end_ns)}
 
 

@@ -12,8 +12,11 @@ import { moneyLabel, moneyTone } from "../model/tradingLabels";
 /**
  * ② Today, in four numbers: what the account made, what it risked, and what is still on it (#604 T4).
  *
- * The realized pair is `totals` — the server's own sums over the `position` observations it closed, one
- * bounded to the current UTC day and one unbounded. The desk used to print a third number instead: the
+ * The realized pair is `totals` — the server's own sums over every trade plan the slot opened and closed,
+ * one bounded to the current UTC day and one unbounded. Each plan's result is folded from its fill journal
+ * (#680): exit minus entry notional, signed by direction, less every commission the venue charged; funding
+ * is not in it. A closed plan whose fills cannot yield a result is counted as missing, never as zero, and
+ * the caution line below says so whenever one exists. The desk used to print a third number instead: the
  * sum of the realized column on the rows it happened to be showing, which is neither today's result nor
  * the account's. Both of these include the manual entries an operator typed at the CLI, and the caption
  * says so, because leaving them out would make the desk disagree with the venue about the same account.
@@ -41,7 +44,7 @@ export function TradingTally({
   return (
     <Card
       data-block="tally"
-      hint="含手工入场，按 UTC 日界聚合；已记录成交手续费计入，资金费未计入"
+      hint="含手工入场，按 UTC 日界聚合；已实现盈亏由成交记录折算并扣除手续费，资金费未计入"
       title="今日战况"
     >
       {/*
@@ -84,9 +87,9 @@ export function TradingTally({
           <small>{account ? `挂单 ${account.open_orders_count}` : "读自 /status"}</small>
         </span>
       </div>
-      {totals && !totals.pnl_complete_total ? (
+      {totals && totals.pnl_missing_total > 0 ? (
         <p className="trading-empty-note" data-tone="caution">
-          盈亏或成交历史不完整，以上仅为已知部分，不能视为账户完整净利润。
+          {`${totals.pnl_missing_total} 笔已平仓交易的成交或手续费记录不全，盈亏未计入；以上仅为已知部分，不能视为账户完整净利润。`}
         </p>
       ) : null}
       <SourceLine path="GET /api/trading/executions → totals · GET /api/trading/status → execution.current_account" />

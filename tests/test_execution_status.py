@@ -4,10 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from uuid import UUID
 
-import pytest
-
 from tracefold.app.execution_status import execution_readiness_projection
-from tracefold.integrations.nautilus.oi_runtime.state import RuntimeReadiness
 from tracefold.trading.storage.execution_stream import (
     ExecutionAccountOrder,
     ExecutionAccountPosition,
@@ -21,22 +18,17 @@ def _execution(mode: str = "paper") -> SimpleNamespace:
     return SimpleNamespace(mode=mode, account_slot="binance_usdm_primary")
 
 
-def _account_snapshot(*, complete: bool = True, truncated: bool = False) -> ExecutionAccountSnapshot:
+def _account_snapshot(*, positions: tuple[ExecutionAccountPosition, ...] = ()) -> ExecutionAccountSnapshot:
     return ExecutionAccountSnapshot(
         observed_at_ns=9_000_000_000,
-        market_observed_at_ns=None,
         equity_usd="1000",
-        day_start_equity_usd="1000",
         daily_drawdown_usd="0",
         daily_drawdown_bps=0,
-        aggregate_risk_usd="0",
-        positions=(),
+        positions=positions,
         orders=(),
         open_orders_count=0,
         inflight_orders_count=0,
-        unknown_orders_count=0,
-        complete=complete,
-        truncated=truncated,
+        complete=True,
     )
 
 
@@ -46,21 +38,17 @@ def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
         mode="paper",
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
         alive=True,
-        execution_safe=True,
         entries_armed=True,
-        startup_reconciled=True,
         unexpected_exposure=False,
-        account_flat=True,
         positions_count=0,
         open_orders_count=0,
         protection_status="not_applicable",
-        reconciliation_observed_at_ns=9_000_000_000,
-        facts_expire_at_ns=19_000_000_000,
         heartbeat_at_ns=heartbeat_at_ns,
         entry_block_reason=None,
-        started_at_ns=8_000_000_000,
+        started_at_ns=min(heartbeat_at_ns, 8_000_000_000),
         updated_at_ns=heartbeat_at_ns,
         account_snapshot=_account_snapshot(),
+        routes_count=487,
     )
 
 
@@ -78,309 +66,96 @@ def _control(*, entries_paused: bool = False) -> ExecutionRuntimeControlState:
 def test_disabled_execution_never_projects_a_stale_runtime_as_ready() -> None:
     projection = execution_readiness_projection(_execution("disabled"), _state(), _control(), now_ns=10_000_000_000)
 
-    assert projection["alive"] is False
-    assert projection["execution_safe"] is False
-    assert projection["entries_armed"] is False
+    assert (projection["alive"], projection["entries_armed"]) == (False, False)
     assert projection["entry_block_reason"] == "disabled"
     assert projection["facts_expire_at_ms"] is None
+    assert projection["current_account"] is None
 
 
-def test_active_execution_projects_exact_runtime_gates_and_no_identity_ceremony() -> None:
+def test_a_live_runtime_projects_exactly_its_own_answers_and_the_private_proof_facts_are_gone() -> None:
     projection = execution_readiness_projection(_execution(), _state(), _control(), now_ns=10_000_000_000)
 
-    assert projection["alive"] is True
-    assert projection["execution_safe"] is True
-    assert projection["entries_armed"] is True
-    assert projection["entry_block_reason"] is None
-    assert projection["reconciliation_age_ms"] == 1_000
-    assert projection["account_flat_proven"] is True
-    # #537 PR-4. What an operator acts on, and nothing about what build produced it. The six identity
-    # facts below were written on every heartbeat and read only into this JSON, where no page and no
-    # command ever named one.
-    assert set(projection).isdisjoint(
-        {
-            "runtime_release",
-            "config_sha256",
-            "runtime_revision",
-            "image_digest",
-            "credential_fingerprint",
-            "lifecycle_state",
-        }
-    )
-    # #537 PR-5. One field per operator question. The two raw observation clocks are what
-    # `facts_expire_at_ms` and `reconciliation_age_ms` are derived from, the two readiness counts said
-    # what `current_account` carries row by row, and raw `account_flat` is what the venue had not yet
-    # proven -- `account_flat_proven` is the one an operator acts on.
     assert set(projection) == {
         "mode",
         "account_slot",
         "alive",
-        "execution_safe",
         "entries_armed",
         "entry_block_reason",
-        "reconciliation_age_ms",
-        "startup_reconciled",
         "entries_paused",
         "emergency_halted",
         "unexpected_exposure",
-        "account_flat_proven",
         "protection_status",
         "routes_count",
         "facts_expire_at_ms",
         "current_account",
     }
-
-
-def test_flat_proof_requires_a_fresh_private_reconciliation() -> None:
-    projection = execution_readiness_projection(
-        _execution(),
-        replace(
-            _state(heartbeat_at_ns=20_000_000_000),
-            reconciliation_observed_at_ns=9_000_000_000,
-            updated_at_ns=20_000_000_000,
-        ),
-        _control(),
-        now_ns=20_000_000_000,
-    )
-
-    assert projection["alive"] is True
-    assert projection["execution_safe"] is False
-    assert projection["account_flat_proven"] is False
-    assert projection["entry_block_reason"] == "reconciliation_stale"
-    assert projection["reconciliation_age_ms"] == 11_000
-    assert projection["current_account"] is None
-
-
-def test_current_account_requires_a_non_future_private_reconciliation() -> None:
-    projection = execution_readiness_projection(
-        _execution(),
-        replace(_state(), reconciliation_observed_at_ns=11_000_000_000),
-        _control(),
-        now_ns=10_000_000_000,
-    )
-
-    assert projection["reconciliation_age_ms"] == 0
-    assert projection["current_account"] is None
-
-
-def test_flat_proof_requires_complete_non_truncated_current_account_facts() -> None:
-    missing = execution_readiness_projection(
-        _execution(),
-        replace(_state(), account_snapshot=None),
-        _control(),
-        now_ns=10_000_000_000,
-    )
-    partial = execution_readiness_projection(
-        _execution(),
-        replace(_state(), account_snapshot=_account_snapshot(complete=False)),
-        _control(),
-        now_ns=10_000_000_000,
-    )
-    truncated = execution_readiness_projection(
-        _execution(),
-        replace(_state(), account_snapshot=_account_snapshot(truncated=True)),
-        _control(),
-        now_ns=10_000_000_000,
-    )
-
-    assert missing["account_flat_proven"] is False
-    assert partial["account_flat_proven"] is False
-    assert truncated["account_flat_proven"] is False
-
-
-def test_flat_proof_requires_no_open_inflight_or_unknown_order_uncertainty() -> None:
-    inflight_order = ExecutionAccountOrder(
-        client_order_id="entry-query-pending",
-        instrument_id="BTCUSDT-PERP.BINANCE",
-        state="inflight",
-        leg="entry",
-        quantity="0.01",
-        reduce_only=False,
-        trigger_price=None,
-        owned=True,
-    )
-    snapshots = (
-        replace(_account_snapshot(), open_orders_count=1),
-        replace(_account_snapshot(), orders=(inflight_order,), inflight_orders_count=1),
-        replace(_account_snapshot(), unknown_orders_count=1),
-    )
-
-    for snapshot in snapshots:
-        projection = execution_readiness_projection(
-            _execution(),
-            replace(_state(), account_snapshot=snapshot),
-            _control(),
-            now_ns=10_000_000_000,
-        )
-        assert projection["account_flat_proven"] is False
-
-
-def test_current_account_projection_remains_a_distinct_read_model() -> None:
-    snapshot = ExecutionAccountSnapshot(
-        observed_at_ns=9_000_000_000,
-        market_observed_at_ns=8_900_000_000,
-        equity_usd="995",
-        day_start_equity_usd="1000",
-        daily_drawdown_usd="5",
-        daily_drawdown_bps=50,
-        aggregate_risk_usd="2.5",
-        positions=(
-            ExecutionAccountPosition(
-                position_id="position-1",
-                instrument_id="BTCUSDT-PERP.BINANCE",
-                side="long",
-                quantity="0.01",
-                entry_price="100000",
-                mark_price="100500",
-                unrealized_pnl_usd="5",
-                owned=True,
-                protection_status="protected",
-                protection_quantity="0.01",
-                protection_trigger_price="99000",
-                protection_full_coverage=True,
-            ),
-        ),
-        orders=(),
-        open_orders_count=1,
-        inflight_orders_count=0,
-        unknown_orders_count=0,
-        complete=True,
-    )
-    projection = execution_readiness_projection(
-        _execution(),
-        replace(_state(), account_flat=False, positions_count=1, account_snapshot=snapshot),
-        _control(),
-        now_ns=10_000_000_000,
-    )
-
-    assert projection["account_flat_proven"] is False
-    assert projection["current_account"]["equity_usd"] == "995"
-    assert projection["current_account"]["positions"][0]["protection_full_coverage"] is True
-    # #537 PR-5. The stored snapshot's own two clocks are what `facts_expire_at_ms` is derived from,
-    # `day_start_equity_usd` is the baseline `daily_drawdown_usd` was already measured against, and a
-    # `truncated` snapshot is exactly one that is not `complete`.
+    assert (projection["alive"], projection["entries_armed"], projection["entry_block_reason"]) == (True, True, None)
+    assert projection["routes_count"] == 487
+    assert projection["facts_expire_at_ms"] == 15_000
     assert set(projection["current_account"]) == {
         "equity_usd",
         "daily_drawdown_usd",
         "daily_drawdown_bps",
-        "aggregate_risk_usd",
         "positions",
         "orders",
         "open_orders_count",
         "inflight_orders_count",
-        "unknown_orders_count",
         "complete",
-        "audit_healthy",
-        "audit_failure_reason",
     }
 
 
-def test_active_execution_fails_closed_on_identity_or_heartbeat_drift() -> None:
-    mismatch = execution_readiness_projection(
-        SimpleNamespace(mode="paper", account_slot="binance_usdm_secondary"),
-        _state(),
-        _control(),
-        now_ns=10_000_000_000,
-    )
-    stale = execution_readiness_projection(_execution(), _state(), _control(), now_ns=15_000_000_001)
-
-    assert mismatch["entries_armed"] is False
-    assert mismatch["entry_block_reason"] == "runtime_identity_mismatch"
-    assert stale["alive"] is False
-    assert stale["execution_safe"] is False
-    assert stale["entries_armed"] is False
-    assert stale["entry_block_reason"] == "runtime_heartbeat_stale"
-
-
-def test_transient_flat_and_unexpected_exposure_facts_remain_fail_closed() -> None:
-    state = replace(
-        _state(),
-        execution_safe=False,
-        entries_armed=False,
-        unexpected_exposure=True,
-        entry_block_reason="unexpected_exposure",
+def test_a_stale_heartbeat_disarms_the_projection_whatever_the_row_says() -> None:
+    projection = execution_readiness_projection(
+        _execution(), _state(heartbeat_at_ns=1_000_000_000), _control(), now_ns=10_000_000_000
     )
 
-    projection = execution_readiness_projection(_execution(), state, _control(), now_ns=10_000_000_000)
+    assert (projection["alive"], projection["entries_armed"]) == (False, False)
+    assert projection["entry_block_reason"] == "runtime_heartbeat_stale"
+    assert projection["facts_expire_at_ms"] == 6_000
 
-    assert projection["alive"] is True
-    assert projection["execution_safe"] is False
-    assert projection["entries_armed"] is False
+
+def test_the_runtimes_own_block_reason_and_the_operator_switches_pass_straight_through() -> None:
+    blocked = replace(_state(), entries_armed=False, entry_block_reason="unexpected_exposure", unexpected_exposure=True)
+    projection = execution_readiness_projection(
+        _execution(), blocked, _control(entries_paused=True), now_ns=10_000_000_000
+    )
+
     assert projection["entry_block_reason"] == "unexpected_exposure"
     assert projection["unexpected_exposure"] is True
-    assert projection["unexpected_exposure"] is True
+    assert projection["entries_paused"] is True
 
-    paused_projection = execution_readiness_projection(
-        _execution(), state, _control(entries_paused=True), now_ns=10_000_000_000
+
+def test_a_row_from_another_account_or_mode_is_not_this_runtime() -> None:
+    projection = execution_readiness_projection(_execution("live"), _state(), _control(), now_ns=10_000_000_000)
+    assert projection["entry_block_reason"] == "runtime_identity_mismatch"
+    assert projection["alive"] is False
+
+
+def test_the_account_snapshot_round_trips_positions_with_their_protection_and_orders_by_leg() -> None:
+    position = ExecutionAccountPosition(
+        position_id="BTCUSDT-PERP.BINANCE-OI-RUNTIME-F46",
+        instrument_id="BTCUSDT-PERP.BINANCE",
+        side="long",
+        quantity="0.049",
+        entry_price="10000",
+        mark_price="10010",
+        unrealized_pnl_usd="0.49",
+        owned=True,
+        stop_trigger_price="9900",
+        take_profit_trigger_price=None,
     )
-    assert paused_projection["entry_block_reason"] == "unexpected_exposure"
-
-
-def test_the_projection_carries_the_runtimes_own_arming_answer() -> None:
-    """#537 PR-3. The Runtime folds the control row into `entries_armed`; this reader does not re-fold it.
-
-    A pause the Runtime has acted on arrives here as the row it wrote. A pause it has not acted on yet
-    renders as the control row says — paused — beside the Runtime's own claim about itself, because
-    two derivations of one rule a heartbeat apart is how a console reports an arming state that no
-    process is actually in.
-    """
-
-    acted = execution_readiness_projection(
-        _execution(),
-        replace(_state(), entries_armed=False, entry_block_reason="entries_paused"),
-        _control(entries_paused=True),
-        now_ns=10_000_000_000,
+    order = ExecutionAccountOrder(
+        client_order_id="tf" + "0" * 30,
+        instrument_id="BTCUSDT-PERP.BINANCE",
+        state="open",
+        leg="stop",
+        quantity="0.049",
+        reduce_only=True,
+        trigger_price="9900",
+        owned=True,
     )
+    snapshot = replace(_account_snapshot(positions=(position,)), orders=(order,), open_orders_count=1)
 
-    assert acted["alive"] is True
-    assert acted["execution_safe"] is True
-    assert acted["entries_armed"] is False
-    assert acted["entry_block_reason"] == "entries_paused"
-    assert acted["entries_paused"] is True
-
-    not_yet = execution_readiness_projection(
-        _execution(), _state(), _control(entries_paused=True), now_ns=10_000_000_000
-    )
-
-    assert not_yet["entries_armed"] is True
-    assert not_yet["entries_paused"] is True
-
-
-def test_the_runtime_catalogue_size_passes_straight_through() -> None:
-    """#537 PR-3. `routes_count` is a count the Runtime derived once, not a list this reader measures."""
-
-    projection = execution_readiness_projection(
-        _execution(), replace(_state(), routes_count=412), _control(), now_ns=10_000_000_000
-    )
-
-    assert projection["routes_count"] == 412
-    assert execution_readiness_projection(_execution("disabled"), None, None, now_ns=1)["routes_count"] == 0
-
-
-@pytest.mark.parametrize("interval_seconds", [5, 30, 60])
-def test_http_and_runtime_share_the_persisted_private_deadline(interval_seconds: int) -> None:
-    reconciled_at = 10_000_000_000
-    readiness = RuntimeReadiness(reconciliation_stale_after_ns=interval_seconds * 3_000_000_000)
-    readiness.reconciled(account_observed_at_ns=reconciled_at, reconciliation_observed_at_ns=reconciled_at)
-    deadline = reconciled_at + interval_seconds * 3_000_000_000
-    for now in (deadline - 1, deadline, deadline + 1):
-        native = readiness.snapshot(now_ns=now, singleton_ready=True, entries_paused=False, emergency_halted=False)
-        row = replace(
-            _state(heartbeat_at_ns=now),
-            reconciliation_observed_at_ns=reconciled_at,
-            facts_expire_at_ns=native.facts_expire_at_ns,
-            execution_safe=native.execution_safe,
-            entries_armed=native.entries_armed,
-            entry_block_reason=native.entry_block_reason,
-        )
-        http = execution_readiness_projection(_execution(), row, _control(), now_ns=now)
-        assert native.facts_expire_at_ns == deadline
-        assert http["execution_safe"] == native.execution_safe == (now <= deadline)
-        assert http["facts_expire_at_ms"] == deadline // 1_000_000
-    # The private proof can remain fresh while a stalled process loses its independent heartbeat.
-    stale = replace(
-        _state(heartbeat_at_ns=reconciled_at), reconciliation_observed_at_ns=reconciled_at, facts_expire_at_ns=deadline
-    )
-    http = execution_readiness_projection(_execution(), stale, _control(), now_ns=reconciled_at + 6_000_000_000)
-    assert http["alive"] is False
-    assert http["execution_safe"] is False
+    assert ExecutionAccountSnapshot.from_payload(snapshot.payload()) == snapshot
+    assert not position.protected
+    assert replace(position, take_profit_trigger_price="10200").protected

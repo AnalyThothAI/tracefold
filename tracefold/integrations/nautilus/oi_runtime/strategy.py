@@ -1,81 +1,157 @@
-"""Thin Nautilus lifecycle and callback router for the OI Runtime."""
+"""The OI Runtime's Nautilus Strategy: Nautilus owns every order and position, this owns intent (#680).
+
+The Nautilus Cache is the only in-process execution state. It is rebuilt from the venue by Nautilus'
+startup reconciliation before this Strategy starts and kept converged by Nautilus' five-second checks
+after, so a restart and a steady tick are the same situation and this module has one path for both.
+What it holds itself is intent, not execution: the non-terminal TradePlans (durable, loaded at start),
+the inputs still waiting on a verdict, and the operator's control switches.
+
+Everything this module decides is level-triggered from the Cache and idempotent:
+
+* entry: a Signal or manual Command passes the gates in order, waits within its TTL for a quote and a
+  narrow enough spread, and becomes one committed plan and one market order with a deterministic
+  client order id -- never a second one;
+* protection: a position whose entry order is terminal gets one reduce-only `STOP_MARKET` and one
+  reduce-only `TAKE_PROFIT_MARKET`, both triggered on the mark price, placed once from the average
+  fill price; a missing one is placed again, a present one is never compared, resized or replaced;
+* exits: past its maximum holding time a position is closed with a reduce-only market order; when a
+  position closes, every order left on its instrument is canceled and its plan ends with the reason
+  its closing order implies;
+* uncertainty: exposure no plan claims blocks new entries and is recorded. Nothing is ever flattened
+  because the picture is unclear.
+
+No callback here lets an exception escape into Nautilus or the event loop, and nothing here reads a
+private (`_`-prefixed) member of a Nautilus object.
+"""
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 from threading import Lock
 from typing import Any, Literal
 
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.identifiers import ClientId, PositionId
+from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
+from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading import EXECUTION_STRATEGY_ID, ExecutionAccountSnapshot, OperatorIntentV1
+from tracefold.trading import ExecutionAccountSnapshot, ExitReason, OperatorIntentV1, TradePlan
 
-from .account_projection import RuntimeAccountProjector
-from .audit_sink import AuditSink
-from .config import OiRuntimeProfile
-from .entry import EntryCoordinator
-from .exit import ExitCoordinator
-from .observations import AuditBackpressure, RuntimeObservationWriter
-from .protection import ProtectionCoordinator
-from .quotes import QuoteStreamCoordinator
-from .recovery import RecoveryCoordinator
-from .risk import DayStartBaseline
-from .signal_client import ExecutionSignalClient
-from .state import (
-    ExecutionState,
-    PrivateReconciliationReason,
-    RuntimeControlSnapshot,
+from .account_projection import OrderLeg, account_snapshot, open_and_inflight_orders, order_leg
+from .config import CONTINUOUS_CHECK_SECONDS, OiInstrumentRoute, OiRuntimeProfile
+from .entry import (
     RuntimeEntryRequest,
-    RuntimeExecutionState,
-    RuntimeReadiness,
-    RuntimeReadinessSnapshot,
-    RuntimeReconciliationSnapshot,
-    order_for_event,
+    deterministic_client_order_id,
+    entry_quantity,
+    protective_trigger,
+    spread_bps,
 )
-from .trade_plans import TradePlanChannel
+from .journal import ExecutionJournal
+from .observations import RuntimeObservations, bounded_text, spread_detail
+from .risk import DayStartBaseline, account_equity_usd, decimal_value
+from .signal_client import ExecutionSignalClient
 
+_STRATEGY_ID = "OI-RUNTIME"
 _CALLBACK_BATCH = 16
 _PUMP_INTERVAL_MS = 100
-_AMBIGUOUS_REASONS = ("-1007", "503", "timeout", "timed out", "response unknown")
+_CONVERGE_INTERVAL_NS = int(CONTINUOUS_CHECK_SECONDS * 1_000_000_000)
+# The venue refusing a protective order because its trigger is already crossed (`-2021 Order would
+# immediately trigger`). The stop or take-profit condition is then already met, so the position is
+# closed at market under that leg's reason instead of retrying a trigger that can never rest.
+_IMMEDIATE_TRIGGER_MARKERS = ("-2021", "immediately trigger")
+_CLOSING_TAGS: tuple[ExitReason, ...] = ("time_exit", "operator_flatten", "stop_filled", "take_profit")
+
+EntryVerdict = Literal["refuse", "defer", "admit"]
 
 
 def oi_strategy_config(profile: OiRuntimeProfile) -> StrategyConfig:
+    """One Strategy claims every routed instrument, so every order Nautilus reconciles there is its own."""
+
     claims = sorted((route.instrument_id for route in profile.routes), key=lambda item: item.value)
     tag = hashlib.sha256(profile.namespace.encode()).hexdigest()[:3].upper()
     return StrategyConfig(
-        strategy_id="OI-RUNTIME",
+        strategy_id=_STRATEGY_ID,
         order_id_tag=tag,
         oms_type="NETTING",
         external_order_claims=claims,
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeControlSnapshot:
+    entries_paused: bool
+    emergency_halted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OpenPlan:
+    """A plan that has not ended, and whether its input still owes a durable verdict."""
+
+    plan: TradePlan
+    disposition_pending: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeInputs:
+    """What a Runtime generation reads from PostgreSQL once, before its Strategy starts."""
+
+    control: RuntimeControlSnapshot
+    open_plans: tuple[OpenPlan, ...] = ()
+    # market_key -> the latest stop-out inside the cooldown window.
+    stop_exits: Mapping[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeView:
+    """What the durable projection and the probe publish about this instant."""
+
+    entries_armed: bool
+    entry_block_reason: str | None
+    unexpected_exposure: bool
+    positions_count: int
+    open_orders_count: int
+    protection_status: Literal["not_applicable", "protected", "unprotected"]
+    account_snapshot: ExecutionAccountSnapshot
+
+
+@dataclass(slots=True)
+class _Deferred:
+    request: RuntimeEntryRequest
+    reason: str
+    detail: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _Verdict:
+    action: EntryVerdict
+    reason: str = ""
+    detail: dict[str, str] = field(default_factory=dict)
+    plan: TradePlan | None = None
+
+
 class OiNautilusStrategy(Strategy):
-    """Route callbacks to concrete owners; never synchronously call PostgreSQL."""
+    """Route inputs and Nautilus events to intent; never call PostgreSQL synchronously."""
 
     def __init__(
         self,
         *,
         profile: OiRuntimeProfile,
         signals: ExecutionSignalClient,
-        plans: TradePlanChannel,
-        audit: AuditSink,
-        readiness: RuntimeReadiness,
-        # Whoever owns the one thread allowed to mutate `RuntimeExecutionState`. On the pinned
-        # `nautilus-trader` 1.231.0 the order/position callbacks run on the asyncio event loop while a
-        # `LiveClock` timer runs on a Rust-owned thread `threading.enumerate()` does not list
-        # (`tests/integration/test_nautilus_live_clock_threads.py`, #510 F), so the live root passes
-        # `loop.call_soon_threadsafe`; a single-threaded `BacktestEngine` passes direct invocation.
+        journal: ExecutionJournal,
+        inputs: RuntimeInputs,
+        # Whoever owns the one thread allowed to run the pump. On the pinned `nautilus-trader`
+        # 1.231.0 order and position callbacks run on the asyncio event loop while a `LiveClock`
+        # timer runs on a Rust-owned thread, so the live root passes `loop.call_soon_threadsafe`; a
+        # single-threaded `BacktestEngine` passes direct invocation (#510 F).
         dispatch_pump: Callable[[Callable[[], None]], None],
-        singleton_ready: Any,
-        day_start: DayStartBaseline | None,
-        request_reconciliation: Callable[[PrivateReconciliationReason], None],
-        initial_control_state: RuntimeControlSnapshot | None = None,
+        singleton_ready: Callable[[], bool],
+        day_start: DayStartBaseline | None = None,
         config: StrategyConfig | None = None,
     ) -> None:
         selected = config or oi_strategy_config(profile)
@@ -85,320 +161,826 @@ class OiNautilusStrategy(Strategy):
         super().__init__(selected)
         self._profile = profile
         self._signals = signals
-        self._plans = plans
-        self._audit = audit
-        self._readiness = readiness
+        self._journal = journal
         self._dispatch_pump = dispatch_pump
         self._singleton_ready = singleton_ready
+        self._routes: dict[str, OiInstrumentRoute] = {route.market_key: route for route in profile.routes}
+        self._observations = RuntimeObservations(journal=journal, signals=signals, timestamp_ns=self._now_ns)
+        self._entries_paused = inputs.control.entries_paused
+        self._emergency_halted = inputs.control.emergency_halted
+        self._plans: dict[str, TradePlan] = {value.plan.entry_id: value.plan for value in inputs.open_plans}
+        self._owed: set[str] = {value.plan.entry_id for value in inputs.open_plans if value.disposition_pending}
+        self._stop_exits: dict[str, int] = dict(inputs.stop_exits)
+        self._deferred: dict[str, _Deferred] = {}
+        self._submitting: RuntimeEntryRequest | None = None
+        self._unexpected: tuple[str, ...] = ()
+        self._subscribed: set[InstrumentId] = set()
+        self._converge_due_ns = 0
         self._day_start = day_start
         self._day_start_lock = Lock()
-        self._request_reconciliation = request_reconciliation
-        factory = audit.factory
-        if factory.account_slot != profile.account_slot or factory.execution_strategy != EXECUTION_STRATEGY_ID:
-            raise ValueError("oi_runtime_audit_identity_invalid")
-        self._runtime = RuntimeExecutionState.from_control_snapshot(initial_control_state)
-        self._quotes = QuoteStreamCoordinator(engine=self, state=self._runtime)
-        self._account_projector = RuntimeAccountProjector(engine=self, profile=profile, state=self._runtime)
-        self._observation_writer = RuntimeObservationWriter(
-            audit=audit,
-            signals=signals,
-            state=self._runtime,
-            timestamp_ns=lambda: int(self.clock.timestamp_ns()),
-        )
-        self._exits = ExitCoordinator(
-            engine=self,
-            plans=plans,
-            profile=profile,
-            state=self._runtime,
-            observations=self._observation_writer,
-            request_reconciliation=request_reconciliation,
-            halt_for_unexpected_exposure=readiness.halt_for_unexpected_exposure,
-        )
-        self._protection = ProtectionCoordinator(
-            engine=self,
-            plans=plans,
-            profile=profile,
-            state=self._runtime,
-            readiness=readiness,
-            observations=self._observation_writer,
-            exits=self._exits,
-            quotes=self._quotes,
-            request_reconciliation=request_reconciliation,
-        )
-        self._recovery = RecoveryCoordinator(
-            engine=self,
-            plans=plans,
-            profile=profile,
-            state=self._runtime,
-            readiness=readiness,
-            protection=self._protection,
-            exits=self._exits,
-            quotes=self._quotes,
-            request_reconciliation=request_reconciliation,
-        )
-        self._entry = EntryCoordinator(
-            engine=self,
-            plans=plans,
-            profile=profile,
-            state=self._runtime,
-            readiness=readiness,
-            observations=self._observation_writer,
-            quotes=self._quotes,
-            day_start_baseline=self.day_start_baseline,
-            readiness_snapshot=self.readiness,
-            verify_owned_exposure=self._recovery.verify_owned_exposure,
-            request_reconciliation=request_reconciliation,
-        )
+
+    # -- lifecycle ---------------------------------------------------------------------------------
 
     def on_start(self) -> None:
-        """Start the input pump and nothing else; quotes are subscribed per admitted entry (#510 E)."""
-
+        for plan in self._plans.values():
+            self._subscribe(InstrumentId.from_str(plan.instrument_id))
         self.clock.set_timer(
-            name=f"{self.id}:OI-PUMP",
+            name=self._timer_name,
             interval=timedelta(milliseconds=_PUMP_INTERVAL_MS),
             callback=self.on_timer,
             fire_immediately=True,
         )
 
     def on_stop(self) -> None:
-        timer_name = f"{self.id}:OI-PUMP"
-        if timer_name in self.clock.timer_names:
-            self.clock.cancel_timer(timer_name)
-        self._quotes.release_all()
+        if self._timer_name in self.clock.timer_names:
+            self.clock.cancel_timer(self._timer_name)
+        for instrument_id in tuple(self._subscribed):
+            self._subscribed.discard(instrument_id)
+            self.unsubscribe_quote_ticks(instrument_id)
 
     @property
-    def quote_subscriptions(self) -> frozenset[Any]:
-        """Which instruments this Runtime is currently paying the venue to stream."""
-
-        return self._quotes.subscribed
+    def _timer_name(self) -> str:
+        return f"{self.id}:OI-PUMP"
 
     def on_timer(self, _event: object) -> None:
-        """Hand the pump to the callback thread; live, this one is not it.
-
-        Every field of `RuntimeExecutionState` is a plain dict, set or dataclass attribute with no
-        lock, and the order, position and exit callbacks that share it all arrive on the event loop.
-        Pumping here would race them from a second OS thread (#510 F).
-        """
+        """Hand the pump to the callback thread; live, the timer thread is not it (#510 F)."""
 
         self._dispatch_pump(self._pump)
 
     def _pump(self) -> None:
+        """Converge first, so no input is judged against a picture older than the last event."""
+
+        now_ns = self._now_ns()
+        if now_ns >= self._converge_due_ns:
+            self._converge_due_ns = now_ns + _CONVERGE_INTERVAL_NS
+            self._guard("converge", lambda: self._converge(now_ns))
+        self._guard("commands", lambda: self._drain_commands(now_ns))
+        if self._signals.queued_command_count == 0 and self._signals.command_scan_complete:
+            self._guard("signals", lambda: self._drain_signals(now_ns))
+        for deferred in tuple(self._deferred.values()):
+            self._admit_guarded(deferred.request, now_ns)
+        self._guard("entry_submit", lambda: self._submit_committed(now_ns))
+        self._guard("quotes", self._sweep_quotes)
+
+    def _drain_commands(self, now_ns: int) -> None:
         for _ in range(_CALLBACK_BATCH):
             command = self._signals.next_command_nowait()
             if command is None:
-                break
-            try:
-                self._route_command(command)
-            except AuditBackpressure:
-                break
-        self._exits.advance_pending()
-        if self._signals.queued_command_count == 0 and self._signals.command_scan_complete:
-            for _ in range(_CALLBACK_BATCH):
-                signal = self._signals.next_nowait()
-                if signal is None:
-                    break
-                try:
-                    self._entry.handle_signal(signal)
-                except AuditBackpressure:
-                    break
-        self._entry.submit_committed()
-        self._entry.query_aged()
-        self._exits.advance_policy()
-        self._exits.retry_failed()
-        self._recovery.verify_owned_exposure()
-        self._quotes.sweep(int(self.clock.timestamp_ns()))
+                return
+            self._guard("command", partial(self._route_command, command, now_ns))
 
-    def readiness(self) -> RuntimeReadinessSnapshot:
-        return self._readiness.snapshot(
-            now_ns=int(self.clock.timestamp_ns()),
-            singleton_ready=bool(self._singleton_ready()),
-            entries_paused=self._runtime.entries_paused,
-            emergency_halted=self._runtime.emergency_halted,
+    def _drain_signals(self, now_ns: int) -> None:
+        for _ in range(_CALLBACK_BATCH):
+            signal = self._signals.next_nowait()
+            if signal is None:
+                return
+            self._admit_guarded(RuntimeEntryRequest.from_signal(signal), now_ns)
+
+    def _guard(self, step: str, run: Callable[[], object]) -> None:
+        """No step's exception reaches Nautilus or the event loop; the next pump runs it again."""
+
+        try:
+            run()
+        except Exception as exc:
+            self.log.exception(f"OI Runtime step failed ({step})", exc)
+
+    def _now_ns(self) -> int:
+        return int(self.clock.timestamp_ns())
+
+    # -- operator commands -------------------------------------------------------------------------
+
+    def _route_command(self, command: OperatorIntentV1, now_ns: int) -> None:
+        if command.account_slot != self._profile.account_slot:
+            self._observations.reject_command(command, "account_slot_mismatch")
+            return
+        if command.expires_at_ns <= now_ns:
+            self._observations.reject_command(command, "expired")
+            return
+        if command.action == "pause_entries":
+            self._entries_paused = True
+            self._observations.accept_command(command, "entries_paused")
+        elif command.action == "resume_entries":
+            if self._emergency_halted:
+                self._observations.reject_command(command, "emergency_halt_sticky")
+                return
+            self._entries_paused = False
+            self._observations.accept_command(command, "entries_resumed")
+        elif command.action == "emergency_halt":
+            self._entries_paused = True
+            self._emergency_halted = True
+            self._observations.accept_command(command, "emergency_halted")
+        elif command.action == "manual_entry":
+            self._admit_guarded(RuntimeEntryRequest.from_manual_command(command), now_ns)
+        elif command.action == "flatten" and command.scope == "account":
+            self._flatten(command)
+        else:
+            self._observations.reject_command(command, "flatten_scope_unsupported")
+
+    def _flatten(self, command: OperatorIntentV1) -> None:
+        """Pause entries, cancel working entries and close every position this Strategy holds.
+
+        Protective orders stay until each position is closed, so a close the venue refuses leaves the
+        position protected; the close handler cancels them once it is gone.
+        """
+
+        self._entries_paused = True
+        owned = 0
+        unowned = 0
+        for position in self.cache.positions_open():
+            if position.strategy_id != self.id:
+                unowned += 1
+                continue
+            owned += 1
+            self.close_position(position, tags=["operator_flatten"])
+        for plan in self._plans.values():
+            entry = self.cache.order(ClientOrderId(plan.entry_client_order_id))
+            if entry is not None and (entry.is_open or entry.is_inflight) and not entry.is_pending_cancel:
+                self.cancel_order(entry)
+        self._observations.accept_command(
+            command,
+            "flatten_submitted",
+            {"positions": str(owned), "unowned_positions": str(unowned)},
         )
+
+    # -- entry -------------------------------------------------------------------------------------
+
+    def _admit_guarded(self, request: RuntimeEntryRequest, now_ns: int) -> None:
+        try:
+            self._admit(request, now_ns)
+        except Exception as exc:
+            self.log.exception(f"OI Runtime entry failed ({request.entry_id})", exc)
+            self._deferred.pop(request.entry_id, None)
+            self._guard("entry_error", lambda: self._answer(request, "runtime_error"))
+
+    def _admit(self, request: RuntimeEntryRequest, now_ns: int) -> None:
+        entry_id = request.entry_id
+        if entry_id in self._plans or (self._submitting is not None and self._submitting.entry_id == entry_id):
+            self._deferred.pop(entry_id, None)
+            return
+        if request.expires_at_ns <= now_ns:
+            deferred = self._deferred.pop(entry_id, None)
+            if deferred is None:
+                self._answer(request, "expired")
+            else:
+                self._answer(request, deferred.reason, deferred.detail)
+            return
+        verdict = self._gate(request, now_ns)
+        if verdict.action == "defer":
+            self._deferred[entry_id] = _Deferred(request, verdict.reason, verdict.detail)
+            return
+        self._deferred.pop(entry_id, None)
+        if verdict.action == "refuse":
+            self._answer(request, verdict.reason, verdict.detail)
+            return
+        plan = verdict.plan
+        if plan is None or not self._journal.prepare(plan):
+            self._deferred[entry_id] = _Deferred(request, "trade_plan_busy", {})
+            return
+        self._submitting = request
+
+    def _gate(self, request: RuntimeEntryRequest, now_ns: int) -> _Verdict:
+        """The first gate an entry fails, in the order an operator reads them, or the plan it becomes."""
+
+        risk = self._profile.risk
+        if self._emergency_halted:
+            return _Verdict("refuse", "emergency_halted")
+        if self._entries_paused:
+            return _Verdict("refuse", "entries_paused")
+        if not self._singleton_ready():
+            return _Verdict("defer", "singleton_lost")
+        if self._unexpected:
+            return _Verdict("refuse", "unexpected_exposure")
+        if request.source == "signal":
+            stopped_at = self._stop_exits.get(request.market_key)
+            if stopped_at is not None and now_ns < stopped_at + risk.post_stop_cooldown_ns:
+                return _Verdict("refuse", "post_stop_cooldown")
+        if len(self._exposed_instruments()) >= risk.max_positions:
+            return _Verdict("refuse", "position_limit")
+        equity = account_equity_usd(cache=self.cache, account_id=self._profile.account_id)
+        if equity is None or equity <= 0:
+            return _Verdict("defer", "account_unavailable")
+        try:
+            baseline = self.day_start_baseline(equity_usd=equity, now_ns=now_ns)
+        except ValueError as exc:
+            return _Verdict("refuse", str(exc))
+        allowed_risk = min(equity * risk.risk_fraction_per_trade, risk.max_risk_per_trade_usd)
+        if allowed_risk <= 0:
+            return _Verdict("refuse", "risk_non_positive")
+        # What the day has already lost plus what this trade can still lose (#680 RC12).
+        if baseline.equity_usd - equity + allowed_risk > risk.max_daily_loss_usd:
+            return _Verdict("refuse", "daily_loss_limit")
+        route = self._routes.get(request.market_key)
+        if route is None:
+            return _Verdict("refuse", "instrument_unmapped")
+        self._subscribe(route.instrument_id)
+        instrument = self.cache.instrument(route.instrument_id)
+        if instrument is None:
+            return _Verdict("defer", "instrument_unavailable")
+        quote = self.cache.quote_tick(route.instrument_id)
+        if quote is None or now_ns - int(quote.ts_event) > risk.market_stale_after_ns:
+            return _Verdict("defer", "market_unavailable")
+        spread = spread_bps(quote)
+        if spread is None:
+            return _Verdict("defer", "market_unavailable")
+        if spread > risk.max_spread_fraction_of_stop * Decimal(route.stop_distance_bps):
+            return _Verdict("defer", "spread_limit", spread_detail(spread))
+        if self._instrument_busy(route.instrument_id):
+            return _Verdict("defer", "instrument_busy")
+        if self._submitting is not None:
+            return _Verdict("defer", "trade_plan_busy")
+        quantity = entry_quantity(
+            direction=request.direction,
+            quote=quote,
+            instrument=instrument,
+            stop_distance_bps=route.stop_distance_bps,
+            allowed_risk_usd=allowed_risk,
+            equity_usd=equity,
+            max_leverage=risk.max_leverage,
+            existing_notional_usd=self._gross_notional(),
+        )
+        if isinstance(quantity, str):
+            return _Verdict("refuse", quantity)
+        client_order_id = deterministic_client_order_id(
+            namespace=self._profile.namespace, entry_id=request.entry_id, leg="entry"
+        )
+        plan = TradePlan(
+            entry_id=request.entry_id,
+            source=request.source,
+            case_id=request.case_id,
+            account_slot=self._profile.account_slot,
+            runtime_mode_at_creation=self._profile.mode,
+            market_key=request.market_key,
+            instrument_id=route.instrument_id.value,
+            direction=request.direction,
+            entry_client_order_id=client_order_id.value,
+            created_at_ns=now_ns,
+            entry_expires_at_ns=request.expires_at_ns,
+            entry_quantity=quantity.as_decimal(),
+            stop_distance_bps=route.stop_distance_bps,
+            risk_budget_usd=allowed_risk,
+            max_leverage_at_creation=risk.max_leverage,
+            exit_policy_id=self._profile.exit_policy.policy_id,
+            take_profit_bps=self._profile.exit_policy.take_profit_bps,
+            max_holding_ns=self._profile.exit_policy.max_holding_ns,
+            updated_at_ns=now_ns,
+        )
+        return _Verdict("admit", plan=plan, detail=spread_detail(spread))
+
+    def _submit_committed(self, now_ns: int) -> None:
+        """Send the entry order of the plan the bridge just committed. No receipt, no order."""
+
+        receipt = self._journal.take_receipt()
+        if receipt is None:
+            return
+        request, self._submitting = self._submitting, None
+        plan = receipt.plan
+        if request is None or request.entry_id != plan.entry_id:
+            self.log.error(f"OI Runtime receipt without its request ({plan.entry_id})")
+            return
+        if not receipt.committed:
+            self._answer(request, receipt.reason or "trade_plan_rejected")
+            return
+        self._plans[plan.entry_id] = plan
+        self._owed.add(plan.entry_id)
+        instrument_id = InstrumentId.from_str(plan.instrument_id)
+        instrument = self.cache.instrument(instrument_id)
+        # The plan is durable and its order is not sent yet. Nothing the entry was sized on is
+        # re-measured here -- a plan is sent at the size it was committed at -- but an operator who
+        # paused or halted in between, or a Signal that lapsed while the insert committed, still wins.
+        refusal = (
+            "emergency_halted"
+            if self._emergency_halted
+            else "entries_paused"
+            if self._entries_paused
+            else "expired"
+            if plan.entry_expires_at_ns <= now_ns
+            else "instrument_unavailable"
+            if instrument is None
+            else None
+        )
+        if refusal is not None or instrument is None:
+            self._close_plan(plan, "not_submitted", terminal_at_ns=now_ns, now_ns=now_ns)
+            self._dispose_owed(plan, refusal or "instrument_unavailable")
+            return
+        order = self.order_factory.market(
+            instrument_id=instrument_id,
+            order_side=OrderSide.BUY if plan.direction == "long" else OrderSide.SELL,
+            quantity=instrument.make_qty(plan.entry_quantity),
+            reduce_only=False,
+            client_order_id=ClientOrderId(plan.entry_client_order_id),
+        )
+        self._observations.order(
+            correlation=self._correlation(plan),
+            client_order_id=plan.entry_client_order_id,
+            leg="entry",
+            status="submitted",
+            occurred_at_ns=now_ns,
+        )
+        self.submit_order(order)
+
+    def _answer(self, request: RuntimeEntryRequest, reason: str, detail: dict[str, str] | None = None) -> None:
+        self._observations.dispose_entry(source=request.source, entry_id=request.entry_id, reason=reason, detail=detail)
+
+    def _dispose_owed(self, plan: TradePlan, reason: str, detail: dict[str, str] | None = None) -> None:
+        """Write a plan's input verdict once: the first venue answer, or how the plan ended without one."""
+
+        if plan.entry_id not in self._owed:
+            return
+        self._owed.discard(plan.entry_id)
+        self._observations.dispose_entry(source=plan.source, entry_id=plan.entry_id, reason=reason, detail=detail)
+
+    # -- Nautilus events ---------------------------------------------------------------------------
+
+    def on_order_accepted(self, event: Any) -> None:
+        self._guard("order_accepted", lambda: self._order_event(event, "accepted"))
+
+    def on_order_canceled(self, event: Any) -> None:
+        self._guard("order_canceled", lambda: self._order_event(event, "canceled"))
+
+    def on_order_expired(self, event: Any) -> None:
+        self._guard("order_expired", lambda: self._order_refused(event, "expired"))
+
+    def on_order_rejected(self, event: Any) -> None:
+        self._guard("order_rejected", lambda: self._order_refused(event, "rejected"))
+
+    def on_order_denied(self, event: Any) -> None:
+        self._guard("order_denied", lambda: self._order_refused(event, "denied"))
+
+    def on_order_filled(self, event: Any) -> None:
+        self._guard("order_filled", lambda: self._order_filled(event))
+
+    def on_position_opened(self, event: Any) -> None:
+        self._guard("position_opened", lambda: self._position_opened(event))
+
+    def on_position_closed(self, event: Any) -> None:
+        self._guard("position_closed", lambda: self._position_closed(event))
+
+    def _order_context(
+        self, client_order_id: ClientOrderId, instrument_id: InstrumentId
+    ) -> tuple[TradePlan | None, OrderLeg]:
+        plan = self._plan_on(instrument_id)
+        order = self.cache.order(client_order_id)
+        entry = None if plan is None else plan.entry_client_order_id
+        if order is None:
+            return plan, "entry" if entry == client_order_id.value else "unknown"
+        return plan, order_leg(order, entry_client_order_id=entry)
+
+    def _order_event(self, event: Any, status: str) -> None:
+        plan, leg = self._order_context(event.client_order_id, event.instrument_id)
+        venue_order_id = getattr(event, "venue_order_id", None)
+        self._observations.order(
+            correlation=self._correlation(plan),
+            client_order_id=event.client_order_id.value,
+            leg=leg,
+            status=status,
+            occurred_at_ns=int(event.ts_event),
+            venue_order_id=None if venue_order_id is None else venue_order_id.value,
+        )
+        if plan is not None and leg == "entry" and status == "accepted":
+            self._dispose_owed(plan, "accepted")
+
+    def _order_filled(self, event: Any) -> None:
+        plan, leg = self._order_context(event.client_order_id, event.instrument_id)
+        self._observations.fill(correlation=self._correlation(plan), leg=leg, event=event)
+        if plan is not None and leg == "entry":
+            self._dispose_owed(plan, "accepted")
+        self._converge_due_ns = 0
+
+    def _order_refused(self, event: Any, status: str) -> None:
+        """A venue or pre-trade refusal. A refused entry ends its plan now, in the venue's own words."""
+
+        plan, leg = self._order_context(event.client_order_id, event.instrument_id)
+        reason = str(getattr(event, "reason", "") or "")
+        self._observations.order(
+            correlation=self._correlation(plan),
+            client_order_id=event.client_order_id.value,
+            leg=leg,
+            status=status,
+            occurred_at_ns=int(event.ts_event),
+            reason=reason or None,
+        )
+        # A refusal waits for the regular five-second convergence: a venue that keeps refusing a
+        # replacement is then asked once per interval, never once per pump.
+        if plan is None:
+            return
+        instrument_id = InstrumentId.from_str(plan.instrument_id)
+        position = self._position_on(instrument_id)
+        if leg == "entry" and position is None:
+            now_ns = self._now_ns()
+            self._close_plan(plan, "not_submitted", terminal_at_ns=int(event.ts_event), now_ns=now_ns)
+            detail = {"venue_reason": bounded_text(reason)} if reason else {}
+            self._dispose_owed(plan, "venue_rejected", detail)
+            return
+        immediate = any(marker in reason.lower() for marker in _IMMEDIATE_TRIGGER_MARKERS)
+        if leg in {"stop", "take_profit"} and immediate and position is not None and position.strategy_id == self.id:
+            self.close_position(position, tags=["stop_filled" if leg == "stop" else "take_profit"])
+
+    def _position_opened(self, event: Any) -> None:
+        plan = self._plan_on(event.instrument_id)
+        self._converge_due_ns = 0
+        if plan is None:
+            return
+        opened = plan if plan.opened_at_ns is not None else self._mark_open(plan, int(event.ts_opened))
+        self._observations.position(
+            correlation=self._correlation(opened),
+            position_id=event.position_id.value,
+            status="opened",
+            occurred_at_ns=int(event.ts_opened),
+            quantity=event.quantity,
+            average_entry_price=event.avg_px_open,
+        )
+        self._dispose_owed(opened, "accepted")
+
+    def _position_closed(self, event: Any) -> None:
+        """The position is gone: clear its instrument, and end its plan with the reason and the clock."""
+
+        instrument_id = event.instrument_id
+        reason = self._exit_reason(event.closing_order_id)
+        self._cancel_working_orders(instrument_id)
+        self._converge_due_ns = 0
+        plan = self._plan_on(instrument_id)
+        if plan is not None and plan.opened_at_ns is None:
+            plan = self._mark_open(plan, int(event.ts_opened))
+        self._observations.position(
+            correlation=self._correlation(plan),
+            position_id=event.position_id.value,
+            status="closed",
+            occurred_at_ns=int(event.ts_closed),
+            quantity=event.peak_qty,
+            average_entry_price=event.avg_px_open,
+            exit_price=event.avg_px_close,
+            exit_reason=reason,
+        )
+        if plan is None:
+            return
+        self._dispose_owed(plan, "accepted")
+        self._close_plan(plan, reason, terminal_at_ns=int(event.ts_closed), now_ns=self._now_ns())
+
+    def _exit_reason(self, closing_order_id: ClientOrderId | None) -> ExitReason:
+        order = None if closing_order_id is None else self.cache.order(closing_order_id)
+        if order is None:
+            return "external"
+        tags = order.tags or []
+        for tag in _CLOSING_TAGS:
+            if tag in tags:
+                return tag
+        if order.order_type == OrderType.STOP_MARKET:
+            return "stop_filled"
+        if order.order_type == OrderType.MARKET_IF_TOUCHED:
+            return "take_profit"
+        return "external"
+
+    # -- the invariant -----------------------------------------------------------------------------
+
+    def _converge(self, now_ns: int) -> None:
+        """Read the Cache, make it match intent, and name whatever intent cannot claim.
+
+        Startup and steady state are the same call: the first pump after Nautilus reconciled runs it.
+        """
+
+        positions: dict[InstrumentId, list[Any]] = defaultdict(list)
+        for position in self.cache.positions_open():
+            positions[position.instrument_id].append(position)
+            # Every position is marked, claimed or not: equity and the daily loss depend on it.
+            if self.cache.instrument(position.instrument_id) is not None:
+                self._subscribe(position.instrument_id)
+        open_orders, inflight = open_and_inflight_orders(self.cache)
+        working: dict[InstrumentId, list[Any]] = defaultdict(list)
+        for order in (*open_orders, *inflight):
+            working[order.instrument_id].append(order)
+        unexpected: list[str] = []
+        planned = {InstrumentId.from_str(plan.instrument_id): plan for plan in self._plans.values()}
+        for instrument_id, plan in planned.items():
+            self._converge_plan(
+                plan, positions.get(instrument_id, []), working.get(instrument_id, []), now_ns, unexpected
+            )
+        for instrument_id, held in positions.items():
+            if instrument_id not in planned:
+                unexpected.extend(f"position:{position.id.value}" for position in held)
+        for instrument_id, orders in working.items():
+            if instrument_id in planned:
+                continue
+            if instrument_id not in positions:
+                self._cancel_working_orders(instrument_id)
+            unexpected.extend(f"order:{order.client_order_id.value}" for order in orders if not order.is_reduce_only)
+        self._set_unexpected(tuple(sorted(set(unexpected))), now_ns)
+
+    def _converge_plan(
+        self,
+        plan: TradePlan,
+        positions: list[Any],
+        orders: list[Any],
+        now_ns: int,
+        unexpected: list[str],
+    ) -> None:
+        instrument_id = InstrumentId.from_str(plan.instrument_id)
+        entry = self.cache.order(ClientOrderId(plan.entry_client_order_id))
+        entry_working = entry is not None and (entry.is_open or entry.is_inflight)
+        unexpected.extend(
+            f"order:{order.client_order_id.value}"
+            for order in orders
+            if not order.is_reduce_only and order.client_order_id.value != plan.entry_client_order_id
+        )
+        expected_side = PositionSide.LONG if plan.direction == "long" else PositionSide.SHORT
+        own = [position for position in positions if position.strategy_id == self.id and position.side == expected_side]
+        unexpected.extend(f"position:{position.id.value}" for position in positions if position not in own)
+        if not own:
+            if entry_working or (entry is not None and not entry.is_closed) or positions:
+                return
+            self._cancel_working_orders(instrument_id)
+            self._end_unobserved(plan, entry, now_ns)
+            return
+        position = own[0]
+        if plan.opened_at_ns is None:
+            filled = entry is not None and entry.filled_qty.as_decimal() > 0
+            plan = self._mark_open(plan, int(position.ts_opened) if filled else plan.created_at_ns)
+        self._dispose_owed(plan, "accepted")
+        if entry_working:
+            return
+        self._ensure_protection(plan, position, orders, now_ns)
+        opened_at_ns = plan.opened_at_ns or plan.created_at_ns
+        if now_ns >= opened_at_ns + plan.max_holding_ns:
+            self._time_exit(position, orders)
+
+    def _end_unobserved(self, plan: TradePlan, entry: Any, now_ns: int) -> None:
+        """A plan whose instrument is flat and whose entry is not working, and whose end nobody saw.
+
+        An entry order the venue refused or canceled unfilled never opened anything; any other plan was
+        open or may have been, and its close happened where this Runtime could not see it.
+        """
+
+        if plan.opened_at_ns is None and entry is not None and entry.filled_qty.as_decimal() == 0:
+            reason = str(getattr(entry.last_event, "reason", "") or "")
+            refused = entry.status in {OrderStatus.REJECTED, OrderStatus.DENIED}
+            self._close_plan(plan, "not_submitted", terminal_at_ns=now_ns, now_ns=now_ns)
+            self._dispose_owed(
+                plan,
+                "venue_rejected" if refused else "entry_canceled",
+                {"venue_reason": bounded_text(reason)} if reason else {},
+            )
+            return
+        traded = plan.opened_at_ns is not None or (entry is not None and entry.filled_qty.as_decimal() > 0)
+        self._close_plan(plan, "venue_unknown", terminal_at_ns=now_ns, now_ns=now_ns)
+        self._dispose_owed(plan, "accepted" if traded else "entry_outcome_unknown")
+
+    def _ensure_protection(self, plan: TradePlan, position: Any, orders: list[Any], now_ns: int) -> None:
+        closing_side = OrderSide.SELL if position.is_long else OrderSide.BUY
+        protective = [
+            order
+            for order in orders
+            if order.strategy_id == self.id and order.is_reduce_only and order.side == closing_side
+        ]
+        have_stop = any(order.order_type == OrderType.STOP_MARKET for order in protective)
+        have_take_profit = any(order.order_type == OrderType.MARKET_IF_TOUCHED for order in protective)
+        if have_stop and have_take_profit:
+            return
+        instrument = self.cache.instrument(position.instrument_id)
+        if instrument is None:
+            return
+        average = decimal_value(position.avg_px_open)
+        if not have_stop:
+            self._submit_protection(plan, position, instrument, closing_side, "stop", average, now_ns)
+        if not have_take_profit:
+            self._submit_protection(plan, position, instrument, closing_side, "take_profit", average, now_ns)
+
+    def _submit_protection(
+        self,
+        plan: TradePlan,
+        position: Any,
+        instrument: Any,
+        closing_side: OrderSide,
+        leg: Literal["stop", "take_profit"],
+        average: Decimal,
+        now_ns: int,
+    ) -> None:
+        """One reduce-only order on the mark price, at the plan's distance from the average fill.
+
+        The first attempt carries the plan's deterministic id for that leg. A replacement -- the first
+        was canceled or refused -- takes a Nautilus-generated id, because a client order id names one
+        order for good.
+        """
+
+        trigger = instrument.make_price(
+            protective_trigger(
+                direction=plan.direction,
+                average_entry_price=average,
+                distance_bps=plan.stop_distance_bps if leg == "stop" else plan.take_profit_bps,
+                leg=leg,
+            )
+        )
+        deterministic = deterministic_client_order_id(
+            namespace=self._profile.namespace, entry_id=plan.entry_id, leg=leg
+        )
+        client_order_id = deterministic if self.cache.order(deterministic) is None else None
+        create = self.order_factory.stop_market if leg == "stop" else self.order_factory.market_if_touched
+        order = create(
+            instrument_id=position.instrument_id,
+            order_side=closing_side,
+            quantity=position.quantity,
+            trigger_price=trigger,
+            trigger_type=TriggerType.MARK_PRICE,
+            reduce_only=True,
+            client_order_id=client_order_id,
+        )
+        self._observations.order(
+            correlation=self._correlation(plan),
+            client_order_id=order.client_order_id.value,
+            leg=leg,
+            status="submitted",
+            occurred_at_ns=now_ns,
+            trigger_price=trigger,
+        )
+        self.submit_order(order, position_id=position.id)
+
+    def _time_exit(self, position: Any, orders: list[Any]) -> None:
+        if any(
+            order.strategy_id == self.id and order.order_type == OrderType.MARKET and order.is_reduce_only
+            for order in orders
+        ):
+            return
+        self.close_position(position, tags=["time_exit"])
+
+    def _cancel_working_orders(self, instrument_id: InstrumentId) -> None:
+        pending = [
+            order
+            for order in (
+                *self.cache.orders_open(instrument_id=instrument_id, strategy_id=self.id),
+                *self.cache.orders_inflight(instrument_id=instrument_id, strategy_id=self.id),
+            )
+            if not order.is_pending_cancel
+        ]
+        if pending:
+            self.cancel_all_orders(instrument_id)
+
+    def _set_unexpected(self, unexpected: tuple[str, ...], now_ns: int) -> None:
+        if unexpected == self._unexpected:
+            return
+        self._unexpected = unexpected
+        if unexpected:
+            self.log.warning(f"OI Runtime exposure no plan claims: {', '.join(unexpected)}")
+        self._observations.exposure(unexpected=unexpected, observed_at_ns=now_ns)
+
+    # -- plans -------------------------------------------------------------------------------------
+
+    def _mark_open(self, plan: TradePlan, opened_at_ns: int) -> TradePlan:
+        opened = plan.opened(opened_at_ns=max(opened_at_ns, plan.created_at_ns), now_ns=self._now_ns())
+        self._plans[plan.entry_id] = opened
+        self._journal.offer_plan(opened)
+        return opened
+
+    def _close_plan(self, plan: TradePlan, reason: ExitReason, *, terminal_at_ns: int, now_ns: int) -> None:
+        closed = plan.closed(reason=reason, terminal_at_ns=terminal_at_ns, now_ns=now_ns)
+        self._plans.pop(plan.entry_id, None)
+        self._journal.offer_plan(closed)
+        if reason == "stop_filled":
+            self._stop_exits[plan.market_key] = max(
+                self._stop_exits.get(plan.market_key, 0), closed.terminal_at_ns or 0
+            )
+
+    def _plan_on(self, instrument_id: InstrumentId) -> TradePlan | None:
+        value = instrument_id.value
+        return next((plan for plan in self._plans.values() if plan.instrument_id == value), None)
+
+    def _position_on(self, instrument_id: InstrumentId) -> Any:
+        return next(iter(self.cache.positions_open(instrument_id=instrument_id)), None)
+
+    @staticmethod
+    def _correlation(plan: TradePlan | None) -> dict[str, str]:
+        return {} if plan is None else RuntimeObservations.correlation(plan.source, plan.entry_id)
+
+    def _exposed_instruments(self) -> set[InstrumentId]:
+        exposed = {InstrumentId.from_str(plan.instrument_id) for plan in self._plans.values()}
+        exposed.update(position.instrument_id for position in self.cache.positions_open())
+        if self._submitting is not None:
+            route = self._routes.get(self._submitting.market_key)
+            if route is not None:
+                exposed.add(route.instrument_id)
+        return exposed
+
+    def _instrument_busy(self, instrument_id: InstrumentId) -> bool:
+        """An entry never shares its instrument: a resting close-all stop there would close it too."""
+
+        return bool(
+            self._plan_on(instrument_id) is not None
+            or self.cache.positions_open(instrument_id=instrument_id)
+            or self.cache.orders_open(instrument_id=instrument_id)
+            or self.cache.orders_inflight(instrument_id=instrument_id)
+        )
+
+    def _gross_notional(self) -> Decimal:
+        total = Decimal(0)
+        for position in self.cache.positions_open():
+            total += abs(decimal_value(position.quantity)) * decimal_value(position.avg_px_open)
+        return total
+
+    # -- quotes ------------------------------------------------------------------------------------
+
+    def _subscribe(self, instrument_id: InstrumentId) -> None:
+        """Stream quotes only for instruments an entry is waiting on or a plan holds (#510 E)."""
+
+        if instrument_id in self._subscribed:
+            return
+        self._subscribed.add(instrument_id)
+        self.subscribe_quote_ticks(instrument_id)
+
+    def _sweep_quotes(self) -> None:
+        needed = {InstrumentId.from_str(plan.instrument_id) for plan in self._plans.values()}
+        needed.update(position.instrument_id for position in self.cache.positions_open())
+        for request in (
+            *(value.request for value in self._deferred.values()),
+            *(() if self._submitting is None else (self._submitting,)),
+        ):
+            route = self._routes.get(request.market_key)
+            if route is not None:
+                needed.add(route.instrument_id)
+        for instrument_id in tuple(self._subscribed - needed):
+            self._subscribed.discard(instrument_id)
+            self.unsubscribe_quote_ticks(instrument_id)
+
+    # -- control, baseline and the published view --------------------------------------------------
 
     def control_state(self) -> RuntimeControlSnapshot:
-        return self._runtime.control_snapshot()
-
-    def account_snapshot(self, *, projected_at_ns: int) -> ExecutionAccountSnapshot:
-        return self._account_projector.snapshot(
-            baseline=self._current_day_start(),
-            projected_at_ns=projected_at_ns,
-            audit_healthy=self._audit.healthy,
-            audit_failure_reason=self._audit.failure_reason,
-        )
-
-    def protection_status(
-        self,
-        *,
-        positions_count: int,
-        unexpected_exposure: bool,
-    ) -> Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]:
-        return self._protection.status(
-            positions_count=positions_count,
-            unexpected_exposure=unexpected_exposure,
-        )
+        return RuntimeControlSnapshot(entries_paused=self._entries_paused, emergency_halted=self._emergency_halted)
 
     def update_day_start(self, baseline: DayStartBaseline) -> None:
         """Accept a baseline already loaded durably by the background owner."""
 
         with self._day_start_lock:
-            if self._day_start is not None and baseline.utc_day < self._day_start.utc_day:
-                raise ValueError("oi_runtime_day_start_baseline_stale")
-            self._day_start = baseline
+            if self._day_start is None or baseline.utc_day >= self._day_start.utc_day:
+                self._day_start = baseline
 
     def day_start_baseline(self, *, equity_usd: Decimal, now_ns: int) -> DayStartBaseline:
-        """Today's baseline, recorded from current equity when none has arrived yet (#520 PR-B).
+        """Today's baseline, recorded from current equity when none has arrived yet (#520 PR-B)."""
 
-        One durable `risk` row a day is still the store of record, so a restart keeps the day-loss
-        limit; it carries the day's fixed event id, so this path and the background owner converge
-        on one row whichever writes first. What is gone is the refusal.
-        """
-
-        current = self._current_day_start()
+        current = self._current_day_start(now_ns)
         if current is not None:
             return current
-        baseline, observation = self._audit.factory.day_start_baseline(
-            utc_day=self._utc_day(),
+        baseline, observation = self._journal.factory.day_start_baseline(
+            utc_day=_utc_day(now_ns),
             equity_usd=equity_usd,
             recorded_at_ns=now_ns,
         )
-        self._audit.offer(observation)
+        self._journal.offer(observation)
         with self._day_start_lock:
             self._day_start = baseline
         return baseline
 
-    def _current_day_start(self) -> DayStartBaseline | None:
-        utc_day = self._utc_day()
+    def _current_day_start(self, now_ns: int) -> DayStartBaseline | None:
         with self._day_start_lock:
             baseline = self._day_start
-        return baseline if baseline is not None and baseline.utc_day == utc_day else None
+        return baseline if baseline is not None and baseline.utc_day == _utc_day(now_ns) else None
 
-    def _utc_day(self) -> str:
-        return datetime.fromtimestamp(int(self.clock.timestamp_ns()) // 1_000_000_000, tz=UTC).date().isoformat()
-
-    def reconcile_runtime(self, snapshot: RuntimeReconciliationSnapshot) -> bool:
-        return self._recovery.reconcile(snapshot)
-
-    def flatten_position(self, position_id: PositionId) -> None:
-        self._exits.flatten(position_id)
-
-    def _route_command(self, command: OperatorIntentV1) -> None:
-        now_ns = int(self.clock.timestamp_ns())
-        if (
-            command.command_id in self._runtime.disposed_command_ids
-            or command.command_id in self._runtime.pending_flatten
+    def entry_block_reason(self) -> str | None:
+        for blocked, reason in (
+            (self._emergency_halted, "emergency_halted"),
+            (self._entries_paused, "entries_paused"),
+            (not self._singleton_ready(), "singleton_lost"),
+            (bool(self._unexpected), "unexpected_exposure"),
         ):
-            return
-        if command.account_slot != self._profile.account_slot:
-            self._observation_writer.dispose_command(command, "rejected", "account_slot_mismatch")
-            return
-        if command.expires_at_ns <= now_ns:
-            self._observation_writer.dispose_command(command, "rejected", "expired")
-            return
-        if command.action == "pause_entries":
-            self._runtime.entries_paused = True
-            self._observation_writer.dispose_command(command, "accepted", "entries_paused")
-            return
-        if command.action == "resume_entries":
-            if self._runtime.emergency_halted:
-                self._observation_writer.dispose_command(command, "rejected", "emergency_halt_sticky")
-                return
-            self._runtime.entries_paused = False
-            self._observation_writer.dispose_command(command, "accepted", "entries_resumed")
-            return
-        if command.action == "emergency_halt":
-            self._runtime.entries_paused = True
-            self._runtime.emergency_halted = True
-            self._observation_writer.dispose_command(command, "accepted", "emergency_halted")
-            return
-        if command.action == "manual_entry":
-            self._entry.handle(RuntimeEntryRequest.from_manual_command(command))
-            return
-        if command.action != "flatten" or command.scope != "account":
-            self._observation_writer.dispose_command(command, "rejected", "flatten_scope_unsupported")
-            return
-        self._exits.start_flatten(command)
+            if blocked:
+                return reason
+        return None
 
-    def on_position_opened(self, event: Any) -> None:
-        self._protection.position_opened(event)
-
-    def on_position_changed(self, event: Any) -> None:
-        self._protection.position_changed(event)
-
-    def on_position_closed(self, event: Any) -> None:
-        self._protection.position_closed(event)
-
-    def on_order_canceled(self, event: Any) -> None:
-        routed = self._runtime.state_for_order(event.client_order_id)
-        if routed is None:
-            return
-        state, leg = routed
-        self._observation_writer.native_order_event(state, leg, "canceled", event)
-        self._route_known_terminal(state, event.client_order_id, leg)
-
-    def on_order_accepted(self, event: Any) -> None:
-        routed = self._runtime.state_for_order(event.client_order_id)
-        if routed is None:
-            return
-        state, leg = routed
-        if leg == "entry":
-            self._entry.accepted(state)
-        elif leg == "protection":
-            self._protection.accept_pending(state, event.client_order_id)
-        self._observation_writer.native_order_event(state, leg, "accepted", event)
-
-    def on_order_filled(self, event: Any) -> None:
-        routed = self._runtime.state_for_order(event.client_order_id)
-        if routed is None:
-            return
-        state, leg = routed
-        if leg == "entry":
-            self._entry.accepted(state)
-        self._observation_writer.fill(state, leg, event)
-
-    def on_order_rejected(self, event: Any) -> None:
-        self._route_rejected(event, "rejected")
-
-    def on_order_denied(self, event: Any) -> None:
-        self._route_rejected(event, "denied")
-
-    def on_order_expired(self, event: Any) -> None:
-        self._route_rejected(event, "expired")
-
-    def _route_rejected(self, event: Any, status: str) -> None:
-        routed = self._runtime.state_for_order(event.client_order_id)
-        if routed is None:
-            return
-        state, leg = routed
-        # The venue's own words, kept verbatim for the observation and lowered only for the match
-        # below; recording them is the only way an operator can answer "why" after the fact (#604 T1).
-        reason = str(getattr(event, "reason", ""))
-        lowered = reason.lower()
-        order = order_for_event(state, event.client_order_id, leg)
-        if status == "rejected" and order is not None and any(token in lowered for token in _AMBIGUOUS_REASONS):
-            self._request_reconciliation("protection_ambiguity" if leg == "protection" else "unknown_outcome")
-            if leg == "entry":
-                self._entry.mark_unknown(state)
-            self.query_order(order, client_id=ClientId("BINANCE"))
-            self._observation_writer.order(state, order, leg, "unknown_query_first")
-            if (
-                leg == "protection"
-                and event.client_order_id not in state.retiring_stop_orders
-                and state.position_quantity > 0
-                and state.position_id is not None
-            ):
-                self._exits.flatten(state.position_id, reason="protection_failure")
-            return
-        self._route_known_terminal(state, event.client_order_id, leg)
-        self._observation_writer.rejected_order_event(state, leg, status, event, reason)
-
-    def _route_known_terminal(self, state: ExecutionState, client_order_id: Any, leg: str) -> None:
-        if leg == "entry":
-            self._entry.known_terminal(state)
-        elif leg == "exit":
-            self._exits.known_terminal(state, client_order_id)
-        elif leg == "protection":
-            self._protection.known_terminal(state, client_order_id)
+    def runtime_view(self, now_ns: int) -> RuntimeView:
+        snapshot = account_snapshot(
+            cache=self.cache,
+            account_id=self._profile.account_id,
+            plan_entry_orders={
+                InstrumentId.from_str(plan.instrument_id): plan.entry_client_order_id for plan in self._plans.values()
+            },
+            baseline=self._current_day_start(now_ns),
+            now_ns=now_ns,
+            market_stale_after_ns=self._profile.risk.market_stale_after_ns,
+        )
+        owned = [position for position in snapshot.positions if position.owned]
+        protection: Literal["not_applicable", "protected", "unprotected"] = (
+            "not_applicable"
+            if not snapshot.positions
+            else "protected"
+            if owned and len(owned) == len(snapshot.positions) and all(position.protected for position in owned)
+            else "unprotected"
+        )
+        reason = self.entry_block_reason()
+        return RuntimeView(
+            entries_armed=reason is None,
+            entry_block_reason=reason,
+            unexpected_exposure=bool(self._unexpected),
+            positions_count=len(snapshot.positions),
+            open_orders_count=snapshot.open_orders_count,
+            protection_status=protection,
+            account_snapshot=snapshot,
+        )
 
 
-__all__ = ["OiNautilusStrategy", "oi_strategy_config"]
+def _utc_day(now_ns: int) -> str:
+    return datetime.fromtimestamp(now_ns // 1_000_000_000, tz=UTC).date().isoformat()
+
+
+__all__ = [
+    "OiNautilusStrategy",
+    "OpenPlan",
+    "RuntimeControlSnapshot",
+    "RuntimeInputs",
+    "RuntimeView",
+    "oi_strategy_config",
+]

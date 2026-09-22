@@ -7,7 +7,6 @@ import {
   EXECUTION_SOURCE_ZH,
   EXECUTION_STAGE_ZH,
   EXIT_REASON_ZH,
-  HISTORY_GAP_ZH,
   holdingLabel,
   ledgerSentence,
   moneyLabel,
@@ -34,6 +33,11 @@ import {
  * stores. `stage` is the server's word, the prices and quantities are the venue's own decimal strings, and
  * `order_reject_reason` is printed verbatim under the disposition: it is the venue talking, and
  * translating it would put words in the exchange's mouth.
+ *
+ * The realized number is net: the server folds it from the entry's fill journal, exit minus entry notional
+ * less every commission (#680), and publishes those commissions as `fees_usd`, which the cell prints under
+ * it. Until the entry is fully closed and every fill carries a quote-currency commission there is no
+ * number, and a closed row says 盈亏未知 rather than a zero.
  */
 export function TradingLoopLedger({
   caseFiltered = false,
@@ -120,6 +124,9 @@ export function TradingLoopLedger({
               </span>
               <span data-label="退出">
                 {row.exit_price ?? "—"}
+                {row.take_profit_trigger_price != null ? (
+                  <small>止盈价 {row.take_profit_trigger_price}</small>
+                ) : null}
                 {row.take_profit_bps != null && row.max_holding_ns != null ? (
                   <small>
                     止盈 {row.take_profit_bps} bps · 最长 {holdingLabel(0, row.max_holding_ns)}
@@ -140,11 +147,7 @@ export function TradingLoopLedger({
                 <small>
                   持仓 {holdingLabel(row.entry_filled_at_ns, row.position_closed_at_ns)}
                 </small>
-                {!row.history_complete && row.gap_reason ? (
-                  <small data-tone="caution">
-                    {HISTORY_GAP_ZH[row.gap_reason] ?? row.gap_reason}
-                  </small>
-                ) : null}
+                {row.fees_usd != null ? <small>手续费 {moneyLabel(row.fees_usd)}</small> : null}
               </span>
             </article>
           ))}

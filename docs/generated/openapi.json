@@ -7882,35 +7882,8 @@
       },
       "TradingExecutionAccountData": {
         "additionalProperties": false,
-        "description": "What the account holds, as the Runtime's own private reconciliation last saw it.\n\nIts two observation clocks, the day-start equity baseline and the `truncated` flag were published\nbeside these and rendered nowhere: the desk ages the whole projection against `facts_expire_at_ms`,\nreads the drawdown the Runtime already measured against that baseline, and a truncated snapshot is\nalready not `complete` (#537 PR-5).",
+        "description": "What the account holds, read from the Nautilus Cache the Runtime executes against (#680).\n\nNautilus reconciles that Cache with the venue at start and every five seconds after; this is the\nRuntime's own picture, published whole. `complete` says every position could be marked and the\nbalance was known, so equity and the drawdown are whole numbers.",
         "properties": {
-          "aggregate_risk_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Aggregate Risk Usd"
-          },
-          "audit_failure_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Audit Failure Reason"
-          },
-          "audit_healthy": {
-            "default": true,
-            "title": "Audit Healthy",
-            "type": "boolean"
-          },
           "complete": {
             "title": "Complete",
             "type": "boolean"
@@ -7973,17 +7946,11 @@
             "maxItems": 100,
             "title": "Positions",
             "type": "array"
-          },
-          "unknown_orders_count": {
-            "minimum": 0.0,
-            "title": "Unknown Orders Count",
-            "type": "integer"
           }
         },
         "required": [
           "open_orders_count",
           "inflight_orders_count",
-          "unknown_orders_count",
           "complete"
         ],
         "title": "TradingExecutionAccountData",
@@ -8003,8 +7970,9 @@
           "leg": {
             "enum": [
               "entry",
+              "stop",
+              "take_profit",
               "exit",
-              "protection",
               "unknown"
             ],
             "title": "Leg",
@@ -8084,42 +8052,6 @@
             "title": "Position Id",
             "type": "string"
           },
-          "protection_full_coverage": {
-            "title": "Protection Full Coverage",
-            "type": "boolean"
-          },
-          "protection_quantity": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Protection Quantity"
-          },
-          "protection_status": {
-            "enum": [
-              "protected",
-              "pending",
-              "unprotected",
-              "unknown"
-            ],
-            "title": "Protection Status",
-            "type": "string"
-          },
-          "protection_trigger_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Protection Trigger Price"
-          },
           "quantity": {
             "title": "Quantity",
             "type": "string"
@@ -8131,6 +8063,28 @@
             ],
             "title": "Side",
             "type": "string"
+          },
+          "stop_trigger_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Trigger Price"
+          },
+          "take_profit_trigger_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Take Profit Trigger Price"
           },
           "unrealized_pnl_usd": {
             "anyOf": [
@@ -8150,22 +8104,15 @@
           "side",
           "quantity",
           "entry_price",
-          "owned",
-          "protection_status",
-          "protection_full_coverage"
+          "owned"
         ],
         "title": "TradingExecutionPositionData",
         "type": "object"
       },
       "TradingExecutionReadinessData": {
         "additionalProperties": false,
-        "description": "One field per operator question, and the CLI `tracefold trading status` block is this same dict.\n\nThe two raw observation clocks (`heartbeat_at_ns`, `reconciliation_observed_at_ns`) went with the\nages derived from them: the desk compares `facts_expire_at_ms` against its own clock and prints\n`reconciliation_age_ms`, both already measured here. `positions_count` / `open_orders_count` said\nwhat `current_account` carries row by row, and raw `account_flat` said what the venue had not yet\nproven -- `account_flat_proven` is the answer an operator acts on (#537 PR-5).",
+        "description": "One field per operator question, and the CLI `tracefold trading status` block is this same dict.\n\n`execution_safe`, `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` answered\nquestions about the Runtime's private account proof, and went with it (#680): Nautilus reconciles\nthe venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.",
         "properties": {
-          "account_flat_proven": {
-            "default": false,
-            "title": "Account Flat Proven",
-            "type": "boolean"
-          },
           "account_slot": {
             "title": "Account Slot",
             "type": "string"
@@ -8209,10 +8156,6 @@
             ],
             "title": "Entry Block Reason"
           },
-          "execution_safe": {
-            "title": "Execution Safe",
-            "type": "boolean"
-          },
           "facts_expire_at_ms": {
             "anyOf": [
               {
@@ -8234,38 +8177,20 @@
             "type": "string"
           },
           "protection_status": {
-            "default": "unknown",
+            "default": "not_applicable",
             "enum": [
               "not_applicable",
               "protected",
-              "pending",
-              "unprotected",
-              "unknown"
+              "unprotected"
             ],
             "title": "Protection Status",
             "type": "string"
-          },
-          "reconciliation_age_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reconciliation Age Ms"
           },
           "routes_count": {
             "default": 0,
             "minimum": 0.0,
             "title": "Routes Count",
             "type": "integer"
-          },
-          "startup_reconciled": {
-            "default": false,
-            "title": "Startup Reconciled",
-            "type": "boolean"
           },
           "unexpected_exposure": {
             "default": false,
@@ -8277,7 +8202,6 @@
           "mode",
           "account_slot",
           "alive",
-          "execution_safe",
           "entries_armed"
         ],
         "title": "TradingExecutionReadinessData",
@@ -8285,7 +8209,7 @@
       },
       "TradingExecutionRowData": {
         "additionalProperties": false,
-        "description": "One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented; the desk links the ones that have one to\nthe Case drawer.\n\n`order_status`, `position_status` and the `accepted` / `rejected` split are the inputs `stage` is\nderived from, and `stage` is what the table renders: publishing all four let a reader compare a\nvenue word against the server's own answer about the same row (#537 PR-5). `last_observed_at_ns`\nwas a second clock beside `observed_at_ns` that no column printed.",
+        "description": "One entry identity's whole execution, folded from its plan and its own observations.\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.\n\n`realized_pnl_usd` and `fees_usd` are folded from the fill journal (#680): exit minus entry\nnotional, signed by direction, less every commission the venue charged. Both are absent until the\nentry is fully closed and every fill carries a quote-currency commission.",
         "properties": {
           "account_slot": {
             "anyOf": [
@@ -8398,6 +8322,17 @@
             ],
             "title": "Exit Reason"
           },
+          "fees_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fees Usd"
+          },
           "fill_avg_price": {
             "anyOf": [
               {
@@ -8419,21 +8354,6 @@
               }
             ],
             "title": "Fill Quantity"
-          },
-          "gap_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gap Reason"
-          },
-          "history_complete": {
-            "title": "History Complete",
-            "type": "boolean"
           },
           "instrument_id": {
             "anyOf": [
@@ -8566,9 +8486,7 @@
               "ordered",
               "filled",
               "protected",
-              "closing",
-              "closed",
-              "unresolved"
+              "closed"
             ],
             "title": "Stage",
             "type": "string"
@@ -8605,6 +8523,17 @@
               }
             ],
             "title": "Take Profit Bps"
+          },
+          "take_profit_trigger_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Take Profit Trigger Price"
           }
         },
         "required": [
@@ -8614,7 +8543,6 @@
           "direction",
           "observed_at_ns",
           "pnl_known",
-          "history_complete",
           "stage"
         ],
         "title": "TradingExecutionRowData",
@@ -8687,7 +8615,7 @@
       },
       "TradingRealizedTotalsData": {
         "additionalProperties": false,
-        "description": "What this account slot has realized, over the current UTC day and over its whole ledger.\n\nThe desk could only sum the realized column of the rows it was showing, so the one number an\noperator reconciles against the venue was the one number the console could not produce (#604 T3).\nBoth sums fold every `closed` position the slot has, manual entries included, because a manual\nentry is a retained trade in this account. Decimal strings, like every other money field here.",
+        "description": "What this account slot has realized, over the current UTC day and over its whole ledger.\n\nBoth sums fold the fill journal of every plan the slot opened and closed, manual entries included,\nbecause a manual entry is a retained trade in this account. A closed plan whose fills cannot yield\na result is counted as missing rather than as zero. Decimal strings, like every other money field.",
         "properties": {
           "closed_today": {
             "minimum": 0.0,
@@ -8698,14 +8626,6 @@
             "minimum": 0.0,
             "title": "Closed Total",
             "type": "integer"
-          },
-          "pnl_complete_today": {
-            "title": "Pnl Complete Today",
-            "type": "boolean"
-          },
-          "pnl_complete_total": {
-            "title": "Pnl Complete Total",
-            "type": "boolean"
           },
           "pnl_known_today": {
             "minimum": 0.0,
@@ -8757,8 +8677,6 @@
           "pnl_known_total",
           "pnl_missing_today",
           "pnl_missing_total",
-          "pnl_complete_today",
-          "pnl_complete_total",
           "closed_today",
           "closed_total"
         ],

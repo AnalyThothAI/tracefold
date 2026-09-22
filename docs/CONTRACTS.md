@@ -313,13 +313,16 @@ validator of an execution fact's shape; #520 PR-B then dropped
 `confirmation_identity` from that contract with the `CONFIRM` token itself.
 
 A `position` observation's summary is `{status, quantity, avg_entry_price,
-exit_price, realized_pnl_usd, exit_reason}`, every value the string of its
-Decimal and each key present only once the fact exists. On `closed`, `quantity`
-is what was open immediately before the close, `exit_price` and
-`realized_pnl_usd` are Nautilus `PositionClosed.avg_px_close` / `realized_pnl`,
-and `exit_reason` is `stop_filled | flatten | unclaimed_flatten` — which of the
-Runtime's three exits took the position off the venue. A `protection` summary
-carries `trigger_price` beside `explicit_quantity`.
+exit_price, exit_reason}`, every value the string of its Decimal and each key
+present only once the fact exists. On `closed`, `quantity` is what was open
+immediately before the close, `exit_price` is Nautilus
+`PositionClosed.avg_px_close`, and `exit_reason` is the plan's exit reason
+(`stop_filled | take_profit | time_exit | operator_flatten | external`). An
+`order` or `protection` summary is `{leg, status, reason?, trigger_price?}` with
+`leg` one of `entry | stop | take_profit | exit | unknown` (`protection` for the
+stop and take-profit legs); a `fill` summary is `{leg, last_quantity, last_price,
+commission, commission_currency}`. Realized PnL is not an observation: readers fold
+it from the fills (#680).
 
 All database consumers use `storage.postgres.dsn` and `password_file`. Process
 identity is the connection's stable `application_name`; Serve's HTTP pool is
@@ -1357,40 +1360,30 @@ Runtime facts, and status carries readiness plus bounded totals.
   version, digest and config are on every Case row that was decided under them,
   which is where a reader can act on them. Decision exposes the lane's last
   frozen Case as its only durable liveness; execution exposes mode and account
-  slot, independent `alive`, `execution_safe`, and `entries_armed` facts,
-  `entry_block_reason`, the two operator control flags, protection status,
-  `account_flat_proven`, and `reconciliation_age_ms`. #537 PR-4 deleted the six
-  identity fields beside them — `runtime_release`, `config_sha256`,
-  `runtime_revision`, `image_digest`, `credential_fingerprint` and
-  `lifecycle_state` — which named the build rather than what it was doing and
-  which no page or command read. #537 PR-5 deleted every remaining raw fact
-  whose derived answer is published beside it: `heartbeat_at_ns` and
-  `reconciliation_observed_at_ns` are the two clocks `facts_expire_at_ms` and
-  `reconciliation_age_ms` are measured from, `positions_count` and
-  `open_orders_count` said what `current_account` carries row by row, and raw
-  `account_flat` said what the venue had not yet proven. The `counts` block went
-  with them: `cases_24h` and `signals_24h` cost one `count(*)` per table on
-  every 15 s poll of every route, for chrome figures the console no longer has.
+  slot, independent `alive` and `entries_armed` facts, `entry_block_reason`, the
+  two operator control flags, `unexpected_exposure`, `protection_status`
+  (`not_applicable | protected | unprotected`), `routes_count`,
+  `facts_expire_at_ms` and `current_account`. #537 PR-4 deleted the six identity
+  fields beside them — `runtime_release`, `config_sha256`, `runtime_revision`,
+  `image_digest`, `credential_fingerprint` and `lifecycle_state` — which named the
+  build rather than what it was doing. #680 deleted `execution_safe`,
+  `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` with the
+  private account proof they described: Nautilus reconciles the venue into its
+  Cache before the Strategy starts and every five seconds after, so a fresh
+  heartbeat is the freshness of `current_account`.
   **The CLI block is this projection.** `tracefold trading status` renders the
   same dict from the same `execution_readiness_projection`, so neither surface
-  can grow a field the other does not have. `current_account` is the replaceable
-  Runtime-owned read model for current equity, day-start/drawdown, aggregate
-  risk, bounded position/protection rows, and bounded open/in-flight order rows
-  including ownership uncertainty. It is neither an append-only audit ledger
-  nor an OMS owner. `account_flat_proven=true` additionally requires the Runtime
-  heartbeat, existing-exposure safety, and the complete Binance private
-  reconciliation to remain inside its 10-second freshness budget; empty or
-  partial `current_account` rows never prove flat. That read model publishes
-  what the account holds and not the clocks it was read on: `observed_at_ns`,
-  `market_observed_at_ns`, `day_start_equity_usd` and `truncated` went in #537
-  PR-5, because `facts_expire_at_ms` is derived from the first two,
-  `daily_drawdown_usd` was already measured against the baseline, and a
-  truncated snapshot is exactly one that is not `complete`. Nautilus `/readyz` means
-  `alive && execution_safe`; it remains green when only new entries are paused
-  or otherwise blocked. `routes_count` is how many `market_key`s this Runtime
-  generation can reach, and `facts_expire_at_ms` is the instant this projection
-  stops being current — the earlier of the heartbeat and private-reconciliation
-  freshness budgets — so a reader compares one instant against its own clock
+  can grow a field the other does not have. `current_account` is the Runtime's
+  Nautilus Cache, published whole: equity, day-start drawdown, positions with the
+  stop and take-profit trigger resting against each and whether a plan claims
+  them (`owned`), and open/in-flight orders by leg
+  (`entry | stop | take_profit | exit | unknown`). It is neither an append-only
+  audit ledger nor an OMS owner, and an empty one proves flat only while the
+  projection is current. Nautilus `/readyz` means `alive`; it remains green when
+  new entries are paused or otherwise blocked. `routes_count` is how many
+  `market_key`s this Runtime generation can reach, and `facts_expire_at_ms` is
+  the instant this projection stops being current — the heartbeat's five-second
+  freshness budget — so a reader compares one instant against its own clock
   instead of running a timer per rule. Serve reads no secret file and constructs
   no provider client.
 - `GET /api/trading/cases` defaults to summary-only 24-hour state, reason
@@ -1420,30 +1413,31 @@ Runtime facts, and status carries readiness plus bounded totals.
   `entry_client_order_id`, `stop_distance_bps`, `risk_budget_usd`,
   `max_leverage_at_creation`, `exit_policy_id`, `take_profit_bps` and
   `max_holding_ns`; historical entries without a plan leave them absent/null.
-  Observations supply known fills, prices, venue refusal text and realized PnL.
-  `stage ∈ {pending, rejected, expired, ordered, filled, protected, closing, closed, unresolved}`
-  uses plan lifecycle when available; a missing audit row never expires an active plan.
+  Observations supply known fills, prices, the stop and take-profit triggers and
+  venue refusal text.
+  `stage ∈ {pending, rejected, expired, ordered, filled, protected, closed}`
+  uses plan lifecycle when available; a plan that ended `not_submitted` is
+  `rejected`, and a missing observation never expires an active plan.
   `entry_filled_at_ns`, `position_closed_at_ns` and `duration_ns` preserve the
   available clocks, with frozen plan clocks used when native observations are missing.
 
-  Each row publishes `pnl_known`, `history_complete` and optional `gap_reason`.
-  Gap reasons include `entry_fill_missing`, `close_observation_missing`,
-  `exit_fills_incomplete`, `audit_gap`, `entry_outcome_unknown` and
-  `native_pnl_basis_incomplete_after_restart`. A known PnL can coexist with an
-  incomplete fill audit; completeness and numerical availability are distinct.
+  `realized_pnl_usd` and `fees_usd` are folded from the entry's fills: exit
+  notional minus entry notional, signed by direction, minus every commission. They
+  and `pnl_known=true` are present only when the exit fills sum to the entry
+  quantity and every commission was charged in USDT; funding is not included.
   Exit reasons are `stop_filled`, `take_profit`, `time_exit`, `operator_flatten`,
-  `protection_failure`, `recovery_safety_flatten`, `venue_unknown` or
+  `external` (a close this Runtime did not originate), `venue_unknown` or
   `not_submitted`; historical stored reason strings remain readable.
 
-  Account totals count each closed identity once across terminal plans and native
-  close observations. `realized_known_today_usd` and `realized_known_total_usd`
-  sum only present PnL values; they are null when none are known. `closed_today/total`,
-  `pnl_known_today/total`, `pnl_missing_today/total` and
-  `pnl_complete_today/total` accompany the amounts. Complete requires every closed
-  entry to have known PnL, matching entry/exit fill coverage, a close observation
-  and no known history gap. The UTC day is a half-open interval; totals have no
-  24-hour limit. Plans proven never submitted are not counted as closed positions.
-  Old total names are removed, without aliases.
+  Account totals fold the fills of every plan the slot opened and closed, manual
+  entries included. `realized_known_today_usd` and `realized_known_total_usd`
+  sum only known PnL values; they are null when none are known.
+  `closed_today/total`, `pnl_known_today/total` and `pnl_missing_today/total`
+  accompany the amounts, so a closed plan whose fills cannot yield a result is
+  counted as missing rather than as zero. The UTC day is a half-open interval on
+  the plan's terminal clock; totals have no 24-hour limit. Plans that were never
+  opened are not counted as closed positions. `history_complete`, `gap_reason`
+  and `pnl_complete_today/total` were removed in #680 without aliases.
 
 - The HTTP console is read-only (#624). Operator commands are available through
   the local CLI only. The former browser command route, command request/receipt

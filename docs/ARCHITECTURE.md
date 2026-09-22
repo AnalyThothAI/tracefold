@@ -172,7 +172,7 @@ model names, refresh intervals, and historical tasks:
 | OI, liquidation, smart-money notifications | `tracefold/news/market_notifications.py` |
 | Wallet receipts, net-buy detection, price sampling | App chain-tape wiring and its three independently supervised task declarations |
 | OI Source → Case → Signal | `tracefold/trading/signal_lane.py` |
-| Account, orders, protection, reconciliation | Nautilus integration, composed by `tracefold/app/nautilus/` |
+| Account, orders, protection, reconciliation | Nautilus (the Cache, reconciled with the venue), driven by the Runtime Strategy composed in `tracefold/app/nautilus/` |
 
 The code-owned limits still apply. Inspect their definitions and consumer tests when
 changing cadence or budgets; this map intentionally does not keep a second numerical
@@ -348,15 +348,29 @@ belong in the Signal lane or its manifest as shadow Runtime state.
 
 ### Runtime ownership
 
-The Nautilus integration owns account state, execution routing, risk, orders,
-protection, exits, and reconciliation. App supplies its process/database/probe
-composition. Paper and live use the configured Runtime path with their respective
-account/environment settings; neither mode turns a local command into a fill.
-Inspect the pinned dependency and Runtime construction for implementation details.
+Nautilus owns execution state (#680). Each fact has exactly one owner, and the Runtime keeps
+no parallel order or position state machine beside Nautilus:
+
+| Fact | The one owner | How it is kept |
+| --- | --- | --- |
+| Positions, open orders, fills | The venue; the in-process projection is the Nautilus Cache | Startup reconciliation (`reconciliation=True`, a lookback longer than the longest holding time) rebuilds the Cache before the Strategy starts; the 5 s open-order and position checks keep it converged. No Cache database: a restart is the same reconciliation a start is. |
+| Trading intent (a plan) | `trading_trade_plans` | Written when the entry is admitted (before its order exists), when its position opens, and when it ends. Read back only as intent — instrument, direction, distances, maximum holding time — never as order or position state. |
+| Execution event log | `trading_execution_observations` | An append-only journal of verdicts, orders, fills (with the venue's commission) and positions, one row per transaction. |
+| Realized PnL | The fill journal | Exit minus entry notional, signed by direction, less every commission; folded by the read models. Not a Nautilus position field. |
+| Signals, operator Commands, control switches | PostgreSQL | Unchanged. |
+| Tradable universe | The Runtime's route catalogue, from Nautilus' Binance instrument provider | USDT-settled `PERPETUAL` contracts in `TRADING` status; `TRADIFI_PERPETUAL` is never routed. |
+
+The Strategy converges the Cache on intent every five seconds, and on every fill and
+position event: a position whose entry order is terminal gets one reduce-only stop and
+one reduce-only take-profit on the mark price, a missing one is placed again, a position
+past its maximum holding time is closed, and orders left on a flat instrument are
+canceled. Exposure no plan claims blocks new entries and is recorded; nothing is ever
+flattened because the picture is unclear. App supplies process, database and probe
+composition and never reads a private member of a Nautilus object. Paper and live use
+the same path with their respective account and environment; neither mode turns a local
+command into a fill.
 
 The business Signal lane imports no Nautilus engine and has no order authority.
-This is a real separation of responsibilities, not a claim that the repository has
-removed the Nautilus integration entirely.
 
 ### Failure semantics
 

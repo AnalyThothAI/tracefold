@@ -886,22 +886,17 @@
 | `mode` | `TEXT` | False | `None` |
 | `runtime_id` | `UUID` | False | `None` |
 | `alive` | `BOOLEAN` | False | `None` |
-| `startup_reconciled` | `BOOLEAN` | False | `None` |
 | `unexpected_exposure` | `BOOLEAN` | False | `None` |
-| `account_flat` | `BOOLEAN` | False | `None` |
-| `reconciliation_observed_at_ns` | `BIGINT` | False | `None` |
 | `heartbeat_at_ns` | `BIGINT` | False | `None` |
 | `entry_block_reason` | `TEXT` | True | `None` |
 | `started_at_ns` | `BIGINT` | False | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
-| `execution_safe` | `BOOLEAN` | False | `None` |
 | `entries_armed` | `BOOLEAN` | False | `None` |
 | `positions_count` | `INTEGER` | False | `None` |
 | `open_orders_count` | `INTEGER` | False | `None` |
 | `protection_status` | `TEXT` | False | `None` |
 | `account_snapshot` | `JSONB` | True | `None` |
 | `routes_count` | `INTEGER` | False | `0` |
-| `facts_expire_at_ns` | `BIGINT` | False | `0` |
 
 ## `trading_operator_intents`
 
@@ -947,7 +942,6 @@
 | `opened_at_ns` | `BIGINT` | True | `None` |
 | `terminal_at_ns` | `BIGINT` | True | `None` |
 | `exit_reason` | `TEXT` | True | `None` |
-| `history_gap_reason` | `TEXT` | True | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
 
 ## `trading_trade_signals`

@@ -37,6 +37,10 @@ ExecutionAction = Literal[
     "flatten",
     "manual_entry",
 ]
+# What a Runtime writes, and nothing else (#680): the verdicts on its two inputs, the day-start and
+# exposure risk facts, and the Nautilus order, fill, position and protective-order events. The private
+# account proof (`reconciliation`), the lifecycle stages (`readiness`) and the audit-loss records
+# (`audit_gap`) went with the machinery that wrote them; Nautilus reconciles the venue itself.
 ObservationKind = Literal[
     "signal_disposition",
     "control_disposition",
@@ -45,9 +49,6 @@ ObservationKind = Literal[
     "fill",
     "position",
     "protection",
-    "reconciliation",
-    "readiness",
-    "audit_gap",
 ]
 
 

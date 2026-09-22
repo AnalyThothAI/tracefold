@@ -1,25 +1,37 @@
-"""Focused fixtures for the dormant #433-B Runtime seam."""
+"""Shared fixtures for the OI Runtime: a profile, its inputs, and a real Nautilus engine to run it on.
+
+`backtest_runtime` runs the production Strategy inside a real `BacktestEngine`: real Cache, real
+ExecutionEngine, real RiskEngine and a simulated venue that fills, triggers and cancels. The DB
+bridge's one ordering duty -- a plan is committed before its entry order exists -- is played by
+`dispatch`, which settles the Strategy's prepared plan between two pumps exactly as the bridge thread
+does between two cycles. Everything else the bridge writes stays in the journal for the test to read.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import Any
 
 from nautilus_trader.accounting.factory import AccountFactory
+from nautilus_trader.backtest.config import BacktestEngineConfig
+from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import MessageBus, TestClock
+from nautilus_trader.config import LoggingConfig
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.currencies import USDT
-from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, TriggerType
 from nautilus_trader.model.events import AccountState
-from nautilus_trader.model.identifiers import AccountId, TraderId
+from nautilus_trader.model.identifiers import AccountId, ClientOrderId, PositionId, TraderId
 from nautilus_trader.model.objects import AccountBalance, Money
+from nautilus_trader.model.position import Position
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
-from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
     ActiveRuntimeMode,
     OiExitPolicy,
@@ -27,130 +39,65 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
     OiRiskLimits,
     OiRuntimeProfile,
 )
+from tracefold.integrations.nautilus.oi_runtime.entry import deterministic_client_order_id
+from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory, PlanReceipt
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
-from tracefold.integrations.nautilus.oi_runtime.state import (
+from tracefold.integrations.nautilus.oi_runtime.strategy import (
+    OiNautilusStrategy,
+    OpenPlan,
     RuntimeControlSnapshot,
-    RuntimeEntryRequest,
-    RuntimeReadiness,
-    deterministic_client_order_id,
+    RuntimeInputs,
 )
-from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
-from tracefold.integrations.nautilus.oi_runtime.trade_plans import TradePlanChannel
-from tracefold.trading import OperatorIntentV1, TradePlan, TradeSignalV1
+from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradePlan, TradeSignalV1
 
 NOW_NS = 1_900_000_000_000_000_000
 ACCOUNT_ID = AccountId("BINANCE-001")
-_RESUMED_CONTROL_STATE = RuntimeControlSnapshot(False, False, ())
+MARKET = "crypto:perp:BTC:USDT"
+SECOND_NS = 1_000_000_000
+RESUMED = RuntimeControlSnapshot(entries_paused=False, emergency_halted=False)
+INSTRUMENT = TestInstrumentProvider.btcusdt_perp_binance()
 
 
-def oi_profile(mode: ActiveRuntimeMode = "paper") -> OiRuntimeProfile:
-    routes = (
-        OiInstrumentRoute(
-            market_key="crypto:perp:BTC:USDT",
-            instrument_id=TestInstrumentProvider.btcusdt_perp_binance().id,
-            stop_distance_bps=200,
-        ),
+def oi_profile(mode: ActiveRuntimeMode = "paper", **risk: Any) -> OiRuntimeProfile:
+    limits = OiRiskLimits(
+        risk_fraction_per_trade=Decimal("0.01"),
+        max_risk_per_trade_usd=Decimal("10"),
+        max_positions=1,
+        max_leverage=2,
+        max_daily_loss_usd=Decimal("50"),
+        max_spread_fraction_of_stop=Decimal("0.3"),
+        post_stop_cooldown_ns=4 * 3_600 * SECOND_NS,
+        market_stale_after_ns=10 * SECOND_NS,
     )
     return OiRuntimeProfile(
         mode=mode,
         account_slot="binance_usdm_primary",
         account_id=ACCOUNT_ID,
         namespace=f"oi-{mode}-identity",
-        routes=routes,
-        exit_policy=OiExitPolicy(take_profit_bps=200, max_holding_ns=14_400_000_000_000),
-        risk=OiRiskLimits(
-            risk_fraction_per_trade=Decimal("0.01"),
-            max_risk_per_trade_usd=Decimal("10"),
-            max_total_risk_usd=Decimal("25"),
-            max_positions=3,
-            max_leverage=2,
-            max_daily_loss_usd=Decimal("50"),
-            market_stale_after_ns=10_000_000_000,
-            # account_stale_after_ns == 10s, reconciliation_stale_after_ns == 15s.
-            reconciliation_interval_ns=5_000_000_000,
-        ),
+        routes=(OiInstrumentRoute(market_key=MARKET, instrument_id=INSTRUMENT.id, stop_distance_bps=200),),
+        exit_policy=OiExitPolicy(take_profit_bps=200, max_holding_ns=4 * 3_600 * SECOND_NS),
+        risk=replace(limits, **risk),
     )
 
 
-def trade_signal(*, signal_id: str = "1" * 64, expires_at_ns: int = NOW_NS + 60_000_000_000) -> TradeSignalV1:
-    return TradeSignalV1(
-        seq=1,
-        signal_id=signal_id,
-        case_id=f"case-{signal_id[:8]}",
-        market_key="crypto:perp:BTC:USDT",
-        direction="long",
-        observed_at_ns=NOW_NS - 1_000_000,
-        expires_at_ns=expires_at_ns,
+def trade_signal(
+    *,
+    signal_id: str = "1" * 64,
+    expires_at_ns: int = NOW_NS + 60 * SECOND_NS,
+    direction: str = "long",
+) -> TradeSignalV1:
+    return TradeSignalV1.model_validate(
+        {
+            "seq": 1,
+            "signal_id": signal_id,
+            "case_id": f"case-{signal_id[:8]}",
+            "market_key": MARKET,
+            "direction": direction,
+            "observed_at_ns": NOW_NS - 1_000_000,
+            "expires_at_ns": expires_at_ns,
+        }
     )
-
-
-def trade_plan_for_entry(request: RuntimeEntryRequest, profile: OiRuntimeProfile | None = None) -> TradePlan:
-    """Frozen admitted intent for focused native risk/recovery tests; PostgreSQL tests commit it."""
-    profile = profile or oi_profile()
-    route = next(route for route in profile.routes if route.market_key == request.market_key)
-    created = min(NOW_NS, request.expires_at_ns - 1)
-    return TradePlan(
-        entry_id=request.entry_id,
-        source=request.source,
-        case_id=request.signal.case_id if request.signal is not None else None,
-        account_slot=profile.account_slot,
-        runtime_mode_at_creation=profile.mode,
-        market_key=request.market_key,
-        instrument_id=route.instrument_id.value,
-        direction=request.direction,
-        entry_client_order_id=deterministic_client_order_id(
-            namespace=profile.namespace, entry_id=request.entry_id, leg="entry"
-        ).value,
-        created_at_ns=created,
-        entry_expires_at_ns=request.expires_at_ns,
-        entry_quantity=Decimal("0.049"),
-        stop_distance_bps=route.stop_distance_bps,
-        risk_budget_usd=Decimal("10"),
-        max_leverage_at_creation=profile.risk.max_leverage,
-        take_profit_bps=profile.exit_policy.take_profit_bps,
-        max_holding_ns=profile.exit_policy.max_holding_ns,
-        updated_at_ns=created,
-    )
-
-
-def pump_with_committed_plan(context: SimpleNamespace) -> None:
-    """Deliver the DB boundary's receipt when testing other native coordinator mechanisms.
-
-    Commit ordering/failure itself uses the real PostgreSQL bridge in test_nautilus_trade_plan.
-    Keeping this explicit at each call site makes these focused tests' boundary visible.
-    """
-    context.strategy.on_timer(None)
-    plan = context.plans.pending_prepare()
-    if plan is not None:
-        context.plans.committed(plan, newly_committed=True)
-        context.strategy.on_timer(None)
-
-
-class SignalRows:
-    def __init__(self, *values: TradeSignalV1) -> None:
-        self.values = values
-
-    def __call__(
-        self,
-        _account_slot: str,
-        _execution_strategy: str,
-        limit: int,
-    ) -> tuple[TradeSignalV1, ...]:
-        return self.values[:limit]
-
-
-class CommandRows:
-    def __init__(self, *values: OperatorIntentV1) -> None:
-        self.values = values
-
-    def __call__(
-        self,
-        _account_slot: str,
-        _execution_strategy: str,
-        limit: int,
-    ) -> tuple[OperatorIntentV1, ...]:
-        return self.values[:limit]
 
 
 def operator_intent(
@@ -158,7 +105,7 @@ def operator_intent(
     command_id: str = "5" * 64,
     action: str = "pause_entries",
     requested_at_ns: int = NOW_NS - 1_000_000,
-    expires_at_ns: int = NOW_NS + 60_000_000_000,
+    expires_at_ns: int = NOW_NS + 60 * SECOND_NS,
     scope: str = "entries",
     market_key: str | None = None,
     direction: str | None = None,
@@ -167,7 +114,7 @@ def operator_intent(
         {
             "seq": 1,
             "command_id": command_id,
-            "account_slot": oi_profile().account_slot,
+            "account_slot": "binance_usdm_primary",
             "action": action,
             "scope": scope,
             "reason": "operator test",
@@ -181,49 +128,318 @@ def operator_intent(
     )
 
 
+def open_plan(
+    *,
+    entry_id: str = "1" * 64,
+    opened_at_ns: int | None = NOW_NS - 60 * SECOND_NS,
+    created_at_ns: int = NOW_NS - 61 * SECOND_NS,
+    profile: OiRuntimeProfile | None = None,
+    quantity: Decimal = Decimal("0.049"),
+) -> TradePlan:
+    """A committed plan an earlier Runtime generation left behind."""
+
+    profile = profile or oi_profile()
+    return TradePlan(
+        entry_id=entry_id,
+        source="signal",
+        case_id=f"case-{entry_id[:8]}",
+        account_slot=profile.account_slot,
+        runtime_mode_at_creation=profile.mode,
+        market_key=MARKET,
+        instrument_id=INSTRUMENT.id.value,
+        direction="long",
+        entry_client_order_id=deterministic_client_order_id(
+            namespace=profile.namespace, entry_id=entry_id, leg="entry"
+        ).value,
+        created_at_ns=created_at_ns,
+        entry_expires_at_ns=created_at_ns + 60 * SECOND_NS,
+        entry_quantity=quantity,
+        stop_distance_bps=200,
+        risk_budget_usd=Decimal("10"),
+        max_leverage_at_creation=profile.risk.max_leverage,
+        take_profit_bps=profile.exit_policy.take_profit_bps,
+        max_holding_ns=profile.exit_policy.max_holding_ns,
+        status="prepared" if opened_at_ns is None else "open",
+        opened_at_ns=opened_at_ns,
+        updated_at_ns=max(created_at_ns, opened_at_ns or created_at_ns),
+    )
+
+
+def rows(*values: Any) -> Callable[[str, str, int], tuple[Any, ...]]:
+    """A Signal or Command reader that returns these values, as the bridge's indexed poll would."""
+
+    def read(_slot: str, _strategy: str, limit: int) -> tuple[Any, ...]:
+        return values[:limit]
+
+    return read
+
+
+def quote(bid: float, ask: float, at_ns: int) -> Any:
+    return TestDataStubs.quote_tick(instrument=INSTRUMENT, bid_price=bid, ask_price=ask, ts_event=at_ns, ts_init=at_ns)
+
+
+def quotes(bid: float, ask: float, *, start_ns: int, count: int, step_ns: int = 100_000_000) -> list[Any]:
+    return [quote(bid, ask, start_ns + index * step_ns) for index in range(count)]
+
+
+@dataclass
+class BacktestRuntime:
+    """One production Strategy on one real `BacktestEngine`, and every durable row it offered."""
+
+    engine: BacktestEngine
+    strategy: OiNautilusStrategy
+    journal: ExecutionJournal
+    signals: ExecutionSignalClient
+    profile: OiRuntimeProfile
+    receipts: list[PlanReceipt] = field(default_factory=list)
+    refuse_plans: bool = False
+
+    def run(self) -> None:
+        self.engine.run()
+
+    def observations(self, kind: str | None = None) -> list[ExecutionObservationV1]:
+        values = [row.value for row in self.journal.due(float("inf")) if isinstance(row.value, ExecutionObservationV1)]
+        return [value for value in values if kind is None or value.normalized_kind == kind]
+
+    def plans(self) -> list[TradePlan]:
+        return [row.value for row in self.journal.due(float("inf")) if isinstance(row.value, TradePlan)]
+
+    def dispositions(self) -> list[dict[str, Any]]:
+        return [
+            dict(value.summary)
+            for value in self.observations()
+            if value.normalized_kind in {"signal_disposition", "control_disposition"}
+        ]
+
+    def orders(self) -> list[Any]:
+        return list(self.engine.cache.orders(strategy_id=self.strategy.id))
+
+
+def backtest_runtime(
+    *,
+    tape: Iterable[Any],
+    signals: Iterable[TradeSignalV1] = (),
+    commands: Iterable[OperatorIntentV1] = (),
+    open_plans: Iterable[OpenPlan] = (),
+    stop_exits: dict[str, int] | None = None,
+    control: RuntimeControlSnapshot = RESUMED,
+    profile: OiRuntimeProfile | None = None,
+    seed: Callable[[BacktestEngine, OiNautilusStrategy], None] | None = None,
+    refuse_plans: bool = False,
+    starting_balance: int = 1_000,
+) -> BacktestRuntime:
+    profile = profile or oi_profile()
+    signal_client = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
+    if commands:
+        signal_client.poll_commands_once(rows(*commands))
+    if signals:
+        signal_client.poll_once(rows(*signals))
+    journal = ExecutionJournal(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1"))
+    holder: dict[str, BacktestRuntime] = {}
+
+    def dispatch(pump: Callable[[], None]) -> None:
+        pump()
+        plan = journal.pending_prepare()
+        if plan is None:
+            return
+        runtime = holder["runtime"]
+        receipt = (
+            PlanReceipt(plan, committed=False, reason="trade_plan_rejected")
+            if runtime.refuse_plans
+            else PlanReceipt(plan, committed=True)
+        )
+        runtime.receipts.append(receipt)
+        journal.settle_prepare(receipt)
+        pump()
+
+    strategy = OiNautilusStrategy(
+        profile=profile,
+        signals=signal_client,
+        journal=journal,
+        inputs=RuntimeInputs(control=control, open_plans=tuple(open_plans), stop_exits=stop_exits or {}),
+        dispatch_pump=dispatch,
+        singleton_ready=lambda: True,
+        day_start=DayStartBaseline("2030-03-17", Decimal(starting_balance), NOW_NS - 1, "4" * 64),
+    )
+    engine = BacktestEngine(
+        BacktestEngineConfig(trader_id=TraderId("OI-TEST"), logging=LoggingConfig(bypass_logging=True))
+    )
+    engine.add_venue(
+        venue=INSTRUMENT.id.venue,
+        oms_type=OmsType.NETTING,
+        account_type=AccountType.MARGIN,
+        starting_balances=[Money(starting_balance, INSTRUMENT.quote_currency)],
+        base_currency=None,
+        default_leverage=Decimal(2),
+    )
+    engine.add_instrument(INSTRUMENT)
+    engine.add_data(list(tape))
+    engine.add_strategy(strategy)
+    if seed is not None:
+        seed(engine, strategy)
+    runtime = BacktestRuntime(
+        engine=engine,
+        strategy=strategy,
+        journal=journal,
+        signals=signal_client,
+        profile=profile,
+        refuse_plans=refuse_plans,
+    )
+    holder["runtime"] = runtime
+    return runtime
+
+
+def seed_reconciled_position(
+    engine: BacktestEngine,
+    strategy: OiNautilusStrategy,
+    *,
+    quantity: Decimal = Decimal("0.049"),
+    entry_price: Decimal = Decimal(10_000),
+    stop: Decimal | None = Decimal(9_800),
+    take_profit: Decimal | None = Decimal(10_200),
+    stop_client_order_id: str = "RECONCILED-STOP",
+    take_profit_client_order_id: str = "RECONCILED-TP",
+) -> PositionId:
+    """What Nautilus' startup reconciliation leaves in the Cache for a position held across a restart.
+
+    The position is rebuilt from the venue's report as a claimed order and its fill; the resting stop
+    and take-profit come back as claimed open orders. The Strategy sees exactly this at its first pump.
+    """
+
+    position_id = PositionId(f"{INSTRUMENT.id}-{strategy.id}")
+    entry = strategy.order_factory.market(
+        instrument_id=INSTRUMENT.id,
+        order_side=OrderSide.BUY,
+        quantity=INSTRUMENT.make_qty(quantity),
+        client_order_id=ClientOrderId("RECONCILED-ENTRY"),
+    )
+    engine.cache.add_order(entry)
+    entry.apply(TestEventStubs.order_submitted(entry, account_id=ACCOUNT_ID, ts_event=NOW_NS - 2))
+    engine.cache.update_order(entry)
+    fill = TestEventStubs.order_filled(
+        order=entry,
+        instrument=INSTRUMENT,
+        strategy_id=strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position_id,
+        last_qty=INSTRUMENT.make_qty(quantity),
+        last_px=INSTRUMENT.make_price(entry_price),
+        commission=Money(0, INSTRUMENT.quote_currency),
+        ts_event=NOW_NS - 1,
+    )
+    entry.apply(fill)
+    engine.cache.update_order(entry)
+    engine.cache.add_position(Position(INSTRUMENT, fill), OmsType.NETTING)
+    for price, client_order_id, create in (
+        (stop, stop_client_order_id, strategy.order_factory.stop_market),
+        (take_profit, take_profit_client_order_id, strategy.order_factory.market_if_touched),
+    ):
+        if price is None:
+            continue
+        order = create(
+            instrument_id=INSTRUMENT.id,
+            order_side=OrderSide.SELL,
+            quantity=INSTRUMENT.make_qty(quantity),
+            trigger_price=INSTRUMENT.make_price(price),
+            trigger_type=TriggerType.MARK_PRICE,
+            reduce_only=True,
+            client_order_id=ClientOrderId(client_order_id),
+        )
+        # `BacktestEngine.run` replays cached open orders through its matching engine, which refuses a
+        # reduce-only order it cannot bind to a position; the venue holds these instead.
+        engine.cache.add_order(order, position_id=position_id)
+        order.apply(TestEventStubs.order_submitted(order, account_id=ACCOUNT_ID, ts_event=NOW_NS - 1))
+        engine.cache.update_order(order)
+        order.apply(TestEventStubs.order_accepted(order, account_id=ACCOUNT_ID, ts_event=NOW_NS - 1))
+        engine.cache.update_order(order)
+    return position_id
+
+
 class RecordingOiStrategy(OiNautilusStrategy):
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)  # type: ignore[arg-type]
-        self.submitted: list[tuple[Any, Any, Any]] = []
+    """The production Strategy with its outbound venue calls recorded instead of sent."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.submitted: list[tuple[Any, Any]] = []
         self.canceled: list[Any] = []
-        self.queried: list[Any] = []
+        self.canceled_all: list[Any] = []
+        self.closed: list[tuple[Any, list[str] | None]] = []
         self.subscribed: list[Any] = []
         self.unsubscribed: list[Any] = []
 
     def subscribe_quote_ticks(self, instrument_id: Any, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
         self.subscribed.append(instrument_id)
 
     def unsubscribe_quote_ticks(self, instrument_id: Any, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
         self.unsubscribed.append(instrument_id)
 
     def submit_order(self, order: Any, position_id: Any = None, client_id: Any = None, params: Any = None) -> None:
-        del params
-        self.submitted.append((order, position_id, client_id))
+        self.cache.add_order(order, position_id=position_id)
+        self.submitted.append((order, position_id))
 
     def cancel_order(self, order: Any, client_id: Any = None, params: Any = None) -> None:
-        del client_id, params
         self.canceled.append(order)
 
-    def query_order(self, order: Any, client_id: Any = None, params: Any = None) -> None:
-        del client_id, params
-        self.queried.append(order)
+    def cancel_all_orders(
+        self, instrument_id: Any, order_side: Any = None, client_id: Any = None, params: Any = None
+    ) -> None:
+        self.canceled_all.append(instrument_id)
+
+    def close_position(self, position: Any, client_id: Any = None, tags: Any = None, **kwargs: Any) -> None:
+        self.closed.append((position, tags))
 
 
-def _usdt_margin_account() -> Any:
+@dataclass
+class UnitRuntime:
+    """The Strategy registered on a bare Cache, clock and Portfolio: every Cache fact is the test's."""
+
+    strategy: RecordingOiStrategy
+    journal: ExecutionJournal
+    signals: ExecutionSignalClient
+    cache: Cache
+    clock: TestClock
+    profile: OiRuntimeProfile
+
+    def pump(self) -> None:
+        self.strategy.on_timer(None)
+
+    def settle(self, *, committed: bool = True, reason: str | None = None) -> TradePlan | None:
+        """Play the bridge: commit the prepared plan (or refuse it) and pump once more."""
+
+        plan = self.journal.pending_prepare()
+        if plan is not None:
+            self.journal.settle_prepare(PlanReceipt(plan, committed=committed, reason=reason))
+            self.pump()
+        return plan
+
+    def advance(self, ns: int) -> None:
+        self.clock.set_time(self.clock.timestamp_ns() + ns)
+
+    def observations(self, kind: str | None = None) -> list[ExecutionObservationV1]:
+        values = [row.value for row in self.journal.due(float("inf")) if isinstance(row.value, ExecutionObservationV1)]
+        return [value for value in values if kind is None or value.normalized_kind == kind]
+
+    def plans(self) -> list[TradePlan]:
+        return [row.value for row in self.journal.due(float("inf")) if isinstance(row.value, TradePlan)]
+
+    def dispositions(self) -> list[dict[str, Any]]:
+        return [
+            dict(value.summary)
+            for value in self.observations()
+            if value.normalized_kind in {"signal_disposition", "control_disposition"}
+        ]
+
+    def add_quote(self, bid: float, ask: float, *, at_ns: int | None = None) -> None:
+        self.cache.add_quote_tick(quote(bid, ask, self.clock.timestamp_ns() if at_ns is None else at_ns))
+
+
+def _usdt_margin_account(balance: int) -> Any:
     state = AccountState(
         account_id=ACCOUNT_ID,
         account_type=AccountType.MARGIN,
         base_currency=None,
         reported=True,
-        balances=[
-            AccountBalance(
-                total=Money(1_000, USDT),
-                locked=Money(0, USDT),
-                free=Money(1_000, USDT),
-            )
-        ],
+        balances=[AccountBalance(total=Money(balance, USDT), locked=Money(0, USDT), free=Money(balance, USDT))],
         margins=[],
         info={},
         event_id=UUID4(),
@@ -233,114 +449,147 @@ def _usdt_margin_account() -> Any:
     return AccountFactory.create(state)
 
 
-def registered_oi_strategy(
+def unit_runtime(
     *,
-    values: tuple[TradeSignalV1, ...] = (),
-    commands: tuple[OperatorIntentV1, ...] = (),
-    singleton: list[bool] | None = None,
-    audit: AuditSink | None = None,
-    signal_client: ExecutionSignalClient | None = None,
-    cache: Cache | None = None,
-    mark_reconciled: bool = True,
-    initial_control_state: RuntimeControlSnapshot | None = _RESUMED_CONTROL_STATE,
+    signals: Iterable[TradeSignalV1] = (),
+    commands: Iterable[OperatorIntentV1] = (),
+    open_plans: Iterable[OpenPlan] = (),
+    stop_exits: dict[str, int] | None = None,
+    control: RuntimeControlSnapshot = RESUMED,
     profile: OiRuntimeProfile | None = None,
+    balance: int = 1_000,
+    day_start_equity: Decimal | None = None,
     with_quote: bool = True,
-    plans: TradePlanChannel | None = None,
-) -> SimpleNamespace:
+    singleton: list[bool] | None = None,
+) -> UnitRuntime:
     profile = profile or oi_profile()
-    selected_signals = signal_client or ExecutionSignalClient(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    if values:
-        selected_signals.poll_once(SignalRows(*values))
+    signal_client = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
     if commands:
-        selected_signals.poll_commands_once(CommandRows(*commands))
-    factory = ObservationFactory(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    selected_audit = audit or AuditSink(factory=factory)
-    readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
-    if mark_reconciled:
-        readiness.reconciled(
-            account_observed_at_ns=NOW_NS,
-            reconciliation_observed_at_ns=NOW_NS,
-        )
-    singleton_state = singleton or [True]
-    reconciliation_requests: list[str] = []
-    selected_plans = plans or TradePlanChannel()
+        signal_client.poll_commands_once(rows(*commands))
+    if signals:
+        signal_client.poll_once(rows(*signals))
+    journal = ExecutionJournal(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1"))
+    singleton_state = singleton if singleton is not None else [True]
     strategy = RecordingOiStrategy(
         profile=profile,
-        signals=selected_signals,
-        plans=selected_plans,
-        audit=selected_audit,
-        readiness=readiness,
+        signals=signal_client,
+        journal=journal,
+        inputs=RuntimeInputs(control=control, open_plans=tuple(open_plans), stop_exits=stop_exits or {}),
         # `TestClock` fires timers on the calling thread, so the harness is the callback thread.
-        # The real cross-thread hand-off is proven against a live `TradingNode` in
-        # `tests/integration/test_nautilus_live_clock_threads.py` (#510 F).
         dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: singleton_state[0],
         day_start=DayStartBaseline(
-            utc_day="2030-03-17",
-            equity_usd=Decimal("1000"),
-            recorded_at_ns=NOW_NS - 1_000_000,
-            event_id="4" * 64,
+            "2030-03-17", Decimal(balance) if day_start_equity is None else day_start_equity, NOW_NS - 1, "4" * 64
         ),
-        request_reconciliation=reconciliation_requests.append,
-        initial_control_state=initial_control_state,
     )
     clock = TestClock()
     clock.set_time(NOW_NS)
     msgbus = MessageBus(TraderId("OI-TEST"), clock)
-    selected_cache = cache or Cache()
-    instrument = TestInstrumentProvider.btcusdt_perp_binance()
-    if selected_cache.instrument(instrument.id) is None:
-        selected_cache.add_instrument(instrument)
-    if with_quote and selected_cache.quote_tick(instrument.id) is None:
-        selected_cache.add_quote_tick(
-            TestDataStubs.quote_tick(
-                instrument=instrument,
-                bid_price=9_999,
-                ask_price=10_000,
-                ts_event=NOW_NS,
-                ts_init=NOW_NS,
-            )
-        )
-    account = _usdt_margin_account()
-    account.set_leverage(instrument.id, Decimal(profile.risk.max_leverage))
-    if selected_cache.account(ACCOUNT_ID) is None:
-        selected_cache.add_account(account)
-    portfolio = Portfolio(msgbus, selected_cache, clock)
+    cache = Cache()
+    cache.add_instrument(INSTRUMENT)
+    if with_quote:
+        cache.add_quote_tick(quote(9_999, 10_000, NOW_NS))
+    account = _usdt_margin_account(balance)
+    account.set_leverage(INSTRUMENT.id, Decimal(profile.risk.max_leverage))
+    cache.add_account(account)
+    portfolio = Portfolio(msgbus, cache, clock)
     portfolio.initialize_orders()
     portfolio.initialize_positions()
-    strategy.register(TraderId("OI-TEST"), portfolio, msgbus, selected_cache, clock)
-    return SimpleNamespace(
-        strategy=strategy,
-        profile=profile,
-        signals=selected_signals,
-        plans=selected_plans,
-        audit=selected_audit,
-        readiness=readiness,
-        singleton=singleton_state,
-        clock=clock,
-        cache=selected_cache,
-        portfolio=portfolio,
-        instrument=instrument,
-        reconciliation_requests=reconciliation_requests,
+    strategy.register(TraderId("OI-TEST"), portfolio, msgbus, cache, clock)
+    return UnitRuntime(
+        strategy=strategy, journal=journal, signals=signal_client, cache=cache, clock=clock, profile=profile
     )
+
+
+def cached_position(
+    runtime: UnitRuntime,
+    *,
+    quantity: Decimal = Decimal("0.049"),
+    price: Decimal = Decimal(10_000),
+    strategy_id: Any = None,
+    client_order_id: str = "RECONCILED-ENTRY",
+) -> Position:
+    """A position in the Cache, as Nautilus' reconciliation or a live fill leaves it."""
+
+    strategy = runtime.strategy
+    owner = strategy.id if strategy_id is None else strategy_id
+    position_id = PositionId(f"{INSTRUMENT.id}-{owner}")
+    order = strategy.order_factory.market(
+        instrument_id=INSTRUMENT.id,
+        order_side=OrderSide.BUY,
+        quantity=INSTRUMENT.make_qty(quantity),
+        client_order_id=ClientOrderId(client_order_id),
+    )
+    runtime.cache.add_order(order)
+    order.apply(TestEventStubs.order_submitted(order, account_id=ACCOUNT_ID, ts_event=NOW_NS - 2))
+    runtime.cache.update_order(order)
+    fill = TestEventStubs.order_filled(
+        order=order,
+        instrument=INSTRUMENT,
+        strategy_id=owner,
+        account_id=ACCOUNT_ID,
+        position_id=position_id,
+        last_qty=INSTRUMENT.make_qty(quantity),
+        last_px=INSTRUMENT.make_price(price),
+        commission=Money(0, INSTRUMENT.quote_currency),
+        ts_event=NOW_NS - 1,
+    )
+    order.apply(fill)
+    runtime.cache.update_order(order)
+    position = Position(INSTRUMENT, fill)
+    runtime.cache.add_position(position, OmsType.NETTING)
+    return position
+
+
+def cached_protection(
+    runtime: UnitRuntime,
+    *,
+    leg: str,
+    trigger: Decimal,
+    quantity: Decimal = Decimal("0.049"),
+    client_order_id: str | None = None,
+) -> Any:
+    """A resting reduce-only stop or take-profit the venue reports open."""
+
+    strategy = runtime.strategy
+    create = strategy.order_factory.stop_market if leg == "stop" else strategy.order_factory.market_if_touched
+    order = create(
+        instrument_id=INSTRUMENT.id,
+        order_side=OrderSide.SELL,
+        quantity=INSTRUMENT.make_qty(quantity),
+        trigger_price=INSTRUMENT.make_price(trigger),
+        trigger_type=TriggerType.MARK_PRICE,
+        reduce_only=True,
+        client_order_id=ClientOrderId(client_order_id or f"RESTING-{leg.upper()}"),
+    )
+    runtime.cache.add_order(order)
+    order.apply(TestEventStubs.order_submitted(order, account_id=ACCOUNT_ID, ts_event=NOW_NS - 1))
+    runtime.cache.update_order(order)
+    order.apply(TestEventStubs.order_accepted(order, account_id=ACCOUNT_ID, ts_event=NOW_NS - 1))
+    runtime.cache.update_order(order)
+    return order
 
 
 __all__ = [
     "ACCOUNT_ID",
+    "INSTRUMENT",
+    "MARKET",
     "NOW_NS",
-    "CommandRows",
+    "RESUMED",
+    "SECOND_NS",
+    "BacktestRuntime",
     "RecordingOiStrategy",
-    "SignalRows",
+    "UnitRuntime",
+    "backtest_runtime",
+    "cached_position",
+    "cached_protection",
     "oi_profile",
+    "open_plan",
     "operator_intent",
-    "pump_with_committed_plan",
-    "registered_oi_strategy",
-    "trade_plan_for_entry",
+    "quote",
+    "quotes",
+    "rows",
+    "seed_reconciled_position",
     "trade_signal",
+    "unit_runtime",
 ]

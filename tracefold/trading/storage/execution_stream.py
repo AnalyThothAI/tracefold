@@ -33,6 +33,25 @@ _IDENTITY = re.compile(IDENTITY_PATTERN)
 _OBSERVATION_BATCH_SAVEPOINT = "tracefold_execution_observation_batch"
 
 type StoredExecutionPayload = tuple[int, dict[str, Any]]
+# The current-projection columns, in the order `_runtime_state_values` binds them.
+_RUNTIME_STATE_FIELDS: Final = (
+    "account_slot",
+    "mode",
+    "runtime_id",
+    "alive",
+    "entries_armed",
+    "unexpected_exposure",
+    "positions_count",
+    "open_orders_count",
+    "protection_status",
+    "heartbeat_at_ns",
+    "entry_block_reason",
+    "started_at_ns",
+    "updated_at_ns",
+    "account_snapshot",
+    "routes_count",
+)
+_RUNTIME_STATE_COLUMNS: Final = ", ".join(_RUNTIME_STATE_FIELDS)
 
 
 # The one canonical jsonb encoder for this package: sorted keys and no whitespace drift, so a payload
@@ -132,7 +151,7 @@ class PreparedExecutionObservationBatch:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionAccountPosition:
-    """One bounded position row in the current Runtime read projection."""
+    """One position the Nautilus Cache holds, with the protective orders resting against it."""
 
     position_id: str
     instrument_id: str
@@ -141,11 +160,10 @@ class ExecutionAccountPosition:
     entry_price: str
     mark_price: str | None
     unrealized_pnl_usd: str | None
+    # Whether a non-terminal plan claims this instrument. Exposure no plan claims blocks new entries.
     owned: bool
-    protection_status: Literal["protected", "pending", "unprotected", "unknown"]
-    protection_quantity: str | None
-    protection_trigger_price: str | None
-    protection_full_coverage: bool
+    stop_trigger_price: str | None
+    take_profit_trigger_price: str | None
 
     def __post_init__(self) -> None:
         if not self.position_id or len(self.position_id) > 256 or not postgres_text_valid(self.position_id):
@@ -155,15 +173,19 @@ class ExecutionAccountPosition:
         if not self.quantity or not self.entry_price:
             raise ValueError("execution_account_position_value_invalid")
 
+    @property
+    def protected(self) -> bool:
+        return self.stop_trigger_price is not None and self.take_profit_trigger_price is not None
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionAccountOrder:
-    """One open or in-flight order in the current Runtime read projection."""
+    """One open or in-flight order in the Nautilus Cache."""
 
     client_order_id: str
     instrument_id: str
     state: Literal["open", "inflight"]
-    leg: Literal["entry", "exit", "protection", "unknown"]
+    leg: Literal["entry", "stop", "take_profit", "exit", "unknown"]
     quantity: str
     reduce_only: bool
     trigger_price: str | None
@@ -178,47 +200,40 @@ class ExecutionAccountOrder:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionAccountSnapshot:
-    """Current account read model derived by the sole Nautilus Runtime owner."""
+    """What the account holds, read from the Nautilus Cache the Runtime executes against (#680).
+
+    Nautilus reconciles the Cache with the venue at start and every five seconds after, so this is the
+    Runtime's own picture, not a second proof beside it. `complete` says every position could be
+    marked and the account balance was known, so `equity_usd` and the drawdown are whole numbers.
+    """
 
     observed_at_ns: int
-    market_observed_at_ns: int | None
     equity_usd: str | None
-    day_start_equity_usd: str | None
     daily_drawdown_usd: str | None
     daily_drawdown_bps: int | None
-    aggregate_risk_usd: str | None
     positions: tuple[ExecutionAccountPosition, ...]
     orders: tuple[ExecutionAccountOrder, ...]
     open_orders_count: int
     inflight_orders_count: int
-    unknown_orders_count: int
     complete: bool
-    truncated: bool = False
-    # Whether the Runtime's durable audit copy is keeping up. It is reported, never enforced: Binance
-    # holds the account's own order and fill history, so an unwritable local copy is a thing to show
-    # an operator, not a reason to refuse exposure (#520 PR-B).
-    audit_healthy: bool = True
-    audit_failure_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if self.observed_at_ns <= 0 or (self.market_observed_at_ns is not None and self.market_observed_at_ns <= 0):
+        if self.observed_at_ns <= 0:
             raise ValueError("execution_account_snapshot_clock_invalid")
-        if min(self.open_orders_count, self.inflight_orders_count, self.unknown_orders_count) < 0:
+        if min(self.open_orders_count, self.inflight_orders_count) < 0:
             raise ValueError("execution_account_snapshot_count_invalid")
         if len(self.positions) > 100 or len(self.orders) > 200:
-            raise ValueError("execution_account_snapshot_bounds_invalid")
-        if self.audit_failure_reason is not None and len(self.audit_failure_reason) > 128:
             raise ValueError("execution_account_snapshot_bounds_invalid")
 
     def payload(self) -> dict[str, Any]:
         return {
-            "version": "execution_account_snapshot_v1",
+            "version": "execution_account_snapshot_v2",
             **asdict(self),
         }
 
     @classmethod
     def from_payload(cls, value: object) -> ExecutionAccountSnapshot:
-        if not isinstance(value, dict) or value.get("version") != "execution_account_snapshot_v1":
+        if not isinstance(value, dict) or value.get("version") != "execution_account_snapshot_v2":
             raise ValueError("execution_account_snapshot_invalid")
         try:
             payload = {key: item for key, item in value.items() if key != "version"}
@@ -233,54 +248,43 @@ class ExecutionAccountSnapshot:
 class ExecutionRuntimeState:
     """The sole durable current projection for one execution account slot.
 
-    What is running was six further columns: `runtime_release`, `config_sha256`, `runtime_revision`,
-    `image_digest`, `credential_fingerprint` and `lifecycle_state`. Every one of them was written on
-    every heartbeat and read by nothing but the `/status` JSON, where no page and no operator command
-    ever named one; `lifecycle_state` restated `alive` with a fifth value (`failed`) no writer ever
-    used. `runtime_id` stays, because the generation fence in `update_execution_runtime_state` is a
-    real refusal: it is how a row a departing Runtime still holds cannot be overwritten by its
-    successor (#537 PR-4).
+    `runtime_id` is the generation fence: `update_execution_runtime_state` only writes the row the
+    running generation inserted, so a departing Runtime cannot overwrite its successor. The private
+    account-proof facts that stood here -- `execution_safe`, `startup_reconciled`, `account_flat`,
+    `reconciliation_observed_at_ns` and `facts_expire_at_ns` -- went with the proof (#680): Nautilus
+    reconciles before the Strategy starts, so a running Runtime is a reconciled one.
     """
 
     account_slot: str
     mode: Literal["paper", "live"]
     runtime_id: UUID
     alive: bool
-    execution_safe: bool
     entries_armed: bool
-    startup_reconciled: bool
     unexpected_exposure: bool
-    account_flat: bool
     positions_count: int
     open_orders_count: int
-    protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]
-    reconciliation_observed_at_ns: int
+    protection_status: Literal["not_applicable", "protected", "unprotected"]
     heartbeat_at_ns: int
     entry_block_reason: str | None
     started_at_ns: int
     updated_at_ns: int
     account_snapshot: ExecutionAccountSnapshot | None = None
-    # How many `market_key`s this Runtime generation discovered it can reach. A count, because a count
-    # is all any reader ever rendered: the Signal lane read the key list to pre-refuse a market, and
-    # the Runtime already answers that by name on the entry path (#537 PR-3). Fixed for the life of
-    # one `runtime_id`, like the release beside it, so only the insert writes it.
+    # How many `market_key`s this Runtime generation routes. Fixed for the life of one `runtime_id`,
+    # so only the insert writes it.
     routes_count: int = 0
-    facts_expire_at_ns: int = 0
 
     def __post_init__(self) -> None:
         if _IDENTITY.fullmatch(self.account_slot) is None:
             raise ValueError("execution_runtime_identity_invalid")
         if self.mode not in {"paper", "live"}:
             raise ValueError("execution_runtime_mode_invalid")
-        if self.reconciliation_observed_at_ns < 0 or min(self.heartbeat_at_ns, self.started_at_ns) <= 0:
+        if min(self.heartbeat_at_ns, self.started_at_ns) <= 0:
             raise ValueError("execution_runtime_clock_invalid")
         if self.updated_at_ns < max(self.heartbeat_at_ns, self.started_at_ns):
             raise ValueError("execution_runtime_clock_invalid")
         if min(self.positions_count, self.open_orders_count) < 0:
             raise ValueError("execution_runtime_counts_invalid")
-        if self.execution_safe and not (self.alive and self.startup_reconciled and not self.unexpected_exposure):
-            raise ValueError("execution_runtime_safe_invalid")
-        if self.entries_armed and not self.execution_safe:
+        if self.entries_armed and not (self.alive and not self.unexpected_exposure):
             raise ValueError("execution_runtime_armed_invalid")
         if self.entries_armed != (self.entry_block_reason is None):
             raise ValueError("execution_runtime_entry_reason_invalid")
@@ -545,16 +549,8 @@ class ExecutionStreamStorage:
                   ON command.command_id = offered.payload ->> 'command_id'
                  AND command.account_slot = offered.payload ->> 'account_slot'
                WHERE command.action IN ('pause_entries', 'resume_entries', 'emergency_halt', 'flatten')
-                 AND (
-                   (
-                     offered.payload ->> 'normalized_kind' = 'control_disposition'
-                     AND offered.payload -> 'summary' ->> 'disposition' IN ('accepted', 'completed')
-                   ) OR (
-                     command.action = 'flatten'
-                     AND offered.payload ->> 'normalized_kind' = 'readiness'
-                     AND offered.payload -> 'summary' ->> 'control_stage' = 'runtime_accepted'
-                   )
-                 )
+                 AND offered.payload ->> 'normalized_kind' = 'control_disposition'
+                 AND offered.payload -> 'summary' ->> 'disposition' = 'accepted'
                ORDER BY command.account_slot, command.seq,
                         (offered.payload ->> 'observed_at_ns')::bigint DESC
             )
@@ -627,15 +623,7 @@ class ExecutionStreamStorage:
         if _IDENTITY.fullmatch(account_slot) is None:
             raise ValueError("execution_account_slot_invalid")
         row = self.conn.execute(
-            """
-            SELECT account_slot, mode, runtime_id, alive, execution_safe, entries_armed,
-                   startup_reconciled, unexpected_exposure, account_flat,
-                   positions_count, open_orders_count, protection_status,
-                   reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-                   started_at_ns, updated_at_ns, account_snapshot, routes_count, facts_expire_at_ns
-              FROM trading_execution_runtime_state
-             WHERE account_slot = %s
-            """,
+            f"SELECT {_RUNTIME_STATE_COLUMNS} FROM trading_execution_runtime_state WHERE account_slot = %s",  # noqa: S608
             (account_slot,),
         ).fetchone()
         return None if row is None else self._materialize_runtime_state(row)
@@ -643,37 +631,12 @@ class ExecutionStreamStorage:
     def put_execution_runtime_state(self, value: ExecutionRuntimeState) -> ExecutionRuntimeState:
         require_transaction(self.conn, operation="put_execution_runtime_state")
         self.conn.execute(
-            """
-            INSERT INTO trading_execution_runtime_state (
-              account_slot, mode, runtime_id, alive, execution_safe, entries_armed,
-              startup_reconciled, unexpected_exposure, account_flat,
-              positions_count, open_orders_count, protection_status,
-              reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-              started_at_ns, updated_at_ns, account_snapshot, routes_count, facts_expire_at_ns
-            ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s
-            )
+            f"""
+            INSERT INTO trading_execution_runtime_state ({_RUNTIME_STATE_COLUMNS})
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
             ON CONFLICT (account_slot) DO UPDATE SET
-              mode = EXCLUDED.mode,
-              runtime_id = EXCLUDED.runtime_id,
-              alive = EXCLUDED.alive,
-              execution_safe = EXCLUDED.execution_safe,
-              entries_armed = EXCLUDED.entries_armed,
-              startup_reconciled = EXCLUDED.startup_reconciled,
-              unexpected_exposure = EXCLUDED.unexpected_exposure,
-              account_flat = EXCLUDED.account_flat,
-              positions_count = EXCLUDED.positions_count,
-              open_orders_count = EXCLUDED.open_orders_count,
-              protection_status = EXCLUDED.protection_status,
-              reconciliation_observed_at_ns = EXCLUDED.reconciliation_observed_at_ns,
-              heartbeat_at_ns = EXCLUDED.heartbeat_at_ns,
-              entry_block_reason = EXCLUDED.entry_block_reason,
-              started_at_ns = EXCLUDED.started_at_ns,
-              updated_at_ns = EXCLUDED.updated_at_ns,
-              account_snapshot = EXCLUDED.account_snapshot,
-              routes_count = EXCLUDED.routes_count
-            """,
+              {", ".join(f"{column} = EXCLUDED.{column}" for column in _RUNTIME_STATE_FIELDS[1:])}
+            """,  # noqa: S608 -- module-owned column names; every value stays bound
             self._runtime_state_values(value),
         )
         return value
@@ -685,31 +648,23 @@ class ExecutionStreamStorage:
         updated = self.conn.execute(
             """
             UPDATE trading_execution_runtime_state
-               SET alive = %s, execution_safe = %s,
-                   entries_armed = %s,
-                   startup_reconciled = %s, unexpected_exposure = %s, account_flat = %s,
+               SET alive = %s, entries_armed = %s, unexpected_exposure = %s,
                    positions_count = %s, open_orders_count = %s, protection_status = %s,
-                   reconciliation_observed_at_ns = %s, heartbeat_at_ns = %s,
-                   entry_block_reason = %s, updated_at_ns = %s,
-                   account_snapshot = %s::jsonb, facts_expire_at_ns = %s
+                   heartbeat_at_ns = %s, entry_block_reason = %s, updated_at_ns = %s,
+                   account_snapshot = %s::jsonb
              WHERE account_slot = %s AND runtime_id = %s
             """,
             (
                 value.alive,
-                value.execution_safe,
                 value.entries_armed,
-                value.startup_reconciled,
                 value.unexpected_exposure,
-                value.account_flat,
                 value.positions_count,
                 value.open_orders_count,
                 value.protection_status,
-                value.reconciliation_observed_at_ns,
                 value.heartbeat_at_ns,
                 value.entry_block_reason,
                 value.updated_at_ns,
                 self._account_snapshot_json(value.account_snapshot),
-                value.facts_expire_at_ns,
                 value.account_slot,
                 value.runtime_id,
             ),
@@ -723,15 +678,11 @@ class ExecutionStreamStorage:
             mode=row["mode"],
             runtime_id=UUID(str(row["runtime_id"])),
             alive=bool(row["alive"]),
-            execution_safe=bool(row["execution_safe"]),
             entries_armed=bool(row["entries_armed"]),
-            startup_reconciled=bool(row["startup_reconciled"]),
             unexpected_exposure=bool(row["unexpected_exposure"]),
-            account_flat=bool(row["account_flat"]),
             positions_count=int(row["positions_count"]),
             open_orders_count=int(row["open_orders_count"]),
             protection_status=row["protection_status"],
-            reconciliation_observed_at_ns=int(row["reconciliation_observed_at_ns"]),
             heartbeat_at_ns=int(row["heartbeat_at_ns"]),
             entry_block_reason=(None if row["entry_block_reason"] is None else str(row["entry_block_reason"])),
             started_at_ns=int(row["started_at_ns"]),
@@ -742,7 +693,6 @@ class ExecutionStreamStorage:
                 else ExecutionAccountSnapshot.from_payload(dict(row["account_snapshot"]))
             ),
             routes_count=int(row["routes_count"]),
-            facts_expire_at_ns=int(row["facts_expire_at_ns"]),
         )
 
     @staticmethod
@@ -756,22 +706,17 @@ class ExecutionStreamStorage:
             value.mode,
             value.runtime_id,
             value.alive,
-            value.execution_safe,
             value.entries_armed,
-            value.startup_reconciled,
             value.unexpected_exposure,
-            value.account_flat,
             value.positions_count,
             value.open_orders_count,
             value.protection_status,
-            value.reconciliation_observed_at_ns,
             value.heartbeat_at_ns,
             value.entry_block_reason,
             value.started_at_ns,
             value.updated_at_ns,
             cls._account_snapshot_json(value.account_snapshot),
             value.routes_count,
-            value.facts_expire_at_ns,
         )
 
     def ensure_execution_runtime_control_state(

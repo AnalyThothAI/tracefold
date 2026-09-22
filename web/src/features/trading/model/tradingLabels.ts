@@ -56,24 +56,27 @@ export function policyLabel(policyId: string | null | undefined): string {
 /**
  * Why `entries_armed` is false, keyed exactly as `app/execution_status.py` and the Runtime write it.
  *
- * The projection's own words come first, then the Runtime readiness gates it forwards. A reason with no
- * entry renders as itself: a missing translation is a gap in this table, never a reason to hide a refusal.
+ * The projection's own words come first, then the Runtime lifecycle words, then the four the Runtime
+ * itself blocks entries on. The reconciliation and ownership gates went with the Runtime's private account
+ * proof (#680). A reason with no entry renders as itself: a missing translation is a gap in this table,
+ * never a reason to hide a refusal.
  */
 export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
+  // The read projection's own words.
   disabled: "执行通道未启用",
-  emergency_halted: "已紧急停止",
-  entries_paused: "开仓已暂停",
   entry_blocked: "开仓被拒绝（未具名）",
-  reconciliation_stale: "私有对账已过期",
   runtime_heartbeat_stale: "Runtime 心跳已过期",
   runtime_identity_mismatch: "Runtime 身份与配置不符",
-  runtime_starting: "Runtime 正在启动",
   runtime_state_missing: "Runtime 状态未上报",
+  // The Runtime process lifecycle.
+  runtime_rebuilding: "Runtime 正在重建",
+  runtime_starting: "Runtime 正在启动",
   runtime_stopped: "Runtime 已停止",
+  // What the Runtime blocks entries on.
+  emergency_halted: "已紧急停止",
+  entries_paused: "开仓已暂停",
   singleton_lost: "账户槽位已被他人持有",
-  startup_reconciliation_unproven: "启动对账尚未完成",
-  unexpected_exposure: "出现无主敞口",
-  ownership_ambiguous: "交易归属存在冲突",
+  unexpected_exposure: "出现无计划认领的敞口",
 };
 
 export function entryBlockReasonLabel(reason: string | null | undefined): string {
@@ -82,45 +85,45 @@ export function entryBlockReasonLabel(reason: string | null | undefined): string
 }
 
 /**
- * Why the Runtime accepted or refused one Signal, keyed as `signal_disposition.summary.disposition`.
+ * Why the Runtime accepted or refused one entry, keyed as `signal_disposition.summary.disposition`.
  *
- * Four of these mean accepted (`tracefold/trading/stages.py:ACCEPTED_ENTRY_DISPOSITIONS`); the rest are the
- * entry path's own refusals in `oi_runtime/entry.py` plus the risk policy's in `oi_runtime/risk.py`. The
- * server's `stage` already says `ordered` or `rejected` about the same row, so this table only has to
- * say *why*. Exactly the words a writer can still emit: the two cached-replay refusals went with
- * `entry._replay_cached` (#537 PR-4), and the reasons above them with the gates #537 PR-3 deleted.
+ * `accepted` is the one word that means the venue took the entry order
+ * (`tracefold/trading/stages.py:ACCEPTED_ENTRY_DISPOSITIONS`), and the Runtime writes it only after the
+ * venue answered (#680). Every other word is a refusal: the Strategy's own gates, the risk policy's, the
+ * sizing checks, and what the venue said about the order itself. A gate that waits — for the account, the
+ * market, a narrower spread, a free instrument — waits within the Signal's TTL and names itself as the
+ * refusal only if the TTL runs out first. The server's `stage` already says `ordered` or `rejected` about
+ * the same row, so this table only has to say *why*; the venue's own reason for `venue_rejected` is
+ * printed verbatim beside it from `order_reject_reason`.
  */
 export const SIGNAL_DISPOSITION_ZH: Record<string, string> = {
-  accepted: "已受理",
-  recovered: "重启后恢复",
-  replayed_query_first: "缓存订单重放 · 先查询",
-  unknown_query_first: "提交结果未知 · 先查询",
-  // The entry path's refusals.
+  accepted: "交易所已受理",
+  // The Strategy's gates.
   expired: "Signal 已过期",
+  account_unavailable: "账户不可读",
   instrument_busy: "该市场已有在场执行",
-  instrument_or_market_missing: "缺少合约或行情",
+  instrument_unavailable: "合约定义不可读",
   instrument_unmapped: "运行时目录里没有这个市场",
-  market_subscription_pending: "行情订阅预热中",
-  protection_unproven: "已有敞口未证明受保护",
+  market_unavailable: "行情不可用",
+  post_stop_cooldown: "止损后冷却期内",
+  spread_limit: "点差在 Signal 有效期内始终超限",
+  trade_plan_busy: "交易计划写入未完成",
+  trade_plan_conflict: "交易计划冲突",
+  trade_plan_rejected: "交易计划被拒绝",
   // The risk policy's halts and denials.
-  account_stale: "账户快照已过期",
   daily_loss_limit: "当日亏损已达上限",
-  market_stale: "行情已过期",
   position_limit: "持仓数已达上限",
   risk_non_positive: "可用风险预算不为正",
+  oi_runtime_day_start_baseline_invalid: "当日起始权益无法作为基线",
   // Sizing refusals: the order the venue would accept is not the order the risk budget allows.
   notional_below_minimum: "名义金额低于最小值",
   quantity_below_increment: "数量低于最小变动",
   quantity_below_minimum: "数量低于最小值",
-  spread_limit: "点差超限",
-  // Facts the entry path could not read at all.
-  oi_runtime_account_balance_missing: "账户余额不可读",
-  oi_runtime_account_missing: "账户不可读",
-  oi_runtime_candidate_market_missing: "候选市场行情不可读",
-  oi_runtime_day_start_baseline_invalid: "当日起始权益无法作为基线",
-  oi_runtime_instrument_missing: "合约定义不可读",
-  oi_runtime_market_invalid: "行情不可用于判定",
-  oi_runtime_market_missing: "行情不可读",
+  // What happened to the entry order itself.
+  entry_canceled: "入场单未成交即撤销",
+  entry_outcome_unknown: "入场结果未知",
+  runtime_error: "Runtime 内部错误",
+  venue_rejected: "交易所拒绝入场",
 };
 
 export function signalDispositionLabel(reason: string | null | undefined): string {
@@ -128,7 +131,12 @@ export function signalDispositionLabel(reason: string | null | undefined): strin
   return SIGNAL_DISPOSITION_ZH[reason] ?? ENTRY_BLOCK_REASON_ZH[reason] ?? reason;
 }
 
-/** The seven stages `tracefold/trading/stages.py:execution_stage` derives. The server owns the word. */
+/**
+ * The seven stages `tracefold/trading/stages.py:execution_stage` derives. The server owns the word.
+ *
+ * A plan that ended because its entry was refused (`exit_reason = not_submitted`) is `rejected`, never
+ * `closed`: nothing opened, so there is nothing to have closed.
+ */
 export const EXECUTION_STAGE_ZH: Record<string, string> = {
   pending: "待处置",
   rejected: "已拒绝",
@@ -137,8 +145,6 @@ export const EXECUTION_STAGE_ZH: Record<string, string> = {
   filled: "已成交",
   protected: "止损已挂",
   closed: "已平仓",
-  closing: "平仓中",
-  unresolved: "归属待核实",
 };
 
 /**
@@ -152,40 +158,53 @@ export const EXECUTION_SOURCE_ZH: Record<string, string> = {
   signal: "Signal",
 };
 
-/** The three exits `ProtectionCoordinator` can witness, as the `position/closed` observation records them. */
-export const HISTORY_GAP_ZH: Record<string, string> = {
-  audit_gap: "成交历史存在审计缺口",
-  entry_fill_missing: "入场成交记录缺失",
-  entry_outcome_unknown: "缺少入场结果凭据",
-  close_observation_missing: "平仓记录缺失",
-  exit_fills_incomplete: "退出成交记录不完整",
-  native_pnl_basis_incomplete_after_restart: "重启后成交成本基础不完整",
-};
-
+/**
+ * Why a trade plan ended, as `trading_trade_plans.exit_reason` stores it.
+ *
+ * `external` is a close this Runtime observed but did not originate (a venue-side close, a liquidation, an
+ * order placed on the venue by hand); `venue_unknown` is a plan whose end the Runtime never saw because the
+ * account was already flat for it when it looked. The last two are historical: plans closed before #680
+ * still carry them, and nothing writes them now.
+ */
 export const EXIT_REASON_ZH: Record<string, string> = {
+  stop_filled: "止损成交",
   take_profit: "止盈退出",
   time_exit: "持仓到期退出",
   operator_flatten: "操作员平仓",
+  external: "外部平仓（非本 Runtime 发起）",
+  venue_unknown: "未观察到平仓过程",
+  not_submitted: "入场被拒，计划终止",
   protection_failure: "保护失败平仓",
   recovery_safety_flatten: "恢复保护时安全平仓",
-  venue_unknown: "退出原因待确认",
-  not_submitted: "计划终止，未提交入场",
-  flatten: "flatten 退出",
-  stop_filled: "止损成交",
-  unclaimed_flatten: "无主敞口 flatten",
 };
 
+/** What one open or in-flight order is for, as `current_account.orders[].leg` names it. */
+export const ORDER_LEG_ZH: Record<string, string> = {
+  entry: "入场",
+  stop: "止损",
+  take_profit: "止盈",
+  exit: "退出",
+  unknown: "用途未知",
+};
+
+export function orderLegLabel(leg: string | null | undefined): string {
+  if (!leg) return "—";
+  return ORDER_LEG_ZH[leg] ?? leg;
+}
+
 /**
- * How far the Runtime has got with protecting what the account holds, as `protection_status` names it.
+ * Whether what the account holds is protected, as `protection_status` names it.
+ *
+ * `protected` means every position is claimed by a trade plan and has both its stop and its take-profit
+ * resting on the venue; `not_applicable` is an account with no position at all. The Runtime answers from its own Nautilus Cache,
+ * so the `pending` and `unknown` words of its private proof went with it (#680).
  *
  * It lived inline in `TradingRisk` and answered in English — `PROTECTION PENDING`, `UNPROTECTED` — while
  * the nine tables beside it answered in Chinese. One reader, one language, one place (#604 T4).
  */
 export const PROTECTION_STATUS_ZH: Record<string, string> = {
   not_applicable: "无需保护",
-  pending: "保护挂单中",
   protected: "已受保护",
-  unknown: "保护状态未知",
   unprotected: "未受保护",
 };
 

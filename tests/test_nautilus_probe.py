@@ -11,7 +11,7 @@ def test_nautilus_probe_answers_a_blocked_runtime_with_the_payload_that_says_why
     payload is the answer; `ok` still carries the same claim, inside it.
     """
 
-    readiness = {"ok": False, "execution_safe": False, "entry_block_reason": "startup_reconciliation"}
+    readiness = {"ok": False, "alive": False, "entry_block_reason": "runtime_starting"}
     app = create_probe_app(
         title="Tracefold Nautilus Probe",
         readiness=lambda: readiness,
@@ -24,7 +24,7 @@ def test_nautilus_probe_answers_a_blocked_runtime_with_the_payload_that_says_why
     assert blocked.status_code == 200
     assert blocked.json() == readiness
 
-    readiness.update(ok=True, execution_safe=True, entry_block_reason=None)
+    readiness.update(ok=True, alive=True, entry_block_reason=None)
     available = client.get("/readyz")
     assert available.status_code == 200
     assert available.json() == readiness

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from nautilus_trader.adapters.binance import (
     BINANCE,
@@ -26,16 +28,23 @@ from nautilus_trader.config import (
     TradingNodeConfig,
 )
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.identifiers import AccountId, ClientId, InstrumentId, TraderId
+from nautilus_trader.model.instruments import CryptoPerpetual
 
-from tracefold.trading import IDENTITY_PATTERN, MARKET_KEY_PATTERN
+from tracefold.trading import IDENTITY_PATTERN, MARKET_KEY_PATTERN, market_key
 
 _IDENTITY = re.compile(IDENTITY_PATTERN)
 _MARKET_KEY = re.compile(MARKET_KEY_PATTERN)
+# Nautilus reconciles the venue at start over this many minutes of order and fill history, and never
+# less than a day: a position opened just inside the longest holding time must still find its entry.
+_MIN_RECONCILIATION_LOOKBACK_MINS = 1_440
+_RECONCILIATION_LOOKBACK_MARGIN_MINS = 60
+# Nautilus' own continuous checks. Five seconds is the invariant cadence the Strategy converges on too.
+CONTINUOUS_CHECK_SECONDS = 5.0
 
 # What a Runtime that is actually going to trade can be. `disabled` is not one of them: `run_nautilus`
-# returns on it before any profile exists, so a `RuntimeMode` alias that admitted it only made every
-# path downstream re-prove that it was not looking at a Runtime that cannot trade (#589 PR-2).
+# returns on it before any profile exists (#589 PR-2).
 ActiveRuntimeMode = Literal["paper", "live"]
 
 
@@ -61,36 +70,53 @@ class OiInstrumentRoute:
             raise ValueError("oi_runtime_stop_distance_invalid")
 
 
-# How much older than one private-reconciliation period the account and reconciliation clocks may be
-# before an entry is refused. They are multiples of the period, not free numbers: the account clock is
-# only ever as fresh as the last scan, so any budget at or below one period is expired for part of
-# every cycle by construction (#510 B). Two periods tolerates one missed scan, three tolerates two,
-# and both still refuse a Runtime that has genuinely stopped reconciling.
-_ACCOUNT_STALE_PERIODS = 2
-_RECONCILIATION_STALE_PERIODS = 3
+def route_catalogue(instruments: Iterable[Any], *, stop_distance_bps: int) -> tuple[OiInstrumentRoute, ...]:
+    """The markets this Runtime may enter: Binance's own USDT-settled crypto perpetuals, trading now.
+
+    Binance lists stock and commodity perpetuals under the same `CryptoPerpetual` shape with
+    `contractType = TRADIFI_PERPETUAL`; they need a separate agreement on the account and the Demo venue
+    refused one with `-4411` (#680 RC8). Only `contractType = PERPETUAL` in `TRADING` status is a route.
+    A symbol whose base asset cannot be a market key (a non-ASCII meme listing) is skipped, and two
+    instruments claiming one market key is a catalogue this Runtime cannot route unambiguously.
+    """
+
+    routes: dict[str, OiInstrumentRoute] = {}
+    for instrument in instruments:
+        if not isinstance(instrument, CryptoPerpetual):
+            continue
+        if instrument.quote_currency != USDT or instrument.settlement_currency != USDT:
+            continue
+        info = instrument.info or {}
+        if str(info.get("status")) != "TRADING" or str(info.get("contractType")) != "PERPETUAL":
+            continue
+        key = market_key(instrument.base_currency.code)
+        if _MARKET_KEY.fullmatch(key) is None:
+            continue
+        if key in routes:
+            raise RuntimeError("oi_runtime_market_route_ambiguous")
+        routes[key] = OiInstrumentRoute(
+            market_key=key, instrument_id=instrument.id, stop_distance_bps=stop_distance_bps
+        )
+    return tuple(routes[key] for key in sorted(routes))
 
 
 @dataclass(frozen=True, slots=True)
 class OiRiskLimits:
-    """The smallest Runtime-owned gap policy beyond Nautilus RiskEngine."""
+    """The operator's entry and sizing policy, as the Runtime enforces it."""
 
     risk_fraction_per_trade: Decimal
     max_risk_per_trade_usd: Decimal
-    max_total_risk_usd: Decimal
     max_positions: int
     max_leverage: int
     max_daily_loss_usd: Decimal
-    # Market freshness is owned by the quote stream, not by the private scan, so it stays its own
-    # number. The two account clocks below are owned by the private scan and are derived from it.
+    max_spread_fraction_of_stop: Decimal
+    post_stop_cooldown_ns: int
     market_stale_after_ns: int
-    reconciliation_interval_ns: int
 
     def __post_init__(self) -> None:
         if not Decimal("0") < self.risk_fraction_per_trade <= Decimal("1"):
             raise ValueError("oi_runtime_risk_fraction_invalid")
-        if self.max_risk_per_trade_usd <= 0 or self.max_total_risk_usd <= 0:
-            raise ValueError("oi_runtime_risk_limit_invalid")
-        if self.max_risk_per_trade_usd > self.max_total_risk_usd:
+        if self.max_risk_per_trade_usd <= 0:
             raise ValueError("oi_runtime_risk_limit_invalid")
         if not 1 <= self.max_positions <= 100:
             raise ValueError("oi_runtime_max_positions_invalid")
@@ -98,20 +124,10 @@ class OiRiskLimits:
             raise ValueError("oi_runtime_max_leverage_invalid")
         if self.max_daily_loss_usd <= 0:
             raise ValueError("oi_runtime_daily_loss_invalid")
-        if min(self.market_stale_after_ns, self.reconciliation_interval_ns) <= 0:
-            raise ValueError("oi_runtime_staleness_invalid")
-
-    @property
-    def account_stale_after_ns(self) -> int:
-        return self.reconciliation_interval_ns * _ACCOUNT_STALE_PERIODS
-
-    @property
-    def reconciliation_stale_after_ns(self) -> int:
-        return self.reconciliation_interval_ns * _RECONCILIATION_STALE_PERIODS
-
-    @property
-    def reconciliation_interval_seconds(self) -> float:
-        return self.reconciliation_interval_ns / 1_000_000_000
+        if not Decimal("0") < self.max_spread_fraction_of_stop <= Decimal("1"):
+            raise ValueError("oi_runtime_max_spread_invalid")
+        if self.post_stop_cooldown_ns < 0 or self.market_stale_after_ns <= 0:
+            raise ValueError("oi_runtime_clock_limit_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,15 +145,8 @@ class OiExitPolicy:
 class OiRuntimeProfile:
     """The account slot this Runtime executes for, and the policy it executes under.
 
-    `account_slot` plus `mode` is the whole execution identity (#520), and now it is the only one:
-    `runtime_release` and `config_sha256` rode along on the projection and on every observation
-    naming what was running, and no reader ever named either (#537 PR-4).
-
-    `namespace` is that identity spelled once. It was two fields, `cache_namespace` and
-    `client_order_namespace`, and the composition root has only ever built both out of the same
-    `tracefold:{account_slot}:{mode}` string: the Nautilus trader id and every deterministic client
-    order id are derived from it, so two fields could only ever let a restart derive order ids under
-    one namespace while claiming the Cache of another (#589 PR-2).
+    `account_slot` plus `mode` is the whole execution identity (#520). `namespace` is that identity
+    spelled once: the Nautilus trader id and every deterministic client order id derive from it.
     """
 
     mode: ActiveRuntimeMode
@@ -164,6 +173,11 @@ class OiRuntimeProfile:
         if not self.routes:
             raise ValueError("oi_runtime_routes_missing")
 
+    @property
+    def reconciliation_lookback_mins(self) -> int:
+        holding_mins = math.ceil(self.exit_policy.max_holding_ns / 60_000_000_000)
+        return max(_MIN_RECONCILIATION_LOOKBACK_MINS, holding_mins + _RECONCILIATION_LOOKBACK_MARGIN_MINS)
+
 
 @dataclass(frozen=True, slots=True)
 class BinanceRuntimeCredentials:
@@ -181,11 +195,7 @@ def _trader_id(profile: OiRuntimeProfile) -> TraderId:
 
 
 def _instance_id(profile: OiRuntimeProfile) -> UUID4:
-    """Stable per account slot and mode, which is what the namespace already carries.
-
-    It was derived from the whole configuration digest instead, so every risk-limit edit gave the
-    same Runtime a new Nautilus instance id and therefore a new Nautilus Cache namespace (#537 PR-4).
-    """
+    """Stable per account slot and mode, which is what the namespace already carries (#537 PR-4)."""
 
     digest = hashlib.sha256(f"tracefold:oi-runtime:{profile.account_slot}:{profile.mode}".encode()).digest()
     value = uuid.UUID(bytes=digest[:16], version=4)
@@ -193,11 +203,7 @@ def _instance_id(profile: OiRuntimeProfile) -> UUID4:
 
 
 def binance_environment(mode: ActiveRuntimeMode) -> BinanceEnvironment:
-    """The one place `paper` becomes Binance's demo environment and `live` becomes production.
-
-    The catalogue discovery in the composition root carried a second copy of this ternary, so the
-    two could have disagreed about which venue a Runtime was about to trade on (#537 PR-4).
-    """
+    """The one place `paper` becomes Binance's demo environment and `live` becomes production."""
 
     return BinanceEnvironment.DEMO if mode == "paper" else BinanceEnvironment.LIVE
 
@@ -206,7 +212,13 @@ def build_oi_node_config(
     profile: OiRuntimeProfile,
     credentials: BinanceRuntimeCredentials,
 ) -> TradingNodeConfig:
-    """Build the pinned paper/live graph."""
+    """The pinned paper/live graph, in which Nautilus owns every order and position (#680).
+
+    Startup reconciliation rebuilds the Cache from the venue before the Strategy starts; the open-order
+    and position checks keep it converged every five seconds after that, over open orders only so the
+    REST weight stays inside the live budget. There is no Cache database: the venue is the store, and a
+    restart is the same reconciliation a start is.
+    """
 
     environment = binance_environment(profile.mode)
     instrument_ids = frozenset(route.instrument_id for route in profile.routes)
@@ -231,7 +243,8 @@ def build_oi_node_config(
         # Sizing already caps gross notional at the configured leverage. Avoid an
         # account-wide burst of per-symbol leverage mutations during catalogue load.
         futures_leverages=None,
-        # A transport retry cannot decide whether an economic order exists.
+        # A transport retry cannot decide whether an economic order exists; Nautilus' in-flight
+        # check queries the order instead.
         max_retries=None,
     )
     client_id = ClientId(BINANCE)
@@ -248,25 +261,24 @@ def build_oi_node_config(
         data_engine=LiveDataEngineConfig(external_clients=[client_id]),
         risk_engine=LiveRiskEngineConfig(bypass=False),
         exec_engine=LiveExecEngineConfig(
-            # The App root owns the one complete startup proof, including Binance
-            # Algo orders. Nautilus retains only its native continuous mechanics:
-            # in-flight query-first and missing open-order/position event repair.
-            reconciliation=False,
+            reconciliation=True,
+            reconciliation_lookback_mins=profile.reconciliation_lookback_mins,
             reconciliation_instrument_ids=None,
             filter_unclaimed_external_orders=False,
             filter_position_reports=False,
             generate_missing_orders=True,
             inflight_check_interval_ms=2_000,
             inflight_check_threshold_ms=5_000,
-            inflight_check_retries=0,
-            open_check_interval_secs=5.0,
-            open_check_open_only=False,
-            position_check_interval_secs=5.0,
+            inflight_check_retries=5,
+            open_check_interval_secs=CONTINUOUS_CHECK_SECONDS,
+            open_check_open_only=True,
+            position_check_interval_secs=CONTINUOUS_CHECK_SECONDS,
+            graceful_shutdown_on_exception=True,
         ),
         data_clients={BINANCE: data},
         exec_clients={BINANCE: execution},
         timeout_connection=30.0,
-        timeout_reconciliation=30.0,
+        timeout_reconciliation=60.0,
         timeout_portfolio=10.0,
         timeout_disconnection=10.0,
         timeout_post_stop=10.0,
@@ -274,6 +286,7 @@ def build_oi_node_config(
 
 
 __all__ = [
+    "CONTINUOUS_CHECK_SECONDS",
     "ActiveRuntimeMode",
     "BinanceRuntimeCredentials",
     "OiExitPolicy",
@@ -282,4 +295,5 @@ __all__ = [
     "OiRuntimeProfile",
     "binance_environment",
     "build_oi_node_config",
+    "route_catalogue",
 ]

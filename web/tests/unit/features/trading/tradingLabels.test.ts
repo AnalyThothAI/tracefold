@@ -1,4 +1,6 @@
 import {
+  EXECUTION_STAGE_ZH,
+  EXIT_REASON_ZH,
   admissionReasonLabel,
   admissionStatusLabel,
   bpsPercent,
@@ -8,6 +10,7 @@ import {
   moneyLabel,
   moneyTone,
   nsClock,
+  orderLegLabel,
   policyLabel,
   policyReasonLabel,
   protectionStatusLabel,
@@ -57,24 +60,48 @@ describe("Alpha labels", () => {
 
 describe("execution labels", () => {
   it("translates why entries are blocked, from the projection's words and the Runtime's alike", () => {
-    // `execution_status.py` owns the first, `oi_runtime/state.py` the second; both reach the same field.
+    // `execution_status.py` owns the first, the Runtime the second; both reach the same field.
+    expect(entryBlockReasonLabel("runtime_heartbeat_stale")).toBe("Runtime 心跳已过期");
+    expect(entryBlockReasonLabel("runtime_rebuilding")).toBe("Runtime 正在重建");
     expect(entryBlockReasonLabel("entries_paused")).toBe("开仓已暂停");
-    expect(entryBlockReasonLabel("startup_reconciliation_unproven")).toBe("启动对账尚未完成");
+    expect(entryBlockReasonLabel("singleton_lost")).toBe("账户槽位已被他人持有");
     expect(entryBlockReasonLabel("a_gate_nobody_translated")).toBe("a_gate_nobody_translated");
+    // The reconciliation gates went with the Runtime's private account proof (#680); nothing writes them.
+    for (const gone of [
+      "startup_reconciliation_unproven",
+      "reconciliation_stale",
+      "ownership_ambiguous",
+    ]) {
+      expect(entryBlockReasonLabel(gone)).toBe(gone);
+    }
     // No reason at all is the armed state, not a missing translation.
     expect(entryBlockReasonLabel(null)).toBe("允许新增 exposure");
   });
 
   it("translates one Signal's durable disposition without collapsing accept and refuse", () => {
-    expect(signalDispositionLabel("accepted")).toBe("已受理");
+    // `accepted` is written only once the venue answered (#680), so it says who accepted.
+    expect(signalDispositionLabel("accepted")).toBe("交易所已受理");
+    expect(signalDispositionLabel("venue_rejected")).toBe("交易所拒绝入场");
     expect(signalDispositionLabel("instrument_unmapped")).toBe("运行时目录里没有这个市场");
     expect(signalDispositionLabel("expired")).toBe("Signal 已过期");
     expect(signalDispositionLabel("position_limit")).toBe("持仓数已达上限");
+    expect(signalDispositionLabel("post_stop_cooldown")).toBe("止损后冷却期内");
+    expect(signalDispositionLabel("spread_limit")).toBe("点差在 Signal 有效期内始终超限");
+    expect(signalDispositionLabel("entry_outcome_unknown")).toBe("入场结果未知");
     // A refusal the risk policy can no longer reach renders as itself: #537 PR-3 deleted
-    // `aggregate_risk_limit`, `leverage_limit` and the two post-rounding sizing checks.
+    // `aggregate_risk_limit`, `leverage_limit` and the two post-rounding sizing checks, and #680 the
+    // recovery and query-first words of the Runtime's own order bookkeeping.
     expect(signalDispositionLabel("aggregate_risk_limit")).toBe("aggregate_risk_limit");
+    for (const gone of [
+      "recovered",
+      "replayed_query_first",
+      "protection_unproven",
+      "market_stale",
+    ]) {
+      expect(signalDispositionLabel(gone)).toBe(gone);
+    }
     // The entry path forwards the readiness gate's own word, so that vocabulary resolves here too.
-    expect(signalDispositionLabel("unexpected_exposure")).toBe("出现无主敞口");
+    expect(signalDispositionLabel("unexpected_exposure")).toBe("出现无计划认领的敞口");
     expect(signalDispositionLabel("a_refusal_nobody_translated")).toBe(
       "a_refusal_nobody_translated",
     );
@@ -102,9 +129,42 @@ describe("desk labels", () => {
     expect(protectionStatusLabel("protected")).toBe("已受保护");
     expect(protectionStatusLabel("unprotected")).toBe("未受保护");
     expect(protectionStatusLabel("not_applicable")).toBe("无需保护");
+    // `pending` and `unknown` belonged to the Runtime's private proof (#680) and nothing publishes them.
+    expect(protectionStatusLabel("pending")).toBe("pending");
     // A status nobody translated is the string an operator greps, not an upper-cased guess at it.
     expect(protectionStatusLabel("half_covered")).toBe("half_covered");
     expect(protectionStatusLabel(null)).toBe("—");
+  });
+
+  it("names each resting order's leg, stop and take-profit apart", () => {
+    expect(orderLegLabel("entry")).toBe("入场");
+    expect(orderLegLabel("stop")).toBe("止损");
+    expect(orderLegLabel("take_profit")).toBe("止盈");
+    expect(orderLegLabel("exit")).toBe("退出");
+    expect(orderLegLabel("unknown")).toBe("用途未知");
+    // The single `protection` leg split into the two orders it stood for (#680).
+    expect(orderLegLabel("protection")).toBe("protection");
+    expect(orderLegLabel(null)).toBe("—");
+  });
+
+  it("carries exactly the seven stages the server derives and every exit a plan can close with", () => {
+    expect(Object.keys(EXECUTION_STAGE_ZH).sort()).toEqual(
+      ["closed", "expired", "filled", "ordered", "pending", "protected", "rejected"].sort(),
+    );
+    expect(EXIT_REASON_ZH.external).toBe("外部平仓（非本 Runtime 发起）");
+    expect(EXIT_REASON_ZH.not_submitted).toBe("入场被拒，计划终止");
+    // Plans closed before #680 keep their words, so the historical two still translate.
+    expect(EXIT_REASON_ZH.protection_failure).toBe("保护失败平仓");
+    expect(EXIT_REASON_ZH.recovery_safety_flatten).toBe("恢复保护时安全平仓");
+    for (const reason of [
+      "stop_filled",
+      "take_profit",
+      "time_exit",
+      "operator_flatten",
+      "venue_unknown",
+    ]) {
+      expect(EXIT_REASON_ZH[reason]).toBeTruthy();
+    }
   });
 
   it("names an admission status and its refusal, and never crashes on an unknown key", () => {

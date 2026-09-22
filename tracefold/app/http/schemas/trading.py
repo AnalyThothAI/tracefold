@@ -25,18 +25,19 @@ class TradingExecutionPositionData(ExactApiSchema):
     entry_price: str
     mark_price: str | None = None
     unrealized_pnl_usd: str | None = None
+    # Whether a non-terminal plan claims this instrument; exposure no plan claims blocks new entries.
     owned: bool
-    protection_status: Literal["protected", "pending", "unprotected", "unknown"]
-    protection_quantity: str | None = None
-    protection_trigger_price: str | None = None
-    protection_full_coverage: bool
+    # The reduce-only stop and take-profit resting against this position, as the Nautilus Cache
+    # holds them; `None` where there is none.
+    stop_trigger_price: str | None = None
+    take_profit_trigger_price: str | None = None
 
 
 class TradingExecutionOrderData(ExactApiSchema):
     client_order_id: str
     instrument_id: str
     state: Literal["open", "inflight"]
-    leg: Literal["entry", "exit", "protection", "unknown"]
+    leg: Literal["entry", "stop", "take_profit", "exit", "unknown"]
     quantity: str
     reduce_only: bool
     trigger_price: str | None = None
@@ -44,54 +45,43 @@ class TradingExecutionOrderData(ExactApiSchema):
 
 
 class TradingExecutionAccountData(ExactApiSchema):
-    """What the account holds, as the Runtime's own private reconciliation last saw it.
+    """What the account holds, read from the Nautilus Cache the Runtime executes against (#680).
 
-    Its two observation clocks, the day-start equity baseline and the `truncated` flag were published
-    beside these and rendered nowhere: the desk ages the whole projection against `facts_expire_at_ms`,
-    reads the drawdown the Runtime already measured against that baseline, and a truncated snapshot is
-    already not `complete` (#537 PR-5).
+    Nautilus reconciles that Cache with the venue at start and every five seconds after; this is the
+    Runtime's own picture, published whole. `complete` says every position could be marked and the
+    balance was known, so equity and the drawdown are whole numbers.
     """
 
     equity_usd: str | None = None
     daily_drawdown_usd: str | None = None
     daily_drawdown_bps: int | None = None
-    aggregate_risk_usd: str | None = None
     positions: list[TradingExecutionPositionData] = Field(default_factory=list, max_length=100)
     orders: list[TradingExecutionOrderData] = Field(default_factory=list, max_length=200)
     open_orders_count: int = Field(ge=0)
     inflight_orders_count: int = Field(ge=0)
-    unknown_orders_count: int = Field(ge=0)
     complete: bool
-    audit_healthy: bool = True
-    audit_failure_reason: str | None = None
 
 
 class TradingExecutionReadinessData(ExactApiSchema):
     """One field per operator question, and the CLI `tracefold trading status` block is this same dict.
 
-    The two raw observation clocks (`heartbeat_at_ns`, `reconciliation_observed_at_ns`) went with the
-    ages derived from them: the desk compares `facts_expire_at_ms` against its own clock and prints
-    `reconciliation_age_ms`, both already measured here. `positions_count` / `open_orders_count` said
-    what `current_account` carries row by row, and raw `account_flat` said what the venue had not yet
-    proven -- `account_flat_proven` is the answer an operator acts on (#537 PR-5).
+    `execution_safe`, `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` answered
+    questions about the Runtime's private account proof, and went with it (#680): Nautilus reconciles
+    the venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.
     """
 
     mode: Literal["disabled", "paper", "live"]
     account_slot: str
     alive: bool
-    execution_safe: bool
     entries_armed: bool
     entry_block_reason: str | None = None
-    reconciliation_age_ms: int | None = None
-    startup_reconciled: bool = False
     entries_paused: bool = True
     emergency_halted: bool = False
     unexpected_exposure: bool = False
-    account_flat_proven: bool = False
-    protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"] = "unknown"
+    protection_status: Literal["not_applicable", "protected", "unprotected"] = "not_applicable"
     routes_count: int = Field(default=0, ge=0)
-    # The instant this projection stops being current: the earlier of the heartbeat and private
-    # reconciliation freshness budgets. `None` when there is no Runtime row to age.
+    # The instant this projection stops being current: the Runtime heartbeat's freshness budget.
+    # `None` when there is no Runtime row to age.
     facts_expire_at_ms: int | None = None
     current_account: TradingExecutionAccountData | None = None
 
@@ -189,17 +179,15 @@ class TradingCasesData(ExactApiSchema):
 
 
 class TradingExecutionRowData(ExactApiSchema):
-    """One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).
+    """One entry identity's whole execution, folded from its plan and its own observations.
 
     `entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,
     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
-    `case_id` is absent on those rows rather than invented; the desk links the ones that have one to
-    the Case drawer.
+    `case_id` is absent on those rows rather than invented.
 
-    `order_status`, `position_status` and the `accepted` / `rejected` split are the inputs `stage` is
-    derived from, and `stage` is what the table renders: publishing all four let a reader compare a
-    venue word against the server's own answer about the same row (#537 PR-5). `last_observed_at_ns`
-    was a second clock beside `observed_at_ns` that no column printed.
+    `realized_pnl_usd` and `fees_usd` are folded from the fill journal (#680): exit minus entry
+    notional, signed by direction, less every commission the venue charged. Both are absent until the
+    entry is fully closed and every fill carries a quote-currency commission.
     """
 
     source: Literal["signal", "manual"]
@@ -209,19 +197,19 @@ class TradingExecutionRowData(ExactApiSchema):
     direction: Literal["long", "short"]
     observed_at_ns: int
     disposition_reason: str | None = None
-    # The venue's own words for a refused entry order, recorded by the Runtime rather than summarised
-    # (#604 T1). Absent on every row written before it recorded them, and on every order it did not
-    # refuse.
+    # The venue's own words for a refused entry order (#604 T1).
     order_reject_reason: str | None = None
     fill_quantity: str | None = None
     fill_avg_price: str | None = None
     stop_trigger_price: str | None = None
+    take_profit_trigger_price: str | None = None
     # The two instants a holding time is the distance between: the entry's first fill and the close of
     # the position it opened. `observed_at_ns` is when the Signal was written, which is neither.
     entry_filled_at_ns: int | None = None
     position_closed_at_ns: int | None = None
     exit_price: str | None = None
     realized_pnl_usd: str | None = None
+    fees_usd: str | None = None
     exit_reason: str | None = None
     plan_status: str | None = None
     account_slot: str | None = None
@@ -235,8 +223,6 @@ class TradingExecutionRowData(ExactApiSchema):
     take_profit_bps: int | None = None
     max_holding_ns: int | None = None
     pnl_known: bool
-    history_complete: bool
-    gap_reason: str | None = None
     duration_ns: int | None = None
     stage: ExecutionStage
 
@@ -244,10 +230,9 @@ class TradingExecutionRowData(ExactApiSchema):
 class TradingRealizedTotalsData(ExactApiSchema):
     """What this account slot has realized, over the current UTC day and over its whole ledger.
 
-    The desk could only sum the realized column of the rows it was showing, so the one number an
-    operator reconciles against the venue was the one number the console could not produce (#604 T3).
-    Both sums fold every `closed` position the slot has, manual entries included, because a manual
-    entry is a retained trade in this account. Decimal strings, like every other money field here.
+    Both sums fold the fill journal of every plan the slot opened and closed, manual entries included,
+    because a manual entry is a retained trade in this account. A closed plan whose fills cannot yield
+    a result is counted as missing rather than as zero. Decimal strings, like every other money field.
     """
 
     realized_known_today_usd: str | None
@@ -256,8 +241,6 @@ class TradingRealizedTotalsData(ExactApiSchema):
     pnl_known_total: int = Field(ge=0)
     pnl_missing_today: int = Field(ge=0)
     pnl_missing_total: int = Field(ge=0)
-    pnl_complete_today: bool
-    pnl_complete_total: bool
     closed_today: int = Field(ge=0)
     closed_total: int = Field(ge=0)
 

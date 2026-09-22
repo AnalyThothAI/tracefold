@@ -47,9 +47,7 @@ test("positions lead the desk; execution opens a keyboard-dismissible Case and r
   await expectNoUnhandledApiRequests(page);
 });
 
-test("missing PnL and cold cost basis stay explicit in the existing desk", async ({
-  page,
-}, testInfo) => {
+test("missing PnL stays explicit in the existing desk", async ({ page }, testInfo) => {
   await installMockApi(page);
   const data = tradingExecutionsFixture();
   data.totals = {
@@ -62,15 +60,13 @@ test("missing PnL and cold cost basis stay explicit in the existing desk", async
     pnl_known_total: 0,
     pnl_missing_today: 3,
     pnl_missing_total: 3,
-    pnl_complete_today: false,
-    pnl_complete_total: false,
   };
   data.executions = [
+    // Closed, but a fill without a quote-currency commission leaves no net number to fold (#680).
     tradingExecutionRowFixture({
+      fees_usd: null,
       pnl_known: false,
       realized_pnl_usd: null,
-      history_complete: false,
-      gap_reason: "native_pnl_basis_incomplete_after_restart",
     }),
   ];
   await page.route("**/api/trading/executions*", (route) =>
@@ -78,14 +74,16 @@ test("missing PnL and cold cost basis stay explicit in the existing desk", async
   );
   await page.goto("/trading");
   await expect(page.getByText("平仓 3 · 已知 0 · 缺失 3")).toHaveCount(2);
-  await expect(page.getByText(/不能视为账户完整净利润/)).toBeVisible();
+  await expect(
+    page.getByText(/^3 笔已平仓交易的成交或手续费记录不全.*不能视为账户完整净利润/),
+  ).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await page.getByRole("button", { name: "执行记录", exact: true }).click();
   await expect(page.getByText("盈亏未知")).toBeVisible();
-  await expect(page.getByText("重启后成交成本基础不完整")).toBeVisible();
+  await expect(page.getByText(/^手续费 /)).toHaveCount(0);
   await expectNoDocumentHorizontalOverflow(page);
   await page.screenshot({
-    path: testInfo.outputPath("trade-plan-history-gap.png"),
+    path: testInfo.outputPath("trade-plan-missing-pnl.png"),
     fullPage: true,
   });
   await expectNoUnhandledApiRequests(page);

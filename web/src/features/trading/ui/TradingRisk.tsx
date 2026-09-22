@@ -9,6 +9,7 @@ import {
   bpsPercent,
   entryBlockReasonLabel,
   moneyLabel,
+  orderLegLabel,
   protectionStatusLabel,
 } from "../model/tradingLabels";
 
@@ -21,9 +22,9 @@ import {
  * source for the same account.
  *
  * `stale` is the page's one freshness comparison — `Date.now() > execution.facts_expire_at_ms`, the instant
- * the server itself published as the end of this projection's budget. Past it the safety words are not what
- * the response says they are, so they read 待确认 rather than the browser recomputing a heartbeat age and a
- * reconciliation age of its own and disagreeing with the server about both.
+ * the server itself published as the end of this projection's budget (the Runtime heartbeat plus five
+ * seconds). Past it the safety words are not what the response says they are, so they read 待确认 rather
+ * than the browser recomputing a heartbeat age of its own and disagreeing with the server about it.
  */
 export function TradingSafetyStrip({
   execution,
@@ -35,24 +36,17 @@ export function TradingSafetyStrip({
   return (
     <div className="trading-risk" data-block="safety">
       {/*
-       * Three words, not four. `FLAT` was the fourth and has read `NOT PROVEN` around the clock in
-       * production: `ExecutionRuntimeState.account_flat` stays false with zero positions, so the tile was a
-       * permanently amber quarter of the strip that no operator could act on. That is a writer-side defect
-       * and it is tracked as one; here the proof is a footnote of the exposure block, where an empty
-       * position list is the claim it qualifies.
+       * Two words. `当前仓位可保护 / 退出` was the third and answered `execution_safe`, a claim about the
+       * Runtime's private account proof; Nautilus owns execution state now and reconciles the venue itself
+       * (#680), so the proof and the tile went together. What remains is whether the process is alive and
+       * whether it will take a new entry — and if not, the reason it names.
        */}
-      <MetricRow className="trading-safety-grid" columns={3} label="执行安全状态">
+      <MetricRow className="trading-safety-grid" columns={2} label="执行安全状态">
         <Metric
           eyebrow="执行服务在线"
           value={safety(execution.alive, stale)}
           caption="执行进程与事件循环"
           tone={!stale && execution.alive ? "accent" : "caution"}
-        />
-        <Metric
-          eyebrow="当前仓位可保护 / 退出"
-          value={safety(execution.execution_safe, stale)}
-          caption="不代表账户资料完整"
-          tone={!stale && execution.execution_safe ? "accent" : "caution"}
         />
         <Metric
           eyebrow="允许新增仓位"
@@ -79,11 +73,12 @@ export function TradingSafetyStrip({
  * `max_positions` is 1 and the lane emits a handful of Signals a day, so the positions list, the order list
  * and the protection strip are empty most of the time — three empty regions holding a full card each. The
  * block opens itself the moment the account holds a position or an order, or the Runtime reports exposure
- * it does not own, and stays open until that is no longer true.
+ * no trade plan claims, and stays open until that is no longer true.
  *
- * The audit tile went with it. `audit_healthy` is true around the clock, so `审计写入 HEALTHY` was a
- * constant occupying a cell; an unhealthy audit is now an alert line, which is the only state a reader has
- * to act on. `unexpected_exposure` gets the same treatment and had no rendering at all before.
+ * Everything here is the Runtime's own Nautilus Cache as the last heartbeat published it (#680). A
+ * position is protected when both its stop and its take-profit rest on the venue; the strip prints the two
+ * trigger prices rather than a coverage verdict the browser would have to compute. An empty list is what
+ * the Cache shows, stated as such — the desk makes no separate claim that the account is flat.
  */
 export function TradingExposure({
   execution,
@@ -107,20 +102,17 @@ export function TradingExposure({
           <small>
             {open
               ? "当前账户仓位与订单"
-              : !stale && execution.account_flat_proven
-                ? "已核实空仓"
-                : "未见仓位，账户为空尚未证实"}
+              : account == null
+                ? "未取得 Runtime 账户快照"
+                : stale
+                  ? "上次读取未见仓位"
+                  : "Runtime 当前未见仓位"}
           </small>
         </summary>
 
         {execution.unexpected_exposure ? (
           <p className="trading-alert-line" data-tone="alert">
-            Runtime 报告了无主敞口；当前敞口需要由运维核查。
-          </p>
-        ) : null}
-        {account != null && !account.audit_healthy ? (
-          <p className="trading-alert-line" data-tone="alert">
-            账户事实写入审计失败 · {account.audit_failure_reason ?? "UNHEALTHY"}
+            Runtime 报告了无计划认领的敞口，新入场已被阻止；当前敞口需要由运维核查。
           </p>
         ) : null}
 
@@ -135,81 +127,61 @@ export function TradingExposure({
             }
             warn={Number(account?.daily_drawdown_usd ?? 0) > 0}
           />
-          <Fact label="总风险金额" value={moneyLabel(account?.aggregate_risk_usd)} />
-          <Fact
-            label="私有对账距今"
-            value={
-              execution.reconciliation_age_ms == null
-                ? "未取得"
-                : `${execution.reconciliation_age_ms.toLocaleString("en-US")} ms`
-            }
-            warn={
-              execution.reconciliation_age_ms == null || execution.reconciliation_age_ms > 10_000
-            }
-          />
           <Fact
             label="账户事实"
             value={account?.complete ? "完整" : account ? "部分资料缺失" : "未取得"}
             warn={!account?.complete}
           />
-          <Fact
-            label="处理中 / 未知订单"
-            value={`${account?.inflight_orders_count ?? "—"} / ${account?.unknown_orders_count ?? "—"}`}
-            warn={Boolean(account?.unknown_orders_count)}
-          />
+          <Fact label="在途订单" value={account?.inflight_orders_count ?? "—"} />
         </div>
 
         {positions.length ? (
           <div className="trading-position-list">
-            {positions.map((position) => (
-              <article className="trading-position-row" key={position.position_id}>
-                <div className="trading-position-identity">
-                  <b>{position.instrument_id}</b>
-                  <span data-tone={position.side === "long" ? "long" : "short"}>
-                    {position.side === "long" ? "多仓" : "空仓"}
-                  </span>
-                  {!position.owned ? <span data-tone="alert">归属未确认</span> : null}
-                </div>
-                <div className="trading-position-facts">
-                  <Fact label="数量" value={position.quantity} />
-                  <Fact label="入场均价" value={position.entry_price} />
-                  <Fact label="标记价格" value={position.mark_price ?? "未取得"} />
-                  <Fact
-                    label="未实现盈亏"
-                    value={moneyLabel(position.unrealized_pnl_usd)}
-                    warn={position.unrealized_pnl_usd == null}
-                  />
-                </div>
-                <div
-                  className="trading-protection-strip"
-                  data-tone={!stale && position.protection_full_coverage ? "protected" : "caution"}
-                >
-                  <b>
-                    {stale ? "保护事实已过期" : protectionStatusLabel(position.protection_status)}
-                  </b>
-                  <span>Qty {position.protection_quantity ?? "—"}</span>
-                  <span>Trigger {position.protection_trigger_price ?? "—"}</span>
-                  <span>
-                    {stale
-                      ? "覆盖情况待确认"
-                      : position.protection_full_coverage
-                        ? "全部覆盖"
-                        : "未全部覆盖"}
-                  </span>
-                </div>
-              </article>
-            ))}
+            {positions.map((position) => {
+              const guarded =
+                position.stop_trigger_price != null && position.take_profit_trigger_price != null;
+              return (
+                <article className="trading-position-row" key={position.position_id}>
+                  <div className="trading-position-identity">
+                    <b>{position.instrument_id}</b>
+                    <span data-tone={position.side === "long" ? "long" : "short"}>
+                      {position.side === "long" ? "多仓" : "空仓"}
+                    </span>
+                    {!position.owned ? <span data-tone="alert">无计划认领</span> : null}
+                  </div>
+                  <div className="trading-position-facts">
+                    <Fact label="数量" value={position.quantity} />
+                    <Fact label="入场均价" value={position.entry_price} />
+                    <Fact label="标记价格" value={position.mark_price ?? "未取得"} />
+                    <Fact
+                      label="未实现盈亏"
+                      value={moneyLabel(position.unrealized_pnl_usd)}
+                      warn={position.unrealized_pnl_usd == null}
+                    />
+                  </div>
+                  <div
+                    className="trading-protection-strip"
+                    data-tone={!stale && guarded ? "protected" : "caution"}
+                  >
+                    <b>
+                      {stale
+                        ? "保护事实已过期"
+                        : protectionStatusLabel(guarded ? "protected" : "unprotected")}
+                    </b>
+                    <span>止损 {position.stop_trigger_price ?? "未挂"}</span>
+                    <span>止盈 {position.take_profit_trigger_price ?? "未挂"}</span>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         ) : (
-          /*
-           * The FLAT footnote. `account_flat_proven` is one fresh private reconciliation saying the slot
-           * holds nothing — it qualifies this empty list and nothing else, which is why it is a sentence
-           * here rather than a permanently amber word in the safety strip.
-           */
           <EmptyNote className="trading-empty-note">
-            {!stale && execution.account_flat_proven
-              ? "当前账户无仓位，且新鲜 Binance 私有对账已证明账户为空。"
-              : "未见当前仓位；这本身不能证明账户为空。"}
+            {account == null
+              ? "未取得 Runtime 账户快照，不能据此断言没有仓位。"
+              : stale
+                ? "上次读取时 Runtime 未见仓位；当前状态待确认。"
+                : "Runtime 当前未见仓位。"}
           </EmptyNote>
         )}
 
@@ -220,18 +192,24 @@ export function TradingExposure({
                 <b>{order.instrument_id}</b>
                 <span>{order.state.toUpperCase()}</span>
                 <span data-tone={order.leg === "unknown" ? "caution" : undefined}>
-                  {order.leg.toUpperCase()} · Qty {order.quantity}
+                  {orderLegLabel(order.leg)} · Qty {order.quantity}
                 </span>
                 <span>Trigger {order.trigger_price ?? "—"}</span>
                 <span data-tone={!order.owned ? "caution" : undefined}>
-                  {order.owned ? "OWNED" : "归属未确认"}
+                  {order.owned ? "OWNED" : "无计划认领"}
                   {order.reduce_only ? " · REDUCE ONLY" : ""}
                 </span>
               </article>
             ))}
           </div>
         ) : (
-          <p className="trading-inline-empty">未见 open / inflight order；不据此推断账户为空。</p>
+          <p className="trading-inline-empty">
+            {account == null
+              ? "未取得挂单与在途订单。"
+              : stale
+                ? "上次读取时未见挂单或在途订单。"
+                : "Runtime 当前未见挂单或在途订单。"}
+          </p>
         )}
       </details>
       <SourceLine path="GET /api/trading/status → execution.current_account" />

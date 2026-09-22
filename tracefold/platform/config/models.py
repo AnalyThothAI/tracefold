@@ -596,29 +596,32 @@ class TradingExecutionCredentialsSettings(BaseModel):
 
 
 class TradingExecutionRiskSettings(BaseModel):
-    """The Runtime-owned risk gap policy, as operator-owned numbers (#510 E).
+    """The Runtime-owned entry and sizing policy, as operator-owned numbers (#510 E, #680).
 
-    Every value here used to be a literal in `tracefold/app/nautilus/root.py`, so a risk change meant
-    a code change. The Runtime reads this section once, when it starts, into the profile it runs with;
-    a change to any of these numbers therefore takes effect at the next Runtime restart and needs
-    nothing else. The activation fence that once stood beside them -- a `config_sha256` digest and the
-    `profile_id` it fenced -- is gone (#520, #537). None of them is a secret and `tracefold config`
-    prints all of them.
+    The Runtime reads this section once, when it starts, into the profile it runs with; a change to
+    any of these numbers takes effect at the next Runtime restart and needs nothing else. None of
+    them is a secret and `tracefold config` prints all of them.
 
-    The stop distance stays a Runtime number: the Nautilus Strategy places and replaces the stop, and
-    neither the Case nor the Signal ever carries it.
+    `max_total_risk_usd` and `reconciliation_interval_seconds` are gone (#680): with `max_positions`
+    the only concurrency limit the aggregate budget could never bind, and Nautilus owns reconciliation
+    and its five-second cadence. The stop distance stays a Runtime number: the Strategy places the
+    stop, and neither the Case nor the Signal ever carries it.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     risk_fraction_per_trade: Decimal = Decimal("0.01")
     max_risk_per_trade_usd: Decimal = Decimal("10")
-    max_total_risk_usd: Decimal = Decimal("25")
     max_positions: int = 1
     max_leverage: int = 1
     max_daily_loss_usd: Decimal = Decimal("25")
     stop_distance_bps: int = 100
-    reconciliation_interval_seconds: float = 5.0
+    # The widest spread an entry may cross, as a fraction of the stop distance: 0.3 of a 100 bps stop
+    # is 30 bps. An entry waits for a narrower book within its Signal's TTL rather than being refused
+    # on one tick, and the refusal it ends with records the spread it measured.
+    max_spread_fraction_of_stop: Decimal = Decimal("0.3")
+    # After a stop-out, Signals for the same market are refused for this long; manual entries are not.
+    post_stop_cooldown_seconds: int = 14_400
     market_stale_after_seconds: float = 5.0
 
     @model_validator(mode="after")
@@ -629,17 +632,9 @@ class TradingExecutionRiskSettings(BaseModel):
             raise ValueError("trading_execution_risk_fraction_invalid")
         # Below one dollar of risk every candidate rounds to zero size at the venue's increment, so
         # the Runtime would refuse every Signal with `quantity_below_increment` instead of trading.
-        if self.max_risk_per_trade_usd < 1 or self.max_total_risk_usd < 1:
+        # Ten thousand dollars of stop distance is larger than the account this slot is.
+        if not 1 <= self.max_risk_per_trade_usd <= 10_000:
             raise ValueError("trading_execution_risk_limit_invalid")
-        # One trade's budget is drawn from the aggregate budget; it cannot exceed it.
-        if self.max_risk_per_trade_usd > self.max_total_risk_usd:
-            raise ValueError("trading_execution_risk_limit_invalid")
-        # This deployment is one operator's single Binance USD-M slot. Ten thousand dollars of
-        # simultaneous stop distance is larger than the account the fence exists to protect.
-        if self.max_total_risk_usd > 10_000:
-            raise ValueError("trading_execution_risk_limit_invalid")
-        # Each concurrent position is one more stop this Runtime must keep proven inside one
-        # reconciliation period; ten is the most a single private scan can re-prove in that budget.
         if not 1 <= self.max_positions <= 10:
             raise ValueError("trading_execution_max_positions_invalid")
         # Sizing is fixed-risk and only clamps notional to `equity * leverage`, so leverage is a
@@ -654,13 +649,12 @@ class TradingExecutionRiskSettings(BaseModel):
         # spread, and one at half the mark is not a stop.
         if not 1 <= self.stop_distance_bps <= 5_000:
             raise ValueError("trading_execution_stop_distance_invalid")
-        # `OiRiskLimits` derives the account (2x) and reconciliation (3x) staleness budgets from this
-        # one period. Under a second the private REST scan spends the Binance weight budget on itself;
-        # over a minute an entry is judged against an account picture up to three minutes old.
-        if not 1.0 <= self.reconciliation_interval_seconds <= 60.0:
-            raise ValueError("trading_execution_reconciliation_interval_invalid")
-        # Quote freshness is a stream fact, not a scan fact, so it is its own number; the same one
-        # second floor and one minute ceiling apply for the same reason.
+        # A spread as wide as the stop spends the whole stop on entry.
+        if not Decimal("0") < self.max_spread_fraction_of_stop <= Decimal("1"):
+            raise ValueError("trading_execution_max_spread_invalid")
+        if not 0 <= self.post_stop_cooldown_seconds <= 604_800:
+            raise ValueError("trading_execution_post_stop_cooldown_invalid")
+        # A quote older than a minute is not a price to size an order against.
         if not 1.0 <= self.market_stale_after_seconds <= 60.0:
             raise ValueError("trading_execution_market_stale_invalid")
         return self

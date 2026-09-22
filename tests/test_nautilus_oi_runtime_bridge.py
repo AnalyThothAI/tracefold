@@ -1,33 +1,23 @@
-"""The database bridge cycle: three steps, one of which cannot silence the other two (#510 PR-1)."""
+"""The database bridge: one row per transaction, nothing blocks the next, nothing is fatal (#680 RC1, RC6)."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
 from contextlib import nullcontext
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import psycopg
 import pytest
-from loguru import logger
 
-from tests.helpers.nautilus_oi_runtime_process import (
-    audit_queued_count,
-)
-from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
+from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile, open_plan, operator_intent, trade_signal
+from tracefold.app.nautilus import oi_runtime
 from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, RuntimeStateProjector
-from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
-from tracefold.integrations.nautilus.oi_runtime.state import RuntimeReadiness, RuntimeReadinessSnapshot
-from tracefold.integrations.nautilus.oi_runtime.trade_plans import TradePlanChannel
-from tracefold.trading.storage.execution_stream import (
-    ExecutionRuntimeState,
-    PreparedExecutionObservationBatch,
-)
+from tracefold.trading.storage.execution_stream import ExecutionRuntimeState, PreparedExecutionObservationBatch
 
 
 def _runtime_state() -> ExecutionRuntimeState:
@@ -36,15 +26,11 @@ def _runtime_state() -> ExecutionRuntimeState:
         mode="paper",
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
         alive=True,
-        execution_safe=False,
         entries_armed=False,
-        startup_reconciled=False,
         unexpected_exposure=False,
-        account_flat=True,
         positions_count=0,
         open_orders_count=0,
         protection_status="not_applicable",
-        reconciliation_observed_at_ns=NOW_NS,
         heartbeat_at_ns=NOW_NS,
         entry_block_reason="runtime_starting",
         started_at_ns=NOW_NS,
@@ -55,24 +41,18 @@ def _runtime_state() -> ExecutionRuntimeState:
 class _FakeTrading:
     """Only the calls `_cycle` makes, each able to fail the way production failed."""
 
-    def __init__(self, *, rejected_event_ids: frozenset[str]) -> None:
-        self._rejected_event_ids = rejected_event_ids
-        self.signals_broken = True
+    def __init__(self) -> None:
+        self.refused: set[str] = set()
+        self.transient: set[str] = set()
+        self.appended: list[str] = []
+        self.plan_updates: list[tuple[Any, ...]] = []
+        self.inserted: list[tuple[Any, ...]] = []
+        self.stored_plan: dict[str, Any] | None = None
         self.command_reads = 0
         self.signal_reads = 0
-        self.appended: list[str] = []
-        self.updates: list[ExecutionRuntimeState] = []
-        self.recovery_reads = 0
+        self.signals: tuple[Any, ...] = ()
 
-    def active_trade_plans(self, **_kwargs: Any) -> tuple[Any, ...]:
-        self.recovery_reads += 1
-        return ()
-
-    def put_execution_runtime_state(self, _state: ExecutionRuntimeState) -> None:
-        raise AssertionError("the startup session inserts the row, never the bridge cycle")
-
-    def update_execution_runtime_state(self, state: ExecutionRuntimeState) -> bool:
-        self.updates.append(state)
+    def update_execution_runtime_state(self, _state: ExecutionRuntimeState) -> bool:
         return True
 
     def unresolved_operator_intents(self, **_kwargs: Any) -> tuple[Any, ...]:
@@ -81,321 +61,225 @@ class _FakeTrading:
 
     def unresolved_trade_signals(self, **_kwargs: Any) -> tuple[Any, ...]:
         self.signal_reads += 1
-        if self.signals_broken:
-            raise RuntimeError("signal read exploded")
-        return ()
-
-    def recover(self) -> None:
-        self.signals_broken = False
+        return self.signals
 
     def append_execution_observations(self, prepared: PreparedExecutionObservationBatch) -> tuple[int, ...]:
-        payloads = json.loads(prepared.payload_json)
-        event_ids = [str(payload["event_id"]) for payload in payloads]
-        if any(event_id in self._rejected_event_ids for event_id in event_ids):
-            raise psycopg.errors.CheckViolation("trading_execution_observation_native_refs_check")
-        self.appended.extend(event_ids)
-        return tuple(range(len(event_ids)))
+        [payload] = json.loads(prepared.payload_json)
+        event_id = str(payload["event_id"])
+        if event_id in self.refused:
+            raise psycopg.errors.UniqueViolation("ux_trading_execution_signal_disposition")
+        if event_id in self.transient:
+            raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+        self.appended.append(event_id)
+        return (len(self.appended),)
+
+    def update_trade_plan(self, values: tuple[Any, ...]) -> bool:
+        self.plan_updates.append(values)
+        return True
+
+    def insert_trade_plan(self, values: tuple[Any, ...]) -> bool:
+        self.inserted.append(values)
+        return True
+
+    def trade_plan(self, _entry_id: str) -> dict[str, Any] | None:
+        return self.stored_plan
 
 
-def _singleton(alive: list[bool]) -> AccountSlotSingleton:
+class _FakeRepos:
+    def __init__(self, trading: _FakeTrading) -> None:
+        self.trading = trading
+        self.conn = SimpleNamespace(execute=lambda *_args, **_kwargs: None)
+
+    def transaction(self) -> Any:
+        return nullcontext()
+
+
+def _singleton() -> AccountSlotSingleton:
     singleton = AccountSlotSingleton(
         account_slot="binance_usdm_primary",
         try_acquire=lambda _slot: True,
         release=lambda _slot: True,
-        heartbeat=lambda: alive[0],
+        heartbeat=lambda: True,
     )
     assert singleton.acquire() is True
     return singleton
 
 
-def _bridge(
-    *,
-    audit: AuditSink,
-    signals: ExecutionSignalClient,
-    singleton: AccountSlotSingleton | None = None,
-    projector: RuntimeStateProjector | None = None,
-) -> OiRuntimeDatabaseBridge:
-    return OiRuntimeDatabaseBridge(
+def _bridge() -> tuple[OiRuntimeDatabaseBridge, ExecutionJournal, ExecutionSignalClient]:
+    profile = oi_profile()
+    signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
+    journal = ExecutionJournal(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1"))
+    bridge = OiRuntimeDatabaseBridge(
         settings=SimpleNamespace(),
-        profile=oi_profile(),
+        profile=profile,
         signals=signals,
-        audit=audit,
+        journal=journal,
         update_day_start=lambda _baseline: None,
-        singleton=singleton or _singleton([True]),
-        projector=projector or RuntimeStateProjector(initial=_runtime_state(), recovery_inputs=()),
-        plans=TradePlanChannel(),
+        singleton=_singleton(),
+        projector=RuntimeStateProjector(initial=_runtime_state()),
     )
+    return bridge, journal, signals
 
 
-def test_a_failing_audit_step_never_stops_the_command_read_and_logs_one_cause_once() -> None:
-    """The operator must still be able to flatten while the ledger is refusing writes.
-
-    On 2026-09-02 a `CheckViolation` in the audit append aborted the whole cycle, so the Command read
-    in the same `try` stopped for six hours while a position was open, and the same traceback was
-    logged 742 times (#510 A).
-    """
-
-    profile = oi_profile()
-    factory = ObservationFactory(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
+def _order(journal: ExecutionJournal, index: int) -> Any:
+    value = journal.factory.create(
+        normalized_kind="order",
+        occurred_at_ns=NOW_NS + index,
+        observed_at_ns=NOW_NS + index,
+        summary={"leg": "entry", "status": "submitted"},
+        event_identity=f"order-{index}",
     )
-    audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
-    poisoned = factory.create(
-        normalized_kind="fill",
+    journal.offer(value)
+    return value
+
+
+def test_every_journal_row_is_its_own_transaction_and_a_refused_row_never_holds_up_the_next() -> None:
+    bridge, journal, signals = _bridge()
+    trading = _FakeTrading()
+    signal = trade_signal()
+    signals.poll_once(lambda *_args: (signal,))
+    assert signals.next_nowait() == signal
+    refused = journal.factory.create(
+        normalized_kind="signal_disposition",
+        signal_id=signal.signal_id,
         occurred_at_ns=NOW_NS,
         observed_at_ns=NOW_NS,
-        summary={"leg": "entry"},
-        payload={"leg": "entry"},
+        summary={"disposition": "accepted"},
+        event_identity="final",
     )
-    assert audit.offer(poisoned) is True
+    journal.offer(refused)
+    after = _order(journal, 1)
+    trading.refused.add(refused.event_id)
 
-    trading = _FakeTrading(rejected_event_ids=frozenset({poisoned.event_id}))
-    repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
-    signals = ExecutionSignalClient(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    bridge = _bridge(audit=audit, signals=signals)
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
 
-    records: list[str] = []
-    sink_id = logger.add(lambda message: records.append(message.record["message"]), level="INFO")
-    try:
-        bridge._cycle(repos)
-        bridge._cycle(repos)
-    finally:
-        logger.remove(sink_id)
-
-    assert trading.command_reads == 2
-    assert trading.signal_reads == 2
-    assert bridge.fatal_error is None
-    assert len(trading.appended) == 1
-    gap = next(iter(trading.appended))
-    assert gap != poisoned.event_id
-    assert audit_queued_count(audit) == 0
-    assert audit.healthy is True
-    assert records.count("OI Runtime database bridge step failed (signals)") == 1
-    assert records.count("OI Runtime database bridge step failed (audit)") == 0
+    assert trading.appended == [after.event_id]
+    assert journal.backlog() == 0
+    # A refused verdict still settles its input: the database's refusal is the answer it will get.
+    assert signals.poll_once(lambda *_args: (signal,)) == 1
 
 
-@pytest.mark.parametrize("message", ["statement timeout", "", " \n "])
-def test_a_transient_audit_failure_leaves_the_batch_queued_without_killing_the_bridge(message: str) -> None:
-    profile = oi_profile()
-    factory = ObservationFactory(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
-    value = factory.create(
-        normalized_kind="readiness",
-        occurred_at_ns=NOW_NS,
-        observed_at_ns=NOW_NS,
-        summary={"lifecycle": "started"},
-        payload={"lifecycle": "started"},
-    )
-    assert audit.offer(value) is True
+def test_a_lost_statement_ends_the_cycle_and_its_row_waits_out_a_backoff_instead_of_being_dropped() -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
+    stuck = _order(journal, 1)
+    behind = _order(journal, 2)
+    trading.transient.add(stuck.event_id)
 
-    class _Unavailable(_FakeTrading):
-        def append_execution_observations(self, prepared: PreparedExecutionObservationBatch) -> tuple[int, ...]:
-            raise TimeoutError(message)
-
-    trading = _Unavailable(rejected_event_ids=frozenset())
-    repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
-    signals = ExecutionSignalClient(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    bridge = _bridge(audit=audit, signals=signals)
-
-    bridge._cycle(repos)
-    bridge._cycle(repos)
-
-    assert trading.command_reads == 2
-    assert bridge.fatal_error is None
-    assert audit_queued_count(audit) == 1
-    assert audit.failure_reason == "audit_append_failed"
-    assert audit.healthy is False
+    with pytest.raises(psycopg.OperationalError):
+        bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    # The statement timeout is a lost-session class: the cycle ends so `_run` replaces the session,
+    # and the row it was writing waits out its backoff rather than being dropped.
+    assert journal.backlog() == 2
+    trading.transient.clear()
+    [row_behind] = [row for row in journal.due(float("inf")) if row.value is behind]
+    assert row_behind.not_before == 0.0
 
 
-def test_a_lost_connection_still_aborts_the_cycle_so_the_session_is_replaced() -> None:
-    profile = oi_profile()
-    factory = ObservationFactory(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
+def test_a_row_the_storage_layer_raises_on_is_deferred_not_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
+    first = _order(journal, 1)
+    second = _order(journal, 2)
+    calls: list[str] = []
 
-    class _Disconnected(_FakeTrading):
-        def unresolved_operator_intents(self, **_kwargs: Any) -> Sequence[Any]:
-            raise psycopg.OperationalError("server closed the connection unexpectedly")
+    def flaky(_repos: Any, value: Any) -> None:
+        calls.append(value.event_id)
+        if value.event_id == first.event_id:
+            raise OSError("socket reset")
+        trading.appended.append(value.event_id)
 
-    trading = _Disconnected(rejected_event_ids=frozenset())
-    repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
-    signals = ExecutionSignalClient(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    bridge = _bridge(audit=audit, signals=signals)
+    monkeypatch.setattr(oi_runtime, "write_journal_row", flaky)
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
 
-    try:
-        bridge._cycle(repos)
-    except psycopg.OperationalError:
-        return
-    raise AssertionError("a lost connection must reach _run, which replaces the session")
+    assert trading.appended == [second.event_id]
+    [waiting] = journal.due(float("inf"))
+    assert waiting.value is first and waiting.attempts == 1
 
 
-def test_a_stuck_input_step_keeps_reading_and_never_disarms_entries() -> None:
-    """#520 PR-B: the read that is failing is the only source of entry requests.
+def test_plan_transitions_are_written_as_updates_one_per_transaction() -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
+    plan = open_plan(opened_at_ns=None)
+    opened = plan.opened(opened_at_ns=NOW_NS, now_ns=NOW_NS)
+    journal.offer_plan(opened)
 
-    `control_plane_ready` turned a stuck Command or Signal read into `entries_armed=false`, on the
-    theory that a Runtime consuming nothing must not stay armed. It could never fire on anything: an
-    entry request arrives through exactly that read, so while it fails there is nothing to admit. The
-    cycle logs the cause once and keeps re-reading, which is what actually recovers.
-    """
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
 
-    profile = oi_profile()
-    factory = ObservationFactory(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
-    trading = _FakeTrading(rejected_event_ids=frozenset())
-    repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
-    signals = ExecutionSignalClient(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    bridge = _bridge(audit=audit, signals=signals)
-
-    readiness = RuntimeReadiness(reconciliation_stale_after_ns=profile.risk.reconciliation_stale_after_ns)
-    readiness.reconciled(account_observed_at_ns=NOW_NS, reconciliation_observed_at_ns=NOW_NS)
-
-    def snapshot() -> RuntimeReadinessSnapshot:
-        return readiness.snapshot(
-            now_ns=NOW_NS,
-            singleton_ready=True,
-            entries_paused=False,
-            emergency_halted=False,
-        )
-
-    armed = snapshot()
-    assert (armed.execution_safe, armed.entries_armed, armed.entry_block_reason) == (True, True, None)
-
-    bridge._cycle(repos)
-    bridge._cycle(repos)
-
-    # A failing read is retried on the very next cycle rather than silencing itself or the others.
-    assert trading.signal_reads == 2
-    still_armed = snapshot()
-    assert (still_armed.execution_safe, still_armed.entries_armed, still_armed.entry_block_reason) == (
-        True,
-        True,
-        None,
-    )
-
-    trading.recover()
-    bridge._cycle(repos)
-
-    assert trading.signal_reads == 3
-    assert snapshot().entries_armed is True
+    [values] = trading.plan_updates
+    assert values[0] == "open" and values[1] == NOW_NS and values[5] == plan.entry_id
 
 
-def test_the_bridge_thread_owns_the_projection_write_the_recovery_read_and_the_slot_heartbeat() -> None:
-    """#510 PR-5b. The event loop offers a row and reads memory; this cycle does every statement.
+def test_only_the_exact_prepared_plan_authorizes_its_entry_order() -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
+    plan = open_plan(opened_at_ns=None)
+    journal.prepare(plan)
+    trading.stored_plan = plan.model_dump()
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    receipt = journal.take_receipt()
+    assert receipt is not None and receipt.committed
 
-    Production ran `singleton.check()`, the recovery read and the projection write synchronously on
-    the trading event loop every 500 ms, over a third connection with no statement timeout, on the
-    same thread as every Nautilus order callback (#510 E).
-    """
-
-    profile = oi_profile()
-    factory = ObservationFactory(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
-    trading = _FakeTrading(rejected_event_ids=frozenset())
-    trading.recover()
-    repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
-    signals = ExecutionSignalClient(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    alive = [True]
-    singleton = _singleton(alive)
-    starting = _runtime_state()
-    projector = RuntimeStateProjector(initial=starting, recovery_inputs=())
-    bridge = _bridge(audit=audit, signals=signals, singleton=singleton, projector=projector)
-
-    bridge._cycle(repos)
-
-    assert trading.updates == []
-    assert trading.recovery_reads == 1
-    assert bridge.recovery_inputs() == ()
-
-    running = replace(
-        starting,
-        entry_block_reason="reconciliation_stale",
-        heartbeat_at_ns=starting.heartbeat_at_ns + 1,
-        updated_at_ns=starting.updated_at_ns + 1,
-    )
-    projector.offer(running)
-    bridge._cycle(repos)
-
-    assert trading.updates == [running]
-    assert projector.current == running
-
-    # The lock's session dies; the heartbeat that notices runs here, and the loop reads `acquired`.
-    alive[0] = False
-    bridge._cycle(repos)
-
-    assert singleton.acquired is False
+    other = open_plan(entry_id="2" * 64, opened_at_ns=None)
+    journal.prepare(other)
+    trading.stored_plan = {**other.model_dump(), "entry_quantity": other.entry_quantity * 2}
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    receipt = journal.take_receipt()
+    assert receipt is not None and not receipt.committed and receipt.reason == "trade_plan_conflict"
 
 
-def test_a_failing_projection_write_logs_once_and_leaves_the_inputs_and_the_gates_alone() -> None:
-    """A stale `alive` heartbeat is already how every reader decides a Runtime is gone."""
+def test_an_insert_the_database_refuses_answers_the_strategy_instead_of_stalling_it() -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
 
-    profile = oi_profile()
-    factory = ObservationFactory(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    audit = AuditSink(factory=factory, max_count=32, max_bytes=200_000)
+    def refuse(_values: tuple[Any, ...]) -> bool:
+        raise psycopg.errors.UniqueViolation("ux_trading_trade_plans_active_instrument")
 
-    class _LostGeneration(_FakeTrading):
-        def update_execution_runtime_state(self, state: ExecutionRuntimeState) -> bool:
-            self.updates.append(state)
-            return False
+    trading.insert_trade_plan = refuse  # type: ignore[method-assign]
+    plan = open_plan(opened_at_ns=None)
+    journal.prepare(plan)
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    receipt = journal.take_receipt()
+    assert receipt is not None and (receipt.committed, receipt.reason) == (False, "trade_plan_rejected")
 
-    trading = _LostGeneration(rejected_event_ids=frozenset())
-    trading.recover()
-    repos: Any = SimpleNamespace(trading=trading, transaction=nullcontext)
-    signals = ExecutionSignalClient(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    starting = _runtime_state()
-    projector = RuntimeStateProjector(initial=starting, recovery_inputs=())
-    bridge = _bridge(audit=audit, signals=signals, projector=projector)
 
-    records: list[str] = []
-    sink_id = logger.add(lambda message: records.append(message.record["message"]), level="INFO")
-    try:
-        for offset in range(1, 4):
-            projector.offer(
-                replace(
-                    starting,
-                    entry_block_reason="reconciliation_stale",
-                    heartbeat_at_ns=starting.heartbeat_at_ns + offset,
-                    updated_at_ns=starting.updated_at_ns + offset,
-                )
-            )
-            bridge._cycle(repos)
-    finally:
-        logger.remove(sink_id)
+def test_commands_are_read_first_and_a_broken_signal_read_is_contained() -> None:
+    bridge, _journal, signals = _bridge()
+    trading = _FakeTrading()
 
-    assert len(trading.updates) == 3
-    assert projector.current == starting
-    assert bridge.fatal_error is None
-    assert trading.command_reads == 3
-    assert records.count("OI Runtime database bridge step failed (projection)") == 1
+    def explode(**_kwargs: Any) -> tuple[Any, ...]:
+        trading.signal_reads += 1
+        raise RuntimeError("signal read exploded")
+
+    trading.unresolved_trade_signals = explode  # type: ignore[method-assign]
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    assert (trading.command_reads, trading.signal_reads) == (2, 2)
+    signals.poll_commands_once(lambda *_args: (operator_intent(),))
+    assert signals.next_command_nowait() is not None
+
+
+def test_a_lost_session_is_replaced_and_the_bridge_thread_never_dies(monkeypatch: pytest.MonkeyPatch) -> None:
+    bridge, _journal, _signals = _bridge()
+    trading = _FakeTrading()
+    sessions: list[int] = []
+
+    class _Session:
+        def __enter__(self) -> _FakeRepos:
+            sessions.append(1)
+            if len(sessions) == 1:
+                raise psycopg.OperationalError("server closed the connection unexpectedly")
+            if len(sessions) == 2:
+                raise RuntimeError("anything else a connect can raise")
+            bridge.stop()
+            return _FakeRepos(trading)
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(oi_runtime, "open_repositories", lambda *_args, **_kwargs: _Session())
+    monkeypatch.setattr(oi_runtime, "_RECONNECT_BACKOFF_SECONDS", (0.0,))
+    bridge.start()
+    bridge.join(5.0)
+
+    assert len(sessions) == 3

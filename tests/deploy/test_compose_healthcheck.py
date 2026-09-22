@@ -30,8 +30,8 @@ def test_container_healthcheck_uses_liveness_endpoint():
 def test_the_execution_runtime_is_health_checked_on_liveness_not_readiness():
     """Its `/readyz` answers 200 with the payload now, so it is a diagnosis and not a signal.
 
-    It should not be one either (#598 D5-b): a runtime that is alive but blocked -- startup
-    reconciliation unproven, unexpected exposure, entries paused -- is exactly the process an
+    It should not be one either (#598 D5-b): a runtime that is alive but blocked -- a generation
+    rebuilding, unexpected exposure, entries paused -- is exactly the process an
     operator has to be able to reach, and `restart: unless-stopped` on an unhealthy container would
     restart the owner of an open position instead of leaving it there to be read.
     """

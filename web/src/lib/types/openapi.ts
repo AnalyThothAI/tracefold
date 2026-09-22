@@ -3225,23 +3225,13 @@ export interface components {
         };
         /**
          * TradingExecutionAccountData
-         * @description What the account holds, as the Runtime's own private reconciliation last saw it.
+         * @description What the account holds, read from the Nautilus Cache the Runtime executes against (#680).
          *
-         *     Its two observation clocks, the day-start equity baseline and the `truncated` flag were published
-         *     beside these and rendered nowhere: the desk ages the whole projection against `facts_expire_at_ms`,
-         *     reads the drawdown the Runtime already measured against that baseline, and a truncated snapshot is
-         *     already not `complete` (#537 PR-5).
+         *     Nautilus reconciles that Cache with the venue at start and every five seconds after; this is the
+         *     Runtime's own picture, published whole. `complete` says every position could be marked and the
+         *     balance was known, so equity and the drawdown are whole numbers.
          */
         TradingExecutionAccountData: {
-            /** Aggregate Risk Usd */
-            aggregate_risk_usd?: string | null;
-            /** Audit Failure Reason */
-            audit_failure_reason?: string | null;
-            /**
-             * Audit Healthy
-             * @default true
-             */
-            audit_healthy: boolean;
             /** Complete */
             complete: boolean;
             /** Daily Drawdown Bps */
@@ -3258,8 +3248,6 @@ export interface components {
             orders?: components["schemas"]["TradingExecutionOrderData"][];
             /** Positions */
             positions?: components["schemas"]["TradingExecutionPositionData"][];
-            /** Unknown Orders Count */
-            unknown_orders_count: number;
         };
         /** TradingExecutionOrderData */
         TradingExecutionOrderData: {
@@ -3271,7 +3259,7 @@ export interface components {
              * Leg
              * @enum {string}
              */
-            leg: "entry" | "exit" | "protection" | "unknown";
+            leg: "entry" | "stop" | "take_profit" | "exit" | "unknown";
             /** Owned */
             owned: boolean;
             /** Quantity */
@@ -3298,17 +3286,6 @@ export interface components {
             owned: boolean;
             /** Position Id */
             position_id: string;
-            /** Protection Full Coverage */
-            protection_full_coverage: boolean;
-            /** Protection Quantity */
-            protection_quantity?: string | null;
-            /**
-             * Protection Status
-             * @enum {string}
-             */
-            protection_status: "protected" | "pending" | "unprotected" | "unknown";
-            /** Protection Trigger Price */
-            protection_trigger_price?: string | null;
             /** Quantity */
             quantity: string;
             /**
@@ -3316,6 +3293,10 @@ export interface components {
              * @enum {string}
              */
             side: "long" | "short";
+            /** Stop Trigger Price */
+            stop_trigger_price?: string | null;
+            /** Take Profit Trigger Price */
+            take_profit_trigger_price?: string | null;
             /** Unrealized Pnl Usd */
             unrealized_pnl_usd?: string | null;
         };
@@ -3323,18 +3304,11 @@ export interface components {
          * TradingExecutionReadinessData
          * @description One field per operator question, and the CLI `tracefold trading status` block is this same dict.
          *
-         *     The two raw observation clocks (`heartbeat_at_ns`, `reconciliation_observed_at_ns`) went with the
-         *     ages derived from them: the desk compares `facts_expire_at_ms` against its own clock and prints
-         *     `reconciliation_age_ms`, both already measured here. `positions_count` / `open_orders_count` said
-         *     what `current_account` carries row by row, and raw `account_flat` said what the venue had not yet
-         *     proven -- `account_flat_proven` is the answer an operator acts on (#537 PR-5).
+         *     `execution_safe`, `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` answered
+         *     questions about the Runtime's private account proof, and went with it (#680): Nautilus reconciles
+         *     the venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.
          */
         TradingExecutionReadinessData: {
-            /**
-             * Account Flat Proven
-             * @default false
-             */
-            account_flat_proven: boolean;
             /** Account Slot */
             account_slot: string;
             /** Alive */
@@ -3354,8 +3328,6 @@ export interface components {
             entries_paused: boolean;
             /** Entry Block Reason */
             entry_block_reason?: string | null;
-            /** Execution Safe */
-            execution_safe: boolean;
             /** Facts Expire At Ms */
             facts_expire_at_ms?: number | null;
             /**
@@ -3365,22 +3337,15 @@ export interface components {
             mode: "disabled" | "paper" | "live";
             /**
              * Protection Status
-             * @default unknown
+             * @default not_applicable
              * @enum {string}
              */
-            protection_status: "not_applicable" | "protected" | "pending" | "unprotected" | "unknown";
-            /** Reconciliation Age Ms */
-            reconciliation_age_ms?: number | null;
+            protection_status: "not_applicable" | "protected" | "unprotected";
             /**
              * Routes Count
              * @default 0
              */
             routes_count: number;
-            /**
-             * Startup Reconciled
-             * @default false
-             */
-            startup_reconciled: boolean;
             /**
              * Unexpected Exposure
              * @default false
@@ -3389,17 +3354,15 @@ export interface components {
         };
         /**
          * TradingExecutionRowData
-         * @description One entry identity's whole execution, folded from its own observations (#528 PR-1, PR-3).
+         * @description One entry identity's whole execution, folded from its plan and its own observations.
          *
          *     `entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,
          *     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
-         *     `case_id` is absent on those rows rather than invented; the desk links the ones that have one to
-         *     the Case drawer.
+         *     `case_id` is absent on those rows rather than invented.
          *
-         *     `order_status`, `position_status` and the `accepted` / `rejected` split are the inputs `stage` is
-         *     derived from, and `stage` is what the table renders: publishing all four let a reader compare a
-         *     venue word against the server's own answer about the same row (#537 PR-5). `last_observed_at_ns`
-         *     was a second clock beside `observed_at_ns` that no column printed.
+         *     `realized_pnl_usd` and `fees_usd` are folded from the fill journal (#680): exit minus entry
+         *     notional, signed by direction, less every commission the venue charged. Both are absent until the
+         *     entry is fully closed and every fill carries a quote-currency commission.
          */
         TradingExecutionRowData: {
             /** Account Slot */
@@ -3427,14 +3390,12 @@ export interface components {
             exit_price?: string | null;
             /** Exit Reason */
             exit_reason?: string | null;
+            /** Fees Usd */
+            fees_usd?: string | null;
             /** Fill Avg Price */
             fill_avg_price?: string | null;
             /** Fill Quantity */
             fill_quantity?: string | null;
-            /** Gap Reason */
-            gap_reason?: string | null;
-            /** History Complete */
-            history_complete: boolean;
             /** Instrument Id */
             instrument_id?: string | null;
             /** Market Key */
@@ -3468,13 +3429,15 @@ export interface components {
              * Stage
              * @enum {string}
              */
-            stage: "pending" | "rejected" | "expired" | "ordered" | "filled" | "protected" | "closing" | "closed" | "unresolved";
+            stage: "pending" | "rejected" | "expired" | "ordered" | "filled" | "protected" | "closed";
             /** Stop Distance Bps */
             stop_distance_bps?: number | null;
             /** Stop Trigger Price */
             stop_trigger_price?: string | null;
             /** Take Profit Bps */
             take_profit_bps?: number | null;
+            /** Take Profit Trigger Price */
+            take_profit_trigger_price?: string | null;
         };
         /** TradingExecutionsData */
         TradingExecutionsData: {
@@ -3501,20 +3464,15 @@ export interface components {
          * TradingRealizedTotalsData
          * @description What this account slot has realized, over the current UTC day and over its whole ledger.
          *
-         *     The desk could only sum the realized column of the rows it was showing, so the one number an
-         *     operator reconciles against the venue was the one number the console could not produce (#604 T3).
-         *     Both sums fold every `closed` position the slot has, manual entries included, because a manual
-         *     entry is a retained trade in this account. Decimal strings, like every other money field here.
+         *     Both sums fold the fill journal of every plan the slot opened and closed, manual entries included,
+         *     because a manual entry is a retained trade in this account. A closed plan whose fills cannot yield
+         *     a result is counted as missing rather than as zero. Decimal strings, like every other money field.
          */
         TradingRealizedTotalsData: {
             /** Closed Today */
             closed_today: number;
             /** Closed Total */
             closed_total: number;
-            /** Pnl Complete Today */
-            pnl_complete_today: boolean;
-            /** Pnl Complete Total */
-            pnl_complete_total: boolean;
             /** Pnl Known Today */
             pnl_known_today: number;
             /** Pnl Known Total */

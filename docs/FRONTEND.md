@@ -648,10 +648,10 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    The box has no submit button: `Enter` submits, and the visible `/` keycap is inert on every route.
 3. Verify visible loading/empty/error states are structured, labelled, and non-overlapping.
 4. Confirm no failing `/api/*` requests and no WebSocket connection attempt in the browser session.
-   On `/trading`, verify disabled, alive-but-unsafe and safe-but-paused states;
-   protected positions, failed protection and unknown orders; and Signal rows
-   at rejected, expired and closed. Observe healthy status beyond 30 seconds
-   without freshness flicker. Interrupt status reads until the server deadline
+   On `/trading`, verify disabled, alive-but-blocked and alive-but-paused states;
+   protected positions, positions missing a stop or take-profit and exposure no
+   plan claims; and Signal rows at rejected, expired and closed. Observe healthy
+   status beyond 30 seconds without freshness flicker. Interrupt status reads until the server deadline
    passes: safety answers must become 待确认 with a clear last-read disclosure.
    Restore reads and verify recovery. Historical execution and decision reads
    must remain usable throughout, and no manual execution controls may render.
