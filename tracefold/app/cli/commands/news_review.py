@@ -53,6 +53,9 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "accept-drafts":
             return _handle_review_accept_drafts(args, settings, principal)
 
+        if action == "audit-report":
+            return _handle_review_audit_report(args, settings, principal)
+
         payload = _read_json_or_yaml(str(args.file))
         kind = str(payload.get("kind") or "")
         key = str(args.idempotency_key or uuid.uuid4())
@@ -80,6 +83,31 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         return 0, {"ok": True, "data": data}
     except (ValueError, PermissionError) as exc:
         return 2, {"ok": False, "error": str(exc)}
+
+
+def _handle_review_audit_report(args: Namespace, settings: Any, principal: Any) -> tuple[int, dict[str, Any]]:
+    """Read a draft batch, look up what each task actually got, and print the day's two short lists.
+
+    The decisions come from the ReviewDesk queue one task at a time — the same read an authorized reviewer
+    opens — rather than from a second SQL statement over the verdict tables. A task the desk cannot resolve
+    is reported as skipped, never assumed.
+    """
+
+    from tracefold.app.repository_session import postgres_connection
+    from tracefold.news.review.audit import audit_report, decision_task_ids, decisions_from_queue, render_table
+    from tracefold.news.review.desk import DeskQuery, ReviewDesk
+
+    batch = _read_json_or_yaml(str(args.file))
+    rows: list[dict[str, Any]] = []
+    with postgres_connection(settings) as conn:
+        desk = ReviewDesk(conn)
+        for task_id in decision_task_ids(batch):
+            queue = desk.open(DeskQuery(view="queue", mode="event", task=task_id, status="all"), principal=principal)
+            rows.extend(dict(row) for row in (queue.get("tasks") or ()))
+    report = audit_report(batch, decisions_from_queue(rows))
+    if not bool(args.json):
+        report = {**report, "table": render_table(report)}
+    return 0, {"ok": True, "data": report}
 
 
 def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any) -> tuple[int, dict[str, Any]]:

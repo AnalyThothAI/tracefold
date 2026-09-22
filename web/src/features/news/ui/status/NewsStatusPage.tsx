@@ -364,6 +364,15 @@ function WatchPanel({ status }: { status: NewsStatus }) {
   );
 }
 
+/** A daily-audit ratio as "share (numerator/denominator, 已接受审核数)"; no accepted judgment reads as 尚无. */
+function reviewRatio(ratio: NewsStatus["pipeline"]["keep_ratio_sent_24h"] | undefined) {
+  const denominator = ratio?.denominator ?? 0;
+  if (!ratio || denominator <= 0) return "尚无审核";
+  const share =
+    ratio.ratio === null || ratio.ratio === undefined ? "—" : `${(ratio.ratio * 100).toFixed(1)}%`;
+  return `${share}（${ratio.numerator}/${denominator} 已接受审核）`;
+}
+
 function TechnicalMetrics({ status }: { status: NewsStatus }) {
   const queues = Object.entries(status.broker.queues ?? {});
   const incidents = status.ingest.open_incidents ?? [];
@@ -401,6 +410,17 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow
             k="reviewed_external_miss_24h"
             v={String(status.pipeline.reviewed_external_miss_24h)}
+          />
+          {/* #675 §4. The denominator travels with the ratio because it is accepted review judgments,
+              not cards: on a day with three reviews "100%" and "3/3" are the same number and only one
+              of them can be misread as a product result. */}
+          <KeyValueRow
+            k="keep_ratio_sent_24h"
+            v={reviewRatio(status.pipeline.keep_ratio_sent_24h)}
+          />
+          <KeyValueRow
+            k="missed_ratio_dropped_24h"
+            v={reviewRatio(status.pipeline.missed_ratio_dropped_24h)}
           />
           <KeyValueRow
             k="candidate_share_24h"

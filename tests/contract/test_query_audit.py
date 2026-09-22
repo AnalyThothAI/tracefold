@@ -49,6 +49,7 @@ _NEWS_QUERY_NAMES = (
     "news_status_funnel_suppressed",
     "news_status_funnel_verdicts",
     "news_status_funnel_reviews",
+    "news_status_funnel_review_ratios",
     "news_status_funnel_totals",
     "news_status_learning_retention",
     "news_quote_snapshot_read",
@@ -185,6 +186,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_funnel_suppressed",
         "news_status_funnel_verdicts",
         "news_status_funnel_reviews",
+        "news_status_funnel_review_ratios",
         "news_status_funnel_totals",
         "news_status_learning_retention",
     )
@@ -448,6 +450,7 @@ def test_status_audit_reads_its_sql_from_the_production_module_only():
         "STATUS_FUNNEL_SUPPRESSED_SQL",
         "STATUS_FUNNEL_VERDICTS_SQL",
         "STATUS_FUNNEL_REVIEWS_SQL",
+        "STATUS_FUNNEL_REVIEW_RATIOS_SQL",
         "STATUS_FUNNEL_TOTALS_SQL",
         "STATUS_LEARNING_RETENTION_SQL",
     }

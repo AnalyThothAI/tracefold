@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import pathlib
+import threading
+import time
 from typing import Any
 
 import dspy  # type: ignore[import-untyped]
@@ -24,6 +26,7 @@ from tracefold.news.review.drafter import (
     TaxonomyBlindDrafter,
     build_draft_batch,
     build_drafter_lm,
+    spend_by_model,
     submission_payload,
     taxonomy_dimensions,
 )
@@ -573,3 +576,124 @@ def test_novelty_is_normalised_so_the_rubric_can_accept_it() -> None:
     assert EventRubricSubmission(**submission_payload(proper, stable_taxonomy=_TAXONOMY)).novelty.duplicate_of == (
         "b" * 64
     )
+
+
+class _SlowScriptedDrafterLM(dspy.BaseLM):  # type: ignore[misc]
+    """Records overlap, and can fail one named task, so both concurrency properties are observable."""
+
+    def __init__(self, *, fail_for: str = "") -> None:
+        super().__init__(model="scripted/slow-drafter")
+        self._fail_for = fail_for
+        self._lock = threading.Lock()
+        self.calls = 0
+        self.in_flight = 0
+        self.peak_in_flight = 0
+
+    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+        rendered = json.dumps(messages, ensure_ascii=False)
+        with self._lock:
+            self.calls += 1
+            self.in_flight += 1
+            self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+        try:
+            time.sleep(0.02)
+            if self._fail_for and self._fail_for in rendered:
+                raise RuntimeError("provider unavailable")
+            return [json.dumps({"draft": _RUBRIC})]
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+
+
+def test_bounded_concurrency_overlaps_tasks_and_keeps_the_batch_in_task_order() -> None:
+    """Three sequential calls per task made a daily batch a 5-14 hour job (#675 §4). The width is bounded
+    and the fold is by task, so neither the output order nor the counters depend on which call returned
+    first."""
+
+    rubric_lm = _SlowScriptedDrafterLM()
+    tasks = _tasks(8)
+
+    batch = build_draft_batch(ReviewDrafter(rubric_lm), tasks, taxonomy_drafters=_blind_pair(), concurrency=4)
+
+    assert [entry.task_id for entry in batch.drafts] == [task["task_id"] for task in tasks]
+    assert all(entry.error is None for entry in batch.drafts)
+    assert 1 < rubric_lm.peak_in_flight <= 4
+    assert batch.drafter["calls"] == 8 and batch.drafter["failures"] == 0
+    assert batch.taxonomy_drafters["labelled_n"] == 8
+    assert batch.taxonomy_drafters["agreement_n"] == 8
+
+
+def test_one_task_failing_under_concurrency_is_isolated_to_its_own_entry() -> None:
+    failing = _SlowScriptedDrafterLM(fail_for="公司 3 承诺新增产能")
+    tasks = _tasks(6)
+    # `_tasks` gives every card the same text; the failure has to be addressable to a known task.
+    for index, task in enumerate(tasks, start=1):
+        task["card_json"] = json.dumps({"verdict": {"headline_zh": f"公司 {index} 承诺新增产能"}}, ensure_ascii=False)
+
+    batch = build_draft_batch(ReviewDrafter(failing), tasks, taxonomy_drafters=_blind_pair(), concurrency=3)
+
+    errored = [entry for entry in batch.drafts if entry.error is not None]
+    assert [entry.task_id for entry in batch.drafts] == [task["task_id"] for task in tasks]
+    assert [entry.task_id for entry in errored] == [tasks[2]["task_id"]]
+    assert "provider unavailable" in str(errored[0].error)
+    # The failure is the rubric's, not the blind labellers': the taxonomy counters still see every task.
+    assert batch.drafter["failures"] == 1 and batch.taxonomy_drafters["labelled_n"] == 6
+
+
+def test_a_serial_batch_and_a_concurrent_batch_are_the_same_batch() -> None:
+    serial = build_draft_batch(
+        ReviewDrafter(_ScriptedDrafterLM()), _tasks(5), taxonomy_drafters=_blind_pair(), concurrency=1
+    )
+    concurrent = build_draft_batch(
+        ReviewDrafter(_ScriptedDrafterLM()), _tasks(5), taxonomy_drafters=_blind_pair(), concurrency=4
+    )
+    assert serial.batch_sha256 == concurrent.batch_sha256
+
+
+class _CostedResponse:
+    """What a paid gateway hands back: token usage and, on this route, a stated cost."""
+
+    def __init__(self, cost: float | None) -> None:
+        self.usage = {"prompt_tokens": 1_000, "completion_tokens": 250, "total_tokens": 1_250}
+        self._hidden_params = {"response_cost": cost} if cost is not None else {}
+
+
+def test_a_drafting_call_is_accounted_with_tokens_and_an_unknown_cost_stays_unknown() -> None:
+    """#675 §4: the daily audit runs on a paid route, so a batch has to say what it spent. An unknown
+    cost is counted as an unknown call, never as zero."""
+
+    lm = build_drafter_lm(
+        model_name="openai/deepseek-v4-pro",
+        api_key="unused",
+        api_base="https://example.test/v1",
+        model_kwargs={},
+        structured_output="response_schema",
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(dspy.LM, "_process_lm_response", lambda self, response, *args, **kwargs: ["{}"])
+        lm._process_lm_response(_CostedResponse(0.0125), None, None)
+        lm._process_lm_response(_CostedResponse(None), None, None)
+
+    assert lm.spend == {
+        "calls": 2,
+        "input_tokens": 2_000,
+        "output_tokens": 500,
+        "cached_tokens": 0,
+        "total_tokens": 2_500,
+        "observed_cost_microusd": 12_500,
+        "cost_unknown_calls": 1,
+    }
+
+
+def test_the_batch_reports_spend_per_model_and_adds_up_a_model_used_for_two_roles() -> None:
+    shared = _ScriptedBlindLM("scripted/shared")
+    shared.spend = {**dict.fromkeys(("input_tokens", "output_tokens", "cached_tokens", "cost_unknown_calls"), 0)}
+    shared.spend.update({"calls": 3, "total_tokens": 90, "observed_cost_microusd": 7})
+    other = _ScriptedBlindLM("scripted/other")
+
+    merged = spend_by_model(TaxonomyBlindDrafter(shared), TaxonomyBlindDrafter(shared), TaxonomyBlindDrafter(other))
+
+    assert merged == {
+        "scripted/shared": {**shared.spend, "calls": 6, "total_tokens": 180, "observed_cost_microusd": 14}
+    }
+    assert "scripted/other" not in merged  # a scripted LM has no spend counter and is not invented one

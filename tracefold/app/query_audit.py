@@ -101,6 +101,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_funnel_suppressed",
         "news_status_funnel_verdicts",
         "news_status_funnel_reviews",
+        "news_status_funnel_review_ratios",
         "news_status_funnel_totals",
         "news_status_learning_retention",
     ),
