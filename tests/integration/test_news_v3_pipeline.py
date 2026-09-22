@@ -2018,7 +2018,7 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
         why_zh="",
     )
     judgment = scored_judgment(verdict)
-    facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate", member_count=1)
+    facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate")
     decision = decide(judgment, facts, status, now_ms=now_ms)
     assert decision.final == "throttled" and decision.throttled_by == "storyline:conflict:mideast_2026:budget"
     assert decision.override_rule == "fact_kind_state_change" and decision.seen_scope == "all"

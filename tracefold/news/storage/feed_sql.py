@@ -350,7 +350,7 @@ def feed_page_sql(where_sql: str) -> str:
                t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
                t.error_code AS triage_error_code, t.created_at_ms AS verdict_created_at_ms,
                t.published_at_ms AS verdict_published_at_ms,
-               t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
+               t.verdict ->> 'direction' AS direction,
                t.verdict ->> 'headline_zh' AS headline_zh, t.verdict ->> 'scope' AS scope,
                t.verdict AS triage_verdict, t.editorial AS model_editorial,
                d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code,

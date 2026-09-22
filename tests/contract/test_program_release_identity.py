@@ -35,7 +35,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # them, the two canonical code-set orders the envelope pinned go with the fields they ordered, and the
 # closed fact-kind vocabulary is pinned in their place. That is a different question asked of the
 # provider, so it is a different Program version and a different envelope.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "0ebf3fce8663511b87b34d0d5671194fd93d2c40f13bd7c4bcb20d74f3cdbda6"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "22ab36aadd6b811b6c56180d44f8e64b94b43150d402b259305d9269e4815401"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.

@@ -365,7 +365,6 @@ def _decide_row(row: dict[str, Any], assets: list[dict[str, Any]]) -> tuple[str,
         grounded_assets=tuple(asset["symbol"] for asset in assets),
         watchlist_symbols=frozenset(),
         admission="listing_deterministic" if row["v14_override_rule"] == "listing_deterministic" else "candidate",
-        member_count=row["member_count"],
         independent_text_count=row["independent_text_count"],
         title=row["title"],
     )

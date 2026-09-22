@@ -41,6 +41,9 @@ from ..told_context import ToldLedgerSnapshot as _ToldLedgerSnapshot
 # Retrieval's own threshold on comparison titles, deliberately not `news.policy.similarity_max`: that knob is
 # operator-owned duplicate policy over reader headlines, and coupling the two would let a policy edit silently
 # change what the model is allowed to see.
+# What a told entry carried before #675 §1 and does not carry now. A ledger entry projects the verdict,
+# so an archived context holds whatever the verdict held on the day it was recorded.
+_RETIRED_TOLD_KEYS: Final[frozenset[str]] = frozenset({"magnitude"})
 WATCHLIST_MAX: Final[int] = 64
 GROUNDED_ASSETS_MAX: Final[int] = 16
 # What the catalogue can say about the symbols this Event already carries, bounded (#651 §A). Eight
@@ -107,6 +110,59 @@ class EditorialEnvelope(_ExactContractModel):
     taxonomy_status: Literal["available", "unavailable"] = "available"
     taxonomy_error_code: str | None = None
     editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _adapt_pre_cut_document(cls, value: Any) -> Any:
+        """Read a stored `news_editorial_v3` or `_v2` document into the v4 shape (#675 §1).
+
+        The ledger holds three editorial contracts and rewrites none of them, so every learning surface
+        that validates a stored envelope -- the release metric, the frozen corpus, the observed-episode
+        projection -- would otherwise raise on the first row written before this cut. That is not a
+        hypothetical: `storage.learning` selects `news_judgment_v2` rows by name so the corpus keeps its
+        history, and a 30-day retention means most of it is still pre-cut.
+
+        The stored hash is *verified before anything is dropped*, which is the whole point of doing this
+        here rather than at each call site: the document is checked against the digest the writer computed
+        over it, and only then is `relevance` -- the seven `TradeRelevanceV1` codes #675 §1 deleted --
+        removed and the v4 digest computed over what is left. A row whose hash does not address its own
+        content is a corrupted row and still raises. v2 additionally nests the authority inside the
+        taxonomy, which #651 §5.3 lifted out; the same lift happens here and is the same lift
+        `storage.decisions.editorial_read_shape` performs for the API.
+        """
+
+        if not isinstance(value, Mapping):
+            return value
+        version = str(value.get("editorial_contract_version") or "")
+        if version in {"", EDITORIAL_CONTRACT_VERSION}:
+            return value
+        if version not in {"news_editorial_v3", "news_editorial_v2"}:
+            raise ValueError("news_editorial_contract_version_unknown")
+        stored = {key: item for key, item in value.items() if key != "editorial_sha256"}
+        if str(value.get("editorial_sha256") or "") != canonical_sha(stored):
+            raise ValueError("news_editorial_hash_mismatch")
+        taxonomy = value.get("taxonomy")
+        if version == "news_editorial_v2":
+            if not isinstance(taxonomy, Mapping):
+                raise ValueError("news_editorial_taxonomy_status_invalid")
+            authority = str(taxonomy.get("source_authority") or "unknown")
+            # A v2 row exists only because its taxonomy validated: the whole judgment failed otherwise.
+            axes: Any = {key: item for key, item in taxonomy.items() if key != "source_authority"}
+            status, error_code = "available", None
+        else:
+            authority = str(value.get("source_authority") or "unknown")
+            axes = dict(taxonomy) if isinstance(taxonomy, Mapping) else None
+            status = str(value.get("taxonomy_status") or "available")
+            error_code = value.get("taxonomy_error_code") or None
+        payload = {
+            "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
+            "editorial_origin": "model",
+            "source_authority": authority,
+            "taxonomy": axes,
+            "taxonomy_status": status,
+            "taxonomy_error_code": error_code,
+        }
+        return {**payload, "editorial_sha256": canonical_sha(payload)}
 
     @classmethod
     def issue(
@@ -398,6 +454,50 @@ class TriageContext(_ExactContractModel):
             now_ms=int(now_ms),
             queue_lag_ms=max(0, int(queue_lag_ms)),
         )
+
+    @classmethod
+    def adapt_archived(cls, document: Mapping[str, Any]) -> tuple[dict[str, Any], str | None]:
+        """One archived context in the shapes this contract still validates, and what wrote it.
+
+        Two adaptations, both explicit, both named here rather than repeated at each read boundary.
+
+        The first is `news_evidence_input_v1`: a prepared-evidence block from before #651's input version
+        is dropped rather than replayed, because reanalysing it would be today's assembly answering an old
+        question. That one is older than this cut and only moved here.
+
+        The second is #675 §1. A told entry projects the verdict it was written from, so every entry
+        archived before this contract carries the deleted ``magnitude`` -- and `ToldLedgerEntry` and
+        `_ModelVisibleToldEntry` both forbid unknown keys, so a recorded `TriageContext` from last week
+        fails validation outright. `dataset._selected_context` answered that failure with ``None`` and the
+        episode silently left the corpus; the learning plane would have quietly lost its entire pre-cut
+        history to a field nobody reads. The key is stripped and the contract that wrote it is returned,
+        so the caller records a reconstruction instead of inventing an exact replay (#679 review 2).
+
+        Returns the adapted document and the contract version it was written under, or ``None`` when the
+        document already matches the current one and nothing was changed.
+        """
+
+        archived = dict(document)
+        if dict(archived.get("prepared_evidence") or {}).get("input_version") == "news_evidence_input_v1":
+            archived["prepared_evidence"] = None
+        told = archived.get("told")
+        if not isinstance(told, Mapping):
+            return archived, None
+        entries = told.get("entries")
+        if not isinstance(entries, Sequence) or isinstance(entries, str | bytes):
+            return archived, None
+        if not any(isinstance(entry, Mapping) and _RETIRED_TOLD_KEYS & set(entry) for entry in entries):
+            return archived, None
+        archived["told"] = {
+            **told,
+            "entries": [
+                {key: item for key, item in entry.items() if key not in _RETIRED_TOLD_KEYS}
+                if isinstance(entry, Mapping)
+                else entry
+                for entry in entries
+            ],
+        }
+        return archived, "news_judgment_v2"
 
     def adapt_archived_excerpt(self) -> TriageContext:
         """Explicit input-study conversion using only archived previews, never today's database.
@@ -702,13 +802,76 @@ def aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]
 
 
 class ScoredJudgment(_ExactContractModel):
-    """Canonical verdict/editorial projection shared by every learning surface."""
+    """Canonical verdict/editorial projection shared by every learning surface.
 
-    judgment_contract_version: Literal["news_judgment_v3"] = JUDGMENT_CONTRACT_VERSION
+    Two shapes reach this model and only one of them is written here. `issue()` builds a judgment under
+    the current contract. `from_stored()` -- and `model_validate` on a frozen corpus row -- reads one the
+    ledger already holds, which may be `news_judgment_v2`: a verdict carrying `magnitude` and `audience`
+    and no `fact_kind`, beside a `news_editorial_v3` envelope carrying the deleted `relevance` object.
+
+    Those rows are not migrated and their hashes address the document the writer produced, so a
+    reconstructed judgment keeps `verdict_sha256` and `scored_judgment_sha256` exactly as stored while its
+    `verdict` and `editorial` are read in the current shape. The hashes are verified against the stored
+    document *before* the retired fields are dropped, and `reconstructed_from` names the contract that
+    wrote it so the round trip through the frozen corpus is stable and so no caller mistakes a
+    reconstruction for a hash it can recompute (#679 review 1).
+    """
+
+    judgment_contract_version: Literal["news_judgment_v3", "news_judgment_v2"] = JUDGMENT_CONTRACT_VERSION
     verdict: TriageVerdict
     editorial: EditorialEnvelope
     verdict_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     scored_judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The contract the stored document was written under, when this judgment was read rather than issued.
+    # `None` on everything the current Program produces.
+    reconstructed_from: Literal["news_judgment_v2"] | None = None
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        judgment_contract_version: str,
+        verdict: Mapping[str, Any],
+        editorial: Mapping[str, Any],
+    ) -> ScoredJudgment:
+        """One judgment as the ledger holds it, with the digests the writer computed over it.
+
+        The two columns are hashed in the shape they are stored in, which is what makes the result
+        comparable with the `judgment_sha256` column beside them. Validating them into the current models
+        first would hash the *adapted* shape and no stored row would ever match again.
+        """
+
+        verdict_sha256 = canonical_sha(dict(verdict))
+        payload = {
+            "judgment_contract_version": judgment_contract_version,
+            "verdict": dict(verdict),
+            "editorial": dict(editorial),
+            "verdict_sha256": verdict_sha256,
+        }
+        return cls.model_validate({**payload, "scored_judgment_sha256": canonical_sha(payload)})
+
+    @model_validator(mode="before")
+    @classmethod
+    def _adapt_pre_cut_document(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        version = str(value.get("judgment_contract_version") or "")
+        if version != "news_judgment_v2" or value.get("reconstructed_from"):
+            return value
+        stored_verdict = value.get("verdict")
+        payload = {
+            "judgment_contract_version": version,
+            "verdict": dict(stored_verdict) if isinstance(stored_verdict, Mapping) else stored_verdict,
+            "editorial": value.get("editorial"),
+            "verdict_sha256": value.get("verdict_sha256"),
+        }
+        if isinstance(stored_verdict, Mapping) and str(value.get("verdict_sha256") or "") != canonical_sha(
+            dict(stored_verdict)
+        ):
+            raise ValueError("news_scored_judgment_identity_mismatch")
+        if str(value.get("scored_judgment_sha256") or "") != canonical_sha(payload):
+            raise ValueError("news_scored_judgment_identity_mismatch")
+        return {**value, "reconstructed_from": "news_judgment_v2"}
 
     @classmethod
     def issue(cls, *, verdict: TriageVerdict, editorial: EditorialEnvelope) -> ScoredJudgment:
@@ -728,6 +891,15 @@ class ScoredJudgment(_ExactContractModel):
 
     @model_validator(mode="after")
     def _projection_identity_is_exact(self) -> ScoredJudgment:
+        # A reconstructed judgment's digests address the stored document, not this one, and were already
+        # verified against it in `_adapt_pre_cut_document`. Recomputing them here would compare the v2
+        # hash with a v3 canonicalization and fail every pre-cut row in the corpus.
+        if self.reconstructed_from is not None:
+            if self.judgment_contract_version != self.reconstructed_from:
+                raise ValueError("news_scored_judgment_identity_mismatch")
+            return self
+        if self.judgment_contract_version != JUDGMENT_CONTRACT_VERSION:
+            raise ValueError("news_scored_judgment_identity_mismatch")
         expected_verdict = canonical_sha(self.verdict.model_dump(mode="json"))
         payload = {
             "judgment_contract_version": self.judgment_contract_version,

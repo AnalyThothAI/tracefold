@@ -94,6 +94,28 @@ FactKind = Literal[
     "schedule",
     "promotion",
 ]
+# The six kinds that state a new fact about the world, and the four that do not. A `statement` is somebody
+# saying something, a `recap` is the same fact told again, a `schedule` is a calendar entry, and a
+# `promotion` is somebody selling something; none of them is a reason to interrupt a reader. This is the
+# whole of the push/drop split, and the 2026-09-22 audit is why it is drawn here: 64 of the 232 cards a
+# reviewer wanted demoted were marketing and small-project product announcements, 39 were price
+# broadcasts, 22 were pure opinion and 7 were schedules -- four kinds, not four thresholds.
+#
+# It lives beside `FACT_KINDS` rather than in `triage_rules` because two planes read it and neither may
+# import the other: `triage_rules.decide()` acts on it, and `review.desk` flags a delivered card whose
+# kind is in the drop half. A second copy in the review plane would be a second policy, and the two would
+# drift the first time a kind moved sides.
+PUSH_FACT_KINDS: Final[frozenset[str]] = frozenset(
+    {"state_change", "new_quantity", "level_crossed", "period_record", "quantified_flow", "official_measure"}
+)
+DROP_FACT_KINDS: Final[frozenset[str]] = frozenset({"statement", "recap", "schedule", "promotion"})
+# A new state of the world, however it arrived: a thing that happened, or a measure an authority took.
+# `official_measure` is the half of the retired `development_delta=state_change` the audit named as the
+# conflict rows' only real cost -- "Trump presses Zelensky to stop striking refineries" and "Russia to
+# extend the diesel export ban" were withheld as one more statement on a running storyline because
+# `change_state=announced` cannot tell a measure from a spokesman's opinion. `fact_kind` can, so both
+# kinds are exempt from the conflict rows and both can escalate.
+MATERIAL_FACT_KINDS: Final[frozenset[str]] = frozenset({"state_change", "official_measure"})
 AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
 Decision = Literal["push", "escalate", "drop", "throttled"]
@@ -419,12 +441,15 @@ def json_ready(value: Any) -> Any:
 __all__ = [
     "ADMITTED_ADMISSIONS",
     "DELIVERY_CARD_VERSION",
+    "DROP_FACT_KINDS",
     "EVENT_IDENTITY_VERSION",
     "FACT_KINDS",
     "GATE_POLICY_VERSION",
     "MARKET_TYPES",
+    "MATERIAL_FACT_KINDS",
     "NEWS_BUS_SCHEMA_VERSION",
     "OUTBOX_MAX_AGE_MS",
+    "PUSH_FACT_KINDS",
     "TRIAGE_POLICY_VERSION",
     "Admission",
     "AssetClass",

@@ -553,7 +553,11 @@ refuses. Remove the retired webpage configuration key before the new image start
 Admits `news_judgment_v3`, `news_triage_policy_v16` and `news_semantic_program_v13`
 to `news_verdicts_current_judgment_check`, and binds each contract version to the
 verdict shape that wrote it through the new
-`news_current_verdict_contract_shape_valid`. #675 §1 deletes `TradeRelevanceV1`,
+`news_current_verdict_contract_shape_valid`, which is deliberately not `STRICT`:
+a `STRICT` predicate returns NULL for a NULL argument, `... AND NULL` is NULL and
+a CHECK admits a row whose predicate is NULL, so a verdict with no
+`judgment_origin` would have passed the one clause written to refuse it. #675 §1
+deletes `TradeRelevanceV1`,
 `magnitude` and `audience` from the model's output and adds `fact_kind` and
 `evidence_ref`, so the verdict, the editorial envelope and the policy all move at
 once. Old Workers cannot write under the new CHECK and new Workers cannot write

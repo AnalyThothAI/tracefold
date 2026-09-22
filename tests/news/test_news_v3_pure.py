@@ -983,7 +983,7 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     assert (
         decide(
             _verdict(fact_kind="official_measure", scope="macro", assets=[]),
-            replace(stale, watchlist_symbols=frozenset(), member_count=2),
+            replace(stale, watchlist_symbols=frozenset()),
             status,
             taxonomy={"event_family": "macro_policy_data", "change_state": "effective"},
             source_authority="reputable_secondary",
@@ -1344,10 +1344,16 @@ def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores
     assert production_decide(wire, lone, None).final == "escalate"
     merged = production_decide(scored_judgment(big, taxonomy=macro), replace(lone, independent_text_count=2), None)
     assert merged.final == "escalate" and merged.override_rule == "escalate_corroborated"
-    # A second arrival of the same text is not a second party, which is why the row counts distinct texts.
-    assert production_decide(scored_judgment(big, taxonomy=macro), replace(lone, member_count=5), None).final == (
-        "push"
+    # A second arrival of the same text is not a second party, which is why the row counts distinct texts
+    # and `GateFacts` no longer carries the Deduper's arrival count at all (#679 review 7). Two members of
+    # one wire line, from a source the registry cannot name, is the #675 Tencent shape: one distinct text,
+    # so the escalate is downgraded rather than granted.
+    assert not hasattr(lone, "member_count")
+    two_arrivals_one_text = production_decide(
+        scored_judgment(big, taxonomy=macro), replace(lone, independent_text_count=1), None
     )
+    assert two_arrivals_one_text.final == "push"
+    assert two_arrivals_one_text.override_rule == "escalate_uncorroborated"
     # A grounded asset is not corroboration: a provider tag says which instrument, not that anyone confirmed it.
     tagged = replace(lone, grounded_assets=("CL", "XYZ-CL"))
     assert production_decide(scored_judgment(big, taxonomy=macro), tagged, None).final == "push"
@@ -1554,17 +1560,33 @@ def test_the_five_percent_exception_is_carried_by_the_market_not_by_the_size_of_
         result = production_decide(judgment, quote, None)
         assert (result.final == "push") is admitted, market
 
-    # It is an admission, not a confirmation: the move is the fact whatever kind the model read the
-    # sentence as, so a `recap` on a commodity is admitted under the kind the exception gives it.
-    recap = _table_judgment(
+    # It is an admission about a price report, not about any sentence that mentions a number. A
+    # `statement` is rescued, because the move is usually the thing being stated and reading it as a
+    # quote is the mistake the exception exists to correct.
+    stated = _table_judgment(
         verdict={
             "headline_zh": "WTI原油期货日内大跌5.00%",
-            "fact_kind": "recap",
+            "fact_kind": "statement",
             "assets": [TriageAsset(symbol="CL", market_type="commodity", role="primary")],
         }
     )
-    admitted = production_decide(recap, quote, None)
+    admitted = production_decide(stated, quote, None)
     assert admitted.final == "push" and admitted.override_rule == "fact_kind_new_quantity"
+
+    # A `recap`, a `schedule` and a `promotion` are not. Each one says the text is about something other
+    # than the move it mentions -- told again, scheduled, or sold beside it -- and admitting them on the
+    # size of a number anywhere in the sentence would push the class the audit counted as its largest
+    # demote bucket (#679 review 3).
+    for kind in ("recap", "schedule", "promotion"):
+        mentions = _table_judgment(
+            verdict={
+                "headline_zh": "WTI原油期货日内大跌5.00%",
+                "fact_kind": kind,
+                "assets": [TriageAsset(symbol="CL", market_type="commodity", role="primary")],
+            }
+        )
+        withheld = production_decide(mentions, quote, None)
+        assert (withheld.final, withheld.override_rule) == ("drop", f"fact_kind_{kind}"), kind
 
     # Below the threshold the market does not matter.
     small = _table_judgment(
@@ -1616,7 +1638,9 @@ def test_the_decision_table_withholds_an_uncorroborated_conflict_claim() -> None
     assert production_decide(claim, replace(lone, independent_text_count=2), _told_on(key, 1), now_ms=_NOW).final == (
         "push"
     )
-    assert production_decide(claim, replace(lone, member_count=5), _told_on(key, 1), now_ms=_NOW).final == "drop"
+    assert (
+        production_decide(claim, replace(lone, independent_text_count=1), _told_on(key, 1), now_ms=_NOW).final == "drop"
+    )
     # So does a source the registry can name.
     named = _table_judgment(
         event_family="geopolitical_conflict",
@@ -1808,6 +1832,11 @@ def test_every_fact_kind_has_exactly_one_row_and_one_rule_name() -> None:
         assert OVERRIDE_RULE_ZH[f"fact_kind_{kind}"], kind
     assert set(FACT_KINDS) == PUSH_FACT_KINDS | DROP_FACT_KINDS
     assert not PUSH_FACT_KINDS & DROP_FACT_KINDS
+    # The review plane flags a delivered card whose kind is in the drop half, and reads the same object
+    # rather than a second copy of the list: two copies are two policies the first time a kind moves.
+    from tracefold.news.review.desk import _NON_FACT_KINDS
+
+    assert _NON_FACT_KINDS is DROP_FACT_KINDS
     # Every name the table can produce is a constant with reader copy behind it.
     assert set(DECISION_TABLE_RULES) == {f"fact_kind_{kind}" for kind in FACT_KINDS} | {
         "escalate_corroborated",
@@ -1815,8 +1844,45 @@ def test_every_fact_kind_has_exactly_one_row_and_one_rule_name() -> None:
         "price_report_without_basis",
         "conflict_claim_uncorroborated",
         "conflict_running_storyline",
+        # Not a kind: the name a judgment that states none is withheld under.
+        "fact_kind_unavailable",
     }
+    assert "fact_kind_unavailable" not in {f"fact_kind_{kind}" for kind in FACT_KINDS}
     assert all(OVERRIDE_RULE_ZH[rule] for rule in DECISION_TABLE_RULES)
+
+
+def test_the_verifier_reads_the_kind_the_policy_acted_on_not_the_one_the_model_wrote() -> None:
+    """#679 review 5. `non_fact_delivered` is critical, and one legitimate path would have tripped it.
+
+    `confirmed_fact_kind` re-reads a `market_flow_price` report against its own text, and the >= 5%
+    commodity/index exception carries a card the model called a `statement` through as a `new_quantity`.
+    The verdict still stores `statement`, so a verifier comparing the stored kind would raise a critical
+    flag on a card the policy deliberately delivered. `decide()` already records which kind it acted on
+    -- the `fact_kind_*` override rule names it -- so the ledger is read rather than a second copy
+    persisted beside it.
+    """
+
+    from tracefold.news.review.desk import _acted_fact_kind, _verifier_flags
+
+    admitted = {
+        "verdict": {"fact_kind": "statement", "novelty": "new_fact"},
+        "final_decision": "push",
+        "override_rule": "fact_kind_new_quantity",
+    }
+    assert _acted_fact_kind("fact_kind_new_quantity", admitted["verdict"]) == "new_quantity"
+    assert not [flag for flag in _verifier_flags(admitted) if flag["code"] == "non_fact_delivered"]
+
+    # The case the flag exists for is untouched: a `statement` that reached a reader through an
+    # objective guard has no `fact_kind_*` rule, so the stored kind is what the verifier reads.
+    guarded = {**admitted, "override_rule": "listing_deterministic"}
+    assert _acted_fact_kind("listing_deterministic", guarded["verdict"]) == "statement"
+    flags = [flag for flag in _verifier_flags(guarded) if flag["code"] == "non_fact_delivered"]
+    assert [flag["severity"] for flag in flags] == ["info"]
+
+    # And a `promotion` delivered with no guard at all is still the critical finding.
+    unguarded = {**admitted, "override_rule": "", "verdict": {"fact_kind": "promotion"}}
+    flags = [flag for flag in _verifier_flags(unguarded) if flag["code"] == "non_fact_delivered"]
+    assert [flag["severity"] for flag in flags] == ["critical"]
 
 
 def test_a_verdict_that_states_no_fact_kind_is_withheld_rather_than_guessed() -> None:
@@ -1843,7 +1909,10 @@ def test_a_verdict_that_states_no_fact_kind_is_withheld_rather_than_guessed() ->
     )
     assert archived.fact_kind is None and archived.evidence_ref == ""
     result = production_decide(scored_judgment(archived), replace(_NO_WATCHLIST, title=""), None)
-    assert result.final == "drop" and result.override_rule == "fact_kind_statement"
+    # Named for the absence, not folded into `fact_kind_statement`: the ledger may not record an
+    # observation the model never made (#679 review 9).
+    assert result.final == "drop" and result.override_rule == "fact_kind_unavailable"
+    assert OVERRIDE_RULE_ZH["fact_kind_unavailable"]
     assert fallback_verdict(_NO_WATCHLIST, error_code="news_program_route_deadline").verdict.fact_kind is None
 
 
@@ -2436,6 +2505,17 @@ def test_card_is_the_reader_contract() -> None:
     )
     assert escalated["header"]["title"]["content"] == "⚡ Nvidia to invest $100bn"  # URL in AI copy -> code fallback
     assert escalated["elements"][0]["content"] == "利多 · 官方措施 · -"
+    # A verdict written under `news_judgment_v2` has a direction and a novelty and no kind at all, and
+    # the review desk, the fidelity corpus and the console detail all re-render those rows. The facts
+    # line is gated on the direction, so the card keeps 利多 and 新进展 and simply omits the third word
+    # instead of losing all three to a field the writer never had (#679 review 6).
+    archived = render_first_card(
+        event={"event_id": "e3", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
+        verdict={"direction": "bullish", "novelty": "progression", "headline_zh": "英伟达加码投资"},
+        decision="push",
+        grounded_assets=[],
+    )
+    assert archived["elements"][0]["content"].splitlines()[-1] == "利多 · 新进展 · -"
     # Degraded (model chain failed, rule baseline pushes): the wire text itself, no verdict words the model never gave.
     degraded = render_first_card(
         event={

@@ -2708,6 +2708,20 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
             "history_scope": "recent",
             "retrieval_reason": "recent",
         }
+        # And the shape predicate refuses a row with a missing argument instead of abstaining. A STRICT
+        # function returns NULL for a NULL argument, `... AND NULL` is NULL, and a CHECK admits a row
+        # whose predicate is NULL -- so a verdict with no `judgment_origin` would have walked straight
+        # through the one clause written to bind it to its contract (#679 review 4).
+        shape = "SELECT news_current_verdict_contract_shape_valid(%s, %s, %s::jsonb) AS ok"
+        v3_verdict = json.dumps({"fact_kind": "state_change", "evidence_ref": "c1"})
+        assert conn.execute(shape, ("news_judgment_v3", "model", v3_verdict)).fetchone()["ok"] is True
+        for contract, origin, verdict in (
+            (None, "model", v3_verdict),
+            ("news_judgment_v3", None, v3_verdict),
+            ("news_judgment_v3", "model", None),
+        ):
+            assert conn.execute(shape, (contract, origin, verdict)).fetchone()["ok"] is False
+
         told_valid = "SELECT news_current_told_trace_valid(%s::jsonb) AS ok"
         assert conn.execute(told_valid, (json.dumps([told_entry]),)).fetchone()["ok"]
         # And the entry a pre-v3 Worker wrote, magnitude and all, is still accepted unchanged.

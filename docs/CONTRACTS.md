@@ -1182,7 +1182,10 @@ that need a classification are silent when `editorial.taxonomy_status` is
    `fact_kind_promotion` drop, before and independently of any classification.
 2. On taxonomy `market_flow_price` + `reported`, a same-day move of >= 5% on a
    primary asset whose `market_type` is `commodity` or `index` is admitted as
-   `fact_kind_new_quantity` (the owner's one exception, #675 §7); otherwise a
+   `fact_kind_new_quantity` (the owner's one exception, #675 §7) -- unless the
+   model's own kind is `recap`, `schedule` or `promotion`, which say the text is
+   about something other than the move it mentions; a `statement` stays eligible,
+   because the move is usually the thing being stated. Otherwise a
    claimed `level_crossed`, `period_record` or `quantified_flow` whose own title
    and `headline_zh` state no level crossed, period record, quantified flow,
    stablecoin depeg or freight rate in either language becomes a `statement` and
@@ -1202,9 +1205,18 @@ that need a classification are silent when `editorial.taxonomy_status` is
    an uncorroborated one is a `push` under `escalate_uncorroborated`.
 6. Otherwise `fact_kind_<kind>` pushes.
 
+A judgment that states no `fact_kind` at all -- only a replay of an archived
+`news_judgment_v2` verdict can be one -- drops under its own
+`fact_kind_unavailable`, never folded into `fact_kind_statement`: the ledger does
+not record an observation the model never made.
+
 The corroboration input is the count of distinct `evidence_text_sha256` values
 across the Event's frozen members, carried on the verdict trace as
-`independent_text_count`. Retired quota and v9
+`independent_text_count`. It replaced the Deduper's arrival count outright, and
+`GateFacts.member_count` is gone with it: two arrivals of one wire line are one
+party, which is the #675 card that opened the Issue. `member_count` remains on
+the Event and on the evidence snapshot, where it counts arrivals and nothing
+reads it as corroboration. Retired quota and v9
 action/priority keys
 are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and

@@ -138,7 +138,6 @@ def gate_facts(case_key: str) -> GateFacts:
         watchlist_symbols=frozenset(str(value) for value in row["watchlist_hits"] or ()),
         admission=str(row["admission"]),
         source_age_s=None,
-        member_count=int(row["member_count"] or 1),
     )
 
 

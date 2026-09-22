@@ -111,7 +111,7 @@ def _rows() -> list[dict[str, Any]]:
     return [json.loads(line) for line in FIXTURE.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _replay(row: dict[str, Any]) -> DecisionResult:
+def _replay(row: dict[str, Any], *, fact_kind: str | None = None) -> DecisionResult:
     """Run the production `decide()` over one recorded row, with the proxy kind in the verdict.
 
     Three inputs are reconstructed rather than recorded, and each one is pinned to the value that cannot
@@ -127,7 +127,7 @@ def _replay(row: dict[str, Any]) -> DecisionResult:
             assets=row["assets"],
             direction=row["direction"],
             scope=row["scope"],
-            fact_kind=proxy_fact_kind(row),
+            fact_kind=fact_kind or proxy_fact_kind(row),
             evidence_ref="c1",
             confidence=0.8,
             headline_zh=row["headline_zh"][:60],
@@ -144,7 +144,6 @@ def _replay(row: dict[str, Any]) -> DecisionResult:
         grounded_assets=tuple(asset["symbol"] for asset in row["assets"]),
         watchlist_symbols=frozenset(),
         admission="listing_deterministic" if row["v14_override_rule"] == "listing_deterministic" else "candidate",
-        member_count=row["member_count"],
         independent_text_count=row["independent_text_count"],
         title=row["title"],
     )
@@ -255,18 +254,18 @@ def test_the_table_withholds_one_hundred_and_twenty_four_delivered_cards(
     for _, rule in withheld:
         by_rule[rule] = by_rule.get(rule, 0) + 1
     assert by_rule == {
-        "fact_kind_recap": 41,
+        "fact_kind_recap": 42,
         "fact_kind_statement": 21,
         "conflict_claim_uncorroborated": 13,
         "fact_kind_schedule": 5,
         "price_report_without_basis": 5,
     }
-    assert len(withheld) == 85
+    assert len(withheld) == 86
 
     labels: dict[str, int] = {}
     for row, _ in withheld:
         labels[row["reviewer_verdict"]] = labels.get(row["reviewer_verdict"], 0) + 1
-    assert labels == {"demote": 59, "borderline": 13, "keep": 13}
+    assert labels == {"demote": 59, "borderline": 13, "keep": 14}
     # Two rows fire on no card in this recording and are covered directly in `test_news_v3_pure.py`
     # instead: `conflict_running_storyline`, because the proxy reads nearly every conflict card's
     # `announced`/`effective` state as a `state_change` and the row exempts those, and
@@ -284,13 +283,13 @@ def test_what_the_table_withholds_is_mostly_what_the_rubric_called_noise(
     categories: dict[str, int] = {}
     for row, _ in _withheld(replayed):
         categories[row["reviewer_category"]] = categories.get(row["reviewer_category"], 0) + 1
-    assert categories["price_report"] == 31
+    assert categories["price_report"] == 32
     assert categories["opinion"] == 12
     assert categories["conflict_routine"] == 8
     assert categories["marketing"] == 7
     # The residue is what the rows pay for: cards a reviewer read as a real fact.
     assert categories["real_fact"] == 8
-    assert sum(categories.values()) == 85
+    assert sum(categories.values()) == 86
 
 
 def test_the_cards_the_table_still_delivers_are_the_ones_the_reviewer_wanted(
@@ -298,7 +297,7 @@ def test_the_cards_the_table_still_delivers_are_the_ones_the_reviewer_wanted(
 ) -> None:
     """The product metric #675 §5 asks for: the keep share of what the reader is actually handed.
 
-    23% of the delivered day was `keep` and 56% was `demote`. Withholding 85 cards moves the delivered
+    23% of the delivered day was `keep` and 56% was `demote`. Withholding 86 cards moves the delivered
     slice to 25% keep and 52% demote. That is a small move and it is the honest one to report: the
     proxy cannot answer `promotion`, so the 64 marketing and small-project product cards the audit
     counted are all still delivered here, and the cross-language duplicate class #675 §2 owns is
@@ -307,11 +306,11 @@ def test_the_cards_the_table_still_delivers_are_the_ones_the_reviewer_wanted(
     """
 
     delivered = [row for row, result in replayed if result.final in PUSHED]
-    assert len(delivered) == 332
+    assert len(delivered) == 331
     labels: dict[str, int] = {}
     for row in delivered:
         labels[row["reviewer_verdict"]] = labels.get(row["reviewer_verdict"], 0) + 1
-    assert labels == {"keep": 83, "borderline": 76, "demote": 173}
+    assert labels == {"keep": 82, "borderline": 76, "demote": 173}
     assert round(100 * labels["keep"] / len(delivered)) == 25
     assert round(100 * labels["demote"] / len(delivered)) == 52
 
@@ -319,7 +318,7 @@ def test_the_cards_the_table_still_delivers_are_the_ones_the_reviewer_wanted(
 def test_the_keep_labelled_cards_the_table_withholds_are_the_known_ones(
     replayed: list[tuple[dict[str, Any], DecisionResult]],
 ) -> None:
-    """Thirteen of the withheld cards had a reviewer who wanted them, and each one is accounted for.
+    """Fourteen of the withheld cards had a reviewer who wanted them, and each one is accounted for.
 
     Four are the `statement` row's real cost and are accepted as such: two Fed speakers saying rates may
     have to rise, a network's report of a live antitrust negotiation, and a venue that "may" form next
@@ -331,7 +330,10 @@ def test_the_keep_labelled_cards_the_table_withholds_are_the_known_ones(
     `market_flow_price`. One is the owner's decision (#675 §7): a single stock at 10.4% is a price
     broadcast. Two are the conflict row's cost, and both are authority-registry gaps rather than rule
     defects -- UKMTO is a first-party maritime authority the registry does not name, and the Reuters
-    line reached us through a relay the registry deliberately will not name.
+    line reached us through a relay the registry deliberately will not name. The fourteenth is the
+    cost of #679 review 3: the >= 5% commodity exception no longer carries a `recap`, and this proxy
+    reads the WTI card as one. It is the proxy's coarseness, not the rule's -- the same card class is
+    `new_quantity` to the live model in the smoke run -- but it is counted here rather than argued away.
     """
 
     keeps = sorted(
@@ -359,6 +361,12 @@ def test_the_keep_labelled_cards_the_table_withholds_are_the_known_ones(
             ("fact_kind_recap", "09-22 00:08", "利比亚Sharara管线关闭致油田产量据称大幅下降"),
             # The owner's decision: a single stock is excluded from the >= 5% exception.
             ("fact_kind_recap", "09-21 17:17", "Meta股价涨幅扩大，最新上涨10.4%"),
+            # The exception does not carry a `recap`, and the proxy calls this card one (#679 review 3).
+            (
+                "fact_kind_recap",
+                "09-21 16:57",
+                "WTI原油期货11月合约日内大跌5.00%，现报91.27美元/桶",
+            ),
             # Authority-registry gaps, not rule defects.
             ("conflict_claim_uncorroborated", "09-21 09:33", "UKMTO称军方通报一艘入港油轮被弹丸击中"),
             ("conflict_claim_uncorroborated", "09-21 14:51", "路透：美国提议将中美贸易休战延长六个月"),
@@ -369,19 +377,33 @@ def test_the_keep_labelled_cards_the_table_withholds_are_the_known_ones(
 def test_the_owner_exception_admits_a_five_percent_commodity_move_and_not_a_single_stock(
     replayed: list[tuple[dict[str, Any], DecisionResult]],
 ) -> None:
-    """#675 §7, on the two cards the recording has for it.
+    """#675 §7 and #679 review 3, on the two cards the recording has for them.
 
-    WTI -5.00% is a `commodity` primary and the move is itself the fact, so the exception admits it as a
-    `new_quantity` however the model read the sentence. Meta +10.4% is one stock and stays withheld,
-    which is the decision the owner wrote down and the reason the exception is carried by the primary
-    asset's market rather than by the size of the move.
+    The exception is carried by the primary asset's market and never by the size of the move, so Meta
+    +10.4% is one stock and stays withheld -- the decision the owner wrote down. It is also carried only
+    where the text is reporting the move: a `recap`, a `schedule` or a `promotion` that mentions a big
+    number is about something else, and admitting one on the size of that number would push the class the
+    audit counted as its largest demote bucket.
+
+    The WTI card is where those two meet, and the recording shows what the second rule costs. The proxy
+    reads it as a `recap`, so it is now withheld -- a card the reviewer labelled `keep`. That is the
+    proxy's coarseness rather than the rule's: the live model answers `new_quantity` on this class in the
+    smoke run, and a `statement` on the same sentence is still admitted, which is the case the exception
+    was written for. The cost is counted in `test_the_keep_labelled_cards_the_table_withholds_are_the_
+    known_ones` instead of being argued away, and it is the one number in this file that a live
+    `fact_kind` would be expected to move back.
     """
 
     by_headline = {row["headline_zh"]: (row, result) for row, result in replayed}
     wti, wti_result = by_headline["WTI原油期货11月合约日内大跌5.00%，现报91.27美元/桶"]
     assert proxy_fact_kind(wti) == "recap"
     assert [asset["market_type"] for asset in wti["assets"] if asset["role"] == "primary"] == ["commodity"]
-    assert (wti_result.final, wti_result.override_rule) == ("push", "fact_kind_new_quantity")
+    assert (wti_result.final, wti_result.override_rule) == ("drop", "fact_kind_recap")
+
+    # The same card, the same market, the same move, read as a statement rather than a retelling: the
+    # exception admits it. This is the discrimination #679 review 3 asked the rule to draw.
+    admitted = _replay(wti, fact_kind="statement")
+    assert (admitted.final, admitted.override_rule) == ("push", "fact_kind_new_quantity")
 
     meta, meta_result = by_headline["Meta股价涨幅扩大，最新上涨10.4%"]
     assert [asset["market_type"] for asset in meta["assets"] if asset["role"] == "primary"] == ["equity"]

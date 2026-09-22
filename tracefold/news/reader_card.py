@@ -384,13 +384,18 @@ class ReaderCard:
 
         facts, market = self.facts, self.header.family != "news"
         parts: list[str] = []
-        if facts.direction is not None and facts.fact_kind is not None:
+        # Gated on the direction alone, not on the fact kind. A verdict written under `news_judgment_v2`
+        # has a direction and a novelty and no kind at all, and re-rendering one -- the review desk, the
+        # fidelity corpus and the console detail all do -- must not silently drop 利多/利空 and 新进展
+        # because the third word is missing. `fact_kind_word()` contributes nothing when there is no kind
+        # (#679 review 6).
+        if facts.direction is not None:
             parts.append(self.direction_word())
             # 28.8% of a week's cards advanced a story the reader already had one for, and the card
             # said nothing about it (#113). `新进展` is the model's own `novelty`, not a count.
             if facts.novelty == "progression":
                 parts.append(NOVELTY_ZH["progression"])
-            parts.append(self.fact_kind_word())
+            parts.extend(word for word in (self.fact_kind_word(),) if word)
         if facts.tickers:
             parts.append(" ".join(facts.tickers))
         origin = " ".join(part for part in facts.source if part) or fmt.UNKNOWN_ORIGIN

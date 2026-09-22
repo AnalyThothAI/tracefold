@@ -102,6 +102,7 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "fact_kind_recap": "事实类型：综述或复述，不推送",
     "fact_kind_schedule": "事实类型：日程，不推送",
     "fact_kind_promotion": "事实类型：营销推广，不推送",
+    "fact_kind_unavailable": "该判断未给出事实类型，无法判定，不推送",
     # Retired with policy v15 and kept for the ledger. `decide()` cannot produce these names any more, but
     # the 30-day verdict retention still holds rows carrying them, and a console that rendered a bare key
     # for a card the reader received last week would be a worse answer than a stale one (#675 §1).

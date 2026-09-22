@@ -110,7 +110,6 @@ def production_decision(
     judgment: ScoredJudgment,
     projection: Mapping[str, Any],
     *,
-    member_count: int = 1,
     independent_text_count: int = 1,
     now_ms: int | None = None,
 ) -> DecisionResult:
@@ -129,12 +128,12 @@ def production_decision(
     says, while a recorded row keeps the action the reader actually received under the policy that produced
     it. A receipt is not re-decided because the rule moved.
 
-    ``member_count``, ``independent_text_count`` and ``now_ms`` come from the frozen ``TriageContext`` the
-    episode already carries (`evidence.member_count`, `prepared_evidence.independent_text_count`, `now_ms`),
-    so the policy-v12 corroboration, the storyline budget and the policy-v15 decision table replay without a
-    new projection root (#504, #675). An archived context that predates the count replays at 1, which is the
-    value that lets the conflict row fire — the same conservative answer production takes when the Deduper
-    could not tell it otherwise.
+    ``independent_text_count`` and ``now_ms`` come from the frozen ``TriageContext`` the episode already
+    carries (`prepared_evidence.independent_text_count`, `now_ms`), so the corroboration rules, the storyline
+    budget and the v16 decision table replay without a new projection root (#504, #675). An archived context
+    that predates the count replays at 1, which is the value that lets the conflict row fire — the same
+    conservative answer production takes when the Deduper could not tell it otherwise. The Deduper's arrival
+    count went with `GateFacts.member_count`: no row reads it any more (#679 review 7).
     """
 
     recorded = projection.get("recorded_decision_result")
@@ -183,7 +182,6 @@ def production_decision(
             # #154: `news learning baseline` scores the production action, so this metric has to be able to
             # reach `stale_source_artifact` too.
             source_age_s=gate.get("source_age_s"),
-            member_count=max(1, int(member_count)),
             independent_text_count=max(1, int(independent_text_count)),
             title=str(storyline.get("title") or ""),
         ),

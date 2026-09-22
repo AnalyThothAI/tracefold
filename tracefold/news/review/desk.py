@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.identity import comparison_title as normalize_comparison_title
 from ..market_review.storage import MarketReviewCohort, PriceRepository
-from ..models import FactKind, MarketType
+from ..models import DROP_FACT_KINDS, FACT_KINDS, FactKind, MarketType
 from ..outcome import decision_zh
 from ..taxonomy import (
     IPTC_CODEBOOK_SHA256,
@@ -114,9 +114,13 @@ _DIMENSIONS = {
     "taxonomy_assertion_status",
 }
 _NOVELTY = {"new_fact", "progression", "restatement", "uncertain"}
-# The four `fact_kind` values `decide()` never pushes on their own (`triage_rules.DROP_FACT_KINDS`),
-# restated here as a review-plane constant because this module may not import the policy it reviews.
-_NON_FACT_KINDS: Final[frozenset[str]] = frozenset({"statement", "recap", "schedule", "promotion"})
+# The four `fact_kind` values `decide()` never pushes on their own. It is the same object the policy
+# reads, imported from `models` rather than restated: this module may not import `triage_rules`, but the
+# split belongs to the kinds themselves and a second copy here would be a second policy (#679 review 10).
+_NON_FACT_KINDS: Final[frozenset[str]] = DROP_FACT_KINDS
+# `triage_rules.FACT_KIND_RULES` names every row `fact_kind_<kind>`; this is the half of that name the
+# review plane can read back without importing the policy.
+_FACT_KIND_RULE_PREFIX: Final[str] = "fact_kind_"
 _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
     "asset_grounding": "gate",
     "timeliness": "delivery",
@@ -2281,6 +2285,13 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _acted_fact_kind(rule: str, verdict: Mapping[str, Any]) -> str:
+    """The `fact_kind` the stored decision acted on: the override rule's, or else the verdict's own."""
+
+    kind = rule.removeprefix(_FACT_KIND_RULE_PREFIX) if rule.startswith(_FACT_KIND_RULE_PREFIX) else ""
+    return kind if kind in FACT_KINDS else str(verdict.get("fact_kind") or "")
+
+
 def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
     verdict = dict(row.get("verdict") or {})
     final = str(row.get("final_decision") or "")
@@ -2301,7 +2312,15 @@ def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
     # reaching the reader anyway -- cannot happen under v16, because the model states no reader value
     # and `decide()` produces the action it names. A `statement`, `recap`, `schedule` or `promotion`
     # that still reaches a reader did so through an objective guard, which is what this flag says.
-    if str(verdict.get("fact_kind") or "") in _NON_FACT_KINDS and final in {"push", "escalate"}:
+    #
+    # The kind compared is the one `decide()` acted on, not the one the model wrote (#679 review 5). The
+    # two differ on exactly one path: `confirmed_fact_kind` re-reads a `market_flow_price` report against
+    # its own text, and the >= 5% commodity/index exception can carry a card the model called a
+    # `statement` through as a `new_quantity`. `decide()` already records which kind it acted on -- a
+    # `fact_kind_*` override rule names it -- so the ledger is read rather than a second copy persisted
+    # beside it. A row whose rule is an objective guard has no such record and falls back to the verdict,
+    # which is the case this flag was written for.
+    if _acted_fact_kind(rule, verdict) in _NON_FACT_KINDS and final in {"push", "escalate"}:
         flags.append(
             {
                 "code": "non_fact_delivered",

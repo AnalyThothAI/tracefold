@@ -163,13 +163,19 @@ CREATE OR REPLACE FUNCTION public.news_current_triage_verdict_valid(value jsonb)
     # degraded lane makes no observation of the text -- there is no model answer to record -- so its
     # `fact_kind` is JSON null and its `evidence_ref` is empty, and saying so here is what stops a null
     # from meaning "the model declined to answer" on a row where the model did answer.
+    #
+    # Deliberately not STRICT. A STRICT predicate returns NULL for a NULL argument, `... AND NULL` is NULL,
+    # and a CHECK admits a row whose predicate is NULL -- so a row with no `judgment_origin` or no
+    # `verdict` would have walked straight through the one clause written to refuse it. Every argument is
+    # tested for NULL and a missing one is a refusal, not an abstention (#679 review 4).
     op.execute(f"""
 CREATE FUNCTION public.news_current_verdict_contract_shape_valid(
     contract_version text, origin text, value jsonb
 ) RETURNS boolean
-    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
     AS $_$
-          SELECT CASE contract_version
+          SELECT contract_version IS NOT NULL AND origin IS NOT NULL AND value IS NOT NULL
+             AND CASE contract_version
             WHEN 'news_judgment_v3' THEN
               value ? 'fact_kind' AND value ? 'evidence_ref'
               AND NOT (value ? 'magnitude') AND NOT (value ? 'audience')

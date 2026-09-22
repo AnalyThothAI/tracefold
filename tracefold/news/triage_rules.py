@@ -20,7 +20,16 @@ from typing import Any, Final
 
 from .artifact_identity import canonical_sha
 from .events.storyline import NO_STORYLINE_KEY
-from .models import FACT_KINDS, Decision, FactKind, TriageVerdict, base_symbol
+from .models import (
+    DROP_FACT_KINDS,
+    FACT_KINDS,
+    MATERIAL_FACT_KINDS,
+    PUSH_FACT_KINDS,
+    Decision,
+    FactKind,
+    TriageVerdict,
+    base_symbol,
+)
 from .program.contracts import JUDGMENT_CONTRACT_VERSION, ScoredJudgment
 from .similarity import max_similarity
 
@@ -91,14 +100,14 @@ class GateFacts:
     # Seconds between the source artifact's own publication and the provider's push (#154). `None` whenever the
     # artifact does not carry its own timestamp, which is every non-x/twitter frame.
     source_age_s: int | None = None
-    # #504 D3: how many provider Items the Deduper merged into this Event. A second independent arrival is the
-    # cheapest corroboration there is; a single Item from a source of unknown authority is none.
-    member_count: int = 1
-    # #675 §3: how many *distinct member texts* the Deduper merged, counted over `evidence_text_sha256`. It is
-    # not `member_count` and it is not a cosmetic refinement of it: the #675 Tencent card had two members and
-    # both were the same jin10 line arriving twice, so `member_count` read 2 and called one wire two parties.
-    # A digest over the normalized provider body is the only thing that can tell a second arrival from a
-    # second source. The escalate corroboration rule deliberately still reads `member_count` (see `decide`).
+    # #675 §3: how many *distinct member texts* the Deduper merged, counted over `evidence_text_sha256`.
+    #
+    # It replaced `member_count` outright in v16, and `member_count` is gone from this contract with it.
+    # #504 D3 gave the escalate corroboration rule the Deduper's arrival count on the theory that a second
+    # arrival is a second party; the #675 Tencent card is why that is false. It had two members and both
+    # were the same jin10 line arriving twice, so `member_count` read 2 and called one wire two parties. A
+    # digest over the normalized provider body is the only thing that can tell a second arrival from a
+    # second source, so the corroboration rule now reads this and nothing else counts arrivals.
     independent_text_count: int = 1
     # The Event's own wire title. The decision table checks the text the fact actually arrived in as well as
     # the reader headline the model wrote from it: a basis stated in the English source and dropped from the
@@ -278,6 +287,11 @@ _PRICE_PERCENT: Final = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 # stays a background card -- so the exception is carried by the primary asset's market, never by its size.
 PRICE_MOVE_EXCEPTION_PERCENT: Final = 5.0
 PRICE_MOVE_EXCEPTION_MARKETS: Final[frozenset[str]] = frozenset({"commodity", "index"})
+# The three kinds the >= 5% exception may not rescue. Each one says the text is about something other than
+# the move it mentions -- told again, scheduled, or sold -- so admitting it on the size of the number would
+# push the class the 2026-09-22 audit counted as its largest demote bucket. `statement` is deliberately not
+# here: the move is usually the thing being stated (#679 review 3).
+PRICE_MOVE_EXCEPTION_EXCLUDED_KINDS: Final[frozenset[str]] = frozenset({"recap", "schedule", "promotion"})
 
 
 def price_move_basis(text: str) -> bool:
@@ -389,25 +403,17 @@ RULE_CONFLICT_CLAIM_UNCORROBORATED: Final[str] = "conflict_claim_uncorroborated"
 RULE_CONFLICT_RUNNING_STORYLINE: Final[str] = "conflict_running_storyline"
 RULE_SINGLE_NAME_WITHOUT_INSTRUMENT: Final[str] = "single_name_without_instrument"
 RULE_STALE_SOURCE_ARTIFACT: Final[str] = "stale_source_artifact"
+# A judgment that carries no `fact_kind` at all. It is not a `statement` -- a statement is an observation
+# the model made -- and the ledger may not record an observation nobody made, so the withholding gets its
+# own name. Only a replay of an archived `news_judgment_v2` verdict can reach it: `module._assemble`
+# builds every model verdict from the typed EventSemantics, and the v3 CHECK refuses a model row without
+# a kind.
+RULE_FACT_KIND_UNAVAILABLE: Final[str] = "fact_kind_unavailable"
 FACT_KIND_RULES: Final[dict[str, str]] = {kind: f"fact_kind_{kind}" for kind in FACT_KINDS}
 
-# The six kinds that state a new fact about the world, and the four that do not. A `statement` is somebody
-# saying something, a `recap` is the same fact told again, a `schedule` is a calendar entry, and a
-# `promotion` is somebody selling something; none of them is a reason to interrupt a reader. This is the
-# whole of the push/drop split, and the 2026-09-22 audit is why it is drawn here: 64 of the 232 cards a
-# reviewer wanted demoted were marketing and small-project product announcements, 39 were price
-# broadcasts, 22 were pure opinion and 7 were schedules -- four kinds, not four thresholds.
-PUSH_FACT_KINDS: Final[frozenset[str]] = frozenset(
-    {"state_change", "new_quantity", "level_crossed", "period_record", "quantified_flow", "official_measure"}
-)
-DROP_FACT_KINDS: Final[frozenset[str]] = frozenset({"statement", "recap", "schedule", "promotion"})
-# A new state of the world, however it arrived: a thing that happened, or a measure an authority took.
-# `official_measure` is the half of the retired `development_delta=state_change` the audit named as the
-# conflict rows' only real cost -- "Trump presses Zelensky to stop striking refineries" and "Russia to
-# extend the diesel export ban" were withheld as one more statement on a running storyline because
-# `change_state=announced` cannot tell a measure from a spokesman's opinion. `fact_kind` can, so both
-# kinds are exempt from the conflict rows and both can escalate.
-MATERIAL_FACT_KINDS: Final[frozenset[str]] = frozenset({"state_change", "official_measure"})
+# `PUSH_FACT_KINDS`, `DROP_FACT_KINDS` and `MATERIAL_FACT_KINDS` are imported from `models` beside the
+# kinds they partition, because `review.desk` reads the drop half too and may not import this module.
+#
 # Where a material change is loud enough to interrupt a reader twice over. Four families, chosen because
 # they are the ones whose state changes are about access, safety or the price of money rather than about
 # one issuer's own product: a closure, a rate decision, a breach, a venue admitting or delisting an
@@ -420,6 +426,7 @@ ESCALATE_FAMILIES: Final[frozenset[str]] = frozenset(
 CONFIRMED_FACT_KINDS: Final[frozenset[str]] = frozenset({"level_crossed", "period_record", "quantified_flow"})
 
 DECISION_TABLE_RULES: Final[tuple[str, ...]] = (
+    RULE_FACT_KIND_UNAVAILABLE,
     RULE_ESCALATE_CORROBORATED,
     RULE_ESCALATE_UNCORROBORATED,
     RULE_PRICE_REPORT_WITHOUT_BASIS,
@@ -441,9 +448,16 @@ def confirmed_fact_kind(kind: FactKind | None, text: str, markets: frozenset[str
 
     The owner's exception comes first (#675 §7), because it is an independent admission rather than a
     confirmation of something the model claimed: a same-day move of >= 5% carried by a `commodity` or
-    `index` primary is itself the fact the reader wants, whatever kind the model read the sentence as.
-    A single stock is excluded by name -- the Tencent card that opened #675 is +7% and stays withheld --
-    so the exception is carried by the primary asset's market and never by the size of the move.
+    `index` primary is itself the fact the reader wants. A single stock is excluded by name -- the Tencent
+    card that opened #675 is +7% and stays withheld -- so the exception is carried by the primary asset's
+    market and never by the size of the move.
+
+    It is not, however, carried past the three kinds that say the text is not reporting the move at all
+    (#679 review 3). A `recap` is the move told again, a `schedule` is a calendar entry that happens to
+    quote one, and a `promotion` is somebody selling something next to one; admitting those on the size
+    of a number mentioned anywhere in the text would push exactly the class the audit counted as its
+    largest demote bucket. A `statement` stays eligible, because the move is often the thing being
+    stated -- "oil settles 6% higher" read as a quote is the mistake the exception exists to correct.
 
     Then the confirmation. If the model says the number crossed a level, set a period record or moved a
     quantified flow, the text has to say so in either language, or the card is a quote and the answer is
@@ -452,7 +466,11 @@ def confirmed_fact_kind(kind: FactKind | None, text: str, markets: frozenset[str
     spell.
     """
 
-    if _states_large_daily_move(text) and bool(markets & PRICE_MOVE_EXCEPTION_MARKETS):
+    if (
+        kind not in PRICE_MOVE_EXCEPTION_EXCLUDED_KINDS
+        and _states_large_daily_move(text)
+        and bool(markets & PRICE_MOVE_EXCEPTION_MARKETS)
+    ):
         return "new_quantity", False
     if kind not in CONFIRMED_FACT_KINDS:
         return kind, False
@@ -506,8 +524,10 @@ def decision_table_row(
     if kind is None:
         # A model judgment always carries a kind (`module._assemble` builds the verdict from the typed
         # EventSemantics, and the CHECK refuses a v3 model row without one). Nothing but a replay of an
-        # archived v2 judgment can arrive here, and it has no observation to decide from.
-        return "drop", FACT_KIND_RULES["statement"]
+        # archived v2 judgment can arrive here, and it has no observation to decide from. The row is named
+        # for the absence rather than folded into `fact_kind_statement`, because the ledger would otherwise
+        # record an observation the model never made (#679 review 9).
+        return "drop", RULE_FACT_KIND_UNAVAILABLE
 
     if taxonomy is not None:
         family = taxonomy.event_family
@@ -830,6 +850,7 @@ __all__ = [
     "ESCALATE_FAMILIES",
     "FACT_KIND_RULES",
     "MATERIAL_FACT_KINDS",
+    "PRICE_MOVE_EXCEPTION_EXCLUDED_KINDS",
     "PRICE_MOVE_EXCEPTION_MARKETS",
     "PRICE_MOVE_EXCEPTION_PERCENT",
     "PUSH_FACT_KINDS",
@@ -837,6 +858,7 @@ __all__ = [
     "RULE_CONFLICT_RUNNING_STORYLINE",
     "RULE_ESCALATE_CORROBORATED",
     "RULE_ESCALATE_UNCORROBORATED",
+    "RULE_FACT_KIND_UNAVAILABLE",
     "RULE_LISTING_DETERMINISTIC",
     "RULE_PRICE_REPORT_WITHOUT_BASIS",
     "RULE_RESTATEMENT",

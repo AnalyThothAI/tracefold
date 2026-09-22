@@ -241,7 +241,6 @@ def _gate_facts(
         watchlist_symbols=watchlist_symbols,
         admission=str(card.get("admission") or ""),
         source_age_s=card.get("source_age_s"),
-        member_count=max(1, int(card.get("member_count") or 1)),
         independent_text_count=max(1, int(getattr(prepared_evidence, "independent_text_count", 0) or 0)),
         title=str(card.get("leader_title") or ""),
     )
