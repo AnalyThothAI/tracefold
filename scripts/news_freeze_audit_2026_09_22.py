@@ -42,6 +42,9 @@ append-only plane and there is no undo.
     uv run python scripts/news_freeze_audit_2026_09_22.py --reviews /path/to/merged_reviews.json
     uv run python scripts/news_freeze_audit_2026_09_22.py --reviews ... \\
         --execute --confirm independent_audit_2026-09-22
+
+`--dsn` has to name the database that still holds the 09-21/09-22 evidence snapshots; the default is the
+usual loopback mapping and is wrong wherever the container publishes on another address.
 """
 
 from __future__ import annotations
