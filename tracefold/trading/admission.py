@@ -36,7 +36,7 @@ Two neighbouring reasons are deliberately absent:
 
 from __future__ import annotations
 
-from collections.abc import Container, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypedDict
 
@@ -47,7 +47,7 @@ from .sources import SOURCE_VENUE_KEYS, SourceRejected, normalize_source_venue
 # `evidence` so a stored answer still names the rulebook that produced it; it is no longer part of the
 # row's key, because a re-decision under a new version overwrites the one answer about that source
 # rather than opening a second row beside it (#537 PR-3).
-ADMISSION_VERSION: Final = "trading_admission_v9"
+ADMISSION_VERSION: Final = "trading_admission_v10"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "market_context", "freeze"]
@@ -288,35 +288,31 @@ def admit_trigger(
     *,
     now_ms: int,
     config: AdmissionConfig,
-    cased_source_keys: Container[str] = (),
 ) -> AdmissionResult | None:
     """Whether this fact may start a Case *now*, or the one named reason it may not.
 
-    `None` means "carry on to Case freeze". The order is deliberate. Idempotency first,
-    because a Source that already produced a Case has a terminal answer and every rule below it would
-    be describing work that is already done. Then the frame's own frozen properties, then the clock.
+    `None` means "carry on to Case freeze". The frame's own frozen properties first, then the clock.
+
+    Idempotency is not a rule here any more. The lane asks the ledger which sources are already
+    answered and never evaluates one whose answer is terminal, and a source that produced a Case has
+    its terminal `CASE_CREATED` row written in the Case's own transaction; restating that as an
+    `eligibility:already_consumed` refusal only ever re-described a closed row (#680 RC7). A second
+    Case for the same source or issuer is still refused inside the insert, as `freeze:already_consumed`.
 
     There is no rule about another Case being undecided. The rule that deferred a frame whenever its
     issuer already had a `PENDING` Case never once fired in the whole ledger: the lane decides every
-    Case it freezes in the same turn it freezes it, `already_consumed` answers the same source twice,
-    and the Runtime's `instrument_busy` answers a market that already has live exposure (#537 PR-3).
+    Case it freezes in the same turn it freezes it, and the Runtime's `instrument_busy` answers a
+    market that already has live exposure (#537 PR-3).
     """
 
-    if candidate.source_key in cased_source_keys:
-        return _result(
-            candidate=candidate,
-            status="REJECTED",
-            stage="eligibility",
-            reason="already_consumed",
-            retryable=False,
-        )
     frame = admit_frame(candidate, config=config)
     if frame is not None:
         return frame
     if now_ms - candidate.observed_at_ms > config.max_age_ms:
         # The clock only moves one way, so this is terminal on arrival. It is `EXPIRED` rather than
         # `REJECTED` because nothing about the fact was wrong — the lane simply was not looking when it
-        # was actionable, which is the answer an operator needs after a restart or a paused runner.
+        # was actionable. That is the answer every frame an outage hid gets on the lane's first sweep
+        # after it comes back, so no live frame is ever left with no answer at all (#680 RC7).
         return _result(
             candidate=candidate,
             status="EXPIRED",

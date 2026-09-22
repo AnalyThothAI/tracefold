@@ -232,6 +232,13 @@ delivery consumer settles `terminal/delivery_unavailable`.
 `trading.enabled` controls only the Alpha/Signal lane. The accepted keys are:
 
 - `enabled`;
+- `watchdog_enabled`, default `true`: the Workers Trading watchdog that alerts
+  through the configured News push provider when the Signal lane faults, a live
+  OI frame goes unanswered, the Runtime stops beating or keeps restarting,
+  Signals keep being refused, or a plan outlives its time exit (#680). It is the
+  only switch; thresholds are code-owned, and it is not a notification channel
+  of its own. Its per-condition episode state is the platform table
+  `platform_watchdog_alerts` (`20260922_0388`), written only by Workers;
 - `candidates.*`: `max_age_seconds`, `min_oi_value_usd` — a freshness budget and
   a venue liquidity prior, never sizing and never Alpha. `symbol_cooldown_seconds`
   and `max_rank_in_window` were retired by #348: a per-symbol re-entry delay is

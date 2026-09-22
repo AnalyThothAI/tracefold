@@ -38,6 +38,7 @@ from tracefold.app.workers.runtime import (
     NEWS_QUOTES,
     NEWS_REACTIONS,
     TRADING_SIGNAL_LANE,
+    TRADING_WATCHDOG,
     WALLET_NET_BUY,
     WALLET_PRICES,
     WALLET_ROSTER,
@@ -57,6 +58,11 @@ from tracefold.app.workers.wiring.news import (
 from tracefold.app.workers.wiring.trading import (
     SIGNAL_LANE_TASK_NAME,
     run_signal_lane,
+)
+from tracefold.app.workers.wiring.watchdog import (
+    TRADING_WATCHDOG_TASK_NAME,
+    TradingWatchdog,
+    run_trading_watchdog,
 )
 from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.pipeline.root import NewsPipeline
@@ -106,6 +112,7 @@ def worker_business_tasks(
     market_notifications: MarketNotificationLoop | None = None,
     chain_tape: ChainTapeComposition | None = None,
     telemetry: Any | None = None,
+    trading_watchdog: TradingWatchdog | None = None,
 ) -> tuple[WorkerTask, ...]:
     """Return the ordered task declarations consumed by the Workers root.
 
@@ -187,6 +194,18 @@ def worker_business_tasks(
                 name=SIGNAL_LANE_TASK_NAME,
                 capability=TRADING_SIGNAL_LANE,
                 run=lambda stop: run_signal_lane(lane, stop_event=stop, telemetry=telemetry),
+                foundational=False,
+            )
+        )
+    if trading_watchdog is not None:
+        watchdog = trading_watchdog
+        # Declared after the lane it watches. Alert-only: a watchdog fault stops the watchdog and
+        # nothing it watches (#680 RC11).
+        tasks.append(
+            WorkerTask(
+                name=TRADING_WATCHDOG_TASK_NAME,
+                capability=TRADING_WATCHDOG,
+                run=lambda stop: run_trading_watchdog(watchdog, stop_event=stop),
                 foundational=False,
             )
         )

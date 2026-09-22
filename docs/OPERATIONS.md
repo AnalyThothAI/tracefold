@@ -327,6 +327,56 @@ only to an image compatible with the live schema. A non-flat incident rolls
 forward: the Runtime remains the sole authority until exposure is protected or
 closed, and `/flatten account` is the operator's convergence command.
 
+### Trading watchdog
+
+Every failure the #680 audit found was silent: the Signal lane stopped 35 times
+for up to 31 hours, 391 live OI frames were never answered, the Runtime
+restarted 110 times a day, and 21 Signals in a row were refused for three and a
+half days. The `trading-watchdog` Workers task (capability `trading_watchdog`)
+reads durable facts every 60 seconds and tells the operator through the push
+provider `news.push.*` already configures — the Feishu webhook in this
+deployment, or Telegram. It is alert-only: it never pauses, blocks, flattens,
+retries or repairs anything.
+
+| Condition | Fires when | Read from |
+| --- | --- | --- |
+| `signal_lane_faulted` | `trading_signal_lane` is `faulted` | this Workers process's capability report |
+| `oi_frames_unanswered` | a live, non-historical OI frame durable for over 10 minutes (and under 12 hours) has no admission row | `news_oi_signals`, `trading_candidate_gate_decisions` |
+| `runtime_heartbeat_stale` | `execution.mode` is `paper`/`live` and the Runtime row's heartbeat is over 60 s old, or there is no row | `trading_execution_runtime_state` |
+| `runtime_restart_loop` | more than 3 Runtime generations (distinct `started_at_ns`) seen starting within the last hour | the same row, sampled every pass |
+| `signal_refusal_streak` | the newest 5 or more `signal_disposition` observations are all something other than `accepted`; the message carries the reason histogram | `trading_execution_observations` |
+| `plan_overdue` | a plan still not terminal was opened more than `max_holding` + 15 minutes ago | `trading_trade_plans` |
+
+Each condition is one episode: a message when it starts, a repeat at most every
+4 hours while it lasts, and one recovery message once it has stayed clear for 10
+minutes. A condition that comes back inside those 10 minutes is the same episode,
+so a Runtime restarting every few minutes is one alert, not one per restart. The
+episode state is `platform_watchdog_alerts` (`20260922_0388`), one row per
+condition, so a Workers restart neither re-pages an active condition nor loses the
+recovery message for one that cleared meanwhile. A message the provider did not
+accept is not recorded as sent and is retried on the next pass. Messages leave
+through the News Deliverer's one send entry, paced by the same
+`news.push.min_interval_seconds`; there is no second channel, sender or
+credential. Thresholds are code constants in
+`tracefold/app/workers/wiring/watchdog.py`.
+
+The watchdog runs when `trading.enabled` is true, `trading.watchdog_enabled`
+(default `true`) is not switched off, and News push can deliver. Otherwise its
+capability reads `disabled` (`trading_disabled`, `trading_watchdog_disabled`) or
+`unavailable` (`trading_watchdog_push_unavailable`). To mute it, set
+`trading.watchdog_enabled: false` and restart Workers. The current state of every
+condition is one query:
+
+```sql
+SELECT condition_key, active, opened_at_ms, notified_at_ms, clear_since_ms, detail
+  FROM platform_watchdog_alerts
+ ORDER BY condition_key;
+```
+
+It runs inside Workers, so a Workers outage is not its to report — the container
+state and `/readyz` are. The restart count is sampled once a pass and starts over
+with each Workers process, so it can under-count and never over-counts.
+
 ## Operator lifecycle
 
 The canonical complete-product lifecycle is:
@@ -341,8 +391,15 @@ make down
 `make up` preflights Git, `uv`, Docker, Compose, an authenticated GitHub
 CLI, the project interpreter (3.13, matching the image), and daemon access; runs
 idempotent initialization; builds one shared Python/React image; starts
-PostgreSQL when absent; requires the one-shot migration to succeed; starts Serve
-and Workers; and then runs the same fail-closed application status gate. That
+PostgreSQL when absent; runs the one-shot migration and waits for its container
+to exit; starts Serve and Workers only if it exited 0; and then runs the same
+fail-closed application status gate. The wait is `docker wait`, not Compose's
+`service_completed_successfully` edge alone: `up --wait` bounds that edge by
+`--wait-timeout` as well, and when the budget ran out during `20260922_0387`
+Compose started Workers against the old head anyway, which then restarted on
+`migration_status: stale` for ten minutes (#680 PR-2). A migration that fails now
+leaves Serve and Workers stopped, with the migration's last log lines on stderr.
+`make deploy-image` uses the same sequence. That
 preflight is a prerequisite of exactly four entries — `up`, `deploy-image`,
 `db-migrate` and `runtime-build`, the ones that build an image, start the stack
 or migrate the database. It used to guard fourteen, including every way of
@@ -855,14 +912,17 @@ tracefold workers
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
      news-triage, news-deliverer, news-janitor); the bounded polling loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
-     when Trading is enabled, trading-signal-lane;
+     when Trading is enabled, trading-signal-lane, and trading-watchdog when
+     News push can deliver;
      workers-control
 ```
 
-Quote plan/store uses an existing ordinary business permit. Event Reaction,
-Janitor and #104's capital lane keep the one-slot heavy-business gate over
-the same pool, so heavy work is serialized without blocking display quote
-progress or consuming the four News hot-path slots. Quote provider calls are
+Quote plan/store, the wallet tape and the Trading Signal lane use ordinary
+business permits. Event Reaction and the Janitor keep the one-slot
+heavy-business gate over the same pool, so heavy work is serialized without
+blocking display quote progress or consuming the four News hot-path slots. The
+Signal lane shared that gate until #680: queued behind a retention sweep for
+the gate's 16 s admission budget, one refused turn stopped it for good. Quote provider calls are
 bounded to 12 mandatory current source groups (concurrency 4, 10 s deadline)
 plus at most two post-store Binance day reads; its 20 s cadence is start-based,
 non-overlapping, and does not catch up. Reactions remain bounded to 32 merged
@@ -1019,8 +1079,8 @@ The separate loopback Workers probe answers two questions, not one. `ok` is
 basic readiness: this process still owns PostgreSQL, its schema and its
 singleton session. `capabilities` is a separate object keyed by capability name
 -- `news_ingestion`, `news_editorial`, `news_delivery`, `news_instruments`,
-`news_quotes`, `news_reactions`, `market_notifications`, `trading_signal_lane` --
-each with a `state` of
+`news_quotes`, `news_reactions`, `market_notifications`, `trading_signal_lane`,
+`trading_watchdog` -- each with a `state` of
 `running`, `faulted`, `unavailable` or `disabled` and the reason that put it
 there. The same object is persisted on `workers_runtime.capabilities` and
 republished on `/api/status` under `runtime.workers_runtime.capabilities`, and
@@ -1033,7 +1093,13 @@ An unexpected program error in one *optional* business task stops that task,
 records its capability `faulted` with the failure that stopped it, and leaves
 every other task running. Nothing restarts it: recovery is an operator restart
 after the fix, which is why a `faulted` capability is a page-worthy fact even
-while readiness stays 200. A push sender that cannot be constructed from the
+while readiness stays 200 -- and why the Trading watchdog pages a faulted
+`trading_signal_lane` (see [Trading watchdog](#trading-watchdog)). A Signal lane
+turn the database refused (`ResourceAdmissionTimeout`: admission, lock,
+statement, transaction or connection timeout) is not a program error: the lane
+logs it, counts an errored turn, and runs the next one after a doubling backoff
+capped at 30 s. Until #680 that timeout faulted the lane, 33 times out of 35,
+for up to 31 hours. A push sender that cannot be constructed from the
 current configuration reports `news_delivery` `unavailable` with the
 configuration reason, the Deliverer settles those Events `delivery_unavailable`
 rather than presenting them as sent, and `/api/news/status` reports
@@ -1746,21 +1812,30 @@ that restarts and re-reads a backlog cannot move yesterday's frames into today.
 `evidence` carries the rulebook that reached the answer — `gate_version` and
 `gate_config_digest` — beside the numbers it read (`20260904_0360`).
 
-`attempt_count` is how many times the scanner re-read that source, not how many
-times the answer changed: a terminal row keeps its status, stage, reason and
-evidence, and only the two evaluation counters move. `DEFERRED` is the only
-non-terminal state and means a later scan could genuinely answer differently
-(`market_data_unavailable` is the only rule that still writes one); the lane's
-own sweep turns it into `EXPIRED` with `trigger_stale` once the frame is past
-the trigger budget, so an open row that never resolved reads as the clock's
-answer rather than as pending work. Retention is 90 days, purged in bounded batches by the
-same turn.
+The ledger is the lane's cursor (#680 RC7). Every turn reads the frames that
+became durable inside the last `max_age` — the only ones that can still be
+admitted — asks the ledger which of them already have an answer, and evaluates
+only the rest: frames with no row, and frames whose row is still `DEFERRED`. A
+terminal answer is written once and never read again, so `attempt_count` is 1
+for a frame answered on first look and counts the re-evaluations of a row that
+was `DEFERRED`; before #680 every terminal row was rewritten every two-second
+turn (median 148 times per frame). Once a minute, and on the first turn after a
+restart, the turn is a *sweep*: it reads the last 12 hours instead
+(`ANSWER_HORIZON_MS`), so every frame an outage hid gets its answer —
+`EXPIRED` with `eligibility:trigger_stale`, since nothing about the fact was
+wrong and the lane simply was not looking — instead of no row at all, which is
+what 391 live frames were left with before. The sweep also closes a
+`DEFERRED` row whose frame is past the trigger budget as `EXPIRED`, keeping the
+stage and reason it was waiting on, and runs the 90-day retention in bounded
+batches. `DEFERRED` is the only non-terminal state and means a later scan could
+genuinely answer differently (`market_data_unavailable` is the only rule that
+still writes one).
 
-Two adjacent situations are *not* refusals and read as such:
-`decision: null` on the HTTP surface means the lane has no row for that source at
-all — outside the 24-hour window, or never scanned — and a source whose case was
-already created reports `CASE_CREATED` with the `case_id`, which is the link to
-`trading_cases`.
+Two adjacent situations are *not* refusals and read as such: no row at all for a
+live frame means the lane has not answered it — outside the 12-hour horizon, or
+the lane is not running, which the [Trading watchdog](#trading-watchdog) pages
+after ten minutes — and a source whose case was already created reports
+`CASE_CREATED` with the `case_id`, which is the link to `trading_cases`.
 
 Changing a threshold does not rewrite an answer: a terminal row keeps the status,
 stage, reason and evidence it was decided with, including the digest of the

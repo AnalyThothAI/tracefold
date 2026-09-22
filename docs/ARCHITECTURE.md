@@ -194,7 +194,11 @@ cancellation, and supervision; business runners own their action and durable sta
 
 Reception, recovery, admission, and retention are foundational News tasks. Optional
 capabilities include editorial judgment, delivery, instrument/quote/reaction review,
-market notifications, the wallet tasks, and the Trading Signal lane when configured.
+market notifications, the wallet tasks, the Trading Signal lane when configured, and
+the Trading watchdog beside it when News push can deliver. The watchdog is App's: it
+reads the lane's capability, the OI and admission ledgers and three Runtime facts,
+keeps its episode state in the platform table `platform_watchdog_alerts`, and alerts
+through the Deliverer's one send entry; it never blocks or repairs anything.
 The root also owns the probe and singleton/control work.
 
 The wallet composition currently declares `news-chain-tape`, `news-wallet-net-buy`,
@@ -327,7 +331,11 @@ not something a news explanation or architecture diagram already implements.
 
 Admission owns source validation, supported venues, freshness, market context,
 liquidity, and source idempotency. Rejections and deferred work remain explainable
-through the admission ledger. `sources.py` owns the supported source vocabulary;
+through the admission ledger, which is also the lane's cursor: a frame with a terminal
+row is not evaluated again, a frame with no row is answered whatever its age, and a
+once-a-minute sweep over the last 12 hours gives every frame an outage hid an
+`EXPIRED` answer. The lane runs on ordinary business database admission, and a turn
+the database refuses ends that turn only (#680). `sources.py` owns the supported source vocabulary;
 `admission.py` owns current admission semantics. Do not maintain a second source or
 venue-priority registry in documentation or App wiring.
 

@@ -798,6 +798,18 @@
 | `judgment_contract_version` | `TEXT` | True | `None` |
 | `judgment_origin` | `TEXT` | True | `None` |
 
+## `platform_watchdog_alerts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `condition_key` | `TEXT` | False | `None` |
+| `active` | `BOOLEAN` | False | `None` |
+| `opened_at_ms` | `BIGINT` | False | `None` |
+| `notified_at_ms` | `BIGINT` | True | `None` |
+| `clear_since_ms` | `BIGINT` | True | `None` |
+| `detail` | `TEXT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `trading_candidate_gate_decisions`
 
 | Column | Type | Nullable | Default |

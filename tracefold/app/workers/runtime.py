@@ -40,6 +40,9 @@ WALLET_ROSTER = "wallet_roster"
 WALLET_NET_BUY = "wallet_net_buy"
 WALLET_PRICES = "wallet_prices"
 TRADING_SIGNAL_LANE = "trading_signal_lane"
+# The alert-only watcher over the lane, the Runtime and the plans (#680 RC11). Its own key, because a
+# watchdog that stopped is exactly what nothing else would report.
+TRADING_WATCHDOG = "trading_watchdog"
 
 CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]
 
@@ -105,6 +108,9 @@ class CapabilityStates:
 
     def disabled(self, capability: str, reason: str) -> None:
         self.declare(capability, "disabled", reason=reason)
+
+    def get(self, capability: str) -> CapabilityState | None:
+        return self._states.get(capability)
 
     def payload(self) -> dict[str, dict[str, Any]]:
         return {
@@ -347,6 +353,7 @@ __all__ = [
     "NEWS_REACTIONS",
     "SHARED_RESOURCE_FAILURES",
     "TRADING_SIGNAL_LANE",
+    "TRADING_WATCHDOG",
     "WALLET_NET_BUY",
     "WALLET_PRICES",
     "WORKERS_RUNTIME_STALE_AFTER_MS",

@@ -367,7 +367,7 @@ def _publish_runtime_catalogue(conn: Any, *market_keys: str) -> None:
     conn.commit()
 
 
-def _seam_lane(conn: Any) -> SignalLane:
+def _seam_lane(conn: Any, *, clock: Callable[[], int] = now_ms) -> SignalLane:
     async def bars(_candidate: Any, start: int, end: int) -> list[Bar]:
         aligned = (start // BAR_INTERVAL_MS) * BAR_INTERVAL_MS
         return [
@@ -380,7 +380,7 @@ def _seam_lane(conn: Any) -> SignalLane:
         config=SignalLaneConfig(oi_metric_version="oi_signal_v1"),
         bars=bars,
         oi_projection=_news_projection(NewsDatabase(conn)),
-        clock=now_ms,
+        clock=clock,
     )
 
 
@@ -540,3 +540,82 @@ def test_one_source_key_is_one_admission_row_whatever_configuration_saw_it(clean
     assert repos.trading.gate_decision_for_source_key(source_key=row["source_key"])["reason"] == (
         "oi_value_below_floor"
     )
+
+
+def _gate_rows(conn: Any) -> dict[str, dict[str, Any]]:
+    return {
+        str(row["source_key"]): dict(row)
+        for row in conn.execute(
+            "SELECT source_key, status, stage, reason, attempt_count, last_evaluated_at_ms"
+            " FROM trading_candidate_gate_decisions"
+        ).fetchall()
+    }
+
+
+def test_an_outage_replay_leaves_no_live_frame_without_exactly_one_answer(clean: Any) -> None:
+    """#680 RC7 F2P, against the real ledger: every frame an outage hid gets one answer, written once.
+
+    The lane's window was `max_age_ms`, so a frame that arrived while the lane was down was never read
+    again: 391 live frames ended with no `trading_candidate_gate_decisions` row at all, and every frame
+    that did have one was rewritten every turn (`attempt_count` p50 148). Here five frames arrive over
+    eleven hours of outage, one of them already `DEFERRED` before it began, and the lane comes back.
+    """
+
+    conn = clean
+    now = now_ms()
+    ages_minutes = {"hidden-11h": 660, "hidden-5h": 300, "deferred-40m": 40, "hidden-8m": 8}
+    for event_id, minutes in ages_minutes.items():
+        _numeric_oi_fact(
+            conn, event_id=event_id, item_id=f"item-{event_id}", observed_at_ms=now - minutes * 60_000, symbol="SOL"
+        )
+    _numeric_oi_fact(conn, event_id="fresh", item_id="item-fresh", observed_at_ms=now - 20_000, symbol="ETH")
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.trading.record_gate_decision(
+            source_key=f"oi:deferred-40m:{OI_METRIC_VERSION}",
+            trigger_kind="oi",
+            underlying_key="crypto:SOL",
+            source_observed_at_ms=now - 40 * 60_000,
+            status="DEFERRED",
+            stage="market_context",
+            reason="market_data_unavailable",
+            retryable=True,
+            evidence={"gate_version": ADMISSION_VERSION},
+            case_id=None,
+            now_ms=now - 39 * 60_000,
+        )
+    conn.commit()
+    clock = [now]
+    lane = _seam_lane(conn, clock=lambda: clock[0])
+
+    first = asyncio.run(lane.advance())
+    answered = _gate_rows(conn)
+
+    keys = {f"oi:{event_id}:{OI_METRIC_VERSION}" for event_id in (*ages_minutes, "fresh")}
+    assert set(answered) == keys, "a live frame was left with no admission row"
+    assert first.sources == 5
+    for event_id in ("hidden-11h", "hidden-5h", "hidden-8m"):
+        row = answered[f"oi:{event_id}:{OI_METRIC_VERSION}"]
+        assert (row["status"], row["stage"], row["reason"], row["attempt_count"]) == (
+            "EXPIRED",
+            "eligibility",
+            "trigger_stale",
+            1,
+        )
+    # The clock closes a waiting row without replacing what it was waiting on.
+    deferred = answered[f"oi:deferred-40m:{OI_METRIC_VERSION}"]
+    assert (deferred["status"], deferred["stage"], deferred["reason"]) == (
+        "EXPIRED",
+        "market_context",
+        "market_data_unavailable",
+    )
+    assert answered[f"oi:fresh:{OI_METRIC_VERSION}"]["status"] == "CASE_CREATED"
+
+    # A later sweep and an ordinary turn both leave every terminal answer exactly as it was written.
+    clock[0] = now + 61_000
+    second = asyncio.run(lane.advance())
+    clock[0] = now + 63_000
+    asyncio.run(lane.advance())
+
+    assert second.sources == 0
+    assert _gate_rows(conn) == answered

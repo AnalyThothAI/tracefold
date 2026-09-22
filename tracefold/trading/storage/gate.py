@@ -14,7 +14,7 @@ bumped, and there is no statement here that can move one back.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 # S608 exemptions below reuse closed ledger/select fragments defined in this module; all values stay bound.
@@ -44,10 +44,32 @@ GATE_DECISIONS_SINCE_SQL: Final = f"""
      ORDER BY source_observed_at_ms DESC, source_key
      LIMIT %s
 """  # noqa: S608 -- a module-owned column list; every predicate stays bound
+# The status of every named source that already has an answer, by primary key. The key list is the
+# caller's own window of frames, so this is one bounded index probe per frame rather than a window
+# over the frames' observation clock, which a recovered frame can sit hours behind.
+GATE_ANSWERS_SQL: Final = """
+    SELECT source_key, status
+      FROM trading_candidate_gate_decisions
+     WHERE source_key = ANY(%s)
+"""
 
 
 class CandidateGateStorage:
     conn: Any
+
+    def gate_answers(self, *, source_keys: Sequence[str]) -> dict[str, str]:
+        """The stored status of each named source that has an answer at all. Absent means never answered.
+
+        This is what makes the ledger the lane's cursor. A source whose row is terminal is answered for
+        good -- no later scan may change it, the `ON CONFLICT` clause below already refused to -- so the
+        lane stops re-reading it instead of bumping its counters every turn, and a source with no row at
+        all is exactly the frame an outage left unanswered (#680 RC7).
+        """
+
+        if not source_keys:
+            return {}
+        rows = self.conn.execute(GATE_ANSWERS_SQL, (list(dict.fromkeys(source_keys)),)).fetchall()
+        return {str(row["source_key"]): str(row["status"]) for row in rows}
 
     def record_gate_decision(
         self,
@@ -67,16 +89,19 @@ class CandidateGateStorage:
         """Write or advance one admission decision. Re-evaluation never appends and never regresses.
 
         A terminal row keeps its status, stage, reason, evidence and case link; only
-        `last_evaluated_at_ms` and `attempt_count` move. That is what makes "the scanner re-read this
-        source 40 times" and "the answer changed" distinguishable in the ledger. The stored `evidence`
-        therefore keeps naming the rulebook that *decided* the row, not the one that last looked at it.
+        `last_evaluated_at_ms` and `attempt_count` move. The lane no longer sends a terminal row here
+        again -- `gate_answers` tells it which sources are answered for good, where it used to rewrite
+        every open window's rows each turn, 148 times per frame at the median -- so a terminal answer is
+        written once and `attempt_count` counts the evaluations of a row that was still `DEFERRED`
+        (#680 RC7). The clause stays the authority for a second writer racing the first. The stored
+        `evidence` keeps naming the rulebook that *decided* the row, not the one that last looked at it.
 
-        The clock is the one answer that closes a row *without* replacing what it was waiting on. The
-        scanner re-reads its whole overlap window every couple of seconds, so a row deferred on an
-        unlisted instrument or an unavailable candle is re-evaluated the moment it passes `max_age_ms`
-        and arrives here as `eligibility:trigger_stale`. Letting that overwrite the stored reason
-        collapses every waiting reason into the clock within five minutes, and `candidate_reasons_*`
-        then aggregates the clock instead of the bottleneck.
+        The clock is the one answer that closes a row *without* replacing what it was waiting on. A
+        `DEFERRED` row is re-evaluated every turn while its frame is in the lane's window, so a row
+        deferred on an unavailable candle is re-evaluated the moment it passes `max_age_ms` and arrives
+        here as `eligibility:trigger_stale`. Letting that overwrite the stored reason collapses every
+        waiting reason into the clock within five minutes, and `candidate_reasons_*` then aggregates
+        the clock instead of the bottleneck.
 
         So `status` and `retryable` always advance out of `DEFERRED` — the row is closed either way —
         while `stage`, `reason`, `evidence` and `case_id` advance only when the incoming answer is
@@ -133,8 +158,8 @@ class CandidateGateStorage:
 
         A `DEFERRED` row promises that a later scan could answer differently. Once the frame is past the
         trigger budget that promise is false, and leaving the row open would make the ledger's open set
-        grow without bound while claiming work is still pending. This is also the only writer the lane
-        has for a frame that has left its scan window, now that the window is exactly `max_age_ms`.
+        grow without bound while claiming work is still pending. The lane closes a deferred frame itself
+        while the frame is in its window; this is the writer for one that left the window still open.
 
         `stage` and `reason` are left exactly as the gate wrote them: only a `stage:reason` pair some
         rule can emit is legal, the read model aggregates on those pairs, and the status alone already

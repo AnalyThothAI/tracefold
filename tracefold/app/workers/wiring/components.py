@@ -26,6 +26,7 @@ from tracefold.app.workers.runtime import (
 from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition, _wire_chain_tape
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import _wire_signal_lane
+from tracefold.app.workers.wiring.watchdog import TradingWatchdog, wire_trading_watchdog
 from tracefold.news.bus import BrokerBackpressure, BrokerUnavailable
 from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.pipeline.root import NewsPipeline
@@ -48,6 +49,7 @@ class _Components:
     market_notifications: MarketNotificationLoop | None = None
     chain_tape: ChainTapeComposition | None = None
     signal_lane: SignalLane | None = None
+    trading_watchdog: TradingWatchdog | None = None
     capabilities: CapabilityStates = field(default_factory=CapabilityStates)
 
 
@@ -123,6 +125,11 @@ async def _wire_components(
             reason="news_item_push_news_disabled" if push.requested else "news_disabled",
         )
     signal_lane = _wire_trading_lane(settings=settings, db=db, telemetry=telemetry, capabilities=capabilities)
+    # The watchdog alerts through the Deliverer's one send entry, so it exists only beside a News
+    # pipeline; which provider that entry reaches is composition's answer, not the watchdog's.
+    trading_watchdog = wire_trading_watchdog(
+        settings=settings, db=db, capabilities=capabilities, news_pipeline=news_pipeline
+    )
     return _Components(
         news_pipeline=news_pipeline,
         news_bus=news_bus,
@@ -130,6 +137,7 @@ async def _wire_components(
         market_notifications=market_notifications,
         chain_tape=chain_tape,
         signal_lane=signal_lane,
+        trading_watchdog=trading_watchdog,
         telemetry=telemetry,
         capabilities=capabilities,
     )

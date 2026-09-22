@@ -15,11 +15,15 @@ from tracefold.app.workers.runtime import (
     CapabilityStates,
 )
 from tracefold.app.workers.task_contract import WorkerTask, worker_business_tasks
+from tracefold.app.workers.wiring import trading as trading_wiring
 from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition
 from tracefold.app.workers.wiring.components import _capability_fault_reason
 from tracefold.app.workers.wiring.news import run_market_notifications
+from tracefold.app.workers.wiring.trading import run_signal_lane
 from tracefold.news.bus import BrokerUnavailable
-from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
+from tracefold.platform.observability import TelemetryRegistry
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceCapability, ResourceOperationOverrun
+from tracefold.trading.signal_lane import LaneTurn
 
 
 def test_fatal_code_uses_typed_overrun_instead_of_error_text() -> None:
@@ -422,3 +426,153 @@ def test_an_unexpected_turn_error_is_raised_rather_than_swallowed() -> None:
     with pytest.raises(RuntimeError, match="turn_failed"):
         asyncio.run(run_market_notifications(loop, stop_event=stop, poll_seconds=0.001))  # type: ignore[arg-type]
     assert loop.calls == ["start", "advance", "advance"]
+
+
+class _RefusingLane:
+    """A Signal lane whose first turns the database refuses, then one that succeeds and stops the task."""
+
+    def __init__(self, failures: list[BaseException], stop: asyncio.Event) -> None:
+        self.failures = failures
+        self.stop = stop
+        self.turns = 0
+
+    async def advance(self) -> LaneTurn:
+        self.turns += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        self.stop.set()
+        return LaneTurn(sources=1, cases_created=0)
+
+
+def test_a_refused_lane_turn_ends_only_that_turn_and_the_capability_keeps_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#680 RC7 acceptance: an injected `ResourceAdmissionTimeout` no longer faults the lane.
+
+    33 of the 35 production faults since 09-05 were exactly this -- one refused admission to the heavy
+    slot -- and each stopped the lane until the next Workers restart, up to 31 hours later. It now ends
+    one turn: the next runs after a capped backoff and the capability still says `running`.
+    """
+
+    monkeypatch.setattr(trading_wiring, "SIGNAL_LANE_BACKOFF_MAX_SECONDS", 0.02)
+    stop = asyncio.Event()
+    lane = _RefusingLane(
+        [
+            ResourceAdmissionTimeout("worker_database_admission_timeout:trading_case_claim"),
+            ResourceAdmissionTimeout("worker_database_lock_timeout:trading_admission_write"),
+        ],
+        stop,
+    )
+    capabilities = CapabilityStates()
+    capabilities.running("trading_signal_lane")
+    telemetry = TelemetryRegistry()
+
+    async def on_fault() -> None:
+        raise AssertionError("a refused turn must not fault the lane")
+
+    asyncio.run(
+        workers_module._run_capability_task(
+            WorkerTask(
+                name="trading-signal-lane",
+                capability="trading_signal_lane",
+                run=lambda stop_event: run_signal_lane(
+                    lane,  # type: ignore[arg-type]
+                    stop_event=stop_event,
+                    telemetry=telemetry,
+                    poll_seconds=0.001,
+                ),
+                foundational=False,
+            ),
+            stop_event=stop,
+            capabilities=capabilities,
+            on_fault=on_fault,
+        )
+    )
+
+    assert lane.turns == 3
+    assert capabilities.payload()["trading_signal_lane"] == {"state": "running", "reason": None}
+    rendered = telemetry.render_prometheus_text()
+    assert 'tracefold_external_data_turn_total{name="trading_signal_lane",outcome="error"} 2.0' in rendered
+    assert 'tracefold_external_data_turn_total{name="trading_signal_lane",outcome="success"} 1.0' in rendered
+
+
+def test_the_refusal_backoff_doubles_from_the_poll_and_stops_at_thirty_seconds() -> None:
+    assert [trading_wiring.refusal_backoff_seconds(refusals) for refusals in range(1, 8)] == [
+        4.0,
+        8.0,
+        16.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+    ]
+    assert trading_wiring.SIGNAL_LANE_BACKOFF_MAX_SECONDS == 30.0
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("lane bug"), ValueError("bad manifest"), OperationalError("raw driver error")],
+    ids=("runtime-error", "value-error", "unwrapped-driver-error"),
+)
+def test_a_lane_program_error_still_faults_the_capability(failure: BaseException) -> None:
+    """Only the database's refusal is a transient turn. Everything else stops the lane, as before."""
+
+    stop = asyncio.Event()
+    lane = _RefusingLane([failure], stop)
+    capabilities = CapabilityStates()
+    capabilities.running("trading_signal_lane")
+    faults: list[None] = []
+
+    async def on_fault() -> None:
+        faults.append(None)
+
+    asyncio.run(
+        workers_module._run_capability_task(
+            WorkerTask(
+                name="trading-signal-lane",
+                capability="trading_signal_lane",
+                run=lambda stop_event: run_signal_lane(lane, stop_event=stop_event, poll_seconds=0.001),  # type: ignore[arg-type]
+                foundational=False,
+            ),
+            stop_event=stop,
+            capabilities=capabilities,
+            on_fault=on_fault,
+        )
+    )
+
+    assert lane.turns == 1
+    assert capabilities.payload()["trading_signal_lane"] == {
+        "state": "faulted",
+        "reason": f"trading_signal_lane:{type(failure).__name__}",
+    }
+    assert faults == [None]
+
+
+def test_a_lane_operation_overrun_is_still_root_fatal() -> None:
+    """`ResourceOperationOverrun` keeps its meaning: a thread outlived its envelope, not a refused turn."""
+
+    overrun = ResourceOperationOverrun(
+        capability=ResourceCapability.DATABASE_BUSINESS,
+        operation_name="trading_signal_lane_answers",
+    )
+    stop = asyncio.Event()
+    lane = _RefusingLane([overrun], stop)
+
+    async def on_fault() -> None:
+        raise AssertionError("an overrun must not be confined to the lane")
+
+    with pytest.raises(ResourceOperationOverrun):
+        asyncio.run(
+            workers_module._run_capability_task(
+                WorkerTask(
+                    name="trading-signal-lane",
+                    capability="trading_signal_lane",
+                    run=lambda stop_event: run_signal_lane(lane, stop_event=stop_event, poll_seconds=0.001),  # type: ignore[arg-type]
+                    foundational=False,
+                ),
+                stop_event=stop,
+                capabilities=CapabilityStates(),
+                on_fault=on_fault,
+            )
+        )
+    assert lane.turns == 1

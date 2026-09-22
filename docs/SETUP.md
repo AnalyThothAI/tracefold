@@ -37,7 +37,9 @@ nothing defaults. It must be an absolute `http(s)` URL with no query or fragment
 unset, they carry the item id and no button. See `OPERATIONS.md`. A second
 `make up` rebuilds the shared application image and deliberately recreates only
 the migration, Serve, and Workers containers so edits to the bind-mounted
-operator config take effect. An already running PostgreSQL container is not
+operator config take effect. The migration runs to completion first; Serve and
+Workers start only after its container exited 0, and a failed migration leaves
+them stopped with its last log lines printed. An already running PostgreSQL container is not
 recreated; the operator files and named-volume data remain in place.
 
 The optional Binance execution runtime is **not** part of this lifecycle. It has

@@ -17,10 +17,14 @@ from tracefold.platform.config.models import Settings
 from tracefold.trading.admission import ADMISSION_VERSION, AdmissionConfig
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow, TradingCaseManifest, canonical_sha256
 from tracefold.trading.policy import ALPHA_POLICY
-from tracefold.trading.signal_lane import SignalLane, SignalLaneConfig
+from tracefold.trading.signal_lane import (
+    ANSWER_HORIZON_MS,
+    SWEEP_INTERVAL_MS,
+    SignalLane,
+    SignalLaneConfig,
+)
 from tracefold.trading.sources import SourceRejected, normalize_oi_source
 from tracefold.trading.storage.execution_stream import PreparedTradeSignal
-from tracefold.trading.storage.lane import SignalLaneSnapshot
 
 NOW = 1_787_000_000_000
 
@@ -58,15 +62,17 @@ def _bars(cutoff: int = NOW - 60_000) -> tuple[Bar, ...]:
 class FakeTrading:
     def __init__(self, rows: Sequence[OiCandidateRow]) -> None:
         self.rows = tuple(rows)
-        self.snapshot = SignalLaneSnapshot(frozenset())
+        # The ledger as `gate_answers` reads it: the stored status of each answered source.
+        self.answers: dict[str, str] = {}
         self.cases: dict[str, dict[str, Any]] = {}
         self.claimable: list[str] = []
         self.signals: list[PreparedTradeSignal] = []
         self.admission: list[dict[str, Any]] = []
+        self.answer_reads: list[tuple[str, ...]] = []
 
-    def signal_lane_snapshot(self, *, since_ms: int) -> SignalLaneSnapshot:
-        del since_ms
-        return self.snapshot
+    def gate_answers(self, *, source_keys: Sequence[str]) -> dict[str, str]:
+        self.answer_reads.append(tuple(source_keys))
+        return {key: self.answers[key] for key in source_keys if key in self.answers}
 
     def create_case(
         self,
@@ -84,6 +90,7 @@ class FakeTrading:
         self.cases[case_id] = {"manifest": manifest, "created_at_ms": now_ms, "state": CaseState.PENDING}
         self.claimable.append(case_id)
         self.admission.append(dict(admission))
+        self.answers[admission["source_key"]] = admission["status"]
         return True
 
     def claim_case(self, **_: Any) -> dict[str, Any] | None:
@@ -109,6 +116,9 @@ class FakeTrading:
 
     def record_gate_decision(self, **row: Any) -> None:
         self.admission.append(row)
+        # The upsert's one rule the lane depends on: a terminal answer is never replaced.
+        if self.answers.get(row["source_key"], "DEFERRED") == "DEFERRED":
+            self.answers[row["source_key"]] = row["status"]
 
     def expire_stale_gate_decisions(self, **_: Any) -> int:
         return 0
@@ -138,6 +148,8 @@ def _lane(
     *,
     settings_noise: object | None = None,
     expected_symbol: str | None = "BTC",
+    clock: Any = None,
+    windows: list[tuple[int, int]] | None = None,
 ) -> SignalLane:
     del settings_noise
 
@@ -145,15 +157,23 @@ def _lane(
         assert expected_symbol is None or candidate.base_symbol == expected_symbol
         return _bars(candidate.observed_at_ms)
 
-    async def projection(_metric: str, _after: int, _until: int) -> Sequence[OiCandidateRow]:
-        return trading.rows
+    async def projection(_metric: str, after: int, until: int) -> Sequence[OiCandidateRow]:
+        # The News read's own window, on the row's durable clock (`available_at_ms` here). A row that
+        # carries none stands for a malformed frame the real read still returns.
+        if windows is not None:
+            windows.append((after, until))
+        return tuple(
+            row
+            for row in trading.rows
+            if row["available_at_ms"] is None or after < int(row["available_at_ms"]) <= until
+        )
 
     return SignalLane(
         db=FakeDb(trading),  # type: ignore[arg-type]
         config=SignalLaneConfig(oi_metric_version="oi_signal_v1", admission=AdmissionConfig(), policy=ALPHA_POLICY),
         bars=bars,
         oi_projection=projection,
-        clock=lambda: NOW,
+        clock=clock or (lambda: NOW),
     )
 
 
@@ -246,21 +266,119 @@ def test_no_trade_writes_no_signal() -> None:
     assert next(iter(trading.cases.values()))["state"] is CaseState.NO_TRADE
 
 
-def test_a_source_that_already_has_a_case_does_not_create_a_second_one() -> None:
-    """The one idempotency rule the lane still executes, and the only one it needs.
+def test_a_source_the_ledger_has_answered_for_good_is_never_evaluated_again() -> None:
+    """#680 RC7. The ledger is the cursor: a terminal answer is read, not rewritten.
 
-    A second Case for the same *issuer* is refused by `ux_trading_case_in_flight_underlying` inside the
-    insert, so the lane no longer restates it as `underlying_busy` — a reason that never once fired in
-    the ledger, because the lane decides every Case it freezes in the turn that freezes it (#537 PR-3).
+    The lane used to re-evaluate every frame in its window every turn and upsert the same terminal
+    answer again, 148 times per frame at the median and 80,665 updates against 576 inserts, all of
+    it through the one heavy database slot it shared with News. A frame whose Case already exists has
+    its `CASE_CREATED` row, so there is nothing left to ask about it.
     """
 
     consumed = FakeTrading((_row(),))
-    consumed.snapshot = SignalLaneSnapshot(frozenset({"oi:evt-1:oi_signal_v1"}))
+    consumed.answers["oi:evt-1:oi_signal_v1"] = "CASE_CREATED"
 
-    asyncio.run(_lane(consumed).advance())
+    turn = asyncio.run(_lane(consumed).advance())
 
+    assert (turn.sources, turn.cases_created) == (0, 0)
     assert consumed.cases == {}
-    assert {row["reason"] for row in consumed.admission} == {"already_consumed"}
+    assert consumed.admission == []
+
+
+def test_every_frame_is_written_exactly_once_across_turns() -> None:
+    """A fresh frame is answered on first look and never touched again, sweep or not (#680 RC7)."""
+
+    clock = [NOW]
+    trading = FakeTrading(
+        (
+            _row(),
+            _row(event_id="evt-2", source_item_id="source-2", oi_value_usd=1_000_000),
+            _row(event_id="evt-3", source_item_id="source-3", venue="okx"),
+        )
+    )
+    lane = _lane(trading, clock=lambda: clock[0])
+
+    for step in range(3):
+        clock[0] = NOW + step * SWEEP_INTERVAL_MS
+        asyncio.run(lane.advance())
+
+    written = [row["source_key"] for row in trading.admission]
+    assert sorted(written) == ["oi:evt-1:oi_signal_v1", "oi:evt-2:oi_signal_v1", "oi:evt-3:oi_signal_v1"]
+    assert trading.answers == {
+        "oi:evt-1:oi_signal_v1": "CASE_CREATED",
+        "oi:evt-2:oi_signal_v1": "REJECTED",
+        "oi:evt-3:oi_signal_v1": "REJECTED",
+    }
+
+
+def test_an_outage_replay_answers_every_hidden_frame_exactly_once() -> None:
+    """#680 RC7, shaped like the 09-10..12 outage: frames kept arriving while nothing answered them.
+
+    Before the cut the window was `max_age_ms`, so every frame older than five minutes when the lane
+    came back was never read again: 391 live frames ended with no ledger row at all. The first turn
+    after a restart is a sweep over the answer horizon, and it gives every one of them the answer an
+    outage deserves -- `EXPIRED/trigger_stale` -- while a frame still inside its budget is admitted.
+    """
+
+    hidden = tuple(
+        _row(
+            event_id=f"hidden-{minutes}",
+            source_item_id=f"hidden-item-{minutes}",
+            observed_at_ms=NOW - minutes * 60_000,
+            available_at_ms=NOW - minutes * 60_000 + 1_000,
+        )
+        for minutes in (700, 480, 125, 31, 6)
+    )
+    fresh = _row(event_id="fresh", source_item_id="fresh-item")
+    trading = FakeTrading((*hidden, fresh))
+    clock = [NOW]
+    lane = _lane(trading, clock=lambda: clock[0])
+
+    asyncio.run(lane.advance())
+    first = list(trading.admission)
+    clock[0] = NOW + SWEEP_INTERVAL_MS
+    asyncio.run(lane.advance())
+
+    assert trading.admission == first, "a second sweep rewrote an answered frame"
+    by_key = {row["source_key"]: row for row in first}
+    assert set(by_key) == {f"oi:{row['event_id']}:oi_signal_v1" for row in (*hidden, fresh)}
+    for row in hidden:
+        answer = by_key[f"oi:{row['event_id']}:oi_signal_v1"]
+        assert (answer["status"], answer["stage"], answer["reason"]) == ("EXPIRED", "eligibility", "trigger_stale")
+    assert by_key["oi:fresh:oi_signal_v1"]["status"] == "CASE_CREATED"
+
+
+def test_only_the_sweep_reads_the_answer_horizon() -> None:
+    """Every turn reads the window a frame can still be admitted in; once a minute the sweep reads 12 h."""
+
+    windows: list[tuple[int, int]] = []
+    clock = [NOW]
+    lane = _lane(FakeTrading(()), clock=lambda: clock[0], windows=windows)
+    max_age_ms = AdmissionConfig().max_age_ms
+
+    for offset in (0, 2_000, 4_000, SWEEP_INTERVAL_MS, SWEEP_INTERVAL_MS + 2_000):
+        clock[0] = NOW + offset
+        asyncio.run(lane.advance())
+
+    assert [until - after for after, until in windows] == [
+        ANSWER_HORIZON_MS,
+        max_age_ms,
+        max_age_ms,
+        ANSWER_HORIZON_MS,
+        max_age_ms,
+    ]
+
+
+def test_a_deferred_frame_is_asked_again_until_it_is_answered() -> None:
+    """`DEFERRED` is the one open answer: the lane re-evaluates it and may close it."""
+
+    trading = FakeTrading((_row(),))
+    trading.answers["oi:evt-1:oi_signal_v1"] = "DEFERRED"
+
+    turn = asyncio.run(_lane(trading).advance())
+
+    assert (turn.sources, turn.cases_created) == (1, 1)
+    assert trading.answers["oi:evt-1:oi_signal_v1"] == "CASE_CREATED"
 
 
 def test_every_admissible_frame_in_the_turn_is_frozen() -> None:
@@ -454,21 +572,12 @@ def test_repository_fault_propagates_out_of_the_turn() -> None:
     ((AdmissionConfig().max_age_ms - 1, "case_created", 1), (AdmissionConfig().max_age_ms + 1, "trigger_stale", 0)),
     ids=("inside-the-window", "past-the-window"),
 )
-def test_the_scan_horizon_is_exactly_the_admission_window(
+def test_the_admission_window_is_exactly_max_age(
     age_ms: int,
     expected_reason: str,
     expected_cases: int,
 ) -> None:
-    """#537 PR-3 F2P. One window, not three.
-
-    `scan_horizon_ms` was `max_age_ms * 3`, so every turn re-read two windows of frames whose only
-    possible answer was the one already stored: the median frame was evaluated 439 times before the
-    expiry sweep closed it. A frame one millisecond inside the window is admitted; one millisecond
-    outside it is `trigger_stale`, and that is the whole of what the horizon has to reach.
-    """
-
-    config = SignalLaneConfig(oi_metric_version="oi_signal_v1", admission=AdmissionConfig(), policy=ALPHA_POLICY)
-    assert config.scan_horizon_ms == config.admission.max_age_ms
+    """A frame one millisecond inside `max_age_ms` is admitted; one millisecond outside it is stale."""
 
     trading = FakeTrading((_row(observed_at_ms=NOW - age_ms, available_at_ms=NOW - age_ms),))
 

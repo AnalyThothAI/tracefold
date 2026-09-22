@@ -50,7 +50,6 @@ from .market_context import PriceWindow, pre_move_bps, select_bar
 from .policy import ALPHA_POLICY, AlphaPolicy
 from .sources import SourceRejected, normalize_oi_source, telemetry_source
 from .storage.execution_stream import prepare_trade_signal
-from .storage.lane import SignalLaneSnapshot
 from .storage.root import TradingRepositories, TradingRepository
 from .telemetry import TradingExternalDataTelemetryPort, TradingWorkSemantics, observe_provider_call
 
@@ -60,6 +59,15 @@ BAR_INTERVAL_MS: Final = 300_000
 COLD_READ_TIMEOUT_SECONDS: Final = 10.0
 COLD_WRITE_TIMEOUT_SECONDS: Final = 10.0
 SIGNAL_TTL_MS: Final = 180_000
+# How far back the lane's sweep looks for frames that still have no answer at all. An outage of the
+# lane or of Workers hides every frame that arrived while it lasted, and until #680 they were never
+# answered: the only window was `max_age_ms`, so 391 live frames were left with no ledger row. Twelve
+# hours holds the longest outage the watchdog can let run unnoticed several times over, and at the
+# busiest day on record (353 frames) it stays inside the projection's own 256-row ceiling.
+ANSWER_HORIZON_MS: Final = 12 * 3_600_000
+# The sweep is the only turn that reads the horizon, retires open rows and purges retention; every other
+# turn reads the `max_age_ms` window alone, which is all a frame can still be admitted in.
+SWEEP_INTERVAL_MS: Final = 60_000
 _MAX_DECISIONS_PER_TURN: Final = 4
 _ADMISSION_RETENTION_MS: Final = 90 * 86_400_000
 
@@ -93,17 +101,6 @@ class SignalLaneConfig:
         if not 1_000 <= self.signal_ttl_ms <= self.admission.max_age_ms:
             raise ValueError("trading_signal_ttl_invalid")
 
-    @property
-    def scan_horizon_ms(self) -> int:
-        """Exactly the window a frame can still be admitted in, and not a minute more.
-
-        It was three times that. A frame outside `max_age_ms` has one possible answer — `trigger_stale`
-        — and the ledger already holds it, so the two extra windows only re-asked a closed question:
-        the median frame was re-evaluated 439 times before the sweep closed it (#537 PR-3).
-        """
-
-        return self.admission.max_age_ms
-
 
 @dataclass(frozen=True, slots=True)
 class LaneTurn:
@@ -115,6 +112,8 @@ class LaneTurn:
     are durable rows; this value is the process measurement its host records (#604 T2).
     """
 
+    # The frames this turn had to answer: new, or still `DEFERRED`. A frame the ledger has already
+    # answered for good is not read again, so this is not the size of the window it scanned.
     sources: int
     cases_created: int
 
@@ -141,44 +140,64 @@ class SignalLane:
         self._clock = clock
         self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
+        # In-process pacing only. A restart sweeps on its first turn, which is exactly when an outage
+        # has left frames unanswered; nothing durable depends on this value.
+        self._swept_at_ms: int | None = None
 
     async def advance(self) -> LaneTurn:
         return await self._advance_turn()
 
     async def _advance_turn(self) -> LaneTurn:
+        """One turn: answer every frame that has no terminal answer yet, then decide pending Cases.
+
+        The ledger is the cursor (#680 RC7). A frame with a terminal row is skipped rather than
+        rewritten, so the median frame is written once instead of 148 times; a frame with no row at all
+        is answered whatever its age, so a frame an outage hid still gets `EXPIRED/trigger_stale`
+        rather than nothing. Every turn reads the `max_age_ms` window a frame can still be admitted
+        in; once a minute -- and on the first turn after a restart -- the sweep reads the whole
+        `ANSWER_HORIZON_MS`, closes what is still open, and runs retention.
+        """
+
         now = self._clock()
-        snapshot = await self._db.read(
-            "trading_signal_lane_snapshot",
-            lambda repos: _trading(repos).signal_lane_snapshot(since_ms=now - self._config.scan_horizon_ms),
-            timeout_seconds=COLD_READ_TIMEOUT_SECONDS,
-        )
-        rows = list(
-            await self._oi_projection(
-                self._config.oi_metric_version,
-                now - self._config.scan_horizon_ms,
-                now,
-            )
-        )
+        sweep = self._swept_at_ms is None or now - self._swept_at_ms >= SWEEP_INTERVAL_MS
+        horizon_ms = ANSWER_HORIZON_MS if sweep else self._config.admission.max_age_ms
+        rows = list(await self._oi_projection(self._config.oi_metric_version, now - horizon_ms, now))
+        open_rows = await self._unanswered(rows)
 
         results: dict[str, AdmissionResult] = {}
-        admitted = self._admit(rows, snapshot=snapshot, now=now, results=results)
+        admitted = self._admit(open_rows, now=now, results=results)
         created = 0
         for candidate in admitted:
             if await self._freeze(candidate, now=now, results=results):
                 created += 1
         await self._flush_admission(results, now)
-        await self._maintain_admission(now)
+        if sweep:
+            await self._maintain_admission(now)
+            self._swept_at_ms = now
 
         for _ in range(_MAX_DECISIONS_PER_TURN):
             if await self._decide_one() is None:
                 break
-        return LaneTurn(sources=len(rows), cases_created=created)
+        return LaneTurn(sources=len(open_rows), cases_created=created)
+
+    async def _unanswered(self, rows: Sequence[OiCandidateRow]) -> list[OiCandidateRow]:
+        """The frames whose answer is still open: no ledger row yet, or a `DEFERRED` one."""
+
+        if not rows:
+            return []
+        metric_version = self._config.oi_metric_version
+        keys = [_source_key(row, metric_version) for row in rows]
+        answers = await self._db.read(
+            "trading_signal_lane_answers",
+            lambda repos: _trading(repos).gate_answers(source_keys=keys),
+            timeout_seconds=COLD_READ_TIMEOUT_SECONDS,
+        )
+        return [row for row, key in zip(rows, keys, strict=True) if answers.get(key, "DEFERRED") == "DEFERRED"]
 
     def _admit(
         self,
         rows: Sequence[OiCandidateRow],
         *,
-        snapshot: SignalLaneSnapshot,
         now: int,
         results: dict[str, AdmissionResult],
     ) -> list[OiTradeCandidate]:
@@ -203,12 +222,7 @@ class SignalLane:
             if venue_result is not None:
                 results[normalized.source_key] = venue_result
                 continue
-            verdict = admit_trigger(
-                normalized,
-                now_ms=now,
-                config=self._config.admission,
-                cased_source_keys=snapshot.cased_source_keys,
-            )
+            verdict = admit_trigger(normalized, now_ms=now, config=self._config.admission)
             if verdict is not None:
                 results[normalized.source_key] = verdict
                 continue
@@ -436,8 +450,10 @@ def _source_key(row: OiCandidateRow, metric_version: str) -> str:
 
 
 __all__ = [
+    "ANSWER_HORIZON_MS",
     "BAR_INTERVAL_MS",
     "SIGNAL_TTL_MS",
+    "SWEEP_INTERVAL_MS",
     "BarFetcher",
     "LaneTurn",
     "OiProjectionReader",

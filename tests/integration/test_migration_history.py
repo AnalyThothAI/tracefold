@@ -46,7 +46,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260922_0387"
+HEAD = "20260922_0388"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -253,6 +253,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260922_0387",
         "20260922_0386",
         "20260920_0385",
         "20260919_0384",
@@ -2726,3 +2727,39 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
         assert conn.execute(told_valid, (json.dumps([told_entry]),)).fetchone()["ok"]
         # And the entry a pre-v3 Worker wrote, magnitude and all, is still accepted unchanged.
         assert conn.execute(told_valid, (json.dumps([{**told_entry, "magnitude": 2}]),)).fetchone()["ok"]
+
+
+def test_the_watchdog_alert_ledger_is_one_additive_table_and_reverses_cleanly() -> None:
+    """`20260922_0388` (#680 PR-2): one new platform table, nothing existing touched, a real downgrade.
+
+    The ledger holds only which conditions the operator was last told about, so dropping it is the
+    exact reverse -- the next watchdog pass re-alerts whatever is still active -- and the revision
+    below it keeps its own forward-only refusal.
+    """
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260922_0387")
+    assert _table_exists("platform_watchdog_alerts") is False
+
+    command.upgrade(config, "head")
+    assert _stamped_revision() == HEAD == "20260922_0388"
+    assert _table_exists("platform_watchdog_alerts") is True
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute(
+            """
+            INSERT INTO platform_watchdog_alerts
+              (condition_key, active, opened_at_ms, notified_at_ms, clear_since_ms, detail, updated_at_ms)
+            VALUES ('signal_lane_faulted', true, 1, NULL, NULL, 'x', 1)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.downgrade(config, "20260922_0387")
+    assert _stamped_revision() == "20260922_0387"
+    assert _table_exists("platform_watchdog_alerts") is False
+    command.upgrade(config, "head")
+    assert _table_exists("platform_watchdog_alerts") is True
