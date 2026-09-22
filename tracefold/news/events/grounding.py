@@ -44,13 +44,6 @@ GROUNDING_POLICY_VERSION: Final = "news_gate_grounding_v1"
 # resolved and the text therefore need not spell; `unsupported` is "nothing on this Event names it", which
 # is a normal state for a correct ticker the model read off a company name.
 GroundingSupport = Literal["cashtag", "text", "alias", "provider_tag", "unsupported"]
-GROUNDING_SUPPORT_ORDER: Final[tuple[GroundingSupport, ...]] = (
-    "cashtag",
-    "text",
-    "alias",
-    "provider_tag",
-    "unsupported",
-)
 
 # The commodity underlyings whose tag needs the commodity named in the text, and the bilingual words that
 # name it. Keys are provider tag spellings after the `XYZ-` prefix is stripped, including the alias forms
@@ -80,7 +73,7 @@ COMMODITY_CONTEXT: Final[Mapping[str, re.Pattern[str]]] = {
 # One token of a headline: Latin/CJK word characters plus the punctuation a symbol may legitimately carry
 # (`0700.HK`, `BRK.B`, `i-80`). Splitting on it is what keeps `FIRE` out of "Fireblocks" and `BA` out of
 # "BAE" without a stemmer.
-_TOKEN: Final = re.compile(r"[A-Za-z0-9一-鿿.\-']+")
+_TOKEN: Final = re.compile(r"[A-Za-z0-9\u4e00-\u9fff.\-']+")
 _HK_CODE: Final = re.compile(r"^(?:HK)?0*(\d{1,5})(?:\.HK)?$", re.IGNORECASE)
 
 
@@ -232,7 +225,6 @@ def verdict_grounding(
 __all__ = [
     "COMMODITY_CONTEXT",
     "GROUNDING_POLICY_VERSION",
-    "GROUNDING_SUPPORT_ORDER",
     "AssetGrounding",
     "GroundingSupport",
     "asset_grounding",
