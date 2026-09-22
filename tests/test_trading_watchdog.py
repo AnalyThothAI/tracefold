@@ -160,7 +160,7 @@ def test_each_condition_is_named_by_the_fact_that_holds_it() -> None:
         overdue_plans=(
             OverduePlan(
                 market_key="crypto:perp:UNI:USDT",
-                status="closing",
+                status="open",
                 opened_at_ns=(now - 5 * HOUR_MS) * 1_000_000,
                 max_holding_ns=4 * HOUR_MS * 1_000_000,
             ),
@@ -188,7 +188,7 @@ def test_each_condition_is_named_by_the_fact_that_holds_it() -> None:
         "最近 5 个 Signal 的处置都不是 accepted",
         "拒因：unexpected_exposure ×4 · instrument_busy ×1",
     )
-    assert "crypto:perp:UNI:USDT closing" in found[wd.PLAN_OVERDUE].lines[0]
+    assert "crypto:perp:UNI:USDT open" in found[wd.PLAN_OVERDUE].lines[0]
 
 
 def test_a_healthy_deployment_holds_no_condition() -> None:
