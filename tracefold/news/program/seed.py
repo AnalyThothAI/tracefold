@@ -88,26 +88,6 @@ Use bullish/bearish only when the supplied evidence supports a clear price mecha
 
 audience: crypto for crypto-market users, us_equity for any listed equity, macro for macro/risk-asset events, otherwise none. scope is macro, sector, or single_name according to the affected tradable surface.
 
-## Price-only a-e calibration
-A headline whose whole content is a quote, intraday percentage, new high/low, or liquidation tally has realtime reader value only when at least one condition holds:
-a. The text says a level was crossed: 站上 / 跌破 / 突破 / 收复 / reclaims / 创 X 以来新高(低). A price merely printed beside a move, such as "+3% to $1,328.68", is not a crossing.
-b. It is the largest move over a named period, such as 创 3 月以来最大涨幅.
-c. It triggered, or was triggered by, liquidations or ETF flows that the text quantifies.
-d. It is the first market confirmation of a fact already on the tape, such as a policy, filing, or earnings number.
-e. The move itself is at least 5% on the day, regardless of asset class.
-Anything else is noise whatever the provider score. Apply the same a-e test to a coin, metal, index, or single stock.
-
-Positive examples:
-- 比特币突破 70000 美元，四小时内超 10 亿美元空头被清算 -> a and c, magnitude 2, reader_value realtime.
-- 韩国 KOSPI 日内涨 6.00% 至 6861.17 点 -> e, magnitude 2, reader_value realtime.
-- Bitcoin reclaims $66,000 -> a, magnitude 2, reader_value realtime.
-- 黄金上涨 4.2%，创三个月以来最大单日涨幅 -> b, magnitude 2, reader_value realtime.
-- 美联储意外降息后，美元指数开盘首跌 2.1% -> d, magnitude 2, reader_value realtime: the first market confirmation of the policy already on the tape.
-
-Negative examples:
-- Spot Palladium Rises Nearly 3% to $1,328.68/Oz -> no crossing and below 5%, magnitude 0, reader_value none.
-- Shares of Samsung Electronics Rise Over 3% -> no crossing and below 5%, magnitude 0, reader_value none.
-
 ## Exclusions
 Never emit realtime or escalate reader value for:
 - Law-firm template notices such as Securities Investigation Notice or Investor Alert.
@@ -126,10 +106,11 @@ Examples:
 - "Iran strikes Gulf bases hosting US forces after US attacks" -> CL/commodity primary / bearish / macro / magnitude 3 / reader_value escalate.
 
 ## Novelty against event_status.told
-told contains up to 16 cards proven sent to the reader, chosen for relevance to *this* event from bounded history: the most recent cards within 4 h, the delivered cards of the last 24 h whose original title is closest to this one, plus targeted cards from 4–48 h with the same fact fingerprint or a canonical instrument overlap. It is ordered most-related first, not newest first: targeted exact fact, same storyline, shared instrument, same-fact title match, then the rest; inside each group the closest title comes first. Each entry has visible index i, age (ago_min), storyline_key, comparison_title, symbols, magnitude, direction, headline_zh, and why_zh. It is a selection, not the whole history: absence from told is weak evidence, so judge novelty on what the entries say. A told entry can be many hours old; age never makes the same fact new.
+told contains up to 16 cards proven sent to the reader, chosen for relevance to *this* event from bounded history: the most recent cards within 4 h, the delivered cards of the last 24 h whose original title is closest to this one, plus targeted cards from 4–48 h with the same fact fingerprint or a canonical instrument overlap. Six of the slots are reserved for whatever the reader received in the last 60 minutes, however unrelated it looks; the entries themselves are ordered most-related first, not newest first: targeted exact fact, same storyline, shared instrument, same-fact title match, then the rest; inside each group the closest title comes first. Each entry has visible index i, age (ago_min), storyline_key, comparison_title, symbols, magnitude, direction, headline_zh, and why_zh. It is a selection, not the whole history: absence from told is weak evidence, so judge novelty on what the entries say. A told entry can be many hours old; age never makes the same fact new.
 - new_fact: nothing in told is about this event; restates=-1.
-- progression: told covers the story and, measured against those entries, the evidence supports a new subject action, a state change such as a ceasefire, a blockade or a sanction in effect, a new venue, the execution result of something announced earlier, or a decision-relevant new quantity; restates=-1 even when it follows an earlier card.
+- progression: told covers the story and, measured against those entries, the evidence supports a state change such as a ceasefire, a blockade or a sanction in effect, a new subject action by someone else, a new venue, or the execution result of something announced earlier; restates=-1 even when it follows an earlier card.
 - restatement: the same fact as one told entry, however it arrives — another outlet or wire, a translation, a narrative rewrite, another sentence of the same speech, filing or announcement, an analyst restating it, or a price-reaction piece carrying no fact of its own; also another strike, statement or casualty figure in a conflict told covers, or another line of one central-bank decision or presser. A different wording, a different number for the same quantity from another outlet, or a more precise figure of the same fact is still the same fact. Your own direction reading is not a fact about the world either: a told entry you now read the other way round is still the same fact. Set restates to that entry's visible i.
+Within 60 minutes of a told entry about the same announcement, a second outlet, another sentence of it, an added figure, a date it already implied or a list of its participants is restatement, not progression. One announcement is one fact however many lines of it arrive; only a state change, a new subject's own action, or an execution result starts a new one.
 Two different economic events are not one fact because one storyline covers both. When told is empty, novelty is new_fact. restates must name the told index of the same fact and never an index absent from the bounded evidence.
 
 Examples:
@@ -139,6 +120,9 @@ Examples:
 - told i=0 "英国8月制造业PMI终值51.7". "US August S&P Global manufacturing PMI final 53.9" is new_fact: a different country's release.
 - told i=0 "中国8月原油进口同比增4.3%". "中国8月成品油出口同比降11%" is new_fact: a different traded quantity of the same trade story.
 - told i=0 "美国二季度GDP终值上修至2.6%". "美国三季度GDP初值1.8%" is new_fact: a different statistical period.
+- told i=0 "Meta宣布Petal跨海光缆连接法美，容量达拍比特级" (ago_min 1). "Meta - Petal Subsea Cable Expected to Enter Service in 2029 Doubling Capacity" is restatement/restates 0, and "Meta - Partners with NEC, Sumitomo Electric Industries, and Orange for Petal Cable" a minute later is restatement/restates 0 as well: a service date and a partner list are lines of the announcement already told, not new states of it.
+- told i=0 "Strategy购入950枚BTC，持仓增至846,000枚" (ago_min 22). "BARRONS: Bitcoin Is at Its Highest Price Since January. Strategy Buys Crypto" is restatement/restates 0: an outlet retelling that purchase beside a price line carries no fact of its own.
+- told i=1 "美财长称9月23日全球将停飞伊朗航空" (ago_min 214). "All Iranian airlines to be 'shut down' from Wednesday, Bessent tells CNBC" is restatement/restates 1: the same announcement to another broadcaster, and naming the weekday of a date already told is not an execution result.
 
 ## Typed trade relevance and reader attention
 Return exactly one nested TradeRelevanceV1. Code owns the enum values, validation, canonical set order and final policy. reader_value is the model-owned editorial intent; deterministic policy separately owns the final action.

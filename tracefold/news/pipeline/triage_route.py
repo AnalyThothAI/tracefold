@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, assert_never
 
 from ..events.storyline import STORYLINE_REGISTRY_SHA256
+from ..evidence import PreparedEvidence
 from ..models import GATE_POLICY_VERSION, TriageVerdict
 from ..program.contracts import ScoredJudgment, SemanticJudge, TriageContext
 from ..reader_history import ReaderHistorySnapshot
@@ -215,13 +216,28 @@ class _Judged:
     error_code: str | None
 
 
-def _gate_facts(card: Mapping[str, Any], watchlist_symbols: frozenset[str]) -> GateFacts:
+def _gate_facts(
+    card: Mapping[str, Any],
+    watchlist_symbols: frozenset[str],
+    *,
+    prepared_evidence: PreparedEvidence | None = None,
+) -> GateFacts:
+    """The code-owned facts one Event carries into `decide()`.
+
+    ``independent_text_count`` comes from the prepared evidence because that is where the members' text
+    digests are already read (#675 §3); a caller with no prepared evidence — the degraded path before the
+    freeze, a pure test — falls back to one text, which is the conservative answer for a rule that only
+    withholds on ``<= 1``.
+    """
+
     return GateFacts(
         grounded_assets=tuple(card.get("grounded_assets") or []),
         watchlist_symbols=watchlist_symbols,
         admission=str(card.get("admission") or ""),
         source_age_s=card.get("source_age_s"),
         member_count=max(1, int(card.get("member_count") or 1)),
+        independent_text_count=max(1, int(getattr(prepared_evidence, "independent_text_count", 0) or 0)),
+        title=str(card.get("leader_title") or ""),
     )
 
 
@@ -287,6 +303,10 @@ def _initial_trace(
         "evidence_version": int(card.get("evidence_version") or 0),
         "evidence_sha256": str(card.get("evidence_sha256") or ""),
         "focus_fact_id": str(card.get("focus_fact_id") or ""),
+        # #675 §3: the corroboration fact the decision table read, stored beside the thresholds it ran
+        # under. `member_count` is already on the Event; this is the number of distinct texts behind it,
+        # and without it a v15 verdict cannot be replayed against the input that produced it.
+        "independent_text_count": route.facts.independent_text_count,
         "storyline_key_preliminary": route.prelim_key,
         "status": {
             "storyline_key": route.prelim_key,

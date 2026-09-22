@@ -34,6 +34,12 @@ from tests.support.news_novelty_sequences import (
 )
 from tracefold.news.reader_history import build_reader_history
 from tracefold.news.similarity import trigram_similarity
+from tracefold.news.told_context import (
+    TOLD_MAX,
+    TOLD_RECENCY_RESERVED,
+    TOLD_RECENCY_WINDOW_MS,
+    ToldLedgerSnapshot,
+)
 from tracefold.news.triage_rules import DEFAULT_POLICY, GateFacts, decide, storyline_status
 
 VISA = "visa_onchain_credit"
@@ -186,6 +192,63 @@ def test_the_cp_listing_chain_drops_the_channel_repeat_and_keeps_the_new_venue()
     assert cross_channel["told_index_of_target"] == 6
     assert told(str(cross_channel["case"]))[6]["event_id"] == str(upbit["event_id"])
     assert bithumb["expected_duplicate_of"] is None
+
+
+def test_a_dense_instrument_history_can_no_longer_hide_the_card_this_one_repeats() -> None:
+    """#675 §2 A1, over the frozen CP notice rather than over synthetic rows.
+
+    The restatement guard can only fire on a ledger entry the model was shown, so the whole chain above
+    rests on the delivered Upbit notice being selected at all. It is 25 minutes old and its storyline key
+    is the same, which is why it was selected in production -- but the audit found 21 of 37 duplicate pairs
+    where the earlier card had *no* tier against the candidate and was evicted by 48 h of same-instrument
+    traffic. Here that pressure is applied deliberately: a dense pool of older cards about the same
+    instrument, each of which outranks a keyless recent card on the old selector.
+
+    The point is membership, not order. The notice is selected, so `restates` can name it, and the drop the
+    chain above asserts remains reachable.
+    """
+
+    upbit, cross_channel, _ = _steps(CP)
+    case_key = str(cross_channel["case"])
+    current = event(case_key)
+    now_ms = triage_stamp(case_key)
+    notice = history_row(str(upbit["case"]))
+    assert now_ms - notice["at_ms"] < TOLD_RECENCY_WINDOW_MS
+
+    # Sixteen older cards the targeted retrieval matched on an exact fact fingerprint: the top tier, which
+    # is uncapped, so on rank alone they fill the whole ledger and the 25-minute notice falls out of it.
+    crowd = [
+        {
+            **notice,
+            "event_id": f"crowd{index:02d}",
+            "at_ms": now_ms - (4 + index) * 3_600_000,
+            "comparison_fingerprint": f"crowd{index:02d}",
+            "history_scope": "targeted",
+            "retrieval_reason": "exact_fingerprint",
+        }
+        for index in range(TOLD_MAX)
+    ]
+
+    def _select(rows: list[dict]) -> list[str]:
+        snapshot = ToldLedgerSnapshot.select(
+            rows,
+            now_ms=now_ms,
+            storyline_key=storyline_key(case_key),
+            symbols=[str(value) for value in current["grounded_assets"] or ()],
+            comparison_title=str(current["comparison_title"] or ""),
+            exclude_event_id=str(cross_channel["event_id"]),
+        )
+        assert len(snapshot.entries) == TOLD_MAX
+        return [entry.event_id for entry in snapshot.entries]
+
+    assert str(upbit["event_id"]) in _select([*crowd, notice])
+    # The reservation is what holds it: age the same card past the window and the crowd takes every slot.
+    aged = {**notice, "at_ms": now_ms - TOLD_RECENCY_WINDOW_MS - 60_000}
+    assert str(upbit["event_id"]) not in _select([*crowd, aged])
+    # And the crowd still owns the other ten slots: the reservation is a floor of six, not a takeover.
+    burst = [{**notice, "event_id": f"fresh{index:02d}", "at_ms": now_ms - (index + 1) * 60_000} for index in range(10)]
+    kept = _select([*crowd, *burst])
+    assert sum(1 for event_id in kept if event_id.startswith("crowd")) == TOLD_MAX - TOLD_RECENCY_RESERVED
 
 
 def test_a_reversal_reaches_as_a_progression_and_drops_as_a_restatement() -> None:

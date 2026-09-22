@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import psycopg
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
@@ -45,7 +46,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260920_0385"
+HEAD = "20260922_0386"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -252,6 +253,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260920_0385",
         "20260919_0384",
         "20260919_0383",
         "20260918_0382",
@@ -340,9 +342,14 @@ def test_current_head_downgrade_is_irreversible() -> None:
 
     # The task-level review cut cannot be rolled back by downgrading the contract that admits a v7 row:
     # every review accepted under it would become unreadable through `news_review_records_v1`.
-    with pytest.raises(RuntimeError, match="news_local_evidence_forward_only"):
+    with pytest.raises(RuntimeError, match="news_policy_v15_decision_table_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    # And the revision behind it says the same thing about the v12 Program it admitted.
+    command.stamp(config, "20260920_0385")
+    with pytest.raises(RuntimeError, match="news_local_evidence_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260920_0385"
     command.stamp(config, "20260915_0379")
     # The editorial v3 cut cannot roll a v3 judgment back by downgrading the CHECK that admits it, and the
     # typed-asset cut behind it says the same thing about a v10 verdict.
@@ -2464,6 +2471,10 @@ def test_local_evidence_migration_preserves_v11_verdict_and_archive(monkeypatch)
     _empty_the_schema()
     command.upgrade(config, "20260919_0384")
     monkeypatch.setattr(history, "SEMANTIC_PROGRAM_VERSION", "news_semantic_program_v11")
+    # The seed is a verdict written *before* this cut, so it carries the policy version the 0384 CHECK
+    # admits. Leaving the current one here would make the seed itself the thing the CHECK rejects, and
+    # the revision under test would never run.
+    monkeypatch.setattr(history, "TRIAGE_POLICY_VERSION", "news_triage_policy_v14")
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
         event_id = admit(repos, "BTC acquisition remains pending approval.").results[0].event_id
@@ -2486,3 +2497,53 @@ def test_local_evidence_migration_preserves_v11_verdict_and_archive(monkeypatch)
             == "Pending approval"
         )
         assert conn.execute("SELECT to_regclass('ix_news_events_evidence_title') AS index").fetchone()["index"]
+
+
+def test_policy_v15_migration_keeps_the_v14_verdict_it_finds_and_admits_the_new_one(monkeypatch):
+    """`20260922_0386`, against the smallest history it can affect: one verdict on the old policy version.
+
+    The revision edits one CHECK and nothing else, and the property that matters is the one an operator
+    cannot establish by reading it: the predicate it rewrote is the predicate PostgreSQL actually held, so
+    the rows already under it stay valid and are not touched, while the version the new Workers emit
+    becomes writable in the same transaction. The refusal below is also why the image and the migration
+    cannot be deployed in either order -- the old CHECK rejects exactly what the new image writes.
+    """
+
+    from contextlib import closing
+
+    from tests.integration import test_news_reader_history as history
+    from tests.integration.test_news_evidence_material import admit
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260920_0385")
+    monkeypatch.setattr(history, "TRIAGE_POLICY_VERSION", "news_triage_policy_v14")
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        old_event = admit(repos, "BTC acquisition remains pending approval.").results[0].event_id
+        history._persist_triage_verdict(repos, event_id=old_event, at_ms=2000, symbol="BTC")
+        conn.commit()
+        before = conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall()
+        assert [row["row"]["policy_version"] for row in before] == ["news_triage_policy_v14"]
+
+        monkeypatch.setattr(history, "TRIAGE_POLICY_VERSION", "news_triage_policy_v15")
+        blocked = admit(repos, "ETH acquisition remains pending approval.").results[0].event_id
+        with pytest.raises(psycopg.errors.CheckViolation):
+            history._persist_triage_verdict(repos, event_id=blocked, at_ms=2100, symbol="ETH")
+        conn.rollback()
+
+    command.upgrade(config, "head")
+    # Head to head is a no-op: the revision refuses a predicate it has already rewritten.
+    command.upgrade(config, "head")
+
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        assert conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall() == before
+        repos = repositories_for_connection(conn)
+        new_event = admit(repos, "SOL acquisition remains pending approval.").results[0].event_id
+        history._persist_triage_verdict(repos, event_id=new_event, at_ms=2200, symbol="SOL")
+        conn.commit()
+        versions = {
+            str(row["policy_version"])
+            for row in conn.execute("SELECT policy_version FROM news_verdicts WHERE stage='triage'").fetchall()
+        }
+        assert versions == {"news_triage_policy_v14", "news_triage_policy_v15"}

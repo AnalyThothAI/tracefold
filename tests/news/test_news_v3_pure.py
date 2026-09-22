@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.news_judgment import scored_judgment, trade_relevance
+from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
 from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
 from tracefold.news.card_format import CHANGE_BASIS_LABEL
 from tracefold.news.delivery import (
@@ -62,6 +62,7 @@ from tracefold.news.triage_rules import (
     GateFacts,
     StorylineStatus,
     fallback_verdict,
+    price_move_basis,
     rule_baseline,
     storyline_status,
 )
@@ -1410,6 +1411,332 @@ def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
     assert decide(nameless, replace(_NO_WATCHLIST, admission="listing_deterministic"), None).final == "push"
 
 
+def _table_judgment(**over: Any) -> Any:
+    """One realtime push whose taxonomy, authority and headline the decision table can read (#675 §3)."""
+
+    fields = {
+        "event_family": over.pop("event_family", "market_flow_price"),
+        "change_state": over.pop("change_state", "reported"),
+        "assertion_status": over.pop("assertion_status", "confirmed"),
+    }
+    relevance = trade_relevance(**over.pop("relevance", {}))
+    verdict = _verdict(**over.pop("verdict", {}))
+    return scored_judgment(
+        verdict,
+        relevance=relevance,
+        taxonomy=news_taxonomy(**fields),
+        source_authority=over.pop("source_authority", "unknown"),
+        **over,
+    )
+
+
+def _told_on(key: str, count: int, *, minutes_ago: int = 30) -> StorylineStatus:
+    """A shown ledger holding ``count`` entries on one storyline key."""
+
+    return StorylineStatus(
+        key=key,
+        told_directions=("neutral",) * count,
+        told_assets=(frozenset(),) * count,
+        told_keys=(key,) * count,
+        told_at_ms=tuple(_NOW - (minutes_ago + index) * 60_000 for index in range(count)),
+    )
+
+
+def test_price_move_basis_reads_both_languages_of_every_shape_the_audit_named() -> None:
+    """#675 §3. The first cut of this vocabulary was Chinese-only and wrongly dropped 11 of 14 English or
+    variant cards, so the shapes are asserted on the exact strings the 24 h audit produced."""
+
+    for admissible in (
+        "比特币站上 85000 美元",
+        "美国原油跌回每桶 100 美元下方",
+        "英伟达失守 100 美元关口",
+        "Bitcoin rises above $82,000",
+        "Gold reclaims $4,000 an ounce",
+        "Silver falls below $50",
+        "黄金创三个月以来最大单日涨幅",
+        "创 7 月 30 日以来最大盘中涨幅",
+        "Meta shares hit a seven-month high",
+        "Copper at its highest since January",
+        "S&P 500 posts its biggest daily gain of the year",
+        "四小时内超 10 亿美元空头被清算",
+        "增持 7400 万美元 ETH",
+        "提取 10,000 枚 ETH",
+        "SOL 持仓升至 816 万枚",
+        "Bitcoin ETFs saw $999 million of inflows",
+        "USDe 跌至 0.92 美元",
+        "Tether depegs to $0.97",
+        "VLCC 日租金升至 103.5 万美元",
+    ):
+        assert price_move_basis(admissible), admissible
+
+    for quote_only in (
+        "Spot Palladium Rises Nearly 3% to $1,328.68/Oz",
+        "Shares of Samsung Electronics Rise Over 3%",
+        "Meta 股价涨幅扩大，最新上涨 10.4%",
+        "腾讯港股盘中涨超 7%",
+        "费城半导体指数涨幅扩大至 4%",
+    ):
+        assert not price_move_basis(quote_only), quote_only
+    assert not price_move_basis("")
+
+
+def test_the_decision_table_withholds_a_price_report_that_states_no_basis() -> None:
+    """The first #675 card: a 47-character title whose whole content is "it went up 7%".
+
+    Neither the model nor the seed was wrong about it — the seed's own price calibration admitted any move
+    of 5% or more "regardless of asset class", and the model applied that correctly. The threshold belongs
+    in code, and the owner's exception (#675 §7) is narrower than the sentence it replaces: a whole market,
+    never a single name.
+    """
+
+    tencent = _table_judgment(verdict={"headline_zh": "腾讯港股盘中涨超7%", "assets": [], "scope": "macro"})
+    quote = replace(_NO_WATCHLIST, title="Tencent Shares Rise More Than 7% Intraday")
+    dropped = production_decide(tencent, quote, None)
+    assert dropped.final == "drop" and dropped.override_rule == "price_report_without_basis"
+    assert dropped.throttled_by is None and OVERRIDE_RULE_ZH["price_report_without_basis"]
+
+    # A basis anywhere in the card's own text admits it — including one the 60-character headline dropped.
+    assert production_decide(tencent, replace(quote, title="Tencent rises above HK$700"), None).final == "push"
+    crossed = _table_judgment(verdict={"headline_zh": "比特币站上85000美元", "assets": [], "scope": "macro"})
+    assert production_decide(crossed, quote, None).final == "push"
+
+    # Only `market_flow_price` + `reported`: the same headline classified as a real fact is not touched.
+    for family, state in (("financial_results", "reported"), ("market_flow_price", "announced")):
+        other = _table_judgment(
+            event_family=family,
+            change_state=state,
+            verdict={"headline_zh": "腾讯港股盘中涨超7%", "assets": [], "scope": "macro"},
+        )
+        assert production_decide(other, quote, None).final == "push", (family, state)
+
+
+def test_the_five_percent_exception_is_carried_by_the_market_not_by_the_size_of_the_move() -> None:
+    """#675 §7: the owner kept a same-day move of 5% or more as its own admission, for a commodity or an
+    index only. A single stock at 10.4% is still a price broadcast; crude at 5.00% is the fact itself."""
+
+    quote = replace(_NO_WATCHLIST, title="")
+    for market, admitted in (("commodity", True), ("index", True), ("equity", False), ("crypto", False)):
+        judgment = _table_judgment(
+            verdict={
+                "headline_zh": "标的日内下跌5.00%",
+                "assets": [TriageAsset(symbol="CL", market_type=market, role="primary")],
+            }
+        )
+        result = production_decide(judgment, quote, None)
+        assert (result.final == "push") is admitted, market
+
+    # Below the threshold the market does not matter.
+    small = _table_judgment(
+        verdict={
+            "headline_zh": "原油日内下跌3.00%",
+            "assets": [TriageAsset(symbol="CL", market_type="commodity", role="primary")],
+        }
+    )
+    assert production_decide(small, quote, None).override_rule == "price_report_without_basis"
+    # And a `mentioned` commodity does not lend its market to a single-stock move.
+    borrowed = _table_judgment(
+        verdict={
+            "headline_zh": "某股票日内上涨10.4%",
+            "assets": [
+                TriageAsset(symbol="META", market_type="equity", role="primary"),
+                TriageAsset(symbol="CL", market_type="commodity", role="mentioned"),
+            ],
+        }
+    )
+    assert production_decide(borrowed, quote, None).override_rule == "price_report_without_basis"
+
+
+def test_the_decision_table_withholds_an_uncorroborated_conflict_claim() -> None:
+    """The second #675 card: one ministry's word, one text, 97 minutes into a storyline the reader was
+    already reading. All four facts were in PostgreSQL and `decide()` read none of them."""
+
+    # An `actor:` key, so only this row can fire: the running-storyline row below needs a `conflict:` key.
+    key = "actor:ru_mod"
+    claim = _table_judgment(
+        event_family="geopolitical_conflict",
+        change_state="reported",
+        assertion_status="claimed",
+        relevance={"development_delta": "material_detail"},
+        verdict={"headline_zh": "俄防部：俄军打击克列缅丘格炼油厂", "assets": [], "scope": "macro"},
+    )
+    lone = replace(_NO_WATCHLIST, independent_text_count=1, title="")
+    dropped = production_decide(claim, lone, _told_on(key, 1), now_ms=_NOW)
+    assert dropped.final == "drop" and dropped.override_rule == "conflict_claim_uncorroborated"
+    assert OVERRIDE_RULE_ZH["conflict_claim_uncorroborated"]
+
+    # A second independent *text* corroborates it. A second arrival of the same text does not, which is the
+    # whole reason this reads `independent_text_count` and not `member_count`.
+    assert production_decide(claim, replace(lone, independent_text_count=2), _told_on(key, 1), now_ms=_NOW).final == (
+        "push"
+    )
+    assert production_decide(claim, replace(lone, member_count=5), _told_on(key, 1), now_ms=_NOW).final == "drop"
+    # So does a source the registry can name.
+    named = _table_judgment(
+        event_family="geopolitical_conflict",
+        change_state="reported",
+        assertion_status="claimed",
+        relevance={"development_delta": "material_detail"},
+        verdict={"headline_zh": "俄防部：俄军打击克列缅丘格炼油厂", "assets": [], "scope": "macro"},
+        source_authority="reputable_secondary",
+    )
+    assert production_decide(named, lone, _told_on(key, 1), now_ms=_NOW).final == "push"
+    # And so does a confirmed assertion.
+    confirmed = _table_judgment(
+        event_family="geopolitical_conflict",
+        change_state="effective",
+        assertion_status="confirmed",
+        relevance={"development_delta": "material_detail"},
+        verdict={"headline_zh": "俄防部：俄军打击克列缅丘格炼油厂", "assets": [], "scope": "macro"},
+    )
+    assert production_decide(confirmed, lone, _told_on(key, 1), now_ms=_NOW).final == "push"
+
+
+def test_a_conflict_state_change_survives_until_the_reader_is_two_cards_into_the_storyline() -> None:
+    """#675 §3, the G2x refinement the audit measured: the model marks nearly every strike a `state_change`
+    during an escalation, so honouring it unconditionally is how the refinery card escaped the rule. It is
+    honoured while the storyline is new to the reader and withdrawn once two cards are already delivered."""
+
+    key = "conflict:mideast_2026"
+    change = _table_judgment(
+        event_family="geopolitical_conflict",
+        change_state="effective",
+        assertion_status="claimed",
+        relevance={"development_delta": "state_change"},
+        verdict={"headline_zh": "俄军称大规模打击乌克兰目标", "assets": [], "scope": "macro"},
+    )
+    lone = replace(_NO_WATCHLIST, independent_text_count=1, title="")
+
+    assert production_decide(change, lone, _told_on(key, 1), now_ms=_NOW).final == "push"
+    saturated = production_decide(change, lone, _told_on(key, 2), now_ms=_NOW)
+    assert saturated.final == "drop" and saturated.override_rule == "conflict_claim_uncorroborated"
+    # The ledger is read over 4 h, and only on exactly this key.
+    assert production_decide(change, lone, _told_on(key, 2, minutes_ago=300), now_ms=_NOW).final == "push"
+    elsewhere = replace(_told_on("conflict:ru_ua", 2), key=key)
+    assert production_decide(change, lone, elsewhere, now_ms=_NOW).final == "push"
+    # `none` is not a storyline, so cards filed under it never count as the same one.
+    nowhere = replace(_told_on(NO_STORYLINE_KEY, 2), key=NO_STORYLINE_KEY)
+    assert production_decide(change, lone, nowhere, now_ms=_NOW).final == "push"
+
+
+def test_the_decision_table_withholds_one_more_item_on_a_conflict_the_reader_is_reading() -> None:
+    """19 of the 232 demoted cards in the 24 h audit were running-battle traffic: another strike, another
+    casualty figure, another statement, all on a storyline the reader had a card for minutes earlier."""
+
+    key = "conflict:mideast_2026"
+    routine = _table_judgment(
+        event_family="geopolitical_conflict",
+        change_state="reported",
+        assertion_status="confirmed",
+        relevance={"development_delta": "material_detail"},
+        verdict={"headline_zh": "乌军称袭击俄炼油厂", "assets": [], "scope": "macro"},
+        source_authority="reputable_secondary",
+    )
+    facts = replace(_NO_WATCHLIST, independent_text_count=3, title="")
+
+    dropped = production_decide(routine, facts, _told_on(key, 1), now_ms=_NOW)
+    assert dropped.final == "drop" and dropped.override_rule == "conflict_running_storyline"
+    assert OVERRIDE_RULE_ZH["conflict_running_storyline"]
+    # The first card on the storyline still reaches the reader.
+    assert production_decide(routine, facts, _told_on(key, 0), now_ms=_NOW).final == "push"
+    # A ceasefire, a closure or a sanction in effect is why the storyline is followed at all.
+    change = _table_judgment(
+        event_family="geopolitical_conflict",
+        change_state="effective",
+        assertion_status="confirmed",
+        relevance={"development_delta": "state_change"},
+        verdict={"headline_zh": "双方宣布停火生效", "assets": [], "scope": "macro"},
+        source_authority="reputable_secondary",
+    )
+    assert production_decide(change, facts, _told_on(key, 3), now_ms=_NOW).final == "push"
+    # Only a `conflict:` key. An asset storyline with the same shape belongs to the budget, not to this row.
+    asset_key = replace(_told_on("asset:crypto:BTC", 1), key="asset:crypto:BTC")
+    assert production_decide(routine, facts, asset_key, now_ms=_NOW).final == "push"
+
+
+def test_the_decision_table_never_touches_escalate_listing_or_the_watchlist_guard() -> None:
+    """#675 §5 acceptance: v15 adds rows to one branch and leaves the other three byte-identical."""
+
+    key = "conflict:mideast_2026"
+    told = _told_on(key, 3)
+    routine = {
+        "event_family": "geopolitical_conflict",
+        "change_state": "reported",
+        "assertion_status": "claimed",
+        "relevance": {"development_delta": "material_detail"},
+        "verdict": {"headline_zh": "某方称再度发动打击", "assets": [], "scope": "macro", "magnitude": 3},
+    }
+    lone = replace(_NO_WATCHLIST, independent_text_count=1, title="")
+    assert production_decide(_table_judgment(**routine), lone, told, now_ms=_NOW).final == "drop"
+
+    escalate = _table_judgment(**{**routine, "relevance": {"development_delta": "material_detail"}})
+    escalate = _table_judgment(
+        **{
+            **routine,
+            "relevance": {"development_delta": "material_detail", "reader_value": "escalate"},
+            "source_authority": "reputable_secondary",
+        }
+    )
+    result = production_decide(escalate, lone, told, now_ms=_NOW)
+    assert result.final == "escalate" and result.override_rule == "trade_relevance_escalate"
+
+    uncorroborated = _table_judgment(
+        **{**routine, "relevance": {"development_delta": "material_detail", "reader_value": "escalate"}}
+    )
+    downgraded = production_decide(uncorroborated, lone, told, now_ms=_NOW)
+    assert downgraded.final == "push" and downgraded.override_rule == "trade_relevance_escalate_uncorroborated"
+
+    listing = production_decide(_table_judgment(**routine), replace(lone, admission="listing_deterministic"), told)
+    assert listing.final == "push" and listing.override_rule == "listing_deterministic"
+
+    watchlist = production_decide(
+        _table_judgment(**routine),
+        replace(lone, watchlist_symbols=frozenset({"NVDA"}), grounded_assets=("NVDA",)),
+        told,
+    )
+    assert watchlist.final == "push" and watchlist.override_rule == "watchlist_objective_guard"
+
+
+def test_the_decision_table_is_silent_when_the_taxonomy_predictor_failed() -> None:
+    """A classification that does not exist is not evidence. Treating `unavailable` as "not a price report,
+    not a conflict" would quietly make a Predictor outage the loudest card's ally (#651 §5.3, #675 §3)."""
+
+    unclassified = scored_judgment(
+        _verdict(headline_zh="腾讯港股盘中涨超7%", assets=[], scope="macro"),
+        relevance=trade_relevance(),
+        taxonomy_error_code="news_program_output_truncated",
+    )
+    assert unclassified.editorial.taxonomy_status == "unavailable"
+    result = production_decide(unclassified, replace(_NO_WATCHLIST, title=""), None)
+    assert result.final == "push" and result.override_rule == "trade_relevance_realtime"
+
+
+def test_the_shown_ledger_answers_how_much_of_this_storyline_the_reader_already_has() -> None:
+    """`told_keys`/`told_at_ms` are the ledger the *model judged against*, not the wider seen window."""
+
+    key = "conflict:ru_ua"
+    status = storyline_status(
+        key,
+        told=[
+            {"event_id": "a", "at_ms": _NOW - 60_000, "storyline_key": key, "direction": "neutral", "symbols": []},
+            {"event_id": "b", "at_ms": _NOW - 5 * 3_600_000, "storyline_key": key, "direction": "neutral"},
+            {"event_id": "c", "at_ms": _NOW - 60_000, "storyline_key": "asset:crypto:BTC", "direction": "neutral"},
+        ],
+    )
+    assert status.told_keys == (key, key, "asset:crypto:BTC")
+    assert status.told_on_key_within(now_ms=_NOW, window_ms=4 * 3_600_000) == 1
+    assert status.told_on_key_within(now_ms=_NOW, window_ms=6 * 3_600_000) == 2
+    # A replay that kept no clock gets the age-blind count rather than silently zero.
+    assert status.told_on_key_within(now_ms=None, window_ms=4 * 3_600_000) == 2
+    # `none` is not a storyline.
+    assert (
+        storyline_status(
+            NO_STORYLINE_KEY,
+            told=[{"event_id": "a", "at_ms": _NOW, "storyline_key": NO_STORYLINE_KEY, "direction": "neutral"}],
+        ).told_on_key_within(now_ms=_NOW, window_ms=4 * 3_600_000)
+        == 0
+    )
+
+
 def test_decide_uses_content_duplicate_evidence_without_a_reader_quota() -> None:
     """Prior volume on the *reader* never blocks a card; only evidence that the reader already got this fact
     (or, since v12, this storyline's budget) can."""
@@ -1454,6 +1781,11 @@ def test_storyline_status_carries_only_content_evidence() -> None:
         "key",
         "told_directions",
         "told_assets",
+        # #675 §3: the shown ledger's own keys and stamps. Still receipt evidence about delivered cards —
+        # the two conflict rows of the v15 decision table count how much of this storyline the reader was
+        # already handed, which is a fact about deliveries and not a capacity counter.
+        "told_keys",
+        "told_at_ms",
         "seen_headlines",
         "seen_event_ids",
         "seen_directions",
@@ -1554,22 +1886,46 @@ def test_told_selector_ranks_the_candidates_own_storyline_above_every_unrelated_
     assert [entry.i for entry in entries] == list(range(TOLD_MAX))
 
 
-def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
-    """A dense storyline plus a trickle of unrelated cards: every slot goes to evidence.
+def test_only_the_last_hour_may_displace_evidence_and_only_up_to_its_reservation() -> None:
+    """A dense storyline plus a trickle of unrelated cards: every slot but the reserved ones goes to evidence.
 
-    This is what keeps an unrelated delivery from buying a second paid execution — if filler could take a slot
-    an evidence row wanted, a new unrelated card would change the evidence set and force a re-ask.
+    Outside the 60-minute window this is still absolute, and that is what keeps an unrelated delivery from
+    buying a second paid execution: an older filler row cannot take a slot an evidence row wanted, so it
+    cannot change the evidence set and force a re-ask.
+
+    Inside the window it is deliberately no longer absolute (#675 §2). The reader had *just* been handed
+    those cards, and a ledger that hides them is a ledger the model cannot call a repeat against — which is
+    what 21 of the 37 audited duplicate pairs turned out to be. The displacement is bounded by
+    ``TOLD_RECENCY_RESERVED`` and by nothing else in the selection moving.
     """
 
-    from tracefold.news.told_context import TOLD_MAX
+    from tracefold.news.told_context import TOLD_MAX, TOLD_RECENCY_RESERVED
 
-    dense = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="topic:rates") for i in range(TOLD_MAX + 4)]
-    filler = [_told_row(f"o{i}", _NOW - 1 - i * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(3)]
-    entries = _select(filler + dense).entries
-    assert [entry.tier for entry in entries] == ["storyline"] * TOLD_MAX
-    # Adding one more unrelated card changes nothing the model sees.
-    grew = _select([_told_row("new", _NOW, storyline_key=NO_STORYLINE_KEY), *filler, *dense]).entries
-    assert [entry.event_id for entry in grew] == [entry.event_id for entry in entries]
+    # Every dense row is older than the window, so only a fresh filler row can ever be reserved.
+    dense = [_told_row(f"s{i}", _NOW - (70 + i) * 60_000, storyline_key="topic:rates") for i in range(TOLD_MAX + 4)]
+    stale = [_told_row(f"x{i}", _NOW - (61 + i) * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(3)]
+
+    # An unrelated card that has aged out of the window cannot take a slot from evidence at all.
+    assert [entry.tier for entry in _select(stale + dense).entries] == ["storyline"] * TOLD_MAX
+
+    # One unrelated card inside the window takes exactly one slot, and it is ranked last as filler always was.
+    entries = _select([_told_row("o0", _NOW - 60_000, storyline_key=NO_STORYLINE_KEY), *stale, *dense]).entries
+    assert [entry.tier for entry in entries] == ["storyline"] * (TOLD_MAX - 1) + ["recency"]
+    assert entries[-1].event_id == "o0"
+    # The reservation is a ceiling: a whole hour of unrelated traffic takes six slots, never more.
+    fresh = [_told_row(f"n{i}", _NOW - (1 + i) * 60_000, storyline_key=NO_STORYLINE_KEY) for i in range(12)]
+    crowded = _select(fresh + dense).entries
+    assert sum(1 for entry in crowded if entry.tier == "recency") == TOLD_RECENCY_RESERVED
+    assert [entry.event_id for entry in crowded if entry.tier == "recency"] == [f"n{i}" for i in range(6)]
+
+    # Once it is saturated, one more unrelated delivery evicts the oldest reserved row and nothing else:
+    # the ten evidence rows the novelty hash is taken over are untouched, so an unrelated delivery still
+    # cannot buy a second paid execution.
+    grew = _select([_told_row("new", _NOW - 1, storyline_key=NO_STORYLINE_KEY), *fresh, *dense]).entries
+    assert [entry.event_id for entry in grew if entry.tier == "storyline"] == [
+        entry.event_id for entry in crowded if entry.tier == "storyline"
+    ]
+    assert [entry.event_id for entry in grew if entry.tier == "recency"] == ["new", *(f"n{i}" for i in range(5))]
 
 
 def test_told_selector_overflow_from_a_capped_tier_still_fills_leftover_slots() -> None:

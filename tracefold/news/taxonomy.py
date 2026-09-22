@@ -629,8 +629,21 @@ class NewsTaxonomyV1(ModelTaxonomyV1):
 # not an institution's; aggregators and relays (`opennews`, `zerohedge`) restate an origin they do not
 # own, so authority would be inherited from whoever they copied; and a belligerent's state media (TASS,
 # IRIB) is a party to the event it reports, which is exactly the `claimed` case D3 exists to catch.
-SOURCE_AUTHORITY_CLASSIFIER_VERSION: Final = "news_source_authority_v3"
-_REGULATORY_SOURCE_NAMES: Final = frozenset({"sec", "edgar", "securities and exchange commission"})
+#
+# v4 (#675 §3) adds the official government and military accounts the 24 h audit found classified as
+# `unknown`. `decide()` reads this classification twice now -- the uncorroborated-escalate rule and the
+# v15 conflict row -- so a US Central Command post about its own ships, a Department of War release or a
+# White House statement was being weighed as one anonymous party's claim. These are first-party sources by
+# the same rule Binance's own announcement is: the institution is reporting what it itself did.
+#
+# The exclusions above are unchanged and one candidate was refused under them: a US state governor's press
+# office is an official account, but the week of posts under it is political messaging about a third party,
+# which is the "party to the event it reports" case. A personal account still gets nothing, whatever office
+# its owner holds -- `realdonaldtrump` is absent while `potus`, the office's own account, is present.
+SOURCE_AUTHORITY_CLASSIFIER_VERSION: Final = "news_source_authority_v4"
+# The SEC's own account belongs beside the SEC's own domain: it publishes the orders `sec.gov` hosts.
+_REGULATORY_SOURCE_NAMES: Final = frozenset({"sec", "edgar", "secgov", "securities and exchange commission"})
+_REGULATORY_HANDLES: Final = frozenset({"secgov"})
 # Registered domains only: `_hostname_in` matches a registered domain and its subdomains, so
 # `edgar.sec.gov` and `www.sec.gov` resolve through `sec.gov` rather than needing their own entries.
 _REGULATORY_HOSTNAMES: Final = frozenset({"sec.gov"})
@@ -642,19 +655,24 @@ _ISSUER_SOURCE_NAMES: Final = frozenset(
         "binance futures",
         "binance wallet",
         "bybit",
+        "centcom",
         "chainlink",
         "coinbase",
         "coinbase status",
+        "deptofwar",
         "ethereum",
         "hyperliquid",
         "kraken",
         "nasdaq",
         "nyse",
         "okx",
+        "potus",
         "solana",
+        "statedeptspox",
         "tesla",
         "tron dao",
         "upbit",
+        "whitehouse",
     }
 )
 # The `@handle` form of the same identities. The product-line names above are reporting-origin strings,
@@ -665,18 +683,23 @@ _ISSUER_HANDLES: Final = frozenset(
         "aave",
         "binance",
         "bybit",
+        "centcom",
         "chainlink",
         "coinbase",
+        "deptofwar",
         "ethereum",
         "hyperliquid",
         "kraken",
         "nasdaq",
         "nyse",
         "okx",
+        "potus",
         "solana",
+        "statedeptspox",
         "tesla",
         "tron dao",
         "upbit",
+        "whitehouse",
     }
 )
 # Each issuer's own official registered domain, checked one by one against the name above; a name whose
@@ -710,6 +733,15 @@ _ISSUER_HOSTNAMES: Final = frozenset(
         "businesswire.com",
         "globenewswire.com",
         "prnewswire.com",
+        # Official US government publishers, each the institution's own registered domain (#675 §3). A
+        # registered domain owns its subdomains, so `home.treasury.gov`, `www.war.gov` and
+        # `disclosures-clerk.house.gov` -- the three forms the 7-day production sample actually carries --
+        # resolve through these four without an entry each.
+        "federalreserve.gov",
+        "house.gov",
+        "justice.gov",
+        "treasury.gov",
+        "war.gov",
     }
 )
 _SECONDARY_SOURCE_NAMES: Final = frozenset(
@@ -754,7 +786,7 @@ _SECONDARY_HOSTNAMES: Final = frozenset(
 _SOURCE_AUTHORITY_REGISTRY: Final = {
     "regulatory_filing": {
         "names": sorted(_REGULATORY_SOURCE_NAMES),
-        "handles": [],
+        "handles": sorted(_REGULATORY_HANDLES),
         "hostnames": sorted(_REGULATORY_HOSTNAMES),
     },
     "issuer_first_party": {

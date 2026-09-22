@@ -7,7 +7,15 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from ..bus import now_ms
-from ..evidence import PreparedEvidence, assemble_evidence, frozen_members, query_for, select_members, shortlist
+from ..evidence import (
+    PreparedEvidence,
+    assemble_evidence,
+    frozen_members,
+    independent_text_count,
+    query_for,
+    select_members,
+    shortlist,
+)
 from ..models import MarketAsset, market_type_of
 from .runtime import NewsDatabasePort
 
@@ -69,4 +77,12 @@ async def prepare_evidence(
         exclusions=exclusions,
         elapsed_ms=int((time.monotonic() - started) * 1000),
     )
-    return prepared.model_copy(update={"candidate_count": len(candidates), "member_candidate_count": len(members)})
+    return prepared.model_copy(
+        update={
+            "candidate_count": len(candidates),
+            "member_candidate_count": len(members),
+            # Counted over every frozen member, not the material subset: `select_members` already collapsed
+            # identical bodies, so counting its output would always answer 1 for the case #675 is about.
+            "independent_text_count": independent_text_count(members, metadata),
+        }
+    )

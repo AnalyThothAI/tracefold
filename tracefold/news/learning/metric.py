@@ -666,6 +666,7 @@ def accepted_review_metric(
         judgment,
         projection,
         member_count=gold.context.evidence.member_count,
+        independent_text_count=max(1, int(getattr(gold.context.prepared_evidence, "independent_text_count", 0) or 0)),
         now_ms=gold.context.now_ms,
     )
     if pred_name == "reader_card":

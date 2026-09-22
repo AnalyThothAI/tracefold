@@ -142,6 +142,33 @@ def test_frozen_members_deduplicate_bodies_not_urls_facts_or_sources():
     assert [r["item_id"] for r in chosen] == ["leader", "correction", "later"]
 
 
+def test_independent_text_count_counts_texts_and_not_arrivals():
+    """#675 §3: the corroboration fact `decide()` reads is how many *texts* an Event has, not how many
+    arrivals. The #675 Tencent card had two members and one jin10 line arriving twice, so `member_count`
+    read 2 and called one wire two parties."""
+
+    from tracefold.news.evidence import independent_text_count, text_sha
+
+    members = [{"item_id": name} for name in ("leader", "copy", "correction", "unhashed", "blank")]
+    metadata = [
+        {"item_id": "leader", "evidence_text_sha256": "same"},
+        {"item_id": "copy", "evidence_text_sha256": "same"},
+        {"item_id": "correction", "evidence_text_sha256": "corrected"},
+        # An empty body is not a text, and a member whose body has not been persisted yet is one we cannot
+        # compare — counting it separately understates corroboration rather than overstating it.
+        {"item_id": "blank", "evidence_text_sha256": text_sha("")},
+    ]
+    assert independent_text_count(members, metadata) == 4
+    assert independent_text_count(members[:2], metadata) == 1
+    assert independent_text_count([], metadata) == 0
+    # The availability cutoff is deliberately not applied: this is a fact about the Event, not about what
+    # the Program may read at this instant.
+    assert (
+        independent_text_count(members[:3], [{**row, "provider_params_available_at_ms": 10**12} for row in metadata])
+        == 2
+    )
+
+
 def test_members_share_global_budget_keep_incremental_conditions_and_conflicts():
     leader = "Acme acquisition announced. " + "Historical background. " * 500
     extra = "Acme acquisition announced. The agreement is non-binding and awaits approval. Amount is $2.5 million."
