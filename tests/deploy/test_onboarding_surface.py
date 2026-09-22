@@ -43,7 +43,9 @@ def _deploy_image_sandbox(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, s
         """#!/bin/sh
 set -eu
 : > "$TRACEFOLD_TEST_EXTERNAL_ACTIVITY"
+printf '%s\n' "$*" >> "$TRACEFOLD_TEST_DOCKER_CALLS"
 if [ "$1" = "info" ]; then exit 0; fi
+if [ "$1" = "wait" ]; then printf '%s\n' "${TRACEFOLD_TEST_MIGRATE_EXIT_CODE:-0}"; exit 0; fi
 if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
 if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then printf '%s\\n' "$TRACEFOLD_TEST_IMAGE"; exit 0; fi
 if [ "$1" = "run" ]; then
@@ -251,6 +253,7 @@ esac
         "TRACEFOLD_TEST_SERVICES_STOPPED": str(services_stopped),
         "TRACEFOLD_TEST_STOP_ARGS": str(tmp_path / "stop-args"),
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
+        "TRACEFOLD_TEST_DOCKER_CALLS": str(tmp_path / "docker-calls"),
         "TRACEFOLD_TEST_BUILD_ARGS": str(tmp_path / "build-args"),
         "TRACEFOLD_TEST_DOWN_ARGS": str(tmp_path / "down-args"),
         "TRACEFOLD_TEST_NAUTILUS_REMOVED": str(tmp_path / "nautilus-removed"),
@@ -718,6 +721,49 @@ def test_a_deploy_never_stops_or_recreates_the_execution_runtime(
     assert "nautilus" not in Path(env["TRACEFOLD_TEST_STOP_ARGS"]).read_text(encoding="utf-8")
     assert not Path(env["TRACEFOLD_TEST_NAUTILUS_STOPPED"]).exists()
     assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+
+
+def _deploy_command(target: str) -> list[str]:
+    return ["make", target, *([f"IMAGE_ID={TEST_IMAGE_ID}"] if target == "deploy-image" else [])]
+
+
+@pytest.mark.parametrize("target", ("up", "deploy-image"))
+def test_serve_and_workers_start_only_after_the_migration_exited_zero(tmp_path: Path, target: str) -> None:
+    """#680 PR-2. Compose's own ordering edge is bounded by `--wait-timeout`, so it is not the order.
+
+    On 2026-09-22 `20260922_0387` ran longer than the 300 s wait, Compose started Workers anyway, and
+    Workers restarted on `migration_status: stale` for ten minutes. The deploy now brings up the
+    migration alone, waits for its container to exit, and only then starts Serve and Workers -- without
+    letting Compose re-run the migration as their dependency.
+    """
+
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+
+    result = subprocess.run(_deploy_command(target), cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode == 0, result.stderr
+    calls = Path(env["TRACEFOLD_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8").splitlines()
+    migrate_up = next(i for i, call in enumerate(calls) if call.startswith("compose up") and " migrate" in call)
+    waited = calls.index("wait migrate-id")
+    app_up = next(i for i, call in enumerate(calls) if call.startswith("compose up") and call.endswith("serve workers"))
+    stopped = next(i for i, call in enumerate(calls) if call.startswith("compose stop") and "workers" in call)
+    assert stopped < migrate_up < waited < app_up
+    assert "--wait" not in calls[migrate_up].split()
+    assert {"--no-deps", "--wait"} <= set(calls[app_up].split())
+
+
+@pytest.mark.parametrize("target", ("up", "deploy-image"))
+def test_a_failed_migration_leaves_serve_and_workers_stopped(tmp_path: Path, target: str) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MIGRATE_EXIT_CODE"] = "1"
+
+    result = subprocess.run(_deploy_command(target), cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode != 0
+    assert "migrate exited 1; serve and workers were not started." in result.stderr
+    calls = Path(env["TRACEFOLD_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8").splitlines()
+    assert "wait migrate-id" in calls
+    assert not [call for call in calls if call.startswith("compose up") and "serve" in call.split()]
 
 
 def test_deploy_image_accepts_an_older_runtime_revision_so_a_rollback_target_exists(

@@ -250,26 +250,31 @@ class WorkerChainTapeDatabase:
 
 
 class WorkerTradingDatabase:
-    """`TradingDatabasePort` (#104): the same one-slot heavy admission Event Reaction uses.
+    """`TradingDatabasePort` (#104): the Signal lane on ordinary business admission.
+
+    It shared the one-slot heavy admission with the Janitor and Event Reaction until #680. A lane turn
+    is a handful of short, bounded statements that has to run every two seconds; queued behind a
+    retention sweep for the heavy slot's 16 s admission budget, one refused turn stopped it for good
+    -- 33 of the 35 production faults since 09-05 (#680 RC7). It now takes an ordinary business permit,
+    like the wallet tape, and never one of the four the News hot path was budgeted.
 
     Deliberately no error translation. Trading has no broker to requeue into and no retry vocabulary of
-    its own: a refused or overrun operation surfaces as the platform error it is, the runner's turn logs
-    and ends, and the next turn re-reads the same durable state.
+    its own: a refused operation surfaces as the platform error it is, `run_signal_lane` ends that one
+    turn and backs off, and the next turn re-reads the same durable state.
     """
 
     def __init__(self, database: WorkerDatabase) -> None:
         self._database = database
-        self._lane = database.heavy_business()
 
     async def read[T](self, name: str, fn: Callable[[TradingRepositories], T], *, timeout_seconds: float) -> T:
-        return await self._lane.run_business(
+        return await self._database.run_business(
             name,
             _in_session(self._database, name, fn, timeout_seconds, _trading_repositories),
             operation_timeout_seconds=timeout_seconds,
         )
 
     async def tx[T](self, name: str, fn: Callable[[TradingRepositories], T], *, timeout_seconds: float) -> T:
-        return await self._lane.run_business(
+        return await self._database.run_business(
             name,
             _in_session(self._database, name, fn, timeout_seconds, _trading_repositories),
             operation_timeout_seconds=timeout_seconds,

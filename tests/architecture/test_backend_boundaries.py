@@ -219,6 +219,15 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # than keeping a fourth copy of that mapping.
         "tracefold.trading.sources",
         "tracefold.trading.storage.root",
+        # #680 RC11. The Trading watchdog alerts through the Deliverer's one send entry, which takes
+        # the card model and the frozen channel payload together, so the composition builds both the
+        # way the market loop does -- the card's own value types and the one Feishu serializer, with no
+        # renderer, loop or delivery ledger behind them.
+        "tracefold.news.reader_card",
+        "tracefold.news.feishu_card",
+        # The row shapes of the watchdog's three read-only execution facts. The statements stay in
+        # Trading's storage; App reads the values and decides only whether to alert.
+        "tracefold.trading.storage.health",
     ),
     "app.nautilus": (
         # #433-B: the dormant Runtime composition root materializes Trading-owned execution rows,
@@ -284,6 +293,7 @@ SQL_TABLE_RE = re.compile(
 )
 PLATFORM_TABLES = {
     "alembic_version",
+    "platform_watchdog_alerts",
     "workers_runtime",
 }
 # Existing database adapters that legitimately own SQL without being storage modules. Keep this small:

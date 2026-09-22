@@ -73,6 +73,28 @@ if [ "$${TRACEFOLD_MIGRATE_UNDER_RUNTIME:-}" != 1 ] && [ -n "$$(docker compose p
 	fi
 endef
 
+# Migrate to completion first, and only then start what reads the schema. The Compose edge
+# `depends_on: migrate: service_completed_successfully` is not enough on its own: `up --wait` bounds
+# the dependency wait by `--wait-timeout` too, and when that runs out Compose starts the dependant
+# anyway (reproduced on Compose 2.40.3). On 2026-09-22 `20260922_0387` re-validated its CHECK for
+# longer than the 300 s budget, so Workers started against the old head and fatally restarted on
+# `migration_status: stale` until the migration finished. `docker wait` has no such budget -- the
+# revision's own statement timeout bounds it -- and a failed migration now leaves Serve and Workers
+# stopped instead of starting them against a schema they refuse (#680 PR-2). Expects `fail`.
+define START_APPLICATION_AFTER_MIGRATE
+docker compose up -d --no-build --force-recreate rabbitmq-policy migrate || fail; \
+	migrate_id=$$(docker compose ps --all -q migrate); \
+	[ -n "$$migrate_id" ] || fail; \
+	migrate_exit_code=$$(docker wait "$$migrate_id") || fail; \
+	if [ "$$migrate_exit_code" != 0 ]; then \
+		docker compose logs --no-color --tail=50 migrate >&2 || true; \
+		echo "migrate exited $$migrate_exit_code; serve and workers were not started." >&2; \
+		fail; \
+	fi; \
+	docker compose up -d --no-build --force-recreate --no-deps --wait \
+		--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) serve workers || fail
+endef
+
 # One read-only psql invocation, reused by every head comparison. `$$1` is the statement.
 POSTGRES_READ_ONLY_PSQL = docker compose exec -T postgres sh -eu -c \
 	'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
@@ -444,10 +466,8 @@ _up-locked:
 		target_manifest=$$(printf '%s' "$$manifest_document" \
 			| uv run python -c 'import json,sys; print(json.load(sys.stdin)["data"]["runtime_manifest_sha"])') || fail; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
-		runtime_services="migrate rabbitmq-policy serve workers"; \
 		docker compose stop -t 40 workers serve || fail; \
-		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
+		$(START_APPLICATION_AFTER_MIGRATE); \
 		make --no-print-directory status-app || fail; \
 		ready_manifest=$$(curl -fsS "$(TRACEFOLD_WORKERS_URL)/readyz" \
 			| uv run python -c 'import json,sys; print(str(json.load(sys.stdin).get("runtime_manifest_sha") or ""))') || fail; \
@@ -559,8 +579,7 @@ _deploy-image-locked:
 		}; \
 		runtime_services="migrate rabbitmq-policy serve workers"; \
 		docker compose stop -t 40 workers serve || fail; \
-		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
+		$(START_APPLICATION_AFTER_MIGRATE); \
 		for service in $$runtime_services; do \
 			container_id=$$(docker compose ps --all -q "$$service"); \
 			if [ -z "$$container_id" ]; then \

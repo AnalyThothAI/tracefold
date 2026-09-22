@@ -548,6 +548,26 @@ atomically; recover by rolling forward or restoring a verified backup. Downgrade
 refuses. Remove the retired webpage configuration key before the new image starts.
 
 
+### 20260922_0388: Workers watchdog alert ledger (#680 PR-2)
+
+Creates `platform_watchdog_alerts`, one row per condition the Trading watchdog
+watches (six today): whether the condition is active, when its episode opened,
+when the operator was last told about it (`NULL` until a message got through), and
+since when an active condition has read clear. It exists so "already alerted"
+survives a Workers restart — Workers restarted 10–21 times a day in the #680 audit
+window, and memory-held state would re-page every active condition on each one and
+lose the recovery message for one that cleared meanwhile. It is platform-owned
+bookkeeping beside `workers_runtime`, written only by the Workers singleton; no
+business decision reads it.
+
+`CREATE TABLE` touches no existing relation, rewrites nothing and builds no index
+beyond the new primary key; `lock_timeout=5s`, `statement_timeout=30s`. It runs
+behind the normal stopped-writer migration gate like every revision. An older
+image never names the table. Downgrade drops it, which loses only which conditions
+were last alerted: the next pass re-alerts whatever is still active. Nothing in the
+execution Runtime reads or writes it, so it can be applied while a Runtime is up
+with `TRACEFOLD_MIGRATE_UNDER_RUNTIME=1`.
+
 ### 20260922_0387: News judgment v3, editorial v4, review v8, policy v16 (#675 PR-2)
 
 Admits `news_judgment_v3`, `news_triage_policy_v16` and `news_semantic_program_v13`

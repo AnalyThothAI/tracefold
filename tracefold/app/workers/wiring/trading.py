@@ -19,11 +19,12 @@ from loguru import logger
 
 from tracefold.app.trading_config import signal_lane_config
 from tracefold.app.worker_database import WorkerDatabase
-from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerTradingDatabase
+from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_oi_sources
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
+from tracefold.platform.resource import ResourceAdmissionTimeout
 from tracefold.trading import OiTradeCandidate
 from tracefold.trading.contracts import Bar as TradingBar
 from tracefold.trading.contracts import OiCandidateRow
@@ -34,6 +35,10 @@ SIGNAL_LANE_TASK_NAME = "trading-signal-lane"
 # The lane moves at the speed of a five-minute OI frame; two seconds is what makes a fresh frame reach
 # a Case well inside its own trigger budget without the scan becoming a busy loop.
 SIGNAL_LANE_POLL_SECONDS = 2.0
+# The longest a refused turn waits before the next one. Doubling from the poll interval reaches it in
+# four refusals; a database that is merely busy is retried within seconds, and one that is down is not
+# asked every two seconds.
+SIGNAL_LANE_BACKOFF_MAX_SECONDS = 30.0
 _SIGNAL_PROJECTION_TIMEOUT_SECONDS = 10.0
 
 
@@ -45,30 +50,32 @@ def _wire_signal_lane(
 ) -> SignalLane | None:
     """#104/#331. Disabled by default; a disabled Trading context constructs nothing.
 
-    The lane shares Event Reaction's one-slot heavy admission rather than the four News lane slots, for
-    the same reason #88 gave: a trading backlog must not compete with the Deduper, Triage and the
-    Deliverer for the lane they were budgeted.
+    Both of the lane's database paths -- its own Trading statements and its one News read -- take an
+    ordinary business permit, never one of the four News lane slots, for the same reason #88 gave: a
+    trading backlog must not compete with the Deduper, Triage and the Deliverer for the lane they were
+    budgeted. They used to share the one-slot heavy admission with the Janitor and Event Reaction,
+    which is what turned every long retention sweep into a refused lane turn (#680 RC7).
+
+    The News read goes straight to the business lane in the platform error vocabulary, where it used
+    to borrow the Janitor's adapter and come back as a News `DeferError` the lane had no word for.
     """
 
     if not settings.trading.enabled:
         return None
-
-    news_db = WorkerNewsColdDatabase(db)
 
     async def read_news_oi_projection(
         metric_version: str,
         after_created_at_ms: int,
         until_created_at_ms: int,
     ) -> Sequence[OiCandidateRow]:
-        return await news_db.read(
+        return await db.run_business(
             "trading_oi_projection",
-            lambda repos: news_oi_sources(
-                repos,
-                metric_version,
-                after_created_at_ms,
-                until_created_at_ms,
-            ),
-            timeout_seconds=_SIGNAL_PROJECTION_TIMEOUT_SECONDS,
+            _read_news_oi_projection,
+            db,
+            metric_version,
+            after_created_at_ms,
+            until_created_at_ms,
+            operation_timeout_seconds=_SIGNAL_PROJECTION_TIMEOUT_SECONDS,
         )
 
     return SignalLane(
@@ -78,6 +85,16 @@ def _wire_signal_lane(
         oi_projection=read_news_oi_projection,
         telemetry=telemetry,
     )
+
+
+def _read_news_oi_projection(
+    db: WorkerDatabase,
+    metric_version: str,
+    after_created_at_ms: int,
+    until_created_at_ms: int,
+) -> Sequence[OiCandidateRow]:
+    with db.worker_session("trading_oi_projection", _SIGNAL_PROJECTION_TIMEOUT_SECONDS) as repos:
+        return news_oi_sources(repos, metric_version, after_created_at_ms, until_created_at_ms)
 
 
 async def _source_native_candles(
@@ -115,6 +132,13 @@ async def _source_native_bars(candidate: OiTradeCandidate, start_ms: int, end_ms
     return await _source_native_candles(candidate.venue, candidate.base_symbol, start_ms, end_ms)
 
 
+def refusal_backoff_seconds(refusals: int, *, poll_seconds: float = SIGNAL_LANE_POLL_SECONDS) -> float:
+    """The wait after the `refusals`-th refused turn in a row: doubling from the poll, capped."""
+
+    doubled = max(0.05, float(poll_seconds)) * float(2 ** max(1, int(refusals)))
+    return min(SIGNAL_LANE_BACKOFF_MAX_SECONDS, doubled)
+
+
 async def run_signal_lane(
     lane: SignalLane,
     *,
@@ -124,18 +148,44 @@ async def run_signal_lane(
 ) -> None:
     """Poll `advance()` until the process stops. The lane owns no clock of its own.
 
-    An exception out of `advance()` is an infrastructure fault by construction — every business
-    refusal is a durable row — so it ends this run of the lane. It is raised, never swallowed: the
-    Workers root records `trading_signal_lane` as `faulted` with this failure and stops the task,
-    and News reception, fact writes and reads carry on beside it (#553 PR-3). Retrying here would
-    leave a green Decision Plane beside a lane that cannot advance; escalating to a process fatal,
-    as this used to, took healthy ingestion down with one lane and then restarted the pair forever.
+    A turn the database refused -- an admission, lock, statement, transaction or connection timeout,
+    which `WorkerDatabase` names `ResourceAdmissionTimeout` -- ends that turn and nothing else. It is
+    logged, counted as an errored turn, and the next one runs after a doubling backoff capped at
+    `SIGNAL_LANE_BACKOFF_MAX_SECONDS`. Every business refusal is a durable row and every turn re-reads
+    the ledger it writes, so a skipped turn loses no work. Until #680 this raised, the Workers root
+    marked the capability `faulted`, and nothing restarted it: 33 of 35 production faults were one
+    such timeout, and the longest outage lasted 31 hours.
+
+    Anything else out of `advance()` is a program error, and it is raised, never swallowed: the
+    Workers root records `trading_signal_lane` as `faulted` with this failure and stops the task, and
+    News reception, fact writes and reads carry on beside it (#553 PR-3). `ResourceOperationOverrun`
+    is not a refused turn -- a native operation outlived its envelope and still holds its thread -- so
+    it still reaches the root, which treats it as the foundation failure it is.
     """
 
+    refusals = 0
     while not stop_event.is_set():
         started = time.perf_counter()
         try:
             turn = await lane.advance()
+        except ResourceAdmissionTimeout as exc:
+            refusals += 1
+            if telemetry is not None:
+                telemetry.record_external_data_turn(
+                    "trading_signal_lane",
+                    "error",
+                    time.perf_counter() - started,
+                )
+            delay = refusal_backoff_seconds(refusals, poll_seconds=poll_seconds)
+            logger.warning(
+                "signal lane turn refused by the database; retrying error={} refusals={} retry_in_seconds={}",
+                exc,
+                refusals,
+                delay,
+            )
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            continue
         except Exception:
             logger.exception("signal lane turn failed")
             if telemetry is not None:
@@ -145,6 +195,7 @@ async def run_signal_lane(
                     time.perf_counter() - started,
                 )
             raise
+        refusals = 0
         if telemetry is not None:
             # What the turn read and what it made of it. The port and both gauges have carried these
             # two counts since #331; this loop passed neither, so the lane's source and target volume
@@ -161,7 +212,9 @@ async def run_signal_lane(
 
 
 __all__ = [
+    "SIGNAL_LANE_BACKOFF_MAX_SECONDS",
     "SIGNAL_LANE_POLL_SECONDS",
     "SIGNAL_LANE_TASK_NAME",
+    "refusal_backoff_seconds",
     "run_signal_lane",
 ]

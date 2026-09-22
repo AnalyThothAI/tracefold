@@ -22,8 +22,14 @@ from tracefold.platform.resource import ResourceAdmissionTimeout
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
-def test_quote_ordinary_lane_progresses_while_trading_holds_the_heavy_gate() -> None:
-    """#304: real sessions prove Quote is ordinary and Reaction/Trading share one heavy permit."""
+def test_quote_and_the_signal_lane_progress_while_reaction_holds_the_heavy_gate() -> None:
+    """#304 and #680 RC7: real sessions prove Quote and the Signal lane are ordinary business work.
+
+    The Signal lane shared Event Reaction's one heavy permit until #680, so a long heavy statement
+    queued every lane turn behind it for the 16 s admission budget and one refusal stopped the lane for
+    good. Now only heavy work waits for the heavy permit: a second Reaction read queues behind the
+    first, while a lane turn and a quote read both run inside their ordinary one-second admission.
+    """
 
     pool = create_pool(
         _test_postgres_dsn(),
@@ -41,37 +47,48 @@ def test_quote_ordinary_lane_progresses_while_trading_holds_the_heavy_gate() -> 
     quote = WorkerQuoteDatabase(database)
     reaction = WorkerReactionDatabase(database)
     trading = WorkerTradingDatabase(database)
-    trading_started = Event()
-    reaction_started = Event()
+    heavy_started = Event()
+    second_heavy_started = Event()
 
     def hold_heavy(repos) -> str:
-        trading_started.set()
-        repos.trading.case_counts(since_ms=0)
+        heavy_started.set()
+        repos.price.quote_target_symbols(since_ms=0, limit=1)
         time.sleep(1.5)
-        return "trading-finished"
+        return "reaction-finished"
 
     def read_one(repos) -> int:
         repos.price.quote_target_symbols(since_ms=0, limit=1)
         return 1
 
-    def read_reaction(repos) -> int:
-        reaction_started.set()
+    def read_second_heavy(repos) -> int:
+        second_heavy_started.set()
         return read_one(repos)
 
+    def lane_turn(repos) -> int:
+        repos.trading.gate_answers(source_keys=["oi:ladder:oi_signal_v1"])
+        return 1
+
     async def scenario() -> None:
-        held = asyncio.create_task(trading.read("trading_hold", hold_heavy, timeout_seconds=3.0))
+        held = asyncio.create_task(reaction.read("reaction_hold", hold_heavy, timeout_seconds=3.0))
         waiting: asyncio.Task[int] | None = None
         try:
             for _ in range(100):
-                if trading_started.is_set():
+                if heavy_started.is_set():
                     break
                 await asyncio.sleep(0.01)
-            assert trading_started.is_set()
+            assert heavy_started.is_set()
 
-            waiting = asyncio.create_task(reaction.read("reaction_wait", read_reaction, timeout_seconds=3.0))
+            waiting = asyncio.create_task(reaction.read("reaction_wait", read_second_heavy, timeout_seconds=3.0))
             await asyncio.sleep(0.05)
-            assert not reaction_started.is_set()
+            assert not second_heavy_started.is_set()
 
+            assert (
+                await asyncio.wait_for(
+                    trading.read("trading_signal_lane_answers", lane_turn, timeout_seconds=1.0),
+                    timeout=1.0,
+                )
+                == 1
+            )
             assert (
                 await asyncio.wait_for(
                     quote.read("quote_progress", read_one, timeout_seconds=1.0),
@@ -80,11 +97,11 @@ def test_quote_ordinary_lane_progresses_while_trading_holds_the_heavy_gate() -> 
                 == 1
             )
             assert not held.done()
-            assert not reaction_started.is_set()
+            assert not second_heavy_started.is_set()
 
-            assert await held == "trading-finished"
+            assert await held == "reaction-finished"
             assert await waiting == 1
-            assert reaction_started.is_set()
+            assert second_heavy_started.is_set()
         finally:
             await asyncio.gather(held, *(task for task in (waiting,) if task is not None), return_exceptions=True)
 

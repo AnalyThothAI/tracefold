@@ -8,7 +8,6 @@ and committing a Signal also appends the Signal. They are one transaction each, 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any, Final
 
 from ..admission import AdmissionRow
@@ -22,33 +21,8 @@ from .gate import CandidateGateStorage
 LATEST_CASE_CREATED_AT_SQL: Final = "SELECT max(created_at_ms) AS latest FROM trading_cases"
 
 
-@dataclass(frozen=True, slots=True)
-class SignalLaneSnapshot:
-    """The one durable fact that prevents duplicate Alpha work: which sources already have a Case."""
-
-    cased_source_keys: frozenset[str]
-
-
 class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
     conn: Any
-
-    def signal_lane_snapshot(self, *, since_ms: int) -> SignalLaneSnapshot:
-        """Which sources in the scan window already produced a Case. One read, one fact.
-
-        It also read every Runtime's published route catalogue, so the lane could refuse a market no
-        Runtime lists. The Runtime answers that itself, by name, on the entry path, and the projection
-        needed a `None`-means-no-catalogue special case that no other reader had (#537 PR-3).
-        """
-
-        rows = self.conn.execute(
-            """
-            SELECT primary_source_key
-              FROM trading_cases
-             WHERE created_at_ms >= %s OR state IN ('PENDING', 'RUNNING')
-            """,
-            (int(since_ms),),
-        ).fetchall()
-        return SignalLaneSnapshot(cased_source_keys=frozenset(str(row["primary_source_key"]) for row in rows))
 
     def create_case(
         self,
@@ -262,4 +236,4 @@ class LaneStorage(CandidateGateStorage, ExecutionStreamStorage):
         return None if latest is None else int(latest)
 
 
-__all__ = ["LATEST_CASE_CREATED_AT_SQL", "LaneStorage", "SignalLaneSnapshot"]
+__all__ = ["LATEST_CASE_CREATED_AT_SQL", "LaneStorage"]
