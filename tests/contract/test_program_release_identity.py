@@ -25,7 +25,12 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # #675 §3: the envelope carries the source-authority registry, and the registry gained the official
 # government and military accounts the 24 h audit found classified as `unknown`. Nothing about the
 # request shape, the output contracts or the route budget moved.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "bce60aff0045c50c3195ecfe4d0cd29fa3614422cac8500f2e963f1b7c4e6454"
+# #675 PR-3 re-pins it for one new assembly rule: a `primary` the catalogue candidate row shown to the
+# model proves is a different kind of instrument is demoted to `mentioned` before the atom is issued
+# (`assembly.contradicted_primary_symbols`). That decides what lands in the verdict, so it is rendered
+# and hashed here for the same reason `normalize_restates` is. The request shape, both output contracts
+# and the route budget are unchanged.
+NEWS_EXECUTION_ENVELOPE_SHA256 = "88f7e059ebf9d449feb752ff4dc54be31b0894104705bd50836d5e9ed486a0d5"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -159,6 +164,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
     assert set(envelope["signatures"]) == predictors
     assert set(envelope["implementation_ast_sha256"]) == {
         "artifact.render_model_evidence_json",
+        "assembly.contradicted_primary_symbols",
         "assembly.normalize_restates",
         "assembly.restatement_index_error",
         "contracts.CatalogCandidate",
@@ -238,6 +244,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
             if path["format_fallback"] is not None:
                 assert path["format_fallback"]["config"]["response_format"] == {"type": "json_object"}
     assert set(envelope["assembly"]) == {
+        "contradicted_primary_symbols",
         "normalization_capture",
         "restatement_index",
         "normalize_restates",

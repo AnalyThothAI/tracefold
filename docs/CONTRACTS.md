@@ -571,7 +571,9 @@ every Event this code can open.
   Later pages keep the stricter stability.
 
   Every Event carries `grounded_assets` (the raw provider coin tags the Gate
-  admitted on) and beside it `assets[]` — the durable `news_event_assets`
+  admitted on — grade B+/A/A+ or a literal cashtag, with crude requiring the
+  registry's energy context and every other commodity requiring its own name
+  in the text) and beside it `assets[]` — the durable `news_event_assets`
   ledger resolved against the #75 instrument universe. That ledger includes
   Gate-grounded tags and deterministic-judge primaries, so an OI Event can have
   `grounded_assets=[]` and a listed BTR entry in `assets[]`. Each entry is
@@ -1906,7 +1908,12 @@ drift trips the activation. `news replay <hits.json>` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
 Event with admission, grounded assets, and preliminary storyline. `news why
 <event_id>` prints the Event's chain (item, gate, triage, decide, delivery)
-and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
+and a one-line `outcome`. A model verdict's trace carries a `grounding` block
+beside it: per named asset, how this Event carries the symbol (`cashtag`,
+`text`, `alias`, `provider_tag`, `unsupported`), whether the instrument
+catalogue holds it, and whether the catalogue row the model was shown proves a
+different market than the one it claimed. It is recorded evidence about the
+judgment; the decision policy reads none of it. `news dlq inspect|replay|purge [--limit]`
 peeks, republishes, or purges `news.dead`. `replay` verifies the effective
 policy and the topology first and exits non-zero without reading a message if
 either is unknown or drifted; a dead letter it cannot decode is returned to the

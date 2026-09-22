@@ -24,6 +24,7 @@ from typing import Any, Final
 
 from ..market_review.instruments import NON_CRYPTO_CLASSES
 from ..models import Admission, AssetClass, EngineType
+from .grounding import commodity_context_present
 from .storyline import match_storyline, storyline_entry
 
 # Law-firm solicitation templates. The strong list (firm names, template phrases) is vetoed outright — a real
@@ -142,8 +143,9 @@ def grounded_assets(
     """Provider coins the pipeline treats as grounded: grade B+/A/A+ tags and any literal ``$TICKER`` cashtag.
 
     The provider already resolved names to symbols (Bitcoin -> BTC:A, Home Depot -> HD:A, SafePal -> SFP:A); the
-    Gate does not second-guess that with its own name table. ``CL`` (crude) counts only in energy context and a
-    short stop-list drops tags whose symbol collides with an English word. Triage decides which grounded assets are
+    Gate does not second-guess that with its own name table. ``CL`` (crude) counts only in energy context, every
+    other commodity underlying counts only when the text names that commodity (:mod:`.grounding`), and a short
+    stop-list drops tags whose symbol collides with an English word. Triage decides which grounded assets are
     primary; ``decide()`` only trusts primaries that are also grounded. ``strong_only`` keeps A/A+ tags and
     cashtags — the ones allowed to open a preliminary storyline before Triage has spoken. ``energy`` lets a
     caller that already read the registry for this exact text hand the answer in; ``None`` reads it here.
@@ -169,6 +171,14 @@ def grounded_assets(
                 out.append(symbol)
             continue
         if len(base) < 2 or base in _TICKER_TAG_STOP:
+            continue
+        # #675 PR-3: the `CL` condition above, generalized to the rest of the commodity underlyings. A
+        # provider tag on a commodity whose own name is nowhere in the text is the provider matching
+        # something else: a 24 h window had `XAU`/`XYZ-GOLD` on 央行票据, on SoftBank's bond sale and on
+        # seven Hong Kong filings, and `XAU`/`XAG` on the 上期所 notice that adjusted copper, aluminium,
+        # zinc and lead margins and never mentioned either metal. Over 3,362 Events the condition removed
+        # 40 tags and removed none from an Event that named that commodity at all.
+        if not commodity_context_present(base, text):
             continue
         grade = str(coin.get("grade") or "")
         if grade in grades or _cashtag_in_text(base, text):

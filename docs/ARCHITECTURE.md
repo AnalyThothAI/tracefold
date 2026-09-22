@@ -216,6 +216,19 @@ Admission stores normalized provider Items and separates editorial from market i
 Editorial Items join same-kind Events through the existing dedupe and grounding owners.
 Triage receives frozen evidence rather than mutable provider responses.
 
+Grounding is the provider's name resolution plus two code conditions, and the Gate keeps
+no name table of its own: a B+/A/A+ coin tag or a literal `$TICKER` is the grounded asset.
+The conditions narrow it where a tag is about a word rather than an instrument — crude
+needs the storyline registry's energy context, and every other commodity underlying needs
+its own name in the text, bilingually (`events/grounding.py`). Beside that, each verdict
+records how the Event carries every instrument it names (`cashtag`, `text`, `alias`,
+`provider_tag`, `unsupported`) and what the catalogue holds for it. That reading is
+recorded evidence for a later decision and for the console; `decide()` consumes none of
+it. It is a signal rather than a rule because a symbol is not a name: a measured day of
+delivered cards has correct primaries the text never spells (`LMT` for Lockheed Martin,
+`0700.HK` for 腾讯) and mis-resolved ones it spells perfectly, so separating them needs an
+issuer-name source the catalogue does not yet have.
+
 The public semantic seam is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`.
 The native DSPy Program executes EventSemantics, Taxonomy, and ReaderCard predictors;
 deterministic assembly and policy own validation and the reader-facing decision.

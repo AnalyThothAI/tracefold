@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, assert_never
 
+from ..events.grounding import AssetGrounding, verdict_grounding
 from ..events.storyline import STORYLINE_REGISTRY_SHA256
 from ..evidence import PreparedEvidence
 from ..models import GATE_POLICY_VERSION, TriageVerdict
@@ -76,6 +77,11 @@ class _TriageSettle:
     trace: dict[str, Any]
     stamp: int
     allow_stale: bool
+    # #675 PR-3: how this Event carries each instrument its verdict names -- cashtag, own spelling, code
+    # variant, provider tag or nothing -- and what the catalogue holds for it. Recorded evidence about the
+    # judgment, read by nothing in `decide()`: the measurements behind that restraint are in
+    # `events/grounding.py`. Empty for a judgment that names no asset.
+    grounding: tuple[AssetGrounding, ...] = ()
     # #400: which durable transition the stable arm's Triage circuit owes PostgreSQL, applied inside the
     # same persist transaction as the verdict. There is no process-memory copy of incident state: an
     # open circuit re-asserts the incident on every settle and a stable Program answer closes it, so a
@@ -238,6 +244,32 @@ def _gate_facts(
         member_count=max(1, int(card.get("member_count") or 1)),
         independent_text_count=max(1, int(getattr(prepared_evidence, "independent_text_count", 0) or 0)),
         title=str(card.get("leader_title") or ""),
+    )
+
+
+def _verdict_grounding(route: _RouteInputs, verdict: TriageVerdict) -> tuple[AssetGrounding, ...]:
+    """How this Event carries the instruments its verdict names, read off the evidence it was judged on.
+
+    The text is the wire title, the provider's first line and the frozen current evidence -- what the
+    model was shown, not the Chinese headline it wrote, because a reader headline drops the ticker by
+    contract and a 60-character line is not evidence about grounding either way.
+    """
+
+    prepared = route.context.prepared_evidence
+    evidence = route.context.evidence
+    text = " \n".join(
+        (
+            route.wire_title,
+            evidence.title,
+            evidence.raw_first_line,
+            *(span.text for span in (prepared.current_evidence if prepared is not None else ())),
+        )
+    )
+    return verdict_grounding(
+        [asset.model_dump(mode="json") for asset in verdict.assets],
+        text=text,
+        grounded=route.facts.grounded_assets,
+        candidates={row.symbol: row.classes for row in route.context.gate.catalog_candidates},
     )
 
 

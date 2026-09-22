@@ -14,6 +14,7 @@ from typing import Any, ClassVar, Literal
 
 from ..artifact_identity import canonical_json, canonical_sha
 from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientError, now_ms
+from ..events.grounding import GROUNDING_POLICY_VERSION
 from ..events.storyline import final_storyline_key
 from ..evidence import PreparedEvidence
 from ..models import TRIAGE_POLICY_VERSION, MarketAsset, json_ready
@@ -61,6 +62,7 @@ from .triage_route import (
     _RouteInputs,
     _TriageOutcome,
     _TriageSettle,
+    _verdict_grounding,
 )
 
 log = logging.getLogger("tracefold.news")
@@ -648,6 +650,7 @@ class TriageConsumer:
             trace=trace,
             stamp=route.stamp,
             allow_stale=not attempts.reasked and not judged.degraded,
+            grounding=_verdict_grounding(route, verdict),
             circuit_incident=_circuit_incident_for(arm, attempts, stamp=route.stamp),
         )
 
@@ -729,6 +732,14 @@ class TriageConsumer:
         trace["status_final"] = {"storyline_key": s.final_key}
         trace["storyline_key"] = s.final_key
         trace["verdict_sha256"] = canonical_sha(s.verdict.model_dump(mode="json"))
+        # #675 PR-3: the grounding reading of every instrument on this verdict, so `news why`, the console
+        # and a later decision row can ask *how* an asset got onto a card instead of inferring it from the
+        # symbol. `decide()` reads none of it in v15.
+        if s.grounding:
+            trace["grounding"] = {
+                "policy": GROUNDING_POLICY_VERSION,
+                "assets": [reading.as_trace() for reading in s.grounding],
+            }
         trace["judgment_contract_version"] = s.judgment.judgment_contract_version
         trace["judgment_origin"] = s.origin
         judgment_sha256 = s.judgment_sha256

@@ -10,6 +10,43 @@ They are pure functions over their inputs so the identity render can enumerate t
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
+
+def contradicted_primary_symbols(
+    assets: Sequence[Mapping[str, object]],
+    candidates: Mapping[str, Sequence[str]] | None,
+) -> tuple[str, ...]:
+    """Primaries the instrument catalogue the model was shown says are not that kind of instrument (#675 PR-3).
+
+    `gate.catalog_candidates` is the uncollapsed catalogue row for every symbol this Event already names
+    (#651 §A). When it holds exactly one market for a symbol, the catalogue has *proved* what that symbol
+    is, and a `primary` that calls it something else is not a reading of ambiguous evidence — it is an
+    answer contradicting the evidence it was given. On the 2026-09-21 delivered ledger the rule fires on
+    two of 132 unambiguous primaries and both were reviewer-labelled noise: `SILVER` (`market_type`
+    `unknown`) for Sunshine Silver's land package, and `XYZ-COPPER` (`market_type` `equity`) for King
+    Copper Discovery's. The other 130 agree with the catalogue.
+
+    Deliberately silent on the ambiguous case: 156 of 338 primaries have two or more candidate classes
+    (`PUMP` is a token and a ticker, `GOLD` is an underlying and Barrick), and choosing between them is
+    what the text is for and what the model is asked to do. Silent as well on a symbol the candidate list
+    does not hold at all — "the catalogue does not know" is not "the answer is wrong", and the measured
+    cost of treating it as one is 33 correct primaries (`LMT`, `ACN`, `0700.HK`) demoted.
+    """
+
+    if not candidates:
+        return ()
+    out: list[str] = []
+    for asset in assets:
+        if str(asset.get("role") or "") != "primary":
+            continue
+        symbol = str(asset.get("symbol") or "")
+        base = symbol.upper().removeprefix("XYZ-")
+        classes = tuple(str(value) for value in candidates.get(base) or ())
+        if len(classes) == 1 and str(asset.get("market_type") or "unknown") != classes[0]:
+            out.append(symbol)
+    return tuple(out)
+
 
 def restatement_index_error(*, novelty: str, restates: int, told_count: int) -> str | None:
     """The domain rule a structured-output constraint cannot express, and the code therefore must.
@@ -41,6 +78,7 @@ def normalize_restates(*, novelty: str, restates: int) -> int:
 
 
 __all__ = [
+    "contradicted_primary_symbols",
     "normalize_restates",
     "restatement_index_error",
 ]
