@@ -25,7 +25,7 @@ from ..taxonomy import (
     SOURCE_AUTHORITY_REGISTRY_SHA256,
     source_authority_from_evidence,
 )
-from .assembly import normalize_restates, restatement_index_error
+from .assembly import contradicted_primary_symbols, normalize_restates, restatement_index_error
 from .contracts import TRADE_AFFECTED_MARKET_ORDER, TRADE_CHANNEL_ORDER, TriageContext
 from .lm import (
     LM_REQUEST_IDENTITY_SCHEMA,
@@ -104,7 +104,7 @@ _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
 }
 _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
     "artifact.py": ("render_model_evidence_json",),
-    "assembly.py": ("normalize_restates", "restatement_index_error"),
+    "assembly.py": ("contradicted_primary_symbols", "normalize_restates", "restatement_index_error"),
     "contracts.py": (
         # `CatalogCandidate` and the function that builds the list decide what disambiguation evidence
         # the model is shown and in what order (#651 §A). The visible-input schema alone would not
@@ -289,6 +289,20 @@ def _assembly_surface() -> dict[str, Any]:
             f"{novelty}|restates={restates}": normalize_restates(novelty=novelty, restates=restates)
             for novelty in _NOVELTIES
             for restates in (-1, 0, 1)
+        },
+        # #675 PR-3: the catalogue reading that can turn a model `primary` into a `mentioned` name decides
+        # what lands in the semantic atom, so it is rendered here for the same reason `normalize_restates`
+        # is. The golden inputs cover the three readings the rule distinguishes: a proved class the answer
+        # contradicts, the same class agreed with, and an ambiguous row it must leave alone.
+        "contradicted_primary_symbols": {
+            f"{market_type}|{'/'.join(classes)}": list(
+                contradicted_primary_symbols(
+                    [{"role": "primary", "symbol": "GOLD", "market_type": market_type}],
+                    {"GOLD": classes},
+                )
+            )
+            for market_type in ("commodity", "equity", "unknown")
+            for classes in (("commodity",), ("commodity", "equity"), ())
         },
         "trade_channel_order": list(TRADE_CHANNEL_ORDER),
         "trade_affected_market_order": list(TRADE_AFFECTED_MARKET_ORDER),

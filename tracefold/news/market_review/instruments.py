@@ -105,7 +105,9 @@ ALIAS_SEEDS: Final[Mapping[str, str]] = {
 # These names are checked *before* the venue default, so a symbol listed here must not also be a real crypto
 # listing. `GAS` was exactly that mistake: Neo's gas token trades on binance.spot, binance.perp and hl.perp, while
 # natural gas trades as `NATGAS`. Since #89 the class reaches the Gate, so a collision here mislabels live cards.
-_COMMODITY: Final = frozenset(
+# Since #675 PR-3 it is also the vocabulary `events.grounding.COMMODITY_CONTEXT` narrows: a tag on one of these
+# grounds only when the text names the commodity, so the two tables are asserted against each other.
+COMMODITY_SYMBOLS: Final = frozenset(
     {
         "GOLD",
         "SILVER",
@@ -247,7 +249,7 @@ def classify(base_symbol: str, *, venue: str) -> InstrumentClass:
         return "crypto"
     if symbol in _PRE_IPO:
         return "pre_ipo"
-    if symbol in _COMMODITY:
+    if symbol in COMMODITY_SYMBOLS:
         return "commodity"
     if symbol in _INDEX:
         return "index"
@@ -354,6 +356,7 @@ def grounding_rollup(
 
 __all__ = [
     "ALIAS_SEEDS",
+    "COMMODITY_SYMBOLS",
     "EQUITY_DEXS",
     "INSTRUMENT_CLASSES",
     "INSTRUMENT_CLASS_ORDER",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -13,7 +13,7 @@ from ..artifact_identity import canonical_json
 from ..models import TriageVerdict
 from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, source_authority_from_evidence
 from .artifact import NewsProgramStateV1, render_model_evidence_json, validate_program_instruction
-from .assembly import normalize_restates, restatement_index_error
+from .assembly import contradicted_primary_symbols, normalize_restates, restatement_index_error
 from .contracts import EditorialEnvelope, ProgramNormalizationTrace, ReaderCardSemanticView, TriageContext
 from .lm import (
     LMDelegateProgramError,
@@ -123,13 +123,39 @@ def _relevance_normalizations(
     return tuple(traces)
 
 
+def _demote_contradicted_primaries(
+    semantics: EventSemantics,
+    candidates: Mapping[str, Sequence[str]],
+) -> EventSemantics:
+    """Turn a primary the shown catalogue row contradicts into a `mentioned` name (#675 PR-3).
+
+    The demotion, not a rejection: the Event is still *about* something, and the card keeps the name it
+    was given. What it loses is the claim that this is the instrument the reader would act on, which is
+    the claim `single_name_without_instrument` and the storyline key both read. The rule and its measured
+    scope live in `assembly.contradicted_primary_symbols`; this applies it and keeps asset order.
+    """
+
+    contradicted = frozenset(
+        contradicted_primary_symbols([asset.model_dump(mode="json") for asset in semantics.assets], candidates)
+    )
+    if not contradicted:
+        return semantics
+    assets = tuple(
+        asset.model_copy(update={"role": "mentioned"}) if asset.symbol in contradicted else asset
+        for asset in semantics.assets
+    )
+    return semantics.model_copy(update={"assets": assets})
+
+
 def _normalize_and_validate_semantics(
     raw_semantics: Any,
     *,
     told_count: int,
+    catalog_candidates: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[EventSemantics, tuple[ProgramNormalizationTrace, ...]]:
     try:
         semantics = EventSemantics.model_validate(raw_semantics)
+        semantics = _demote_contradicted_primaries(semantics, catalog_candidates or {})
         normalizations = list(_relevance_normalizations(raw_semantics, semantics))
         normalized_restates = normalize_restates(novelty=semantics.novelty, restates=semantics.restates)
         if normalized_restates != semantics.restates:
@@ -370,6 +396,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         semantics, normalizations = _normalize_and_validate_semantics(
             prediction.semantics,
             told_count=len(prepared.context.told.entries),
+            catalog_candidates={row.symbol: row.classes for row in prepared.context.gate.catalog_candidates},
         )
         semantics_json = canonical_json(_reader_card_semantic_view(semantics).model_dump(mode="json"))
         return semantics, normalizations, semantics_json
