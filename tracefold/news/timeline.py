@@ -204,6 +204,10 @@ def event_timeline(
                     "program_version": latest.get("program_version"),
                     "program_sha256": latest.get("program_sha256"),
                     "policy_version": latest.get("policy_version"),
+                    # #675 PR-3: how this Event carries each instrument the judgment names, beside the
+                    # assets themselves. `null` for a verdict written before the reading existed and for
+                    # a judgment that named none.
+                    "grounding": (latest.get("trace") or {}).get("grounding"),
                     "latency_ms": (latest.get("trace") or {}).get("latency_ms"),
                 },
             }

@@ -37,6 +37,7 @@ from tracefold.news.models import TriageVerdict
 from tracefold.news.program.assembly import contradicted_primary_symbols
 from tracefold.news.program.module import _demote_contradicted_primaries
 from tracefold.news.program.signatures import EventSemantics
+from tracefold.news.timeline import event_timeline
 from tracefold.news.triage_rules import GateFacts, StorylineStatus, decide
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "grounding_replay_24h.jsonl"
@@ -416,3 +417,67 @@ def test_a_demoted_primary_reaches_the_reader_as_a_dropped_card(rows: list[dict[
         (("push", "trade_relevance_realtime"), ("drop", "single_name_without_instrument")),
         (("push", "trade_relevance_realtime"), ("drop", "single_name_without_instrument")),
     ]
+
+
+def test_the_timeline_publishes_the_reading_beside_the_assets() -> None:
+    """The console reads the Event chain, so the block travels with the assets step or not at all."""
+
+    reading = asset_grounding("SILVER", market_type="unknown", text="Sunshine Silver", candidates={})
+    verdict = {
+        "novelty": "new_fact",
+        "direction": "neutral",
+        "scope": "single_name",
+        "magnitude": 1,
+        "confidence": 0.9,
+        "assets": [{"symbol": "SILVER", "role": "mentioned", "market_type": "unknown"}],
+        "headline_zh": "标题",
+        "why_zh": "说明",
+        "audience": "none",
+    }
+    block = {"policy": "news_gate_grounding_v1", "assets": [reading.as_trace()]}
+    _, steps = event_timeline(
+        event={
+            "event_id": "ev-1",
+            "leader_title": "Sunshine Silver",
+            "reporting_origin": "opennews",
+            "dedupe_family": "general",
+            "event_kind": "news",
+            "opened_at_ms": 1,
+            "member_count": 1,
+            "admission": "candidate",
+            "asset_class": "none",
+            "grounded_assets": [],
+            "watchlist_hits": [],
+            "macro_lexicon": False,
+            "storyline_key": "none",
+            "published_at_ms": 1,
+            "ingest_mode": "live",
+            "provenance": [],
+        },
+        members=[],
+        verdicts=[
+            {
+                "final_decision": "drop",
+                "override_rule": "single_name_without_instrument",
+                "throttled_by": None,
+                "degraded": False,
+                "error_code": None,
+                "created_at_ms": 2,
+                "stage": "triage",
+                "verdict": verdict,
+                "trace": {"grounding": block},
+            }
+        ],
+        deliveries=[],
+    )
+    triage = next(step for step in steps if step["stage"] == "triage")
+    assert triage["facts"]["grounding"] == block
+    assert triage["facts"]["grounding"]["assets"][0] == {
+        "symbol": "SILVER",
+        "role": "primary",
+        "market_type": "unknown",
+        "support": "text",
+        "in_catalogue": False,
+        "catalogue_classes": [],
+        "class_conflict": False,
+    }
