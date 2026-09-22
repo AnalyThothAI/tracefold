@@ -37,6 +37,7 @@ from .feed_sql import (
     EVENT_VERDICTS_SQL,
     OUTCOME_GROUP_SQL,
     STATUS_DELIVERY_SQL,
+    STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
     STATUS_FUNNEL_SUPPRESSED_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
@@ -553,6 +554,17 @@ class FeedStorage:
             STATUS_FUNNEL_REVIEWS_SQL,
             (day_ago,),
         ).fetchone()
+        # #675 §4. The daily audit's two product ratios, over accepted judgments rather than cards: how much
+        # of what the reader got a reviewer would keep, and how much of what was withheld they would have
+        # sent. Both carry their numerator and denominator so a two-review day reads as a two-review day.
+        ratios = self.conn.execute(
+            STATUS_FUNNEL_REVIEW_RATIOS_SQL,
+            (day_ago,),
+        ).fetchone()
+        sent_n = int(ratios["sent_n"] or 0) if ratios else 0
+        sent_push_n = int(ratios["sent_push_n"] or 0) if ratios else 0
+        dropped_n = int(ratios["dropped_n"] or 0) if ratios else 0
+        dropped_push_n = int(ratios["dropped_push_n"] or 0) if ratios else 0
         # The four Event-feed stages are one cohort, not four independent rolling windows. A verdict created
         # today for yesterday's Event still belongs in model-health throughput, but it must not make the
         # feed's 24 h funnel grow after the intake cohort has fallen out of the window. Every predicate below
@@ -573,6 +585,16 @@ class FeedStorage:
             "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
             "reviewed_should_push_24h": int(missed["n"] or 0) if missed else 0,
             "reviewed_external_miss_24h": int(missed["external"] or 0) if missed else 0,
+            "keep_ratio_sent_24h": {
+                "ratio": round(sent_push_n / sent_n, 4) if sent_n else None,
+                "numerator": sent_push_n,
+                "denominator": sent_n,
+            },
+            "missed_ratio_dropped_24h": {
+                "ratio": round(dropped_push_n / dropped_n, 4) if dropped_n else None,
+                "numerator": dropped_push_n,
+                "denominator": dropped_n,
+            },
             "duplicates_withheld_24h": duplicates,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
             "admitted_24h": admitted,

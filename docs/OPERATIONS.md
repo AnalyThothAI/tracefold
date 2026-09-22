@@ -1322,7 +1322,8 @@ Diagnose News in this order:
    a share far below ~90% means the low-signal switch or a template flood),
    `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
    `pushed_by_rule`, `reviewed_should_push_24h`,
-   `reviewed_external_miss_24h`, `triage_24h` vs
+   `reviewed_external_miss_24h`, `keep_ratio_sent_24h`,
+   `missed_ratio_dropped_24h`, `triage_24h` vs
    `triage_degraded_24h`, `triage_p95_ms`, `queue_lag_p95_ms`,
    `throttled_24h`. For one Event, `tracefold news why <event_id>` prints
    raw first line -> normalized title -> gate facts -> triage verdict ->
@@ -1362,6 +1363,25 @@ Diagnose News in this order:
    `parsed`, `raw`, `groups` and `last_received_at_ms` for the requested window,
    and a rising `raw` count with `parse_error = oi_template_unmatched` is
    provider format drift rather than model noise.
+
+   `keep_ratio_sent_24h` and `missed_ratio_dropped_24h` are the daily sampling
+   loop's two product readings (#675 §4), and their **denominator is accepted
+   review judgments, not cards**. Each carries `numerator` and `denominator`
+   beside `ratio` so a two-review day reads as a two-review day rather than as
+   0% or 100%; with no accepted judgment in the window `ratio` is `null`.
+   `keep_ratio_sent_24h` = accepted judgments whose `should_push` is
+   `must_push` or `should_push`, over all accepted judgments whose sampler
+   `selection.stratum` is `delivered`. `missed_ratio_dropped_24h` = the same
+   numerator over the `model_drop` and `throttled` strata. `uncertain` is in
+   both denominators and in neither numerator. Unlike
+   `reviewed_should_push_24h`, these two carry **no** learning-epoch and no
+   `release_eligible` filter: they answer "did the reader want what we sent",
+   which is a property of the last 24 h of reviews rather than of the running
+   bundle, and clamping them to the epoch reset the reading on every deploy.
+   The stratum is the sampler's, so an `escalate` card (stratum `critical`) and
+   a failed delivery are in neither denominator; `news review audit-report`
+   groups the same question by `final_decision` instead and therefore counts
+   `escalate` as delivered.
 5. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
    (`delivery_unavailable` = push disabled or the selected provider configuration unavailable;
    `ambiguous_after_crash` = a send whose ack was lost). Historical rows can
@@ -2512,3 +2532,92 @@ not establish factual truth. Empty refs are diagnostic and do not create a new d
 policy. Missing material uses the frozen fact; a database failure remains an error.
 Later material does not automatically edit or resend a card. v11 reanalysis uses frozen
 previews with explicit adaptation provenance; exact replay never consults live material.
+
+### 每日抽审 (#675 §4)
+
+The feedback loop that keeps the push policy honest: a model drafts a review for
+each of the day's tasks, code prints only the tasks worth a person's minute, a
+human accepts that subset, and the two status ratios move. It runs from the CLI
+on the host, never in Workers: accepting a label always names a person
+(`--reviewer` and `--only`), and offline learning does not take real-time
+resources.
+
+1. **Draft, three strata.** One batch per stratum, so delivered cards and
+   withheld cards are both represented whatever the day's volume was. The routes
+   are the documented drafting defaults
+   ([taxonomy](NEWS_TAXONOMY.md), which also explains why the non-thinking
+   production `qwen3.8-27b` may not draft: it *is* the Stable taxonomy route):
+
+   ```
+   tracefold news learning draft-reviews --hours 24 --stratum delivered \
+       --limit 100 --rubric-model deepseek-v4-pro \
+       --taxonomy-models deepseek-v4-pro,qwen3.8-27b:thinking \
+       --concurrency 4 --out /tmp/audit-delivered.json
+   tracefold news learning draft-reviews --hours 24 --stratum model_drop --limit 100 ... \
+       --out /tmp/audit-drop.json
+   tracefold news learning draft-reviews --hours 24 --stratum throttled --limit 80 ... \
+       --out /tmp/audit-throttled.json
+   ```
+
+   `--concurrency` is how many tasks are drafted at once (default 4, `1` is the
+   old serial loop). Each task still fails on its own and the batch is written
+   in task order.
+
+   **Cost.** Three model calls per task — one rubric and two blind taxonomy
+   labels — so the ~287 tasks a full day yields are **~861 physical calls**, two
+   of the three on the paid DeepSeek route. Every batch receipt and every batch
+   file now carries `spend_by_model`: physical `calls`, `input_tokens`,
+   `output_tokens`, `cached_tokens`, `total_tokens`, `observed_cost_microusd`
+   and `cost_unknown_calls` per model. A call whose provider stated no cost is
+   counted in `cost_unknown_calls`, never as zero, so an unpriced route is
+   visible rather than free-looking. **`--limit` is the only spend cap this
+   command has**: there is no budget or cost flag, nothing stops a run
+   part-way, and a batch of N tasks is a commitment to about 3N calls. Choose
+   `--limit` before starting, not after.
+
+   The **100 + 100 sample volume only exists once #675 PR-2 removes the
+   relevance-based strata.** Until then `ReviewDesk._selection` sends most tasks
+   into `color_only_progression`, `scheduled_or_in_line_macro` and the other
+   `TradeRelevanceV1` branches, and `--stratum delivered` yields roughly a dozen
+   tasks a day; run the loop on what it returns rather than widening `--hours`
+   to fake the count.
+
+2. **Report.** `tracefold news review audit-report --file /tmp/audit-delivered.json`
+   reads each task's actual decision back through the ReviewDesk queue and
+   prints, in `data.table`, the two ratios for that batch and one line per task:
+   every **disagreement** (the draft says push on a dropped or throttled task,
+   or says hold on a delivered one) plus a deterministic **10% sample of the
+   agreements**, so agreement itself stays audited. The sample is seeded by
+   `task_id`, so re-running the report gives the same reading list. `--json`
+   drops the table and leaves the machine report. It writes nothing.
+
+3. **Read, then accept.** `data.only` is the disagreement + sample task ids,
+   ready to paste. Always run the dry run first — it is the step that shows what
+   the rubric would refuse:
+
+   ```
+   tracefold news review accept-drafts --file /tmp/audit-delivered.json \
+       --only "$(...)" --dry-run
+   tracefold news review accept-drafts --file /tmp/audit-delivered.json \
+       --only "$(...)" --reviewer <person>
+   ```
+
+   `--only` and `--reviewer` are required for a write; a dry run creates no
+   acceptance row, so its placeholder identity never becomes provenance. Accept
+   the tasks you actually read, not the whole batch.
+
+4. **Read the ratios.** `keep_ratio_sent_24h` and `missed_ratio_dropped_24h` in
+   the `pipeline` block of `/api/news/status`, and on the console's 流水线
+   panel, move with what was accepted.
+   Read the denominator beside each one: they are shares of accepted judgments,
+   not of cards, and a handful of reviews is a handful of reviews.
+
+The 2026-09-22 independent audit (1,491 labels) enters the same plane through
+`scripts/news_freeze_audit_2026_09_22.py`, which maps each label to a
+`should_push` with `dimensions={"timeliness": "not_applicable"}` under
+`reviewer=independent_audit_2026-09-22`. It defaults to `--dry-run`; a real
+write needs `--execute` **and** `--confirm independent_audit_2026-09-22`,
+because it appends 1,491 judgments plus 1,491 acceptances to an append-only
+plane. Those reviewers never read the frozen evidence snapshot, so the batch
+carries no `factual_fidelity`, `asset_grounding` or `why_*` label and produces
+no component learning target.

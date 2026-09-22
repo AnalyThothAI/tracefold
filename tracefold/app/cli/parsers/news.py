@@ -97,6 +97,21 @@ def add_news_commands(
         action="store_true",
         help="report exactly what would be submitted, and write nothing",
     )
+    # #675 §4. The step between drafting and accepting: it reads a batch and the decisions those tasks
+    # actually got, and prints only the tasks worth a person's minute. Writes nothing.
+    review_audit = review_subcommands.add_parser(
+        "audit-report",
+        help=(
+            "compare a draft batch with the shipped decisions; prints disagreements, "
+            "a one-in-ten agreement sample and two ratios"
+        ),
+    )
+    review_audit.add_argument("--file", required=True, help="draft batch produced by `learning draft-reviews`")
+    review_audit.add_argument(
+        "--json",
+        action="store_true",
+        help="omit the rendered table from the payload, leaving only the machine report",
+    )
     review_external = review_subcommands.add_parser("external-miss", help="append an external miss and its rubric")
     review_external.add_argument("--file", required=True)
     review_external.add_argument("--idempotency-key", default="")
@@ -214,6 +229,13 @@ def add_news_commands(
         "--include-reviewed",
         action="store_true",
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
+    )
+    # #675 §4: three sequential calls per task is 5-14 hours for a daily 300-task batch on the local route.
+    learning_draft.add_argument(
+        "--concurrency",
+        type=_positive_int,
+        default=4,
+        help="how many tasks may be drafted at once (1 = the serial loop); each task still fails on its own",
     )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for authorized review")
     # #453. The only candidate-generating entry point: zero-call readiness followed by exactly one stock

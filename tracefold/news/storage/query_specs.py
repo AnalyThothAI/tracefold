@@ -28,6 +28,7 @@ from .feed_sql import (
     EVENT_MEMBERS_SQL,
     EVENT_VERDICTS_SQL,
     STATUS_DELIVERY_SQL,
+    STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
     STATUS_FUNNEL_SUPPRESSED_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
@@ -262,6 +263,13 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_status_funnel_reviews",
             sql=STATUS_FUNNEL_REVIEWS_SQL,
+            params=(day_ago,),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_status_funnel_review_ratios",
+            sql=STATUS_FUNNEL_REVIEW_RATIOS_SQL,
             params=(day_ago,),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,

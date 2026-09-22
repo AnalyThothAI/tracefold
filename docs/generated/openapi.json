@@ -4535,6 +4535,12 @@
             "title": "Grounded 24H",
             "type": "integer"
           },
+          "keep_ratio_sent_24h": {
+            "$ref": "#/components/schemas/NewsReviewRatio24hData"
+          },
+          "missed_ratio_dropped_24h": {
+            "$ref": "#/components/schemas/NewsReviewRatio24hData"
+          },
           "model_triage_24h": {
             "default": 0,
             "title": "Model Triage 24H",
@@ -5449,6 +5455,35 @@
           }
         },
         "title": "NewsRecoveryStatusData",
+        "type": "object"
+      },
+      "NewsReviewRatio24hData": {
+        "additionalProperties": false,
+        "description": "One daily-audit product ratio with the two numbers it was divided from (#675 \u00a74).\n\nThe denominator counts accepted review judgments in the window, not cards, so a day nobody audited\nreads as `null` over zero rather than as a perfect or a catastrophic share.",
+        "properties": {
+          "denominator": {
+            "default": 0,
+            "title": "Denominator",
+            "type": "integer"
+          },
+          "numerator": {
+            "default": 0,
+            "title": "Numerator",
+            "type": "integer"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ratio"
+          }
+        },
+        "title": "NewsReviewRatio24hData",
         "type": "object"
       },
       "NewsSourceContractStageCountsData": {

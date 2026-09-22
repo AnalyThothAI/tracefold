@@ -1945,6 +1945,8 @@ export interface components {
              * @default 0
              */
             grounded_24h: number;
+            keep_ratio_sent_24h?: components["schemas"]["NewsReviewRatio24hData"];
+            missed_ratio_dropped_24h?: components["schemas"]["NewsReviewRatio24hData"];
             /**
              * Model Triage 24H
              * @default 0
@@ -2307,6 +2309,27 @@ export interface components {
             pending_count: number;
             /** Reason */
             reason?: ("recovery_pending" | "recovery_transient") | null;
+        };
+        /**
+         * NewsReviewRatio24hData
+         * @description One daily-audit product ratio with the two numbers it was divided from (#675 §4).
+         *
+         *     The denominator counts accepted review judgments in the window, not cards, so a day nobody audited
+         *     reads as `null` over zero rather than as a perfect or a catastrophic share.
+         */
+        NewsReviewRatio24hData: {
+            /**
+             * Denominator
+             * @default 0
+             */
+            denominator: number;
+            /**
+             * Numerator
+             * @default 0
+             */
+            numerator: number;
+            /** Ratio */
+            ratio?: number | null;
         };
         /** NewsSourceContractStageCountsData */
         NewsSourceContractStageCountsData: {

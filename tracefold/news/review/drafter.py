@@ -30,7 +30,10 @@ decides.
 from __future__ import annotations
 
 import importlib.metadata
+import threading
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from typing import Any, Final, Literal, TypedDict, cast
 
 import dspy  # type: ignore[import-untyped]
@@ -47,18 +50,76 @@ from ..program.contracts import (
     TradeSurprise,
     TradeTradability,
 )
-from ..program.lm import StructuredOutputMode, structured_output_capability
+from ..program.lm import StructuredOutputMode, physical_call_usage, structured_output_capability
 from ..program.seed import SEED_INSTRUCTIONS
 from ..program.signatures import EventTaxonomySignature
 from ..taxonomy import ModelTaxonomyV1, SourceAuthority
 
+_EMPTY_SPEND: Final = {
+    "calls": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cached_tokens": 0,
+    "total_tokens": 0,
+    "observed_cost_microusd": 0,
+    "cost_unknown_calls": 0,
+}
+
+
+def spend_by_model(*drafters: Any) -> dict[str, dict[str, int]]:
+    """Per-model physical calls, tokens and observed/unknown cost, merged across drafters of one batch."""
+
+    return merge_spend(
+        *(
+            {str(getattr(drafter, "model", "") or "unknown"): dict(spend)}
+            for drafter in drafters
+            if isinstance(spend := getattr(getattr(drafter, "_lm", None), "spend", None), Mapping)
+        )
+    )
+
+
+def merge_spend(*maps: Mapping[str, Mapping[str, Any]] | None) -> dict[str, dict[str, int]]:
+    """Add per-model spend maps together. One model drafting two roles spends twice, not once."""
+
+    merged: dict[str, dict[str, int]] = {}
+    for source in maps:
+        for model, spend in dict(source or {}).items():
+            bucket = merged.setdefault(str(model), dict(_EMPTY_SPEND))
+            for field, value in dict(spend).items():
+                bucket[field] = bucket.get(field, 0) + int(value)
+    return merged
+
 
 class ConfiguredDrafterLM(dspy.LM):  # type: ignore[misc]
-    """Stock DSPy LM with the endpoint's explicit structured-output capability."""
+    """Stock DSPy LM with the endpoint's explicit structured-output capability, and a spend counter.
+
+    The counter exists because the daily audit runs on a paid route (#675 §4): a batch that cannot say how
+    many physical calls it made, on what tokens, at what observed cost is a batch nobody can budget. It
+    reuses `physical_call_usage`, the Program ledger's own accounting, so there is one reader of provider
+    usage rather than two. `cost_unknown_calls` counts the calls whose provider stated no cost — an unknown
+    cost is reported as unknown, never as zero.
+    """
 
     def __init__(self, model: str, *, structured_output: StructuredOutputMode, **kwargs: Any) -> None:
         self._structured_output = structured_output
+        self._spend_lock = threading.Lock()
+        self.spend: dict[str, int] = dict(_EMPTY_SPEND)
         super().__init__(model, **kwargs)
+
+    def _process_lm_response(self, response: Any, prompt: Any, messages: Any, **kwargs: Any) -> Any:
+        """The one funnel every sync and async delegate answer passes through."""
+
+        usage = physical_call_usage(response)
+        cost = usage["cost_microusd"]
+        with self._spend_lock:
+            self.spend["calls"] += 1
+            for field in ("input_tokens", "output_tokens", "cached_tokens", "total_tokens"):
+                self.spend[field] += int(usage[field] or 0)
+            if cost is None:
+                self.spend["cost_unknown_calls"] += 1
+            else:
+                self.spend["observed_cost_microusd"] += int(cost)
+        return super()._process_lm_response(response, prompt, messages, **kwargs)
 
     @property
     def supported_params(self) -> set[str]:
@@ -105,6 +166,10 @@ def build_drafter_lm(
         request["temperature"] = temperature
     return lm_type(str(model_name), structured_output=structured_output, **request)
 
+
+# How many tasks `build_draft_batch` keeps in flight by default (#675 §4). Four is a width the local
+# route and a hosted one both sustain; the CLI's `--concurrency` moves it, and 1 is the old serial loop.
+DEFAULT_DRAFT_CONCURRENCY: Final = 4
 
 DRAFTER_ID = "tracefold.news.review_drafter_v7"
 TAXONOMY_BLIND_DRAFTER_ID = "tracefold.news.taxonomy_blind_drafter_v1"
@@ -375,6 +440,7 @@ class TaxonomyBlindDrafter:
         )
         self.calls = 0
         self.failures = 0
+        self._counter_lock = threading.Lock()
 
     @property
     def model(self) -> str:
@@ -395,14 +461,16 @@ class TaxonomyBlindDrafter:
     def draft(self, *, evidence_json: str) -> ModelTaxonomyV1 | str:
         """Return a taxonomy, or an error string. Never raises: one bad Event must not end the batch."""
 
-        self.calls += 1
+        with self._counter_lock:
+            self.calls += 1
         try:
             with dspy.context(lm=self._lm, adapter=dspy.JSONAdapter(use_native_function_calling=False)):
                 prediction = self._predict(evidence_json=evidence_json)
             taxonomy = prediction.taxonomy
             return taxonomy if isinstance(taxonomy, ModelTaxonomyV1) else ModelTaxonomyV1.model_validate(taxonomy)
         except Exception as exc:
-            self.failures += 1
+            with self._counter_lock:
+                self.failures += 1
             return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
@@ -437,6 +505,11 @@ class ReviewDrafter:
         )
         self.calls = 0
         self.failures = 0
+        self._counter_lock = threading.Lock()
+
+    @property
+    def model(self) -> str:
+        return str(getattr(self._lm, "model", "") or "")
 
     @property
     def identity(self) -> dict[str, Any]:
@@ -450,7 +523,7 @@ class ReviewDrafter:
         supported = tuple(sorted(str(value) for value in (getattr(self._lm, "supported_params", ()) or ())))
         return {
             "drafter_id": DRAFTER_ID,
-            "model": str(getattr(self._lm, "model", "") or ""),
+            "model": self.model,
             "dspy_version": importlib.metadata.version("dspy"),
             "instruction_sha256": canonical_sha(_INSTRUCTION),
             "output_schema_sha256": canonical_sha(ReviewDraft.model_json_schema()),
@@ -467,7 +540,8 @@ class ReviewDrafter:
     def draft(self, *, evidence_json: str, card_json: str, told_json: str) -> RubricDraft | str:
         """Return a rubric draft, or an error string. Never raises: one bad Event must not end the batch."""
 
-        self.calls += 1
+        with self._counter_lock:
+            self.calls += 1
         try:
             with dspy.context(lm=self._lm, adapter=dspy.JSONAdapter(use_native_function_calling=False)):
                 prediction = self._predict(
@@ -478,7 +552,8 @@ class ReviewDrafter:
             draft = prediction.draft
             return draft if isinstance(draft, RubricDraft) else RubricDraft.model_validate(draft)
         except Exception as exc:
-            self.failures += 1
+            with self._counter_lock:
+                self.failures += 1
             return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
@@ -554,17 +629,35 @@ def submission_payload(
     return payload
 
 
+@dataclass(frozen=True)
+class _DraftOutcome:
+    """One task's result, carried out of the worker so the counters are folded in task order, not arrival order."""
+
+    entry: DraftedReview
+    labelled: bool = False
+    agreed: bool = False
+    stable_hit_a: bool = False
+    stable_hit_b: bool = False
+
+
 def build_draft_batch(
     drafter: ReviewDrafter,
     tasks: Sequence[Mapping[str, Any]],
     *,
     taxonomy_drafters: tuple[TaxonomyBlindDrafter, TaxonomyBlindDrafter],
+    concurrency: int = DEFAULT_DRAFT_CONCURRENCY,
 ) -> ReviewDraftBatch:
     """Draft one review per task: two blind taxonomy labels, then the rubric.
 
     Each task carries `taxonomy_evidence_json` (the Program's bounded taxonomy input), the three rubric
     inputs, `stable_taxonomy` (Stable's persisted label, for the code-written taxonomy dimensions) and its
     identity.
+
+    `concurrency` is how many tasks may be in flight at once (#675 §4). Three sequential model calls per
+    task made a 300-task daily batch a 5-14 hour job on the local route, which is the same as saying the
+    daily audit does not run. Each task is still independent: its own failure still becomes that entry's
+    `error` and ends nothing, and the batch is folded back in task order, so output and counters do not
+    depend on which call returned first.
     """
 
     task_ids = [str(task["task_id"]) for task in tasks]
@@ -578,7 +671,8 @@ def build_draft_batch(
     stable_agreement = {drafter_a.model: 0, drafter_b.model: 0}
     labelled_n = 0
     disagreement_task_ids: list[str] = []
-    for task in tasks:
+
+    def draft_one(task: Mapping[str, Any]) -> _DraftOutcome:
         task_id = str(task["task_id"])
         identity = {
             "task_id": task_id,
@@ -596,31 +690,32 @@ def build_draft_batch(
         label_b = drafter_b.draft(evidence_json=blind_input)
         if not isinstance(label_a, ModelTaxonomyV1) or not isinstance(label_b, ModelTaxonomyV1):
             failed = label_a if not isinstance(label_a, ModelTaxonomyV1) else label_b
-            drafts.append(
-                DraftedReview(
+            return _DraftOutcome(
+                entry=DraftedReview(
                     **identity,
                     draft=_EMPTY_DRAFT,
                     stable_taxonomy=stable,
                     error=f"taxonomy_drafting_failed: {failed}",
                 )
             )
-            continue
-        labelled_n += 1
         agreed = label_a == label_b
-        agreement_n += agreed
-        if not agreed:
-            disagreement_task_ids.append(task_id)
-        if stable is not None:
-            stable_agreement[drafter_a.model] += label_a == stable
-            stable_agreement[drafter_b.model] += label_b == stable
         outcome = drafter.draft(
             evidence_json=str(task["evidence_json"]),
             card_json=str(task["card_json"]),
             told_json=str(task.get("told_json") or "[]"),
         )
+        counted = _DraftOutcome(
+            entry=DraftedReview(**identity, draft=_EMPTY_DRAFT, stable_taxonomy=stable, error="placeholder"),
+            labelled=True,
+            agreed=agreed,
+            stable_hit_a=stable is not None and label_a == stable,
+            stable_hit_b=stable is not None and label_b == stable,
+        )
         if not isinstance(outcome, RubricDraft):
-            drafts.append(DraftedReview(**identity, draft=_EMPTY_DRAFT, stable_taxonomy=stable, error=outcome))
-            continue
+            return replace(
+                counted,
+                entry=DraftedReview(**identity, draft=_EMPTY_DRAFT, stable_taxonomy=stable, error=outcome),
+            )
         review_draft = ReviewDraft(
             **outcome.model_dump(mode="json", exclude={"dimensions"}),
             dimensions=cast(ReviewDimensions, {**dict(outcome.dimensions), **taxonomy_dimensions(stable, label_a)}),
@@ -628,9 +723,32 @@ def build_draft_batch(
             taxonomy_drafts={drafter_a.model: label_a, drafter_b.model: label_b},
             taxonomy_disagreement=not agreed,
         )
-        drafts.append(DraftedReview(**identity, draft=review_draft, stable_taxonomy=stable))
+        return replace(counted, entry=DraftedReview(**identity, draft=review_draft, stable_taxonomy=stable))
+
+    width = max(1, int(concurrency))
+    if width == 1:
+        outcomes = [draft_one(task) for task in tasks]
+    else:
+        with ThreadPoolExecutor(max_workers=width, thread_name_prefix="news-draft") as pool:
+            outcomes = list(pool.map(draft_one, tasks))
+    for task_id, outcome_row in zip(task_ids, outcomes, strict=True):
+        drafts.append(outcome_row.entry)
+        if not outcome_row.labelled:
+            continue
+        labelled_n += 1
+        agreement_n += bool(outcome_row.agreed)
+        if not outcome_row.agreed:
+            disagreement_task_ids.append(task_id)
+        stable_agreement[drafter_a.model] += outcome_row.stable_hit_a
+        stable_agreement[drafter_b.model] += outcome_row.stable_hit_b
     return ReviewDraftBatch(
-        drafter={**drafter.identity, "calls": drafter.calls, "failures": drafter.failures},
+        drafter={
+            **drafter.identity,
+            "calls": drafter.calls,
+            "failures": drafter.failures,
+            # Physical provider calls, not rubric attempts: a retried or reformatted call is spend too.
+            "spend": spend_by_model(drafter),
+        },
         taxonomy_drafters={
             "models": [drafter_a.model, drafter_b.model],
             "identities": [drafter_a.identity, drafter_b.identity],
@@ -645,6 +763,7 @@ def build_draft_batch(
             },
             "disagreement_task_ids": disagreement_task_ids,
             "disagreement_policy": "draft takes drafter A; the accepting reviewer decides",
+            "spend": spend_by_model(drafter_a, drafter_b),
         },
         drafts=tuple(drafts),
     )
@@ -668,6 +787,7 @@ _EMPTY_DRAFT = ReviewDraft(
 
 
 __all__ = [
+    "DEFAULT_DRAFT_CONCURRENCY",
     "DRAFTABLE_DIMENSIONS",
     "DRAFTER_ID",
     "DRAFT_SCHEMA",
@@ -683,6 +803,8 @@ __all__ = [
     "TaxonomyBlindDrafter",
     "build_draft_batch",
     "build_drafter_lm",
+    "merge_spend",
+    "spend_by_model",
     "submission_payload",
     "taxonomy_dimensions",
 ]

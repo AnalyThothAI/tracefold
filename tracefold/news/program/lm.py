@@ -699,6 +699,35 @@ def _usage_values(response: LMResponse) -> tuple[int, int, int, int]:
     return input_tokens, output_tokens, cached_tokens, total_tokens
 
 
+def physical_call_usage(response: Any) -> dict[str, int | None]:
+    """Tokens and observed provider cost for one delegate response, in the ledger's own units.
+
+    `LMCallLedger.scope` is a *Program judgment* scope: it is ContextVar-local, requires an
+    `LMCallContext` (program version, program sha, context sha) and its receipts convert to
+    `ProgramCallTrace` for the three Program Predictors only. A review drafter is a metric-side tool that
+    runs off-Program and, since #675 §4, inside worker threads where that ContextVar is not set. It
+    therefore reuses this accounting rather than opening a Program scope it is not part of, so there is
+    still exactly one place that reads a provider's usage and cost.
+
+    `cost_microusd` is `None` when the provider did not state a cost; an unknown cost is never zero.
+    """
+
+    input_tokens, output_tokens, cached_tokens, total_tokens = _usage_values(cast(Any, response))
+    hidden = getattr(response, "_hidden_params", None)
+    raw_cost = dict(hidden).get("response_cost") if isinstance(hidden, Mapping) else getattr(response, "cost", None)
+    try:
+        cost = _cost_microusd(float(raw_cost) if raw_cost is not None else None)
+    except (dspy.LMUnexpectedError, TypeError, ValueError):
+        cost = None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_tokens": cached_tokens,
+        "total_tokens": total_tokens,
+        "cost_microusd": cost,
+    }
+
+
 def _cost_microusd(cost: float | None) -> int | None:
     if cost is None:
         return None
@@ -1298,6 +1327,7 @@ __all__ = [
     "lm_request_projection",
     "lm_request_sha256",
     "mark_active_domain_failure",
+    "physical_call_usage",
     "program_json_adapter",
     "structured_output_capability",
 ]

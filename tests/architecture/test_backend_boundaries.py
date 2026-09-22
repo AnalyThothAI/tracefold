@@ -67,6 +67,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # here would stop meaning the same thing the day the rule changes it (#649 PR-3 §4).
         "tracefold.news.wallet_contracts",
         "tracefold.news.review.desk",
+        # #675 §4: `news review audit-report` is pure folding over a draft batch and the decisions the
+        # desk already published. The CLI composes the two; the module reaches no database of its own.
+        "tracefold.news.review.audit",
         "tracefold.news.program.contracts",
     ),
     "app.composition": (

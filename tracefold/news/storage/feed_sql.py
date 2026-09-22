@@ -222,7 +222,7 @@ STATUS_DELIVERY_SQL: Final = """
         WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p95_ms
 """
 
-# The four funnel statements. `_funnel_24h` folds their rows into the named reasons a reader sees.
+# The five funnel statements. `_funnel_24h` folds their rows into the named reasons a reader sees.
 STATUS_FUNNEL_SUPPRESSED_SQL: Final = f"""
     SELECT admission, count(*) AS n FROM news_events current_event
      WHERE current_event.opened_at_ms >= %s AND admission NOT IN ({ADMITTED_SQL})
@@ -270,6 +270,30 @@ STATUS_FUNNEL_REVIEWS_SQL: Final = """
        AND acceptance.release_eligible AND j.release_eligible
        AND acceptance.created_at_ms >= greatest(%s, current_epoch.starts_at_ms)
        AND j.created_at_ms >= current_epoch.starts_at_ms
+"""
+
+# #675 §4. The two product ratios of the daily audit loop, from the same accepted judgments the corpus is
+# made of. Deliberately not the statement above: that one is release evidence and is clamped to the active
+# epoch and to release-eligible rows, and clamping these would reset the product reading on every deploy —
+# "did the reader want what we sent" is a question about the last 24 h of reviews, not about one bundle.
+# The denominator is accepted judgments, not cards, and `uncertain` is in it without being in the numerator.
+# `selection` is projected on the judgment row only, which is where the sampler recorded the stratum.
+STATUS_FUNNEL_REVIEW_RATIOS_SQL: Final = """
+    SELECT count(*) FILTER (WHERE j.selection ->> 'stratum' = 'delivered') AS sent_n,
+           count(*) FILTER (
+             WHERE j.selection ->> 'stratum' = 'delivered'
+               AND j.should_push IN ('must_push', 'should_push')
+           ) AS sent_push_n,
+           count(*) FILTER (WHERE j.selection ->> 'stratum' IN ('model_drop', 'throttled')) AS dropped_n,
+           count(*) FILTER (
+             WHERE j.selection ->> 'stratum' IN ('model_drop', 'throttled')
+               AND j.should_push IN ('must_push', 'should_push')
+           ) AS dropped_push_n
+      FROM news_review_records_v1 acceptance
+      JOIN news_review_records_v1 j ON j.review_id = acceptance.accepts_review_id
+     WHERE acceptance.review_kind = 'acceptance'
+       AND j.subject_kind = 'event'
+       AND acceptance.created_at_ms >= %s
 """
 
 STATUS_FUNNEL_TOTALS_SQL: Final = f"""
