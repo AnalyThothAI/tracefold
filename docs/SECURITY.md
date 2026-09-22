@@ -82,8 +82,8 @@ has no command ingress or mutation authority (#624).
 
 The Nautilus service is excluded from the default Compose model and remains
 absent while execution is disabled. Canonical paper/live deployment enables
-the explicit `execution` profile and requires Nautilus readiness (`alive &&
-execution_safe`, independent of whether new entries are armed) — the `ok` field
+the explicit `execution` profile and requires Nautilus readiness (`alive`,
+independent of whether new entries are armed) — the `ok` field
 of a `/readyz` payload the endpoint now always serves with 200, so an operator
 reading it while the runtime is blocked gets the reason rather than an empty
 body (#598 D5-b). Readiness governs what the runtime does with the account, not
@@ -94,10 +94,9 @@ read-only mounts for the Binance pair; absent, empty, symlinked, oversized, or
 over-permissive files fail startup. Neither plaintext nor path enters
 PostgreSQL, HTTP, logs, artifacts, or Issues. No execution credential is
 exposed to Workers, Serve, News, RabbitMQ, or public HTTP.
-The complete private-account proof uses Nautilus 1.231 private Binance adapter
-members only through `nautilus_1231_binance_compat.py`. Keeping that dependency
-in one pinned seam prevents an upgrade fallback from bypassing the complete
-positions + regular orders + Algo orders proof.
+The Runtime reads no private Nautilus or Binance adapter member: the venue's
+account is reconciled by Nautilus itself, and an architecture test refuses a
+`_`-prefixed attribute read on any object other than the Runtime's own (#680).
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model

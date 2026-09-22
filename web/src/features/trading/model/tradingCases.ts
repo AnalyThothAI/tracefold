@@ -13,8 +13,9 @@ import { CASE_STATE_ZH, bpsPercent, policyReasonLabel } from "./tradingLabels";
 /**
  * How far the venue took the entries in the window, counted once for the two blocks that state it.
  *
- * `rejected` and `expired` are the stages that mean the entry never reached the venue at all, as
- * `tracefold/trading/stages.py` derives them; everything else is an entry the Runtime accepted.
+ * `rejected` and `expired` are the stages that mean the entry never opened anything, as
+ * `tracefold/trading/stages.py` derives them — refused before submission, refused by the venue itself, or
+ * out of time. `ordered` onward is an entry the venue accepted; `pending` is neither yet.
  */
 export function entrySplit(executions: readonly TradingExecutionRow[]): {
   accepted: number;

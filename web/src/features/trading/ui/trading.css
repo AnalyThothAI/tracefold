@@ -80,7 +80,7 @@
     box-shadow: var(--ring-panel);
   }
 
-  /* Block 1's remainder: the two Runtime identities that qualify the four words above them. */
+  /* Block 1's remainder: the two Runtime identities that qualify the two words above them. */
   .trading-routes-line {
     margin: 0;
     color: var(--text-subtle);
@@ -480,15 +480,11 @@
 
     /* The drawer keeps order 0: a reader who arrived on `?case=<id>` asked for that Case first. */
 
+    /* Two words side by side; the ARMED caption wraps its blocking reason rather than truncating it. */
     .trading-safety-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       grid-auto-columns: auto;
       grid-auto-flow: row;
-    }
-
-    /* ARMED carries the blocking reason, so it takes the full width rather than truncating it. */
-    .trading-safety-grid > :last-child {
-      grid-column: 1 / -1;
     }
 
     .trading-heading-aside {

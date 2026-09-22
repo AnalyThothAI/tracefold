@@ -220,6 +220,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
     reason = _string_or_none(row.get("disposition_reason"))
     fill_quantity = _string_or_none(row.get("fill_quantity"))
     stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
+    realized = _string_or_none(row.get("realized_pnl_usd"))
     return {
         "source": str(row["source"]),
         "entry_id": str(row["entry_id"]),
@@ -232,10 +233,12 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "fill_quantity": fill_quantity,
         "fill_avg_price": _string_or_none(row.get("fill_avg_price")),
         "stop_trigger_price": stop_trigger_price,
+        "take_profit_trigger_price": _string_or_none(row.get("take_profit_trigger_price")),
         "entry_filled_at_ns": _int_or_none(row.get("entry_filled_at_ns")),
         "position_closed_at_ns": _int_or_none(row.get("position_closed_at_ns")),
         "exit_price": _string_or_none(row.get("exit_price")),
-        "realized_pnl_usd": _string_or_none(row.get("realized_pnl_usd")),
+        "realized_pnl_usd": realized,
+        "fees_usd": _string_or_none(row.get("fees_usd")),
         "exit_reason": _string_or_none(row.get("exit_reason")),
         "plan_status": _string_or_none(row.get("plan_status")),
         "account_slot": _string_or_none(row.get("account_slot")),
@@ -248,17 +251,13 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "exit_policy_id": _string_or_none(row.get("exit_policy_id")),
         "take_profit_bps": _int_or_none(row.get("take_profit_bps")),
         "max_holding_ns": _int_or_none(row.get("max_holding_ns")),
-        "pnl_known": bool(row["pnl_known"]),
-        "history_complete": bool(row["history_complete"]),
-        "gap_reason": _string_or_none(row.get("gap_reason")),
+        "pnl_known": realized is not None,
         "duration_ns": _int_or_none(row.get("duration_ns")),
         # The venue's own `order_status` and `position_status` are inputs to this word, not a second
-        # answer beside it: the table renders the stage, and publishing both let a reader compare a
-        # raw venue string against the server's derivation of the same row (#537 PR-5). The Signal's
-        # own TTL is an input for the same reason: a Signal that expired without a disposition is
-        # `expired`, not work still pending (#604 T3).
+        # answer beside it (#537 PR-5). The Signal's own TTL is an input for the same reason (#604 T3).
         "stage": execution_stage(
             plan_status=_string_or_none(row.get("plan_status")),
+            exit_reason=_string_or_none(row.get("exit_reason")),
             disposition_reason=reason,
             order_status=_string_or_none(row.get("order_status")),
             fill_quantity=fill_quantity,
@@ -285,8 +284,6 @@ def _totals(row: dict[str, Any]) -> dict[str, Any]:
                 "pnl_missing_total",
             )
         },
-        "pnl_complete_today": bool(row["pnl_complete_today"]),
-        "pnl_complete_total": bool(row["pnl_complete_total"]),
     }
 
 

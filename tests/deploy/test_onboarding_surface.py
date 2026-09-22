@@ -280,9 +280,7 @@ esac
         "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
         "TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO": "ready",
         "TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA": "a" * 64,
-        "TRACEFOLD_TEST_NAUTILUS_READYZ": (
-            '{"ok": false, "execution_safe": false, "entry_block_reason": "startup_reconciliation_unproven"}'
-        ),
+        "TRACEFOLD_TEST_NAUTILUS_READYZ": ('{"ok": false, "alive": false, "entry_block_reason": "runtime_starting"}'),
     }
     return repo, external_activity, services_stopped, env
 
@@ -1175,8 +1173,8 @@ def test_deploy_image_allows_an_unrelated_untracked_research_notebook(tmp_path: 
     ("readyz", "expected"),
     (
         (
-            '{"ok": false, "execution_safe": false, "entry_block_reason": "startup_reconciliation_unproven"}',
-            "startup_reconciliation_unproven",
+            '{"ok": false, "alive": false, "entry_block_reason": "runtime_starting"}',
+            "runtime_starting",
         ),
         ("", "unreachable"),
     ),

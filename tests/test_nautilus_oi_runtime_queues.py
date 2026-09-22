@@ -1,586 +1,193 @@
-"""Bounded at-least-once Signal and Observation mechanics."""
+"""The Runtime's two in-memory seams: the bounded input queue and the outbound journal."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from decimal import Decimal
 
 import pytest
 
-from tests.helpers.nautilus_oi_runtime_process import (
-    audit_queued_count,
-    signal_pending_command_ids,
-    signal_pending_ids,
-    signal_queued_bytes,
-    signal_queued_count,
-)
-from tests.nautilus_oi_runtime_fixtures import (
-    NOW_NS,
-    CommandRows,
-    SignalRows,
-    oi_profile,
-    operator_intent,
-    trade_signal,
-)
-from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
-    AuditAppendRejected,
-    AuditSink,
+from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile, open_plan, operator_intent, rows, trade_signal
+from tracefold.integrations.nautilus.oi_runtime.journal import (
+    ExecutionJournal,
     ObservationFactory,
+    PlanReceipt,
     day_start_baseline_from_observation,
 )
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
-from tracefold.trading import ExecutionObservationV1
+
+
+def _client(**bounds: int) -> ExecutionSignalClient:
+    return ExecutionSignalClient(account_slot=oi_profile().account_slot, execution_strategy="oi_nautilus_v1", **bounds)
 
 
 def _factory() -> ObservationFactory:
-    profile = oi_profile()
-    return ObservationFactory(
-        account_slot=profile.account_slot,
-        execution_strategy="oi_nautilus_v1",
+    return ObservationFactory(account_slot=oi_profile().account_slot, execution_strategy="oi_nautilus_v1")
+
+
+def _observation(index: int) -> object:
+    return _factory().create(
+        normalized_kind="order",
+        occurred_at_ns=NOW_NS + index,
+        observed_at_ns=NOW_NS + index,
+        summary={"leg": "entry", "status": "submitted"},
+        event_identity=f"row-{index}",
     )
 
 
-def test_signal_queue_is_count_and_byte_bounded_without_silent_pending_claim() -> None:
+# -- the input queue -------------------------------------------------------------------------------
+
+
+def test_signal_queue_is_count_and_byte_bounded_without_a_silent_pending_claim() -> None:
     first = trade_signal(signal_id="1" * 64)
     second = trade_signal(signal_id="2" * 64)
-    one_size = len(first.model_dump_json().encode())
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-        max_count=2,
-        max_bytes=one_size,
-    )
+    client = _client(max_count=2, max_bytes=len(first.model_dump_json().encode()))
 
-    admitted = client.poll_once(SignalRows(first, second))
-
-    assert admitted == 1
-    assert signal_queued_count(client) == 1
-    assert signal_pending_ids(client) == {first.signal_id}
-    assert second.signal_id not in signal_pending_ids(client)
+    assert client.poll_once(rows(first, second)) == 1
     assert client.next_nowait() == first
-    assert signal_queued_count(client) == 0
-    assert signal_pending_ids(client) == {first.signal_id}
+    assert client.next_nowait() is None
+    # Still pending until its verdict is durable, so the next indexed poll cannot enqueue it again.
+    assert client.poll_once(rows(first)) == 0
     client.mark_durable(first.signal_id)
-    assert signal_pending_ids(client) == set()
+    assert client.poll_once(rows(first)) == 1
 
 
-def test_signal_pending_set_prevents_duplicate_enqueue_until_disposition_is_durable() -> None:
+def test_a_released_signal_is_offered_again_and_a_foreign_verdict_settles_nothing() -> None:
     signal = trade_signal()
-    rows = SignalRows(signal)
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-
-    assert client.poll_once(rows) == 1
+    client = _client()
+    client.poll_once(rows(signal))
     assert client.next_nowait() == signal
-    assert client.poll_once(rows) == 0
-    client.mark_durable(signal.signal_id)
-    assert client.poll_once(rows) == 1
+    client.release(signal.signal_id)
+    assert client.poll_once(rows(signal)) == 1
+    # A verdict for a Signal an earlier generation polled is not this client's to settle.
+    client.mark_durable("9" * 64)
+    client.mark_command_durable("9" * 64)
 
 
-def test_signal_can_be_retried_when_audit_backpressure_prevents_final_disposition() -> None:
-    signal = trade_signal()
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-    )
-    client.poll_once(SignalRows(signal))
-    assert client.next_nowait() == signal
-
-    client.retry(signal)
-
-    assert client.next_nowait() == signal
-    assert signal_pending_ids(client) == {signal.signal_id}
-
-
-def test_signal_client_consumes_commands_in_the_same_total_count_and_byte_bound() -> None:
+def test_commands_are_admitted_before_signals_into_the_shared_bound() -> None:
     signal = trade_signal()
     command = operator_intent()
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-        max_count=1,
-        max_bytes=1_048_576,
-    )
+    client = _client(max_count=1)
 
-    assert client.poll_commands_once(CommandRows(command)) == 1
-    assert client.poll_once(SignalRows(signal)) == 0
-    assert client.next_command_nowait() == command
-    assert signal_pending_command_ids(client) == {command.command_id}
-    client.retry_command(command)
-    assert client.next_command_nowait() == command
-    client.mark_command_durable(command.command_id)
-    assert signal_pending_command_ids(client) == set()
-
-
-def test_poll_admits_operator_commands_before_signals_into_the_shared_bound() -> None:
-    """The bridge reads Commands first, and the client itself holds Signals back until it has."""
-
-    signal = trade_signal()
-    command = operator_intent()
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-        max_count=1,
-    )
-
-    assert client.poll_commands_once(CommandRows(command)) == 1
-    assert client.poll_once(SignalRows(signal)) == 0
+    assert client.poll_commands_once(rows(command)) == 1
+    assert client.poll_once(rows(signal)) == 0
     assert client.next_command_nowait() == command
     assert client.next_nowait() is None
 
 
-def test_signal_retry_cannot_overfill_the_shared_command_and_signal_bound() -> None:
-    signal = trade_signal()
-    command = operator_intent()
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-        max_count=1,
-    )
-    assert client.poll_once(SignalRows(signal)) == 1
-    assert client.next_nowait() == signal
-    assert client.poll_commands_once(CommandRows(command)) == 1
-
-    with pytest.raises(RuntimeError, match="oi_runtime_signal_retry_overflow"):
-        client.retry(signal)
-
-    assert signal_queued_count(client) == 1
-
-
-def test_durable_command_scan_evicts_one_buffered_signal_instead_of_being_starved() -> None:
+def test_a_command_scan_evicts_a_buffered_signal_instead_of_being_starved() -> None:
     first = trade_signal(signal_id="1" * 64)
     second = trade_signal(signal_id="2" * 64)
     command = operator_intent(command_id="3" * 64)
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-        max_count=2,
-    )
-    assert client.poll_once(SignalRows(first, second)) == 2
+    client = _client(max_count=2)
+    assert client.poll_once(rows(first, second)) == 2
 
-    assert client.poll_commands_once(CommandRows(command)) == 1
+    assert client.poll_commands_once(rows(command)) == 1
 
-    assert signal_queued_count(client) == 2
     assert client.queued_command_count == 1
     assert client.command_scan_complete is False
-    assert signal_pending_ids(client) == {first.signal_id}
-    assert signal_pending_command_ids(client) == {command.command_id}
-    assert client.poll_once(SignalRows(first, second)) == 0
+    assert client.poll_once(rows(first, second)) == 0
 
 
-def test_durable_command_scan_can_reclaim_signal_bytes_without_losing_database_truth() -> None:
-    first = trade_signal(signal_id="1" * 64)
-    second = trade_signal(signal_id="2" * 64)
-    command = operator_intent(command_id="3" * 64)
-    signal_bytes = len(first.model_dump_json().encode()) + len(second.model_dump_json().encode())
-    command_bytes = len(command.model_dump_json().encode())
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-        max_count=3,
-        max_bytes=max(signal_bytes, command_bytes),
-    )
-    assert client.poll_once(SignalRows(first, second)) == 2
-
-    assert client.poll_commands_once(CommandRows(command)) == 1
-
-    assert signal_pending_command_ids(client) == {command.command_id}
-    assert signal_queued_bytes(client) <= max(signal_bytes, command_bytes)
-    assert len(signal_pending_ids(client)) < 2
-
-
-def test_failed_command_scan_closes_the_signal_gate() -> None:
+def test_a_failed_command_scan_closes_the_signal_gate() -> None:
     signal = trade_signal()
-    client = ExecutionSignalClient(
-        account_slot=oi_profile().account_slot,
-        execution_strategy="oi_nautilus_v1",
-        max_count=2,
-    )
-    assert client.poll_once(SignalRows(signal)) == 1
+    client = _client(max_count=2)
+    assert client.poll_once(rows(signal)) == 1
 
-    def unavailable(_profile: str, _strategy: str, _limit: int) -> tuple[()]:
+    def unavailable(_slot: str, _strategy: str, _limit: int) -> tuple[()]:
         raise RuntimeError("command-reader-unavailable")
 
     with pytest.raises(RuntimeError, match="command-reader-unavailable"):
         client.poll_commands_once(unavailable)
-
     assert client.command_scan_complete is False
-    assert client.poll_once(SignalRows(signal)) == 0
+    assert client.poll_once(rows(signal)) == 0
 
 
-def test_audit_flush_failure_keeps_the_batch_and_reports_unhealthy_until_success() -> None:
+# -- the journal -----------------------------------------------------------------------------------
+
+
+def test_the_journal_is_fifo_deduplicates_an_identical_offer_and_refuses_past_its_bound() -> None:
+    journal = ExecutionJournal(factory=_factory(), max_rows=2)
+    first, second, third = (_observation(index) for index in range(3))
+
+    assert journal.offer(first)
+    assert journal.offer(first)
+    assert journal.offer(second)
+    assert not journal.offer(third)
+    assert [row.value for row in journal.due(0.0)] == [first, second]
+
+
+def test_a_failing_row_waits_out_its_backoff_while_every_row_behind_it_keeps_flowing() -> None:
+    journal = ExecutionJournal(factory=_factory())
+    first, second = _observation(1), _observation(2)
+    journal.offer(first)
+    journal.offer(second)
+
+    head, behind = journal.due(100.0)
+    journal.retry_later(head, 100.0)
+    journal.written(behind, behind.value)
+
+    assert journal.due(100.0) == ()
+    [retried] = journal.due(100.0 + 30.0)
+    assert retried.value is first
+    for _ in range(20):
+        journal.retry_later(retried, 200.0)
+    assert retried.not_before == 230.0
+
+
+def test_a_newer_plan_transition_replaces_a_queued_one_and_a_terminal_one_is_never_undone() -> None:
+    journal = ExecutionJournal(factory=_factory())
+    plan = open_plan(opened_at_ns=None)
+    opened = plan.opened(opened_at_ns=NOW_NS, now_ns=NOW_NS)
+    closed = opened.closed(reason="stop_filled", terminal_at_ns=NOW_NS + 1, now_ns=NOW_NS + 1)
+
+    journal.offer_plan(opened)
+    journal.offer_plan(closed)
+    journal.offer_plan(opened)
+
+    [row] = journal.due(0.0)
+    assert row.value == closed
+
+
+def test_a_plan_transition_arriving_while_the_bridge_writes_the_older_one_is_still_written() -> None:
+    journal = ExecutionJournal(factory=_factory())
+    plan = open_plan(opened_at_ns=None)
+    opened = plan.opened(opened_at_ns=NOW_NS, now_ns=NOW_NS)
+    closed = opened.closed(reason="time_exit", terminal_at_ns=NOW_NS + 1, now_ns=NOW_NS + 1)
+    journal.offer_plan(opened)
+    [row] = journal.due(0.0)
+    in_flight = row.value
+
+    journal.offer_plan(closed)
+    journal.written(row, in_flight)
+
+    [still_queued] = journal.due(0.0)
+    assert still_queued.value == closed
+
+
+def test_one_entry_plan_at_a_time_and_only_a_receipt_releases_the_next() -> None:
+    journal = ExecutionJournal(factory=_factory())
+    first = open_plan(entry_id="1" * 64, opened_at_ns=None)
+    second = open_plan(entry_id="2" * 64, opened_at_ns=None)
+
+    assert journal.prepare(first)
+    assert not journal.prepare(second)
+    assert journal.take_receipt() is None
+    journal.settle_prepare(PlanReceipt(first, committed=True))
+    assert journal.pending_prepare() is None
+    assert not journal.prepare(second)
+    assert journal.take_receipt() == PlanReceipt(first, committed=True)
+    assert journal.prepare(second)
+    with pytest.raises(RuntimeError, match="trade_plan_prepare_identity_lost"):
+        journal.settle_prepare(PlanReceipt(first, committed=True))
+
+
+def test_the_day_start_baseline_has_a_fixed_identity_and_round_trips_its_exact_equity() -> None:
     factory = _factory()
-    value = factory.create(
-        normalized_kind="readiness",
-        occurred_at_ns=NOW_NS,
-        observed_at_ns=NOW_NS,
-        summary={"ready": False},
-        payload={"ready": False},
-    )
-    sink = AuditSink(factory=factory, max_count=2, max_bytes=20_000)
-    assert sink.offer(value) is True
+    equity = Decimal("1234.567890123456")
+    baseline, observation = factory.day_start_baseline(utc_day="2030-03-17", equity_usd=equity, recorded_at_ns=NOW_NS)
 
-    def fail(_values: object) -> None:
-        raise RuntimeError("append-failed")
-
-    with pytest.raises(RuntimeError, match="append-failed"):
-        sink.flush_once(fail)
-    assert audit_queued_count(sink) == 1
-    assert sink.healthy is False
-
-    written: list[object] = []
-    assert sink.flush_once(written.extend) == (value,)
-    assert audit_queued_count(sink) == 0
-    assert sink.healthy is True
-
-
-def test_audit_identity_conflict_stays_unhealthy_until_gap_is_durable() -> None:
-    factory = _factory()
-    event_id = "f" * 64
-    first = factory.create(
-        normalized_kind="readiness",
-        occurred_at_ns=NOW_NS,
-        observed_at_ns=NOW_NS,
-        payload={"version": 1},
-        fixed_event_id=event_id,
-    )
-    conflicting = factory.create(
-        normalized_kind="readiness",
-        occurred_at_ns=NOW_NS + 1,
-        observed_at_ns=NOW_NS + 1,
-        payload={"version": 2},
-        fixed_event_id=event_id,
-    )
-    sink = AuditSink(factory=factory, max_count=1, max_bytes=20_000)
-
-    assert sink.offer(first) is True
-    assert sink.offer(conflicting) is False
-    assert sink.failure_reason == "audit_identity_conflict"
-    written: list[object] = []
-    assert sink.flush_once(written.extend) == (first,)
-    assert sink.healthy is False
-    gap_batch = sink.flush_once(written.extend)
-
-    assert len(gap_batch) == 1
-    gap = gap_batch[0]
-    assert gap.normalized_kind == "audit_gap"
-    # #537 PR-4. One gap shape for all three causes: what was lost, how much, the first identity
-    # and the kinds, whichever cause explains it.
-    assert gap.summary == {
-        "cause": "audit_identity_conflict",
-        "dropped_count": 1,
-        "first_event_id": conflicting.event_id,
-        "kind.readiness": 1,
-    }
-    assert sink.healthy is True
-
-
-def test_audit_overflow_stays_unhealthy_until_a_durable_gap_is_written() -> None:
-    factory = _factory()
-    sink = AuditSink(factory=factory, max_count=2, max_bytes=20_000)
-    values = tuple(
-        factory.create(
-            normalized_kind="readiness",
-            occurred_at_ns=NOW_NS + index,
-            observed_at_ns=NOW_NS + index,
-            summary={"index": index},
-            payload={"index": index},
-        )
-        for index in range(5)
-    )
-
-    assert sink.offer(values[0]) is True
-    assert sink.offer(values[1]) is True
-    assert sink.offer(values[2]) is False
-    assert sink.failure_reason == "audit_queue_overflow"
-
-    written: list[object] = []
-    assert sink.flush_once(written.extend) == values[:2]
-    assert sink.healthy is False
-    assert sink.offer(values[3]) is True
-    assert sink.offer(values[4]) is False
-    gap_batch = sink.flush_once(written.extend)
-
-    assert len(gap_batch) == 2
-    gap = gap_batch[0]
-    assert gap.normalized_kind == "audit_gap"
-    assert gap.summary == {
-        "cause": "audit_queue_overflow",
-        "dropped_count": 1,
-        "first_event_id": values[2].event_id,
-        "kind.readiness": 1,
-    }
-    assert sink.healthy is False
-    next_gap_batch = sink.flush_once(written.extend)
-    assert len(next_gap_batch) == 1
-    assert next_gap_batch[0].normalized_kind == "audit_gap"
-    assert next_gap_batch[0].summary == {
-        "cause": "audit_queue_overflow",
-        "dropped_count": 1,
-        "first_event_id": values[4].event_id,
-        "kind.readiness": 1,
-    }
-    assert sink.healthy is True
-
-
-def test_audit_identity_answers_from_an_index_that_survives_flush_and_gap_writes() -> None:
-    """#589 PR-2 (T-F17). `offer` decides identity in one lookup, and the index tracks the queue.
-
-    It walked the whole deque per callback, on the trading event loop, and worst exactly when the
-    queue was deepest. The index that replaces the walk is only correct if it stays equal to the
-    queue: an identity still queued must still conflict, an identity that has been flushed must be
-    offerable again, and a gap record the sink enqueued into its own queue must be indexed like any
-    other value it holds.
-    """
-
-    factory = _factory()
-    event_id = "a" * 64
-    first = factory.create(
-        normalized_kind="readiness",
-        occurred_at_ns=NOW_NS,
-        observed_at_ns=NOW_NS,
-        payload={"version": 1},
-        fixed_event_id=event_id,
-    )
-    conflicting = factory.create(
-        normalized_kind="readiness",
-        occurred_at_ns=NOW_NS + 1,
-        observed_at_ns=NOW_NS + 1,
-        payload={"version": 2},
-        fixed_event_id=event_id,
-    )
-    sink = AuditSink(factory=factory, max_count=4, max_bytes=20_000)
-
-    assert sink.offer(first) is True
-    # Queued: the identical body is already on its way, a different body under the same identity is
-    # the contradiction. Neither answer may depend on where in the queue the row sits.
-    assert sink.offer(first) is True
-    assert sink.offer(conflicting) is False
-    assert audit_queued_count(sink) == 1
-    assert sink.failure_reason == "audit_identity_conflict"
-
-    written: list[object] = []
-    dequeued = sink.flush_once(written.extend)
-    assert first in dequeued
-    gap = next(value for value in dequeued if value.normalized_kind == "audit_gap")
-    assert audit_queued_count(sink) == 0
-    assert sink.healthy is True
-
-    # Flushed: both identities left the queue, so both are new rows rather than conflicts.
-    assert sink.offer(conflicting) is True
-    assert sink.offer(gap) is True
-    assert audit_queued_count(sink) == 2
-    assert sink.offer(gap) is True
-    assert audit_queued_count(sink) == 2
-    assert sink.healthy is True
-
-
-def test_audit_overflow_is_decided_on_the_queue_bound_not_on_the_identity_index() -> None:
-    """A value refused for overflow is admitted once the deque has room, under its own identity."""
-
-    factory = _factory()
-    sink = AuditSink(factory=factory, max_count=2, max_bytes=20_000)
-    values = tuple(
-        factory.create(
-            normalized_kind="readiness",
-            occurred_at_ns=NOW_NS + index,
-            observed_at_ns=NOW_NS + index,
-            summary={"index": index},
-            payload={"index": index},
-        )
-        for index in range(3)
-    )
-
-    assert sink.offer(values[0]) is True
-    assert sink.offer(values[1]) is True
-    assert sink.offer(values[2]) is False
-    assert sink.failure_reason == "audit_queue_overflow"
-
-    written: list[object] = []
-    assert sink.flush_once(written.extend) == values[:2]
-    # What is left is the overflow gap the sink enqueued for itself, and one free slot.
-    assert audit_queued_count(sink) == 1
-    assert sink.offer(values[2]) is True
-    assert audit_queued_count(sink) == 2
-
-
-def test_rejected_batch_is_quarantined_and_the_queue_behind_it_keeps_flushing() -> None:
-    """A batch the database refuses leaves the queue, names its loss, and stops blocking the rest.
-
-    This is the whole of #510 A after the CHECK itself: the rejected fill used to stay at the head and
-    be replayed every 27 seconds for six hours, and because `flush_once` re-raised, the same cycle's
-    Command read never ran either.
-    """
-
-    factory = _factory()
-    poisoned = tuple(
-        factory.create(
-            normalized_kind=kind,
-            occurred_at_ns=NOW_NS + index,
-            observed_at_ns=NOW_NS + index,
-            summary={"index": index},
-            payload={"kind": kind, "index": index},
-        )
-        for index, kind in enumerate(("fill", "position", "fill"))
-    )
-    later = factory.create(
-        normalized_kind="readiness",
-        occurred_at_ns=NOW_NS + 10,
-        observed_at_ns=NOW_NS + 10,
-        summary={"lifecycle": "started"},
-        payload={"lifecycle": "started"},
-    )
-    refused_ids = {value.event_id for value in poisoned}
-    sink = AuditSink(factory=factory, max_count=16, max_bytes=200_000)
-    for value in poisoned:
-        assert sink.offer(value) is True
-
-    written: list[ExecutionObservationV1] = []
-    refusals = 0
-
-    def writer(values: Sequence[ExecutionObservationV1]) -> None:
-        nonlocal refusals
-        if any(value.event_id in refused_ids for value in values):
-            refusals += 1
-            raise AuditAppendRejected("CheckViolation: trading_execution_observation_native_refs_check")
-        written.extend(values)
-
-    dequeued = sink.flush_once(writer)
-
-    assert refusals == 1
-    assert len(written) == 1
-    gap = written[0]
-    assert gap.normalized_kind == "audit_gap"
-    assert gap.summary == {
-        "cause": "audit_append_rejected",
-        "dropped_count": 3,
-        "first_event_id": poisoned[0].event_id,
-        "kind.fill": 2,
-        "kind.position": 1,
-    }
-    assert tuple(value.event_id for value in dequeued) == (
-        *(value.event_id for value in poisoned),
-        gap.event_id,
-    )
-    assert audit_queued_count(sink) == 0
-    assert sink.healthy is True
-
-    assert sink.offer(later) is True
-    assert sink.flush_once(writer) == (later,)
-    assert written[-1] == later
-    assert refusals == 1
-
-
-def test_a_rejected_batch_stays_unhealthy_until_its_gap_is_durable() -> None:
-    factory = _factory()
-    value = factory.create(
-        normalized_kind="fill",
-        occurred_at_ns=NOW_NS,
-        observed_at_ns=NOW_NS,
-        summary={"leg": "entry"},
-        payload={"leg": "entry"},
-    )
-    sink = AuditSink(factory=factory, max_count=16, max_bytes=200_000)
-    assert sink.offer(value) is True
-
-    def refuse(_values: object) -> None:
-        raise AuditAppendRejected("CheckViolation: trading_execution_observation_native_refs_check")
-
-    assert sink.flush_once(refuse) == (value,)
-    assert sink.healthy is False
-    assert sink.failure_reason == "audit_append_rejected"
-
-    written: list[object] = []
-    gap_batch = sink.flush_once(written.extend)
-
-    assert len(gap_batch) == 1
-    assert gap_batch[0].normalized_kind == "audit_gap"
-    assert gap_batch[0].summary["cause"] == "audit_append_rejected"
-    assert sink.healthy is True
-
-
-def test_a_systemically_rejected_queue_drains_one_batch_per_pass_without_spinning() -> None:
-    factory = _factory()
-    values = tuple(
-        factory.create(
-            normalized_kind="fill",
-            occurred_at_ns=NOW_NS + index,
-            observed_at_ns=NOW_NS + index,
-            summary={"index": index},
-            payload={"index": index},
-        )
-        for index in range(2)
-    )
-    sink = AuditSink(factory=factory, max_count=1, max_bytes=200_000)
-    assert sink.offer(values[0]) is True
-
-    calls = 0
-
-    def refuse(_values: object) -> None:
-        nonlocal calls
-        calls += 1
-        raise AuditAppendRejected("CheckViolation: trading_execution_observation_native_refs_check")
-
-    assert sink.flush_once(refuse) == (values[0],)
-    assert calls == 2
-    assert audit_queued_count(sink) == 1
-    assert sink.healthy is False
-
-
-def test_audit_gap_identity_cannot_collide_across_process_restart_clocks() -> None:
-    factory = _factory()
-
-    def overflow_gap(offset: int) -> object:
-        sink = AuditSink(factory=factory, max_count=1, max_bytes=20_000)
-        first = factory.create(
-            normalized_kind="readiness",
-            occurred_at_ns=NOW_NS + offset,
-            observed_at_ns=NOW_NS + offset,
-            payload={"offset": offset},
-        )
-        dropped = factory.create(
-            normalized_kind="readiness",
-            occurred_at_ns=NOW_NS + offset + 1,
-            observed_at_ns=NOW_NS + offset + 1,
-            payload={"dropped": offset},
-        )
-        assert sink.offer(first) is True
-        assert sink.offer(dropped) is False
-        sink.flush_once(lambda _values: None)
-        return sink.flush_once(lambda _values: None)[0]
-
-    first_gap = overflow_gap(0)
-    restarted_gap = overflow_gap(100)
-
-    assert first_gap.event_id != restarted_gap.event_id
-
-
-def test_day_start_baseline_has_stable_identity_and_exact_restart_value() -> None:
-    factory = _factory()
-    first, observation = factory.day_start_baseline(
-        utc_day="2030-03-17",
-        equity_usd=Decimal("1000.123456"),
-        recorded_at_ns=NOW_NS,
-    )
-    restarted = day_start_baseline_from_observation(observation)
-
-    assert first == restarted
-    assert factory.day_start_event_id("2030-03-17") == observation.event_id
-    assert factory.day_start_event_id("2030-03-18") != observation.event_id
-
-
-def test_day_start_baseline_preserves_venue_equity_beyond_micros() -> None:
-    factory = _factory()
-    equity = Decimal("1000.12345678")
-
-    first, observation = factory.day_start_baseline(
-        utc_day="2030-03-17",
-        equity_usd=equity,
-        recorded_at_ns=NOW_NS,
-    )
-    restarted = day_start_baseline_from_observation(observation)
-
-    assert first.equity_usd == equity
-    assert restarted.equity_usd == equity
+    assert observation.event_id == factory.day_start_event_id("2030-03-17") == baseline.event_id
+    restored = day_start_baseline_from_observation(observation)
+    assert restored.equity_usd == equity and restored.utc_day == "2030-03-17"
+    with pytest.raises(ValueError, match="oi_runtime_day_start_equity_precision_invalid"):
+        factory.day_start_baseline(utc_day="2030-03-17", equity_usd=Decimal(0), recorded_at_ns=NOW_NS)

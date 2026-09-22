@@ -1,4 +1,4 @@
-"""Real PostgreSQL commit failures and native entry hand-off (#644)."""
+"""Real PostgreSQL under the entry handshake and the plan store (#644, #680)."""
 
 from __future__ import annotations
 
@@ -6,82 +6,77 @@ from contextlib import closing
 from uuid import uuid4
 
 import pytest
-from psycopg.errors import CheckViolation
+from psycopg.errors import RaiseException, UniqueViolation
 
-from tests.nautilus_oi_runtime_fixtures import NOW_NS, registered_oi_strategy, trade_signal
-from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
-from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, RuntimeStateProjector, load_recovery_inputs
+from tests.nautilus_oi_runtime_fixtures import NOW_NS, open_plan, trade_signal, unit_runtime
+from tests.postgres_test_utils import connect_postgres_test
+from tracefold.app.nautilus.oi_runtime import (
+    OiRuntimeDatabaseBridge,
+    RuntimeStateProjector,
+    commit_entry_plan,
+    load_runtime_inputs,
+)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
-from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
-from tracefold.trading.storage.trade_plans import prepare_trade_plan
+from tracefold.trading.storage.trade_plans import prepare_trade_plan, prepare_trade_plan_update
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
-def _bridge(harness):
-    state = ExecutionRuntimeState(
-        account_slot=harness.profile.account_slot,
-        mode="paper",
-        runtime_id=uuid4(),
-        alive=True,
-        execution_safe=True,
-        entries_armed=True,
-        startup_reconciled=True,
-        unexpected_exposure=False,
-        account_flat=True,
-        positions_count=0,
-        open_orders_count=0,
-        protection_status="not_applicable",
-        reconciliation_observed_at_ns=NOW_NS,
-        heartbeat_at_ns=NOW_NS,
-        entry_block_reason=None,
-        started_at_ns=NOW_NS,
-        updated_at_ns=NOW_NS,
-    )
+def _bridge(runtime) -> OiRuntimeDatabaseBridge:  # type: ignore[no-untyped-def]
     singleton = AccountSlotSingleton(
-        account_slot=harness.profile.account_slot,
+        account_slot=runtime.profile.account_slot,
         try_acquire=lambda _slot: True,
         release=lambda _slot: True,
         heartbeat=lambda: True,
     )
     assert singleton.acquire()
+    state = ExecutionRuntimeState(
+        account_slot=runtime.profile.account_slot,
+        mode="paper",
+        runtime_id=uuid4(),
+        alive=True,
+        entries_armed=False,
+        unexpected_exposure=False,
+        positions_count=0,
+        open_orders_count=0,
+        protection_status="not_applicable",
+        heartbeat_at_ns=NOW_NS,
+        entry_block_reason="runtime_starting",
+        started_at_ns=NOW_NS,
+        updated_at_ns=NOW_NS,
+    )
     return OiRuntimeDatabaseBridge(
-        settings=Settings(storage=postgres_settings_storage()),
-        profile=harness.profile,
-        signals=harness.signals,
-        plans=harness.plans,
-        audit=harness.audit,
+        settings=None,
+        profile=runtime.profile,
+        signals=runtime.signals,
+        journal=runtime.journal,
         update_day_start=lambda _baseline: None,
         singleton=singleton,
-        projector=RuntimeStateProjector(initial=state, recovery_inputs=()),
+        projector=RuntimeStateProjector(initial=state),
     )
 
 
-def test_committed_plan_is_visible_on_another_connection_before_native_submission() -> None:
-    harness = registered_oi_strategy(values=(trade_signal(),))
-    harness.strategy.on_timer(None)
-    assert harness.strategy.submitted == []
+def test_the_plan_is_durable_on_another_connection_before_its_entry_order_exists() -> None:
+    runtime = unit_runtime(signals=(trade_signal(),))
+    runtime.pump()
+    assert runtime.strategy.submitted == []
     with closing(connect_postgres_test(read_only=False)) as conn:
-        bridge = _bridge(harness)
-        bridge._flush_trade_plans(repositories_for_connection(conn))
+        _bridge(runtime)._cycle(repositories_for_connection(conn))
         with closing(connect_postgres_test(read_only=True)) as observer:
             row = observer.execute("SELECT entry_id, status FROM trading_trade_plans").fetchone()
             assert row == {"entry_id": trade_signal().signal_id, "status": "prepared"}
-        assert harness.strategy.submitted == []
-        harness.strategy.on_timer(None)
-        assert len(harness.strategy.submitted) == 1
-        assert (
-            harness.strategy.submitted[0][0].client_order_id.value
-            == harness.plans.pending_updates()[0].entry_client_order_id
-        )
+        assert runtime.strategy.submitted == []
+        runtime.pump()
+        [(order, _position)] = runtime.strategy.submitted
+        assert order.client_order_id.value == open_plan(opened_at_ns=None).entry_client_order_id
 
 
-@pytest.mark.parametrize("deferred", [False, True], ids=["insert-failure", "commit-failure"])
-def test_real_insert_or_commit_failure_cannot_authorize_an_entry(deferred: bool) -> None:
-    harness = registered_oi_strategy(values=(trade_signal(),))
-    harness.strategy.on_timer(None)
+@pytest.mark.parametrize("deferred", [False, True], ids=["insert-refused", "commit-refused"])
+def test_a_refused_insert_or_commit_answers_the_strategy_and_never_authorizes_an_order(deferred: bool) -> None:
+    runtime = unit_runtime(signals=(trade_signal(),))
+    runtime.pump()
     with closing(connect_postgres_test(read_only=False)) as conn:
         with conn.transaction():
             conn.execute("""CREATE FUNCTION test_refuse_trade_plan() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -92,65 +87,44 @@ def test_real_insert_or_commit_failure_cannot_authorize_an_entry(deferred: bool)
             else:
                 conn.execute("""CREATE TRIGGER test_refuse_plan BEFORE INSERT ON trading_trade_plans
                     FOR EACH ROW EXECUTE FUNCTION test_refuse_trade_plan()""")
-        with pytest.raises(CheckViolation, match="test_trade_plan_refused"):
-            _bridge(harness)._flush_trade_plans(repositories_for_connection(conn))
-        harness.strategy.on_timer(None)
-        assert harness.strategy.submitted == []
+        _bridge(runtime)._cycle(repositories_for_connection(conn))
+        runtime.pump()
+        assert runtime.strategy.submitted == []
         assert conn.execute("SELECT count(*) AS n FROM trading_trade_plans").fetchone()["n"] == 0
+    assert runtime.dispositions() == [{"disposition": "trade_plan_rejected"}]
+
+
+def test_a_lost_commit_receipt_retried_finds_its_own_plan_and_a_foreign_one_authorizes_nothing() -> None:
+    plan = open_plan(opened_at_ns=None, created_at_ns=NOW_NS)
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            assert repos.trading.insert_trade_plan(prepare_trade_plan(plan))
+        # The transaction committed and its receipt was lost: the retry reads back exactly this plan.
+        assert commit_entry_plan(repos, plan).committed is True
+        foreign = plan.model_copy(update={"entry_quantity": plan.entry_quantity * 2})
+        receipt = commit_entry_plan(repos, foreign)
+        assert (receipt.committed, receipt.reason) == (False, "trade_plan_conflict")
 
 
 @pytest.mark.parametrize("age_days", [8, 30])
-def test_active_recovery_has_no_age_or_observation_dependency(age_days: int) -> None:
-    harness = registered_oi_strategy(values=(trade_signal(),))
-    harness.strategy.on_timer(None)
-    plan = harness.plans.pending_prepare()
-    assert plan is not None
+def test_open_plans_are_the_restart_input_whatever_their_age_and_only_for_their_slot_and_mode(age_days: int) -> None:
+    from tests.nautilus_oi_runtime_fixtures import oi_profile
+
     age = age_days * 86_400_000_000_000
-    old = plan.model_copy(
-        update={
-            "created_at_ns": plan.created_at_ns - age,
-            "entry_expires_at_ns": plan.entry_expires_at_ns - age,
-            "updated_at_ns": plan.updated_at_ns - age,
-        }
-    )
+    plan = open_plan(opened_at_ns=None, created_at_ns=NOW_NS - age)
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
-        values = prepare_trade_plan(old)
         with repos.transaction():
-            assert repos.trading.insert_trade_plan(values)
-        assert load_recovery_inputs(repos, plan.account_slot, "paper") == (old,)
-        assert load_recovery_inputs(repos, plan.account_slot, "live") == ()
-        assert load_recovery_inputs(repos, "another-slot", "paper") == ()
+            assert repos.trading.insert_trade_plan(prepare_trade_plan(plan))
+        inputs = load_runtime_inputs(repos, oi_profile(), now_ns=NOW_NS)
+        assert [(value.plan, value.disposition_pending) for value in inputs.open_plans] == [(plan, True)]
+        assert load_runtime_inputs(repos, oi_profile("live"), now_ns=NOW_NS).open_plans == ()
         assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 0
 
 
-def test_retry_after_a_lost_commit_receipt_cannot_submit_twice() -> None:
-    harness = registered_oi_strategy(values=(trade_signal(),))
-    harness.strategy.on_timer(None)
-    plan = harness.plans.pending_prepare()
-    assert plan is not None
-    with closing(connect_postgres_test(read_only=False)) as conn:
-        repos = repositories_for_connection(conn)
-        values = prepare_trade_plan(plan)
-        with repos.transaction():
-            assert repos.trading.insert_trade_plan(values)
-        # The transaction committed but no callback receipt was delivered; the bridge observes
-        # the existing identity on retry and asks for venue reconciliation, never a new entry.
-        _bridge(harness)._flush_trade_plans(repos)
-        harness.strategy.on_timer(None)
-        assert harness.strategy.submitted == []
-        assert harness.reconciliation_requests == ["unknown_outcome"]
-
-
-def test_frozen_intent_and_terminal_plan_cannot_be_rewritten_or_recovered() -> None:
-    from psycopg.errors import RaiseException, UniqueViolation
-
-    from tracefold.trading.storage.trade_plans import prepare_trade_plan_update
-
-    harness = registered_oi_strategy(values=(trade_signal(),))
-    harness.strategy.on_timer(None)
-    plan = harness.plans.pending_prepare()
-    assert plan is not None
+def test_frozen_intent_a_terminal_plan_and_the_open_clock_cannot_be_rewritten() -> None:
+    plan = open_plan(opened_at_ns=None, created_at_ns=NOW_NS)
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
         with repos.transaction():
@@ -165,68 +139,25 @@ def test_frozen_intent_and_terminal_plan_cannot_be_rewritten_or_recovered() -> N
         competitor = plan.model_copy(update={"entry_id": "2" * 64, "entry_client_order_id": "tf" + "2" * 30})
         with pytest.raises(UniqueViolation), repos.transaction():
             repos.trading.insert_trade_plan(prepare_trade_plan(competitor))
-        closed = plan.model_copy(
-            update={
-                "status": "closed",
-                "terminal_at_ns": NOW_NS + 1,
-                "updated_at_ns": NOW_NS + 1,
-                "exit_reason": "not_submitted",
-            }
-        )
+
+        opened = plan.opened(opened_at_ns=NOW_NS + 5, now_ns=NOW_NS + 5)
+        with repos.transaction():
+            assert repos.trading.update_trade_plan(prepare_trade_plan_update(opened))
+        # A later transition carrying a different open clock keeps the one already written.
+        reopened = opened.model_copy(update={"opened_at_ns": NOW_NS + 9, "updated_at_ns": NOW_NS + 9})
+        with repos.transaction():
+            assert repos.trading.update_trade_plan(prepare_trade_plan_update(reopened))
+        assert repos.trading.trade_plan(plan.entry_id)["opened_at_ns"] == NOW_NS + 5
+
+        closed = opened.closed(reason="stop_filled", terminal_at_ns=NOW_NS + 10, now_ns=NOW_NS + 10)
         with repos.transaction():
             assert repos.trading.update_trade_plan(prepare_trade_plan_update(closed))
-        assert load_recovery_inputs(repos, plan.account_slot, "paper") == ()
+        # A terminal plan is final: a late transition is a no-op, not an error, and SQL cannot reopen it.
+        with repos.transaction():
+            assert repos.trading.update_trade_plan(prepare_trade_plan_update(reopened)) is False
         with pytest.raises(RaiseException, match="trade_plan_terminal_immutable"), repos.transaction():
             conn.execute("UPDATE trading_trade_plans SET status = 'open', terminal_at_ns = NULL")
-        # A lost receipt on an already terminal identity still cannot grant submit authority.
-        _bridge(harness)._flush_trade_plans(repos)
-        harness.strategy.on_timer(None)
-        assert harness.strategy.submitted == []
-
-
-@pytest.mark.parametrize("refuse_next_entry", [False, True], ids=["next-entry", "next-entry-insert-fails"])
-def test_terminal_commit_releases_the_instrument_before_the_next_prepare(refuse_next_entry: bool) -> None:
-    old = registered_oi_strategy(values=(trade_signal(),))
-    old.strategy.on_timer(None)
-    old_plan = old.plans.pending_prepare()
-    assert old_plan is not None
-    closed = old_plan.model_copy(
-        update={
-            "status": "closed",
-            "terminal_at_ns": NOW_NS + 1,
-            "updated_at_ns": NOW_NS + 1,
-            "exit_reason": "not_submitted",
+        assert repos.trading.recent_stop_exits(account_slot=plan.account_slot, since_ns=NOW_NS) == {
+            plan.market_key: NOW_NS + 10
         }
-    )
-    next_signal = trade_signal().model_copy(update={"signal_id": "2" * 64})
-    following = registered_oi_strategy(values=(next_signal,))
-    following.strategy.on_timer(None)
-    next_plan = following.plans.pending_prepare()
-    assert next_plan is not None
-    assert following.strategy.submitted == []
-    following.plans.offer_update(closed)
-    with closing(connect_postgres_test(read_only=False)) as conn:
-        repos = repositories_for_connection(conn)
-        prepared = prepare_trade_plan(old_plan)
-        with repos.transaction():
-            assert repos.trading.insert_trade_plan(prepared)
-        bridge = _bridge(following)
-        if refuse_next_entry:
-            conn.execute("""CREATE FUNCTION test_reject_next_plan() RETURNS trigger LANGUAGE plpgsql AS $$
-                BEGIN RAISE check_violation USING MESSAGE = 'test_next_plan_refused'; END $$""")
-            conn.execute("""CREATE TRIGGER test_reject_next_plan BEFORE INSERT ON trading_trade_plans
-                FOR EACH ROW EXECUTE FUNCTION test_reject_next_plan()""")
-            with pytest.raises(CheckViolation, match="test_next_plan_refused"):
-                bridge._flush_trade_plans(repos)
-        else:
-            bridge._flush_trade_plans(repos)
-        # The terminal transaction is independently durable even when the next insert fails.
-        with closing(connect_postgres_test(read_only=True)) as observer:
-            rows = observer.execute("SELECT entry_id, status FROM trading_trade_plans ORDER BY entry_id").fetchall()
-            assert rows == [
-                {"entry_id": old_plan.entry_id, "status": "closed"},
-                *([] if refuse_next_entry else [{"entry_id": next_plan.entry_id, "status": "prepared"}]),
-            ]
-        assert following.plans.pending_updates() == ()
-        following.strategy.on_timer(None)
-        assert len(following.strategy.submitted) == (0 if refuse_next_entry else 1)
+        assert repos.trading.recent_stop_exits(account_slot=plan.account_slot, since_ns=NOW_NS + 11) == {}

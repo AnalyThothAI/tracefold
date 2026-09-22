@@ -1,25 +1,38 @@
-"""The desk table over a real Signal's whole durable execution (#528 PR-1).
+"""The desk table over a real entry's whole durable execution (#528 PR-1, #680 PR-1).
 
-The observations are written by the pinned Nautilus Runtime in its own process, never hand-built
-here: what makes this a read-model test rather than a fixture test is that the row it renders is
-folded from the exact summaries the production writer produces.
+The observations and plans are written by the production Strategy on a real Nautilus engine through
+the production bridge cycle (`tests/helpers/nautilus_oi_runtime_process.py`), never hand-built, where
+the scenario can be run: what makes this a read-model test rather than a fixture test is that the row
+it renders is folded from the exact summaries the production writer produces. Realized PnL is folded
+from the fill journal -- exit minus entry notional, signed, less every commission -- and is checked
+against Nautilus' own realized PnL for the same position.
 """
 
 from __future__ import annotations
 
-import json
-import subprocess
-import sys
 import time
+from dataclasses import replace
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.nautilus_oi_runtime_fixtures import NOW_NS
+from tests.helpers.nautilus_oi_runtime_process import PostgresRuntime, run_runtime_on_postgres
+from tests.nautilus_oi_runtime_fixtures import (
+    MARKET,
+    NOW_NS,
+    SECOND_NS,
+    oi_profile,
+    open_plan,
+    quotes,
+    seed_reconciled_position,
+)
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.config.models import Settings
 from tracefold.trading.execution_contracts import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
@@ -28,6 +41,7 @@ from tracefold.trading.storage.execution_stream import (
     prepare_trade_signal,
 )
 from tracefold.trading.storage.root import TradingRepository
+from tracefold.trading.storage.trade_plans import prepare_trade_plan
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -35,8 +49,6 @@ _ACCOUNT_SLOT = "binance_usdm_primary"
 _SIGNAL_ID = "1" * 64
 _FLATTEN_COMMAND_ID = "b" * 64
 _MANUAL_ENTRY_COMMAND_ID = "c" * 64
-_MANUAL_FLATTEN_COMMAND_ID = "d" * 64
-_MARKET_KEY = "crypto:perp:BTC:USDT"
 TOKEN = "executions-read-model-token"
 
 
@@ -45,22 +57,13 @@ def _seed_signal(
     signal_id: str = _SIGNAL_ID,
     case_id: str = "case-1",
     observed_at_ns: int = NOW_NS - 1_000_000,
-    expires_at_ns: int = NOW_NS + 60_000_000_000,
+    expires_at_ns: int = NOW_NS + 60 * SECOND_NS,
 ) -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
             repo.ensure_execution_runtime_control_state(_ACCOUNT_SLOT, now_ns=NOW_NS)
-        prepared = prepare_trade_signal(
-            signal_id=signal_id,
-            case_id=case_id,
-            market_key="crypto:perp:BTC:USDT",
-            direction="long",
-            observed_at_ns=observed_at_ns,
-            expires_at_ns=expires_at_ns,
-        )
-        with conn.transaction():
             conn.execute(
                 """
                 INSERT INTO trading_cases (
@@ -76,571 +79,277 @@ def _seed_signal(
                 """,
                 (case_id, f"runtime-source:{case_id}", "4" * 64),
             )
-            repo.append_trade_signal(prepared)
-    finally:
-        conn.close()
-
-
-def _run_runtime(dsn: str, mode: str) -> dict[str, object]:
-    result = subprocess.run(
-        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", dsn, mode],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout.strip().splitlines()[-1])
-
-
-def _executions(tmp_path: Path) -> dict[str, object]:
-    settings = Settings(ws_token=TOKEN, storage=postgres_settings_storage())
-    settings.set_config_dir(tmp_path / "app-home")
-    with TestClient(create_app(settings=settings)) as client:
-        response = client.get("/api/trading/executions", headers={"Authorization": f"Bearer {TOKEN}"})
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    assert "commands" not in data
-    return data
-
-
-def test_a_stopped_out_signal_is_one_closed_row_with_its_exit_price_and_realized_result(
-    postgres_clone_dsn: str,
-    tmp_path: Path,
-) -> None:
-    """#528 A/B. Before this change the `closed` position fact was `{status, quantity: 0}`: no exit
-    price, no realized result, no reason, so the one row an operator reads a finished trade off could
-    not say how it ended. The read model then had nothing to fold, and there was no read model.
-    """
-
-    _seed_signal()
-    receipt = _run_runtime(postgres_clone_dsn, "stop_filled")
-    assert receipt["positions_count"] == 0, receipt
-
-    data = _executions(tmp_path)
-    assert data["complete"] is True
-    rows = [row for row in data["executions"] if row["entry_id"] == _SIGNAL_ID]
-    assert len(rows) == 1, data["executions"]
-    row = rows[0]
-
-    assert row["stage"] == "closed"
-    assert row["source"] == "signal"
-    assert row["case_id"] == "case-1"
-    assert row["market_key"] == "crypto:perp:BTC:USDT"
-    assert row["direction"] == "long"
-    assert row["disposition_reason"] == "accepted"
-    assert row["exit_reason"] == "stop_filled"
-    assert row["realized_pnl_usd"] is not None
-    assert float(row["realized_pnl_usd"]) < 0
-    assert row["exit_price"] is not None and float(row["exit_price"]) < float(row["fill_avg_price"])
-    # `closed` reports the quantity that was open, not the zero the Runtime's own counter had reached.
-    assert row["fill_quantity"] == "0.049"
-    assert float(row["stop_trigger_price"]) < float(row["fill_avg_price"])
-    # #537 PR-5. The venue's own `order_status` and `position_status` are what `stage` is derived
-    # from, and the `accepted` / `rejected` split beside it said what `closed` already says.
-    assert {"disposition", "order_status", "position_status", "last_observed_at_ns"}.isdisjoint(row)
-
-    verify = connect_postgres_test(read_only=False)
-    try:
-        closed = verify.execute(
-            """
-            SELECT summary
-              FROM trading_execution_observations
-             WHERE normalized_kind = 'position' AND summary ->> 'status' = 'closed'
-            """
-        ).fetchone()
-    finally:
-        verify.close()
-    assert closed["summary"]["quantity"] == "0.049"
-    assert set(closed["summary"]) == {
-        "status",
-        "quantity",
-        "avg_entry_price",
-        "exit_price",
-        "realized_pnl_usd",
-        "exit_reason",
-    }
-
-
-def test_a_flattened_signal_names_the_operator_exit_and_its_command_stays_recorded(
-    postgres_clone_dsn: str,
-    tmp_path: Path,
-) -> None:
-    """The exit order carries the entry Signal's `signal_id`, which is why the fold is by Signal."""
-
-    _seed_signal()
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            repo.append_operator_intent(
-                _flatten_intent(),
+            repo.append_trade_signal(
+                prepare_trade_signal(
+                    signal_id=signal_id,
+                    case_id=case_id,
+                    market_key=MARKET,
+                    direction="long",
+                    observed_at_ns=observed_at_ns,
+                    expires_at_ns=expires_at_ns,
+                )
             )
     finally:
         conn.close()
 
-    receipt = _run_runtime(postgres_clone_dsn, "flatten_owned")
-    assert receipt["positions_count"] == 0, receipt
-    assert receipt["admitted_commands"] == 0, receipt
 
-    data = _executions(tmp_path)
-    row = next(item for item in data["executions"] if item["entry_id"] == _SIGNAL_ID)
-    assert row["source"] == "signal"
-    assert row["stage"] == "closed"
-    assert row["exit_reason"] == "operator_flatten"
-    assert row["realized_pnl_usd"] is not None
-    assert row["fill_quantity"] == "0.049"
-
-    command = next(item for item in _operator_intents() if item["command_id"] == _FLATTEN_COMMAND_ID)
-    # A flatten writes no `control_disposition` until the private report proves the slot went flat,
-    # and this harness runs no reconciliation. `recorded` is the honest answer: the exposure this
-    # Command closed is on the Signal row above, and reading it back onto the Command would be
-    # exactly the venue correlation #528 C deleted.
-    assert command["disposition"] == "completed"
-    assert command["action"] == "flatten"
-
-
-def test_a_manual_entry_is_its_own_row_and_carries_the_same_close_facts_as_a_signal(
-    postgres_clone_dsn: str,
-    tmp_path: Path,
-) -> None:
-    """#528 PR-3. The manual entry is the one ingress an operator can prove the chain with, and the
-    Runtime writes its order, fill, protection and position facts under the Command's own id. Folding
-    only by `signal_id` left the whole trade out of the desk table: block 3 showed `manual_entry
-    accepted` and block 4 showed nothing, so the fills, the exit and the realized result an operator
-    just produced were invisible where they are read.
-    """
-
-    _seed_manual_entry()
-    receipt = _run_runtime(postgres_clone_dsn, "manual_entry_flatten")
-    assert receipt["admitted_commands"] == 1, receipt
-    assert receipt["positions_count"] == 0, receipt
-
-    data = _executions(tmp_path)
-    rows = [row for row in data["executions"] if row["entry_id"] == _MANUAL_ENTRY_COMMAND_ID]
-    assert len(rows) == 1, data["executions"]
-    row = rows[0]
-
-    assert row["source"] == "manual"
-    assert row["case_id"] is None
-    assert row["market_key"] == _MARKET_KEY
-    assert row["direction"] == "long"
-    assert row["observed_at_ns"] == NOW_NS
-    assert row["disposition_reason"] == "accepted"
-    assert row["stage"] == "closed"
-    assert row["exit_reason"] == "operator_flatten"
-    assert row["realized_pnl_usd"] is not None
-    assert row["exit_price"] is not None
-    assert row["fill_quantity"] is not None and float(row["fill_quantity"]) > 0
-    assert row["fill_avg_price"] is not None
-    assert row["stop_trigger_price"] is not None
-    assert {"disposition", "order_status", "position_status", "last_observed_at_ns"}.isdisjoint(row)
-
-    # Removing the console control ledger must not erase retained operator facts.
-    commands = _operator_intents()
-    command = next(item for item in commands if item["command_id"] == _MANUAL_ENTRY_COMMAND_ID)
-    assert command["action"] == "manual_entry"
-    assert command["disposition"] == "accepted"
-    assert {item["command_id"] for item in commands} == {
-        _MANUAL_ENTRY_COMMAND_ID,
-        _MANUAL_FLATTEN_COMMAND_ID,
-    }
-
-
-def _operator_intents() -> list[dict[str, object]]:
-    conn = connect_postgres_test(read_only=True)
-    try:
-        return TradingRepository(conn).console_operator_intents(since_ns=0, action=None, limit=100)
-    finally:
-        conn.close()
-
-
-def _seed_manual_entry() -> None:
+def _append_command(*, command_id: str, action: str, market_key: str | None = None) -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
             repo.ensure_execution_runtime_control_state(_ACCOUNT_SLOT, now_ns=NOW_NS)
-        with conn.transaction():
             repo.append_operator_intent(
                 prepare_operator_intent(
-                    command_id=_MANUAL_ENTRY_COMMAND_ID,
+                    command_id=command_id,
                     account_slot=_ACCOUNT_SLOT,
-                    action="manual_entry",
-                    scope="market",
-                    reason="manual long",
+                    action=action,
+                    scope="market" if action == "manual_entry" else "account",
+                    reason="executions read model",
                     operator_identity="operator:test",
                     authentication_identity="test:authenticated",
                     requested_at_ns=NOW_NS,
-                    expires_at_ns=NOW_NS + 60_000_000_000,
-                    market_key=_MARKET_KEY,
-                    direction="long",
+                    expires_at_ns=NOW_NS + 60 * SECOND_NS,
+                    market_key=market_key,
+                    direction="long" if market_key else None,
                 )
             )
-            repo.append_operator_intent(_flatten_intent(command_id=_MANUAL_FLATTEN_COMMAND_ID))
     finally:
         conn.close()
 
 
-def _flatten_intent(*, command_id: str = _FLATTEN_COMMAND_ID):
-    return prepare_operator_intent(
-        command_id=command_id,
-        account_slot=_ACCOUNT_SLOT,
-        action="flatten",
-        scope="account",
-        reason="executions read model",
-        operator_identity="operator:test",
-        authentication_identity="test:authenticated",
-        requested_at_ns=NOW_NS,
-        expires_at_ns=NOW_NS + 60_000_000_000,
-        market_key=None,
-        direction=None,
-    )
-
-
-def test_a_stopped_out_signal_publishes_both_clocks_and_the_slots_realized_totals(
-    postgres_clone_dsn: str,
-    tmp_path: Path,
-) -> None:
-    """#604 T3. Two clocks a holding time is the distance between, and totals the window cannot add up.
-
-    Before this change the desk had `observed_at_ns` -- when the Signal was *written* -- and nothing
-    else, so "how long was this open" had no answer, and the only realized number on the page was the
-    sum of whichever rows the 24 h window happened to be showing. Both come off the same durable
-    observations the Runtime just wrote in its own process: the first entry `fill` and the `closed`
-    position, and one aggregate over every `closed` position this slot has.
-    """
-
-    _seed_signal()
-    receipt = _run_runtime(postgres_clone_dsn, "stop_filled")
-    assert receipt["positions_count"] == 0, receipt
-
-    data = _executions(tmp_path)
-    row = next(item for item in data["executions"] if item["entry_id"] == _SIGNAL_ID)
-
-    assert row["stage"] == "closed"
-    assert row["entry_filled_at_ns"] is not None
-    assert row["position_closed_at_ns"] is not None
-    assert row["entry_filled_at_ns"] < row["position_closed_at_ns"]
-    # The entry fill is the first venue fact about this entry, and the close is the last.
-    assert row["observed_at_ns"] <= row["entry_filled_at_ns"]
-    # Nothing refused this order, so there is no venue text to print.
-    assert row["order_reject_reason"] is None
-
-    verify = connect_postgres_test(read_only=False)
-    try:
-        closed = verify.execute(
-            """
-            SELECT occurred_at_ns, summary
-              FROM trading_execution_observations
-             WHERE normalized_kind = 'position' AND summary ->> 'status' = 'closed'
-            """
-        ).fetchone()
-        first_fill = verify.execute(
-            """
-            SELECT min(occurred_at_ns) AS at_ns
-              FROM trading_execution_observations
-             WHERE normalized_kind = 'fill' AND summary ->> 'leg' = 'entry'
-            """
-        ).fetchone()
-    finally:
-        verify.close()
-
-    # The published clocks are the observations' own, not a derivation beside them.
-    assert row["position_closed_at_ns"] == int(closed["occurred_at_ns"])
-    assert row["entry_filled_at_ns"] == int(first_fill["at_ns"])
-
-    totals = data["totals"]
-    assert totals["closed_total"] == 1
-    assert Decimal(totals["realized_known_total_usd"]) == Decimal(str(closed["summary"]["realized_pnl_usd"]))
-    assert Decimal(totals["realized_known_total_usd"]) == Decimal(row["realized_pnl_usd"])
-    # The Runtime's own clock is years ahead of this test's wall clock, so the same close is not in
-    # "today" and the day-scoped pair is the honest zero rather than a copy of the all-time pair.
-    assert totals["closed_today"] == 0
-    assert totals["realized_known_today_usd"] is None
-
-
-def test_a_venue_refusal_reaches_the_desk_as_the_words_the_venue_used(
-    postgres_clone_dsn: str,
-    tmp_path: Path,
-) -> None:
-    """#604 T3 over #604 T1. The Runtime records `summary.reason` on a rejected entry order.
-
-    The desk printed `ordered` and stopped: an operator could see that a Signal reached the venue and
-    not that the venue refused it, or what for. The observation is written straight through the
-    storage API here rather than provoked out of the backtest engine, because what is under test is
-    the fold that publishes the column -- and it tolerates a row written before the Runtime recorded
-    a reason at all, which is every row in the production ledger today. The summary is the exact
-    shape the writer produces, which `test_nautilus_oi_runtime_strategy.py` pins against the real
-    Nautilus event: `{"leg": "entry", "status": "rejected", "reason": <venue text>}`.
-    """
-
-    _seed_signal()
+def _run(**kwargs: Any) -> PostgresRuntime:
     conn = connect_postgres_test(read_only=False)
     try:
-        repo = TradingRepository(conn)
-        with conn.transaction():
-            repo.append_execution_observations(
-                prepare_execution_observations(
-                    (
-                        _observation(
-                            event="a",
-                            kind="signal_disposition",
-                            summary={"disposition": "accepted"},
-                        ),
-                        _observation(
-                            event="b",
-                            kind="order",
-                            summary={
-                                "leg": "entry",
-                                "status": "rejected",
-                                "reason": "Margin is insufficient.",
-                            },
-                        ),
-                    )
-                )
-            )
+        return run_runtime_on_postgres(repositories_for_connection(conn), **kwargs)
     finally:
         conn.close()
 
-    row = next(item for item in _executions(tmp_path)["executions"] if item["entry_id"] == _SIGNAL_ID)
 
-    assert row["stage"] == "ordered"
+def _executions(tmp_path: Path) -> dict[str, Any]:
+    settings = Settings(ws_token=TOKEN, storage=postgres_settings_storage())
+    settings.set_config_dir(tmp_path / "app-home")
+    with TestClient(create_app(settings=settings)) as client:
+        response = client.get("/api/trading/executions", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def _row(tmp_path: Path, entry_id: str = _SIGNAL_ID) -> dict[str, Any]:
+    return next(item for item in _executions(tmp_path)["executions"] if item["entry_id"] == entry_id)
+
+
+def _nautilus_realized(runtime: PostgresRuntime) -> Decimal:
+    [position] = runtime.engine.cache.positions_closed()
+    return position.realized_pnl.as_decimal()
+
+
+def test_a_stopped_out_signal_is_one_closed_row_whose_pnl_is_folded_from_its_fills(tmp_path: Path) -> None:
+    _seed_signal()
+    runtime = _run(
+        tape=[
+            *quotes(9_999, 10_000, start_ns=NOW_NS, count=10),
+            *quotes(9_700, 9_701, start_ns=NOW_NS + 2 * SECOND_NS, count=10),
+        ]
+    )
+
+    data = _executions(tmp_path)
+    [row] = [item for item in data["executions"] if item["entry_id"] == _SIGNAL_ID]
+    assert (row["stage"], row["plan_status"], row["exit_reason"]) == ("closed", "closed", "stop_filled")
+    assert (row["source"], row["case_id"], row["market_key"], row["direction"]) == ("signal", "case-1", MARKET, "long")
     assert row["disposition_reason"] == "accepted"
-    assert row["order_reject_reason"] == "Margin is insufficient."
-    assert row["entry_filled_at_ns"] is None
-    assert row["position_closed_at_ns"] is None
+    assert row["fill_quantity"] == "0.049"
+    assert Decimal(row["fill_avg_price"]) == Decimal(10_000)
+    assert Decimal(row["exit_price"]) == Decimal(9_700)
+    assert Decimal(row["stop_trigger_price"]) == Decimal(9_800)
+    assert Decimal(row["take_profit_trigger_price"]) == Decimal(10_200)
+    # Net of both commissions, exactly Nautilus' own realized PnL for the same position.
+    realized = Decimal(row["realized_pnl_usd"])
+    assert realized == _nautilus_realized(runtime)
+    assert realized == (Decimal(9_700) - Decimal(10_000)) * Decimal("0.049") - Decimal(row["fees_usd"])
+    assert row["pnl_known"] is True
+    assert row["entry_filled_at_ns"] < row["position_closed_at_ns"]
+    assert row["duration_ns"] == row["position_closed_at_ns"] - row["entry_filled_at_ns"]
+    assert {"history_complete", "gap_reason", "order_status", "position_status"}.isdisjoint(row)
+
+    totals = data["totals"]
+    assert (totals["closed_total"], totals["pnl_known_total"], totals["pnl_missing_total"]) == (1, 1, 0)
+    assert Decimal(totals["realized_known_total_usd"]) == realized
+    # The Runtime's clock is years ahead of this test's wall clock, so the close is not "today".
+    assert (totals["closed_today"], totals["realized_known_today_usd"]) == (0, None)
 
 
-def test_a_signal_whose_ttl_ran_out_without_a_disposition_reads_expired(
-    postgres_clone_dsn: str,
+@pytest.mark.parametrize("exit_reason", ["take_profit", "time_exit"])
+def test_a_normal_exit_is_one_native_close_with_complete_pnl(tmp_path: Path, exit_reason: str) -> None:
+    _seed_signal()
+    if exit_reason == "take_profit":
+        tape = [
+            *quotes(9_999, 10_000, start_ns=NOW_NS, count=10),
+            *quotes(10_300, 10_301, start_ns=NOW_NS + 2 * SECOND_NS, count=10),
+        ]
+        profile = oi_profile()
+    else:
+        tape = quotes(9_999, 10_000, start_ns=NOW_NS, count=80)
+        profile = replace(oi_profile(), exit_policy=replace(oi_profile().exit_policy, max_holding_ns=SECOND_NS))
+    runtime = _run(tape=tape, profile=profile)
+
+    row = _row(tmp_path)
+    assert (row["stage"], row["exit_reason"]) == ("closed", exit_reason)
+    assert Decimal(row["realized_pnl_usd"]) == _nautilus_realized(runtime)
+    assert row["duration_ns"] > 0
+
+
+def test_a_flatten_after_a_restart_closes_the_adopted_position_under_the_operators_reason(tmp_path: Path) -> None:
+    """The entry fill was journaled by one generation and the exit fill by the next; the fold spans both."""
+
+    _seed_signal()
+    _run(tape=quotes(9_999, 10_000, start_ns=NOW_NS, count=10))
+    _append_command(command_id=_FLATTEN_COMMAND_ID, action="flatten")
+    _run(tape=quotes(10_049, 10_051, start_ns=NOW_NS + 5 * SECOND_NS, count=20), seed=seed_reconciled_position)
+
+    row = _row(tmp_path)
+    assert (row["stage"], row["exit_reason"]) == ("closed", "operator_flatten")
+    assert row["pnl_known"] is True
+    assert Decimal(row["exit_price"]) == Decimal(10_049)
+    conn = connect_postgres_test(read_only=True)
+    try:
+        [command] = [
+            item
+            for item in TradingRepository(conn).console_operator_intents(since_ns=0, action=None, limit=10)
+            if item["command_id"] == _FLATTEN_COMMAND_ID
+        ]
+    finally:
+        conn.close()
+    assert (command["disposition"], command["disposition_reason"]) == ("accepted", "flatten_submitted")
+
+
+def test_a_manual_entry_is_its_own_row_with_the_same_protection_and_its_command_says_accepted(
     tmp_path: Path,
 ) -> None:
-    """#604 T3 (audit A4). The hole the bridge leaves is a word, not a row that never resolves.
+    _append_command(command_id=_MANUAL_ENTRY_COMMAND_ID, action="manual_entry", market_key=MARKET)
+    _run(tape=quotes(9_999, 10_000, start_ns=NOW_NS, count=20))
 
-    `UNRESOLVED_TRADE_SIGNALS_SQL` anti-joins on `expires_at_ns > now`, so a Signal refused only for a
-    retryable reason -- which writes no durable disposition -- stops being offered the instant it
-    expires and never receives one. Read back through `/api/trading/executions` that was `pending`
-    for the rest of the 24 h window: a row an operator cannot explain and the desk claims is still in
-    flight. Nothing new is written to close it; the Signal's own published TTL is the answer.
-    """
+    row = _row(tmp_path, _MANUAL_ENTRY_COMMAND_ID)
+    assert (row["source"], row["case_id"], row["stage"]) == ("manual", None, "protected")
+    assert row["disposition_reason"] == "accepted"
+    assert Decimal(row["stop_trigger_price"]) == Decimal(9_800)
+    assert row["realized_pnl_usd"] is None and row["pnl_known"] is False
 
+
+def test_a_refused_entry_is_a_rejected_row_in_the_venues_words(tmp_path: Path) -> None:
+    from nautilus_trader.model.enums import TradingState
+
+    _seed_signal()
+
+    def halt(engine: Any, _strategy: Any) -> None:
+        engine.kernel.risk_engine.set_trading_state(TradingState.HALTED)
+
+    _run(tape=quotes(9_999, 10_000, start_ns=NOW_NS, count=10), seed=halt)
+
+    row = _row(tmp_path)
+    assert (row["stage"], row["exit_reason"], row["disposition_reason"]) == (
+        "rejected",
+        "not_submitted",
+        "venue_rejected",
+    )
+    assert "HALTED" in row["order_reject_reason"]
+    assert row["fill_quantity"] is None and row["entry_filled_at_ns"] is None
+
+
+def test_a_signal_whose_ttl_ran_out_without_a_disposition_reads_expired(tmp_path: Path) -> None:
     now_ns = time.time_ns()
     _seed_signal(
         signal_id="9" * 64,
         case_id="case-ttl",
-        observed_at_ns=now_ns - 3_600_000_000_000,
-        expires_at_ns=now_ns - 60_000_000_000,
+        observed_at_ns=now_ns - 3_600 * SECOND_NS,
+        expires_at_ns=now_ns - 60 * SECOND_NS,
     )
     _seed_signal(
         signal_id="8" * 64,
         case_id="case-live",
-        observed_at_ns=now_ns - 3_600_000_000_000,
-        expires_at_ns=now_ns + 3_600_000_000_000,
+        observed_at_ns=now_ns - 3_600 * SECOND_NS,
+        expires_at_ns=now_ns + 3_600 * SECOND_NS,
     )
 
     rows = {row["entry_id"]: row for row in _executions(tmp_path)["executions"]}
-
-    assert rows["9" * 64]["stage"] == "expired"
-    assert rows["9" * 64]["disposition_reason"] is None
-    # A Signal still inside its own TTL is still pending: the clock is the only thing that changed.
+    assert (rows["9" * 64]["stage"], rows["9" * 64]["disposition_reason"]) == ("expired", None)
     assert rows["8" * 64]["stage"] == "pending"
 
 
-def _observation(*, event: str, kind: str, summary: dict[str, object]) -> ExecutionObservationV1:
+def _fill(identity: str, *, leg: str, price: str, at_ns: int, commission: str | None) -> ExecutionObservationV1:
+    summary: dict[str, str] = {"leg": leg, "last_quantity": "0.049", "last_price": price}
+    if commission is not None:
+        summary |= {"commission": commission, "commission_currency": "USDT"}
     return ExecutionObservationV1.model_validate(
         {
-            "event_id": event * 64,
+            "event_id": sha256(f"{identity}:{leg}".encode()).hexdigest(),
             "account_slot": _ACCOUNT_SLOT,
             "execution_strategy": "oi_nautilus_v1",
-            "signal_id": _SIGNAL_ID,
-            "normalized_kind": kind,
-            "occurred_at_ns": NOW_NS,
-            "observed_at_ns": NOW_NS + 1,
+            "signal_id": identity,
+            "normalized_kind": "fill",
+            "occurred_at_ns": at_ns,
+            "observed_at_ns": at_ns,
             "native_identity_references": (),
             "summary": summary,
         }
     )
 
 
-@pytest.mark.parametrize("exit_reason", ["take_profit", "time_exit"])
-def test_normal_exit_uses_one_native_reduce_only_order_and_keeps_complete_pnl(
-    postgres_clone_dsn: str,
+def test_realized_totals_count_a_plan_whose_fills_cannot_yield_a_result_as_missing_never_as_zero(
     tmp_path: Path,
-    exit_reason: str,
 ) -> None:
-    _seed_signal()
-    receipt = _run_runtime(postgres_clone_dsn, exit_reason)
-    assert receipt["positions_count"] == 0
-    entries = [order for order in receipt["orders"] if not order["reduce_only"]]
-    exits = [order for order in receipt["orders"] if order["reduce_only"] and order["order_type"] == "MARKET"]
-    assert len(entries) == len(exits) == 1
-    row = next(item for item in _executions(tmp_path)["executions"] if item["entry_id"] == _SIGNAL_ID)
-    assert row["stage"] == "closed"
-    assert row["exit_reason"] == exit_reason
-    assert row["plan_status"] == "closed"
-    assert row["pnl_known"] is True
-    assert row["history_complete"] is True
-    assert row["gap_reason"] is None
-    assert row["duration_ns"] > 0
-
-
-@pytest.mark.parametrize("crash", ["crash_after_prepare", "crash_after_entry"])
-def test_process_crash_keeps_plan_ownership_without_an_entry_observation(
-    postgres_clone_dsn: str,
-    crash: str,
-) -> None:
-    _seed_signal()
-    stopped = subprocess.run(
-        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", postgres_clone_dsn, crash],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert stopped.returncode == 74, stopped.stderr
-    conn = connect_postgres_test(read_only=False)
-    try:
-        plan = conn.execute(
-            "SELECT entry_id, entry_client_order_id, status, stop_distance_bps FROM trading_trade_plans"
-        ).fetchone()
-        assert plan["entry_id"] == _SIGNAL_ID
-        assert plan["status"] == "prepared"
-        assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 0
-    finally:
-        conn.close()
-    if crash == "crash_after_entry":
-        recovered = _run_runtime(postgres_clone_dsn, "cold_config_change")
-        assert recovered["recovered"] is True
-        assert recovered["positions_count"] == 1
-        assert recovered["protection_status"] == "protected"
-        assert recovered["execution_safe"] is True
-        assert all(
-            order["reduce_only"] or order["client_order_id"] == "EXTERNAL-COLD-ENTRY" for order in recovered["orders"]
-        )
-        assert not any(order["client_order_id"] == plan["entry_client_order_id"] for order in recovered["orders"])
-        verify = connect_postgres_test(read_only=True)
-        try:
-            restored = verify.execute(
-                "SELECT entry_id, entry_client_order_id, stop_distance_bps, history_gap_reason FROM trading_trade_plans"
-            ).fetchone()
-            assert restored["entry_client_order_id"] == plan["entry_client_order_id"]
-            assert restored["stop_distance_bps"] == 200
-            assert restored["history_gap_reason"] == "native_pnl_basis_incomplete_after_restart"
-        finally:
-            verify.close()
-
-
-@pytest.mark.parametrize(
-    "pnls,known_sum,known_count",
-    [
-        (("3", "-1", "2"), "4", 3),
-        (("3", None, "2"), "5", 2),
-        ((None, None, None), None, 0),
-    ],
-)
-@pytest.mark.parametrize("audit_gap", [False, True])
-def test_realized_totals_name_known_pnl_and_never_turn_missing_history_into_zero(
-    tmp_path: Path,
-    pnls: tuple[str | None, ...],
-    known_sum: str | None,
-    known_count: int,
-    audit_gap: bool,
-) -> None:
-    from hashlib import sha256
-
-    from tests.nautilus_oi_runtime_fixtures import trade_plan_for_entry, trade_signal
-    from tracefold.integrations.nautilus.oi_runtime.state import RuntimeEntryRequest
-    from tracefold.trading.storage.trade_plans import prepare_trade_plan
+    """Three closed plans: whole fills with fees, a fill with no commission (history), no exit fill."""
 
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        values = []
-        for index, pnl in enumerate(pnls):
+        observations = []
+        for index, (entry_fee, exit_leg) in enumerate((("0.1", "stop"), (None, "take_profit"), ("0.1", None))):
             identity = str(index + 1) * 64
-            start = time.time_ns() - (index + 1) * 60_000_000_000
+            start = time.time_ns() - (index + 1) * 60 * SECOND_NS
             _seed_signal(
                 signal_id=identity, case_id=f"case-pnl-{index}", observed_at_ns=start, expires_at_ns=start + 10
             )
-            plan = trade_plan_for_entry(RuntimeEntryRequest.from_signal(trade_signal(signal_id=identity)))
-            plan = plan.model_copy(
-                update={
-                    "account_slot": _ACCOUNT_SLOT,
-                    "created_at_ns": start,
-                    "entry_expires_at_ns": start + 10,
-                    "opened_at_ns": start + 1,
-                    "terminal_at_ns": start + 20,
-                    "updated_at_ns": start + 20,
-                    "status": "closed",
-                    "exit_reason": "time_exit",
-                }
+            plan = open_plan(entry_id=identity, opened_at_ns=start + 1, created_at_ns=start).closed(
+                reason="stop_filled" if exit_leg == "stop" else "venue_unknown",
+                terminal_at_ns=start + 20,
+                now_ns=start + 20,
             )
             with conn.transaction():
                 assert repo.insert_trade_plan(prepare_trade_plan(plan))
-            # Missing PnL is an absent close observation, while the plan preserves the closed identity.
-            if pnl is None:
-                continue
-            for kind, offset, summary in (
-                ("fill", 1, {"leg": "entry", "last_quantity": "0.049", "last_price": "10000"}),
-                ("fill", 19, {"leg": "exit", "last_quantity": "0.049", "last_price": "10100"}),
-                ("position", 20, {"status": "closed", "quantity": "0", "realized_pnl_usd": pnl}),
-            ):
-                values.append(
-                    _observation(event="a", kind=kind, summary=summary).model_copy(
-                        update={
-                            "signal_id": identity,
-                            "event_id": sha256(f"{identity}:{offset}".encode()).hexdigest(),
-                            "occurred_at_ns": start + offset,
-                            "observed_at_ns": start + offset,
-                        }
-                    )
-                )
-        if audit_gap:
-            values.append(
-                _observation(event="f", kind="audit_gap", summary={"count": 1}).model_copy(
-                    update={
-                        "signal_id": None,
-                        "occurred_at_ns": start,
-                        "observed_at_ns": time.time_ns(),
-                    }
-                )
-            )
+            observations.append(_fill(identity, leg="entry", price="10000", at_ns=start + 1, commission=entry_fee))
+            if exit_leg is not None:
+                observations.append(_fill(identity, leg=exit_leg, price="10100", at_ns=start + 19, commission="0.2"))
         with conn.transaction():
-            repo.append_execution_observations(prepare_execution_observations(tuple(values)))
+            repo.append_execution_observations(prepare_execution_observations(tuple(observations)))
     finally:
         conn.close()
+
     data = _executions(tmp_path)
     totals = data["totals"]
     assert totals["closed_today"] == totals["closed_total"] == 3
-    assert totals["pnl_known_today"] == totals["pnl_known_total"] == known_count
-    assert totals["pnl_missing_today"] == totals["pnl_missing_total"] == 3 - known_count
-    assert totals["realized_known_today_usd"] == totals["realized_known_total_usd"] == known_sum
-    assert totals["pnl_complete_today"] == totals["pnl_complete_total"] == (known_count == 3 and not audit_gap)
-    assert len(data["executions"]) == 3
-    for row in data["executions"]:
-        assert row["stage"] == "closed"
-        assert row["pnl_known"] == (row["realized_pnl_usd"] is not None)
-        assert row["history_complete"] == (row["pnl_known"] and not audit_gap)
+    assert totals["pnl_known_total"] == 1 and totals["pnl_missing_total"] == 2
+    # (10100 - 10000) x 0.049 - 0.1 - 0.2
+    assert Decimal(totals["realized_known_total_usd"]) == Decimal("4.6")
+    rows = {row["entry_id"]: row for row in data["executions"]}
+    assert Decimal(rows["1" * 64]["realized_pnl_usd"]) == Decimal("4.6")
+    assert Decimal(rows["1" * 64]["fees_usd"]) == Decimal("0.3")
+    assert rows["2" * 64]["realized_pnl_usd"] is None and rows["2" * 64]["fees_usd"] is None
+    assert rows["3" * 64]["realized_pnl_usd"] is None
+    assert {row["stage"] for row in rows.values()} == {"closed"}
 
 
-def test_active_plan_older_than_the_console_window_remains_visible_without_any_audit(tmp_path: Path) -> None:
-    from tests.nautilus_oi_runtime_fixtures import trade_plan_for_entry, trade_signal
-    from tracefold.integrations.nautilus.oi_runtime.state import RuntimeEntryRequest
-    from tracefold.trading.storage.trade_plans import prepare_trade_plan
-
-    old = time.time_ns() - 30 * 86_400_000_000_000
-    plan = trade_plan_for_entry(RuntimeEntryRequest.from_signal(trade_signal()))
-    plan = plan.model_copy(update={"created_at_ns": old, "entry_expires_at_ns": old + 10, "updated_at_ns": old})
+def test_an_open_plan_older_than_the_console_window_remains_visible_without_any_audit(tmp_path: Path) -> None:
+    old = time.time_ns() - 30 * 86_400 * SECOND_NS
+    plan = open_plan(opened_at_ns=None, created_at_ns=old)
     conn = connect_postgres_test(read_only=False)
     try:
         with conn.transaction():
             TradingRepository(conn).insert_trade_plan(prepare_trade_plan(plan))
     finally:
         conn.close()
-    rows = _executions(tmp_path)["executions"]
-    assert len(rows) == 1
-    assert rows[0]["entry_id"] == plan.entry_id
-    assert rows[0]["stage"] == "pending"
-    assert rows[0]["entry_client_order_id"] == plan.entry_client_order_id
-    assert rows[0]["risk_budget_usd"] == str(plan.risk_budget_usd)
+
+    [row] = _executions(tmp_path)["executions"]
+    assert (row["entry_id"], row["stage"]) == (plan.entry_id, "pending")
+    assert row["entry_client_order_id"] == plan.entry_client_order_id
+    assert row["risk_budget_usd"] == str(plan.risk_budget_usd)

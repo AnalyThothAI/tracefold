@@ -770,7 +770,7 @@ runtime-logs: ## tail the execution runtime log
 
 # The readiness payload is printed, never interpreted (#598 D5-b). `/readyz` answers 200 with the
 # whole payload now, so `curl -fsS` is gone with the 503 it used to discard: an operator asking
-# what is wrong gets `execution_safe`, `entry_block_reason` and the rest instead of an empty body
+# what is wrong gets `entries_armed`, `entry_block_reason` and the rest instead of an empty body
 # and one line of curl. An unreachable endpoint is reported and the container state above it,
 # which is the check that actually notices a dead process, still decides the exit status.
 runtime-status: ## report the execution runtime container, health, and operator readiness

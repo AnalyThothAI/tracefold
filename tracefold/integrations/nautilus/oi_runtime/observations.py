@@ -1,426 +1,261 @@
-"""Translate concrete Runtime and Nautilus facts into durable observations."""
+"""Translate Runtime verdicts and Nautilus events into durable observations.
+
+One writer, so every observation of one entry carries the same correlation: a Signal's `signal_id` or
+a manual Command's `command_id`, which is also the plan's `entry_id`. Exposure no plan claims is
+recorded without one.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Any, Final
+from typing import Any, Final, Literal
 
-from tracefold.trading import ACCEPTED_ENTRY_DISPOSITIONS, OperatorIntentV1, TradeSignalV1
+from tracefold.trading import ExecutionObservationV1, OperatorIntentV1
 
-from .audit_sink import AuditSink
+from .account_projection import OrderLeg
+from .journal import ExecutionJournal
+from .risk import decimal_value
 from .signal_client import ExecutionSignalClient
-from .state import ExecutionState, RuntimeEntryRequest, RuntimeExecutionState, RuntimeReconciliationSnapshot
-
-# Refusals that state the Runtime's own clock, not a verdict on the request. Each is answered by the
-# next private reconciliation, the next quote, or that day's baseline write, all of which happen
-# inside a Signal's TTL, so the Signal keeps no durable disposition and the next indexed poll offers
-# it again. The TTL bounds redelivery rather than writing a verdict: `UNRESOLVED_TRADE_SIGNALS_SQL`
-# only offers Signals whose `expires_at_ns` is still ahead of now, so one that lapses between two
-# polls is never handed back and never gets a durable disposition at all. `entry.handle`'s terminal
-# `expired` only lands on a request that was already dequeued when its TTL passed. Everything not
-# listed here is terminal, including every deterministic refusal and every readiness gate a
-# redelivery could only re-answer the same way. Writing a disposition for these is what made five of
-# 2026-09-02's six Signals single-delivery deaths (#510 B); `market_subscription_pending` is the same
-# shape for the quote stream an admission just opened, and it stops being retryable after
-# `QUOTE_WARMUP_NS`.
-RETRYABLE_ENTRY_REASONS: Final[frozenset[str]] = frozenset(
-    {
-        "account_stale",
-        "market_stale",
-        "market_subscription_pending",
-        "oi_runtime_account_missing",
-        "oi_runtime_account_balance_missing",
-        # The same clock family as `account_stale`, answered by the same private reconciliation. It was
-        # terminal while its two siblings were retryable, so which of the three a Runtime happened to
-        # notice first decided whether the Signal got another delivery (#537 PR-3).
-        "reconciliation_stale",
-        "trade_plan_busy",
-    }
-)
-
 
 # The venue's own words for a refusal, bounded by what `ExecutionObservationV1` metadata accepts for
-# one string. Truncating at the writer is what keeps a long refusal from failing the whole
-# observation's validation and sending it down the `audit_append_rejected` gap path instead.
-_MAX_VENUE_REASON_BYTES: Final[int] = 256
+# one string.
+_MAX_TEXT_BYTES: Final[int] = 256
 
 
-def _venue_reason(reason: str) -> str:
-    """The venue's refusal text, cut to whole characters inside the metadata string bound."""
+def bounded_text(value: str) -> str:
+    """Text cut to whole characters inside the metadata string bound."""
 
-    encoded = reason.encode("utf-8")
-    if len(encoded) <= _MAX_VENUE_REASON_BYTES:
-        return reason
-    return encoded[:_MAX_VENUE_REASON_BYTES].decode("utf-8", "ignore")
-
-
-class AuditBackpressure(RuntimeError):
-    pass
+    encoded = value.encode("utf-8")
+    if len(encoded) <= _MAX_TEXT_BYTES:
+        return value
+    return encoded[:_MAX_TEXT_BYTES].decode("utf-8", "ignore")
 
 
-class RuntimeObservationWriter:
-    """The sole native-event/disposition to ExecutionObservationV1 translator."""
+def _decimal_text(value: Any) -> str:
+    return format(decimal_value(value).normalize(), "f")
+
+
+class RuntimeObservations:
+    """The sole native-event and verdict to `ExecutionObservationV1` translator."""
 
     def __init__(
         self,
         *,
-        audit: AuditSink,
+        journal: ExecutionJournal,
         signals: ExecutionSignalClient,
-        state: RuntimeExecutionState,
         timestamp_ns: Callable[[], int],
     ) -> None:
-        self._audit = audit
-        self._factory = audit.factory
+        self._journal = journal
+        self._factory = journal.factory
         self._signals = signals
-        self._state = state
         self._timestamp_ns = timestamp_ns
 
     @staticmethod
-    def correlation(state: ExecutionState) -> dict[str, str]:
-        if state.entry.source == "manual":
-            return {"command_id": state.entry.entry_id}
-        return {"signal_id": state.entry.entry_id}
+    def correlation(source: str | None, entry_id: str | None) -> dict[str, str]:
+        if entry_id is None or source is None:
+            return {}
+        return {"command_id": entry_id} if source == "manual" else {"signal_id": entry_id}
 
-    @staticmethod
-    def event_ns(event: Any) -> int:
-        return int(getattr(event, "ts_event", getattr(event, "ts_init", 0)))
+    def _offer(self, value: ExecutionObservationV1) -> bool:
+        return self._journal.offer(value)
 
-    def dispose_command(self, command: OperatorIntentV1, disposition: str, reason: str) -> None:
-        if command.command_id in self._state.disposed_command_ids:
-            return
+    # -- verdicts on the two inputs ----------------------------------------------------------------
+
+    def dispose_signal(self, signal_id: str, reason: str, detail: dict[str, str] | None = None) -> None:
+        """Write the one terminal verdict on a Signal. A full journal hands the Signal back instead."""
+
         now_ns = self._timestamp_ns()
-        value = self._factory.create(
-            normalized_kind="control_disposition",
-            command_id=command.command_id,
-            occurred_at_ns=now_ns,
-            observed_at_ns=now_ns,
-            summary={"action": command.action, "disposition": disposition, "reason": reason},
-            payload={
-                "command_id": command.command_id,
-                "action": command.action,
-                "disposition": disposition,
-                "reason": reason,
-            },
-            event_identity="final",
-        )
-        if not self._audit.offer(value):
-            self._signals.retry_command(command)
-            raise AuditBackpressure("oi_runtime_audit_backpressure")
-        self._state.disposed_command_ids.add(command.command_id)
-
-    def dispose_signal(self, signal: TradeSignalV1, reason: str) -> None:
-        if signal.signal_id in self._state.disposed_signal_ids:
-            return
-        now_ns = self._timestamp_ns()
-        value = self._factory.create(
-            normalized_kind="signal_disposition",
-            signal_id=signal.signal_id,
-            occurred_at_ns=now_ns,
-            observed_at_ns=now_ns,
-            summary={"disposition": reason},
-            payload={"signal_id": signal.signal_id, "disposition": reason},
-            event_identity="final",
-        )
-        if not self._audit.offer(value):
-            self._signals.retry(signal)
-            raise AuditBackpressure("oi_runtime_audit_backpressure")
-        self._state.disposed_signal_ids.add(signal.signal_id)
-
-    def dispose_entry(self, request: RuntimeEntryRequest, reason: str) -> None:
-        if reason in RETRYABLE_ENTRY_REASONS:
-            self._release_entry(request)
-            return
-        if request.signal is not None:
-            self.dispose_signal(request.signal, reason)
-            return
-        command = request.command
-        if command is None:
-            raise RuntimeError("oi_runtime_entry_source_invalid")
-        self.dispose_command(
-            command,
-            "accepted" if reason in ACCEPTED_ENTRY_DISPOSITIONS else "rejected",
-            reason,
-        )
-
-    def _release_entry(self, request: RuntimeEntryRequest) -> None:
-        """Drop the in-process claim without a durable verdict, so the next poll redelivers it.
-
-        Never `disposed_signal_ids` / `disposed_command_ids`: the entry path checks those before doing
-        any work, and a retryable refusal has to be reconsidered.
-        """
-
-        if request.signal is not None:
-            self._signals.release(request.signal.signal_id)
-            return
-        command = request.command
-        if command is None:
-            raise RuntimeError("oi_runtime_entry_source_invalid")
-        self._signals.release_command(command.command_id)
-
-    def order(self, state: ExecutionState, order: Any, leg: str, status: str) -> None:
-        occurred_at_ns = int(order.ts_init)
-        self._audit.offer(
+        summary: dict[str, str | int | bool] = {"disposition": reason, **(detail or {})}
+        offered = self._offer(
             self._factory.create(
-                normalized_kind="protection" if leg == "protection" else "order",
-                **self.correlation(state),
-                occurred_at_ns=occurred_at_ns,
-                observed_at_ns=occurred_at_ns,
-                native_identity_references=(order.client_order_id.value,),
-                summary={"leg": leg, "status": status},
-                payload={"client_order_id": order.client_order_id.value, "leg": leg, "status": status},
-                event_identity=status,
-            )
-        )
-
-    def native_order_event(self, state: ExecutionState, leg: str, status: str, event: Any) -> None:
-        now_ns = self.event_ns(event)
-        references = [event.client_order_id.value]
-        venue_order_id = getattr(event, "venue_order_id", None)
-        if venue_order_id is not None:
-            references.append(venue_order_id.value)
-        self._audit.offer(
-            self._factory.create(
-                normalized_kind="order" if leg in {"entry", "exit"} else "protection",
-                **self.correlation(state),
-                occurred_at_ns=now_ns,
-                observed_at_ns=max(now_ns, self._timestamp_ns()),
-                native_identity_references=references,
-                summary={"leg": leg, "status": status},
-                payload={
-                    "leg": leg,
-                    "status": status,
-                    "client_order_id": event.client_order_id.value,
-                },
-                event_identity=f"{status}:{event.client_order_id.value}",
-            )
-        )
-
-    def rejected_order_event(self, state: ExecutionState, leg: str, status: str, event: Any, reason: str) -> None:
-        """One terminal venue verdict, in the venue's own words where it gave any.
-
-        The Runtime already read `reason` to tell an ambiguous outcome from a decided one and then
-        dropped it, so the one real rejection this account has seen recorded `{leg, status}` and
-        nothing an operator could answer "why" with (#604 T1). A venue that named no reason keeps the
-        key absent, which is a different fact from a venue that named an empty one.
-        """
-
-        now_ns = self.event_ns(event)
-        summary: dict[str, str] = {"leg": leg, "status": status}
-        payload: dict[str, str] = {"client_order_id": event.client_order_id.value, "status": status}
-        if reason:
-            summary["reason"] = payload["reason"] = _venue_reason(reason)
-        self._audit.offer(
-            self._factory.create(
-                normalized_kind="order" if leg in {"entry", "exit"} else "protection",
-                **self.correlation(state),
+                normalized_kind="signal_disposition",
+                signal_id=signal_id,
                 occurred_at_ns=now_ns,
                 observed_at_ns=now_ns,
-                native_identity_references=(event.client_order_id.value,),
                 summary=summary,
-                payload=payload,
-                event_identity=status,
+                event_identity="final",
+            )
+        )
+        if not offered:
+            self._signals.release(signal_id)
+
+    def dispose_command(
+        self,
+        command_id: str,
+        *,
+        action: str,
+        disposition: Literal["accepted", "rejected"],
+        reason: str,
+        detail: dict[str, str] | None = None,
+    ) -> None:
+        now_ns = self._timestamp_ns()
+        summary: dict[str, str | int | bool] = {
+            "action": action,
+            "disposition": disposition,
+            "reason": reason,
+            **(detail or {}),
+        }
+        offered = self._offer(
+            self._factory.create(
+                normalized_kind="control_disposition",
+                command_id=command_id,
+                occurred_at_ns=now_ns,
+                observed_at_ns=now_ns,
+                summary=summary,
+                event_identity="final",
+            )
+        )
+        if not offered:
+            self._signals.release_command(command_id)
+
+    def dispose_entry(
+        self,
+        *,
+        source: Literal["signal", "manual"],
+        entry_id: str,
+        reason: str,
+        detail: dict[str, str] | None = None,
+    ) -> None:
+        """A Signal's verdict is its reason; a manual Command's is accepted or rejected, with the reason."""
+
+        if source == "signal":
+            self.dispose_signal(entry_id, reason, detail)
+            return
+        self.dispose_command(
+            entry_id,
+            action="manual_entry",
+            disposition="accepted" if reason == "accepted" else "rejected",
+            reason=reason,
+            detail=detail,
+        )
+
+    def reject_command(self, command: OperatorIntentV1, reason: str) -> None:
+        self.dispose_command(command.command_id, action=command.action, disposition="rejected", reason=reason)
+
+    def accept_command(self, command: OperatorIntentV1, reason: str, detail: dict[str, str] | None = None) -> None:
+        self.dispose_command(
+            command.command_id, action=command.action, disposition="accepted", reason=reason, detail=detail
+        )
+
+    # -- Nautilus events ---------------------------------------------------------------------------
+
+    def order(
+        self,
+        *,
+        correlation: dict[str, str],
+        client_order_id: str,
+        leg: OrderLeg,
+        status: str,
+        occurred_at_ns: int,
+        reason: str | None = None,
+        trigger_price: Any = None,
+        venue_order_id: str | None = None,
+    ) -> None:
+        """One order lifecycle step. A stop or take-profit is `protection`; entries and exits are `order`."""
+
+        summary: dict[str, str | int | bool] = {"leg": leg, "status": status}
+        if reason:
+            summary["reason"] = bounded_text(reason)
+        if trigger_price is not None:
+            summary["trigger_price"] = _decimal_text(trigger_price)
+        references = [client_order_id] if venue_order_id is None else [client_order_id, venue_order_id]
+        self._offer(
+            self._factory.create(
+                normalized_kind="protection" if leg in {"stop", "take_profit"} else "order",
+                **correlation,
+                occurred_at_ns=occurred_at_ns,
+                observed_at_ns=self._timestamp_ns(),
+                native_identity_references=references,
+                summary=summary,
+                event_identity=f"{status}:{client_order_id}",
             )
         )
 
-    def fill(self, state: ExecutionState, leg: str, event: Any) -> None:
-        now_ns = self.event_ns(event)
+    def fill(self, *, correlation: dict[str, str], leg: OrderLeg, event: Any) -> None:
+        """One venue fill, with the commission the venue charged for it and the currency it charged in."""
+
         references = [event.client_order_id.value]
         for name in ("venue_order_id", "trade_id", "position_id"):
             value = getattr(event, name, None)
             if value is not None:
                 references.append(value.value)
-        self._audit.offer(
+        summary: dict[str, str | int | bool] = {
+            "leg": leg,
+            "last_quantity": _decimal_text(event.last_qty),
+            "last_price": _decimal_text(event.last_px),
+        }
+        commission = getattr(event, "commission", None)
+        if commission is not None:
+            summary["commission"] = _decimal_text(commission)
+            summary["commission_currency"] = commission.currency.code
+        occurred_at_ns = int(event.ts_event)
+        self._offer(
             self._factory.create(
                 normalized_kind="fill",
-                **self.correlation(state),
-                occurred_at_ns=now_ns,
-                observed_at_ns=max(now_ns, self._timestamp_ns()),
+                **correlation,
+                occurred_at_ns=occurred_at_ns,
+                observed_at_ns=self._timestamp_ns(),
                 native_identity_references=references,
-                summary={
-                    "leg": leg,
-                    "last_quantity": str(event.last_qty),
-                    "last_price": str(event.last_px),
-                },
-                payload={
-                    "leg": leg,
-                    "client_order_id": event.client_order_id.value,
-                    "last_quantity": str(event.last_qty),
-                    "last_price": str(event.last_px),
-                },
+                summary=summary,
                 event_identity=f"fill:{getattr(event, 'trade_id', event.client_order_id)}",
             )
         )
 
     def position(
         self,
-        state: ExecutionState,
-        status: str,
-        occurred_at_ns: int,
         *,
-        quantity: Decimal | None = None,
-        exit_price: Decimal | None = None,
-        realized_pnl_usd: Decimal | None = None,
+        correlation: dict[str, str],
+        position_id: str,
+        status: Literal["opened", "closed"],
+        occurred_at_ns: int,
+        quantity: Any,
+        average_entry_price: Any,
+        exit_price: Any = None,
         exit_reason: str | None = None,
     ) -> None:
-        """How much exposure, at what entry price, and on `closed` out at what price and why.
-
-        `closed` used to report `quantity` 0 -- the Runtime had already zeroed its own counter -- and
-        carried neither the exit price nor the realized result, so the one row an operator reads a
-        finished trade off had no outcome in it at all (#528 A). The caller passes the pre-close
-        quantity and the venue's own close facts; every value stays the string of its Decimal.
-        """
-
-        reported = state.position_quantity if quantity is None else quantity
-        summary: dict[str, str] = {"status": status, "quantity": str(reported)}
-        for key, value in (
-            ("avg_entry_price", state.avg_entry_price),
-            ("exit_price", exit_price),
-            ("realized_pnl_usd", realized_pnl_usd),
-            ("exit_reason", exit_reason),
-        ):
-            if value is not None:
-                summary[key] = str(value)
-        references = () if state.position_id is None else (state.position_id.value,)
-        self._audit.offer(
-            self._factory.create(
-                normalized_kind="position",
-                **self.correlation(state),
-                occurred_at_ns=occurred_at_ns,
-                observed_at_ns=max(occurred_at_ns, self._timestamp_ns()),
-                native_identity_references=references,
-                summary=summary,
-                payload=dict(summary),
-                event_identity=f"{status}:{reported}:{occurred_at_ns}",
-            )
-        )
-
-    def unclaimed_position_closed(
-        self,
-        *,
-        command_id: str,
-        position_id: Any,
-        quantity: Decimal,
-        occurred_at_ns: int,
-        exit_price: Decimal | None,
-        realized_pnl_usd: Decimal | None,
-    ) -> None:
-        """The close of exposure no durable entry identity claims, under the flatten that asked for it."""
-
-        summary: dict[str, str] = {
-            "status": "closed",
-            "quantity": str(quantity),
-            "exit_reason": "unclaimed_flatten",
+        summary: dict[str, str | int | bool] = {
+            "status": status,
+            "quantity": _decimal_text(abs(decimal_value(quantity))),
+            "avg_entry_price": _decimal_text(average_entry_price),
         }
-        for key, value in (("exit_price", exit_price), ("realized_pnl_usd", realized_pnl_usd)):
-            if value is not None:
-                summary[key] = str(value)
-        self._audit.offer(
+        if exit_price is not None:
+            summary["exit_price"] = _decimal_text(exit_price)
+        if exit_reason is not None:
+            summary["exit_reason"] = exit_reason
+        self._offer(
             self._factory.create(
                 normalized_kind="position",
-                command_id=command_id,
+                **correlation,
                 occurred_at_ns=occurred_at_ns,
-                observed_at_ns=max(occurred_at_ns, self._timestamp_ns()),
-                native_identity_references=(position_id.value,),
+                observed_at_ns=self._timestamp_ns(),
+                native_identity_references=(position_id,),
                 summary=summary,
-                payload=dict(summary),
-                event_identity=f"unclaimed_flatten:closed:{position_id.value}:{occurred_at_ns}",
+                event_identity=f"{status}:{position_id}:{occurred_at_ns}",
             )
         )
 
-    def protection_submitted(
-        self,
-        state: ExecutionState,
-        *,
-        client_order_id: Any,
-        quantity: Decimal,
-        trigger_price: Decimal,
-        event_identity: str,
-    ) -> None:
-        now_ns = self._timestamp_ns()
-        self._audit.offer(
+    def exposure(self, *, unexpected: tuple[str, ...], observed_at_ns: int) -> None:
+        """Exposure no plan claims appeared, changed or cleared; new entries are blocked while it lasts."""
+
+        summary: dict[str, str | int | bool] = {
+            "risk_fact": "unexpected_exposure",
+            "count": len(unexpected),
+            "exposure": bounded_text(",".join(unexpected)),
+        }
+        self._offer(
             self._factory.create(
-                normalized_kind="protection",
-                **self.correlation(state),
-                occurred_at_ns=now_ns,
-                observed_at_ns=now_ns,
-                native_identity_references=(client_order_id.value,),
-                summary={
-                    "explicit_quantity": str(quantity),
-                    "trigger_price": str(trigger_price),
-                    "reduce_only": True,
-                },
-                payload={
-                    "client_order_id": client_order_id.value,
-                    "quantity": str(quantity),
-                    "trigger_price": str(trigger_price),
-                    "reduce_only": True,
-                },
-                event_identity=event_identity,
-            )
-        )
-
-    def unclaimed_flatten_order(self, *, command_id: str, position: Any, order: Any) -> None:
-        """Record the reduce-only close of exposure no durable entry identity claims."""
-
-        occurred_at_ns = int(order.ts_init)
-        self._audit.offer(
-            self._factory.create(
-                normalized_kind="order",
-                command_id=command_id,
-                occurred_at_ns=occurred_at_ns,
-                observed_at_ns=max(occurred_at_ns, self._timestamp_ns()),
-                native_identity_references=(order.client_order_id.value, position.id.value),
-                summary={
-                    "leg": "unclaimed_flatten",
-                    "status": "submitted",
-                    "instrument_id": position.instrument_id.value,
-                    "side": "long" if position.is_long else "short",
-                    "quantity": str(order.quantity),
-                },
-                payload={
-                    "client_order_id": order.client_order_id.value,
-                    "position_id": position.id.value,
-                    "instrument_id": position.instrument_id.value,
-                    "leg": "unclaimed_flatten",
-                    "status": "submitted",
-                    "quantity": str(order.quantity),
-                },
-                event_identity=f"unclaimed_flatten:{order.client_order_id.value}",
-            )
-        )
-
-    def flatten_accepted(self, command_id: str) -> bool:
-        now_ns = self._timestamp_ns()
-        return self._audit.offer(
-            self._factory.create(
-                normalized_kind="readiness",
-                command_id=command_id,
-                occurred_at_ns=now_ns,
-                observed_at_ns=now_ns,
-                summary={"action": "flatten", "control_stage": "runtime_accepted"},
-                payload={"command_id": command_id, "action": "flatten", "stage": "runtime_accepted"},
-                event_identity="runtime_accepted",
-            )
-        )
-
-    def flatten_completed(self, command: OperatorIntentV1, snapshot: RuntimeReconciliationSnapshot) -> bool:
-        return self._audit.offer(
-            self._factory.create(
-                normalized_kind="control_disposition",
-                command_id=command.command_id,
-                occurred_at_ns=min(snapshot.account_observed_at_ns, snapshot.reconciliation_observed_at_ns),
-                observed_at_ns=max(snapshot.account_observed_at_ns, snapshot.reconciliation_observed_at_ns),
-                summary={"disposition": "completed", "reason": "binance_account_flat"},
-                payload={
-                    "command_id": command.command_id,
-                    "disposition": "completed",
-                    "reason": "binance_account_flat",
-                    "account_observed_at_ns": snapshot.account_observed_at_ns,
-                },
-                event_identity="final",
+                normalized_kind="risk",
+                occurred_at_ns=observed_at_ns,
+                observed_at_ns=observed_at_ns,
+                summary=summary,
+                event_identity=f"unexpected_exposure:{observed_at_ns}",
             )
         )
 
 
-__all__ = ["RETRYABLE_ENTRY_REASONS", "AuditBackpressure", "RuntimeObservationWriter"]
+def spread_detail(spread: Decimal | None) -> dict[str, str]:
+    return {} if spread is None else {"spread_bps": format(spread.quantize(Decimal("0.01")), "f")}
+
+
+__all__ = ["RuntimeObservations", "bounded_text", "spread_detail"]

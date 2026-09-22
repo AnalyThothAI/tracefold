@@ -92,8 +92,6 @@ class _Trading:
             "pnl_known_total": 11,
             "pnl_missing_today": 0,
             "pnl_missing_total": 1,
-            "pnl_complete_today": True,
-            "pnl_complete_total": False,
         }
 
     def console_executions(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -217,7 +215,7 @@ class _Trading:
                 "last_observed_at_ns": (NOW + 90_000) * 1_000_000,
             },
         ]
-        return [{**row, "pnl_known": row.get("realized_pnl_usd") is not None, "history_complete": True} for row in rows]
+        return rows
 
 
 class _Runtime:
@@ -259,12 +257,14 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
         "mode": "disabled",
         "account_slot": "binance_usdm_primary",
         "alive": False,
-        "execution_safe": False,
         "entries_armed": False,
         "entry_block_reason": "disabled",
     }
     assert {key: data["execution"][key] for key in expected} == expected
-    assert data["execution"]["startup_reconciled"] is False
+    # #680: the private account proof's answers went with the proof.
+    assert {"execution_safe", "startup_reconciled", "reconciliation_age_ms", "account_flat_proven"}.isdisjoint(
+        data["execution"]
+    )
     assert {"singleton_ready", "portfolio_ready", "control_plane_ready", "audit_ready", "day_start_ready"}.isdisjoint(
         data["execution"]
     )
@@ -525,8 +525,6 @@ def test_executions_publishes_the_realized_totals_the_window_cannot_add_up(
         "pnl_known_total": 11,
         "pnl_missing_today": 0,
         "pnl_missing_total": 1,
-        "pnl_complete_today": True,
-        "pnl_complete_total": False,
     }
     totals_call = next(kwargs for name, kwargs in trading.calls if name == "console_realized_totals")
     assert totals_call["account_slot"] == "binance_usdm_primary"

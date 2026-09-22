@@ -22,19 +22,18 @@ Execution remains `disabled` by default, so credentials are optional for the
 ordinary deployment. `trading.enabled` controls only the Alpha/Signal lane;
 `trading.execution.mode` independently selects `disabled`, Binance USD-M
 `paper` (Demo), or Binance USD-M `live`. Paper and live run the same one-owner
-Nautilus Strategy/Risk/OMS/reconciliation path and differ only by immutable
-profile identity, credential namespace, and Binance environment.
+Nautilus Strategy/Risk/OMS/reconciliation path and differ only by account slot,
+mode, credential namespace, and Binance environment.
 
 Run `uv run tracefold init` before the first current startup; canonical
 `make up` and `make deploy-image` already do so. It creates and permissions the
 operator directory and never rewrites config content: a config still holding a
-retired key, such as the pre-#449 multi-login PostgreSQL mapping, is refused by
-`Settings` validation naming that key, and the operator edits it (#589). For a
-direct schema upgrade, require this order: `uv run tracefold init`,
-`uv run tracefold config`, then `make db-migrate`.
+retired key is refused by `Settings` validation naming that key, and the
+operator edits it (#589). For a direct schema upgrade, require this order:
+`uv run tracefold init`, `uv run tracefold config`, then `make db-migrate`.
 
-Run `uv run tracefold config` to inspect only the execution mode, profile,
-account slot, and resolved secret-file references. Never print or copy a
+Run `uv run tracefold config` to inspect only the execution mode, account slot,
+risk section and resolved secret-file references. Never print or copy a
 credential. Verify the configured lifecycle with:
 
 ```text
@@ -45,118 +44,168 @@ make status
 docker compose exec -T workers tracefold trading status
 ```
 
-Disabled status reports `alive=false`, `execution_safe=false`, and
-`entries_armed=false`; `make runtime-status` fails closed if a container is
-still running in that mode. It does not fail on the readiness payload itself:
-that is printed, whatever it says.
-Active safety additionally requires exactly one current account-slot owner,
-secure non-empty credential files, startup reconciliation, initialized
-Portfolio, no unexpected exposure, a fresh heartbeat, and the configured
+Disabled status reports `alive=false` and `entries_armed=false`;
+`make runtime-status` fails closed if a container is still running in that mode.
+It does not fail on the readiness payload itself: that is printed, whatever it
+says. An active Runtime additionally requires exactly one current account-slot
+owner, secure non-empty credential files, a fresh heartbeat, and the configured
 account slot and mode. `tracefold trading status` and `/api/trading/status`
-report what the Runtime is doing and nothing about which build is doing it: the
-release string, configuration digest, image digest, deployment revision,
-credential fingerprint and lifecycle state were written on every heartbeat and
-read by no page and no command, and `20260904_0361` deleted all six. Durable audit, current control,
-day-start baseline, pause, and halt govern `entries_armed` without taking away
-existing-exposure safety. Serve and Workers never receive Binance secrets.
+report what the Runtime is doing and nothing about which build is doing it.
+Serve and Workers never receive Binance secrets.
 
-The active Runtime has two deliberately different reconciliation roles. The
-App root owns complete Binance private-account proof: positions, regular orders,
-and Algo orders must all load and project successfully before startup or a
-fresh `account_flat=true` fact exists. It refreshes that proof every
-`trading.execution.risk.reconciliation_interval_seconds` and wakes it
-immediately for unknown submit/query outcomes, protection ambiguity, unexpected
-exposure, and pending flatten. Nautilus owns native in-flight, missing-open-order, and
-position consistency mechanics at their pinned 2/5/5-second checks; its
-duplicate startup reconciliation is disabled. Any complete-report or Cache
-projection error terminates the generation without refreshing the old fact.
-All Nautilus 1.231 Binance private calls used by that proof are pinned behind
-`nautilus_1231_binance_compat.py`; upgrade validation targets that one seam.
-No App reconciliation or Strategy lifecycle module may call a private adapter
-member directly.
+#### Who owns which execution fact (#680)
 
-The Runtime process holds two PostgreSQL connections. The singleton session
-holds the account-slot advisory lock; from the moment the bridge starts, its
-thread is the only PostgreSQL caller the process has, and it never holds a
-transaction across Binance I/O. Its session carries a five-second
-`statement_timeout`, because reading operator Commands on it is how a flatten
-reaches the Runtime. Semantic changes are written on the next bridge cycle and
-the unchanged generation heartbeats every 500 ms, before the public five-second
-stale threshold; those two cadences are code-owned safety budgets, not operator
-tuning.
+Nautilus owns execution state. The venue is the truth about positions, orders and
+fills, and the Nautilus Cache is the only in-process copy of it: Nautilus'
+startup reconciliation rebuilds the Cache from the venue before the Strategy
+starts, over a lookback longer than the longest holding time, and its 5-second
+open-order and position checks keep it converged. There is no Cache database; a
+restart is the same reconciliation a start is. PostgreSQL holds intent (the
+TradePlan), the append-only execution journal and the operator's inputs. Realized
+PnL is folded from the journal's fills, net of every commission the venue charged.
+See [Architecture](ARCHITECTURE.md#runtime-ownership) for the ownership table.
 
-Quote streams are opened per admitted entry rather than for the whole route
-catalogue, so an operator reading Nautilus logs should expect one market-data
-stream per live thesis and none at rest. The nine risk numbers under
-`trading.execution.risk` are operator-owned and reach the Runtime as the gap
-policy it enforces; editing one needs a restart and nothing else, and moves
-neither the account slot, the client order namespace nor the Nautilus instance
-id, which is derived from `account_slot:mode`.
+On top of the Cache the Strategy runs one invariant every five seconds, and on
+every fill and position event, and it reads nothing but the Cache and the plans:
+
+- a position whose entry order is terminal gets one reduce-only `STOP_MARKET` and
+  one reduce-only `TAKE_PROFIT_MARKET`, both triggered on the **mark price**, at the
+  plan's stop and take-profit distance from the average fill. A missing one is
+  placed again; a present one is never compared, resized or replaced. A stop or
+  take-profit the venue refuses with `-2021 would immediately trigger` means the
+  condition is already met, so the position is closed at market under that leg's
+  reason;
+- a position held past the plan's maximum holding time is closed with a
+  reduce-only market order (`time_exit`);
+- when a position closes, every order left on its instrument is canceled and its
+  plan ends with the reason its closing order implies: `stop_filled`,
+  `take_profit`, `time_exit`, `operator_flatten`, or `external` for a close this
+  Runtime did not originate. A plan whose end the Runtime never saw (the account
+  was already flat for it when it looked) ends as `venue_unknown`;
+- orders on an instrument with no position and no plan are canceled;
+- a position, or a non-reduce-only order, that no plan claims is *unexpected
+  exposure*: new entries are refused with `unexpected_exposure` and a `risk`
+  observation names it. **Nothing is ever flattened because the picture is
+  unclear**; the operator decides, with `/flatten account`.
+
+Nautilus 1.231 behaviours this design routes around rather than patches: orders it
+reconciles carry no account id, so the Runtime only asks the Cache by instrument and
+strategy; a failed Algo-order report during reconciliation is only logged, which
+the invariant, the next 5 s open-order check and the entry precondition (no order
+and no position on the instrument) cover; and a lost user-data listen key is
+recovered once, after which the 5 s checks keep the Cache honest. No Runtime
+module reads a private (`_`-prefixed) member of a Nautilus object
+(`tests/architecture/test_nautilus_runtime_ownership.py`).
+
+#### Entries
+
+A Signal (or a manual `/long`/`/short`) passes these gates in order, and the first
+one it fails is its disposition: `emergency_halted`, `entries_paused`,
+`unexpected_exposure`, `post_stop_cooldown` (Signals only: a stop-out on the same
+market inside `post_stop_cooldown_seconds`, read from the durable plans),
+`position_limit` (`max_positions`), `daily_loss_limit` (what the UTC day already
+lost plus this trade's risk exceeds `max_daily_loss_usd`), `instrument_unmapped`.
+It then waits, inside its own TTL, for a fresh quote (`market_unavailable`), for a
+spread no wider than `max_spread_fraction_of_stop` of its stop distance
+(`spread_limit`, which records the spread it measured as `spread_bps`), and for
+its instrument to hold no position and no order (`instrument_busy`); if the TTL
+runs out while it waits, the reason it was waiting for is its disposition. It is
+sized once, its plan is committed, and only then is one market order sent with the
+plan's deterministic client order id. Nothing is re-measured between the commit
+and the order.
+
+A Signal's disposition is written once the venue answered: `accepted` when the
+venue accepted or filled the entry, `venue_rejected` (with `venue_reason`) when the
+venue or the pre-trade risk engine refused it — that plan ends at once as
+`not_submitted`. A restart between the order and the answer leaves the verdict for
+the next generation, which writes it from the plan and the Cache.
+
+#### Failure semantics
+
+No transient failure stops the process. A Strategy callback or pump step that
+raises is logged and runs again on the next pump; the database bridge replaces a
+lost session after a bounded backoff; a Nautilus node that fails to start, or stops,
+is disposed and a new generation is built after 5-60 s. The process exits only for
+a configuration or credential file it cannot use, a database schema older than its
+image, or the loss of the account-slot lock. The journal writes one row per
+transaction: a row the database refuses on integrity grounds is dropped and logged,
+and any other failure retries that row after a backoff while the rows behind it
+keep flowing.
+
+The Runtime process holds two PostgreSQL connections. The singleton session holds
+the account-slot advisory lock; from the moment the bridge starts, its thread is the
+only PostgreSQL caller the process has, and it never holds a transaction across
+Binance I/O. Its session carries a five-second `statement_timeout`, because reading
+operator Commands on it is how a flatten reaches the Runtime. Semantic changes are
+written on the next bridge cycle and the unchanged generation heartbeats every
+500 ms, before the public five-second stale threshold; those two cadences are
+code-owned safety budgets, not operator tuning.
+
+Quote streams are opened per waiting entry and per held position rather than for the
+whole route catalogue, so an operator reading Nautilus logs should expect one
+market-data stream per live thesis and none at rest. The operator-owned numbers
+under `trading.execution.risk` — `risk_fraction_per_trade`,
+`max_risk_per_trade_usd`, `max_positions`, `max_leverage`, `max_daily_loss_usd`,
+`stop_distance_bps`, `max_spread_fraction_of_stop`, `post_stop_cooldown_seconds`
+and `market_stale_after_seconds` — and `trading.execution.exit_policy` reach the
+Runtime at start; editing one needs a restart and nothing else, and moves neither
+the account slot, the client order namespace nor the Nautilus instance id, which is
+derived from `account_slot:mode`. Existing plans keep the stop distance, take-profit
+and maximum holding time they were admitted with.
 
 **A runtime replacement is a restart, and a product deploy is not one.**
 Changing the runtime image, the release or any `trading.execution.*` value does
-not require a new name, a flat account or a fresh `/resume`: `account_slot` plus
-`mode` is the execution identity, the account-slot advisory lock is what keeps
-two Runtimes apart, and control state lives on the slot. Entries stay exactly as
-the last accepted Command left them. `execution.mode: disabled` is the switch
-that means "do not trade". A News, Serve or Workers release does not restart the
-Runtime at all: `make up` never names the service, so the process keeps its
-position, its protective stop, and its `started_at_ns` across a product deploy
-(#537 D3).
+not require a new name or a fresh `/resume`: `account_slot` plus `mode` is the
+execution identity, the account-slot advisory lock is what keeps two Runtimes
+apart, and control state lives on the slot. Entries stay exactly as the last
+accepted Command left them. `execution.mode: disabled` is the switch that means
+"do not trade". A News, Serve or Workers release does not restart the Runtime at
+all: `make up` never names the service, so the process keeps its position, its
+protective orders, and its `started_at_ns` across a product deploy (#537 D3).
 
-For the first Demo start on a slot, confirm the Binance account is
-authoritatively flat, populate the configured Binance files as regular
-mode-`0600` files, set `execution.mode: paper`, and run `make up` followed by
+For the first Demo start on a slot, confirm the Binance account is flat, populate
+the configured Binance files as regular mode-`0600` files, set
+`execution.mode: paper`, and run `make up` followed by
 `make runtime-build && make runtime-up`. A slot with no Command history starts
 with entries armed. Inspect `make status` and
-`docker compose exec -T workers tracefold trading status` before letting a
-Signal or `/long`/`/short` enter, and use `/pause REASON` if it should not.
-After the bounded Demo exercise, issue `/flatten account TTL_SECONDS`, require a
-later private Binance flat reconciliation, read the receipt out of `trading
-status` and the observation table (below), then run `make runtime-down` and
-restore `execution.mode: disabled`. `make runtime-down` is what stops trading;
-restoring the config afterwards is what stops the next `make runtime-up`. Demo
-evidence is not live-money evidence. Never select `live` or perform a live
-canary without separate explicit operator authority.
+`docker compose exec -T workers tracefold trading status` before letting a Signal
+or `/long`/`/short` enter, and use `/pause REASON` if it should not. After the
+bounded Demo exercise, issue `/flatten account TTL_SECONDS`, confirm the plan ended
+as `operator_flatten` and `current_account` holds no position or order, then run
+`make runtime-down` and restore `execution.mode: disabled`. `make runtime-down` is
+what stops trading; restoring the config afterwards is what stops the next
+`make runtime-up`. Demo evidence is not live-money evidence. Never select `live`
+or perform a live canary without separate explicit operator authority.
 
 #### Reading the Demo receipt out of the durable facts
 
-`trading status` carries the current runtime identity plus `account_flat`,
-`reconciliation_observed_at_ns` and `reconciliation_age_ms`; a flat account is
-proven by that projection inside its freshness budget, never by the absence of a
-row. The three appends the exercise itself has to show are queries, not a
-verifier (#520 PR-B deleted `trading demo-receipt`). Run them against the
-Tracefold database, substituting the entry and flatten `command_id` values the
-ingress returned:
+`trading status` carries the current account as the Runtime's Nautilus Cache holds
+it: positions with the stop and take-profit resting against each, and every working
+order. The trade itself is in the plan and the journal. Run these against the
+Tracefold database, substituting the entry's `signal_id` or manual `command_id`:
 
 ```sql
--- 1. the entry: venue-accepted order and its fill, with the Binance identities
-SELECT normalized_kind, summary ->> 'leg' AS leg, summary ->> 'status' AS status,
-       native_identity_references, observed_at_ns
-  FROM trading_execution_observations
- WHERE command_id = :entry_command_id
-   AND normalized_kind IN ('order', 'fill')
- ORDER BY observed_at_ns;
+-- 1. the plan: admitted intent, when it opened, how and when it ended
+SELECT status, opened_at_ns, terminal_at_ns, exit_reason, stop_distance_bps, take_profit_bps
+  FROM trading_trade_plans
+ WHERE entry_id = :entry_id;
 
--- 2. the protection: an explicit reduce-only stop, accepted by the venue
-SELECT summary ->> 'status' AS status, summary ->> 'explicit_quantity' AS quantity,
-       summary ->> 'reduce_only' AS reduce_only, native_identity_references, observed_at_ns
+-- 2. the venue's side: orders, protection, fills with their commissions, positions
+SELECT normalized_kind, summary, native_identity_references, occurred_at_ns
   FROM trading_execution_observations
- WHERE command_id = :entry_command_id
-   AND normalized_kind = 'protection'
- ORDER BY observed_at_ns;
+ WHERE signal_id = :entry_id OR command_id = :entry_id
+ ORDER BY seq;
 
--- 3. the flatten: completed against a later private Binance flat reconciliation
+-- 3. the flatten: one control disposition, accepted once the closes were sent
 SELECT summary ->> 'disposition' AS disposition, summary ->> 'reason' AS reason, observed_at_ns
   FROM trading_execution_observations
  WHERE command_id = :flatten_command_id
-   AND normalized_kind = 'control_disposition'
- ORDER BY observed_at_ns;
+   AND normalized_kind = 'control_disposition';
 ```
 
-The kill -9 restart receipt is the `readiness` observations with
-`summary ->> 'lifecycle' = 'started'` for the slot: one before the entry and one
-after its fill is what proves the position survived a restart.
+The restart receipt is a new `started_at_ns` on `trading_execution_runtime_state`
+with the plan row unchanged and no new order or protection observation for it:
+the reconciled position and its resting orders were adopted, not replaced.
 
 ### Trading operator control
 
@@ -173,8 +222,9 @@ The closed commands are `/status`, `/pause REASON`, `/resume REASON`,
 `/long MARKET_KEY TTL_SECONDS` / `/short MARKET_KEY TTL_SECONDS`. Flatten and
 manual TTL are 5–120 seconds; control TTL is five minutes. There is no quantity,
 notional, leverage, venue, order type, or direct order option. Manual direction
-enters the same Runtime risk, sizing, deterministic client-ID, order,
-protection, reconciliation, and audit path as a Signal; it has no bypass.
+enters the same Runtime gates, sizing, deterministic client-ID, order,
+protection and journal path as a Signal; it has no bypass (it only skips the
+post-stop cooldown, which belongs to the Signal lane).
 An accepted emergency halt is sticky for the Runtime lifetime: `/resume` is
 explicitly rejected as `emergency_halt_sticky` and cannot manufacture a resumed
 state.
@@ -184,12 +234,12 @@ Runtime running, the intent remains `awaiting_runtime` until its TTL passes;
 ingress never fabricates a terminal Runtime Observation.
 Inspect `trading commands` for the command disposition and
 `trading observations` for later Runtime facts. The only valid evidence ladder
-is: intent recorded, Runtime accepted, order accepted, fill observed, and
-`account_flat=true` on the current execution projection within its
-`reconciliation_age_ms` budget. Never infer a later stage from an earlier one,
-from a recent `decision.last_case_at_ms`, or from Runtime readiness. Do not
-read flatness out of the observation ledger: an unchanged steady reconciliation
-appends no row (#510).
+is: intent recorded, Runtime accepted, order accepted, fill observed, and an
+empty `current_account` (no position, no order) on a live, fresh execution
+projection. Never infer a later stage from an earlier one, from a recent
+`decision.last_case_at_ms`, or from Runtime readiness. Do not read flatness out
+of the observation ledger: it records orders, fills and positions, not the
+absence of them.
 
 The browser reads and the one Command write both use the bootstrap `ws_token`
 (#520 PR-B deleted the separate `console_write_token`). The write still requires
@@ -209,42 +259,40 @@ the Workers container.
 
 Preserve both request fields exactly on retries.
 
-The execution Runtime publishes three independent states. `alive` proves only
-the process/TradingNode/event loop; `execution_safe` proves existing exposure can
-still be reconciled, protected, canceled, exited, flattened, and recovered;
-`entries_armed` alone permits new exposure. There are exactly these three, and
-`entries_armed` differs from `execution_safe` only by what an operator asked for.
-Nautilus `/readyz` reports `ok` from the first two and deliberately stays `true`
-when entries are paused. It answers 200 either way and the payload is the
-diagnosis; the container healthcheck asks `/healthz`, because a runtime that is
-alive but blocked is exactly the process an operator must be able to reach, and
-restarting the owner of an open position is not a repair. The Runtime's own
-`entry_block_reason` is one of
-`startup_reconciliation_unproven`, `reconciliation_stale`, `unexpected_exposure`, `ownership_ambiguous`,
-`singleton_lost`, `entries_paused` and `emergency_halted`, and the read
-projection adds only its own `disabled` / `runtime_*` reasons for a row that is
-missing, stale or from another identity; a backpressured audit
-queue and a missing day-start baseline are no longer among them. An unwritable
-audit copy shows as `audit_healthy=false` with `audit_failure_reason` in
-`current_account`, and the day's baseline is recorded from current equity by
-whichever of the entry path and the background owner needs it first. Use
-`entry_block_reason`, `positions_count`, `open_orders_count`,
-`protection_status`, `unexpected_exposure`, and `reconciliation_age_ms` to locate
-the blocked layer; none is an order, fill, or account-flat receipt.
+The execution Runtime publishes two states. `alive` proves only the
+process/TradingNode/event loop; `entries_armed` alone permits new exposure.
+Existing exposure is always protected, exited and flattenable while the Runtime is
+alive, whatever blocks entries. Nautilus `/readyz` reports `ok` from `alive` and
+deliberately stays `true` when entries are blocked. It answers 200 either way and
+the payload is the diagnosis; the container healthcheck asks `/healthz`, because a
+runtime that is alive but blocked is exactly the process an operator must be able
+to reach, and restarting the owner of an open position is not a repair. The
+Runtime's own `entry_block_reason` is one of `emergency_halted`,
+`entries_paused`, `singleton_lost` and `unexpected_exposure`, and the read
+projection adds only its own `disabled` / `runtime_*` reasons
+(`runtime_starting`, `runtime_rebuilding`, `runtime_stopped`,
+`runtime_heartbeat_stale`, `runtime_state_missing`, `runtime_identity_mismatch`)
+for a row that is missing, stale or from another identity. Use
+`entry_block_reason`, `positions_count`, `open_orders_count`, `protection_status`
+(`not_applicable`, `protected`, or `unprotected` while a position lacks its stop or
+take-profit) and `unexpected_exposure` to locate the blocked layer; none is an
+order, fill, or account-flat receipt.
 
-A restart while in a position reclaims it from its nonterminal TradePlan and exact
-native order/position proof. Recovery has no age cutoff. Config edits affect new
-plans: existing positions retain the admitted stop distance, risk contribution,
-TP and maximum holding duration. A cold reconstruction marks PnL unknown when the
-original native cost basis is unavailable.
+A restart while in a position is Nautilus reconciliation: the position and its
+resting stop and take-profit are rebuilt into the Cache from the venue and the
+open plan claims them again by instrument. Recovery has no age cutoff beyond the
+reconciliation lookback, which is always longer than the maximum holding time.
+Config edits affect new plans: existing positions retain the admitted stop
+distance, TP and maximum holding duration.
 
-`unexpected_exposure=true` means native exposure lacks a uniquely proven current
-account/mode plan. Conflicting candidates explicitly report `ownership_ambiguous`.
-Read `current_account` in `trading status` or the Trading page for the instrument,
-side, quantity and `owned` flag. `/flatten account TTL_SECONDS` reduce-only closes
-the account's open positions and cancels resting orders; completion requires a later
-complete private proof. A failed entry query or unavailable ordinary/Algo endpoint
-does not advance that proof.
+`unexpected_exposure=true` means a position, or a non-reduce-only order, exists on
+an instrument no open plan of this account slot and mode claims. Read
+`current_account` in `trading status` or the Trading page for the instrument,
+side, quantity and `owned` flag. `/flatten account TTL_SECONDS` pauses entries,
+closes every open position of the account with a reduce-only market order and
+cancels working entry orders; its disposition is `accepted` with
+`flatten_submitted` once the closes were sent, and the flat account is read from
+`current_account`, not from the disposition.
 
 ### TradePlan cutover and paper exit policy (#644)
 
@@ -257,55 +305,49 @@ outcomes with limited eligible samples and does not establish an optimal TP.
 Live configuration must supply the policy object explicitly; paper defaults never
 silently authorize a live exit policy. Alpha admission is unchanged.
 
-Migration `20260912_0377` is a forward cut from `0376`. It creates no inferred plans
-from historical observations. Before replacing the old runtime:
+### Nautilus-owned execution cutover (#680)
 
-1. Capture the exact old main SHA/image, schema, account slot, mode and fresh private
-   positions, ordinary orders and Algo orders. Pause new entries using the local CLI.
-2. If old exposure exists, either prove one old identity and every frozen parameter
-   and insert a reviewed one-time plan with that evidence, or explicitly flatten paper
-   with the old runtime and retain the completed Command and subsequent full flat
-   proof. If parameters are not provable, use the paper flatten/reopen path. An empty
-   position list alone is insufficient while any ordinary or Algo order remains.
-3. Stop the runtime and application writers under the existing deployment lock. Take
-   and verify the protected backup; retain old images. Apply the forward migration
-   using the exact fully green main image, then start Serve/Workers and the separate
-   Nautilus runtime with the operator-owned config mounted consistently.
-4. Verify schema, account/mode, singleton, current private proof and health. For the
-   Demo receipt, submit one small manual entry through the existing CLI risk limits,
-   verify its committed plan precedes entry, fill and exact stop, restart held,
-   change only new-entry risk settings and restart again. The same plan and old stop
-   must remain. Complete a normal or operator exit and capture its fresh flat proof,
-   terminal plan, exit reason and PnL completeness; another restart must not revive it.
+Migration `20260922_0389` is a forward cut. It deletes the private account proof's
+`reconciliation`, `readiness` and `audit_gap` observations, the projection columns
+that carried it (`execution_safe`, `startup_reconciled`, `account_flat`,
+`reconciliation_observed_at_ns`, `facts_expire_at_ns`), the stored account
+snapshot, and the plan statuses and history-gap column no current writer produces;
+every row it keeps is left with `entries_armed=false` until the new Runtime writes
+its own. Its downgrade refuses. The old Runtime cannot run against it and the new
+Runtime cannot run against the old schema, so the Runtime is down across it:
 
-The Issue receipt records exact revision/image, plan/entry id, native position and
-stop/exit ids, config changes without secrets, and reconciliation clocks. Never use
-live credentials for this procedure. Do not downgrade across the cut with new plans;
-roll forward, or restore a verified stopped backup only after reconciling venue
-exposure. The schema backup cannot roll back a Binance fill.
+1. `make runtime-build` with the new image while the old Runtime still runs.
+2. Confirm the Binance account is flat and every plan is terminal: with the old
+   Runtime, `/flatten account TTL_SECONDS` if needed, then an empty
+   `current_account` and
+   `SELECT count(*) FROM trading_trade_plans WHERE status NOT IN ('closed')` = 0.
+   The new Runtime would adopt an open position through reconciliation anyway; a
+   flat cut simply leaves nothing to prove afterwards.
+3. `make runtime-down`.
+4. Edit `trading.execution.risk` in the operator config: delete
+   `max_total_risk_usd` and `reconciliation_interval_seconds` if present (the config
+   is refused while they remain), and set `max_spread_fraction_of_stop` and
+   `post_stop_cooldown_seconds` only to depart from their defaults (0.3 and 14400).
+5. `make up` (applies the migration).
+6. `make runtime-up`, then `make runtime-status` and
+   `docker compose exec -T workers tracefold trading status` until `alive=true`
+   and `entries_armed` is what the last accepted Command left.
 
-The pinned Binance compatibility seam also binds reconciled native orders to the
-account proven by their private report. Nautilus 1.231 can recreate an accepted order
-with an empty account identity, which otherwise hides it from account-scoped Cache
-reads. The repair replays native events in memory with the missing account binding;
-it neither submits an order nor publishes that local binding as audit/history evidence.
-A held restart receipt must cover the actual Binance report parser and native
-ExecutionEngine, not only a manually seeded cold Cache.
+Never use live credentials for this procedure. Roll forward; the schema backup
+cannot roll back a Binance fill.
 
-Known realized PnL includes the pinned Nautilus 1.231 `PositionClosed.realized_pnl`
-with recorded commissions in the settlement currency. The
-[pinned position implementation](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/model/position.pyx)
-subtracts those fill commissions. Binance
+Known realized PnL is folded from the journal's fills: exit notional minus entry
+notional, signed by side, minus every recorded commission. It is known only when the
+exit fills sum to the entry quantity and every commission was charged in the
+settlement currency (USDT); otherwise it is absent, never synthesized as zero or
+reconstructed from unrelated account balance changes. Binance
 [account updates](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/adapters/binance/futures/schemas/user.py)
-update balances; they do not allocate funding to PositionClosed. Thus the display
-is known execution PnL excluding funding, not complete account net profit.
-Missing entry/exit fills, missing close observations, audit gaps and cold cost-basis
-gaps are visible; absent PnL is never synthesized as zero or reconstructed from
-unrelated account balance changes.
+update balances; they do not allocate funding to a position. Thus the display is
+known execution PnL excluding funding, not complete account net profit.
 
 Runtime control restart reads the single
-`trading_execution_runtime_control_state` row for the active profile. Accepted or
-completed Runtime Observations advance it atomically with append-only history;
+`trading_execution_runtime_control_state` row for the active profile. Accepted
+Runtime control dispositions advance it atomically with append-only history;
 do not reconstruct current pause/halt state by scanning historical Commands.
 
 If Decision is enabled and schema, wiring, policy, or News-generation
@@ -512,8 +554,9 @@ non-zero when the execution mode is `paper`/`live` and no container is running,
 when the container is unhealthy, or when the mode is `disabled` and a container
 is still running; it prints the running image and the whole readiness payload.
 The runtime's `/readyz` answers 200 with that payload whatever it says, so the
-payload is what an operator gets: `execution_safe`, `entries_armed`,
-`entry_block_reason`, the position and order counts. It used to answer 503 when
+payload is what an operator gets: `alive`, `entries_armed`,
+`entry_block_reason`, `unexpected_exposure`, `protection_status`, the position
+and order counts. It used to answer 503 when
 `ok` was false and `curl -fsS` then discarded the body, so the one endpoint that
 explains the process holding live exposure went silent exactly when it had
 something to say. An unreachable endpoint is reported and the report continues;

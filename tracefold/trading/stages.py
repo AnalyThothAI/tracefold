@@ -7,18 +7,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-ExecutionStage = Literal[
-    "pending", "rejected", "expired", "ordered", "filled", "protected", "closing", "closed", "unresolved"
-]
+ExecutionStage = Literal["pending", "rejected", "expired", "ordered", "filled", "protected", "closed"]
 
-# Every terminal entry disposition that means "this Signal or manual Command became an order".
-# Everything else the Runtime writes is a refusal; the retryable clock refusals never reach a durable
-# row at all (`RETRYABLE_ENTRY_REASONS`). It also fed a published `accepted` / `rejected` split beside
-# `stage`, which already says `ordered` or `rejected` about the same row -- one word, derived once
-# here, is what `/api/trading/executions` publishes (#537 PR-5).
-ACCEPTED_ENTRY_DISPOSITIONS: frozenset[str] = frozenset(
-    {"accepted", "recovered", "replayed_query_first", "unknown_query_first"}
-)
+# The one entry disposition that means "the venue took this Signal's or manual Command's order". A
+# Runtime writes it only after the venue answered (#680); every other word is a refusal, including
+# `venue_rejected`, which is the venue refusing the order itself.
+ACCEPTED_ENTRY_DISPOSITIONS: frozenset[str] = frozenset({"accepted"})
 
 
 def execution_stage(
@@ -31,25 +25,21 @@ def execution_stage(
     expires_at_ns: int | None,
     now_ns: int,
     plan_status: str | None = None,
+    exit_reason: str | None = None,
 ) -> ExecutionStage:
-    """Plans own lifecycle. Historical entries without a plan use their recorded observations.
+    """Plans own lifecycle. Entries without a plan use their recorded observations.
 
-    A missing audit row cannot erase an active plan or turn it into an expired Signal.
-    The Signal TTL applies only before an entry plan exists.
+    A missing audit row cannot erase an active plan or turn it into an expired Signal. The Signal TTL
+    applies only before an entry plan exists. A plan that ended because its entry was refused is a
+    rejection, not a closed trade.
     """
 
     if plan_status == "closed":
-        return "closed"
-    if plan_status == "closing":
-        return "closing"
-    if plan_status == "unresolved":
-        return "unresolved"
+        return "rejected" if exit_reason == "not_submitted" else "closed"
     if plan_status == "open":
         return "protected" if stop_trigger_price is not None else "filled"
-    if plan_status == "entry_working":
-        return "ordered"
     if plan_status == "prepared":
-        return "pending"
+        return "ordered" if order_status is not None or fill_quantity is not None else "pending"
     if position_status == "closed":
         return "closed"
     if stop_trigger_price is not None:

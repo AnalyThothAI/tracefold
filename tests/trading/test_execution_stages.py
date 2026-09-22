@@ -52,9 +52,10 @@ def test_a_signal_that_never_got_a_disposition_expires_when_its_own_ttl_passes()
     ("reason", "expected"),
     [
         ("accepted", "ordered"),
-        ("recovered", "ordered"),
-        ("replayed_query_first", "ordered"),
-        ("unknown_query_first", "ordered"),
+        # `accepted` is written only once the venue took the order (#680); the old query-first words
+        # are history rows that also carry the order facts `stage` reads first.
+        ("venue_rejected", "rejected"),
+        ("post_stop_cooldown", "rejected"),
         ("expired", "expired"),
         ("entries_paused", "rejected"),
         ("instrument_unmapped", "rejected"),
@@ -121,3 +122,14 @@ def test_an_entry_order_without_its_disposition_row_is_still_ordered() -> None:
     """The order observation and the disposition are two appends; a read between them is not `pending`."""
 
     assert _stage(order_status="submitted_or_unknown") == "ordered"
+
+
+def test_a_plan_decides_the_stage_and_a_refused_entry_plan_is_a_rejection_not_a_closed_trade() -> None:
+    assert _stage(plan_status="prepared") == "pending"
+    assert _stage(plan_status="prepared", order_status="submitted") == "ordered"
+    assert _stage(plan_status="open", fill_quantity="0.049") == "filled"
+    assert _stage(plan_status="open", stop_trigger_price="9800") == "protected"
+    assert _stage(plan_status="closed", exit_reason="stop_filled") == "closed"
+    assert _stage(plan_status="closed", exit_reason="venue_unknown") == "closed"
+    # #680. A venue that refused the entry order ended the plan before anything traded.
+    assert _stage(plan_status="closed", exit_reason="not_submitted", order_status="rejected") == "rejected"

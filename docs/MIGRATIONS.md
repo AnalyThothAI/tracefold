@@ -548,6 +548,33 @@ atomically; recover by rolling forward or restoring a verified backup. Downgrade
 refuses. Remove the retired webpage configuration key before the new image starts.
 
 
+### 20260922_0389: Nautilus owns execution state (#680 PR-1)
+
+Deletes the private account proof the Runtime no longer writes. The
+`reconciliation`, `readiness` and `audit_gap` observation kinds leave the kind
+CHECK together with their rows (about 95 % of `trading_execution_observations`);
+the append-only trigger is lifted for that one DELETE inside the revision and
+recreated before it commits. `trading_execution_runtime_state` drops
+`execution_safe`, `startup_reconciled`, `account_flat`,
+`reconciliation_observed_at_ns` and `facts_expire_at_ns`, clears the v1
+`account_snapshot` document, disarms every row with `runtime_stopped`, and restates
+its arming rule as `NOT entries_armed OR (alive AND NOT unexpected_exposure)` and
+its protection vocabulary as `not_applicable`/`protected`/`unprotected`.
+`trading_trade_plans` drops `history_gap_reason`, narrows `status` to
+`prepared`/`open`/`closed` and admits the `external` exit reason; its guard
+function is recreated without the history-gap branch and keeps frozen intent,
+terminal immutability and the open clock. The heartbeat, `started_at_ns`, the plan
+lifecycle columns and `signal_disposition` rows are untouched.
+
+Run with the Runtime stopped, the Binance account flat and every plan terminal
+(`make runtime-down`, `make up`, `make runtime-up`): a plan still carrying a
+retired status fails the status CHECK and rolls the whole revision back. One
+transaction, ACCESS EXCLUSIVE on the observation ledger, the runtime-state row
+and the plan table in that order, `lock_timeout=5s`, `statement_timeout=300s`; the
+DELETE leaves dead tuples for autovacuum and the column drops are catalog-only.
+Downgrade refuses; read a deleted proof row from the pre-0389 backup restored into
+a scratch database.
+
 ### 20260922_0388: Workers watchdog alert ledger (#680 PR-2)
 
 Creates `platform_watchdog_alerts`, one row per condition the Trading watchdog

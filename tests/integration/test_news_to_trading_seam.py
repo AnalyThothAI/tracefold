@@ -8,12 +8,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import pytest
-from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.instruments import CryptoPerpetual
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.nautilus import root as nautilus_root
@@ -348,15 +348,11 @@ def _publish_runtime_catalogue(conn: Any, *market_keys: str) -> None:
                 mode="paper",
                 runtime_id=UUID("33333333-3333-4333-8333-333333333333"),
                 alive=True,
-                execution_safe=True,
                 entries_armed=True,
-                startup_reconciled=True,
                 unexpected_exposure=False,
-                account_flat=True,
                 positions_count=0,
                 open_orders_count=0,
                 protection_status="not_applicable",
-                reconciliation_observed_at_ns=2_000,
                 heartbeat_at_ns=2_100,
                 entry_block_reason=None,
                 started_at_ns=1_900,
@@ -387,23 +383,24 @@ def _seam_lane(conn: Any, *, clock: Callable[[], int] = now_ms) -> SignalLane:
 def _discovered_routes(monkeypatch: pytest.MonkeyPatch, *base_symbols: str) -> tuple[OiInstrumentRoute, ...]:
     """The Runtime's own catalogue, discovered from a provider that lists exactly these perpetuals."""
 
-    class _Instrument:
-        def __init__(self, base_code: str) -> None:
-            self.quote_currency = nautilus_root.USDT
-            self.settlement_currency = nautilus_root.USDT
-            self.info = {"status": "TRADING"}
-            self.base_currency = SimpleNamespace(code=base_code)
-            self.id = InstrumentId.from_str(f"{base_code}USDT-PERP.BINANCE")
+    def perpetual(base: str) -> CryptoPerpetual:
+        values = CryptoPerpetual.to_dict(TestInstrumentProvider.btcusdt_perp_binance())
+        values.update(
+            id=f"{base}USDT-PERP.BINANCE",
+            raw_symbol=f"{base}USDT",
+            base_currency=base,
+            info={"status": "TRADING", "contractType": "PERPETUAL"},
+        )
+        return CryptoPerpetual.from_dict(values)
 
     class _Provider:
         def __init__(self, **_: Any) -> None: ...
 
         async def load_all_async(self) -> None: ...
 
-        def list_all(self) -> list[_Instrument]:
-            return [_Instrument(symbol) for symbol in base_symbols]
+        def list_all(self) -> list[CryptoPerpetual]:
+            return [perpetual(symbol) for symbol in base_symbols]
 
-    monkeypatch.setattr(nautilus_root, "CryptoPerpetual", _Instrument)
     monkeypatch.setattr(nautilus_root, "get_cached_binance_http_client", lambda **_: None)
     monkeypatch.setattr(nautilus_root, "BinanceFuturesInstrumentProvider", _Provider)
     return asyncio.run(

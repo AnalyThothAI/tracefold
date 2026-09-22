@@ -47,18 +47,19 @@ describe("TradingPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("names the blocking reason in Chinese, in three safety words rather than four", async () => {
+  it("names the blocking reason in Chinese, in two safety words", async () => {
     /*
-     * `FLAT` was the fourth. `ExecutionRuntimeState.account_flat` stays false with zero positions, so it
-     * read `NOT PROVEN` around the clock — an always-amber quarter of the strip nobody could act on. The
-     * proof is a sentence in the exposure block now, qualifying the empty position list it belongs to.
+     * `FLAT` went first, as an always-amber `NOT PROVEN`; `当前仓位可保护 / 退出` followed it with the
+     * Runtime's private account proof it answered for (#680). Nautilus owns the execution state now, so
+     * the strip asks only whether the Runtime is alive and whether it will take a new entry.
      */
     renderTrading();
 
     expect(await screen.findByRole("heading", { name: "交易执行" })).toBeVisible();
     const safety = screen.getByLabelText("执行安全状态");
-    expect(within(safety).getAllByText("否")).toHaveLength(3);
+    expect(within(safety).getAllByText("否")).toHaveLength(2);
     expect(within(safety).queryByText("NOT PROVEN")).toBeNull();
+    expect(within(safety).queryByText("当前仓位可保护 / 退出")).toBeNull();
     expect(within(safety).getByText("执行通道未启用")).toBeVisible();
     expect(screen.getByText(/可执行市场 0 个/)).toBeVisible();
   });
@@ -70,7 +71,6 @@ describe("TradingPage", () => {
           ok: true,
           data: tradingStatusFixture({
             execution: tradingLiveExecutionFixture({
-              account_flat_proven: true,
               entries_armed: true,
               entries_paused: false,
               entry_block_reason: null,
@@ -83,7 +83,7 @@ describe("TradingPage", () => {
     renderTrading();
 
     const safety = await screen.findByLabelText("执行安全状态");
-    expect(within(safety).getAllByText("待确认")).toHaveLength(3);
+    expect(within(safety).getAllByText("待确认")).toHaveLength(2);
     expect(within(safety).queryByText("是")).toBeNull();
     expect(screen.getByText(/状态待确认：未取得有效期内的新状态/)).toBeVisible();
   });
@@ -174,13 +174,16 @@ describe("TradingPage", () => {
     const closed = await screen.findByText("crypto:perp:BTC:USDT");
     const row = closed.closest(".trading-ledger-row") as HTMLElement;
     expect(within(row).getByText("已平仓")).toBeVisible();
-    expect(within(row).getByText("已受理")).toBeVisible();
+    expect(within(row).getByText("交易所已受理")).toBeVisible();
     expect(within(row).getByText("0.049")).toBeVisible();
     expect(within(row).getByText("9699.0")).toBeVisible();
+    expect(within(row).getByText("止盈价 10200")).toBeVisible();
     expect(within(row).getByText("操作员平仓")).toBeVisible();
     // A loss is green and a profit red, exactly as `tokens.css` reads the two market directions.
     expect(within(row).getByText("−$14.92")).toHaveAttribute("data-tone", "loss");
     expect(within(row).getByText("持仓 1m33s")).toBeVisible();
+    // The realized number is already net of commissions; the fees the fill journal charged sit under it.
+    expect(within(row).getByText("手续费 $0.17")).toBeVisible();
 
     const manual = screen.getByText("crypto:perp:ETH:USDT").closest(".trading-ledger-row")!;
     expect(within(manual as HTMLElement).getByText("$1.12")).toHaveAttribute("data-tone", "profit");
@@ -190,7 +193,7 @@ describe("TradingPage", () => {
     expect(within(manual as HTMLElement).getByText(/SHORT · 手工/)).toBeVisible();
   });
 
-  it("keeps all-missing PnL unknown and names the frozen exit policy and history gap", async () => {
+  it("keeps all-missing PnL unknown, says how many closes it lacks, and names the frozen exit policy", async () => {
     const base = tradingExecutionsFixture();
     server.use(
       http.get(/.*\/api\/trading\/executions$/, () =>
@@ -207,15 +210,16 @@ describe("TradingPage", () => {
               pnl_known_total: 0,
               pnl_missing_today: 3,
               pnl_missing_total: 3,
-              pnl_complete_today: false,
-              pnl_complete_total: false,
             },
             executions: [
+              /*
+               * Closed, but one fill carries no quote-currency commission, so the fill journal cannot
+               * yield a net number and the server publishes neither the result nor the fees (#680).
+               */
               tradingExecutionRowFixture({
+                fees_usd: null,
                 realized_pnl_usd: null,
                 pnl_known: false,
-                history_complete: false,
-                gap_reason: "native_pnl_basis_incomplete_after_restart",
               }),
             ],
           }),
@@ -227,26 +231,44 @@ describe("TradingPage", () => {
     const card = tally.closest("[data-block]") as HTMLElement;
     expect(within(card).getByText("今日已知已实现盈亏").nextSibling).toHaveTextContent("—");
     expect(within(card).getAllByText("平仓 3 · 已知 0 · 缺失 3")).toHaveLength(2);
-    expect(within(card).getByText(/不能视为账户完整净利润/)).toBeVisible();
+    expect(
+      within(card).getByText(/^3 笔已平仓交易的成交或手续费记录不全.*不能视为账户完整净利润/),
+    ).toBeVisible();
+    expect(within(card).getByText(/由成交记录折算并扣除手续费，资金费未计入/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
     expect(await screen.findByText("盈亏未知")).toBeVisible();
+    expect(screen.queryByText(/^手续费 /)).toBeNull();
     expect(screen.getByText("冻结止损 200 bps")).toBeVisible();
     expect(screen.getByText(/风险预算.*10.00.*2×/)).toBeVisible();
     expect(screen.getByText(/止盈 200 bps/)).toBeVisible();
-    expect(screen.getByText(/重启后成交成本基础不完整/)).toBeVisible();
+  });
+
+  it("says nothing is missing when every closed plan has a result", async () => {
+    renderTrading();
+
+    const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest(
+      "[data-block]",
+    ) as HTMLElement;
+    expect(within(tally).getByText("平仓 9 · 已知 9 · 缺失 0")).toBeVisible();
+    expect(within(tally).queryByText(/不能视为账户完整净利润/)).toBeNull();
   });
 
   it("prints a dash for an entry that never filled, and the venue's own rejection words", async () => {
     renderTrading("/trading?tab=executions");
 
-    const unmapped = (await screen.findByText("crypto:perp:NVDA:USDT")).closest(
+    const refused = (await screen.findByText("crypto:perp:NVDA:USDT")).closest(
       ".trading-ledger-row",
     ) as HTMLElement;
-    expect(within(unmapped).getByText("运行时目录里没有这个市场")).toBeVisible();
-    expect(within(unmapped).getByText("已拒绝")).toBeVisible();
+    expect(within(refused).getByText("交易所拒绝入场")).toBeVisible();
+    // A plan that ended as `not_submitted` is a rejection, never a closed trade (#680).
+    expect(within(refused).getByText("已拒绝")).toBeVisible();
+    expect(within(refused).queryByText("已平仓")).toBeNull();
+    expect(within(refused).getByText("入场被拒，计划终止")).toBeVisible();
     // Verbatim: it is the exchange talking, and translating it would put words in the venue's mouth.
-    expect(within(unmapped).getByText("Order would immediately trigger.")).toBeVisible();
-    expect(within(unmapped).getByText("持仓 —")).toBeVisible();
+    expect(within(refused).getByText("Order would immediately trigger.")).toBeVisible();
+    // The plan has a terminal clock but no fill, so there is no holding interval and no result.
+    expect(within(refused).getByText("持仓 —")).toBeVisible();
+    expect(within(refused).queryByText("盈亏未知")).toBeNull();
 
     // A Signal whose TTL ran out before the Runtime could act carries the server's own `expired` stage.
     const stale = screen.getByText("crypto:perp:SOL:USDT").closest(".trading-ledger-row")!;
@@ -263,7 +285,7 @@ describe("TradingPage", () => {
     expect(within(tally).getByText("今日已知已实现盈亏").nextSibling).toHaveTextContent("−$13.80");
     expect(within(tally).getByText("累计已知已实现盈亏").nextSibling).toHaveTextContent("$56.40");
     expect(within(tally).getByText("平仓 9 · 已知 9 · 缺失 0")).toBeVisible();
-    // Four entries in the window, two of which the Runtime refused before any order reached the venue.
+    // Four entries in the window, two of which never opened anything: one the venue refused, one expired.
     expect(within(tally).getByText("所列入场").nextSibling).toHaveTextContent("4");
     expect(within(tally).getByText("受理 2 · 拒绝 2")).toBeVisible();
   });
@@ -298,22 +320,18 @@ describe("TradingPage", () => {
     ) as HTMLElement;
     expect(closed.querySelector("details")).not.toHaveAttribute("open");
     // The summary is the whole block until a reader opens it; the facts are present and not rendered.
-    expect(within(closed).getByText(/仓位 0 · 挂单 — · 保护 保护状态未知/)).toBeVisible();
-    expect(within(closed).getByText("未见当前仓位；这本身不能证明账户为空。")).not.toBeVisible();
+    expect(within(closed).getByText(/仓位 0 · 挂单 — · 保护 无需保护/)).toBeVisible();
+    expect(within(closed).getByText("未取得 Runtime 账户快照")).toBeVisible();
+    expect(
+      within(closed).getByText("未取得 Runtime 账户快照，不能据此断言没有仓位。"),
+    ).not.toBeVisible();
 
     cleanup();
     server.use(
       http.get(/.*\/api\/trading\/status$/, () =>
         HttpResponse.json({
           ok: true,
-          data: tradingStatusFixture({
-            execution: tradingLiveExecutionFixture({
-              current_account: tradingCurrentAccountFixture({
-                audit_failure_reason: "audit_append_failed",
-                audit_healthy: false,
-              }),
-            }),
-          }),
+          data: tradingStatusFixture({ execution: tradingLiveExecutionFixture() }),
         }),
       ),
     );
@@ -323,13 +341,105 @@ describe("TradingPage", () => {
       "section",
     ) as HTMLElement;
     expect(open.querySelector("details")).toHaveAttribute("open");
+    expect(within(open).getByText(/仓位 1 · 挂单 2 · 保护 已受保护/)).toBeVisible();
     expect(within(open).getByText("$997.50")).toBeVisible();
-    expect(within(open).getByText("1,000 ms")).toBeVisible();
-    // The audit tile was a constant `HEALTHY`; only the state a reader acts on renders now, as an alert.
-    expect(within(open).getByText(/账户事实写入审计失败 · audit_append_failed/)).toBeVisible();
-    expect(within(open).queryByText("HEALTHY")).toBeNull();
-    expect(within(open).getAllByText("已受保护").length).toBeGreaterThan(0);
-    expect(within(open).getAllByText("Trigger 9800")).toHaveLength(2);
+    expect(within(open).getByText("在途订单").nextSibling).toHaveTextContent("0");
+    // The Runtime's private proof went with #680: no reconciliation age, no aggregate risk, no audit.
+    for (const gone of ["私有对账距今", "总风险金额", "处理中 / 未知订单"]) {
+      expect(within(open).queryByText(gone)).toBeNull();
+    }
+    expect(within(open).queryByText(/审计/)).toBeNull();
+    // A position is protected when its stop and its take-profit both rest on the venue.
+    const position = within(open).getByText("BTCUSDT-PERP.BINANCE", {
+      selector: ".trading-position-identity b",
+    });
+    const strip = position
+      .closest(".trading-position-row")!
+      .querySelector(".trading-protection-strip") as HTMLElement;
+    expect(strip).toHaveAttribute("data-tone", "protected");
+    expect(within(strip).getByText("已受保护")).toBeVisible();
+    expect(within(strip).getByText("止损 9800")).toBeVisible();
+    expect(within(strip).getByText("止盈 10200")).toBeVisible();
+    // Each resting order names its leg in the desk's own words.
+    expect(within(open).getByText("止损 · Qty 0.05")).toBeVisible();
+    expect(within(open).getByText("止盈 · Qty 0.05")).toBeVisible();
+    expect(within(open).getByText("Trigger 9800")).toBeVisible();
+    expect(within(open).getByText("Trigger 10200")).toBeVisible();
+    expect(within(open).queryByText("无计划认领")).toBeNull();
+  });
+
+  it("names a position without a take-profit unprotected and exposure no plan claims", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            execution: tradingLiveExecutionFixture({
+              current_account: tradingCurrentAccountFixture({
+                open_orders_count: 1,
+                orders: [
+                  {
+                    client_order_id: "stop-order-1",
+                    instrument_id: "BTCUSDT-PERP.BINANCE",
+                    leg: "stop",
+                    owned: true,
+                    quantity: "0.05",
+                    reduce_only: true,
+                    state: "open",
+                    trigger_price: "9800",
+                  },
+                ],
+                positions: [
+                  {
+                    ...tradingCurrentAccountFixture().positions![0]!,
+                    take_profit_trigger_price: null,
+                  },
+                  {
+                    entry_price: "150",
+                    instrument_id: "SOLUSDT-PERP.BINANCE",
+                    mark_price: "151",
+                    owned: false,
+                    position_id: "position-2",
+                    quantity: "1",
+                    side: "short",
+                    stop_trigger_price: null,
+                    take_profit_trigger_price: null,
+                    unrealized_pnl_usd: "-1",
+                  },
+                ],
+              }),
+              entry_block_reason: "unexpected_exposure",
+              protection_status: "unprotected",
+              unexpected_exposure: true,
+            }),
+          }),
+        }),
+      ),
+    );
+    renderTrading();
+
+    const block = (await screen.findByRole("heading", { name: "当前仓位与保护" })).closest(
+      "section",
+    ) as HTMLElement;
+    expect(within(block).getByText(/仓位 2 · 挂单 1 · 保护 未受保护/)).toBeVisible();
+    expect(within(block).getByText(/无计划认领的敞口，新入场已被阻止/)).toBeVisible();
+    expect(
+      within(screen.getByLabelText("执行安全状态")).getByText("出现无计划认领的敞口"),
+    ).toBeVisible();
+
+    const strips = Array.from(block.querySelectorAll<HTMLElement>(".trading-protection-strip"));
+    expect(strips).toHaveLength(2);
+    // A stop alone is not protection: the take-profit is half of what the plan rests on the venue.
+    expect(strips[0]).toHaveAttribute("data-tone", "caution");
+    expect(within(strips[0]!).getByText("未受保护")).toBeVisible();
+    expect(within(strips[0]!).getByText("止损 9800")).toBeVisible();
+    expect(within(strips[0]!).getByText("止盈 未挂")).toBeVisible();
+    expect(within(strips[1]!).getByText("止损 未挂")).toBeVisible();
+    const unclaimed = within(block)
+      .getByText("SOLUSDT-PERP.BINANCE")
+      .closest(".trading-position-row") as HTMLElement;
+    expect(within(unclaimed).getByText("无计划认领")).toBeVisible();
+    expect(within(unclaimed).getByText("空仓")).toBeVisible();
   });
 
   it("reads no admission ledger and no Signal list", async () => {

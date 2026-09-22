@@ -1,3 +1,5 @@
+"""The Runtime composition root: routes, profile, projection, probe and the generation supervisor."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,84 +13,59 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
-from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.instruments import CryptoPerpetual
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from pydantic import ValidationError
 
-from tests.helpers.nautilus_oi_runtime_process import (
-    audit_queued_count,
-)
 from tests.nautilus_oi_runtime_fixtures import oi_profile
 from tracefold.app.nautilus import root as nautilus_root
 from tracefold.app.nautilus.oi_runtime import RuntimeStateProjector
-from tracefold.app.nautilus.root import (
-    _discover_routes,
-    _observe_reconciliation,
-    _PrivateReconciliationRequests,
-    _PrivateReconciliationResult,
-    _probe_payload,
-    _reconcile_account,
-    _risk_limits,
-)
-from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
-from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials, _trader_id
-from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import CompleteBinanceAccountReports
-from tracefold.integrations.nautilus.oi_runtime.state import deterministic_client_order_id
+from tracefold.app.nautilus.root import RuntimeFatal, _discover_routes, _probe_payload, _risk_limits
+from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials, _trader_id, route_catalogue
+from tracefold.integrations.nautilus.oi_runtime.entry import deterministic_client_order_id
 from tracefold.integrations.nautilus.oi_runtime.strategy import oi_strategy_config
 from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 
-def _repos(trading: Any) -> Any:
-    return SimpleNamespace(trading=trading, transaction=nullcontext)
+def _perpetual(base: str, *, contract_type: str = "PERPETUAL", status: str = "TRADING") -> CryptoPerpetual:
+    values = CryptoPerpetual.to_dict(TestInstrumentProvider.btcusdt_perp_binance())
+    values.update(
+        id=f"{base}USDT-PERP.BINANCE",
+        raw_symbol=f"{base}USDT",
+        base_currency=base,
+        info={"status": status, "contractType": contract_type},
+    )
+    return CryptoPerpetual.from_dict(values)
 
 
-def _complete_reports(
-    *,
-    positions: tuple[Any, ...] = (),
-    regular_orders: tuple[Any, ...] = (),
-    algo_orders: tuple[Any, ...] = (),
-) -> CompleteBinanceAccountReports:
-    return CompleteBinanceAccountReports(
-        positions=positions,
-        regular_orders=regular_orders,
-        algo_orders=algo_orders,
+def test_the_route_catalogue_is_binances_own_usdt_perpetuals_trading_now_and_never_tradfi() -> None:
+    """#680 RC8. 29 `TRADIFI_PERPETUAL` stock and commodity contracts were routed; COIN got `-4411`."""
+
+    routes = route_catalogue(
+        [
+            _perpetual("BTC"),
+            _perpetual("COIN", contract_type="TRADIFI_PERPETUAL"),
+            _perpetual("XAU", contract_type="TRADIFI_PERPETUAL"),
+            _perpetual("ETH", status="PENDING_TRADING"),
+            _perpetual("SOL", contract_type="PERPETUAL_DELIVERING"),
+            _perpetual("测试测试"),
+            TestInstrumentProvider.ethusdt_binance(),
+        ],
+        stop_distance_bps=100,
     )
 
-
-def _runtime_state(*, heartbeat_at_ns: int = 1_000_000_000) -> ExecutionRuntimeState:
-    return ExecutionRuntimeState(
-        account_slot="binance_usdm_primary",
-        mode="paper",
-        runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
-        alive=True,
-        execution_safe=False,
-        entries_armed=False,
-        startup_reconciled=False,
-        unexpected_exposure=False,
-        account_flat=True,
-        positions_count=0,
-        open_orders_count=0,
-        protection_status="not_applicable",
-        reconciliation_observed_at_ns=heartbeat_at_ns,
-        heartbeat_at_ns=heartbeat_at_ns,
-        entry_block_reason="runtime_starting",
-        started_at_ns=heartbeat_at_ns,
-        updated_at_ns=heartbeat_at_ns,
-    )
+    assert [route.market_key for route in routes] == ["crypto:perp:BTC:USDT"]
+    assert [route.stop_distance_bps for route in routes] == [100]
 
 
-def test_route_discovery_uses_real_clock_and_skips_unaddressable_provider_symbols(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_two_instruments_claiming_one_market_are_a_catalogue_that_cannot_be_routed() -> None:
+    with pytest.raises(RuntimeError, match="oi_runtime_market_route_ambiguous"):
+        route_catalogue([_perpetual("BTC"), _perpetual("BTC")], stop_distance_bps=100)
+
+
+def test_route_discovery_uses_nautilus_own_provider_on_the_selected_venue(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
-
-    class _Instrument:
-        def __init__(self, base_code: str) -> None:
-            self.quote_currency = nautilus_root.USDT
-            self.settlement_currency = nautilus_root.USDT
-            self.info = {"status": "TRADING"}
-            self.base_currency = SimpleNamespace(code=base_code)
-            self.id = InstrumentId.from_str(f"{base_code}USDT-PERP.BINANCE")
 
     class _Provider:
         def __init__(self, **kwargs: Any) -> None:
@@ -97,133 +74,190 @@ def test_route_discovery_uses_real_clock_and_skips_unaddressable_provider_symbol
         async def load_all_async(self) -> None:
             captured["loaded"] = True
 
-        def list_all(self) -> list[_Instrument]:
-            return [_Instrument("测试测试"), _Instrument("BTC")]
+        def list_all(self) -> list[CryptoPerpetual]:
+            return [_perpetual("BTC"), _perpetual("NVDA", contract_type="TRADIFI_PERPETUAL")]
 
-    monkeypatch.setattr(nautilus_root, "CryptoPerpetual", _Instrument)
     monkeypatch.setattr(
-        nautilus_root,
-        "get_cached_binance_http_client",
-        lambda **kwargs: captured.setdefault("client", kwargs),
+        nautilus_root, "get_cached_binance_http_client", lambda **kwargs: captured.setdefault("client", kwargs)
     )
     monkeypatch.setattr(nautilus_root, "BinanceFuturesInstrumentProvider", _Provider)
 
     routes = asyncio.run(
-        _discover_routes(
-            "paper",
-            BinanceRuntimeCredentials(api_key="demo-key", api_secret="demo-secret"),
-            stop_distance_bps=Settings().trading.execution.risk.stop_distance_bps,
-        )
+        _discover_routes("paper", BinanceRuntimeCredentials("demo-key", "demo-secret"), stop_distance_bps=100)
     )
 
     assert captured["loaded"] is True
     assert captured["client"]["environment"] is BinanceEnvironment.DEMO
-    assert type(captured["client"]["clock"]).__name__ == "LiveClock"
     assert [route.market_key for route in routes] == ["crypto:perp:BTC:USDT"]
-    assert [route.stop_distance_bps for route in routes] == [100]
 
 
-def test_one_reconciliation_period_owns_both_account_freshness_budgets() -> None:
-    """#510 B. Production ran `account_stale_after_ns` at exactly one reconciliation period.
+def test_an_empty_catalogue_fails_the_generation_not_the_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Provider:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
 
-    The account clock is only ever as fresh as the last private scan, so a budget equal to the period
-    is expired for the tail of every cycle by construction: `evaluate_entry` returned
-    `halt("account_stale")` for five of 2026-09-02's six Signals. There is now one input, and both
-    budgets are multiples of it, so the relation cannot be edited apart.
-    """
+        async def load_all_async(self) -> None:
+            return None
 
-    risk = oi_profile().risk
-    production = _risk_limits(Settings())
+        def list_all(self) -> list[Any]:
+            return []
 
-    assert risk.reconciliation_interval_seconds == 5.0
-    assert risk.account_stale_after_ns == 2 * risk.reconciliation_interval_ns
-    assert risk.reconciliation_stale_after_ns == 3 * risk.reconciliation_interval_ns
-    assert production.account_stale_after_ns > production.reconciliation_interval_ns
-    assert production.reconciliation_stale_after_ns > production.account_stale_after_ns
-    # Market freshness is a quote-stream fact and stays its own operator number.
-    assert production.market_stale_after_ns == 5_000_000_000
+    monkeypatch.setattr(nautilus_root, "get_cached_binance_http_client", lambda **kwargs: kwargs)
+    monkeypatch.setattr(nautilus_root, "BinanceFuturesInstrumentProvider", _Provider)
+    with pytest.raises(RuntimeError, match="oi_runtime_route_catalog_empty") as raised:
+        asyncio.run(_discover_routes("paper", BinanceRuntimeCredentials("k", "s"), stop_distance_bps=100))
+    assert not isinstance(raised.value, RuntimeFatal)
 
 
-def test_private_reconciliation_requests_wake_immediately_and_coalesce_duplicate_reasons() -> None:
-    async def exercise() -> tuple[tuple[str, ...], tuple[str, ...]]:
-        loop = asyncio.get_running_loop()
-        wake = asyncio.Event()
-        requests = _PrivateReconciliationRequests(loop=loop, wake=wake)
-
-        requests.request("unknown_outcome")
-        requests.request("unknown_outcome")
-        requests.request("flatten_pending")
-        await asyncio.wait_for(wake.wait(), timeout=0.1)
-        return requests.drain(), requests.drain()
-
-    first, second = asyncio.run(exercise())
-
-    assert first == ("flatten_pending", "unknown_outcome")
-    assert second == ()
+def _settings_with_risk(**overrides: Any) -> Settings:
+    return Settings(trading={"execution": {"mode": "paper", "risk": overrides}})
 
 
-def test_startup_private_reconciliation_projects_complete_reports_and_records_the_fresh_clock(
-    monkeypatch: pytest.MonkeyPatch,
+def test_risk_limits_come_from_the_operator_config() -> None:
+    default = _risk_limits(Settings())
+
+    assert default.risk_fraction_per_trade == Decimal("0.01")
+    assert default.max_risk_per_trade_usd == Decimal("10")
+    assert (default.max_positions, default.max_leverage) == (1, 1)
+    assert default.max_daily_loss_usd == Decimal("25")
+    assert default.max_spread_fraction_of_stop == Decimal("0.3")
+    assert default.post_stop_cooldown_ns == 14_400_000_000_000
+    assert default.market_stale_after_ns == 5_000_000_000
+    assert Settings().trading.execution.risk.stop_distance_bps == 100
+
+    edited = _risk_limits(_settings_with_risk(max_spread_fraction_of_stop="0.5", post_stop_cooldown_seconds=0))
+    assert edited.max_spread_fraction_of_stop == Decimal("0.5")
+    assert edited.post_stop_cooldown_ns == 0
+
+
+@pytest.mark.parametrize("retired", ["max_total_risk_usd", "reconciliation_interval_seconds"])
+def test_the_retired_risk_keys_are_refused_by_name(retired: str) -> None:
+    """#680. Nautilus owns reconciliation, and `max_positions` is the only concurrency limit."""
+
+    with pytest.raises(ValidationError, match=retired):
+        _settings_with_risk(**{retired: 5})
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"risk_fraction_per_trade": "0.02"},
+        {"max_risk_per_trade_usd": "9"},
+        {"max_positions": 2},
+        {"max_leverage": 2},
+        {"max_daily_loss_usd": "40"},
+        {"stop_distance_bps": 120},
+        {"max_spread_fraction_of_stop": "0.2"},
+        {"post_stop_cooldown_seconds": 60},
+        {"market_stale_after_seconds": 7.0},
+    ],
+)
+def test_every_risk_value_reaches_the_runtime_policy_without_renaming_the_account(override: dict[str, Any]) -> None:
+    routes = oi_profile().routes
+    baseline = nautilus_root._active_profile(Settings(trading={"execution": {"mode": "paper"}}), "paper", routes)
+    edited = nautilus_root._active_profile(_settings_with_risk(**override), "paper", routes)
+
+    assert edited.account_slot == baseline.account_slot
+    assert edited.namespace == baseline.namespace
+    if "stop_distance_bps" not in override:
+        assert edited.risk != baseline.risk
+
+
+# The exact venue-visible identity strings a fixed account slot and mode produce. The deterministic
+# entry, stop and take-profit ids are how a restarted Runtime recognizes its own orders on the venue.
+_PINNED_ENTRY_ID = "e" * 64
+_PINNED_IDENTITY = {
+    "paper": {
+        "trader_id": "OI-F46FB62A731F",
+        "order_id_tag": "F46",
+        "entry": "tf80c234dfddf49bb7dae54e6e54940c",
+        "stop": "tf5f89700146d29ff4c7dd53541e8efc",
+        "take_profit": "tf4cacf4cde4f8c30ec87f2c0fec6535",
+    },
+    "live": {
+        "trader_id": "OI-436C67334FF6",
+        "order_id_tag": "436",
+        "entry": "tf62ab44161ae7839b91694b6f7ee798",
+        "stop": "tfcb1414c4798006b5b2ecd8a0e57b70",
+        "take_profit": "tf46b6e068ca7ccbd3c87fe01299cf5f",
+    },
+}
+
+
+@pytest.mark.parametrize("mode", ["paper", "live"])
+def test_the_runtime_namespace_produces_exactly_these_venue_visible_identities(mode: str) -> None:
+    profile = nautilus_root._active_profile(
+        Settings(
+            trading={"execution": {"mode": mode, "exit_policy": {"take_profit_bps": 200, "max_holding_seconds": 14400}}}
+        ),
+        cast(Any, mode),
+        oi_profile().routes,
+    )
+    expected = _PINNED_IDENTITY[mode]
+
+    assert profile.namespace == f"tracefold:binance_usdm_primary:{mode}"
+    assert _trader_id(profile).value == expected["trader_id"]
+    assert oi_strategy_config(profile).order_id_tag == expected["order_id_tag"]
+    for leg in ("entry", "stop", "take_profit"):
+        derived = deterministic_client_order_id(namespace=profile.namespace, entry_id=_PINNED_ENTRY_ID, leg=leg)
+        assert derived.value == expected[leg]
+
+
+@pytest.mark.parametrize(
+    ("override", "reason"),
+    [
+        ({"risk_fraction_per_trade": "0"}, "trading_execution_risk_fraction_invalid"),
+        ({"risk_fraction_per_trade": "0.2"}, "trading_execution_risk_fraction_invalid"),
+        ({"max_risk_per_trade_usd": "0.5"}, "trading_execution_risk_limit_invalid"),
+        ({"max_risk_per_trade_usd": "20000"}, "trading_execution_risk_limit_invalid"),
+        ({"max_positions": 0}, "trading_execution_max_positions_invalid"),
+        ({"max_positions": 11}, "trading_execution_max_positions_invalid"),
+        ({"max_leverage": 0}, "trading_execution_max_leverage_invalid"),
+        ({"max_leverage": 125}, "trading_execution_max_leverage_invalid"),
+        ({"max_daily_loss_usd": "5"}, "trading_execution_daily_loss_invalid"),
+        ({"stop_distance_bps": 0}, "trading_execution_stop_distance_invalid"),
+        ({"stop_distance_bps": 6_000}, "trading_execution_stop_distance_invalid"),
+        ({"max_spread_fraction_of_stop": "0"}, "trading_execution_max_spread_invalid"),
+        ({"max_spread_fraction_of_stop": "1.5"}, "trading_execution_max_spread_invalid"),
+        ({"post_stop_cooldown_seconds": -1}, "trading_execution_post_stop_cooldown_invalid"),
+        ({"market_stale_after_seconds": 0.5}, "trading_execution_market_stale_invalid"),
+    ],
+)
+def test_risk_bounds_refuse_the_values_that_would_make_a_limit_stop_being_one(
+    override: dict[str, Any], reason: str
 ) -> None:
-    account_id = SimpleNamespace(value="BINANCE-001")
-    position = SimpleNamespace(account_id=account_id)
-    regular = SimpleNamespace(account_id=account_id)
-    algo = SimpleNamespace(account_id=account_id)
-    reports = _complete_reports(
-        positions=(position,),
-        regular_orders=(regular,),
-        algo_orders=(algo,),
+    with pytest.raises(ValidationError, match=reason):
+        _settings_with_risk(**override)
+
+
+def test_paper_defaults_are_explicit_engineering_values_and_live_requires_values() -> None:
+    paper = nautilus_root._active_profile(Settings(), "paper", oi_profile().routes)
+    assert paper.exit_policy.take_profit_bps == 200
+    assert paper.exit_policy.max_holding_ns == 14_400_000_000_000
+    # Nautilus reconciles at least a day of history, and always more than the longest holding time.
+    assert paper.reconciliation_lookback_mins == 1_440
+    long_hold = replace(paper, exit_policy=replace(paper.exit_policy, max_holding_ns=72 * 3_600_000_000_000))
+    assert long_hold.reconciliation_lookback_mins == 72 * 60 + 60
+    with pytest.raises(ValidationError, match="trading_execution_live_exit_policy_required"):
+        Settings(trading={"execution": {"mode": "live"}})
+
+
+def _runtime_state(*, heartbeat_at_ns: int = 1_000_000_000) -> ExecutionRuntimeState:
+    return ExecutionRuntimeState(
+        account_slot="binance_usdm_primary",
+        mode="paper",
+        runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
+        alive=True,
+        entries_armed=False,
+        unexpected_exposure=False,
+        positions_count=0,
+        open_orders_count=0,
+        protection_status="not_applicable",
+        heartbeat_at_ns=heartbeat_at_ns,
+        entry_block_reason="runtime_starting",
+        started_at_ns=heartbeat_at_ns,
+        updated_at_ns=heartbeat_at_ns,
     )
-
-    async def load(_client: Any) -> CompleteBinanceAccountReports:
-        return reports
-
-    projected: list[Any] = []
-    monkeypatch.setattr(nautilus_root, "load_complete_binance_account_reports", load)
-    node = SimpleNamespace(
-        kernel=SimpleNamespace(
-            exec_engine=SimpleNamespace(reconcile_execution_report=lambda report: projected.append(report) or True),
-            clock=SimpleNamespace(timestamp_ns=lambda: 9_000),
-        )
-    )
-    client = SimpleNamespace(account_id=account_id)
-
-    result = asyncio.run(_reconcile_account(node=node, client=client, triggers=("startup",)))
-
-    assert result.reports is reports
-    assert result.triggers == ("startup",)
-    assert result.observed_at_ns == 9_000
-    assert result.duration_ns > 0
-    assert projected == [position, regular, algo]
-
-
-def test_private_report_failure_does_not_project_cache_or_mint_a_fresh_reconciliation_clock(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fail(_client: Any) -> CompleteBinanceAccountReports:
-        raise RuntimeError("private-report-failed")
-
-    projected: list[Any] = []
-    clock_reads: list[bool] = []
-    monkeypatch.setattr(nautilus_root, "load_complete_binance_account_reports", fail)
-    node = SimpleNamespace(
-        kernel=SimpleNamespace(
-            exec_engine=SimpleNamespace(reconcile_execution_report=lambda report: projected.append(report) or True),
-            clock=SimpleNamespace(timestamp_ns=lambda: clock_reads.append(True) or 9_000),
-        )
-    )
-
-    with pytest.raises(RuntimeError, match="private-report-failed"):
-        asyncio.run(
-            _reconcile_account(
-                node=node,
-                client=SimpleNamespace(account_id=SimpleNamespace(value="BINANCE-001")),
-                triggers=("steady",),
-            )
-        )
-
-    assert projected == []
-    assert clock_reads == []
 
 
 class _ProjectionTrading:
@@ -239,381 +273,108 @@ class _ProjectionTrading:
         return True
 
 
-def _projector(starting: ExecutionRuntimeState) -> RuntimeStateProjector:
-    return RuntimeStateProjector(initial=starting, recovery_inputs=())
-
-
-def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_only_on_heartbeat() -> None:
-    """#510 PR-5b. The loop offers; only the bridge thread's connection writes."""
-
+def test_the_projector_writes_a_change_immediately_and_an_unchanged_row_only_on_the_heartbeat() -> None:
     trading = _ProjectionTrading()
-    repos = _repos(trading)
+    repos = SimpleNamespace(trading=trading, transaction=nullcontext)
     starting = _runtime_state()
-    projector = _projector(starting)
-    projector.start(repos)
+    projector = RuntimeStateProjector(initial=starting)
+    projector.start(repos)  # type: ignore[arg-type]
 
-    changed = replace(
-        starting,
-        heartbeat_at_ns=starting.heartbeat_at_ns + 1,
-        entry_block_reason="reconciliation_stale",
-        updated_at_ns=starting.updated_at_ns + 1,
-    )
+    def beat(state: ExecutionRuntimeState, after_ns: int, **changes: Any) -> ExecutionRuntimeState:
+        at_ns = state.heartbeat_at_ns + after_ns
+        return replace(state, heartbeat_at_ns=at_ns, updated_at_ns=at_ns, **changes)
+
+    changed = beat(starting, 1, entry_block_reason="entries_paused")
     projector.offer(changed)
-    projector.write_once(repos)
-    assert projector.current == changed
-
-    before_heartbeat = replace(
-        changed,
-        heartbeat_at_ns=changed.heartbeat_at_ns + 100_000_000,
-        updated_at_ns=changed.updated_at_ns + 100_000_000,
-    )
-    projector.offer(before_heartbeat)
-    projector.write_once(repos)
-    assert projector.current == changed
-
-    heartbeat = replace(
-        changed,
-        heartbeat_at_ns=changed.heartbeat_at_ns + 500_000_000,
-        updated_at_ns=changed.updated_at_ns + 500_000_000,
-    )
+    projector.write_once(repos)  # type: ignore[arg-type]
+    projector.offer(beat(changed, 100_000_000))
+    projector.write_once(repos)  # type: ignore[arg-type]
+    heartbeat = beat(changed, 500_000_000)
     projector.offer(heartbeat)
-    projector.write_once(repos)
-    assert projector.current == heartbeat
-
-    # Nothing offered since the last write is nothing to write.
-    projector.write_once(repos)
+    projector.write_once(repos)  # type: ignore[arg-type]
+    projector.write_once(repos)  # type: ignore[arg-type]
 
     assert trading.puts == [starting]
     assert trading.updates == [changed, heartbeat]
 
 
-def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> None:
-    safe_but_paused = replace(
-        _runtime_state(),
-        execution_safe=True,
-        entries_armed=False,
-        startup_reconciled=True,
-        entry_block_reason="entries_paused",
-    )
+def test_the_probe_states_what_an_operator_acts_on_and_always_answers_200() -> None:
+    paused = replace(_runtime_state(), entry_block_reason="entries_paused")
+    payload = _probe_payload(paused)
 
-    payload = _probe_payload(safe_but_paused)
-
-    assert payload["ok"] is True
-    assert payload["alive"] is True
-    assert payload["execution_safe"] is True
-    assert payload["entries_armed"] is False
-    assert _probe_payload(replace(safe_but_paused, execution_safe=False))["ok"] is False
-    # #537 PR-4. `/readyz` states only what an operator acts on. The build's release string, the
-    # configuration digest, the image digest, the deployment revision and the credential fingerprint
-    # were five of its fourteen keys and no reader -- healthcheck, page or command -- named one.
+    assert payload["ok"] is True and payload["entries_armed"] is False
     assert set(payload) == {
         "ok",
         "alive",
-        "execution_safe",
         "entries_armed",
         "entry_block_reason",
         "mode",
         "account_slot",
-        "startup_reconciled",
         "unexpected_exposure",
-        "account_flat",
         "positions_count",
         "open_orders_count",
         "protection_status",
         "heartbeat_at_ns",
     }
-    assert set(nautilus_root._ProbeState.starting(oi_profile("paper")).readiness()) <= set(payload)
-
-
-def test_the_runtime_probe_serves_a_blocked_payload_with_200_not_an_empty_503() -> None:
-    """The endpoint an operator reads about live exposure always answers with what it knows.
-
-    `make runtime-status` fetched it with `curl -fsS`, so `ok=false` produced an empty body and a
-    curl exit code where the payload naming `execution_safe`, `entry_block_reason` and the position
-    counts was the whole answer (#598 D5-b). `ok` is unchanged; only the status code is.
-    """
-
-    blocked = _probe_payload(
-        replace(
-            _runtime_state(),
-            execution_safe=False,
-            entry_block_reason="startup_reconciliation_unproven",
-        )
-    )
-    server = nautilus_root._probe_server(lambda: blocked)
-    client = TestClient(server.config.app)
-
+    starting = nautilus_root._ProbeState.starting(mode="paper", account_slot="binance_usdm_primary").readiness()
+    assert set(starting) == set(payload)
+    client = TestClient(nautilus_root._probe_server(lambda: starting).config.app)
     response = client.get("/readyz")
-
-    assert blocked["ok"] is False
-    assert response.status_code == 200
-    assert response.json() == blocked
-    assert response.json()["entry_block_reason"] == "startup_reconciliation_unproven"
-    # Liveness is what the Compose healthcheck asks, and it is unchanged.
+    assert response.status_code == 200 and response.json() == starting
     assert client.get("/healthz").text == "ok\n"
 
 
-def test_reconciliation_observation_preserves_native_ids_and_flat_proof() -> None:
-    audit = AuditSink(
-        factory=ObservationFactory(
-            account_slot="oi-paper-profile",
-            execution_strategy="oi_nautilus_v1",
+def _supervise(monkeypatch: pytest.MonkeyPatch, outcomes: list[BaseException | None]) -> list[int]:
+    """Run the supervisor over scripted generations; `None` is a generation that ends on a stop request."""
+
+    attempts: list[int] = []
+
+    async def generation(*, stop: asyncio.Event, **_kwargs: Any) -> None:
+        attempts.append(len(attempts))
+        outcome = outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+        stop.set()
+
+    class _Server:
+        should_exit = False
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr(nautilus_root, "_run_generation", generation)
+    monkeypatch.setattr(nautilus_root, "_probe_server", lambda _readiness: _Server())
+    monkeypatch.setattr(nautilus_root, "_REBUILD_BACKOFF_SECONDS", (0.0,))
+    asyncio.run(
+        nautilus_root._run_active_runtime(
+            settings=Settings(trading={"execution": {"mode": "paper"}}),
+            mode="paper",
+            credentials=BinanceRuntimeCredentials("k", "s"),
+            singleton=SimpleNamespace(acquired=True),  # type: ignore[arg-type]
+            repos=SimpleNamespace(),  # type: ignore[arg-type]
         )
     )
-    position = SimpleNamespace(instrument_id=SimpleNamespace(value="BTCUSDT-PERP.BINANCE"))
-    order = SimpleNamespace(
-        client_order_id=SimpleNamespace(value="tf-client"),
-        venue_order_id=SimpleNamespace(value="12345"),
-        instrument_id=SimpleNamespace(value="BTCUSDT-PERP.BINANCE"),
+    return attempts
+
+
+def test_a_transient_failure_rebuilds_the_generation_inside_the_same_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#680 RC1: 322 of 384 restarts were a TLS EOF on a REST call that a retry would have survived."""
+
+    attempts = _supervise(
+        monkeypatch,
+        [
+            OSError("TLS close_notify EOF"),
+            nautilus_root._GenerationFailed("oi_runtime_start_timeout"),
+            None,
+        ],
     )
-
-    _observe_reconciliation(
-        audit=audit,
-        result=_PrivateReconciliationResult(
-            reports=_complete_reports(positions=(position,), regular_orders=(order,)),
-            triggers=("steady",),
-            observed_at_ns=1_000,
-            duration_ns=2_000_000,
-        ),
-        previous_identity=None,
-    )
-
-    observation = audit.flush_once(lambda _values: None)[0]
-    assert observation.normalized_kind == "reconciliation"
-    assert observation.summary == {
-        "source": "binance_private_api",
-        "trigger": "steady",
-        "duration_us": 2_000,
-        "positions": 1,
-        "regular_orders": 1,
-        "algo_orders": 0,
-        "orders": 1,
-        "account_flat": False,
-        "native_refs_truncated": False,
-    }
-    assert observation.native_identity_references == ("12345", "BTCUSDT-PERP.BINANCE", "tf-client")
+    assert attempts == [0, 1, 2]
 
 
-def test_a_steady_reconciliation_that_changed_nothing_stays_out_of_the_ledger() -> None:
-    """Current account state belongs in the projection; the ledger only carries the changes.
-
-    The steady heartbeat wrote one observation every twelve seconds and was 6996 of the 7019 rows in
-    the observation table (#510 E). The projection already carries `account_flat`, the counts, and
-    `reconciliation_observed_at_ns`, refreshed every loop.
-    """
-
-    audit = AuditSink(
-        factory=ObservationFactory(
-            account_slot="oi-paper-profile",
-            execution_strategy="oi_nautilus_v1",
+def test_losing_the_account_slot_or_a_configuration_error_stops_the_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(RuntimeFatal, match="oi_runtime_account_slot_lost"):
+        _supervise(monkeypatch, [RuntimeFatal("oi_runtime_account_slot_lost")])
+    with pytest.raises(RuntimeFatal, match="trading_execution_live_exit_policy_required"):
+        nautilus_root._active_profile(
+            Settings.model_construct(trading=Settings().trading.model_copy()), "live", oi_profile().routes
         )
-    )
-    position = SimpleNamespace(
-        instrument_id=SimpleNamespace(value="UNIUSDT-PERP.BINANCE"),
-        quantity=SimpleNamespace(value="3"),
-    )
-    stop = SimpleNamespace(
-        client_order_id=SimpleNamespace(value="tf0065f6482c5577533ba696da631582"),
-        venue_order_id=SimpleNamespace(value="61742419"),
-        instrument_id=SimpleNamespace(value="UNIUSDT-PERP.BINANCE"),
-        order_status=SimpleNamespace(value="ACCEPTED"),
-    )
-
-    def steady(reports: CompleteBinanceAccountReports, observed_at_ns: int) -> _PrivateReconciliationResult:
-        return _PrivateReconciliationResult(
-            reports=reports,
-            triggers=("steady",),
-            observed_at_ns=observed_at_ns,
-            duration_ns=2_000_000,
-        )
-
-    held = _complete_reports(positions=(position,), algo_orders=(stop,))
-    first = _observe_reconciliation(audit=audit, result=steady(held, 1_000), previous_identity=None)
-    second = _observe_reconciliation(audit=audit, result=steady(held, 2_000), previous_identity=first)
-    third = _observe_reconciliation(audit=audit, result=steady(held, 3_000), previous_identity=second)
-
-    assert first == second == third
-    assert audit_queued_count(audit) == 1
-
-    flat = _complete_reports()
-    fourth = _observe_reconciliation(audit=audit, result=steady(flat, 4_000), previous_identity=third)
-
-    assert fourth != third
-    assert audit_queued_count(audit) == 2
-
-    _observe_reconciliation(audit=audit, result=steady(flat, 5_000), previous_identity=fourth)
-
-    assert audit_queued_count(audit) == 2
-
-    _observe_reconciliation(
-        audit=audit,
-        result=_PrivateReconciliationResult(
-            reports=flat,
-            triggers=("unexpected_exposure",),
-            observed_at_ns=6_000,
-            duration_ns=2_000_000,
-        ),
-        previous_identity=fourth,
-    )
-
-    assert audit_queued_count(audit) == 3
-    observed = audit.flush_once(lambda _values: None)
-    assert [value.summary["trigger"] for value in observed] == ["steady", "steady", "unexpected_exposure"]
-    assert [value.summary["positions"] for value in observed] == [1, 0, 0]
-
-
-def _settings_with_risk(**overrides: Any) -> Settings:
-    return Settings(trading={"execution": {"mode": "paper", "risk": overrides}})
-
-
-def test_risk_limits_come_from_the_operator_config_and_carry_the_route_stop_distance() -> None:
-    """#510 E. Every one of these was a literal in `root.py`, invisible to `tracefold config`."""
-
-    default = _risk_limits(Settings())
-
-    assert default.risk_fraction_per_trade == Decimal("0.01")
-    assert default.max_risk_per_trade_usd == Decimal("10")
-    assert default.max_total_risk_usd == Decimal("25")
-    assert (default.max_positions, default.max_leverage) == (1, 1)
-    assert default.max_daily_loss_usd == Decimal("25")
-    assert default.market_stale_after_ns == 5_000_000_000
-    assert default.reconciliation_interval_ns == 5_000_000_000
-    assert Settings().trading.execution.risk.stop_distance_bps == 100
-
-    edited = _risk_limits(_settings_with_risk(max_positions=3, reconciliation_interval_seconds=8.0))
-
-    assert edited.max_positions == 3
-    assert edited.reconciliation_interval_ns == 8_000_000_000
-    # The two derived account clocks follow the one operator input, as #510 PR-2 established.
-    assert edited.account_stale_after_ns == 16_000_000_000
-    assert edited.reconciliation_stale_after_ns == 24_000_000_000
-
-
-@pytest.mark.parametrize(
-    "override",
-    [
-        {"risk_fraction_per_trade": "0.02"},
-        {"max_risk_per_trade_usd": "9"},
-        {"max_total_risk_usd": "30"},
-        {"max_positions": 2},
-        {"max_leverage": 2},
-        {"max_daily_loss_usd": "40"},
-        {"stop_distance_bps": 120},
-        {"reconciliation_interval_seconds": 6.0},
-        {"market_stale_after_seconds": 7.0},
-    ],
-)
-def test_every_risk_value_reaches_the_runtime_policy_without_renaming_the_account(
-    override: dict[str, Any],
-) -> None:
-    """#537 PR-4. An operator risk edit changes what the Runtime enforces and nothing else.
-
-    It used to also change `config_sha256`, a digest of the whole configuration that rode on the
-    durable projection and on a start receipt no reader ever opened; the one mechanism that consumed
-    it was the Nautilus instance id, which then made every risk edit a new Cache namespace. The
-    account slot, the mode and the namespace derived from them are what identity means here, and none
-    of them may move when a risk number does.
-    """
-
-    routes = oi_profile().routes
-    baseline = nautilus_root._active_profile(Settings(trading={"execution": {"mode": "paper"}}), "paper", routes)
-    edited = nautilus_root._active_profile(_settings_with_risk(**override), "paper", routes)
-
-    assert edited.account_slot == baseline.account_slot
-    assert edited.namespace == baseline.namespace
-    if "stop_distance_bps" not in override:
-        assert edited.risk != baseline.risk
-
-
-# #589 PR-2 (T-F15). The exact venue-visible identity strings a fixed account slot and mode produce.
-# `namespace` and `namespace` were two fields carrying one value, and merging them
-# is only safe if nothing a venue or a restart sees moves: the Nautilus trader id, the strategy's
-# `order_id_tag` and every deterministic client order id are all derived from that one namespace.
-_PINNED_ENTRY_ID = "e" * 64
-_PINNED_IDENTITY = {
-    "paper": {
-        "trader_id": "OI-F46FB62A731F",
-        "order_id_tag": "F46",
-        "entry": "tf80c234dfddf49bb7dae54e6e54940c",
-        "exit": "tfcf358bb5857ab37ab22714ab1bdae7",
-        "protection:3": "tf3be829ca58e89db3fb3ab305d438b3",
-    },
-    "live": {
-        "trader_id": "OI-436C67334FF6",
-        "order_id_tag": "436",
-        "entry": "tf62ab44161ae7839b91694b6f7ee798",
-        "exit": "tf5ff87915624c72eb0ba893b6c6023e",
-        "protection:3": "tf118d5baf1f7dc82c45cdacd6760a94",
-    },
-}
-
-
-@pytest.mark.parametrize("mode", ["paper", "live"])
-def test_the_runtime_namespace_produces_exactly_these_venue_visible_identities(mode: str) -> None:
-    """One namespace per account slot and mode, and these are the strings it produces.
-
-    A restart rebuilds ownership of live orders by re-deriving these ids, so a change here is a
-    Runtime that cannot recognise its own open orders. Pinning the literal strings is what makes
-    that impossible to do by accident.
-    """
-
-    routes = oi_profile().routes
-    profile = nautilus_root._active_profile(
-        Settings(
-            trading={"execution": {"mode": mode, "exit_policy": {"take_profit_bps": 200, "max_holding_seconds": 14400}}}
-        ),
-        cast(Any, mode),
-        routes,
-    )
-    expected = _PINNED_IDENTITY[mode]
-
-    assert profile.namespace == f"tracefold:binance_usdm_primary:{mode}"
-    assert _trader_id(profile).value == expected["trader_id"]
-    assert oi_strategy_config(profile).order_id_tag == expected["order_id_tag"]
-    for leg in ("entry", "exit", "protection:3"):
-        assert (
-            deterministic_client_order_id(
-                namespace=profile.namespace,
-                entry_id=_PINNED_ENTRY_ID,
-                leg=leg,
-            ).value
-            == expected[leg]
-        )
-
-
-@pytest.mark.parametrize(
-    ("override", "reason"),
-    [
-        ({"risk_fraction_per_trade": "0"}, "trading_execution_risk_fraction_invalid"),
-        ({"risk_fraction_per_trade": "0.2"}, "trading_execution_risk_fraction_invalid"),
-        ({"max_risk_per_trade_usd": "0.5"}, "trading_execution_risk_limit_invalid"),
-        ({"max_risk_per_trade_usd": "50"}, "trading_execution_risk_limit_invalid"),
-        ({"max_total_risk_usd": "20000"}, "trading_execution_risk_limit_invalid"),
-        ({"max_positions": 0}, "trading_execution_max_positions_invalid"),
-        ({"max_positions": 11}, "trading_execution_max_positions_invalid"),
-        ({"max_leverage": 0}, "trading_execution_max_leverage_invalid"),
-        ({"max_leverage": 125}, "trading_execution_max_leverage_invalid"),
-        ({"max_daily_loss_usd": "5"}, "trading_execution_daily_loss_invalid"),
-        ({"stop_distance_bps": 0}, "trading_execution_stop_distance_invalid"),
-        ({"stop_distance_bps": 6_000}, "trading_execution_stop_distance_invalid"),
-        ({"reconciliation_interval_seconds": 0.5}, "trading_execution_reconciliation_interval_invalid"),
-        ({"reconciliation_interval_seconds": 120.0}, "trading_execution_reconciliation_interval_invalid"),
-        ({"market_stale_after_seconds": 0.5}, "trading_execution_market_stale_invalid"),
-    ],
-)
-def test_risk_bounds_refuse_the_values_that_would_make_a_limit_stop_being_one(
-    override: dict[str, Any],
-    reason: str,
-) -> None:
-    with pytest.raises(ValidationError, match=reason):
-        _settings_with_risk(**override)
-
-
-def test_paper_defaults_are_explicit_engineering_values_and_live_requires_values() -> None:
-    paper = nautilus_root._active_profile(Settings(), "paper", oi_profile().routes)
-    assert paper.exit_policy.take_profit_bps == 200
-    assert paper.exit_policy.max_holding_ns == 14_400_000_000_000
-    with pytest.raises(ValidationError, match="trading_execution_live_exit_policy_required"):
-        Settings(trading={"execution": {"mode": "live"}})
-    with pytest.raises(ValidationError, match="Field required"):
-        Settings(trading={"execution": {"mode": "live", "exit_policy": {}}})

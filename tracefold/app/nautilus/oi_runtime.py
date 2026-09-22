@@ -1,9 +1,16 @@
-"""The PostgreSQL bridge and read seam for the OI Runtime."""
+"""The PostgreSQL bridge and read seam for the OI Runtime.
+
+One thread and one connection speak PostgreSQL for a running Runtime. Nothing it does is fatal to the
+process (#680 RC1): a statement that fails is logged once per cause and retried, a lost session is
+replaced after a bounded backoff, and a journal row the database refuses on integrity grounds is
+dropped and logged rather than replayed. The account-slot lock is the one fact that stops the process,
+and it lives on its own session.
+"""
 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -12,63 +19,54 @@ from typing import Any
 
 from loguru import logger
 from psycopg import InterfaceError, OperationalError
-from psycopg.errors import IntegrityError
+from psycopg.errors import DataError, IntegrityError, RaiseException
 
 from tracefold.app.repository_session import RepositorySession
 from tracefold.app.repository_session import repositories as open_repositories
-from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
-    AuditAppendRejected,
-    AuditSink,
+from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
+from tracefold.integrations.nautilus.oi_runtime.journal import (
+    ExecutionJournal,
+    JournalRow,
     ObservationFactory,
+    PlanReceipt,
     day_start_baseline_from_observation,
 )
-from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
-from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot
-from tracefold.integrations.nautilus.oi_runtime.trade_plans import PlanPrepared, TradePlanChannel
+from tracefold.integrations.nautilus.oi_runtime.strategy import OpenPlan, RuntimeControlSnapshot, RuntimeInputs
 from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradePlan, TradeSignalV1
 from tracefold.trading.storage.execution_stream import (
-    MAX_EXECUTION_READ_BATCH,
     ExecutionRuntimeState,
     materialize_execution_observation,
     materialize_operator_intents,
     materialize_trade_signals,
     prepare_execution_observations,
 )
-from tracefold.trading.storage.trade_plans import prepare_trade_plan, prepare_trade_plan_update
+from tracefold.trading.storage.trade_plans import (
+    MAX_OPEN_TRADE_PLANS,
+    prepare_trade_plan,
+    prepare_trade_plan_update,
+)
 
 # How often the current row is rewritten when nothing about it changed. It is well inside the public
 # five-second stale budget, so a Runtime that stops projecting reads as stale rather than as healthy.
 RUNTIME_HEARTBEAT_INTERVAL_NS = 500_000_000
-# This connection is the only PostgreSQL caller a Runtime holding live exposure has left, and reading
-# Commands on it is how an operator flattens. A statement that has not finished in one private
-# reconciliation period is broken, not slow: PostgreSQL cancels it, psycopg raises the
-# `OperationalError` the run loop already treats as a lost session, and the session is replaced.
+# Reading Commands on this connection is how an operator flattens. A statement that has not finished
+# in five seconds is broken, not slow: PostgreSQL cancels it and the step retries.
 _STATEMENT_TIMEOUT_MS = 5_000
+_RECONNECT_BACKOFF_SECONDS = (0.2, 0.5, 1.0, 2.0, 5.0)
+# The database's verdict on a row, as opposed to weather: no retry can change it.
+_ROW_REFUSALS = (IntegrityError, DataError, RaiseException, ValueError, RuntimeError)
 
 
 class RuntimeStateProjector:
-    """Durable current state: computed on the event loop, read and written by the bridge thread.
+    """Durable current state: computed on the event loop, written by the bridge thread."""
 
-    Two facts used to be synchronous PostgreSQL calls on the trading event loop, over a third
-    connection, every 500 ms: the generation-fenced `trading_execution_runtime_state` row and the
-    durable entry identities a reconciliation rebuilds ownership from (#510 E). Neither is an input
-    and neither needs to be read by the thread that also runs every Nautilus order callback. The loop
-    offers and reads memory here; every statement belongs to the bridge thread and its one connection.
-    """
-
-    def __init__(
-        self,
-        *,
-        initial: ExecutionRuntimeState,
-        recovery_inputs: tuple[TradePlan, ...],
-    ) -> None:
+    def __init__(self, *, initial: ExecutionRuntimeState) -> None:
         self._lock = Lock()
         self._current = initial
         self._pending: ExecutionRuntimeState | None = None
-        self._recovery_inputs = recovery_inputs
 
     @property
     def current(self) -> ExecutionRuntimeState:
@@ -76,12 +74,6 @@ class RuntimeStateProjector:
 
         with self._lock:
             return self._current
-
-    def recovery_inputs(self) -> tuple[TradePlan, ...]:
-        """The durable entry identities the next reconciliation rebuilds ownership from."""
-
-        with self._lock:
-            return self._recovery_inputs
 
     def offer(self, candidate: ExecutionRuntimeState) -> None:
         """Hand the loop's freshly computed row to the writer; the newest candidate wins."""
@@ -109,15 +101,13 @@ class RuntimeStateProjector:
         if not semantic_change and not heartbeat_due:
             return
         with repos.transaction():
-            if not repos.trading.update_execution_runtime_state(candidate):
-                raise RuntimeError("oi_runtime_generation_lost")
+            written = repos.trading.update_execution_runtime_state(candidate)
+        if not written:
+            # Another generation owns the row. The account-slot lock is what stops two Runtimes;
+            # this generation keeps running on it and simply stops projecting over its successor.
+            logger.error("OI Runtime projection row belongs to another generation ({})", candidate.account_slot)
         with self._lock:
             self._current = candidate
-
-    def refresh_recovery_inputs(self, repos: RepositorySession) -> None:
-        inputs = load_recovery_inputs(repos, self.current.account_slot, self.current.mode)
-        with self._lock:
-            self._recovery_inputs = inputs
 
 
 def _semantic_state(state: ExecutionRuntimeState) -> dict[str, Any]:
@@ -127,37 +117,76 @@ def _semantic_state(state: ExecutionRuntimeState) -> dict[str, Any]:
     return values
 
 
-def load_recovery_inputs(
+def load_runtime_inputs(
     repos: RepositorySession,
-    account_slot: str,
-    mode: str,
-) -> tuple[TradePlan, ...]:
-    """Nonterminal plans are the whole ownership set, independent of age and audit history."""
-    rows = repos.trading.active_trade_plans(account_slot=account_slot, mode=mode, limit=MAX_EXECUTION_READ_BATCH)
-    if len(rows) == MAX_EXECUTION_READ_BATCH:
-        raise RuntimeError("oi_runtime_recovery_input_overflow")
-    return tuple(TradePlan.model_validate(row) for row in rows)
+    profile: OiRuntimeProfile,
+    *,
+    now_ns: int,
+) -> RuntimeInputs:
+    """Everything a generation reads before its Strategy starts: control, open plans, stop-outs.
+
+    Control belongs to the account slot and outlives this process: a slot the operator resumed is
+    still resumed after a restart, a new image or a risk-config change (#520 PR-A). Open plans are the
+    intent Nautilus' reconciled Cache is matched against; they carry no execution state.
+    """
+
+    with repos.transaction():
+        control = repos.trading.ensure_execution_runtime_control_state(profile.account_slot, now_ns=now_ns)
+    rows = repos.trading.open_trade_plans(
+        account_slot=profile.account_slot,
+        mode=profile.mode,
+        limit=MAX_OPEN_TRADE_PLANS,
+    )
+    open_plans = tuple(
+        OpenPlan(
+            plan=TradePlan.model_validate({key: value for key, value in row.items() if key != "disposition_pending"}),
+            disposition_pending=bool(row["disposition_pending"]),
+        )
+        for row in rows
+    )
+    stop_exits = repos.trading.recent_stop_exits(
+        account_slot=profile.account_slot,
+        since_ns=now_ns - profile.risk.post_stop_cooldown_ns,
+    )
+    return RuntimeInputs(
+        control=RuntimeControlSnapshot(
+            entries_paused=control.entries_paused,
+            emergency_halted=control.emergency_halted,
+        ),
+        open_plans=open_plans,
+        stop_exits=stop_exits,
+    )
 
 
-def commit_entry_plan(repos: RepositorySession, plan: TradePlan) -> PlanPrepared:
-    """Return only after commit. A pre-existing identity grants query authority, never submission."""
+def commit_entry_plan(repos: RepositorySession, plan: TradePlan) -> PlanReceipt:
+    """Return only after commit. Only the exact prepared plan authorizes its entry order."""
+
     values = prepare_trade_plan(plan)
     with repos.transaction():
-        inserted = repos.trading.insert_trade_plan(values)
+        repos.trading.insert_trade_plan(values)
         stored = repos.trading.trade_plan(plan.entry_id)
     if stored is None:
-        raise RuntimeError("trade_plan_commit_missing")
-    return PlanPrepared(TradePlan.model_validate(stored), inserted)
+        return PlanReceipt(plan, committed=False, reason="trade_plan_commit_missing")
+    if TradePlan.model_validate(stored) != plan:
+        return PlanReceipt(plan, committed=False, reason="trade_plan_conflict")
+    return PlanReceipt(plan, committed=True)
+
+
+def write_journal_row(repos: RepositorySession, value: ExecutionObservationV1 | TradePlan) -> None:
+    """One row, one transaction."""
+
+    if isinstance(value, TradePlan):
+        prepared_plan = prepare_trade_plan_update(value)
+        with repos.transaction():
+            repos.trading.update_trade_plan(prepared_plan)
+        return
+    prepared = prepare_execution_observations((value,))
+    with repos.transaction():
+        repos.trading.append_execution_observations(prepared)
 
 
 class OiRuntimeDatabaseBridge:
-    """The one thread and the one connection that speak PostgreSQL for a running Runtime.
-
-    Inputs, durable audit, the day-start baseline, the account-slot heartbeat and every durable
-    current-state read and write happen here. The trading event loop keeps Binance, Nautilus and the
-    in-memory picture; on 2026-09-02 it also held a third connection and queried it synchronously
-    every 500 ms, on the same thread as every order callback and with no statement timeout (#510 E).
-    """
+    """The one thread and the one connection that speak PostgreSQL for a running Runtime."""
 
     def __init__(
         self,
@@ -165,8 +194,7 @@ class OiRuntimeDatabaseBridge:
         settings: Any,
         profile: OiRuntimeProfile,
         signals: ExecutionSignalClient,
-        plans: TradePlanChannel,
-        audit: AuditSink,
+        journal: ExecutionJournal,
         update_day_start: Callable[[DayStartBaseline], None],
         singleton: AccountSlotSingleton,
         projector: RuntimeStateProjector,
@@ -177,8 +205,7 @@ class OiRuntimeDatabaseBridge:
         self._settings = settings
         self._profile = profile
         self._signals = signals
-        self._plans = plans
-        self._audit = audit
+        self._journal = journal
         self._update_day_start = update_day_start
         self._singleton = singleton
         self._projector = projector
@@ -187,29 +214,12 @@ class OiRuntimeDatabaseBridge:
         self._thread: Thread | None = None
         self._lock = Lock()
         self._connected = False
-        self._fatal_error: BaseException | None = None
         self._equity: tuple[Decimal, int] | None = None
         self._baseline_day: str | None = None
         self._step_failures: dict[str, str] = {}
-        self._recovery_read_at_ns = 0
 
-    # `_connected` is this loop's own record of whether it currently holds a session. Nothing in
-    # production reads it -- no gate, no projection, no log line -- so the public `connected` property
-    # that stood here was a production accessor with only assertions behind it, and the reconnect
-    # proof that needs it reads the flag through a test-side helper now (#589 PR-2).
-
-    @property
-    def fatal_error(self) -> BaseException | None:
-        with self._lock:
-            return self._fatal_error
-
-    def recovery_inputs(self) -> tuple[TradePlan, ...]:
-        """The durable entry identities the next reconciliation rebuilds ownership from."""
-
-        return self._projector.recovery_inputs()
-
-    def set_equity(self, equity_usd: Decimal, observed_at_ns: int) -> None:
-        if equity_usd <= 0 or observed_at_ns <= 0:
+    def set_equity(self, equity_usd: Decimal | None, observed_at_ns: int) -> None:
+        if equity_usd is None or equity_usd <= 0 or observed_at_ns <= 0:
             return
         with self._lock:
             self._equity = (equity_usd, observed_at_ns)
@@ -228,6 +238,7 @@ class OiRuntimeDatabaseBridge:
             self._thread.join(timeout)
 
     def _run(self) -> None:
+        failures = 0
         while not self._stop.is_set():
             try:
                 with open_repositories(
@@ -236,34 +247,29 @@ class OiRuntimeDatabaseBridge:
                     repos.conn.execute(f"SET statement_timeout = {_STATEMENT_TIMEOUT_MS}")
                     with self._lock:
                         self._connected = True
+                    if failures:
+                        logger.info("OI Runtime database bridge reconnected")
+                    failures = 0
                     while not self._stop.is_set():
                         self._cycle(repos)
                         if self._stop.is_set():
                             break
-                        # The indexed anti-join in `_cycle` is the correctness path and it is
-                        # complete on its own: a Signal or Command is unresolved until a disposition
-                        # exists, so a poll that lands late reads exactly what a poll that landed
-                        # early would have. A `LISTEN` wake beside it was a second delivery path
-                        # that could only ever make this one arrive sooner, and it cost an
-                        # autocommit session, a channel name and a `pg_notify` on three appends
-                        # (#537 PR-4).
                         self._stop.wait(self._poll_seconds)
-                    # The composition root offers its `stopped` row on the way out; this connection is
-                    # the only one that can still write it.
-                    self._step("trade_plans", lambda: self._flush_trade_plans(repos))
-                    self._step("audit", lambda: self._flush_audit(repos))
+                    # The composition root offers its `stopped` row on the way out; this connection
+                    # is the only one that can still write it, and the journal drains behind it.
+                    self._step("journal", lambda: self._flush_journal(repos))
                     self._step("projection", lambda: self._projector.write_once(repos))
                     break
-            except (InterfaceError, OperationalError):
+            except Exception as exc:
+                # A lost session, a failed connect, or anything else the cycle did not contain: the
+                # bridge waits, reconnects and carries on. It is never why the Runtime stops.
                 with self._lock:
                     self._connected = False
-                self._stop.wait(self._poll_seconds)
-            except BaseException as exc:
-                with self._lock:
-                    self._connected = False
-                    self._fatal_error = exc
-                logger.exception("OI Runtime database bridge failed ({})", type(exc).__name__)
-                return
+                delay = _RECONNECT_BACKOFF_SECONDS[min(failures, len(_RECONNECT_BACKOFF_SECONDS) - 1)]
+                if failures == 0:
+                    logger.warning("OI Runtime database bridge lost its session ({}); reconnecting", type(exc).__name__)
+                failures += 1
+                self._stop.wait(delay)
         with self._lock:
             self._connected = False
 
@@ -271,15 +277,12 @@ class OiRuntimeDatabaseBridge:
         """Independent steps, so no one of them can silence the others.
 
         Reading Commands is what lets an operator flatten, so it runs first and no other step's
-        failure can delay it; an audit append in the same `try` once stopped it for six hours while a
-        position was open (#510 A). Only a lost connection aborts the cycle, because that is the
-        session-replacement path in `_run`. A failing current-state step logs once and lets the
-        `alive` heartbeat go stale, which is already how every reader decides a Runtime is gone: not
-        a new gate.
+        failure can delay it (#510 A). Only a lost connection aborts the cycle, because that is the
+        session-replacement path in `_run`.
         """
 
         # The advisory lock lives on the singleton's own session; the loop reads `acquired` from
-        # memory and fails closed. `check` never raises - a dead session is what it reports.
+        # memory and exits when it is gone. `check` never raises - a dead session is what it reports.
         self._singleton.check()
         self._step(
             "commands",
@@ -287,34 +290,66 @@ class OiRuntimeDatabaseBridge:
                 lambda slot, strategy, limit: load_unresolved_operator_intents(repos, slot, strategy, limit),
             ),
         )
-        self._step("trade_plans", lambda: self._flush_trade_plans(repos))
+        self._step("entry_plan", lambda: self._commit_entry_plan(repos))
+        self._step("journal", lambda: self._flush_journal(repos))
         self._step(
             "signals",
             lambda: self._signals.poll_once(
                 lambda slot, strategy, limit: load_unresolved_trade_signals(repos, slot, strategy, limit),
             ),
         )
-        self._step("audit", lambda: self._flush_audit(repos))
-        self._refresh_current_state(repos)
+        self._step("projection", lambda: self._projector.write_once(repos))
         self._step("day_start", lambda: self._refresh_day_start(repos))
 
-    def _flush_trade_plans(self, repos: RepositorySession) -> None:
-        updates = self._plans.pending_updates()
-        if updates:
-            prepared = tuple(prepare_trade_plan_update(value) for value in updates)
-            with repos.transaction():
-                for values in prepared:
-                    repos.trading.update_trade_plan(values)
-            self._projector.refresh_recovery_inputs(repos)
-            for value in updates:
-                self._plans.updated(value)
-        # Retire prior ownership before preparing another entry on its instrument. A failed
-        # new insert must never prevent already-proven lifecycle facts from committing.
-        plan = self._plans.pending_prepare()
-        if plan is not None:
+    def _commit_entry_plan(self, repos: RepositorySession) -> None:
+        plan = self._journal.pending_prepare()
+        if plan is None:
+            return
+        try:
             receipt = commit_entry_plan(repos, plan)
-            self._projector.refresh_recovery_inputs(repos)
-            self._plans.committed(receipt.plan, newly_committed=receipt.newly_committed)
+        except _ROW_REFUSALS as exc:
+            logger.error("OI Runtime entry plan refused ({}): {}", plan.entry_id, type(exc).__name__)
+            receipt = PlanReceipt(plan, committed=False, reason="trade_plan_rejected")
+        self._journal.settle_prepare(receipt)
+
+    def _flush_journal(self, repos: RepositorySession) -> None:
+        """Write every due row in its own transaction; one failing row never holds up the next."""
+
+        for row in self._journal.due(time.monotonic()):
+            value = row.value
+            try:
+                write_journal_row(repos, value)
+            except (InterfaceError, OperationalError):
+                self._journal.retry_later(row, time.monotonic())
+                raise
+            except _ROW_REFUSALS as exc:
+                logger.error(
+                    "OI Runtime journal row refused and dropped ({} {}): {}",
+                    _row_kind(row),
+                    row.key,
+                    f"{type(exc).__name__}: {(str(exc).strip().splitlines() or [''])[0][:200]}",
+                )
+                self._settled(value)
+                self._journal.written(row, value)
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "OI Runtime journal row deferred ({} {}): {}", _row_kind(row), row.key, type(exc).__name__
+                )
+                self._journal.retry_later(row, time.monotonic())
+                continue
+            self._settled(value)
+            self._journal.written(row, value)
+
+    def _settled(self, value: ExecutionObservationV1 | TradePlan) -> None:
+        """A written verdict releases its input from this process's in-flight claim."""
+
+        if not isinstance(value, ExecutionObservationV1):
+            return
+        if value.normalized_kind == "signal_disposition" and value.signal_id is not None:
+            self._signals.mark_durable(value.signal_id)
+        if value.normalized_kind == "control_disposition" and value.command_id is not None:
+            self._signals.mark_command_durable(value.command_id)
 
     def _refresh_day_start(self, repos: RepositorySession) -> None:
         with self._lock:
@@ -327,7 +362,7 @@ class OiRuntimeDatabaseBridge:
             return
         baseline = load_or_record_day_start(
             repos=repos,
-            factory=self._audit.factory,
+            factory=self._journal.factory,
             utc_day=utc_day,
             equity_usd=equity_usd,
             recorded_at_ns=observed_at_ns,
@@ -335,30 +370,8 @@ class OiRuntimeDatabaseBridge:
         self._update_day_start(baseline)
         self._baseline_day = utc_day
 
-    def _flush_audit(self, repos: RepositorySession) -> None:
-        flush_audit_once(
-            repos=repos,
-            audit=self._audit,
-            signals=self._signals,
-        )
-
-    def _refresh_current_state(self, repos: RepositorySession) -> None:
-        """Refresh durable plans periodically, independently of optional audit appends."""
-
-        now_ns = time.time_ns()
-        recovery_due = now_ns - self._recovery_read_at_ns >= int(self._profile.risk.reconciliation_interval_ns)
-        if recovery_due and self._step(
-            "recovery",
-            lambda: self._projector.refresh_recovery_inputs(repos),
-        ):
-            self._recovery_read_at_ns = now_ns
-        self._step("projection", lambda: self._projector.write_once(repos))
-
     def _step(self, name: str, run: Callable[[], object]) -> bool:
-        """Run one cycle step, logging a repeating cause once instead of once per cycle (742 times in
-        six hours, in production). A psycopg error's first line names the relation and constraint
-        without the offending row, so it is stable across rows and is what to deduplicate on.
-        """
+        """Run one cycle step, logging a repeating cause once instead of once per cycle."""
 
         try:
             run()
@@ -379,17 +392,18 @@ class OiRuntimeDatabaseBridge:
         return True
 
 
+def _row_kind(row: JournalRow) -> str:
+    value = row.value
+    return value.normalized_kind if isinstance(value, ExecutionObservationV1) else f"plan:{value.status}"
+
+
 def load_unresolved_trade_signals(
     repos: RepositorySession,
     account_slot: str,
     execution_strategy: str,
     limit: int,
 ) -> tuple[TradeSignalV1, ...]:
-    """Materialize Trading-owned rows at the App composition boundary.
-
-    The wall clock is read here, at the composition seam, because "still pending" is a fact about now
-    and the storage statement takes it as a bound rather than reading a clock of its own.
-    """
+    """Materialize Trading-owned rows at the App composition boundary."""
 
     rows = repos.trading.unresolved_trade_signals(
         account_slot=account_slot,
@@ -415,60 +429,6 @@ def load_unresolved_operator_intents(
         limit=limit,
     )
     return materialize_operator_intents(rows)
-
-
-def load_runtime_control_state(
-    repos: RepositorySession,
-    account_slot: str,
-    *,
-    now_ns: int,
-) -> RuntimeControlSnapshot:
-    """Load this slot's current control row, creating an unpaused one the first time.
-
-    Control belongs to the account slot and survives every deploy: a slot the operator resumed is
-    still resumed after a restart, a new image or a risk-config change, and only a Command moves it.
-    Command/Observation history is never a startup path.
-    """
-
-    with repos.transaction():
-        state = repos.trading.ensure_execution_runtime_control_state(account_slot, now_ns=now_ns)
-    return RuntimeControlSnapshot(
-        entries_paused=state.entries_paused,
-        emergency_halted=state.emergency_halted,
-        flatten_pending=(),
-    )
-
-
-def flush_audit_once(
-    *,
-    repos: RepositorySession,
-    audit: AuditSink,
-    signals: ExecutionSignalClient,
-) -> int:
-    """Background-only durable append; no Strategy callback can reach this function.
-
-    `flush_once` returns everything that left the queue, durably appended or quarantined, and both
-    settle their input: a Signal or Command whose disposition the database refused is disposed of all
-    the same, because the Runtime lost the audit fact, not the decision.
-    """
-
-    def writer(values: Sequence[ExecutionObservationV1]) -> None:
-        prepared = prepare_execution_observations(values)
-        try:
-            with repos.transaction():
-                repos.trading.append_execution_observations(prepared)
-        except IntegrityError as exc:
-            # A CHECK, unique, foreign key or NOT NULL refusal is a verdict on the batch, not weather:
-            # replaying it forever is what blinded the ledger. The sink drops it and records the gap.
-            raise AuditAppendRejected(f"{type(exc).__name__}: {exc.diag.constraint_name or exc.sqlstate}") from exc
-
-    flushed = audit.flush_once(writer)
-    for value in flushed:
-        if value.normalized_kind == "signal_disposition" and value.signal_id is not None:
-            signals.mark_durable(value.signal_id)
-        if value.normalized_kind == "control_disposition" and value.command_id is not None:
-            signals.mark_command_durable(value.command_id)
-    return len(flushed)
 
 
 def load_or_record_day_start(
@@ -501,5 +461,9 @@ __all__ = [
     "OiRuntimeDatabaseBridge",
     "RuntimeStateProjector",
     "commit_entry_plan",
-    "load_recovery_inputs",
+    "load_or_record_day_start",
+    "load_runtime_inputs",
+    "load_unresolved_operator_intents",
+    "load_unresolved_trade_signals",
+    "write_journal_row",
 ]

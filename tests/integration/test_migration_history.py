@@ -21,7 +21,7 @@ from tests.postgres_test_utils import connect_postgres_test, prepare_test_migrat
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
+from tracefold.integrations.nautilus.oi_runtime.journal import (
     ObservationFactory,
     day_start_baseline_from_observation,
 )
@@ -38,6 +38,7 @@ from tracefold.trading.storage.execution_stream import (
     materialize_trade_signals,
     prepare_execution_observations,
     prepare_operator_intent,
+    prepare_trade_signal,
 )
 from tracefold.trading.storage.root import TradingRepository
 
@@ -46,7 +47,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260922_0388"
+HEAD = "20260922_0389"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -253,6 +254,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260922_0388",
         "20260922_0387",
         "20260922_0386",
         "20260920_0385",
@@ -342,12 +344,17 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
+    # The Nautilus ownership cut deleted the private proof's rows and columns; nothing can put them back.
+    with pytest.raises(RuntimeError, match="trading_nautilus_owned_execution_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == HEAD
     # The judgment v3 cut cannot be rolled back by downgrading the CHECK that admits a v3 verdict: every
     # judgment written under it carries `fact_kind` and no `magnitude`, and the v2-only predicate refuses
     # exactly that shape.
+    command.stamp(config, "20260922_0387")
     with pytest.raises(RuntimeError, match="news_judgment_v3_fact_kind_forward_only"):
         command.downgrade(config, "base")
-    assert _stamped_revision() == HEAD
+    assert _stamped_revision() == "20260922_0387"
     # And the revision behind it says the same thing about the v15 policy it admitted.
     command.stamp(config, "20260922_0386")
     with pytest.raises(RuntimeError, match="news_policy_v15_decision_table_forward_only"):
@@ -446,7 +453,6 @@ def test_runtime_control_hard_cut_backfills_current_control_and_forces_runtime_r
                     occurred_at_ns=2_000 + index,
                     observed_at_ns=2_000 + index,
                     summary={"action": action, "disposition": "accepted", "reason": "test"},
-                    payload={"action": action, "disposition": "accepted"},
                     event_identity="accepted",
                 )
                 payload_digest, payload = _pre_0357_observation(observation, profile_key="runtime_profile_id")
@@ -496,7 +502,8 @@ def test_runtime_control_hard_cut_backfills_current_control_and_forces_runtime_r
     finally:
         conn.close()
 
-    command.upgrade(config, "head")
+    # The projection's `execution_safe` is this revision's own column; `20260922_0389` drops it again.
+    command.upgrade(config, "20260922_0387")
     conn = connect_postgres_test(read_only=False)
     try:
         control = conn.execute(
@@ -602,7 +609,6 @@ def _seed_pre_0356_profile(
         occurred_at_ns=created_at_ns + 10,
         observed_at_ns=created_at_ns + 10,
         summary={"action": action, "disposition": "accepted", "reason": "test"},
-        payload={"action": action, "disposition": "accepted"},
         event_identity="accepted",
     )
     payload_digest, payload = _pre_0357_observation(observation, profile_key="runtime_profile_id")
@@ -835,7 +841,6 @@ def _seed_pre_0356_signal_disposition(conn, *, profile_id: str, signal_id: str, 
         occurred_at_ns=2_000,
         observed_at_ns=2_000,
         summary={"disposition": "accepted"},
-        payload={"disposition": "accepted"},
         event_identity=f"disposition:{profile_id}",
     )
     payload_digest, payload = _pre_0357_observation(observation, profile_key="runtime_profile_id")
@@ -1043,7 +1048,6 @@ def _seed_pre_0357_facts(conn, *, signal_id: str, case_id: str, command_id: str,
         occurred_at_ns=2_000,
         observed_at_ns=2_000,
         summary={"disposition": "accepted"},
-        payload={"disposition": "accepted"},
         event_identity="disposition:0357",
     )
     payload_digest, payload = _pre_0357_observation(observation)
@@ -1181,9 +1185,10 @@ def test_pydantic_only_cut_drops_the_shape_checks_the_digests_and_the_readiness_
             "trading_execution_observation_clock_check",
             "trading_operator_intent_action_check",
             "trading_trade_signal_direction_check",
-            "trading_execution_runtime_safe_check",
             "trading_execution_runtime_armed_check",
         } <= checks
+        # `execution_safe` was the private account proof's own gate; `20260922_0389` removed both.
+        assert "trading_execution_runtime_safe_check" not in checks
 
         # The stored payloads lost exactly the keys whose columns went, and nothing else.
         stored = conn.execute(
@@ -1237,7 +1242,6 @@ def test_runtime_identity_cut_drops_the_columns_and_rewrites_the_observation_pay
             occurred_at_ns=2_000,
             observed_at_ns=2_000,
             summary={"risk_fact": "day_start_equity", "utc_day": "2030-03-17", "equity_usd_decimal": "1000.50"},
-            payload={"risk_fact": "day_start_equity"},
             fixed_event_id=event_id,
         )
         payload = _pre_0361_payload(observation)
@@ -1341,7 +1345,9 @@ def test_runtime_identity_cut_drops_the_columns_and_rewrites_the_observation_pay
                 "trading_execution_observation_release_check",
             }
         )
-        assert {"trading_execution_runtime_safe_check", "trading_execution_runtime_armed_check"} <= checks
+        # `20260922_0389` restates the arming rule without the private proof's `execution_safe`.
+        assert "trading_execution_runtime_armed_check" in checks
+        assert "trading_execution_runtime_safe_check" not in checks
 
         # The ledger is still append-only, and the rewritten payload still materialises.
         trigger = conn.execute(
@@ -2742,8 +2748,8 @@ def test_the_watchdog_alert_ledger_is_one_additive_table_and_reverses_cleanly() 
     command.upgrade(config, "20260922_0387")
     assert _table_exists("platform_watchdog_alerts") is False
 
-    command.upgrade(config, "head")
-    assert _stamped_revision() == HEAD == "20260922_0388"
+    command.upgrade(config, "20260922_0388")
+    assert _stamped_revision() == "20260922_0388"
     assert _table_exists("platform_watchdog_alerts") is True
     conn = connect_postgres_test(read_only=False)
     try:
@@ -2761,5 +2767,157 @@ def test_the_watchdog_alert_ledger_is_one_additive_table_and_reverses_cleanly() 
     command.downgrade(config, "20260922_0387")
     assert _stamped_revision() == "20260922_0387"
     assert _table_exists("platform_watchdog_alerts") is False
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260922_0388")
     assert _table_exists("platform_watchdog_alerts") is True
+
+
+def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_every_trade_fact() -> None:
+    """`20260922_0389` (#680 PR-1), against a ledger holding every kind the old Runtime wrote.
+
+    The private proof's `reconciliation` rows, the `readiness` stages and the `audit_gap` records go;
+    every disposition, order, fill, position, protection and risk row stays byte for byte, the ledger is
+    still append-only afterwards, and a terminal plan with a historical exit reason survives the new
+    vocabulary. The projection loses the proof's five columns and its v1 snapshot, which the next
+    Runtime generation rewrites.
+    """
+
+    from contextlib import closing
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260922_0387")
+    slot = "binance_usdm_primary"
+    kinds = (
+        "signal_disposition",
+        "risk",
+        "order",
+        "fill",
+        "position",
+        "protection",
+        "reconciliation",
+        "readiness",
+        "audit_gap",
+    )
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO trading_cases (
+                  case_id, underlying_key, trigger_kind, primary_source_key, manifest, manifest_sha256,
+                  state, policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
+                  updated_at_ms
+                ) VALUES ('case-0389', 'crypto:BTC', 'oi', 'oi:0389', '{}'::jsonb, %s,
+                          'SIGNAL_EMITTED', 'long', 'test', 1, 1, 1, 1)
+                """,
+                ("4" * 64,),
+            )
+            repo.append_trade_signal(
+                prepare_trade_signal(
+                    signal_id="1" * 64,
+                    case_id="case-0389",
+                    market_key="crypto:perp:BTC:USDT",
+                    direction="long",
+                    observed_at_ns=1_000,
+                    expires_at_ns=2_000,
+                )
+            )
+            for index, kind in enumerate(kinds):
+                conn.execute(
+                    """
+                    INSERT INTO trading_execution_observations (
+                      event_id, account_slot, execution_strategy, signal_id, command_id, normalized_kind,
+                      occurred_at_ns, observed_at_ns, native_identity_references, summary, payload
+                    ) VALUES (%s, %s, 'oi_nautilus_v1', %s, NULL, %s, %s, %s, '[]'::jsonb, %s::jsonb, '{}'::jsonb)
+                    """,
+                    (
+                        f"{index:064x}",
+                        slot,
+                        "1" * 64 if kind == "signal_disposition" else None,
+                        kind,
+                        1_000 + index,
+                        1_000 + index,
+                        json.dumps({"disposition": "accepted"} if kind == "signal_disposition" else {"kind": kind}),
+                    ),
+                )
+            conn.execute(
+                """
+                INSERT INTO trading_trade_plans (
+                  entry_id, source, case_id, account_slot, runtime_mode_at_creation, market_key,
+                  instrument_id, direction, entry_client_order_id, created_at_ns, entry_expires_at_ns,
+                  entry_quantity, stop_distance_bps, risk_budget_usd, max_leverage_at_creation,
+                  exit_policy_id, take_profit_bps, max_holding_ns, status, opened_at_ns, terminal_at_ns,
+                  exit_reason, history_gap_reason, updated_at_ns
+                ) VALUES (%s, 'signal', 'case-0389', %s, 'paper', 'crypto:perp:BTC:USDT',
+                          'BTCUSDT-PERP.BINANCE', 'long', %s, 1000, 2000, 0.05, 100, 10, 1,
+                          'oi_fixed_v1', 200, 14400000000000, 'closed', 1100, 1200,
+                          'recovery_safety_flatten', 'native_pnl_basis_incomplete_after_restart', 1200)
+                """,
+                ("1" * 64, slot, "tf" + "a" * 30),
+            )
+            conn.execute(
+                """
+                INSERT INTO trading_execution_runtime_state (
+                  account_slot, mode, runtime_id, alive, execution_safe, entries_armed, startup_reconciled,
+                  unexpected_exposure, account_flat, positions_count, open_orders_count, protection_status,
+                  reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason, started_at_ns,
+                  updated_at_ns, account_snapshot, routes_count, facts_expire_at_ns
+                ) VALUES (%s, 'paper', '44444444-4444-4444-8444-444444444444', TRUE, TRUE, TRUE, TRUE,
+                          FALSE, TRUE, 0, 0, 'unknown', 3000, 3000, NULL, 1000, 3000,
+                          '{"version": "execution_account_snapshot_v1"}'::jsonb, 5, 18000)
+                """,
+                (slot,),
+            )
+        kept = conn.execute(
+            """
+            SELECT event_id, normalized_kind, summary, payload FROM trading_execution_observations
+             WHERE normalized_kind NOT IN ('reconciliation', 'readiness', 'audit_gap') ORDER BY seq
+            """
+        ).fetchall()
+
+    command.upgrade(config, "head")
+
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        after = conn.execute(
+            "SELECT event_id, normalized_kind, summary, payload FROM trading_execution_observations ORDER BY seq"
+        ).fetchall()
+        assert after == kept
+        assert {row["normalized_kind"] for row in after} == set(kinds) - {"reconciliation", "readiness", "audit_gap"}
+        with pytest.raises(psycopg.errors.RaiseException):
+            conn.execute("DELETE FROM trading_execution_observations")
+        conn.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                """
+                INSERT INTO trading_execution_observations (
+                  event_id, account_slot, execution_strategy, normalized_kind, occurred_at_ns, observed_at_ns,
+                  native_identity_references, summary, payload
+                ) VALUES (%s, %s, 'oi_nautilus_v1', 'reconciliation', 1, 1, '[]', '{}', '{}')
+                """,
+                ("f" * 64, slot),
+            )
+        conn.rollback()
+
+        plan = conn.execute("SELECT * FROM trading_trade_plans").fetchone()
+        assert plan["exit_reason"] == "recovery_safety_flatten" and "history_gap_reason" not in plan
+        with pytest.raises(psycopg.errors.RaiseException, match="trade_plan_terminal_immutable"):
+            conn.execute("UPDATE trading_trade_plans SET exit_reason = 'external'")
+        conn.rollback()
+
+        state = conn.execute("SELECT * FROM trading_execution_runtime_state").fetchone()
+        assert set(state).isdisjoint(
+            {
+                "execution_safe",
+                "startup_reconciled",
+                "account_flat",
+                "reconciliation_observed_at_ns",
+                "facts_expire_at_ns",
+            }
+        )
+        assert (state["account_snapshot"], state["protection_status"], state["entries_armed"]) == (
+            None,
+            "not_applicable",
+            False,
+        )
+        assert state["entry_block_reason"] == "runtime_stopped"
+        assert repositories_for_connection(conn).trading.execution_runtime_state(slot) is not None

@@ -137,19 +137,21 @@ class ExecutionSignalClient:
             return value
 
     def mark_durable(self, signal_id: str) -> None:
+        """A disposition for this Signal is in the ledger, so the indexed read will never offer it again.
+
+        A Signal whose plan was committed by an earlier generation was never polled by this one, so a
+        verdict written for it settles nothing here; that is not an error.
+        """
+
         with self._lock:
-            if signal_id not in self._pending_ids:
-                raise RuntimeError("oi_runtime_signal_not_pending")
-            self._pending_ids.remove(signal_id)
+            self._pending_ids.discard(signal_id)
 
     def mark_command_durable(self, command_id: str) -> None:
         with self._lock:
-            if command_id not in self._pending_command_ids:
-                raise RuntimeError("oi_runtime_command_not_pending")
-            self._pending_command_ids.remove(command_id)
+            self._pending_command_ids.discard(command_id)
 
     def release(self, signal_id: str) -> None:
-        """Give up the in-process claim on a Signal whose refusal was not a verdict.
+        """Give up the in-process claim on a Signal whose verdict could not be queued.
 
         `mark_durable` says "a disposition for this Signal is in the ledger"; this says "no disposition
         exists and none is coming from this attempt". The Signal stays unresolved, so the next indexed
@@ -157,45 +159,13 @@ class ExecutionSignalClient:
         """
 
         with self._lock:
-            if signal_id not in self._pending_ids:
-                raise RuntimeError("oi_runtime_signal_not_pending")
-            self._pending_ids.remove(signal_id)
+            self._pending_ids.discard(signal_id)
 
     def release_command(self, command_id: str) -> None:
-        """The Command half of `release`; the manual-entry path refuses on the same clocks."""
+        """The Command half of `release`."""
 
         with self._lock:
-            if command_id not in self._pending_command_ids:
-                raise RuntimeError("oi_runtime_command_not_pending")
-            self._pending_command_ids.remove(command_id)
-
-    def retry(self, value: TradeSignalV1) -> None:
-        """Return a popped Signal when its final audit fact could not be buffered."""
-
-        size = len(value.model_dump_json().encode())
-        with self._lock:
-            if value.signal_id not in self._pending_ids:
-                raise RuntimeError("oi_runtime_signal_not_pending")
-            if any(queued.signal_id == value.signal_id for queued, _ in self._values):
-                return
-            if len(self._values) + len(self._commands) >= self._max_count or self._bytes + size > self._max_bytes:
-                raise RuntimeError("oi_runtime_signal_retry_overflow")
-            self._values.appendleft((value, size))
-            self._bytes += size
-
-    def retry_command(self, value: OperatorIntentV1) -> None:
-        """Return a popped Command when its final audit fact could not be buffered."""
-
-        size = len(value.model_dump_json().encode())
-        with self._lock:
-            if value.command_id not in self._pending_command_ids:
-                raise RuntimeError("oi_runtime_command_not_pending")
-            if any(queued.command_id == value.command_id for queued, _ in self._commands):
-                return
-            if len(self._values) + len(self._commands) >= self._max_count or self._bytes + size > self._max_bytes:
-                raise RuntimeError("oi_runtime_command_retry_overflow")
-            self._commands.appendleft((value, size))
-            self._bytes += size
+            self._pending_command_ids.discard(command_id)
 
 
 __all__ = ["ExecutionSignalClient"]
