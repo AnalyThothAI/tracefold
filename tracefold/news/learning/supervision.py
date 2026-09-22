@@ -13,17 +13,13 @@ from pydantic import ValidationError
 
 from ..taxonomy import ReviewTaxonomyV1
 
+# #675 §1: the three observations a reviewer can correct on the verdict itself. The seven relevance
+# dimensions and `magnitude` went with the fields they labelled -- a reviewer cannot correct a field the
+# Program does not produce, and an accepted label for one would be Gold for nothing.
 SEMANTIC_FIELDS = {
     "asset_grounding": "assets",
     "direction": "direction",
-    "magnitude": "magnitude",
-    "trade_impact_breadth": "impact_breadth",
-    "trade_tradability": "tradability",
-    "trade_surprise": "surprise",
-    "trade_development_delta": "development_delta",
-    "trade_channels": "channels",
-    "trade_affected_markets": "affected_markets",
-    "reader_value": "reader_value",
+    "fact_kind": "fact_kind",
 }
 CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 
@@ -41,7 +37,6 @@ def project_supervision(
     expected = dict(payload.get("expected") or {})
     recorded = dict(judgment or {})
     verdict = dict(recorded.get("verdict") or {})
-    relevance = dict(dict(recorded.get("editorial") or {}).get("relevance") or {})
     labels: dict[str, Any] = {}
     sources: dict[str, str] = {}
     missing: dict[str, str] = {}
@@ -59,8 +54,9 @@ def project_supervision(
             value = sealed["labels"][dimension]
             source = sealed["sources"][dimension]
         elif label == "pass":
-            owner = verdict if dimension in {"asset_grounding", "direction", "magnitude"} else relevance
-            value = owner.get(field)
+            # Every semantic dimension is a field of the verdict now: the editorial envelope carries no
+            # model-owned answer left to bind (#675 §1).
+            value = verdict.get(field)
             source = "accepted_recorded_output"
         else:
             value = expected.get("assets" if dimension == "asset_grounding" else dimension)

@@ -329,7 +329,7 @@ function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
           value: triage.confidence == null ? "" : `${Math.round(triage.confidence * 100)}%`,
         },
         { label: "新颖度", value: triage.novelty_zh },
-        { label: "受众", value: triage.audience_zh },
+        { label: "事实类型", value: triage.fact_kind_zh },
       ]}
       label="判定明细"
     />
@@ -508,7 +508,7 @@ function VerdictRecord({ verdict }: { verdict: NewsVerdict }) {
         <KeyValueRow k="degraded" v={verdict.degraded ? "true" : "false"} />
         <KeyValueRow k="error_code" v={verdict.error_code ?? "—"} />
         <KeyValueRow k="verdict_direction" v={verdict.verdict.direction} />
-        <KeyValueRow k="verdict_magnitude" v={String(verdict.verdict.magnitude)} />
+        <KeyValueRow k="verdict_fact_kind" v={verdict.verdict.fact_kind ?? "—"} />
         <KeyValueRow k="verdict_scope" v={verdict.verdict.scope} />
         <KeyValueRow k="verdict_novelty" v={verdict.verdict.novelty} />
         <KeyValueRow k="headline_zh" v={verdict.verdict.headline_zh} />
@@ -522,7 +522,7 @@ function VerdictRecord({ verdict }: { verdict: NewsVerdict }) {
           }
         />
         <KeyValueRow k="source_authority" v={verdict.model_editorial?.source_authority ?? "—"} />
-        <KeyValueRow k="reader_value" v={verdict.model_editorial?.relevance.reader_value ?? "—"} />
+        <KeyValueRow k="verdict_evidence_ref" v={verdict.verdict.evidence_ref || "—"} />
         <KeyValueRow k="evidence_version" v={String(verdict.evidence_version)} />
         <KeyValueRow k="evidence_sha256" v={verdict.evidence_sha256} />
         <KeyValueRow k="focus_fact_id" v={verdict.focus_fact_id} />

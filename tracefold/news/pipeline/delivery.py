@@ -257,7 +257,6 @@ def _progression_review_candidates(
                     else None
                 ),
                 "symbols": [str(value)[:32] for value in entry.get("symbols") or ()][:6],
-                "magnitude": max(0, min(3, int(entry.get("magnitude") or 0))),
                 "direction": str(entry.get("direction") or "")[:32],
             }
         )
@@ -809,7 +808,6 @@ class DelivererLoop:
                     | {base_symbol(str(value.get("symbol") or "")) for value in tv.get("assets") or ()}
                 ),
                 "assets": list(tv.get("assets") or ()),
-                "magnitude": int(tv.get("magnitude") or 0),
                 "direction": str(tv.get("direction") or "unclear"),
                 "headline_zh": str(tv.get("headline_zh") or ""),
                 "why_zh": str(tv.get("why_zh") or ""),

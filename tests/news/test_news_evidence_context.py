@@ -26,7 +26,6 @@ def history_row(event_id: str, at_ms: int) -> dict:
         grounded_assets=["SEI"],
         canonical_assets=["SEI"],
         assets=[{"symbol": "SEI", "market_type": "equity"}],
-        magnitude=1,
         direction="neutral",
         headline_zh="收购计划",
         why_zh="仍待批准",

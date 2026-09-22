@@ -545,7 +545,7 @@ def test_triage_without_model_is_fail_closed_and_only_objective_guards_push(conn
         assert row["stage"] == "triage" and row["policy_version"] == TRIAGE_POLICY_VERSION
         assert row["degraded"] is True
         assert row["error_code"] == "news_semantic_program_unconfigured"
-        assert row["judgment_contract_version"] == "news_judgment_v2"
+        assert row["judgment_contract_version"] == "news_judgment_v3"
         assert row["judgment_origin"] == "degraded" and row["model"] is None
         assert row["scored_judgment_sha256"] == row["trace"]["judgment_sha256"]
         assert row["verdict"]["headline_zh"] and "模型不可用" not in row["verdict"]["headline_zh"]  # the wire headline

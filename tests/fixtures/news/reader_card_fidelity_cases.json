@@ -68,7 +68,6 @@
               "symbols": [
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Robinhood Chain 收入占 Robinhood 总收入 10-20%",
               "why_zh": "crypto chain low operating costs make its 10-20% revenue share disproportionately high-margin, directly boosting HOOD's overall earnings.",
@@ -89,7 +88,6 @@
                 "HOOD",
                 "MORPHO"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Morpho 接入 Coinbase 和 Robinhood，服务数十万美国活跃消费者",
               "why_zh": "Robinhood 将加密借贷产品推向其数千万用户群，为机构提供了大规模真实消费场景以吸引人才并验证合规价值。",
@@ -110,7 +108,6 @@
                 "CRO",
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Robinhood 与 Crypto.com 达成预测市场合作",
               "why_zh": "两家头部平台打通产品能力，为 Robinhood 引入新的加密衍生品交易场景，可能提升用户活跃度并带来潜在收入增长.",
@@ -133,7 +130,6 @@
                 "HOOD",
                 "SOL"
               ],
-              "magnitude": 1,
               "direction": "neutral",
               "headline_zh": "Robinhood Chain 费用战扩大，Solana、Arbitrum 与 BNB Chain 争夺链上盈利模式",
               "why_zh": "三大公链在交易费与生态激励上的策略分歧加剧，迫使 Robinhood 在其链上重新权衡手续费收入与开发者留存成本。",
@@ -155,7 +151,6 @@
                 "LAYER",
                 "ONDO"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Robinhood Chain 创 DEX 交易量纪录，代币化股票获市场青睐",
               "why_zh": "链上股票交易活跃度提升直接增加 Robinhood 的加密业务收入，验证其平台从券商向链上资产入口转型的逻辑。",
@@ -175,7 +170,6 @@
               "symbols": [
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Bernstein 看多 Robinhood：15 天链费 3300 万美元，2028 年预计达 1.6 亿美元",
               "why_zh": "Robinhood Chain 15 天链上费用达 3300 万美元且位列第一，Bernstein 据此预测其 2028 年费用将达 1.6 亿美元，直接增厚公司现金流并支撑股价上行空间。",
@@ -195,7 +189,6 @@
               "symbols": [
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "Robinhood：股权定价将参考 Citadel Securities 以 200 亿美元估值投资 Crypto",
               "why_zh": "Robinhood 在评估自身股权价值时引入 Citadel 对 Crypto 的 200 亿美元交易作为对标基准，为投资者提供具体的资产重估参考系。",
@@ -217,7 +210,6 @@
                 "HOOD",
                 "SOL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Bernstein：Robinhood 链上费用超 Solana、BNB Chain，目标价看 31% 上行",
               "why_zh": "Robinhood 把自有链交易费计入报表后，收入从佣金转向链上现金流，直接增厚 EPS 预期并支撑估值。",
@@ -237,7 +229,6 @@
               "symbols": [
                 "PONS"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "Loracle 做空 PONS 近 4% 供应量且仍在加仓",
               "why_zh": "Loracle 持续增加空头头寸，显示交易资金正通过大额卖单压制 PONS 价格，加剧短期下行压力.",
@@ -257,7 +248,6 @@
               "symbols": [
                 "PONS"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Bitget 宣布上线 Pons PONS",
               "why_zh": "交易所新增交易通道，为持有者提供即时变现出口，直接支撑代币流动性与价格预期.",
@@ -278,7 +268,6 @@
                 "ARB",
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Arbitrum ARB 24小时暴涨50%：Robinhood链收入激增引发Solana之争",
               "why_zh": "Robinhood链上业务放量带来稳定收入预期，资金从Solana等竞争公链流向Arbitrum生态，推高ARB代币价格。",
@@ -299,7 +288,6 @@
                 "ETH",
                 "PONS"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "部署 PEZ 赚约 90 ETH 费用，转入资金池进一步做空 PONS",
               "why_zh": "交易者将链上产生的 90 ETH 手续费直接注入资金池增加空头仓位，PONS 面临更集中的抛压。",
@@ -319,7 +307,6 @@
               "symbols": [
                 "PONS"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Cumberland 关联钱包 4 天从 Gate 提取 350 万枚 PONS，均价 0.8 美元",
               "why_zh": "机构关联方正以约 278 万美元规模在交易所提币离场，筹码从流通端向链上地址集中，直接减少短期抛压。",
@@ -340,7 +327,6 @@
                 "HOOD",
                 "PENDLE"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Pendle 在 Robinhood Chain 上线",
               "why_zh": "Robinhood 链用户首次可通过 Pendle 锁定固定收益或进行杠杆操作，该 DeFi 协议借此接入新公链并扩大流动性池规模.",
@@ -361,7 +347,6 @@
                 "ARB",
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Arbitrum One 成第三大区块链，收入全归代币控制金库",
               "why_zh": "Robinhood Chain 在专用 Arbitrum 链上截取约 90% 交易利润，ARB 持有人通过金库获得剩余收益分成。",
@@ -381,7 +366,6 @@
               "symbols": [
                 "PONS"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "PONS 上线 HTX 交易所",
               "why_zh": "PONS 获得 HTX 交易通道，持币者可在新平台进行买卖，流动性渠道增加。",
@@ -508,7 +492,6 @@
               "symbols": [
                 "PEAQ"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "peaq Economics 2.0 主网上线，第一阶段功能已包含",
               "why_zh": "PEAQ 项目核心经济模型升级落地主网，代币机制进入新阶段运行。",
@@ -528,7 +511,6 @@
               "symbols": [
                 "ZEC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Zcash 创 2016 年以来新高，空头面临数百万美元账面亏损",
               "why_zh": "价格突破长期高位触发空头止损平仓，强制买入推动 ZEC 进一步上涨并加剧下跌风险。",
@@ -549,7 +531,6 @@
                 "4STOCK",
                 "ASTER"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Aster Dex API 新增 4STOCK 代币",
               "why_zh": "新代币进入 Aster 去中心化交易所接口，为持有者提供即时交易通道并降低参与门槛.",
@@ -569,7 +550,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "布伦特原油逼近 100 美元，印度 Nifty 50 指数跌幅扩大至 0.65%",
               "why_zh": "油价飙升推高输入性通胀压力，削弱央行宽松空间并增加企业成本，压制股市估值。",
@@ -589,7 +569,6 @@
               "symbols": [
                 "RUBIS.PA"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "法国 Rubis 上调全年 EBITDA 指引，交易员预计股价上涨 3-5%",
               "why_zh": "公司主动提高盈利预期，直接提升投资者对其未来现金流的定价基准，推动单只股票估值重估。",
@@ -609,7 +588,6 @@
               "symbols": [
                 "BTC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Liquid Network“白帽”黑客在 Blockstream 修补桥接节点后归还 3400 BTC",
               "why_zh": "Blockstream 完成安全修复促使攻击者主动归还绝大部分被盗资产，仅余约 600 BTC 未退，降低了该部分比特币被恶意转移的风险并恢复市场对该桥接机制的信任.",
@@ -630,7 +608,6 @@
                 "BTC",
                 "CL"
               ],
-              "magnitude": 3,
               "direction": "bearish",
               "headline_zh": "伊朗局势推高布伦特至六周高位，美股期货下跌",
               "why_zh": "中东地缘风险抬升能源供给溢价，布伦特原油上涨引发通胀担忧，压制宏观风险资产估值。",
@@ -651,7 +628,6 @@
                 "005930.KS",
                 "SMSN"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "三星领投 Mistral 30 亿欧元融资，估值超 210 亿欧元",
               "why_zh": "三星作为存储芯片巨头直接注资头部 AI 初创，为其自建数据中心提供资金，强化算力基础设施供应链绑定。",
@@ -671,7 +647,6 @@
               "symbols": [
                 "DELL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Dell'Oro：2026 Q2 价格飙升驱动校园交换机市场增长",
               "why_zh": "网络设备涨价直接增厚戴尔硬件业务毛利率，单季营收与现金流预期同步上修。",
@@ -691,7 +666,6 @@
               "symbols": [
                 "ZEC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "隐私币成唯一超2025年高点板块，ZEC涨2496%",
               "why_zh": "该板块市值从71亿增至336亿美元，ZEC占比62%但剔除后仍涨85%，显示资金正系统性配置隐私资产。",
@@ -712,7 +686,6 @@
                 "TRON",
                 "TRX"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Tron Inc. 获纳入罗素 2000、2500 及 3000 指数",
               "why_zh": "指数纳入触发被动基金按权重强制买入 TRON 股票，带来持续的资金流入以支撑股价。",
@@ -732,7 +705,6 @@
               "symbols": [
                 "OPENAI"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "GPT 6 在 OpenAI 沙盒环境上线",
               "why_zh": "OpenAI 将 GPT 6 部署至内部沙盒，标志着新模型进入受控测试阶段，开发者与用户需等待后续开放接口或正式发布时间以获取实际能力验证。",
@@ -753,7 +725,6 @@
                 "BASED",
                 "SOL"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "亨特·拜登宣布 9 月 9 日推“LAPTOP”币，总量 10 亿枚",
               "why_zh": "代币将基于 Base 链发行，创始人获 30% 份额，20% 补偿 $TRUMP 亏损用户，30% 销毁。",
@@ -771,7 +742,6 @@
               "comparison_title": "breaking the korean won has climbed to a num_23 month high against the u s dollar gaining pct_16 4 in just two months",
               "comparison_fingerprint": "57c57438801ae87064d805af7ad1e78036dbe53ffa30a5c8fc54643cf32fb16f",
               "symbols": [],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "韩元兑美元升至 23 个月新高，两个月内升值 16.4%",
               "why_zh": "Hanquanguan",
@@ -792,7 +762,6 @@
                 "ARB",
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Arbitrum ARB 24小时暴涨50%：Robinhood链收入激增引发Solana之争",
               "why_zh": "Robinhood链上业务放量带来稳定收入预期，资金从Solana等竞争公链流向Arbitrum生态，推高ARB代币价格。",
@@ -812,7 +781,6 @@
               "symbols": [
                 "WDH"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "水滴公司发布 2026 年第二季度未经审计财务业绩及现金股息",
               "why_zh": "公司披露最新季度经营数据并派发红利，投资者据此评估其现金流状况与股东回报政策。",
@@ -940,7 +908,6 @@
               "symbols": [
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Bernstein 看多 Robinhood：15 天链费 3300 万美元，2028 年预计达 1.6 亿美元",
               "why_zh": "Robinhood Chain 15 天链上费用达 3300 万美元且位列第一，Bernstein 据此预测其 2028 年费用将达 1.6 亿美元，直接增厚公司现金流并支撑股价上行空间。",
@@ -963,7 +930,6 @@
                 "HOOD",
                 "SOL"
               ],
-              "magnitude": 1,
               "direction": "neutral",
               "headline_zh": "Robinhood Chain 费用战扩大，Solana、Arbitrum 与 BNB Chain 争夺链上盈利模式",
               "why_zh": "三大公链在交易费与生态激励上的策略分歧加剧，迫使 Robinhood 在其链上重新权衡手续费收入与开发者留存成本。",
@@ -986,7 +952,6 @@
                 "SHEIN",
                 "VIRTUALS"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Robinhood 向全部合格用户开放智能体交易，Virtuals 成链上基础设施",
               "why_zh": "Robinhood 将 AI 代理交易功能覆盖至 100% 合格用户，Virtuals 协议提供钱包与身份支持，机构可借道主流券商入口接入链上代理经济。",
@@ -1008,7 +973,6 @@
                 "LAYER",
                 "ONDO"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Robinhood Chain 创 DEX 交易量纪录，代币化股票获市场青睐",
               "why_zh": "链上股票交易活跃度提升直接增加 Robinhood 的加密业务收入，验证其平台从券商向链上资产入口转型的逻辑。",
@@ -1029,7 +993,6 @@
                 "HOOD",
                 "MORPHO"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Morpho 接入 Coinbase 和 Robinhood，服务数十万美国活跃消费者",
               "why_zh": "Robinhood 将加密借贷产品推向其数千万用户群，为机构提供了大规模真实消费场景以吸引人才并验证合规价值。",
@@ -1050,7 +1013,6 @@
                 "HOOD",
                 "UNI"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Robinhood链周互换量创新高3990万，UNI单日销毁15万枚创纪录",
               "why_zh": "Robinhood链成为Uniswap核心部署场景，高频交易通过费用切换转化为代币销毁机制，直接减少UNI流通供给。",
@@ -1071,7 +1033,6 @@
                 "HOOD",
                 "PENDLE"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Pendle 在 Robinhood Chain 上线",
               "why_zh": "Robinhood 链用户首次可通过 Pendle 锁定固定收益或进行杠杆操作，该 DeFi 协议借此接入新公链并扩大流动性池规模.",
@@ -1092,7 +1053,6 @@
                 "AMC",
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "AMC CEO 斥 Robinhood 股票代币“可鄙”且“恶劣”",
               "why_zh": "AMC 管理层公开否定链上代币化权益，削弱机构对传统股映射资产的信任，压制相关概念股估值。",
@@ -1112,7 +1072,6 @@
               "symbols": [
                 "SOL"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "Kraken 将 Solana 质押收益率降至 2.25%，SOL 维持 102 美元",
               "why_zh": "头部交易所下调质押收益直接降低了持有 SOL 进行质押的无风险回报，削弱了该策略相对于现货持有的吸引力。",
@@ -1132,7 +1091,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "阿根廷将对 Navitas 石油公司及高管在福克兰岛运营提起刑事指控",
               "why_zh": "Falklands 海域的勘探开发面临刑事立案风险，能源公司在该区域的合规成本与资产减值预期上升。",
@@ -1152,7 +1110,6 @@
               "symbols": [
                 "SOL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Solana 将交易大小上限提高三倍以支持复杂应用",
               "why_zh": "更大的单笔载荷让去中心化金融和链上游戏能在 Solana 上执行多步骤原子交易，减少用户桥接与拆分成本。",
@@ -1173,7 +1130,6 @@
                 "ONDO",
                 "SOL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Solana RWA 持有人数首破 40 万，2025 年 1 月曾不足 1 万",
               "why_zh": "代币化现实资产在 Solana 链上的实际持有者从年初的 1 万激增至 40 万，机构与个人投资者对链上合规资产的配置规模显著扩大，直接推高 SOL 网络的实际应用活跃度。",
@@ -1193,7 +1149,6 @@
               "symbols": [
                 "INJ"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "INJ 正式登陆 RobinhoodCrypto",
               "why_zh": "主流零售交易商将 INJ 纳入可交易资产，数百万用户无需跳转钱包即可直接参与其链上生态与 RWA 产品。",
@@ -1214,7 +1169,6 @@
                 "KMNO",
                 "ZEC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "ZEC 抵押借贷在 Solana 上线",
               "why_zh": "持有者可将 ZEC 存入 Kamino 作为抵押物直接借出 USDC，在不卖出底仓的前提下获得流动性并规避抛压。",
@@ -1234,7 +1188,6 @@
               "symbols": [
                 "CC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Canton 网络平均 740 亿美元抵押池中四分之一闲置无收益",
               "why_zh": ": Canton 平台为应对结算不确定性需预留大量缓冲资产，导致 185 亿美元资金无法产生利息收入，直接侵蚀机构托管资产的收益率。",
@@ -1254,7 +1207,6 @@
               "symbols": [
                 "KMNO"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Kamino 成为 Vedavaults 链上收益流动性来源",
               "why_zh": "Veda_vaults 将 Kamino 纳入底层流动性池，为链上收益产品提供新的资金通道。",
@@ -1390,7 +1342,6 @@
                 "AMZN",
                 "QCOM"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "高通向亚马逊关联方发行权证，可购2500万股，行权价161.26美元",
               "why_zh": "亚马逊关联方获得以固定价格增持高通股票的期权，未来若行使将带来直接现金流入并增加股东基数。",
@@ -1411,7 +1362,6 @@
                 "GOLD",
                 "XAU"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "金矿商 SolidCore 拟回购最高 12 亿美元股份",
               "why_zh": "公司动用现金实施大额回购，将减少流通股数并提升每股收益，同时向市场传递管理层认为当前股价被低估的信号.",
@@ -1432,7 +1382,6 @@
                 "ONDO",
                 "XLM"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Pyth Pro 与 Pyth Indices 为 Stellar 40 亿美元 RWA 生态提供全天候定价",
               "why_zh": "实时链上价格数据接入 Stellar 资产结算，降低机构跨链交易滑点并提升代币化资产流动性。",
@@ -1452,7 +1401,6 @@
               "symbols": [
                 "ARES"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "Ares Capital 定价 7.5 亿美元 6.250% 无担保票据，到期日 2033 年",
               "why_zh": "公司通过发行固定利率长期债务直接获取现金，资金将进入资产负债表用于资产收购或运营周转。",
@@ -1472,7 +1420,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "通胀担忧加剧，油价逼近 100 美元令期货下跌",
               "why_zh": "油价突破百元关口推高输入性通胀预期，压制美联储宽松空间并抬升市场风险溢价。",
@@ -1492,7 +1439,6 @@
               "symbols": [
                 "RUBIS.PA"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "法国 Rubis 上调全年 EBITDA 指引，交易员预计股价上涨 3-5%",
               "why_zh": "公司主动提高盈利预期，直接提升投资者对其未来现金流的定价基准，推动单只股票估值重估。",
@@ -1512,7 +1458,6 @@
               "symbols": [
                 "BE"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Bloom Energy 拟 9 月 21 日加入标普 500，盘前股价涨 4.5%",
               "why_zh": "纳入标普 500 将触发被动基金机械性买入，为 BE 股票带来持续的增量配置需求。",
@@ -1532,7 +1477,6 @@
               "symbols": [
                 "STRC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Strategy 回购 1.76 亿美元 STRC 股票，未进行比特币买卖",
               "why_zh": "公司用现金买回自家流通股份而非增持比特币，直接减少 STRC 流通股数并提升每股净资产，同时表明当前资金优先用于股本收缩而非扩大加密资产敞口.",
@@ -1552,7 +1496,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "油价上涨带动美股能源股盘前走高",
               "why_zh": "WTI原油价格上行直接改善石油开采企业的现金流预期，推动相关股票在开盘前获得买盘支撑。",
@@ -1572,7 +1515,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "高盛上调油价预测：2026年12月布伦特/WTI涨5美元至85/80，2027年看80/75",
               "why_zh": "中东航运中断延至2027年的新假设推高原油供给风险溢价，直接支撑能源板块估值。",
@@ -1593,7 +1535,6 @@
                 "BTC",
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "高盛上调油价目标，霍尔木兹中断延续至 2027 年令布油看至 120 美元",
               "why_zh": "霍尔木兹海峡供应受阻时间拉长使原油库存缓冲耗尽，WTI 期货多头将直接受益于现货溢价扩大",
@@ -1613,7 +1554,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "美银上调布伦特基准预测：2026下半年83美元，2027年75美元",
               "why_zh": "国际投行上调原油价格中枢，直接抬升能源板块盈利预期并强化通胀风险溢价。",
@@ -1633,7 +1573,6 @@
               "symbols": [
                 "MSTR"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "Strategy 将数字信用证券回购计划规模增至 20 亿美元",
               "why_zh": "MSTR 扩大回购工具规模，通过注销股份减少流通股数，直接支撑每股价值并强化资产负债表管理预期.",
@@ -1653,7 +1592,6 @@
               "symbols": [
                 "BTC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "特朗普致电普京寻求迅速结束乌克兰战争并恢复美俄关系",
               "why_zh": "美俄直接通话推动停火预期升温，地缘冲突风险溢价回落将缓解全球风险资产压制并压低能源供给中断担忧",
@@ -1673,7 +1611,6 @@
               "symbols": [
                 "BTC"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "新加坡男子承认策划窃取 2.4 亿美元比特币",
               "why_zh": "crypto_broad, single_asset",
@@ -1693,7 +1630,6 @@
               "symbols": [
                 "INTC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Northland Capital 上调英特尔评级至跑赢大市，股价盘前涨 4.4%",
               "why_zh": "评级由市场表现调高至跑赢大市，机构资金预期改善直接推升个股估值。",
@@ -1968,7 +1904,6 @@
                 "BTC",
                 "CL"
               ],
-              "magnitude": 3,
               "direction": "bearish",
               "headline_zh": "美官员：美军打击哈尔克岛和贾斯克附近目标",
               "why_zh": "美军打击伊朗石油出口枢纽附近的设施，旨在切断原油供应以施压德黑兰，能源供给风险推高油价并引发避险情绪。",
@@ -1988,7 +1923,6 @@
               "symbols": [
                 "SPACE"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "FCC 取消航天科技环境审查，终结卫星部署 NIMBY 式阻挠",
               "why_zh": "FCC 取消针对航天科技的强制性环境审查流程，消除了环保组织以光污染为由发起诉讼的监管路径，为 Starlink 等运营商降低轨道高度和扩大星座规模扫清了法律障碍。",
@@ -2006,7 +1940,6 @@
               "comparison_title": "the clarity act passed out of bankinggop committee on a bipartisan num_15000000000000 o num_9 vote because my colleagues and i know that we must ensure the united states leads the way on digital asset regulation and time is running out to secure america s leadership every moment we wait to get this bill to the president s desk is a moment we risk ceding this leadership to another country we owe it to american consumers to make sure this industry operates under us regulations and builds on us soi",
               "comparison_fingerprint": "10cd328c9ced604bb5e6ac25ed124a8d816f662ddd5e3fe94825ce3bf2fad2bd",
               "symbols": [],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Clarity Act 以 15-9 票通过银行委员会，推进美国数字资产监管",
               "why_zh": "法案在参议院委员会获得两党支持并进入下一立法阶段，为行业提供了更明确的合规框架，有助于机构资金在受监管环境下进入市场。",
@@ -2027,7 +1960,6 @@
                 "PLATINUM",
                 "XPT"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "Platinum 被传以每股 27.25-28.38 美元收购 Ingram Micro",
               "why_zh": "若交易达成，Ingram Micro 股东将收到现金对价，其作为 IT 分销商的估值将被重新锚定在并购溢价区间。",
@@ -2047,7 +1979,6 @@
               "symbols": [
                 "BE"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Bloom Energy 拟 9 月 21 日加入标普 500，盘前股价涨 4.5%",
               "why_zh": "纳入标普 500 将触发被动基金机械性买入，为 BE 股票带来持续的增量配置需求。",
@@ -2067,7 +1998,6 @@
               "symbols": [
                 "ORCL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "甲骨文股价盘前上涨 5.1%",
               "why_zh": "交易员在开盘前上调对甲骨文的持仓预期，买盘推高标的价格，机构资金正在流入该单一股票。",
@@ -2087,7 +2017,6 @@
               "symbols": [
                 "INTC"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Northland Capital 上调英特尔评级至跑赢大市，股价盘前涨 4.4%",
               "why_zh": "评级由市场表现调高至跑赢大市，机构资金预期改善直接推升个股估值。",
@@ -2107,7 +2036,6 @@
               "symbols": [
                 "RUBIS.PA"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "法国 Rubis 上调全年 EBITDA 指引，交易员预计股价上涨 3-5%",
               "why_zh": "公司主动提高盈利预期，直接提升投资者对其未来现金流的定价基准，推动单只股票估值重估。",
@@ -2128,7 +2056,6 @@
                 "AMZN",
                 "QCOM"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "高通向亚马逊关联方发行权证，可购2500万股，行权价161.26美元",
               "why_zh": "亚马逊关联方获得以固定价格增持高通股票的期权，未来若行使将带来直接现金流入并增加股东基数。",
@@ -2148,7 +2075,6 @@
               "symbols": [
                 "IONQ"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "IonQ 上调全年营收预期，盘前股价上涨 7%",
               "why_zh": "量子计算公司提高收入指引验证商业化落地速度，直接改善投资者对其现金流和盈利前景的预期。",
@@ -2168,7 +2094,6 @@
               "symbols": [
                 "HOOD"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Robinhood Chain 收入占 Robinhood 总收入 10-20%",
               "why_zh": "crypto chain low operating costs make its 10-20% revenue share disproportionately high-margin, directly boosting HOOD's overall earnings.",
@@ -2188,7 +2113,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "管道高管称亚洲将占加拿大石油出口70%",
               "why_zh": "亚洲市场承接大部分加拿大原油，出口流向更稳定，直接支撑WTI原油需求预期。",
@@ -2208,7 +2132,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "通胀担忧加剧，油价逼近 100 美元令期货下跌",
               "why_zh": "油价突破百元关口推高输入性通胀预期，压制美联储宽松空间并抬升市场风险溢价。",
@@ -2229,7 +2152,6 @@
                 "9984.HK",
                 "SOFTBANK"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "软银集团股价延续涨势，最新上涨 5.7%",
               "why_zh": "资金持续流入推高单只个股价格，持有该股的投资者资产市值直接增加。",
@@ -2249,7 +2171,6 @@
               "symbols": [
                 "BSX"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "波士顿科学股价盘前跌6.1%，网络攻击致全球运营中断",
               "why_zh": "网络安全事件导致全球运营中断，直接冲击公司供应链与收入预期。",
@@ -2269,7 +2190,6 @@
               "symbols": [
                 "ARES"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "Ares Capital 定价 7.5 亿美元 6.250% 无担保票据，到期日 2033 年",
               "why_zh": "公司通过发行固定利率长期债务直接获取现金，资金将进入资产负债表用于资产收购或运营周转。",
@@ -2525,7 +2445,6 @@
               "symbols": [
                 "CP"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "Upbit 宣布新增 Cluster Protocol CP 交易对，支持 KRW、BTC、USDT",
               "why_zh": "韩国头部交易所 Upbit 为 CP 提供法币与主流币直接交易通道，降低用户获取该资产的流动性门槛。",
@@ -2545,7 +2464,6 @@
               "symbols": [
                 "CP"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Bithumb 新增集群协议（CP）韩元交易对",
               "why_zh": "韩国头部交易所 Bithumb 为 CP 开通韩元直接交易通道，本地投资者无需换汇即可参与交易，流动性与可及性提升。",
@@ -2565,7 +2483,6 @@
               "symbols": [
                 "SOPH"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "UPBIT 暂停 SOPH 出入金，网络切换至 9/8 11:00",
               "why_zh": "交易所因底层网络升级暂时切断资产通道，持有者无法在窗口期内转账或交易 SOPH.",
@@ -2583,7 +2500,6 @@
               "comparison_title": "binance notice of removal of spot trading pairs num_2026 num_9 num_11",
               "comparison_fingerprint": "ec1264a178522aa01f04c0c0d67f01d12bdcc28bb6c50eaa77de275d9a9da72d",
               "symbols": [],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "币安公告移除现货交易对",
               "why_zh": "交易所下架特定币种的交易通道，相关代币的流动性入口收窄，持有者需转向其他平台或场外渠道进行资产流转。",
@@ -2604,7 +2520,6 @@
                 "BTC",
                 "ETH"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "渣打为阿联酋机构推出比特币与以太坊现货交易",
               "why_zh": "全球大型银行首次面向海湾地区机构开放 BTC/ETH 现货通道，中东合规资金可直接通过银行账户参与加密市场.",
@@ -2624,7 +2539,6 @@
               "symbols": [
                 "XRP"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "美国现货 XRP ETF 累计净流入近 17 亿美元",
               "why_zh": "crypto 机构资金通过 ETF 通道持续买入，直接增加 XRP 的现货买盘需求并推高价格。",
@@ -2644,7 +2558,6 @@
               "symbols": [
                 "STABLE"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Stable 主网升级 v1.8.0，引入保证区块空间提升 USDT 基础设施",
               "why_zh": "稳定币支付协议通过技术迭代增强链上交易确定性，为 USDT 日常使用场景提供更可靠的底层支撑.",
@@ -2665,7 +2578,6 @@
                 "SPK",
                 "USDS"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Spark SPK 回购计划新里程碑：已耗超 300 万 USDS 回购逾 1.5 亿枚",
               "why_zh": "协议按既定参数持续用稳定币 USDS 在链上注销 SPK，直接减少流通供应并锁定买盘。",
@@ -2687,7 +2599,6 @@
                 "HYPE",
                 "ZEC"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "Garret Bullish 3 分钟内抛售 1000 万美元 HYPE，价格从 87 跌至 85.5",
               "why_zh": "大额现货集中抛售直接冲击流动性薄的 HYPE 盘口，价格快速下探；同时其平掉逾 1 亿美元 BTC 多头并加仓 ZEC 空头至 40K 枚，反映大户正降低风险敞口并转向做空高波动资产。",
@@ -2707,7 +2618,6 @@
               "symbols": [
                 "CRCL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "Funding Circle FY29指引营收3-3.5亿英镑，PBT利润率低至中20%区间",
               "why_zh": "公司给出中期盈利目标，若后续季度实际业绩向该区间靠拢，将支撑CRCL的现金流预期与估值修复。",
@@ -2727,7 +2637,6 @@
               "symbols": [
                 "PUMP"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "0x60b0 过去一小时加开 10 倍杠杆做多 20 亿枚 PUMP，名义敞口约 902 万美元",
               "why_zh": "此前靠做多 PUMP 获利 200 万美元的同一地址继续加仓高杠杆多头，资金流显示其押注短期价格上行，若行情未如期走高该仓位将面临强平风险并可能放大抛压。",
@@ -2747,7 +2656,6 @@
               "symbols": [
                 "TRX"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "CanaryFunds 推出 Staked Tron ETF，支持 TRX",
               "why_zh": "机构通过 ETF 直接持有质押 TRX 资产，省去自行搭建节点和质押操作的门槛，为 TRX 带来新的合规买入渠道.",
@@ -2767,7 +2675,6 @@
               "symbols": [
                 "BNB"
               ],
-              "magnitude": 1,
               "direction": "neutral",
               "headline_zh": "币安推出 Binance AI 测试版，邀用户参与塑造交易未来",
               "why_zh": "交易所直接向用户开放 AI 功能内测通道，参与者可反馈体验以影响产品迭代方向。",
@@ -2787,7 +2694,6 @@
               "symbols": [
                 "CL"
               ],
-              "magnitude": 2,
               "direction": "bullish",
               "headline_zh": "油价上涨带动美股能源股盘前走高",
               "why_zh": "WTI原油价格上行直接改善石油开采企业的现金流预期，推动相关股票在开盘前获得买盘支撑。",
@@ -2808,7 +2714,6 @@
                 "BTC",
                 "SP500"
               ],
-              "magnitude": 2,
               "direction": "bearish",
               "headline_zh": "美债到期规模达7万亿美元，美联储加息令利息成本增加500亿美元",
               "why_zh": "短债占比极高意味着央行利率直接抬高政府融资成本，流动性收紧预期压制风险资产估值。",
@@ -2828,7 +2733,6 @@
               "symbols": [
                 "CRCL"
               ],
-              "magnitude": 2,
               "direction": "neutral",
               "headline_zh": "瑞银瑞士法郎稳定币沙盒进入测试阶段，新增 Six 和 Twint 为合作伙伴",
               "why_zh": "瑞银将传统银行与支付机构接入瑞士法郎稳定币试点，验证了合规链上支付在真实业务场景中的落地路径.",
@@ -3049,7 +2953,7 @@
       "review_queue_available": false
     }
   ],
-  "cases_sha256": "d902d3ecace5b6db9c2099c001cccce10db45987bed11267a290b81659b0746f",
+  "cases_sha256": "c79074def07327cb153939fd0d0c730921c7a68ae434726e66edcccb7d2f3c65",
   "semantic_diagnostics": [
     {
       "name": "flow_direction",

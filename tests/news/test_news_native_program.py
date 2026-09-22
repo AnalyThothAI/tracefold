@@ -34,18 +34,10 @@ def _semantics(**updates: Any) -> dict[str, Any]:
         "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
-        "magnitude": 1,
+        # A venue admitting an instrument, cited against the one span this context shows.
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.8,
-        "audience": "crypto",
-        "relevance": {
-            "impact_breadth": "single_instrument",
-            "tradability": "direct",
-            "surprise": "unknown",
-            "development_delta": "state_change",
-            "channels": ["security_incident", "rates"],
-            "affected_markets": ["single_asset", "fx"],
-            "reader_value": "realtime",
-        },
     }
     value.update(updates)
     return value
@@ -97,7 +89,6 @@ def _context() -> TriageContext:
                 "dedupe_family": "listing",
                 "comparison_title": "BTC listed on another exchange",
                 "comparison_fingerprint": "f" * 64,
-                "magnitude": 1,
                 "direction": "bullish",
                 "headline_zh": "这条历史卡片只允许第一个 Predictor 看到",
                 "why_zh": "历史卡片原因",
@@ -154,6 +145,22 @@ def test_card_cannot_claim_an_unseen_source_reference() -> None:
         program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
 
 
+def test_semantics_cannot_cite_an_unseen_evidence_reference() -> None:
+    """`evidence_ref` is checked against the same visible spans `source_refs` is (#675 §1).
+
+    A kind the model read off a span this Program never showed it is not an observation of this Event,
+    and the failure belongs to the Predictor that answered rather than to the card written after it.
+    """
+
+    program = NativeNewsProgram(build_code_owned_program_state())
+    _unused, taxonomy_lm, card_lm = _lms()
+    event_lm = _ScriptedLM({"semantics": _semantics(evidence_ref="r9")})
+    with pytest.raises(ValueError, match="news_program_evidence_ref_invalid"):
+        program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
+
+    assert card_lm.calls == []
+
+
 def test_input_budget_rejects_before_any_physical_call(monkeypatch) -> None:
     program = NativeNewsProgram(build_code_owned_program_state())
     event_lm, taxonomy_lm, card_lm = _lms()
@@ -193,8 +200,7 @@ def test_three_named_predictors_run_in_order_with_exact_instructions_and_bounded
     assert "event_status" not in card_request
     assert result.instruction_rejected is None
     assert result.semantics is not None and result.semantics.restates == -1
-    assert result.semantics.relevance.channels == ("rates", "security_incident")
-    assert result.semantics.relevance.affected_markets == ("fx", "single_asset")
+    assert (result.semantics.fact_kind, result.semantics.evidence_ref) == ("state_change", "c1")
     assert result.taxonomy is not None and result.taxonomy.event_family == "market_access"
     assert result.verdict is not None
     assert result.editorial is not None and result.editorial.taxonomy is not None
@@ -211,15 +217,15 @@ def test_three_named_predictors_run_in_order_with_exact_instructions_and_bounded
         "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
-        "magnitude": 1,
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.8,
-        "audience": "crypto",
         "headline_zh": "比特币出现新进展",
         "why_zh": "值得关注。",
     }
+    # The restatement index is the only rewrite the Program still makes: `semantic_normalizer_v3` lost the
+    # two canonical code-set orders with the code sets themselves.
     assert [(trace.field, trace.input_value, trace.output_value) for trace in result.normalizations] == [
-        ("channels", ("security_incident", "rates"), ("rates", "security_incident")),
-        ("affected_markets", ("single_asset", "fx"), ("fx", "single_asset")),
         ("restates", 4, -1),
     ]
 
@@ -421,8 +427,7 @@ def test_outer_dspy_envelope_sibling_is_filtered_but_business_model_remains_exac
     assert "diagnostic" not in result.taxonomy.model_dump(mode="json")
     assert "diagnostic" not in result.card.model_dump(mode="json")
     assert result.semantics.restates == -1
-    assert result.semantics.relevance.channels == ("rates", "security_incident")
-    assert result.semantics.relevance.affected_markets == ("fx", "single_asset")
+    assert (result.semantics.fact_kind, result.semantics.evidence_ref) == ("state_change", "c1")
     assert result.card.model_dump(mode="json") == _card()
 
 

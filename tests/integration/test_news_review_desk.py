@@ -17,7 +17,6 @@ from tracefold.news.program.contracts import (
     JUDGMENT_CONTRACT_VERSION,
     EditorialEnvelope,
     ScoredJudgment,
-    TradeRelevanceV1,
 )
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
@@ -38,7 +37,7 @@ pytestmark = pytest.mark.integration
 
 NOW = 1_787_287_000_000
 PRINCIPAL = Principal(subject="operator")
-# The four model axes a `news_review_v7` submission carries. Not `news_taxonomy()`: that helper builds
+# The four model axes a `news_review_v8` submission carries. Not `news_taxonomy()`: that helper builds
 # the persisted seven-key shape, whose `source_authority` is a code fact the reviewer never states.
 MODEL_TAXONOMY = ModelTaxonomyV1(
     subject_codes=(),
@@ -84,7 +83,6 @@ def _open_event(
     source: str = "Reuters",
     bundle_sha: str = ACTIVE_BUNDLE,
     program_sha256: str = "b" * 64,
-    relevance_overrides: dict[str, object] | None = None,
     final_decision: str = "push",
     throttled_by: str | None = None,
 ) -> str:
@@ -122,25 +120,14 @@ def _open_event(
                 "assets": [],
                 "direction": "bullish",
                 "scope": "sector",
-                "magnitude": 2,
+                "fact_kind": "new_quantity",
+                "evidence_ref": "c1",
                 "confidence": 0.7,
-                "audience": "us_equity",
                 "headline_zh": "DRAM 合约价继续上涨",
                 "why_zh": "存储厂商议价能力改善，但持续性仍需后续数据确认。",
             }
         )
-        relevance = {
-            "impact_breadth": "sector",
-            "tradability": "direct",
-            "surprise": "unknown",
-            "development_delta": "material_detail",
-            "channels": ("earnings_cashflow",),
-            "affected_markets": ("single_asset",),
-            "reader_value": "realtime",
-        }
-        relevance.update(relevance_overrides or {})
         editorial = EditorialEnvelope.issue(
-            relevance=TradeRelevanceV1.model_validate(relevance),
             source_authority="reputable_secondary",
             taxonomy=news_taxonomy(
                 event_family="regulatory_legal",
@@ -157,7 +144,7 @@ def _open_event(
             judgment_origin="model",
             rule_baseline_decision="drop",
             final_decision=final_decision,
-            override_rule="trade_relevance_realtime",
+            override_rule="fact_kind_new_quantity",
             throttled_by=throttled_by,
             verdict=verdict.model_dump(mode="json"),
             model_editorial=editorial.model_dump(mode="json"),
@@ -172,7 +159,6 @@ def _open_event(
                 "input_sha256": "a" * 64,
                 "prompt_sha256": "b" * 64,
                 "schema_sha256": "c" * 64,
-                "policy": {"push_magnitude": 1},
                 "gate_policy_version": "v4",
                 "judgment_contract_version": JUDGMENT_CONTRACT_VERSION,
                 "judgment_origin": "model",
@@ -220,7 +206,7 @@ def _rubric(
     why: str = "pass",
     should_push: str = "must_push",
     first_bad_owner: str | None = None,
-    magnitude: str | None = None,
+    fact_kind: str | None = None,
 ) -> EventRubricSubmission:
     """One accepted rubric.
 
@@ -229,11 +215,11 @@ def _rubric(
     unset is exactly the shape ReviewDesk derives an owner for, and the plan must not treat a derived
     owner as a grant.
 
-    `magnitude="fail"` is the *typed* failure — a stated correct value the metric can score a repair
+    `fact_kind="fail"` is the *typed* failure — a stated correct value the metric can score a repair
     against. `why="fail"` is a copy complaint with no such value; #199 keeps it as an excluded diagnostic
     rather than a target, so a corpus meant to exercise optimization has to fail a typed dimension.
 
-    It states every answer on purpose, which under `news_review_v7` is a choice rather than a
+    It states every answer on purpose, which under `news_review_v8` is a choice rather than a
     requirement: this is the shape a reviewer who knows the whole Event submits, and the partial shapes
     are exercised by the tests that are about them.
     """
@@ -249,16 +235,16 @@ def _rubric(
         "taxonomy_change_state": "pass",
         "taxonomy_assertion_status": "pass",
     }
-    if magnitude is not None:
-        dimensions["magnitude"] = magnitude
-    failed = why == "fail" or magnitude == "fail"
+    if fact_kind is not None:
+        dimensions["fact_kind"] = fact_kind
+    failed = why == "fail" or fact_kind == "fail"
     return EventRubricSubmission(
         should_push=should_push,  # type: ignore[arg-type]
         dimensions=dimensions,
         novelty={"judgment": "new_fact"},
         taxonomy=MODEL_TAXONOMY,
         first_bad_owner=first_bad_owner,  # type: ignore[arg-type]
-        expected=ExpectedCorrection(magnitude=3) if magnitude == "fail" else None,
+        expected=ExpectedCorrection(fact_kind="statement") if fact_kind == "fail" else None,
         evidence_refs=["source:sentence:1", "output:why"] if failed else [],
         expected_correction="Do not claim priced-in without source evidence." if failed else "",
     )
@@ -442,6 +428,11 @@ def test_coverage_spans_every_arm_and_narrows_only_when_a_cohort_is_named(conn) 
     had spent the previous days on -- a review is about the words a reader saw, and those words do not
     change when a new bundle is appointed. Both arms are in the default funnel now, and `cohort` still
     narrows to one when an operator is comparing arms deliberately.
+
+    Both Events are escalates so the default queue below is about the cohort filter rather than about
+    `_sampler_selected`'s hash: `critical` is fully sampled, while the `delivered` stratum these rows
+    would otherwise take is sampled at 0.25 (#675 §1 deleted the relevance-scoped strata that used to
+    pull a macro row into a fully sampled one).
     """
 
     first_bundle, second_bundle = "1" * 64, "2" * 64
@@ -450,14 +441,14 @@ def test_coverage_spans_every_arm_and_narrows_only_when_a_cohort_is_named(conn) 
         hit_id=112011,
         title="Micron DRAM contract prices rise in August",
         bundle_sha=first_bundle,
-        relevance_overrides={"impact_breadth": "regional"},
+        final_decision="escalate",
     )
     second_event = _open_event(
         conn,
         hit_id=112012,
         title="Federal Reserve governor announces an immediate resignation",
         bundle_sha=second_bundle,
-        relevance_overrides={"impact_breadth": "regional"},
+        final_decision="escalate",
     )
     epoch_start = int(
         conn.execute(
@@ -695,7 +686,7 @@ def test_high_reaction_accepted_review_is_release_eligible_like_any_other_stratu
         "reason": "market_discovery_only",
         "reason_zh": "仅因事后波动进入发现队列",
         "sampling_probability": 1.0,
-        "selection_version": "news_review_sampler_v3",
+        "selection_version": "news_review_sampler_v4",
     }
     ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
     with repos.transaction():
@@ -760,15 +751,16 @@ def test_the_daily_audit_ratios_group_accepted_judgments_by_stratum(conn) -> Non
         final_decision="throttled",
         throttled_by="storyline:asset:MU:budget",
     )
-    # A task the relevance sampler pulls into its own stratum. It is a real accepted judgment and it must
-    # not land in either product ratio, which is the whole point of grouping by stratum.
+    # A task the sampler pulls into its own stratum. It is a real accepted judgment and it must not land
+    # in either product ratio, which is the whole point of grouping by stratum. `critical` is that
+    # stratum under the v16 sampler: #675 §1 deleted the six relevance-scoped strata with the codes they
+    # read, and an escalate is the one an operator reviews for its own sake.
     elsewhere = _open_event(
         conn,
         hit_id=112107,
-        title="Weekly column revisits container freight rates",
+        title="Tokyo halts every LNG cargo out of the strait",
         delivered=False,
-        final_decision="drop",
-        relevance_overrides={"development_delta": "color_only"},
+        final_decision="escalate",
     )
 
     assert [
@@ -780,7 +772,7 @@ def test_the_daily_audit_ratios_group_accepted_judgments_by_stratum(conn) -> Non
         for event_id, label in zip(dropped, ("should_push", "must_hold"), strict=True)
     ] == ["model_drop", "model_drop"]
     assert _accept(conn, desk, throttled, "uncertain") == "throttled"
-    assert _accept(conn, desk, elsewhere, "must_push") == "color_only_progression"
+    assert _accept(conn, desk, elsewhere, "must_push") == "critical"
 
     now_ms = int(
         conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS n").fetchone()["n"]
@@ -930,11 +922,20 @@ def test_delivery_terminal_error_code_distinguishes_unknown_from_known_failure(c
 
 
 def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> None:
+    """The cursor and the window, on three tasks the sampler always takes.
+
+    All three are fully sampled strata on purpose -- two escalates and one terminal delivery -- because
+    this test is about paging order and the pinned window, and a partially sampled stratum would make
+    its membership a property of `_sampler_selected`'s hash rather than of the cursor. Under the v15
+    sampler the first of them landed in `systemic_macro_must_interrupt` at the same probability; #675 §1
+    deleted that stratum with the relevance codes it read, so the escalate says it instead.
+    """
+
     newest = _open_event(
         conn,
         hit_id=112101,
         title="Federal Reserve unexpectedly cuts its policy rate by 50 basis points",
-        relevance_overrides={"impact_breadth": "regional"},
+        final_decision="escalate",
     )
     delivery_failed = _open_event(
         conn,
@@ -946,7 +947,7 @@ def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> No
         conn,
         hit_id=112103,
         title="Brazil regulator approves a new US-listed airline route",
-        relevance_overrides={"impact_breadth": "regional"},
+        final_decision="escalate",
     )
     repos = repositories_for_connection(conn)
     epoch_start = int(
@@ -1019,8 +1020,8 @@ def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> No
 
 def test_event_queue_scans_sparse_strata_past_two_thousand_real_postgres_rows(conn) -> None:
     # A temporary view shadows the production projection for this connection while retaining the exact SQL
-    # seam ReviewDesk queries. Every 40th row is the requested 100%-sampled stratum, so the first 2,000 raw
-    # rows contain only 50 eligible tasks and cannot establish queue exhaustion.
+    # seam ReviewDesk queries. Every 40th row is an escalate, which is the requested 100%-sampled stratum,
+    # so the first 2,000 raw rows contain only 50 eligible tasks and cannot establish queue exhaustion.
     conn.execute(
         f"""
         CREATE TEMP VIEW news_review_task_source_v1 AS
@@ -1036,15 +1037,16 @@ def test_event_queue_scans_sparse_strata_past_two_thousand_real_postgres_rows(co
                'live'::text AS ingest_mode,
                {NOW} - i AS verdict_created_at_ms,
                1 AS verdict_evidence_version,
-               'drop'::text AS final_decision,
+               CASE WHEN i % 40 = 0 THEN 'escalate' ELSE 'drop' END::text AS final_decision,
                false AS degraded,
                NULL::text AS verdict_error_code,
                NULL::text AS override_rule,
                NULL::text AS throttled_by,
                jsonb_build_object(
                    'novelty', 'new_fact', 'restates', -1, 'assets', '[]'::jsonb,
-                   'direction', 'neutral', 'scope', 'macro', 'magnitude', 0,
-                   'confidence', 1.0, 'audience', 'none',
+                   'direction', 'neutral', 'scope', 'macro',
+                   'fact_kind', CASE WHEN i % 40 = 0 THEN 'official_measure' ELSE 'statement' END,
+                   'evidence_ref', 'c1', 'confidence', 1.0,
                    'headline_zh', i::text, 'why_zh', 'x'
                ) AS verdict,
                jsonb_build_object('agent_assignment', jsonb_build_object('bundle_sha', '{ACTIVE_BUNDLE}')) AS trace,
@@ -1057,22 +1059,7 @@ def test_event_queue_scans_sparse_strata_past_two_thousand_real_postgres_rows(co
                NULL::integer AS max_abs_return_1h_bps,
                '{PROGRAM_VERSION}'::text AS program_version,
                repeat('b', 64) AS program_sha256,
-               jsonb_build_object(
-                   'editorial_origin', 'model',
-                   'relevance', CASE WHEN i % 40 = 0 THEN
-                       jsonb_build_object(
-                           'impact_breadth', 'regional',
-                           'tradability', 'direct',
-                           'reader_value', 'realtime'
-                       )
-                   ELSE
-                       jsonb_build_object(
-                           'impact_breadth', 'global_systemic',
-                           'tradability', 'direct',
-                           'reader_value', 'escalate'
-                       )
-                   END
-               ) AS model_editorial,
+               jsonb_build_object('editorial_origin', 'model') AS model_editorial,
                '{JUDGMENT_CONTRACT_VERSION}'::text AS judgment_contract_version,
                'model'::text AS judgment_origin,
                repeat('c', 64) AS judgment_sha256,
@@ -1085,7 +1072,7 @@ def test_event_queue_scans_sparse_strata_past_two_thousand_real_postgres_rows(co
     queue = ReviewDesk(conn, now_ms=NOW).open(
         DeskQuery(
             cohort=ACTIVE_BUNDLE,
-            stratum="regional_direct_exception",
+            stratum="critical",
             status="all",
             hours=1,
             limit=100,
@@ -1182,12 +1169,12 @@ def test_pairwise_queue_hides_arm_identity_and_appends_blind_acceptance(conn) ->
     case_id = "b" * 64
     _insert_learning_dataset(conn, "c" * 64)
     stable = {
-        "verdict": {"headline_zh": "DRAM 价格上涨", "why_zh": "需求改善。", "magnitude": 2},
+        "verdict": {"headline_zh": "DRAM 价格上涨", "why_zh": "需求改善。", "fact_kind": "new_quantity"},
         "final_decision": "push",
         "delivered": True,
     }
     candidate = {
-        "verdict": {"headline_zh": "DRAM 合约价续涨", "why_zh": "供给偏紧改善厂商议价。", "magnitude": 2},
+        "verdict": {"headline_zh": "DRAM 合约价续涨", "why_zh": "供给偏紧改善厂商议价。", "fact_kind": "new_quantity"},
         "final_decision": "push",
         "delivered": True,
     }
@@ -1626,9 +1613,9 @@ def test_a_pair_from_a_superseded_arm_is_listed_but_cannot_be_judged(conn) -> No
               release_eligible, created_at_ms
             ) VALUES
               (%s, 'judgment', 'pairwise', %s, %s, %s,
-               'news_review_v7', 'reader_contract_v3', 'audit-reviewer', %s::jsonb, %s::jsonb, NULL, true, %s),
+               'news_review_v8', 'reader_contract_v3', 'audit-reviewer', %s::jsonb, %s::jsonb, NULL, true, %s),
               (%s, 'acceptance', 'pairwise', %s, %s, %s,
-               'news_review_v7', 'reader_contract_v3', 'audit-reviewer', '{}'::jsonb, '{}'::jsonb, %s, true, %s)
+               'news_review_v8', 'reader_contract_v3', 'audit-reviewer', '{}'::jsonb, '{}'::jsonb, %s, true, %s)
             """,
             (
                 "9" * 64,
@@ -1745,8 +1732,11 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
     ).fetchone()
     run_sha, case_id, candidate_sha = "1" * 64, "2" * 64, "3" * 64
     _insert_learning_dataset(conn, "4" * 64)
-    stable = {"verdict": {"headline_zh": "旧标题", "why_zh": "旧解释。", "magnitude": 1}, "delivered": False}
-    candidate = {"verdict": {"headline_zh": "新标题", "why_zh": "有证据的新解释。", "magnitude": 2}, "delivered": True}
+    stable = {"verdict": {"headline_zh": "旧标题", "why_zh": "旧解释。", "fact_kind": "statement"}, "delivered": False}
+    candidate = {
+        "verdict": {"headline_zh": "新标题", "why_zh": "有证据的新解释。", "fact_kind": "new_quantity"},
+        "delivered": True,
+    }
     conn.execute(
         """
         INSERT INTO news_learning_cases (
@@ -2037,7 +2027,7 @@ def test_a_source_span_the_frozen_evidence_does_not_contain_is_refused(conn) -> 
 
 
 def test_the_rubric_contract_offers_every_dimension_and_requires_none(conn) -> None:
-    """What the desk tells a reviewer they must answer, which under v7 is only that they answer something."""
+    """What the desk tells a reviewer they must answer, which under v8 is only that they answer something."""
 
     event_id = _open_event(conn)
     desk = ReviewDesk(conn, now_ms=NOW)
@@ -2047,7 +2037,7 @@ def test_the_rubric_contract_offers_every_dimension_and_requires_none(conn) -> N
         "rubric"
     ]
 
-    assert rubric["rubric_version"] == "news_review_v7"
+    assert rubric["rubric_version"] == "news_review_v8"
     assert rubric["required_dimensions"] == []
     assert rubric["required_fields"] == ["dimensions"]
     assert rubric["taxonomy"]["optional"] is True

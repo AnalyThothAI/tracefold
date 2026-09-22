@@ -1833,16 +1833,16 @@ export interface components {
         };
         /**
          * NewsModelEditorialData
-         * @description The editorial sibling of one model verdict, in the current `news_editorial_v3` read shape.
+         * @description The editorial sibling of one model verdict, in the current `news_editorial_v4` read shape.
          *
          *     ``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer
          *     and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
          *     ``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under
          *     `news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row
-         *     reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3).
+         *     reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3), and a
+         *     `news_editorial_v3` row loses the `relevance` object the Program no longer produces (#675 §1).
          */
         NewsModelEditorialData: {
-            relevance: components["schemas"]["NewsTradeRelevanceData"];
             /**
              * Source Authority
              * @enum {string}
@@ -2042,11 +2042,6 @@ export interface components {
         NewsPresentationVerdictData: {
             /** Assets */
             assets?: components["schemas"]["NewsTriageAssetData"][];
-            /**
-             * Audience
-             * @enum {string}
-             */
-            audience: "crypto" | "us_equity" | "macro" | "none";
             /** Confidence */
             confidence: number;
             /**
@@ -2054,10 +2049,15 @@ export interface components {
              * @enum {string}
              */
             direction: "bullish" | "bearish" | "neutral" | "unclear";
+            /**
+             * Evidence Ref
+             * @default
+             */
+            evidence_ref: string;
+            /** Fact Kind */
+            fact_kind?: ("state_change" | "new_quantity" | "level_crossed" | "period_record" | "quantified_flow" | "official_measure" | "statement" | "recap" | "schedule" | "promotion") | null;
             /** Headline Zh */
             headline_zh: string;
-            /** Magnitude */
-            magnitude: number;
             /**
              * Novelty
              * @enum {string}
@@ -2502,47 +2502,6 @@ export interface components {
             title_zh: string;
         };
         /**
-         * NewsTradeRelevanceData
-         * @description The current typed market-relevance judgment; no free-form compatibility payload crosses HTTP.
-         */
-        NewsTradeRelevanceData: {
-            /**
-             * Affected Markets
-             * @default []
-             */
-            affected_markets: ("crypto_broad" | "us_equity_broad" | "rates" | "fx" | "energy" | "metals" | "single_asset")[];
-            /**
-             * Channels
-             * @default []
-             */
-            channels: ("rates" | "liquidity" | "risk_premium" | "energy_supply" | "commodity_supply" | "commodity_demand" | "regulation" | "exchange_access" | "product_progress" | "earnings_cashflow" | "positioning_flow" | "security_incident")[];
-            /**
-             * Development Delta
-             * @enum {string}
-             */
-            development_delta: "state_change" | "material_detail" | "color_only" | "scheduled";
-            /**
-             * Impact Breadth
-             * @enum {string}
-             */
-            impact_breadth: "none" | "single_instrument" | "sector" | "regional" | "cross_asset" | "global_systemic";
-            /**
-             * Reader Value
-             * @enum {string}
-             */
-            reader_value: "escalate" | "realtime" | "background" | "none";
-            /**
-             * Surprise
-             * @enum {string}
-             */
-            surprise: "unscheduled" | "material_vs_expectation" | "in_line" | "unknown";
-            /**
-             * Tradability
-             * @enum {string}
-             */
-            tradability: "direct" | "second_order" | "contextual" | "none";
-        };
-        /**
          * NewsTriageAssetData
          * @description One typed asset of a Triage verdict (#651 §6.2).
          *
@@ -2573,13 +2532,6 @@ export interface components {
         NewsTriageSummaryData: {
             /** Assets */
             assets?: components["schemas"]["NewsTriageAssetData"][];
-            /** Audience */
-            audience?: string | null;
-            /**
-             * Audience Zh
-             * @default
-             */
-            audience_zh: string;
             /** Confidence */
             confidence?: number | null;
             /**
@@ -2601,6 +2553,15 @@ export interface components {
             direction_zh: string;
             /** Error Code */
             error_code?: string | null;
+            /** Evidence Ref */
+            evidence_ref?: string | null;
+            /** Fact Kind */
+            fact_kind?: ("state_change" | "new_quantity" | "level_crossed" | "period_record" | "quantified_flow" | "official_measure" | "statement" | "recap" | "schedule" | "promotion") | null;
+            /**
+             * Fact Kind Zh
+             * @default
+             */
+            fact_kind_zh: string;
             /**
              * Final Decision
              * @enum {string}
@@ -2608,13 +2569,6 @@ export interface components {
             final_decision: "push" | "escalate" | "drop" | "throttled";
             /** Headline Zh */
             headline_zh?: string | null;
-            /** Magnitude */
-            magnitude?: number | null;
-            /**
-             * Magnitude Zh
-             * @default
-             */
-            magnitude_zh: string;
             /** Novelty */
             novelty?: string | null;
             /**
@@ -2624,7 +2578,6 @@ export interface components {
             novelty_zh: string;
             /** Override Rule */
             override_rule?: string | null;
-            relevance?: components["schemas"]["NewsTradeRelevanceData"] | null;
             /** Scope */
             scope?: string | null;
             /**
@@ -2673,9 +2626,9 @@ export interface components {
             focus_fact_id: string;
             /**
              * Judgment Contract Version
-             * @constant
+             * @enum {string}
              */
-            judgment_contract_version: "news_judgment_v2";
+            judgment_contract_version: "news_judgment_v2" | "news_judgment_v3";
             /**
              * Judgment Origin
              * @enum {string}

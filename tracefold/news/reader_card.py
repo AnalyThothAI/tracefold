@@ -25,7 +25,7 @@ from typing import Any, Final, Literal
 
 from . import card_format as fmt
 from .market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS
-from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
+from .outcome import DIRECTION_ZH, FACT_KIND_ZH, NOVELTY_ZH
 from .wallet_contracts import NetBuyMember, NetBuySnapshot
 
 CardFamily = Literal["news", "oi", "liquidation", "smart_money", "wallet"]
@@ -131,7 +131,7 @@ class ReaderCardFacts:
 
     direction: str | None = None
     novelty: str | None = None
-    magnitude: int | None = None
+    fact_kind: str | None = None
     tickers: tuple[str, ...] = ()
     source: tuple[str, ...] = ()
     report_count: int = 1
@@ -366,18 +366,17 @@ class ReaderCard:
         direction = self.facts.direction
         return DIRECTION_ZH.get(direction, direction) if direction is not None else ""
 
-    def magnitude_word(self) -> str:
-        """`影响明显`. `0` is a magnitude the model stated, not a missing one."""
+    def fact_kind_word(self) -> str:
+        """`状态变化`, or nothing at all for a card whose judgment states no kind (#675 §1)."""
 
-        magnitude = self.facts.magnitude
-        return MAGNITUDE_ZH.get(magnitude, str(magnitude)) if magnitude is not None else ""
+        return FACT_KIND_ZH.get(str(self.facts.fact_kind or ""), "")
 
     # -- line composition -------------------------------------------------------------------------
 
     def _facts_line(self) -> str:
         """`利多 · 新进展 · 影响明显 · BTC ETH · CoinDesk`, its report count, and `14:32`.
 
-        A market card names no direction, novelty or magnitude -- it carries no model judgment -- and
+        A market card names no direction, novelty or fact kind -- it carries no model judgment -- and
         always states its report count, because "how many reports is this one card standing for" is
         the whole of what a summary card promises. A News card states the count only when it stands
         for more than one report, where a count of one would be noise.
@@ -385,13 +384,13 @@ class ReaderCard:
 
         facts, market = self.facts, self.header.family != "news"
         parts: list[str] = []
-        if facts.direction is not None and facts.magnitude is not None:
+        if facts.direction is not None and facts.fact_kind is not None:
             parts.append(self.direction_word())
             # 28.8% of a week's cards advanced a story the reader already had one for, and the card
             # said nothing about it (#113). `新进展` is the model's own `novelty`, not a count.
             if facts.novelty == "progression":
                 parts.append(NOVELTY_ZH["progression"])
-            parts.append(self.magnitude_word())
+            parts.append(self.fact_kind_word())
         if facts.tickers:
             parts.append(" ".join(facts.tickers))
         origin = " ".join(part for part in facts.source if part) or fmt.UNKNOWN_ORIGIN

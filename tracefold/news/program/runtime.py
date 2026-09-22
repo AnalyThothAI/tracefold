@@ -77,7 +77,7 @@ PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_state_v1"
 # catalogue's uncollapsed candidates, so a v9 recording answers a different question with a different output
 # contract and is not a replay of this executor. v9 (#501) split taxonomy into its own Predictor; #344 (v8)
 # made the same kind of cut when requests started being rendered by DSPy.
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v12"
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v13"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.

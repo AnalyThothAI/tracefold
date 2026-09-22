@@ -54,26 +54,14 @@ class DevelopmentEpisode(_ExactModel):
 
 
 # Shared by the diagnostic composite metric and release evaluator. They do not define the GEPA
-# population, which is taxonomy-only below.
-_RELEVANCE_DIMENSIONS = (
-    "trade_impact_breadth",
-    "trade_tradability",
-    "trade_surprise",
-    "trade_development_delta",
-    "trade_channels",
-    "trade_affected_markets",
-    "reader_value",
-)
-_SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude")
+# population, which is taxonomy-only below. #675 §1 deleted the seven relevance dimensions with the
+# fields they labelled; `fact_kind` is the one observation that replaced them.
+_SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "fact_kind")
 _CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 _DELIVERY_DIMENSIONS = ("timeliness",)
 _FREE_TEXT_DIMENSIONS = ("headline_fidelity", "why_support", "why_value", "factual_fidelity")
 _NO_GOLD: Final = object()
-_GOLD_KEY = {
-    "direction": "direction",
-    "magnitude": "magnitude",
-    **{name: name for name in _RELEVANCE_DIMENSIONS},
-}
+_GOLD_KEY = {"direction": "direction", "fact_kind": "fact_kind"}
 
 
 def _frozen_policy(projection: Mapping[str, Any]) -> DecidePolicy:
@@ -329,11 +317,6 @@ def _gold_value(expected: Mapping[str, Any], name: str) -> Any:
         if not isinstance(assets, Sequence) or isinstance(assets, (str, bytes)):
             return _NO_GOLD
         return typed_asset_claims(assets)
-    if name in {"trade_channels", "trade_affected_markets"}:
-        value = expected.get(name)
-        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-            return _NO_GOLD
-        return tuple(str(item) for item in value)
     key = _GOLD_KEY.get(name)
     if key is None:
         return _NO_GOLD
@@ -626,16 +609,10 @@ def stable_hard_gate(
         catalog_candidates=episode.context.gate.catalog_candidates,
     ):
         return "ungrounded_primary_asset"
-    relevance = judgment.editorial.relevance
-    if (
-        guard == "none"
-        and relevance is not None
-        and str(relevance.reader_value) in {"background", "none"}
-        and reaches_reader
-    ):
-        return "background_realtime_send"
-    if decision.override_rule == "trade_relevance_inconsistent":
-        return "relevance_inconsistent"
+    # #675 §1: the two defects named here were both about the model's own `reader_value` disagreeing
+    # with the action the reader got, and neither the field nor the rule that read it exists any more.
+    # The equivalent defect under v16 is a card the table pushed on a `fact_kind` the reviewer
+    # corrected, which the understanding target scores directly.
     if accepted_novelty == "restatement" and reaches_reader and guard == "none":
         return "known_duplicate_leak"
     return ""

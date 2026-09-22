@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from ..artifact_identity import canonical_json, canonical_sha
+from ..models import FACT_KINDS
 from ..taxonomy import (
     IPTC_CODEBOOK_SHA256,
     IPTC_SUBJECT_CODES,
@@ -26,7 +27,7 @@ from ..taxonomy import (
     source_authority_from_evidence,
 )
 from .assembly import contradicted_primary_symbols, normalize_restates, restatement_index_error
-from .contracts import TRADE_AFFECTED_MARKET_ORDER, TRADE_CHANNEL_ORDER, TriageContext
+from .contracts import TriageContext
 from .lm import (
     LM_REQUEST_IDENTITY_SCHEMA,
     LM_REQUEST_PROJECTION_SCHEMA,
@@ -55,8 +56,9 @@ from .runtime import (
 )
 from .signatures import EventSemantics, EventSemanticsSignature, EventTaxonomySignature, ReaderCardSignature
 
-# v7 (#668): local-only multi-member evidence; unchanged three-Predictor call budget.
-EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v7"
+# v8 (#675 §1): the EventSemantics Signature drops `TradeRelevanceV1`, `magnitude` and `audience` and
+# gains `fact_kind` and `evidence_ref`; the envelope pins the closed fact-kind vocabulary in their place.
+EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v8"
 
 _GOLDEN_MODEL: Final[str] = "openai/tracefold-execution-identity"
 _GOLDEN_INSTRUCTION: Final[str] = "<golden-instruction>"
@@ -78,18 +80,9 @@ _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
             "assets": [],
             "direction": "neutral",
             "scope": "single_name",
-            "magnitude": 0,
+            "fact_kind": "statement",
+            "evidence_ref": "c1",
             "confidence": 1.0,
-            "audience": "none",
-            "relevance": {
-                "impact_breadth": "none",
-                "tradability": "none",
-                "surprise": "unknown",
-                "development_delta": "color_only",
-                "channels": [],
-                "affected_markets": [],
-                "reader_value": "none",
-            },
         }
     },
     "taxonomy": {
@@ -114,8 +107,6 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "EditorialEnvelope",
         "ProgramTrace",
         "TriageContext",
-        "TradeRelevanceV1",
-        "_canonical_code_set",
         "aggregate_program_usage",
         "catalog_candidates_of",
     ),
@@ -163,7 +154,9 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "_prepare",
         "_reader_card_semantic_view",
         "_rejected",
-        "_relevance_normalizations",
+        # Which `ref_id` values `EventSemantics.evidence_ref` and `ReaderCard.source_refs` are checked
+        # against (#675 §1); it replaces `_relevance_normalizations`, whose two fields are deleted.
+        "_visible_refs",
         # Which taxonomy-call failures the Program degrades instead of ending the route, and how a
         # rejected label is turned into `taxonomy_status=unavailable` (#651 §5.3).
         "_taxonomy_call_failure_code",
@@ -304,8 +297,10 @@ def _assembly_surface() -> dict[str, Any]:
             for market_type in ("commodity", "equity", "unknown")
             for classes in (("commodity",), ("commodity", "equity"), ())
         },
-        "trade_channel_order": list(TRADE_CHANNEL_ORDER),
-        "trade_affected_market_order": list(TRADE_AFFECTED_MARKET_ORDER),
+        # The closed vocabulary the model answers `fact_kind` from, in its canonical order. It replaces
+        # the two code-set orders the envelope used to pin: `channels` and `affected_markets` were
+        # bounded sets whose emission order the Program canonicalized, and #675 §1 deleted both.
+        "fact_kinds": list(FACT_KINDS),
         "taxonomy": {
             "codebook_sha256": IPTC_CODEBOOK_SHA256,
             "subject_codes": list(IPTC_SUBJECT_CODES),

@@ -83,7 +83,8 @@ def _persist_triage_verdict(
         assets=[{"symbol": symbol, "role": "primary"}],
         direction=direction,
         scope="single_name",
-        magnitude=2,
+        fact_kind="state_change",
+        evidence_ref="c1",
         confidence=0.9,
         headline_zh=headline_zh,
         why_zh="",
@@ -113,7 +114,7 @@ def _persist_triage_verdict(
         judgment_origin="model",
         rule_baseline_decision="push",
         final_decision="push",
-        override_rule="trade_relevance_realtime",
+        override_rule="fact_kind_state_change",
         throttled_by=None,
         verdict=verdict.model_dump(mode="json"),
         model_editorial=judgment.editorial.model_dump(mode="json"),
@@ -156,9 +157,7 @@ def _persist_sent_triage_card(
         key: event.get(key)
         for key in ("storyline_key", "comparison_title", "comparison_fingerprint", "dedupe_family", "grounded_assets")
     }
-    bound.update(
-        {key: verdict["verdict"].get(key) for key in ("magnitude", "direction", "headline_zh", "why_zh", "assets")}
-    )
+    bound.update({key: verdict["verdict"].get(key) for key in ("direction", "headline_zh", "why_zh", "assets")})
     bound["canonical_assets"] = list(EvaluationReaderHistory(repos.news.conn).canonical_assets([symbol]))
     assert (
         repos.news.begin_delivery(
@@ -307,7 +306,6 @@ def test_sent_asset_binding_survives_later_grounding_removal(conn) -> None:
                 "grounded_assets": [],
                 "assets": ["BABA"],
                 "canonical_assets": ["BABA"],
-                "magnitude": 2,
                 "direction": "bearish",
                 "headline_zh": "无关发行人提交例行文件",
                 "why_zh": "",

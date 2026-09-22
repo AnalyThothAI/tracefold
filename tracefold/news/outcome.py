@@ -83,18 +83,34 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "oi_parse_failed": "持仓异动供应商格式无法解析，已安全拦截",
     "liquidation_parse_failed": "强平供应商格式无法解析，已安全拦截",
     "watchlist_objective_guard": "命中关注列表客观条件",
-    "trade_relevance_escalate": "交易相关性达到重点推送标准",
-    "trade_relevance_escalate_uncorroborated": "达到重点标准但来源权威未知且仅单条来源，降为普通推送",
-    "trade_relevance_realtime": "交易相关性达到实时推送标准",
     "single_name_without_instrument": "单一标的事实未给出可交易标的，不推送",
-    "price_report_without_basis": "纯价格播报，正文未给出关口、纪录或量化资金流等依据，转为背景",
-    "conflict_claim_uncorroborated": "冲突单方说法，来源权威未知且仅单条独立文本，转为背景",
-    "conflict_running_storyline": "同一冲突线索读者已收到，且非状态变化，转为背景",
-    "trade_relevance_inconsistent": "交易相关性字段不一致，未达推送标准",
-    "reader_value_background": "仅有背景价值，不实时推送",
-    "reader_value_none": "无读者价值，不推送",
+    "price_report_without_basis": "纯价格播报，正文未给出关口、纪录或量化资金流等依据，不推送",
+    "conflict_claim_uncorroborated": "冲突单方说法，来源权威未知且仅单条独立文本，不推送",
+    "conflict_running_storyline": "同一冲突线索读者已收到，且非状态变化或官方措施，不推送",
     "stale_source_artifact": "来源推文本身已过时，按旧闻扣下",
     "restatement": "重复：读者已收到同一事实",
+    # #675 §1, policy v16: the decision table's own rows.
+    "escalate_corroborated": "状态变化或官方措施，且来源可确认或有第二条独立文本，重点推送",
+    "escalate_uncorroborated": "达到重点标准但来源权威未知且仅单条独立文本，降为普通推送",
+    "fact_kind_state_change": "事实类型：状态变化，推送",
+    "fact_kind_new_quantity": "事实类型：新数据，推送",
+    "fact_kind_level_crossed": "事实类型：价格关口，推送",
+    "fact_kind_period_record": "事实类型：期内纪录，推送",
+    "fact_kind_quantified_flow": "事实类型：量化资金流，推送",
+    "fact_kind_official_measure": "事实类型：官方措施，推送",
+    "fact_kind_statement": "事实类型：表态，不推送",
+    "fact_kind_recap": "事实类型：综述或复述，不推送",
+    "fact_kind_schedule": "事实类型：日程，不推送",
+    "fact_kind_promotion": "事实类型：营销推广，不推送",
+    # Retired with policy v15 and kept for the ledger. `decide()` cannot produce these names any more, but
+    # the 30-day verdict retention still holds rows carrying them, and a console that rendered a bare key
+    # for a card the reader received last week would be a worse answer than a stale one (#675 §1).
+    "trade_relevance_escalate": "（v15 及以前）交易相关性达到重点推送标准",
+    "trade_relevance_escalate_uncorroborated": "（v15 及以前）达到重点标准但来源未知且仅单条来源，降为普通推送",
+    "trade_relevance_realtime": "（v15 及以前）交易相关性达到实时推送标准",
+    "trade_relevance_inconsistent": "（v15 及以前）交易相关性字段不一致，未达推送标准",
+    "reader_value_background": "（v15 及以前）仅有背景价值，不实时推送",
+    "reader_value_none": "（v15 及以前）无读者价值，不推送",
 }
 
 ERROR_CODE_ZH: Final[dict[str, str]] = {
@@ -144,11 +160,24 @@ DIRECTION_ZH: Final[dict[str, str]] = {
     "neutral": "中性",
     "unclear": "方向待定",
 }
-MAGNITUDE_ZH: Final[dict[int, str]] = {0: "影响很小", 1: "影响有限", 2: "影响明显", 3: "影响重大"}
+# #675 §1: what kind of new thing the card states, in the reader's language. It replaces `MAGNITUDE_ZH`,
+# whose four words ("影响很小" .. "影响重大") rendered the model's own guess at how much the reader should
+# care. That field is deleted; an observation of the text is what the card carries in its place.
+FACT_KIND_ZH: Final[dict[str, str]] = {
+    "state_change": "状态变化",
+    "new_quantity": "新数据",
+    "level_crossed": "关口",
+    "period_record": "期内纪录",
+    "quantified_flow": "资金流",
+    "official_measure": "官方措施",
+    "statement": "表态",
+    "recap": "综述",
+    "schedule": "日程",
+    "promotion": "推广",
+}
 SCOPE_ZH: Final[dict[str, str]] = {"macro": "宏观", "sector": "板块", "single_name": "个别标的"}
-# The model's novelty judgment against the told ledger (issue #61) and the reader group the card is for.
+# The model's novelty judgment against the told ledger (issue #61).
 NOVELTY_ZH: Final[dict[str, str]] = {"new_fact": "新事实", "progression": "新进展", "restatement": "复述"}
-AUDIENCE_ZH: Final[dict[str, str]] = {"crypto": "加密", "us_equity": "美股", "macro": "宏观", "none": "无"}
 PRIORITY_ZH: Final[dict[str, str]] = {"high": "高优先级", "normal": "普通"}
 DECISION_ZH: Final[dict[str, str]] = {
     "push": "推送",
@@ -234,11 +263,14 @@ def direction_zh(value: str | None) -> str:
     return DIRECTION_ZH.get(str(value or ""), str(value or ""))
 
 
-def magnitude_zh(value: int | None) -> str:
-    try:
-        return MAGNITUDE_ZH.get(int(value), str(value)) if value is not None else ""
-    except (TypeError, ValueError):
-        return str(value)
+def fact_kind_zh(value: str | None) -> str:
+    """The card's own word for one ``fact_kind``, or nothing for a verdict that states none.
+
+    A verdict written under `news_judgment_v2` has no `fact_kind` and a degraded one never had an
+    observation to report; both render as an empty string rather than as a kind nobody claimed.
+    """
+
+    return FACT_KIND_ZH.get(str(value or ""), "")
 
 
 def scope_zh(value: str | None) -> str:
@@ -251,10 +283,6 @@ def decision_zh(value: str | None) -> str:
 
 def novelty_zh(value: str | None) -> str:
     return NOVELTY_ZH.get(str(value or ""), str(value or ""))
-
-
-def audience_zh(value: str | None) -> str:
-    return AUDIENCE_ZH.get(str(value or ""), str(value or ""))
 
 
 # ------------------------------------------------------------------------------------------------ outcome
@@ -369,14 +397,13 @@ def _outcome(kind: OutcomeKind, text_zh: str, reason_zh: str) -> Outcome:
 
 __all__ = [
     "ADMISSION_ZH",
-    "AUDIENCE_ZH",
     "DECISION_ZH",
     "DEDUPE_FAMILY_ZH",
     "DELIVERY_ERROR_ZH",
     "DIRECTION_ZH",
     "ERROR_CODE_ZH",
+    "FACT_KIND_ZH",
     "INCIDENT_CAUSE_ZH",
-    "MAGNITUDE_ZH",
     "NOVELTY_ZH",
     "OUTCOME_GROUP",
     "OUTCOME_VERSION",
@@ -386,14 +413,13 @@ __all__ = [
     "Outcome",
     "OutcomeKind",
     "admission_zh",
-    "audience_zh",
     "decision_zh",
     "delivery_error_zh",
     "direction_zh",
     "error_code_zh",
     "event_outcome",
+    "fact_kind_zh",
     "incident_cause_zh",
-    "magnitude_zh",
     "novelty_zh",
     "override_rule_zh",
     "scope_zh",

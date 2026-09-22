@@ -81,7 +81,7 @@ def _event(
     direction: str = "bullish",
     delivered: bool = True,
     degraded: bool = False,
-    magnitude: int = 2,
+    fact_kind: str = "state_change",
     ingest_mode: str = "live",
     admission: str = "candidate",
     event_kind: str = "news",
@@ -137,7 +137,10 @@ def _event(
         assets=[{"symbol": symbol, "role": "primary"} for symbol in symbols],
         direction=direction,
         scope="single_name",
-        magnitude=magnitude,
+        # The degraded fallback is code-owned and observed nothing, so it states no kind and cites no
+        # evidence span; a model verdict always states both (#675 §1).
+        fact_kind=None if degraded else fact_kind,
+        evidence_ref="" if degraded else "c1",
         confidence=1.0,
         headline_zh="价格复盘测试",
     )
@@ -794,8 +797,8 @@ def test_review_reports_coverage_and_potential_misses(conn) -> None:
     assert misses[0]["return_1h_bps"] == 900
     assert misses[0]["assets"][0]["venue_symbol"] == "ETHUSDT"
 
-    # #112 retires direction, magnitude, and taxonomy rankings: none is causal quality evidence.
-    assert review["magnitudes"] == []
+    # #112 retires direction, fact-kind, and taxonomy rankings: none is causal quality evidence.
+    assert review["fact_kinds"] == []
     assert review["event_families"] == []
 
 

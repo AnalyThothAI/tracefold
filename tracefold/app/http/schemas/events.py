@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from tracefold.news import EventKind, SourceAuthority
+from tracefold.news import EventKind, FactKind, SourceAuthority
 
 from .common import ExactApiSchema
 from .news_common import (
@@ -12,7 +12,6 @@ from .news_common import (
     NewsOutcomeData,
     NewsSymbolNormalizationData,
     NewsTaxonomyData,
-    NewsTradeRelevanceData,
     NewsTriageAssetData,
     NewsTriageSummaryData,
 )
@@ -120,21 +119,24 @@ class NewsPresentationVerdictData(ExactApiSchema):
     assets: list[NewsTriageAssetData] = Field(default_factory=list, max_length=8)
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
     scope: Literal["macro", "sector", "single_name"]
-    magnitude: int = Field(ge=0, le=3)
+    # `null` on a verdict written under `news_judgment_v2` and on a degraded one (#675 §1). Those rows
+    # are audit truth and are never rewritten, so the detail page shows no fact-kind badge for them.
+    fact_kind: FactKind | None = None
+    evidence_ref: str = ""
     confidence: float = Field(ge=0.0, le=1.0)
-    audience: Literal["crypto", "us_equity", "macro", "none"]
     headline_zh: str = Field(min_length=1, max_length=60)
     why_zh: str = Field(default="", max_length=140)
 
 
 class NewsModelEditorialData(ExactApiSchema):
-    """The editorial sibling of one model verdict, in the current `news_editorial_v3` read shape.
+    """The editorial sibling of one model verdict, in the current `news_editorial_v4` read shape.
 
     ``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer
     and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
     ``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under
     `news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row
-    reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3).
+    reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3), and a
+    `news_editorial_v3` row loses the `relevance` object the Program no longer produces (#675 §1).
     """
 
     source_authority: SourceAuthority
@@ -142,7 +144,6 @@ class NewsModelEditorialData(ExactApiSchema):
     taxonomy: NewsTaxonomyData | None = None
     taxonomy_status: Literal["available", "unavailable"] = "available"
     taxonomy_error_code: str | None = None
-    relevance: NewsTradeRelevanceData
 
     @model_validator(mode="after")
     def taxonomy_status_matches_taxonomy(self) -> NewsModelEditorialData:
@@ -155,7 +156,7 @@ class NewsModelEditorialData(ExactApiSchema):
 class NewsVerdictData(ExactApiSchema):
     stage: str
     policy_version: str
-    judgment_contract_version: Literal["news_judgment_v2"]
+    judgment_contract_version: Literal["news_judgment_v2", "news_judgment_v3"]
     judgment_origin: Literal["model", "oi", "liquidation", "degraded"]  # historical origins remain readable
     judgment_sha256: str = Field(pattern=_SHA256_PATTERN)
     verdict: NewsPresentationVerdictData

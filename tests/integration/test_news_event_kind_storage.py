@@ -117,7 +117,8 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
             assets=[],
             direction="neutral",
             scope="single_name",
-            magnitude=0,
+            fact_kind="state_change",
+            evidence_ref="c1",
             confidence=1.0,
             headline_zh="测试新闻判断",
         )

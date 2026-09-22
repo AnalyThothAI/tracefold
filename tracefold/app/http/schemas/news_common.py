@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from tracefold.news import IPTCCodebookSha, MarketType, NewsTaxonomyV1, SourceAuthority, TradeRelevanceV1
+from tracefold.news import FactKind, IPTCCodebookSha, MarketType, NewsTaxonomyV1, SourceAuthority
 
 from .common import ExactApiSchema
 
@@ -43,10 +43,6 @@ class NewsTriageAssetData(ExactApiSchema):
     symbol: str = Field(min_length=1, max_length=16)
     market_type: MarketType
     role: Literal["primary", "mentioned"]
-
-
-class NewsTradeRelevanceData(TradeRelevanceV1):
-    """The current typed market-relevance judgment; no free-form compatibility payload crosses HTTP."""
 
 
 class NewsTaxonomyData(NewsTaxonomyV1):
@@ -97,7 +93,7 @@ class NewsTriageSummaryData(ExactApiSchema):
     degraded: bool = False
     error_code: str | None = None
     direction: str | None = None
-    magnitude: int | None = None
+    fact_kind: FactKind | None = None
     taxonomy: NewsTaxonomyData | None = None
     # `null` on a verdict with no editorial sibling at all -- a degraded, OI or liquidation judgment.
     # `unavailable` on a model judgment whose taxonomy Predictor failed while the other two answered:
@@ -106,19 +102,17 @@ class NewsTriageSummaryData(ExactApiSchema):
     taxonomy_error_code: str | None = None
     source_authority: SourceAuthority | None = None
     source_authority_zh: str = ""
-    relevance: NewsTradeRelevanceData | None = None
     scope: str | None = None
     novelty: str | None = None
-    audience: str | None = None
+    evidence_ref: str | None = None
     confidence: float | None = None
     headline_zh: str | None = None
     why_zh: str | None = None
     assets: list[NewsTriageAssetData] = Field(default_factory=list)
     direction_zh: str = ""
-    magnitude_zh: str = ""
+    fact_kind_zh: str = ""
     scope_zh: str = ""
     novelty_zh: str = ""
-    audience_zh: str = ""
     decision_zh: str = ""
 
 
@@ -134,7 +128,6 @@ __all__ = [
     "NewsOutcomeData",
     "NewsSymbolNormalizationData",
     "NewsTaxonomyData",
-    "NewsTradeRelevanceData",
     "NewsTriageAssetData",
     "NewsTriageSummaryData",
 ]

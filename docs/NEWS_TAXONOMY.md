@@ -26,10 +26,10 @@ independent connected-fact clusters are scored, the result is
   exclusions are unchanged: a personal account, a relay and a belligerent's
   state media stay out, and so does a government press office whose posts are
   political messaging about a third party.
-- Production Program: `news_semantic_program_v12`, Program SHA
-  `a5b99b8060b7cda22f567b29f2e80580fdaca642fc57a95273e72cb398e02402`.
-- Triage policy: `news_triage_policy_v15`.
-- Review contract: `news_review_v7`.
+- Production Program: `news_semantic_program_v13`, Program SHA
+  `f152602341ddfef9d041b2f656eea3f1a507eac38cfbc2fe5a6a1ab1eed531ae`.
+- Triage policy: `news_triage_policy_v16`.
+- Review contract: `news_review_v8`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured
   reporting-source field. Strategy/provenance routing IDs carry no source
@@ -108,20 +108,30 @@ Membership is a judgment about corroboration weight, so three categories stay
 out on purpose: personal accounts (analysts, traders, journalists posting under
 their own name), aggregators and relays that restate an origin they do not own,
 and a belligerent's state media, which is a party to the event it reports.
-Policy v14 reads `editorial.source_authority` when it decides whether an `escalate` is
-corroborated, and none of those three can carry that weight.
+Policy v16 reads `editorial.source_authority` when it decides whether a material change in one of
+four families escalates, and none of those three can carry that weight.
 
 ## Persistence and readers
 
-Model-origin `EditorialEnvelope.v3` carries `source_authority`, `taxonomy_status`
+Model-origin `EditorialEnvelope.v4` carries `source_authority`, `taxonomy_status`
 and `taxonomy_error_code` beside a `taxonomy` that may be JSON null, and hashes
-all of it with TradeRelevance in the same `news_judgment_v2` atom (#651 §5.3): a
-taxonomy Predictor that fails alone leaves the judgment standing. Envelopes
-written under `news_editorial_v2` keep their nested authority and keep
-validating; the storage read boundary converts, and the worker never writes v2
-again. Migration `0336` physically deletes envelopes and judgments older than
-that; no Program, history, review task, learning dataset, release gate, API, or
-Web path decodes or translates their retired shapes.
+all of it in the same `news_judgment_v3` atom (#651 §5.3): a taxonomy Predictor
+that fails alone leaves the judgment standing. v4 (#675 §1) is v3 without
+`relevance`: the envelope persists code facts about the evidence, and the seven
+model-owned codes were not that.
+
+Three editorial shapes and two verdict shapes are in the ledger and none is
+rewritten. `news_editorial_v3` carries the deleted `relevance` object and
+`news_editorial_v2` additionally nests the authority inside the taxonomy;
+`storage.decisions.editorial_read_shape` is the read boundary and drops
+`relevance` rather than publishing a judgment the Program no longer makes. A
+verdict written under `news_judgment_v2` carries `magnitude` and `audience` and
+no `fact_kind`; `news_current_verdict_contract_shape_valid` binds each shape to
+the contract version that wrote it, `TriageVerdict` reads both, and
+`storage.decisions.triage_verdict_read_shape` is the projection boundary that
+drops the two retired keys. Migration `0336` physically deletes envelopes and
+judgments older than v2; no Program, history, review task, learning dataset,
+release gate, API, or Web path decodes or translates their retired shapes.
 
 The Event detail API and console expose Chinese labels for the four axes and for
 the envelope's source authority, and render `分类不可用` with the error code when
@@ -131,7 +141,7 @@ ToldContext, progression, learning replay, and evaluation carry full current
 field names and exact current identities; none accepts a compact or historical
 shape. Structured listing, OI, and liquidation presentation reads code-owned
 `event_kind`; OI and liquidation use their own typed judgments and do not
-fabricate model taxonomy or enter the generic Review v7 queue.
+fabricate model taxonomy or enter the generic Review v8 queue.
 
 ## Gold and GEPA measurement
 
@@ -249,25 +259,31 @@ The four model-owned axes (`subject_codes`, `event_family`, `change_state`,
 `assertion_status`) never enter Gate, ReaderCard, Delivery, or Trading, and
 changing them alone must not change any of those. They do enter `decide()`, and
 since policy v15 (#675) that is deliberate: `event_family`, `change_state` and
-`assertion_status` are three of the input columns of the decision table, whose
-three rows can downgrade a `trade_relevance_realtime` push to `drop`. Nothing
-else reads them and nothing reads `subject_codes`. The rows are one-directional —
-they withhold and never admit — they are silent whenever
-`taxonomy_status` is `unavailable`, and they cannot reach the escalate,
-deterministic-listing or watchlist-objective paths at all, so a classification
-error can cost a reader a card but can never manufacture one, change a card's
-text, or reach Trading. The earlier wording of this paragraph said the axes never
-enter `decide()`; #117 and #501 wrote it when `decide()` read only the model's
-own relevance enums, and #675 withdraws it in favour of the narrower statement
-above, which is the one the code enforces.
+`assertion_status` are three of the input columns of the decision table. Nothing
+else reads them and nothing reads `subject_codes`. Every row that reads them is
+silent whenever `taxonomy_status` is `unavailable`, and the `fact_kind` rows
+still apply, so a taxonomy outage costs precision and never the whole table.
+
+Policy v16 (#675 §1) widens what a classification can do, and the widening is
+stated here because the earlier wording of this paragraph promised it could not.
+Under v15 the three rows could only withhold. Under v16 `event_family` also
+decides whether a material change *escalates*, so a classification error can now
+cost a reader a card, withhold one, or make one louder. It still cannot change a
+card's text or reach Trading: the escalate row reads the family and the
+code-owned corroboration and nothing else, and ReaderCard never sees a taxonomy
+at all. The earlier wording also said the axes never enter `decide()`; #117 and
+#501 wrote it when `decide()` read only the model's own relevance enums, and
+#675 withdrew it in favour of the statement above, which is the one the code
+enforces.
 
 The code-owned `source_authority` field has read this way since policy v12
 (#504): `decide()` reads it as issued from the evidence — from
 `editorial.source_authority` since #651 moved it out of the taxonomy object, so
 that a failed taxonomy call cannot take the corroboration fact down with the
 label — as the escalate corroboration fact, where an eligible `escalate` from an
-`unknown` source with a single Event member is downgraded to `push`, and since
-v15 as the second column of `conflict_claim_uncorroborated`. It is an
+`unknown` source with a single independent member text is downgraded to `push`
+under `escalate_uncorroborated`, and since v15 as the second column of
+`conflict_claim_uncorroborated`. It is an
 evidence-side fact carried on the editorial envelope, not a model judgment, and
 it is not recomputed inside `decide()`. Since #501 taxonomy is the second of three serial Predictors
 (`event_semantics -> taxonomy -> reader_card`); the common successful production

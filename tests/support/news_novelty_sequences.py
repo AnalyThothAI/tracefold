@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from tracefold.news.models import TriageVerdict
-from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment
 from tracefold.news.reader_history import build_reader_history
 from tracefold.news.taxonomy import NewsTaxonomyV1
 from tracefold.news.triage_rules import DecidePolicy, GateFacts
@@ -49,6 +49,12 @@ def sequence(sequence_id: str) -> Mapping[str, Any]:
 
 def case(case_key: str) -> Mapping[str, Any]:
     return raw_cases()[case_key]
+
+
+def step(case_key: str) -> Mapping[str, Any]:
+    """The sequence step that replays this case."""
+
+    return next(item for document in sequences() for item in document["steps"] if item["case"] == case_key)
 
 
 def event(case_key: str) -> Mapping[str, Any]:
@@ -90,23 +96,33 @@ def frozen_policy(case_key: str) -> DecidePolicy:
     return DecidePolicy(**dict(verdict_row(case_key)["trace"]["policy"]))
 
 
-def judgment(case_key: str, **overrides: Any) -> ScoredJudgment:
+def judgment(case_key: str, *, source_authority: str | None = None, **overrides: Any) -> ScoredJudgment:
     """The judgment this Event actually produced, optionally with one field controlled.
 
     The stored taxonomy predates `news_editorial_v3`, where `source_authority` moved from the model's
     taxonomy onto the code-owned envelope. Moving it back on read is the migration, not a fixture edit:
     the exported row is audit truth and is never rewritten.
+
+    `fact_kind` arrives the same way. These verdicts were written under `news_judgment_v2`, which asked
+    the model for `magnitude` and `audience` instead, and policy v16 drops a verdict that states no kind
+    at all -- so a row replayed without one would replay nothing. The kind each card's own text states is
+    named once per step in `issue_651_novelty_sequences.json`, beside that step's gold novelty target; a
+    test that needs a different one says so through ``overrides``.
+
+    ``source_authority`` is the one editorial fact a caller can hold, because it is the only code fact
+    outside the verdict that v16's escalate row reads. A test measuring a rule that applies to ordinary
+    pushes -- the same-fact check, the storyline budget -- has to be able to say "and this notice came
+    from a source the registry cannot name", or the card it is measuring is not one of them.
     """
 
     row = verdict_row(case_key)
-    values = {**row["verdict"], **overrides}
+    values = {**row["verdict"], "fact_kind": step(case_key)["fact_kind"], **overrides}
     taxonomy = dict(row["editorial"].get("taxonomy") or {})
-    authority = str(taxonomy.pop("source_authority", "") or "unknown")
+    stored_authority = str(taxonomy.pop("source_authority", "") or "unknown")
     return ScoredJudgment.issue(
         verdict=TriageVerdict.model_validate(values),
         editorial=EditorialEnvelope.issue(
-            relevance=TradeRelevanceV1.model_validate(row["editorial"]["relevance"]),
-            source_authority=authority,  # type: ignore[arg-type]
+            source_authority=source_authority or stored_authority,  # type: ignore[arg-type]
             taxonomy=NewsTaxonomyV1.model_validate(taxonomy) if taxonomy else None,
             taxonomy_error_code=None if taxonomy else "news_program_taxonomy_unavailable",
         ),
@@ -148,7 +164,6 @@ def history_row(case_key: str) -> dict[str, Any]:
         "canonical_assets": sorted(
             {str(asset["symbol"]) for asset in case(case_key)["event_assets"] if asset.get("symbol")}
         ),
-        "magnitude": int(record["verdict"]["magnitude"]),
         "direction": str(record["verdict"]["direction"]),
         "headline_zh": str(record["verdict"]["headline_zh"]),
         "why_zh": str(record["verdict"]["why_zh"] or ""),
@@ -190,6 +205,7 @@ __all__ = [
     "sequence",
     "sequences",
     "settled_at_ms",
+    "step",
     "storyline_key",
     "told",
     "triage_stamp",

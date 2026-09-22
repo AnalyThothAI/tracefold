@@ -172,7 +172,7 @@ def test_load_case_rejects_review_evidence_and_verdict_identity_tampering() -> N
 
 _SPEC = DatasetSpec(window=ClosedWindow(from_ms=1_788_432_350_195, to_ms=1_788_518_750_195), role="development")
 # Reviewer-owned dimensions only; the harness adds the code-written `taxonomy_*` keys per case.
-_PASSING = {"factual_fidelity": "pass", "direction": "pass", "reader_value": "pass"}
+_PASSING = {"factual_fidelity": "pass", "direction": "pass", "fact_kind": "pass"}
 
 
 class _CountsLedger:
@@ -201,7 +201,7 @@ def _counts(
         evidence_sha256="a" * 64,
         review_id="review-0",
         cluster_id="cluster-0",
-        stratum="regional_direct_exception",
+        stratum="delivery_ambiguous",
         should_push=should_push,
         opened_at_ms=1_788_432_350_195,
     )

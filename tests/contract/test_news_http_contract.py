@@ -664,9 +664,9 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
         "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
-        "magnitude": 2,
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.9,
-        "audience": "crypto",
         "headline_zh": "BTC 获得新的市场准入",
         "why_zh": "准入状态发生变化",
     }
@@ -687,20 +687,11 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
             "assertion_status": "confirmed",
             "assertion_status_zh": "已确认",
         },
-        "relevance": {
-            "impact_breadth": "single_instrument",
-            "tradability": "direct",
-            "surprise": "unscheduled",
-            "development_delta": "state_change",
-            "channels": ["exchange_access"],
-            "affected_markets": ["single_asset"],
-            "reader_value": "realtime",
-        },
     }
     payload = {
         "stage": "triage",
-        "policy_version": "news_triage_policy_v14",
-        "judgment_contract_version": "news_judgment_v2",
+        "policy_version": "news_triage_policy_v16",
+        "judgment_contract_version": "news_judgment_v3",
         "judgment_origin": "model",
         "judgment_sha256": "b" * 64,
         "verdict": verdict,
@@ -728,6 +719,17 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
     assert _triage_assets([{"symbol": "BTC", "market_type": "token", "role": "primary"}]) == [
         {"symbol": "BTC", "market_type": "unknown", "role": "primary"}
     ]
+    # A verdict written under `news_judgment_v2` is still in the 30-day retention and still has to reach
+    # the Event detail. It carries no `fact_kind`, and the schema publishes the absence rather than a
+    # kind nobody claimed (#675 §1).
+    archived = {
+        **payload,
+        "policy_version": "news_triage_policy_v14",
+        "judgment_contract_version": "news_judgment_v2",
+        "verdict": {key: value for key, value in verdict.items() if key not in {"fact_kind", "evidence_ref"}},
+    }
+    older = event_schemas.NewsVerdictData.model_validate(archived)
+    assert older.verdict.fact_kind is None and older.verdict.evidence_ref == ""
     deterministic = {**payload, "judgment_origin": "oi", "model": None, "model_editorial": None}
     assert event_schemas.NewsVerdictData.model_validate(deterministic).judgment_origin == "oi"
     with pytest.raises(ValueError, match="news_verdict_model_identity_origin_mismatch"):

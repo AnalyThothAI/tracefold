@@ -544,7 +544,7 @@ the route components into the eager shell chunk.
   compress to one scrollable row and the page subtitle is dropped so the first Event
   sits within the first screen. Padding must never land on a `-webkit-line-clamp`
   element — the clamped line shows through the padding band.
-- **Score display.** Displayed scores and labels (Triage magnitude and confidence, the News `outcome`/`*_zh`/`label_zh` copy) are server-owned values rendered as-is. The UI does not recompute, rank, translate, or synthesize them locally; `features/news/newsLabels.ts` holds UI affordance copy and tone mapping only.
+- **Score display.** Displayed labels (the Triage fact kind and confidence, the News `outcome`/`*_zh`/`label_zh` copy) are server-owned values rendered as-is. The UI does not recompute, rank, translate, or synthesize them locally; `features/news/newsLabels.ts` holds UI affordance copy and tone mapping only.
 - **No token or provider-image surfaces.** There is no token profile, logo, chain/address link, DEX/CEX market panel, or image proxy anywhere in `web/src`; the API exposes no image URL or image route. Do not add a frontend proxy, helper, or filter that loads or rewrites provider image URLs.
 
 ## Build And Test
@@ -688,9 +688,9 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     decision, or score keys anywhere; and every row with a verdict shows the
     direction chip (利多 filled red / 利空 filled green / 中性 quiet text, each
     with its own arrow). On `/news/events/:eventId`, verify hero (outcome +
-    reason, headline, direction + magnitude + 把握, why, the
+    reason, headline, direction + 事实类型 + 把握, why, the
     taxonomy `事件族/变化状态/来源权威/断言状态/主题` followed by the diagnostic
-    `旧分类` and `SCOPE/NOVELTY/ACTIONABLE/AUDIENCE/MEMBERS` grid with framed cells,
+    `旧分类` and `SCOPE/NOVELTY/ACTIONABLE/MEMBERS` grid with framed cells,
     主要标的 vs 提及), the timeline with `+Δ` and an end-to-end figure,
     同类报道 and a collapsed 技术详情 appear in that order
     with no market-mark table — the two #88 market blocks (`当前报价` and

@@ -26,18 +26,10 @@ def _semantics(**updates: Any) -> dict[str, Any]:
         "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
-        "magnitude": 2,
+        # A venue admitting an instrument, cited against the one span this context shows.
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.8,
-        "audience": "crypto",
-        "relevance": {
-            "impact_breadth": "single_instrument",
-            "tradability": "direct",
-            "surprise": "unscheduled",
-            "development_delta": "state_change",
-            "channels": ["exchange_access"],
-            "affected_markets": ["single_asset"],
-            "reader_value": "realtime",
-        },
     }
     value.update(updates)
     return {"semantics": value}

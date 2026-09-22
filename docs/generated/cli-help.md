@@ -399,7 +399,7 @@ positional arguments:
                         tariff, or writes)
     judge-calibration   score the metric judge against the fixed perturbation
                         corpus; writes a receipt, no DB
-    draft-reviews       propose news_review_v7 rubrics with optional taxonomy
+    draft-reviews       propose news_review_v8 rubrics with optional taxonomy
                         Gold (writes a file, never the DB)
     run                 the one bounded candidate path: readiness -> stock
                         GEPA, into a new empty directory

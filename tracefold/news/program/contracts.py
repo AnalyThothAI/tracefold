@@ -10,11 +10,20 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_sha
 from ..evidence import PreparedEvidence, VisibleEvidenceSpan, assemble_evidence, query_for
-from ..models import MarketAsset, MarketType, TriageAsset, TriageVerdict, base_symbol, market_type_of
+from ..models import (
+    FACT_KINDS,
+    FactKind,
+    MarketAsset,
+    MarketType,
+    TriageAsset,
+    TriageVerdict,
+    base_symbol,
+    market_type_of,
+)
 from ..taxonomy import NewsTaxonomyV1, SourceAuthority
 from ..told_context import TOLD_MAX as _TOLD_MAX
 from ..told_context import TOLD_SYMBOLS_MAX as _TOLD_SYMBOLS_MAX
@@ -42,150 +51,36 @@ GROUNDED_ASSETS_MAX: Final[int] = 16
 CATALOG_CANDIDATE_SYMBOLS_MAX: Final[int] = 8
 CATALOG_CANDIDATE_CLASSES_MAX: Final[int] = 4
 STRATEGIES_MAX: Final[int] = 16
-TRADE_CODE_SET_MAX: Final[int] = 4
 
-TradeImpactBreadth = Literal[
-    "none",
-    "single_instrument",
-    "sector",
-    "regional",
-    "cross_asset",
-    "global_systemic",
-]
-TradeTradability = Literal["direct", "second_order", "contextual", "none"]
-TradeSurprise = Literal["unscheduled", "material_vs_expectation", "in_line", "unknown"]
-TradeDevelopmentDelta = Literal["state_change", "material_detail", "color_only", "scheduled"]
-# `product_progress` (#173): a first-party product/protocol/market capability reaching a verifiable new state
-# had no true channel — `exchange_access` is only who may trade, `earnings_cashflow` only the money mechanism —
-# so it came back empty, and empty channels may co-exist only with contextual/none + background/none, which
-# structurally held every product event. Never brand marketing, a roadmap, or a cumulative vanity count.
-TradeChannel = Literal[
-    "rates",
-    "liquidity",
-    "risk_premium",
-    "energy_supply",
-    "commodity_supply",
-    "commodity_demand",
-    "regulation",
-    "exchange_access",
-    "product_progress",
-    "earnings_cashflow",
-    "positioning_flow",
-    "security_incident",
-]
-TradeAffectedMarket = Literal[
-    "crypto_broad",
-    "us_equity_broad",
-    "rates",
-    "fx",
-    "energy",
-    "metals",
-    "single_asset",
-]
-ReaderValue = Literal["escalate", "realtime", "background", "none"]
-
-TRADE_CHANNEL_ORDER: Final[tuple[TradeChannel, ...]] = (
-    "rates",
-    "liquidity",
-    "risk_premium",
-    "energy_supply",
-    "commodity_supply",
-    "commodity_demand",
-    "regulation",
-    "exchange_access",
-    "product_progress",
-    "earnings_cashflow",
-    "positioning_flow",
-    "security_incident",
-)
-TRADE_AFFECTED_MARKET_ORDER: Final[tuple[TradeAffectedMarket, ...]] = (
-    "crypto_broad",
-    "us_equity_broad",
-    "rates",
-    "fx",
-    "energy",
-    "metals",
-    "single_asset",
-)
-EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v3"]] = "news_editorial_v3"
-JUDGMENT_CONTRACT_VERSION: Final[Literal["news_judgment_v2"]] = "news_judgment_v2"
+EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v4"]] = "news_editorial_v4"
+JUDGMENT_CONTRACT_VERSION: Final[Literal["news_judgment_v3"]] = "news_judgment_v3"
 
 
 class _ExactContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-def _canonical_code_set(value: Any, *, order: Sequence[str]) -> Any:
-    """Canonicalize a bounded model-emitted set before Pydantic applies its max-length constraint."""
-
-    if not isinstance(value, (list, tuple)):
-        return value
-    if not all(isinstance(item, str) and item in order for item in value):
-        # Preserve an invalid value for the typed Literal validator.  Silently
-        # dropping an unknown code would turn schema-invalid model output into
-        # a different, apparently valid editorial judgment.
-        return value
-    present = set(value)
-    return tuple(item for item in order if item in present)
-
-
-class TradeRelevanceV1(_ExactContractModel):
-    """Typed editorial relevance owned by ``EventSemantics.v2``.
-
-    ``channels`` and ``affected_markets`` are sets on the wire but tuples in the
-    contract.  Canonical code-owned ordering makes exact gold, hashing and replay
-    independent of the order in which a model emitted them.
-    """
-
-    impact_breadth: TradeImpactBreadth
-    tradability: TradeTradability
-    surprise: TradeSurprise
-    development_delta: TradeDevelopmentDelta
-    channels: tuple[TradeChannel, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
-    affected_markets: tuple[TradeAffectedMarket, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
-    reader_value: ReaderValue
-
-    @field_validator("channels", mode="before")
-    @classmethod
-    def _canonical_channels(cls, value: Any) -> Any:
-        return _canonical_code_set(value, order=TRADE_CHANNEL_ORDER)
-
-    @field_validator("affected_markets", mode="before")
-    @classmethod
-    def _canonical_markets(cls, value: Any) -> Any:
-        return _canonical_code_set(value, order=TRADE_AFFECTED_MARKET_ORDER)
-
-    @model_validator(mode="after")
-    def _empty_surfaces_are_background_only(self) -> TradeRelevanceV1:
-        if (not self.channels or not self.affected_markets) and not (
-            self.tradability in {"contextual", "none"} and self.reader_value in {"background", "none"}
-        ):
-            raise ValueError("news_trade_relevance_empty_surface_invalid")
-        return self
-
-
 class ReaderCardSemanticView(_ExactContractModel):
     """The complete semantic Interface visible to ``ReaderCard``.
 
-    It intentionally excludes model delivery intent, surprise, tradability and
-    development state.  ReaderCard writes factual copy; it does not get a second
-    opportunity to infer urgency or final action.
+    It intentionally excludes every judgment about the reader.  ReaderCard writes factual copy; it does
+    not get a second opportunity to infer urgency or final action.  ``fact_kind`` is here because it says
+    what the card is *about* -- a level crossed, a measure taken, a figure restated -- which is copy
+    guidance, and it is the only one of the old seven relevance codes that survived #675 §1.
     """
 
     assets: tuple[TriageAsset, ...] = Field(default=(), max_length=8)
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
-    magnitude: int = Field(ge=0, le=3)
+    fact_kind: FactKind
     novelty: Literal["new_fact", "progression", "restatement"]
     restates: int = Field(default=-1, ge=-1)
     scope: Literal["macro", "sector", "single_name"]
-    channels: tuple[TradeChannel, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
-    affected_markets: tuple[TradeAffectedMarket, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
 
 
 class EditorialEnvelope(_ExactContractModel):
     """The one current editorial sibling persisted atomically with a verdict.
 
-    v3 (#651 §5.3) separates the two things v2 kept in one required object. ``source_authority`` is a
+    v3 (#651 §5.3) separated the two things v2 kept in one required object. ``source_authority`` is a
     code fact: `source_authority_from_evidence` reads it off the frozen evidence, the model never emits
     it, and it is therefore present on every model judgment whatever the taxonomy Predictor did.
     ``taxonomy`` is the taxonomy Predictor's answer, and a Predictor can fail on its own -- a truncated
@@ -193,15 +88,20 @@ class EditorialEnvelope(_ExactContractModel):
     two Predictors produced. ``taxonomy_status`` names which of those two happened and
     ``taxonomy_error_code`` carries the `news_program_*` code when it is the second.
 
-    The uncorroborated-escalate rule (`triage_rules.decide`) is why the split is not cosmetic: under v2
-    the rule read `taxonomy.source_authority`, so a taxonomy failure would have taken the corroboration
-    evidence down with the label, and the loudest card class would have lost its safety rule to an
-    unrelated model failure.
+    v4 (#675 §1) drops ``relevance``. The seven `TradeRelevanceV1` codes were the model's own answer to
+    "should the reader be woken", and the envelope is the place a *code* fact about the evidence is
+    persisted beside the verdict -- which is what the two survivors are. What the model observes about
+    the text now lives on the verdict (`fact_kind`), and what the reader gets is decided from these
+    facts by `triage_rules.decide()`.
+
+    The uncorroborated-escalate rule (`triage_rules.decide`) is why the taxonomy split is not cosmetic:
+    under v2 the rule read `taxonomy.source_authority`, so a taxonomy failure would have taken the
+    corroboration evidence down with the label, and the loudest card class would have lost its safety
+    rule to an unrelated model failure.
     """
 
-    editorial_contract_version: Literal["news_editorial_v3"] = EDITORIAL_CONTRACT_VERSION
+    editorial_contract_version: Literal["news_editorial_v4"] = EDITORIAL_CONTRACT_VERSION
     editorial_origin: Literal["model"] = "model"
-    relevance: TradeRelevanceV1
     source_authority: SourceAuthority
     taxonomy: NewsTaxonomyV1 | None = None
     taxonomy_status: Literal["available", "unavailable"] = "available"
@@ -212,7 +112,6 @@ class EditorialEnvelope(_ExactContractModel):
     def issue(
         cls,
         *,
-        relevance: TradeRelevanceV1,
         source_authority: SourceAuthority,
         taxonomy: NewsTaxonomyV1 | None = None,
         taxonomy_error_code: str | None = None,
@@ -220,7 +119,6 @@ class EditorialEnvelope(_ExactContractModel):
         payload = {
             "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
             "editorial_origin": "model",
-            "relevance": relevance.model_dump(mode="json"),
             "source_authority": source_authority,
             "taxonomy": None if taxonomy is None else taxonomy.model_dump(mode="json"),
             "taxonomy_status": "available" if taxonomy is not None else "unavailable",
@@ -356,7 +254,6 @@ class _ModelVisibleToldEntry(_ExactContractModel):
     comparison_title: str = Field(max_length=600)
     symbols: tuple[str, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
     assets: tuple[MarketAsset, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
-    magnitude: int = Field(ge=0, le=3)
     direction: str
     headline_zh: str = Field(max_length=60)
     why_zh: str = Field(max_length=140)
@@ -570,7 +467,6 @@ class TriageContext(_ExactContractModel):
                         comparison_title=entry.comparison_title,
                         symbols=entry.symbols,
                         assets=entry.assets,
-                        magnitude=entry.magnitude,
                         direction=entry.direction,
                         headline_zh=entry.headline_zh,
                         why_zh=entry.why_zh,
@@ -620,7 +516,6 @@ class TriageContext(_ExactContractModel):
                     "comparison_fingerprint": entry.comparison_fingerprint,
                     "symbols": list(entry.symbols),
                     "assets": [{"symbol": a.symbol, "market_type": a.market_type} for a in entry.assets],
-                    "magnitude": entry.magnitude,
                     "direction": entry.direction,
                     "headline_zh": entry.headline_zh,
                     "why_zh": entry.why_zh,
@@ -633,11 +528,14 @@ class TriageContext(_ExactContractModel):
 
 
 class ProgramNormalizationTrace(_ExactContractModel):
-    normalizer_id: Literal["semantic_normalizer_v2"] = "semantic_normalizer_v2"
-    field: Literal["restates", "channels", "affected_markets"]
-    reason: Literal["non_restatement_index_ignored", "canonical_set_order"]
-    input_value: int | tuple[str, ...]
-    output_value: int | tuple[str, ...]
+    # v3 (#675 §1): the only normalization left is the restatement index. `channels` and
+    # `affected_markets` were bounded code sets whose emission order the model could not control, so the
+    # Program canonicalized them and recorded the rewrite; both fields are gone.
+    normalizer_id: Literal["semantic_normalizer_v3"] = "semantic_normalizer_v3"
+    field: Literal["restates"]
+    reason: Literal["non_restatement_index_ignored"]
+    input_value: int
+    output_value: int
 
     @model_validator(mode="after")
     def _field_and_values_match_reason(self) -> ProgramNormalizationTrace:
@@ -737,7 +635,7 @@ class ProgramCallTrace(_ExactContractModel):
 
 
 class ProgramTrace(_ExactContractModel):
-    program_version: Literal["news_semantic_program_v12"]
+    program_version: Literal["news_semantic_program_v13"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # The computed identity of everything the code decided about this call — request envelope, output
@@ -806,7 +704,7 @@ def aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]
 class ScoredJudgment(_ExactContractModel):
     """Canonical verdict/editorial projection shared by every learning surface."""
 
-    judgment_contract_version: Literal["news_judgment_v2"] = JUDGMENT_CONTRACT_VERSION
+    judgment_contract_version: Literal["news_judgment_v3"] = JUDGMENT_CONTRACT_VERSION
     verdict: TriageVerdict
     editorial: EditorialEnvelope
     verdict_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -914,14 +812,14 @@ __all__ = [
     "CATALOG_CANDIDATE_CLASSES_MAX",
     "CATALOG_CANDIDATE_SYMBOLS_MAX",
     "EDITORIAL_CONTRACT_VERSION",
+    "FACT_KINDS",
     "GROUNDED_ASSETS_MAX",
     "JUDGMENT_CONTRACT_VERSION",
     "STRATEGIES_MAX",
-    "TRADE_AFFECTED_MARKET_ORDER",
-    "TRADE_CHANNEL_ORDER",
     "WATCHLIST_MAX",
     "CatalogCandidate",
     "EditorialEnvelope",
+    "FactKind",
     "FrozenEventEvidence",
     "ModelVisibleCardInput",
     "ModelVisibleSemanticsInput",
@@ -936,7 +834,6 @@ __all__ = [
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
-    "TradeRelevanceV1",
     "TriageContext",
     "aggregate_program_usage",
     "catalog_candidates_of",

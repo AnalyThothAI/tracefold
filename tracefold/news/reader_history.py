@@ -26,7 +26,7 @@ TARGETED_ASSET_MAX: Final = 24
 # 32, measured on the 143 labelled duplicate pairs of the 2026-09-01 audit: pg_trgm top-16 over 24 h recalls
 # 98, top-32 recalls 110, top-64 117. The 16 rows the Program sees come out of a pool of 128 + 8 + 24 + 32.
 SIMILAR_TITLE_MAX: Final = 32
-READER_HISTORY_ID: Final = "news_reader_history_v4"
+READER_HISTORY_ID: Final = "news_reader_history_v5"
 READER_HISTORY_CONTRACT: Final = {
     "reader_history": READER_HISTORY_ID,
     "truth": {
@@ -72,7 +72,6 @@ READER_HISTORY_CONTRACT: Final = {
         "grounded_assets",
         "assets",
         "canonical_assets",
-        "magnitude",
         "direction",
         "headline_zh",
         "why_zh",
@@ -96,7 +95,6 @@ _READER_HISTORY_ROW_FIELDS: Final = frozenset(
         "grounded_assets",
         "assets",
         "canonical_assets",
-        "magnitude",
         "direction",
         "headline_zh",
         "why_zh",
@@ -133,7 +131,6 @@ class ReaderHistoryRow:
     # market claim, so neither may pretend to one.
     assets: tuple[MarketAsset, ...]
     canonical_assets: tuple[str, ...]
-    magnitude: int
     direction: str
     headline_zh: str
     why_zh: str
@@ -153,7 +150,6 @@ class ReaderHistoryRow:
             "grounded_assets": list(self.grounded_assets),
             "assets": [{"symbol": asset.symbol, "market_type": asset.market_type} for asset in self.assets],
             "canonical_assets": list(self.canonical_assets),
-            "magnitude": self.magnitude,
             "direction": self.direction,
             "headline_zh": self.headline_zh,
             "why_zh": self.why_zh,
@@ -348,7 +344,6 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
         grounded_assets=grounded,
         assets=assets,
         canonical_assets=canonical,
-        magnitude=int(row["magnitude"]),
         direction=str(row["direction"]),
         headline_zh=str(row["headline_zh"]),
         why_zh=str(row["why_zh"]),

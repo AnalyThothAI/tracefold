@@ -19,7 +19,6 @@ class Receipt:
     event_id: str
     at_ms: int
     storyline_key: str
-    magnitude: int
     direction: str
     headline_zh: str
     why_zh: str
@@ -56,7 +55,6 @@ class Receipt:
             "comparison_title": self.comparison_title,
             "comparison_fingerprint": self.comparison_fingerprint,
             "dedupe_family": self.dedupe_family,
-            "magnitude": self.magnitude,
             "direction": self.direction,
             "headline_zh": self.headline_zh,
             "why_zh": self.why_zh,
@@ -144,7 +142,6 @@ def receipt_from_output(*, event_id: str, at_ms: int, output: Mapping[str, Any],
         event_id=event_id,
         at_ms=at_ms,
         storyline_key=str(output.get("storyline_key") or NO_STORYLINE_KEY),
-        magnitude=int(verdict.get("magnitude") or 0),
         direction=str(verdict.get("direction") or "unclear"),
         headline_zh=str(verdict.get("headline_zh") or ""),
         why_zh=str(verdict.get("why_zh") or ""),

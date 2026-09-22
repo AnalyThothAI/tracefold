@@ -10,15 +10,14 @@ from typing import Any
 from ..evidence import execution_evidence_views
 from ..models import ReaderReceipt, market_type_of
 from ..outcome import (
-    audience_zh,
     decision_zh,
     direction_zh,
     event_outcome,
-    magnitude_zh,
+    fact_kind_zh,
     novelty_zh,
     scope_zh,
 )
-from ..row_values import optional_float, optional_int
+from ..row_values import optional_float
 from ..search import NewsSearchPlan
 from ..source_contracts import (
     EVENT_KINDS,
@@ -28,7 +27,7 @@ from ..source_contracts import (
 )
 from ..taxonomy import source_authority_zh, taxonomy_public
 from ..timeline import event_timeline
-from .decisions import editorial_read_shape
+from .decisions import editorial_read_shape, triage_verdict_read_shape
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_SQL,
@@ -666,17 +665,21 @@ def _triage_summary(
     """The reader-facing Triage summary shared by the feed row and the Event detail.
 
     Every business word is resolved to Chinese here so no browser owns a vocabulary table (the Feishu card in
-    ``delivery.py`` emits the same `DIRECTION_ZH`/`MAGNITUDE_ZH` words, and one definition keeps the card and
+    ``delivery.py`` emits the same `DIRECTION_ZH`/`FACT_KIND_ZH` words, and one definition keeps the card and
     the console from drifting); the raw enum ships beside it purely so the UI can pick a visual tone.
 
-    ``full`` is the Event detail. The feed row renders only direction/magnitude over 25 rows, so it takes
-    the slim shape — carrying the detail fields there cost 20.7% of the feed payload for nothing."""
+    ``full`` is the Event detail. The feed row renders only direction/fact kind over 25 rows, so it takes
+    the slim shape — carrying the detail fields there cost 20.7% of the feed payload for nothing.
+
+    A verdict written under `news_judgment_v2` carries `magnitude` and `audience` and no `fact_kind`;
+    those rows are audit truth and are never rewritten, so `fact_kind` reads as ``None`` for them and
+    the badge is simply absent (#675 §1). This is the read boundary that says so."""
 
     if not final_decision:
         return None
     v: Mapping[str, Any] = verdict or {}
     direction = v.get("direction")
-    magnitude = optional_int(v.get("magnitude"))
+    fact_kind = v.get("fact_kind")
     scope = v.get("scope")
     summary = {
         "final_decision": final_decision,
@@ -685,37 +688,33 @@ def _triage_summary(
         "degraded": bool(degraded),
         "error_code": error_code,
         "direction": direction,
-        "magnitude": magnitude,
+        "fact_kind": fact_kind,
         "headline_zh": v.get("headline_zh"),
         "direction_zh": direction_zh(direction),
-        "magnitude_zh": magnitude_zh(magnitude),
+        "fact_kind_zh": fact_kind_zh(fact_kind),
     }
     if not full:
         return summary
     novelty = v.get("novelty")
-    audience = v.get("audience")
     # The read shape `editorial_read_shape` produces, or nothing at all for a degraded/OI/liquidation
     # verdict that has no editorial sibling. `source_authority` survives a taxonomy failure because it is
     # a code fact about the evidence, so the detail keeps showing it while the classification is absent.
     e: Mapping[str, Any] = editorial or {}
     taxonomy = e.get("taxonomy")
-    relevance = e.get("relevance")
     return summary | {
         "scope": scope,
         "novelty": novelty,
-        "audience": audience,
+        "evidence_ref": v.get("evidence_ref"),
         "confidence": optional_float(v.get("confidence")),
         "taxonomy": taxonomy_public(taxonomy) if isinstance(taxonomy, Mapping) else None,
         "taxonomy_status": e.get("taxonomy_status"),
         "taxonomy_error_code": e.get("taxonomy_error_code"),
         "source_authority": e.get("source_authority"),
         "source_authority_zh": source_authority_zh(e.get("source_authority")),
-        "relevance": dict(relevance) if isinstance(relevance, Mapping) else None,
         "why_zh": v.get("why_zh"),
         "assets": _triage_assets(v.get("assets")),
         "scope_zh": scope_zh(scope),
         "novelty_zh": novelty_zh(novelty),
-        "audience_zh": audience_zh(audience),
         "decision_zh": decision_zh(final_decision),
     }
 
@@ -798,7 +797,6 @@ def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
             "taxonomy": taxonomy_public(taxonomy) if taxonomy is not None else None,
             "taxonomy_status": editorial["taxonomy_status"],
             "taxonomy_error_code": editorial["taxonomy_error_code"],
-            "relevance": dict(editorial["relevance"]),
         }
     return {
         "stage": row["stage"],
@@ -806,7 +804,7 @@ def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
         "judgment_contract_version": row["judgment_contract_version"],
         "judgment_origin": row["judgment_origin"],
         "judgment_sha256": row["scored_judgment_sha256"],
-        "verdict": dict(row.get("verdict") or {}),
+        "verdict": triage_verdict_read_shape(row.get("verdict")),
         "model_editorial": model_editorial,
         "rule_baseline_decision": row["rule_baseline_decision"],
         "final_decision": row["final_decision"],

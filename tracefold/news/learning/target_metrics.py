@@ -36,7 +36,7 @@ from typing import Any, Final, Literal
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from ..models import Novelty
+from ..models import FactKind, Novelty
 from ..taxonomy import ModelTaxonomyV1, ReviewTaxonomyV1
 from .card_lint import lint_reader_card
 from .objective import (
@@ -447,7 +447,7 @@ def asset_grounding_outcome(
 
 
 class _ObservedSemantics(BaseModel):
-    """The three fields the understanding ruler reads, from whichever shape the caller holds.
+    """The four fields the understanding ruler reads, from whichever shape the caller holds.
 
     A GEPA prediction carries a typed `EventSemantics`; a baseline or a release observation carries the
     persisted `TriageVerdict`, which is a wider shape with the same three answers in it. Validating the
@@ -460,6 +460,9 @@ class _ObservedSemantics(BaseModel):
     novelty: Novelty
     restates: int = -1
     assets: tuple[dict[str, Any], ...] = ()
+    # `None` only for a `news_judgment_v2` verdict replayed out of the frozen corpus, which states no
+    # kind; the ruler then scores it as a miss against whatever the reviewer accepted (#675 §1).
+    fact_kind: FactKind | None = None
 
 
 def _observed_semantics(value: Any) -> _ObservedSemantics:
@@ -661,18 +664,14 @@ def understanding_metric(
     raw_semantics = (
         raw_semantics.model_dump(mode="json") if isinstance(raw_semantics, BaseModel) else dict(raw_semantics or {})
     )
-    relevance = dict(raw_semantics.get("relevance") or getattr(pred, "relevance", None) or {})
     from .supervision import SEMANTIC_FIELDS
 
+    # Every remaining semantic dimension is a field of the answer itself (#675 §1): `asset_grounding`
+    # is scored above against typed claims, and `direction` and `fact_kind` are exact comparisons here.
     for dimension, expected_value in dict(getattr(gold, "gold_semantics", {}) or {}).items():
         field = SEMANTIC_FIELDS[dimension]
-        owner = raw_semantics if dimension in {"direction", "magnitude"} else relevance
-        observed_value = owner.get(field)
-        match = (
-            (set(expected_value) == set(observed_value or ()))
-            if dimension in {"trade_channels", "trade_affected_markets"}
-            else observed_value == expected_value
-        )
+        observed_value = raw_semantics.get(field)
+        match = observed_value == expected_value
         scored.append(float(match))
         objectives[f"{dimension}_accuracy"] = float(match)
         components[f"{dimension}_accuracy"] = float(match)
@@ -972,7 +971,7 @@ def target_metric_receipt(
         raise ValueError(f"news_learning_target_unknown:{target}")
     scalar = {
         "classification": "mean(stated taxonomy axes)",
-        "understanding": "mean(accepted typed asset, novelty, direction, magnitude and relevance dimensions)",
+        "understanding": "mean(accepted typed asset, novelty, direction and fact_kind dimensions)",
         "explanation": "f1(support,coverage) or support_only; measured mask per case"
         if judge is not None
         else "literal coverage or card lint proxy; no evidence support measurement",

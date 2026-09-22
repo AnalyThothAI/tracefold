@@ -28,7 +28,7 @@ from typing import Any, Literal
 
 import pytest
 
-from tests.support.news_judgment import news_taxonomy, trade_relevance
+from tests.support.news_judgment import news_taxonomy
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerNewsDatabase
 from tracefold.news.artifact_identity import canonical_sha
@@ -779,9 +779,7 @@ def _judgment(
     usage: ProgramUsage | None = None,
 ) -> SemanticJudgment:
     verdict_payload = verdict.model_dump(mode="json") if hasattr(verdict, "model_dump") else dict(verdict)
-    editorial = EditorialEnvelope.issue(
-        relevance=trade_relevance(), source_authority="unknown", taxonomy=news_taxonomy()
-    )
+    editorial = EditorialEnvelope.issue(source_authority="unknown", taxonomy=news_taxonomy())
     default_calls = (
         _program_call(
             predictor="event_semantics",
@@ -1066,7 +1064,7 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
             assets=[],
             direction="bullish",
             scope="single_name",
-            magnitude=1,
+            fact_kind="statement",
             confidence=0.6,
             headline_zh="ok",
         )
@@ -1127,7 +1125,7 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
             assets=[],
             direction="bullish",
             scope="single_name",
-            magnitude=1,
+            fact_kind="statement",
             confidence=0.6,
             headline_zh="ok",
         ),
@@ -1336,9 +1334,8 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
                     "assets": [{"symbol": "NVDA", "market_type": "equity", "role": "primary"}],
                     "direction": "bullish",
                     "scope": "single_name",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "confidence": 0.8,
-                    "audience": "us_equity",
                     "headline_zh": "英伟达投资",
                     "why_zh": "投资扩大算力供给。",
                 },
@@ -1614,7 +1611,7 @@ def test_deliverer_passes_macro_scope_and_shows_no_badge_for_a_review_that_will_
             "final_decision": "escalate",
             "verdict": {
                 "direction": "bearish",
-                "magnitude": 3,
+                "fact_kind": "state_change",
                 "scope": "macro",
                 "novelty": "progression",
                 "headline_zh": "美国就业基准继续下修",
@@ -1661,7 +1658,7 @@ def test_telegram_sends_a_progression_before_llm_association_review_then_edits_w
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bearish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "novelty": "progression",
                     "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
@@ -1754,7 +1751,7 @@ def test_a_told_entry_with_a_new_upstream_field_still_reaches_the_reader() -> No
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "macro",
                     "novelty": "progression",
                     "headline_zh": "巴拿马运河拥堵迫使液化气油轮绕行",
@@ -1807,7 +1804,7 @@ def test_telegram_removes_an_unverified_previous_headline_and_marks_the_reason()
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "macro",
                     "novelty": "progression",
                     "headline_zh": "巴拿马运河拥堵迫使液化气油轮绕行",
@@ -1863,7 +1860,7 @@ def test_telegram_downgrades_a_confirmed_progression_without_a_receipted_parent_
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "novelty": "progression",
                     "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
@@ -1916,7 +1913,7 @@ def test_single_name_is_sent_first_then_edited_with_a_fresh_cross_venue_contract
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "novelty": "new_fact",
                     "headline_zh": "MetaLight（02605.HK）公布中期业绩",
@@ -1992,7 +1989,7 @@ def test_single_name_without_a_grounded_asset_is_edited_when_the_title_resolves_
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "novelty": "new_fact",
                     "headline_zh": "MetaLight（02605.HK）公布中期业绩",
@@ -2063,7 +2060,7 @@ def test_single_name_without_a_grounded_asset_is_edited_to_say_so_after_authorit
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "novelty": "new_fact",
                     "headline_zh": "MetaLight（02605.HK）公布中期业绩",
@@ -2113,7 +2110,7 @@ def test_the_untradeable_notice_survives_all_five_catalogues_and_reaches_the_sen
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "novelty": "new_fact",
                     "headline_zh": "MetaLight（02605.HK）公布中期业绩",
@@ -2155,7 +2152,7 @@ def test_title_only_acronym_is_kept_when_five_venue_absence_is_not_deletion_safe
                 "final_decision": "push",
                 "verdict": {
                     "direction": "neutral",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "novelty": "new_fact",
                     "headline_zh": "OpenAI 发布研究更新",
@@ -2196,7 +2193,7 @@ def test_single_name_is_kept_when_even_one_catalogue_check_is_incomplete() -> No
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "headline_zh": "MetaLight（02605.HK）公布中期业绩",
                     "assets": [{"symbol": "2605", "market_type": "equity", "role": "primary"}],
@@ -2248,7 +2245,7 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
             "final_decision": "push",
             "verdict": {
                 "direction": "bullish",
-                "magnitude": 2,
+                "fact_kind": "state_change",
                 "headline_zh": "英伟达",
                 "assets": [
                     {"symbol": "NVDA", "market_type": "equity", "role": "primary"},
@@ -2323,7 +2320,7 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
             "final_decision": "push",
             "verdict": {
                 "direction": "bullish",
-                "magnitude": 2,
+                "fact_kind": "state_change",
                 "headline_zh": "比特币与以太坊走强",
                 "assets": [
                     {"symbol": "BTC", "market_type": "crypto", "role": "primary"},
@@ -2418,7 +2415,7 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
             "final_decision": "push",
             "verdict": {
                 "direction": "bullish",
-                "magnitude": 2,
+                "fact_kind": "state_change",
                 "headline_zh": "微软事件",
                 "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
             },
@@ -2503,7 +2500,7 @@ def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_me
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "headline_zh": "微软事件",
                     "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
                 },
@@ -2668,7 +2665,7 @@ def test_pending_enrichment_does_not_block_the_next_telegram_initial_send() -> N
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "headline_zh": "微软事件",
                     "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
                 },
@@ -2739,7 +2736,7 @@ def test_delivery_drain_waits_for_native_edit_before_closing_the_sender() -> Non
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "headline_zh": "微软事件",
                     "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
                 },
@@ -2801,7 +2798,7 @@ def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admissi
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bullish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "headline_zh": "微软事件",
                     "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
                 },
@@ -2879,9 +2876,8 @@ def _quoted_delivery_news() -> RecordingNews:
                 "restates": -1,
                 "direction": "bullish",
                 "scope": "single_name",
-                "magnitude": 2,
+                "fact_kind": "state_change",
                 "confidence": 0.8,
-                "audience": "crypto",
                 "headline_zh": "DOGE 现货 ETF 通过",
                 "why_zh": "现货通道打开。",
                 "assets": [{"symbol": "DOGE", "role": "primary", "market_type": "crypto"}],
@@ -2935,7 +2931,7 @@ def test_deliverer_does_not_price_an_ordinary_ungrounded_model_asset() -> None:
             "program_version": "program-v4",
             "verdict": {
                 "direction": "bullish",
-                "magnitude": 2,
+                "fact_kind": "state_change",
                 "headline_zh": "模型提到了 DOGE",
                 "assets": [{"symbol": "DOGE", "role": "primary"}],
             },
@@ -3243,7 +3239,7 @@ def _model_verdict(**overrides: Any) -> Any:
         "assets": [{"symbol": "NVDA", "market_type": "equity", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
-        "magnitude": 2,
+        "fact_kind": "state_change",
         "confidence": 0.8,
         "headline_zh": "英伟达投资 OpenAI",
         "why_zh": "投资扩大算力供给。",
@@ -3303,7 +3299,7 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     assert inserted["program_version"] == PROGRAM_VERSION
     assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
-    assert inserted["model_editorial"]["editorial_contract_version"] == "news_editorial_v3"
+    assert inserted["model_editorial"]["editorial_contract_version"] == "news_editorial_v4"
     assert inserted["model_editorial"]["taxonomy"]["taxonomy_version"] == "news_taxonomy_v1"
     assert inserted["trace"]["agent_assignment"] == {
         "activation_id": activation_id,
@@ -3370,7 +3366,6 @@ def _ledger_row(
         "comparison_title": headline,
         "comparison_fingerprint": f"fingerprint:{event_id}",
         "dedupe_family": "general",
-        "magnitude": 2,
         "direction": "bullish",
         "headline_zh": headline,
         "why_zh": "已有读者收据。",
@@ -3418,7 +3413,7 @@ def test_triage_told_rows_carry_the_instruments_so_the_listing_exemption_can_fir
             _model_verdict(
                 novelty="restatement",
                 restates=0,
-                magnitude=1,
+                fact_kind="state_change",
                 assets=[{"symbol": "BICO", "market_type": "crypto", "role": "primary"}],
                 headline_zh="Upbit 将上线 BICO",
             )
@@ -3676,7 +3671,7 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     trace = row["trace"]
     assert trace["reasked_after_told_change"] is True
     assert trace["first_judgment"]["verdict"]["novelty"] == "new_fact"
-    assert trace["first_judgment"]["editorial"]["relevance"]["reader_value"] == "realtime"
+    assert trace["first_judgment"]["verdict"]["fact_kind"] == "state_change"
     assert trace["first_input_sha256"] == first_trace.context_sha256
     assert trace["told_count"] == 1 and trace["restates_event_id"] == "ev-just-pushed"
     # The verdict-owning trace is the re-ask trace; the stale trace remains a
@@ -3730,7 +3725,7 @@ def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> 
         storyline_key="none",
     )
     cards = iter((initial, refreshed))
-    verdict = _model_verdict(magnitude=1)
+    verdict = _model_verdict(fact_kind="statement")
     judge = _ScriptedSemanticJudge([verdict, verdict])
     news = RecordingNews(
         get_verdict=None,
@@ -3774,7 +3769,7 @@ def test_triage_evidence_reask_failure_degrades_against_the_refreshed_evidence()
         storyline_key="none",
     )
     cards = iter((initial, refreshed))
-    first_verdict = _model_verdict(magnitude=3, direction="bearish", scope="macro")
+    first_verdict = _model_verdict(fact_kind="state_change", direction="bearish", scope="macro")
 
     class _EvidenceReaskFails:
         def __init__(self) -> None:
@@ -3884,7 +3879,7 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     )
     bus = FakeBus()
 
-    first_verdict = _model_verdict(novelty="new_fact", magnitude=3, direction="bearish", scope="macro")
+    first_verdict = _model_verdict(novelty="new_fact", fact_kind="state_change", direction="bearish", scope="macro")
     first_trace = _program_trace(
         context_sha256="a" * 64,
         verdict_sha256=canonical_sha(first_verdict.model_dump(mode="json")),
@@ -3958,7 +3953,7 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     assert len(model.inputs) == 2
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["degraded"] is False and inserted["error_code"] is None
-    assert inserted["final_decision"] == "push" and inserted["verdict"]["magnitude"] == 3
+    assert inserted["final_decision"] == "push" and inserted["verdict"]["fact_kind"] == "state_change"
     assert inserted["verdict"] == first_verdict.model_dump(mode="json")
     trace = inserted["trace"]
     assert trace["reask_failed"] == "news_program_timeout"
@@ -4801,7 +4796,7 @@ def test_a_progression_review_that_has_not_answered_cannot_hold_the_first_delive
                 "final_decision": "push",
                 "verdict": {
                     "direction": "bearish",
-                    "magnitude": 2,
+                    "fact_kind": "state_change",
                     "scope": "single_name",
                     "novelty": "progression",
                     "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",

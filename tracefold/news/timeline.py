@@ -18,7 +18,7 @@ from .outcome import (
     direction_zh,
     error_code_zh,
     event_outcome,
-    magnitude_zh,
+    fact_kind_zh,
     override_rule_zh,
     scope_zh,
     storyline_key_zh,
@@ -164,7 +164,6 @@ def event_timeline(
         verdict = dict(latest.get("verdict") or {})
         model_editorial = latest.get("model_editorial") if isinstance(latest.get("model_editorial"), Mapping) else None
         taxonomy = model_editorial.get("taxonomy") if model_editorial is not None else None
-        relevance = model_editorial.get("relevance") if model_editorial is not None else None
         degraded = bool(latest.get("degraded"))
         if degraded:
             triage_summary = "模型不可用：" + (error_code_zh(latest.get("error_code")) or "未知原因") + "，按规则兜底"
@@ -172,7 +171,7 @@ def event_timeline(
             bits = [str(verdict.get("headline_zh") or "").strip() or "（无标题）"]
             facts_bits = [
                 direction_zh(verdict.get("direction")),
-                magnitude_zh(verdict.get("magnitude")),
+                fact_kind_zh(verdict.get("fact_kind")),
                 event_family_zh(taxonomy.get("event_family")) if isinstance(taxonomy, Mapping) else "",
             ]
             bits.append(" / ".join(b for b in facts_bits if b))
@@ -191,16 +190,15 @@ def event_timeline(
                     "judgment_contract_version": latest.get("judgment_contract_version"),
                     "event_kind": event.get("event_kind"),
                     "taxonomy": taxonomy,
-                    "relevance": relevance,
                     "direction": verdict.get("direction"),
-                    "magnitude": verdict.get("magnitude"),
+                    "fact_kind": verdict.get("fact_kind"),
                     "scope": verdict.get("scope"),
                     "scope_zh": scope_zh(verdict.get("scope")),
                     "confidence": verdict.get("confidence"),
                     "assets": verdict.get("assets"),
                     "headline_zh": verdict.get("headline_zh"),
                     "why_zh": verdict.get("why_zh"),
-                    "audience": verdict.get("audience"),
+                    "evidence_ref": verdict.get("evidence_ref"),
                     "program_version": latest.get("program_version"),
                     "program_sha256": latest.get("program_sha256"),
                     "policy_version": latest.get("policy_version"),

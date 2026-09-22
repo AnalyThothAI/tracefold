@@ -48,20 +48,18 @@ def test_single_axis_review_to_plan_example_and_metric() -> None:
     assert result.objective_scores == {"change_state_accuracy": 1}
 
 
-def test_action_only_does_not_enter_component_optimizer_but_relevance_does() -> None:
+def test_action_only_does_not_enter_component_optimizer_but_fact_kind_does() -> None:
     action = {"should_push": "must_hold", "dimensions": {}}
     assert "understanding" not in project_supervision(action)["targets"]
-    correction = {"dimensions": {"reader_value": "fail"}, "expected": {"reader_value": "background"}}
+    correction = {"dimensions": {"fact_kind": "fail"}, "expected": {"fact_kind": "official_measure"}}
     ep = _episode(1, target=True).model_copy(
         update={"accepted_review": correction, "applicable_targets": ("understanding",)}
     )
     assert "understanding" in project_supervision(correction)["targets"]
     example = _understanding_example(ep)
-    result = understanding_metric(
-        example, dspy.Prediction(semantics={**_semantics(), "relevance": {"reader_value": "actionable"}})
-    )
+    result = understanding_metric(example, dspy.Prediction(semantics={**_semantics(), "fact_kind": "statement"}))
     assert result.score == 0
-    assert result.components["reader_value_accuracy"] == 0
+    assert result.components["fact_kind_accuracy"] == 0
 
 
 def test_retrieval_miss_does_not_hide_an_entity_error() -> None:

@@ -21,7 +21,8 @@ from typing import Any
 
 import pytest
 
-from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
+from tests.news.test_news_policy_v16_replay import proxy_fact_kind
+from tests.support.news_judgment import news_taxonomy, scored_judgment
 from tracefold.news.events import grounding as grounding_module
 from tracefold.news.events.gate import grounded_assets
 from tracefold.news.events.grounding import (
@@ -44,7 +45,7 @@ FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "grounding
 # The same delivered day recorded for the policy replay (#675 PR-1), which carries the relevance and
 # taxonomy columns `decide()` reads. Joined by event id so the delivery consequence of a demotion is
 # measured through the production decision rather than asserted from the rule's own point of view.
-POLICY_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "policy_v15_replay_24h.jsonl"
+POLICY_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "policy_v16_replay_24h.jsonl"
 NOW = 1_800_000_000_000
 # The 上期所 margin notice: the provider tagged gold and silver on a frame that adjusts copper, aluminium,
 # zinc and lead, and the model made both its primaries. It is the one delivered card whose own primary
@@ -211,18 +212,9 @@ def test_the_program_demotes_a_contradicted_primary_and_keeps_the_name() -> None
             ],
             "direction": "neutral",
             "scope": "single_name",
-            "magnitude": 1,
+            "fact_kind": "state_change",
+            "evidence_ref": "c1",
             "confidence": 0.9,
-            "audience": "none",
-            "relevance": {
-                "impact_breadth": "single_instrument",
-                "tradability": "direct",
-                "surprise": "unscheduled",
-                "development_delta": "state_change",
-                "channels": ["commodity_supply"],
-                "affected_markets": ["single_asset"],
-                "reader_value": "background",
-            },
         }
     )
     demoted = _demote_contradicted_primaries(semantics, {"SILVER": ("commodity",)})
@@ -356,12 +348,12 @@ def _decide_row(row: dict[str, Any], assets: list[dict[str, Any]]) -> tuple[str,
             assets=assets,
             direction=row["direction"],
             scope=row["scope"],
-            magnitude=row["magnitude"],
+            fact_kind=proxy_fact_kind(row),
+            evidence_ref="c1",
             confidence=0.8,
             headline_zh=row["headline_zh"][:60],
             why_zh="",
         ),
-        relevance=trade_relevance(**row["relevance"]),
         taxonomy=news_taxonomy(
             event_family=row["event_family"],
             change_state=row["change_state"],
@@ -414,8 +406,8 @@ def test_a_demoted_primary_reaches_the_reader_as_a_dropped_card(rows: list[dict[
         ]
         outcomes.append((_decide_row(source, source["assets"]), _decide_row(source, after)))
     assert outcomes == [
-        (("push", "trade_relevance_realtime"), ("drop", "single_name_without_instrument")),
-        (("push", "trade_relevance_realtime"), ("drop", "single_name_without_instrument")),
+        (("push", "fact_kind_state_change"), ("drop", "single_name_without_instrument")),
+        (("push", "fact_kind_state_change"), ("drop", "single_name_without_instrument")),
     ]
 
 
@@ -427,12 +419,12 @@ def test_the_timeline_publishes_the_reading_beside_the_assets() -> None:
         "novelty": "new_fact",
         "direction": "neutral",
         "scope": "single_name",
-        "magnitude": 1,
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.9,
         "assets": [{"symbol": "SILVER", "role": "mentioned", "market_type": "unknown"}],
         "headline_zh": "标题",
         "why_zh": "说明",
-        "audience": "none",
     }
     block = {"policy": "news_gate_grounding_v1", "assets": [reading.as_trace()]}
     _, steps = event_timeline(

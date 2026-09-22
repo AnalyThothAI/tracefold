@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import unicodedata
-from collections.abc import Mapping
-from typing import Any, Literal, cast
+from typing import Literal
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, model_validator
 
-from ..models import TriageAsset
+from ..models import FactKind, TriageAsset
 from ..taxonomy import ModelTaxonomyV1
-from .contracts import TradeRelevanceV1
 from .runtime import _ExactModel
 
 
 class EventSemantics(_ExactModel):
-    _raw_channels: tuple[str, ...] | None = PrivateAttr(default=None)
-    _raw_affected_markets: tuple[str, ...] | None = PrivateAttr(default=None)
+    """What the model observed in one bounded Event, and nothing about what the reader should get.
+
+    #675 §1 deleted the other half. `TradeRelevanceV1`'s seven codes and `magnitude` were the model
+    answering a policy question -- seven days of 8950 judgments collapsed them into one bit, and the
+    seed had to teach a threshold ("at least 5% on the day") to make them answerable at all. Both the
+    threshold and the answer belong in `triage_rules.decide()`, where they can be replayed, versioned
+    and argued with. What survives is what a reader of the text can check: which instruments it names,
+    whether it is new against the ledger it was shown, which way it reads, how wide its surface is, and
+    `fact_kind` -- what kind of new thing the text states.
+    """
 
     novelty: Literal["new_fact", "progression", "restatement"]
     restates: int = Field(
@@ -30,28 +36,21 @@ class EventSemantics(_ExactModel):
     assets: tuple[TriageAsset, ...] = Field(default=(), max_length=8)
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
     scope: Literal["macro", "sector", "single_name"]
-    magnitude: int = Field(ge=0, le=3)
+    fact_kind: FactKind = Field(
+        description=(
+            "REQUIRED. What kind of new thing this text states, read off the text itself: state_change | "
+            "new_quantity | level_crossed | period_record | quantified_flow | official_measure | statement | "
+            "recap | schedule | promotion."
+        )
+    )
+    evidence_ref: str = Field(
+        min_length=1,
+        max_length=64,
+        description=(
+            "REQUIRED. The ref_id of the current_evidence or related_evidence span that states the fact_kind."
+        ),
+    )
     confidence: float = Field(ge=0.0, le=1.0)
-    audience: Literal["crypto", "us_equity", "macro", "none"] = "none"
-    relevance: TradeRelevanceV1
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def _retain_pre_normalization_code_order(cls, value: Any, handler: Any) -> EventSemantics:
-        semantics = cast(EventSemantics, handler(value))
-        if not isinstance(value, Mapping) or not isinstance(value.get("relevance"), Mapping):
-            return semantics
-        relevance = value["relevance"]
-        channels = relevance.get("channels")
-        markets = relevance.get("affected_markets")
-        if isinstance(channels, (list, tuple)) and all(isinstance(item, str) for item in channels):
-            semantics._raw_channels = tuple(channels)
-        if isinstance(markets, (list, tuple)) and all(isinstance(item, str) for item in markets):
-            semantics._raw_affected_markets = tuple(markets)
-        return semantics
-
-    def raw_relevance_codes(self, field: Literal["channels", "affected_markets"]) -> tuple[str, ...] | None:
-        return self._raw_channels if field == "channels" else self._raw_affected_markets
 
 
 # #522 D4: the 9 h receipt after the #504 deploy shipped three cards whose `why_zh` was empty and one

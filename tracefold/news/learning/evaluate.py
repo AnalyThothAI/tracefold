@@ -343,7 +343,7 @@ def _target_release_evidence(
             editorial = _output_editorial(dict(output)) or {}
             predictions = {
                 "classification": dspy.Prediction(taxonomy=editorial.get("taxonomy"), editorial=dict(editorial)),
-                "understanding": dspy.Prediction(semantics=verdict or None, relevance=editorial.get("relevance")),
+                "understanding": dspy.Prediction(semantics=verdict or None),
                 "explanation": dspy.Prediction(card=verdict or None),
             }
             for target in LEARNING_TARGETS:

@@ -35,7 +35,6 @@ from .objective import (
     _DELIVERY_DIMENSIONS,
     _FREE_TEXT_DIMENSIONS,
     _NO_GOLD,
-    _RELEVANCE_DIMENSIONS,
     _SEMANTICS_DIMENSIONS,
     DevelopmentEpisode,
     _gold_value,
@@ -65,7 +64,10 @@ from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 # v11 (#651 §8): the taxonomy and asset comparisons moved to `learning/target_metrics.py`, and the
 # taxonomy diagnostic reports that module's masked partial score rather than a plain mean over four axes.
 # The number itself moves on a partial Gold, so the label moves with it.
-METRIC_ID = "tracefold.news.production_action_trade_relevance_v11"
+# v12 (#675 §1): the `trade_relevance` component is deleted with the seven fields it scored, and its
+# weight moves to `semantics_novelty`, which is where the observation that replaced them -- `fact_kind`
+# -- is labelled. The number this metric calls "better" therefore changed, which is why the id did.
+METRIC_ID = "tracefold.news.production_action_fact_kind_v12"
 
 
 # The five components of the candidate-selection score. Code-owned and content-addressed: they are hashed
@@ -73,14 +75,12 @@ METRIC_ID = "tracefold.news.production_action_trade_relevance_v11"
 # divides by the weight mass actually present, so `reader_card_lint` does not take mass away from the four
 # reviewer-labelled components — it adds a fifth opinion that is available on every case.
 _ACTION_WEIGHT = 0.45
-_RELEVANCE_WEIGHT = 0.35
-_SEMANTICS_WEIGHT = 0.10
+_SEMANTICS_WEIGHT = 0.45
 _CARD_WEIGHT = 0.10
 _CARD_LINT_WEIGHT = 0.10
 
 COMPONENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "final_action": ("should_push",),
-    "trade_relevance": _RELEVANCE_DIMENSIONS,
     "semantics_novelty": (*_SEMANTICS_DIMENSIONS, "novelty", "taxonomy"),
     "reader_card": _CARD_DIMENSIONS,
     "reader_card_lint": SCORED_CHECKS,
@@ -91,7 +91,6 @@ COMPONENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
 # an EventSemantics-scored field. Publishing this as "owner" would invite a join with the stored
 # `first_bad_owner` that is wrong for every Gate-owned dimension.
 LABEL_GROUP: dict[str, str] = {
-    **{name: "event_semantics" for name in _RELEVANCE_DIMENSIONS},
     **{name: "event_semantics" for name in _SEMANTICS_DIMENSIONS},
     **{name: "reader_card" for name in _CARD_DIMENSIONS},
     # Scored by nobody — `TriageVerdict` has no timeliness field — but the label is still corpus truth, and
@@ -106,17 +105,10 @@ _EVIDENCE_DIMENSIONS: Final[frozenset[str]] = frozenset({"factual_fidelity", "wh
 _DIMENSION_FIELD = {
     "asset_grounding": "assets",
     "direction": "direction",
-    "magnitude": "magnitude",
+    "fact_kind": "fact_kind",
     "headline_fidelity": "headline_zh",
     "why_support": "why_zh",
     "why_value": "why_zh",
-    "trade_impact_breadth": "impact_breadth",
-    "trade_tradability": "tradability",
-    "trade_surprise": "surprise",
-    "trade_development_delta": "development_delta",
-    "trade_channels": "channels",
-    "trade_affected_markets": "affected_markets",
-    "reader_value": "reader_value",
 }
 
 
@@ -250,7 +242,6 @@ def _component_diagnostics(
     *,
     should_push: str,
     objective_guard: str,
-    relevance_anchors: Sequence[tuple[str, str, Any]],
     semantics_anchors: Sequence[tuple[str, str, Any]],
     card_anchors: Sequence[tuple[str, str, Any]],
     expected_novelty: str,
@@ -265,13 +256,11 @@ def _component_diagnostics(
     novelty_n = int(expected_novelty != "uncertain")
     taxonomy_n = int(taxonomy_gold_present)
     anchors = {
-        "trade_relevance": tuple(relevance_anchors),
         "semantics_novelty": tuple(semantics_anchors),
         "reader_card": tuple(card_anchors),
     }
     weights = {
         "final_action": _ACTION_WEIGHT,
-        "trade_relevance": _RELEVANCE_WEIGHT,
         "semantics_novelty": _SEMANTICS_WEIGHT,
         "reader_card": _CARD_WEIGHT,
         "reader_card_lint": _CARD_LINT_WEIGHT,
@@ -480,13 +469,7 @@ def accepted_review_metric(
         if production_raw
         else None
     )
-    production_verdict = production_judgment.verdict.model_dump(mode="json") if production_judgment is not None else {}
-    production_relevance = (
-        production_judgment.editorial.relevance.model_dump(mode="json")
-        if production_judgment is not None and production_judgment.editorial.relevance is not None
-        else {}
-    )
-    production = {**production_verdict, **production_relevance}
+    production = production_judgment.verdict.model_dump(mode="json") if production_judgment is not None else {}
     projection = dict(gold.policy_metric or {})
     dimensions = dict(review.get("dimensions") or {})
     should_push = str(review.get("should_push") or "uncertain")
@@ -506,11 +489,6 @@ def accepted_review_metric(
     # Early schema/instruction gates have no exact DecisionResult to attribute. ReaderCard action feedback starts
     # disabled and is enabled below only when the live decision proves its own headline caused a seen throttle.
     action_feedback_allowed = pred_name != "reader_card"
-    relevance_anchors = (
-        ()
-        if objective_guard in {"listing_deterministic", "telemetry_deterministic"}
-        else _scoring_anchors(dimensions, _RELEVANCE_DIMENSIONS, expected)
-    )
     semantics_anchors = _scoring_anchors(dimensions, _SEMANTICS_DIMENSIONS, expected)
     card_anchors = _scoring_anchors(dimensions, _CARD_DIMENSIONS, expected)
     expected_novelty = str((review.get("novelty") or {}).get("judgment") or "uncertain")
@@ -532,7 +510,6 @@ def accepted_review_metric(
     component_diagnostics = _component_diagnostics(
         should_push=should_push,
         objective_guard=objective_guard,
-        relevance_anchors=relevance_anchors,
         semantics_anchors=semantics_anchors,
         card_anchors=card_anchors,
         expected_novelty=expected_novelty,
@@ -545,7 +522,7 @@ def accepted_review_metric(
     effective_weight_mass = round(
         sum(float(diagnostic["effective_weight_mass"]) for diagnostic in component_diagnostics.values()), 6
     )
-    included_anchors = (*relevance_anchors, *semantics_anchors, *card_anchors)
+    included_anchors = (*semantics_anchors, *card_anchors)
     scored_names = tuple(name for name, _, _ in included_anchors)
     labelled_n = len(included_anchors) + novelty_denominator + int(taxonomy_gold_present)
     gold_scored = (
@@ -575,8 +552,6 @@ def accepted_review_metric(
         action_gates = {
             "must_push_miss",
             "must_hold_send",
-            "background_realtime_send",
-            "relevance_inconsistent",
             "known_duplicate_leak",
         }
         if pred_name == "event_semantics" and gate in _CARD_LINT_GATES:
@@ -677,18 +652,12 @@ def accepted_review_metric(
         "production_rule": decision.override_rule or "",
         "production_throttled_by": decision.throttled_by or "",
     }
-    relevance = editorial.relevance.model_dump(mode="json") if editorial.relevance is not None else {}
-    observed = {**verdict, **relevance}
+    observed = dict(verdict)
 
     # What the candidate did, dimension by dimension. Computed before the gates, because a gated case still
     # produced a verdict and its dimensions are still comparable — the gate decides the score, not whether
     # the candidate is observable.
     outcomes: list[tuple[str, str]] = []
-    relevance_component = (
-        None
-        if objective_guard in {"listing_deterministic", "telemetry_deterministic"}
-        else _component(dimensions, _RELEVANCE_DIMENSIONS, observed, production, expected, judge, outcomes)
-    )
     semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, observed, production, expected, judge, outcomes)
     card = _component(
         dimensions,
@@ -775,22 +744,6 @@ def accepted_review_metric(
             outcomes=outcomes,
             **decision_metadata,
         )
-    if objective_guard == "none" and relevance.get("reader_value") in {"background", "none"} and reaches_reader:
-        return _zero(
-            "Background material must not interrupt the reader without an objective guard.",
-            gate="background_realtime_send",
-            action=action,
-            outcomes=outcomes,
-            **decision_metadata,
-        )
-    if decision.override_rule == "trade_relevance_inconsistent":
-        return _zero(
-            "Trade relevance is internally inconsistent with the code-owned realtime eligibility contract.",
-            gate="relevance_inconsistent",
-            action=action,
-            outcomes=outcomes,
-            **decision_metadata,
-        )
     if expected_novelty == "restatement" and reaches_reader and objective_guard == "none":
         return _zero(
             "A known same-fact restatement leaked through the production duplicate policy.",
@@ -839,14 +792,12 @@ def accepted_review_metric(
     # leaves it so, and a zero would be a failing mark on a question nobody asked. The weighted sum below
     # already drops an absent component and renormalizes over the ones that are present.
     semantics_score = sum(semantics_subscores) / len(semantics_subscores) if semantics_subscores else None
-    relevance_score = relevance_component[0] if relevance_component else None
     card_score = card[0] if card else None
     # Always present unless the card tripped a gate above or no check applied: this is the whole point of
     # #306 Phase 1 — the ReaderCard side of the ruler no longer needs a reviewer to have labelled anything.
     card_lint_score = lint.score
     components = [
         (_ACTION_WEIGHT, action_score),
-        (_RELEVANCE_WEIGHT, relevance_score),
         (_SEMANTICS_WEIGHT, semantics_score),
         (_CARD_WEIGHT, card_score),
         (_CARD_LINT_WEIGHT, card_lint_score),
@@ -856,7 +807,7 @@ def accepted_review_metric(
 
     # ---- per-Predictor feedback: never ask a Predictor to repair what it cannot cause ----
     owned = (
-        _RELEVANCE_DIMENSIONS + _SEMANTICS_DIMENSIONS
+        _SEMANTICS_DIMENSIONS
         if pred_name == "event_semantics"
         else _CARD_DIMENSIONS
         if pred_name == "reader_card"
@@ -865,11 +816,12 @@ def accepted_review_metric(
     failed = sorted(name for name, label in dimensions.items() if label == "fail" and (owned is None or name in owned))
     if failed:
         feedback.append(f"Repair accepted failed dimensions: {', '.join(failed)}.")
-    # Name the target, not just the defect. A reflection LM told "magnitude is wrong" can only guess; told
-    # "the accepted magnitude is 2" it can write a rule. Only dimensions this Predictor owns are named.
+    # Name the target, not just the defect. A reflection LM told "fact_kind is wrong" can only guess; told
+    # "the accepted fact_kind is official_measure" it can write a rule. Only dimensions this Predictor
+    # owns are named.
     stated = [
         f"{name}={sorted(wanted) if isinstance(wanted, frozenset) else wanted}"
-        for name in (_RELEVANCE_DIMENSIONS + _SEMANTICS_DIMENSIONS + _CARD_DIMENSIONS)
+        for name in (_SEMANTICS_DIMENSIONS + _CARD_DIMENSIONS)
         if dimensions.get(name) == "fail"
         and (owned is None or name in owned)
         and (wanted := _gold_value(expected, name)) is not _NO_GOLD
@@ -887,7 +839,7 @@ def accepted_review_metric(
     # The lint's own repair instructions, routed to the Predictor that writes the copy. They are the only
     # feedback in this metric that needs no reviewer label at all, which is why they survive `pred_name`
     # filtering that drops everything else on an unlabelled case.
-    if lint.feedback and owned != _RELEVANCE_DIMENSIONS + _SEMANTICS_DIMENSIONS:
+    if lint.feedback and owned != _SEMANTICS_DIMENSIONS:
         feedback.extend(lint.feedback)
     correction = str(review.get("expected_correction") or "").strip()
     if correction and (pred_name is None or bool(failed)):
@@ -909,7 +861,6 @@ def accepted_review_metric(
         objective_guard=objective_guard,
         component_scores={
             "final_action": action_score,
-            "trade_relevance": relevance_score,
             "semantics_novelty": semantics_score,
             "reader_card": card_score,
             "reader_card_lint": card_lint_score,
@@ -990,13 +941,11 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
         # scored against, or move to a different review rubric without changing this hash.
         "weights": {
             "final_action": _ACTION_WEIGHT,
-            "trade_relevance": _RELEVANCE_WEIGHT,
             "semantics_novelty": _SEMANTICS_WEIGHT,
             "reader_card": _CARD_WEIGHT,
             "reader_card_lint": _CARD_LINT_WEIGHT,
         },
         "dimensions": {
-            "trade_relevance": list(_RELEVANCE_DIMENSIONS),
             "semantics_novelty": [
                 *_SEMANTICS_DIMENSIONS,
                 "novelty(accepted_field)",
@@ -1018,8 +967,6 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             "metric_judge_unavailable",
             *GATE_CHECKS,
             "ungrounded_primary_asset",
-            "background_realtime_send",
-            "relevance_inconsistent",
             "known_duplicate_leak",
         ],
         "action_source": {

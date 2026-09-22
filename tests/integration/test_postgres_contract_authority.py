@@ -11,7 +11,7 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import news_taxonomy
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TriageVerdict
-from tracefold.news.program.contracts import EditorialEnvelope, TradeRelevanceV1
+from tracefold.news.program.contracts import EditorialEnvelope
 from tracefold.news.review.desk import BlindPairwiseSubmission, EventRubricSubmission, _pairwise_virtual
 from tracefold.news.taxonomy import ModelTaxonomyV1
 
@@ -108,31 +108,17 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
         evidence_refs = [f"ref-{index:02d}-" + "x" * 493 for index in range(32)]
         note = "n" * 2_000
         dimensions |= {
-            "magnitude": "fail",
             "direction": "fail",
             "asset_grounding": "fail",
-            "trade_impact_breadth": "fail",
-            "trade_tradability": "fail",
-            "trade_surprise": "fail",
-            "trade_development_delta": "fail",
-            "trade_channels": "fail",
-            "trade_affected_markets": "fail",
-            "reader_value": "fail",
+            "fact_kind": "fail",
         }
         expected = {
-            "magnitude": 3,
             "direction": "bullish",
             "assets": [
                 {"symbol": f"ASSET{index:02d}".ljust(32, "X"), "market_type": "equity", "role": "primary"}
                 for index in range(16)
             ],
-            "trade_impact_breadth": "global_systemic",
-            "trade_tradability": "second_order",
-            "trade_surprise": "material_vs_expectation",
-            "trade_development_delta": "material_detail",
-            "trade_channels": ["rates", "liquidity", "risk_premium", "energy_supply"],
-            "trade_affected_markets": ["crypto_broad", "us_equity_broad", "rates", "fx"],
-            "reader_value": "escalate",
+            "fact_kind": "official_measure",
         }
     return EventRubricSubmission(
         should_push="should_hold",
@@ -142,7 +128,7 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
         evidence_refs=evidence_refs,
         expected=expected,
         # The four model axes (#651 §7.2). `news_taxonomy()` builds the persisted seven-key shape, whose
-        # `source_authority` is a code fact the reviewer never states and the v7 payload never carries.
+        # `source_authority` is a code fact the reviewer never states and the v8 payload never carries.
         taxonomy=ModelTaxonomyV1(
             subject_codes=(),
             event_family="regulatory_legal",
@@ -174,22 +160,13 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
         assets=[{"symbol": f"ASSET{index}", "market_type": "spot", "role": "mentioned"} for index in range(8)],
         direction="bullish",
         scope="sector",
-        magnitude=3,
+        fact_kind="official_measure",
+        evidence_ref="c1",
         confidence=1,
-        audience="crypto",
         headline_zh="跨语言契约",
         why_zh="数据库必须拒绝绕过应用模型的同一无效当前事实。",
     ).model_dump(mode="json")
     editorial = EditorialEnvelope.issue(
-        relevance=TradeRelevanceV1(
-            impact_breadth="sector",
-            tradability="direct",
-            surprise="material_vs_expectation",
-            development_delta="state_change",
-            channels=("commodity_demand",),
-            affected_markets=("us_equity_broad",),
-            reader_value="realtime",
-        ),
         source_authority="reputable_secondary",
         taxonomy=news_taxonomy(
             event_family="regulatory_legal",
@@ -215,9 +192,6 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
         editorial | {"editorial_origin": "operator"},
     ]
     editorial_corpus.extend({key: value for key, value in editorial.items() if key != removed} for removed in editorial)
-    editorial_relevance_extra = copy.deepcopy(editorial)
-    editorial_relevance_extra["relevance"]["retired"] = True
-    editorial_corpus.append(editorial_relevance_extra)
     editorial_taxonomy_extra = copy.deepcopy(editorial)
     editorial_taxonomy_extra["taxonomy"]["retired"] = True
     editorial_corpus.append(editorial_taxonomy_extra)
@@ -371,7 +345,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             row = conn.execute(
                 """
                     SELECT news_current_review_valid(
-                      'judgment', 'event', 'news_review_v7', 'reader_contract_v3',
+                      'judgment', 'event', 'news_review_v8', 'reader_contract_v3',
                       'event-current', 1, NULL, NULL,
                       %(should_push)s, %(dimensions)s, %(novelty)s,
                       %(first_bad_owner)s, %(evidence_refs)s, %(expected_correction)s, %(note)s,
@@ -410,7 +384,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             row = conn.execute(
                 """
                 SELECT news_current_review_valid(
-                  'judgment', 'pairwise', 'news_review_v7', 'reader_contract_v3',
+                  'judgment', 'pairwise', 'news_review_v8', 'reader_contract_v3',
                   NULL, NULL, NULL, 'pairwise-current',
                   NULL, '{}'::jsonb, '{}'::jsonb, NULL, %(evidence_refs)s, '', %(note)s,
                   %(selection)s, %(payload)s, NULL
@@ -467,7 +441,7 @@ def test_retained_json_validators_meet_native_insert_and_update_budget() -> None
                     CHECK (news_current_liquidation_metadata_valid(liquidation_metadata, true)),
                   selection jsonb NOT NULL,
                   review jsonb NOT NULL CHECK (news_current_review_valid(
-                    'judgment', 'event', 'news_review_v7', 'reader_contract_v3',
+                    'judgment', 'event', 'news_review_v8', 'reader_contract_v3',
                     'event-current', 1, NULL, NULL,
                     review ->> 'should_push', review -> 'dimensions', review -> 'novelty',
                     review ->> 'first_bad_owner', review -> 'evidence_refs',
@@ -496,49 +470,53 @@ def test_retained_json_validators_meet_native_insert_and_update_budget() -> None
         conn.close()
 
 
-def test_the_editorial_validator_holds_both_written_shapes_and_refuses_an_invented_third() -> None:
-    """#651 §5.3: what `news_verdicts.editorial` is allowed to be, stated at the database.
+def test_the_editorial_validator_holds_every_written_shape_and_refuses_an_invented_one() -> None:
+    """#651 §5.3 and #675 §1: what `news_verdicts.editorial` is allowed to be, stated at the database.
 
-    Three things have to be true at once. A `news_editorial_v3` judgment whose taxonomy Predictor failed
-    alone is accepted with a JSON-null taxonomy and a `news_program_*` code. A `news_editorial_v2`
-    document -- which the Python contract can no longer even produce -- keeps validating, because every
-    judgment written before this cut carries it, is audit truth, and is never rewritten. And nothing else
-    does: a status that disagrees with the taxonomy beside it, an error code from another vocabulary, or
-    a v2 document wearing the v3 version are all refused.
+    Four things have to be true at once. A `news_editorial_v4` judgment whose taxonomy Predictor failed
+    alone is accepted with a JSON-null taxonomy and a `news_program_*` code. A `news_editorial_v3`
+    document -- which carries the seven relevance codes this cut deleted -- and a `news_editorial_v2`
+    one -- which the Python contract could already no longer produce -- both keep validating, because
+    every judgment written before their cut carries them, is audit truth, and is never rewritten. And
+    nothing else does: a status that disagrees with the taxonomy beside it, an error code from another
+    vocabulary, or a document wearing another version's number are all refused.
     """
 
-    relevance = TradeRelevanceV1(
-        impact_breadth="single_instrument",
-        tradability="direct",
-        surprise="unscheduled",
-        development_delta="state_change",
-        channels=("exchange_access",),
-        affected_markets=("single_asset",),
-        reader_value="realtime",
-    )
+    relevance = {
+        "impact_breadth": "single_instrument",
+        "tradability": "direct",
+        "surprise": "unscheduled",
+        "development_delta": "state_change",
+        "channels": ["exchange_access"],
+        "affected_markets": ["single_asset"],
+        "reader_value": "realtime",
+    }
     axes = news_taxonomy(event_family="market_access", change_state="effective").model_dump(mode="json")
 
     def sealed(payload: dict[str, Any]) -> dict[str, Any]:
         return payload | {"editorial_sha256": canonical_sha(payload)}
 
-    available = EditorialEnvelope.issue(
-        relevance=relevance, source_authority="issuer_first_party", taxonomy=news_taxonomy()
-    ).model_dump(mode="json")
+    available = EditorialEnvelope.issue(source_authority="issuer_first_party", taxonomy=news_taxonomy()).model_dump(
+        mode="json"
+    )
     unavailable = EditorialEnvelope.issue(
-        relevance=relevance,
         source_authority="unknown",
         taxonomy=None,
         taxonomy_error_code="news_program_output_truncated",
     ).model_dump(mode="json")
+    historical_v3 = sealed(
+        {key: value for key, value in available.items() if key != "editorial_sha256"}
+        | {"editorial_contract_version": "news_editorial_v3", "relevance": relevance}
+    )
     historical_v2 = sealed(
         {
             "editorial_contract_version": "news_editorial_v2",
             "editorial_origin": "model",
-            "relevance": relevance.model_dump(mode="json"),
+            "relevance": relevance,
             "taxonomy": axes | {"source_authority": "reputable_secondary"},
         }
     )
-    accepted = [available, unavailable, historical_v2]
+    accepted = [available, unavailable, historical_v3, historical_v2]
     refused = [
         # A status that disagrees with the taxonomy beside it, in both directions.
         sealed({**unavailable, "taxonomy_status": "available"} | {"taxonomy_error_code": None}),
@@ -552,7 +530,7 @@ def test_the_editorial_validator_holds_both_written_shapes_and_refuses_an_invent
             {key: value for key, value in unavailable.items() if key != "editorial_sha256"}
             | {"taxonomy_error_code": "news_program_"}
         ),
-        # The v2 body under the v3 version, and the v3 body under the v2 version.
+        # The v2 body under the v3 version, and the v4 body under the v2 version.
         sealed(
             {key: value for key, value in historical_v2.items() if key != "editorial_sha256"}
             | {"editorial_contract_version": "news_editorial_v3"}
@@ -561,12 +539,21 @@ def test_the_editorial_validator_holds_both_written_shapes_and_refuses_an_invent
             {key: value for key, value in available.items() if key != "editorial_sha256"}
             | {"editorial_contract_version": "news_editorial_v2"}
         ),
+        # The relevance block is what separates v3 from v4, in both directions.
+        sealed(
+            {key: value for key, value in available.items() if key != "editorial_sha256"}
+            | {"editorial_contract_version": "news_editorial_v3"}
+        ),
+        sealed(
+            {key: value for key, value in historical_v3.items() if key != "editorial_sha256"}
+            | {"editorial_contract_version": "news_editorial_v4"}
+        ),
         # A v2 taxonomy whose authority is outside the vocabulary.
         sealed(
             {key: value for key, value in historical_v2.items() if key != "editorial_sha256"}
             | {"taxonomy": axes | {"source_authority": "a blog"}}
         ),
-        # A v3 authority outside the vocabulary.
+        # A v4 authority outside the vocabulary.
         sealed(
             {key: value for key, value in available.items() if key != "editorial_sha256"}
             | {"source_authority": "a blog"}
@@ -586,9 +573,10 @@ def test_the_editorial_validator_holds_both_written_shapes_and_refuses_an_invent
     finally:
         conn.close()
 
-    # And the Python contract agrees about the two shapes it is allowed to hold.
+    # And the Python contract agrees about the one shape it is allowed to hold.
     assert _python_persisted_form_accepts(EditorialEnvelope, available) is True
     assert _python_persisted_form_accepts(EditorialEnvelope, unavailable) is True
+    assert _python_persisted_form_accepts(EditorialEnvelope, historical_v3) is False
     assert _python_persisted_form_accepts(EditorialEnvelope, historical_v2) is False
 
 

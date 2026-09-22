@@ -88,6 +88,73 @@ DELIBERATE_CHANGES: Final[dict[str, tuple[tuple[str, str], ...]]] = {
     ),
     "market-smart-money-unlabelled-account": (("Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。", ""),),
     "market-liquidation-three-reports": (("最大单笔来源报告金额 $980000", "最大单笔来源报告金额 $1,000,000.00"),),
+    # A fifth reason, and the only one that touches a News card: #675 §1 deletes `magnitude`, so the
+    # facts line's third part is the kind of fact the card states rather than how much the model thought
+    # it mattered. Every News card in both corpora moves by exactly that one word, and the fixture
+    # verdicts were rewritten from `magnitude` to the `fact_kind` each card's own text states -- so the
+    # pairs below are also the review of that rewrite, card by card.
+    "b4dec618d2ac3442ba6455dae61f0412147fe3cc497a264ff23fc1db67ccf260": (
+        (
+            "利多 · 新进展 · 影响明显 · NVDA · www.thestreet.com（2 条报道） · 04:17",
+            "利多 · 新进展 · 新数据 · NVDA · www.thestreet.com（2 条报道） · 04:17",
+        ),
+    ),
+    "b869c36da8df9202e9e711aa40eb8667c9c63d2e066f6ec329b75a9f881812cc": (
+        ("利空 · 影响明显 · CL · jin10 · 04:15", "利空 · 状态变化 · CL · jin10 · 04:15"),
+    ),
+    "bfd76cf3382bef3e0d6c3261d490cb32444254160d9615c214c98cfca955d041": (
+        ("利多 · 影响明显 · SPACE · opennews · 04:12", "利多 · 状态变化 · SPACE · opennews · 04:12"),
+    ),
+    "dffa06be276d4a60a1de3b112499df9bf8fc942a311534b0bec111e91679985c": (
+        (
+            "利多 · 新进展 · 影响明显 · HYPE · opennews（2 条报道） · 04:01",
+            "利多 · 新进展 · 资金流 · HYPE · opennews（2 条报道） · 04:01",
+        ),
+    ),
+    "02d1e9842b0ec89fb31646e740dec35bba06107cdec3fad9a32e7fefc81dfc75": (
+        ("利多 · 新进展 · 影响重大 · CL · opennews · 03:59", "利多 · 新进展 · 表态 · CL · opennews · 03:59"),
+    ),
+    "b084eadef4c8de13a4f195f876a7673fbb9b6df6752b5670ccffcc2a6133ab4d": (
+        (
+            "利空 · 新进展 · 影响重大 · LINK · خبرگزاری فارس · 03:47",
+            "利空 · 新进展 · 表态 · LINK · خبرگزاری فارس · 03:47",
+        ),
+    ),
+    "4cb6f694de3ebcd6cc84aaed38cd98ac770dee0835d72d52f8cbe82d1442f1a3": (
+        ("利多 · 新进展 · 影响重大 · zerohedge · 03:41", "利多 · 新进展 · 状态变化 · zerohedge · 03:41"),
+    ),
+    "ed010bc15e87537e3cdae9fa5866a1207ca9040e40fb0047cfad2c906b12ba8b": (
+        ("利多 · 新进展 · 影响重大 · CL · opennews · 03:37", "利多 · 新进展 · 表态 · CL · opennews · 03:37"),
+    ),
+    "d0be4f00779d56c8f63164ce97be83e6a5d83fad45525ee3cbeeb1cf84709af0": (
+        ("利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:35", "利空 · 新进展 · 表态 · خبرگزاری فارس · 03:35"),
+    ),
+    "1e86a8b9451e5a13d2f27f068a43178aea44232504ff5005df5be89c9d36b079": (
+        ("利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:32", "利空 · 新进展 · 表态 · خبرگزاری فارس · 03:32"),
+    ),
+    "af15f0c315e4d4944f777477293f42c2e08467e8b3d6032efcdb8f81de14a76f": (
+        ("利多 · 影响明显 · RAYDIUM · x.com · 03:14", "利多 · 状态变化 · RAYDIUM · x.com · 03:14"),
+    ),
+    "7991dfcc9461491e0d4e9dd3cec2163a02e4e6712a43d0df8bf36eb26e2fd375": (
+        ("利多 · 影响明显 · opennews · 02:23", "利多 · 官方措施 · opennews · 02:23"),
+    ),
+    "news-escalate-two-assets": (
+        (
+            "利多 · 新进展 · 影响重大 · BTC NVDA · Reuters（3 条报道） · 09:05",
+            "利多 · 新进展 · 状态变化 · BTC NVDA · Reuters（3 条报道） · 09:05",
+        ),
+    ),
+    "news-plain-no-quote-no-link": (("利空 · 影响很小 · opennews · 14:32", "利空 · 表态 · opennews · 14:32"),),
+    "news-quotes-bounded-and-filtered": (
+        (
+            "中性 · 影响有限 · AAPL AMZN META MSFT · x.com（2 条报道） · 07:07",
+            "中性 · 新数据 · AAPL AMZN META MSFT · x.com（2 条报道） · 07:07",
+        ),
+    ),
+    "news-unclear-no-event-time": (("方向待定 · 影响明显 · HYPE · opennews", "方向待定 · 状态变化 · HYPE · opennews"),),
+    "news-header-bounded-at-one-hundred": (
+        ("利多 · 影响明显 · opennews · 12:00", "利多 · 状态变化 · opennews · 12:00"),
+    ),
 }
 # Every dollar amount a card prints, compact `$1.20B` included, so a figure that escaped the money
 # rule is found rather than skipped by a pattern that only knows the shape it was supposed to have.
@@ -354,7 +421,7 @@ def test_every_named_change_belongs_to_a_card_and_is_the_only_one_this_branch_ma
     recorded = {entry["id"]: entry["sent_card"] for entry in PRODUCTION_CARDS}
     recorded |= {entry["id"]: entry["card"] for entry in BRANCH_CARDS["entries"]}
     assert set(DELIBERATE_CHANGES) <= set(recorded)
-    assert len(DELIBERATE_CHANGES) == 6
+    assert len(DELIBERATE_CHANGES) == 23
     for entry_id, changes in DELIBERATE_CHANGES.items():
         rebuilt = _as_this_branch_renders({"id": entry_id}, recorded[entry_id])
         assert _canonical(rebuilt) != _canonical(recorded[entry_id])

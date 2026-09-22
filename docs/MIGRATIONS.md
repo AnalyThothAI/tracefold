@@ -548,6 +548,51 @@ atomically; recover by rolling forward or restoring a verified backup. Downgrade
 refuses. Remove the retired webpage configuration key before the new image starts.
 
 
+### 20260922_0387: News judgment v3, editorial v4, review v8, policy v16 (#675 PR-2)
+
+Admits `news_judgment_v3`, `news_triage_policy_v16` and `news_semantic_program_v13`
+to `news_verdicts_current_judgment_check`, and binds each contract version to the
+verdict shape that wrote it through the new
+`news_current_verdict_contract_shape_valid`. #675 §1 deletes `TradeRelevanceV1`,
+`magnitude` and `audience` from the model's output and adds `fact_kind` and
+`evidence_ref`, so the verdict, the editorial envelope and the policy all move at
+once. Old Workers cannot write under the new CHECK and new Workers cannot write
+under the old one, so there is no overlap window.
+
+Seven predicates are replaced and three created, and every one of them states the
+shape the ledger already holds beside the new one. `news_current_triage_verdict_valid`
+admits the v2 key set (`magnitude`, `audience`) and the v3 key set (`fact_kind`,
+`evidence_ref`); `news_current_model_editorial_valid` admits `news_editorial_v4`
+beside v3 and v2, with the `taxonomy_status` triple extracted into
+`news_current_editorial_taxonomy_slot_valid` so v3 and v4 cannot drift apart;
+`news_current_told_trace_valid` makes a told entry's `magnitude` optional, because
+the ledger projects the verdict and the verdict has none -- and it is restated from
+the definition `20260919_0384` left in the database, not from the one `20260902_0350`
+wrote, because `0384` had already rewritten it in place to make `assets` and
+`provenance_status` optional and a fresh copy of the original text would drop both
+keys and refuse every told trace the current Workers write; the rubric moves to
+`news_review_v8` through its own dimension, `expected` and payload predicates beside
+the v6 and v7 ones, which are untouched. Two objects move because the code that
+writes them did: `news_review_task_source_v1` pinned `news_judgment_v2` on the
+lateral that picks an Event's newest model verdict, and
+`news_current_review_selection_valid` pinned `news_review_sampler_v3`. Without
+either, the whole review plane would answer `insufficient_evidence` and refuse
+every stored review.
+
+Nothing is rewritten. Every verdict, envelope, told trace and accepted review
+already in the ledger keeps validating under the predicate that describes it, and
+the read boundaries -- `storage.decisions.editorial_read_shape` and
+`storage.decisions.triage_verdict_read_shape` -- are what let one API schema serve
+both shapes.
+
+Run behind the normal stopped-writer migration gate: function and view replacement,
+then one ACCESS EXCLUSIVE constraint drop and add on `news_verdicts`, in one
+transaction, with `lock_timeout=5s` and `statement_timeout=1800s`. The ADD
+CONSTRAINT re-validates every verdict row through the canonical-JSON sha256
+predicate; production scale is the 30-day retention, low tens of thousands of rows.
+The revision refuses a constraint it does not recognize and refuses to run twice.
+Downgrade refuses; recover by roll-forward or verified backup restore.
+
 ### 20260922_0386: News triage policy v15 (#675 PR-1)
 
 Adds `news_triage_policy_v15` to the model, OI and degraded branches of

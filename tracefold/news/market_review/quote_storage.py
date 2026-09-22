@@ -48,7 +48,7 @@ DUE_REACTIONS_SQL: Final = """
                        FROM (
                          SELECT v.verdict FROM news_verdicts v
                          WHERE v.event_id = a.event_id AND v.stage = 'triage'
-                           AND v.judgment_contract_version = 'news_judgment_v2'
+                           AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
                           ORDER BY v.created_at_ms DESC LIMIT 1
                        ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
                       WHERE x ->> 'role' = 'primary'
@@ -63,7 +63,7 @@ DUE_REACTIONS_SQL: Final = """
                        FROM (
                          SELECT v.verdict FROM news_verdicts v
                          WHERE v.event_id = a.event_id AND v.stage = 'triage'
-                           AND v.judgment_contract_version = 'news_judgment_v2'
+                           AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
                           ORDER BY v.created_at_ms DESC LIMIT 1
                        ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
                       WHERE replace(upper(x ->> 'symbol'), 'XYZ-', '') = a.symbol
@@ -547,7 +547,7 @@ class QuoteStorage:
                 JOIN LATERAL (
                   SELECT v.verdict FROM news_verdicts v
                    WHERE v.event_id = w.event_id AND v.stage = 'triage'
-                     AND v.judgment_contract_version = 'news_judgment_v2'
+                     AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
                    ORDER BY v.created_at_ms DESC LIMIT 1
                 ) t ON true,
                 LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x

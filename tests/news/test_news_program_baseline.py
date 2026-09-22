@@ -57,9 +57,9 @@ def _frozen_policy_projection() -> dict[str, object]:
 
 _VERDICT: dict[str, Any] = {
     "assets": [{"symbol": "TSLA", "role": "primary"}],
-    "magnitude": 1,
+    "fact_kind": "state_change",
+    "evidence_ref": "c1",
     "direction": "bullish",
-    "audience": "us_equity",
     "scope": "single_name",
     "novelty": "new_fact",
     "restates": -1,
@@ -256,31 +256,31 @@ def test_optimizer_and_baseline_share_one_metric_object() -> None:
 def test_failed_dimension_without_gold_is_visible_but_not_scored() -> None:
     """v4 never rewards a blind change when the reviewer supplied no correct value."""
 
-    episode = _episode(dimensions={"magnitude": "fail"})
-    changed = _score(episode, {**_VERDICT, "magnitude": 3})
+    episode = _episode(dimensions={"fact_kind": "fail"})
+    changed = _score(episode, {**_VERDICT, "fact_kind": "promotion"})
     unchanged = _score(episode, dict(_VERDICT))
     assert changed.score == unchanged.score
-    assert ("magnitude", "not_scored_no_gold") in changed.dimension_outcomes
+    assert ("fact_kind", "not_scored_no_gold") in changed.dimension_outcomes
     assert changed.gold_scored_n == 2  # accepted novelty and taxonomy
 
 
 def test_failed_dimension_with_gold_scores_only_the_stated_value() -> None:
     """Exact accepted-review gold prevents a coin flip from scoring like a repair."""
 
-    dimensions = {"magnitude": "fail", "factual_fidelity": "pass"}
-    golded = _episode(dimensions=dimensions, expected={"magnitude": 2})
+    dimensions = {"fact_kind": "fail", "factual_fidelity": "pass"}
+    golded = _episode(dimensions=dimensions, expected={"fact_kind": "new_quantity"})
     ungolded = _episode(dimensions=dimensions)
 
-    right = _score(golded, {**_VERDICT, "magnitude": 2})
-    wrong = _score(golded, {**_VERDICT, "magnitude": 3})
+    right = _score(golded, {**_VERDICT, "fact_kind": "new_quantity"})
+    wrong = _score(golded, {**_VERDICT, "fact_kind": "promotion"})
     assert right.score > wrong.score
 
     # Without gold neither candidate gets a point for merely changing the rejected value.
-    assert wrong.score < _score(ungolded, {**_VERDICT, "magnitude": 3}).score
-    assert right.score == _score(ungolded, {**_VERDICT, "magnitude": 2}).score
+    assert wrong.score < _score(ungolded, {**_VERDICT, "fact_kind": "promotion"}).score
+    assert right.score == _score(ungolded, {**_VERDICT, "fact_kind": "new_quantity"}).score
 
     assert right.gold_scored_n == 3 and right.labelled_n == 4
-    assert "Accepted correct values: magnitude=2." in right.feedback
+    assert "Accepted correct values: fact_kind=new_quantity." in right.feedback
 
 
 def test_gold_asset_grounding_compares_symbol_sets() -> None:
@@ -299,7 +299,7 @@ def test_gold_asset_grounding_compares_symbol_sets() -> None:
 def test_recorded_mode_scores_the_shipped_action_not_todays_policy() -> None:
     """A retired arm's verdict must stay reproducible after the policy it ran under was replaced."""
 
-    episode = _episode(dimensions={"factual_fidelity": "pass", "magnitude": "pass"})
+    episode = _episode(dimensions={"factual_fidelity": "pass", "fact_kind": "pass"})
     held = run_baseline(
         [BaselineCase(episode=episode, recorded_decision_result=recorded_decision("drop"))],
         mode="recorded",
@@ -344,16 +344,9 @@ def test_baseline_report_is_content_addressable_and_names_its_subject() -> None:
 
 def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> None:
     dimensions = {
-        "trade_impact_breadth": "pass",
-        "trade_tradability": "pass",
-        "trade_surprise": "pass",
-        "trade_development_delta": "pass",
-        "trade_channels": "pass",
-        "trade_affected_markets": "pass",
-        "reader_value": "pass",
         "asset_grounding": "pass",
         "direction": "pass",
-        "magnitude": "pass",
+        "fact_kind": "pass",
         "factual_fidelity": "pass",
         "headline_fidelity": "pass",
         "why_support": "pass",
@@ -372,14 +365,12 @@ def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> N
     assert case.hard_gate == "must_hold_send"
     assert case.component_scores == {
         "final_action": 0.0,
-        "trade_relevance": 0.0,
         "semantics_novelty": 0.0,
         "reader_card": 0.0,
         "reader_card_lint": 0.0,
     }
     assert case.component_denominators == {
         "final_action": 1,
-        "trade_relevance": 7,
         "semantics_novelty": 5,
         "reader_card": 4,
         # Seven of the eight deterministic card checks; the number count does not apply because this
@@ -387,7 +378,7 @@ def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> N
         "reader_card_lint": 7,
     }
     assert case.effective_weight_mass == 1.1
-    assert case.gold_scored_n == 2 and case.labelled_n == 16
+    assert case.gold_scored_n == 2 and case.labelled_n == 9
     assert report.scores["component_denominators"] == case.component_denominators
     assert report.scores["effective_weight_mass_mean"] == 1.1
 
@@ -404,7 +395,7 @@ def test_build_baseline_cases_drops_loader_only_keys() -> None:
     assert build_baseline_cases([raw], action_source="policy")[0].recorded_decision_result is None
 
 
-def test_rubric_v7_gold_requires_a_failed_dimension() -> None:
+def test_rubric_v8_gold_requires_a_failed_dimension() -> None:
     base = {
         "kind": "event_rubric",
         "should_push": "should_push",
@@ -416,27 +407,27 @@ def test_rubric_v7_gold_requires_a_failed_dimension() -> None:
         **base,
         dimensions={
             "factual_fidelity": "pass",
-            "magnitude": "fail",
+            "fact_kind": "fail",
             "timeliness": "pass",
             **_TAXONOMY_DIMENSIONS,
         },
-        expected={"magnitude": 2},
+        expected={"fact_kind": "new_quantity"},
     )
-    assert ok.expected is not None and ok.expected.magnitude == 2
-    with pytest.raises(ValueError, match="news_review_expected_requires_failed_dimension:magnitude"):
+    assert ok.expected is not None and ok.expected.fact_kind == "new_quantity"
+    with pytest.raises(ValueError, match="news_review_expected_requires_failed_dimension:fact_kind"):
         EventRubricSubmission(
             **base,
             dimensions={
                 "factual_fidelity": "pass",
-                "magnitude": "pass",
+                "fact_kind": "pass",
                 "timeliness": "pass",
                 **_TAXONOMY_DIMENSIONS,
             },
-            expected={"magnitude": 2},
+            expected={"fact_kind": "new_quantity"},
         )
 
 
-def test_rubric_v7_submission_without_optional_gold_validates() -> None:
+def test_rubric_v8_submission_without_optional_gold_validates() -> None:
     submission = EventRubricSubmission(
         kind="event_rubric",
         should_push="should_hold",

@@ -203,7 +203,7 @@ def add_news_commands(
     learning_calibration.add_argument("--out", default="", help="write the calibration receipt JSON")
     learning_draft = learning_subcommands.add_parser(
         "draft-reviews",
-        help="propose news_review_v7 rubrics with optional taxonomy Gold (writes a file, never the DB)",
+        help="propose news_review_v8 rubrics with optional taxonomy Gold (writes a file, never the DB)",
     )
     # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
     # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an

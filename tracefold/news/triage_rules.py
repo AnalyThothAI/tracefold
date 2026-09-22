@@ -1,11 +1,14 @@
 """The ordinary model policy and its code-owned degraded fallback.
 
-``TRIAGE_POLICY_VERSION`` is ``news_triage_policy_v15`` (#675 §3). v15 adds the decision table below: three
-ordered rows that run after the realtime branch has already resolved to push, read facts the code owns
-rather than the model's own reading of them, and can only ever downgrade that push to ``drop``. Nothing
-else about v14 moves -- the escalate, listing-deterministic and watchlist-objective paths are byte-identical,
-the storyline budget and the bigram threshold are untouched -- so a v14 and a v15 replay of the same Event
-differ in exactly the rows named here.
+``TRIAGE_POLICY_VERSION`` is ``news_triage_policy_v16`` (#675 §1). v15 bolted three rows onto the side of a
+branch that read the model's own answer to "should the reader get this"; v16 deletes the branch. The model
+observes (`fact_kind`, `novelty`, typed assets, direction, scope), the code decides, and :func:`decide` is
+the whole of the decision -- one ordered table whose every row has a name, reads only facts the code
+produced and stored, and can be replayed against a recording.
+
+What did not move: the restatement drop, the deterministic listing and watchlist guards, the single-name
+instrument rule, the stale-source rule, the similarity check and the storyline budget all keep their
+position and their behaviour. The storyline budget and the bigram threshold are untouched (#675 §6).
 """
 
 from __future__ import annotations
@@ -17,8 +20,8 @@ from typing import Any, Final
 
 from .artifact_identity import canonical_sha
 from .events.storyline import NO_STORYLINE_KEY
-from .models import Decision, TriageVerdict, base_symbol
-from .program.contracts import JUDGMENT_CONTRACT_VERSION, ScoredJudgment, TradeRelevanceV1
+from .models import FACT_KINDS, Decision, FactKind, TriageVerdict, base_symbol
+from .program.contracts import JUDGMENT_CONTRACT_VERSION, ScoredJudgment
 from .similarity import max_similarity
 
 # One owner for the withhold key: `outcome` renders it, `repository` counts it.
@@ -222,21 +225,6 @@ def rule_baseline(facts: GateFacts) -> Decision:
     return "push" if grounded_watchlist_hits(facts) else "drop"
 
 
-def realtime_eligible(verdict: TriageVerdict, relevance: TradeRelevanceV1) -> bool:
-    """The code-owned trade-attention eligibility predicate from policy v11."""
-
-    direct_surface = (
-        relevance.tradability in {"direct", "second_order"}
-        and bool(relevance.channels)
-        and bool(relevance.affected_markets)
-    )
-    material_change = relevance.development_delta == "state_change" or (
-        relevance.development_delta == "material_detail"
-        and (relevance.tradability == "direct" or relevance.surprise in {"unscheduled", "material_vs_expectation"})
-    )
-    return verdict.magnitude >= 2 and direct_surface and material_change
-
-
 # ---------------------------------------------------------------- #675 §3: the decision table's own facts
 #
 # What makes a quote worth interrupting a reader for, stated as text the card itself has to carry. The
@@ -384,11 +372,93 @@ _CONFLICT_KEY_PREFIX: Final[str] = "conflict:"
 # The window the two conflict rows read the ledger over. It is the same 4 h the bounded recent history is
 # already cut at, so the rows can never ask for evidence the retrieval does not carry.
 CONFLICT_TOLD_WINDOW_MS: Final[int] = 4 * 60 * 60_000
-DECISION_TABLE_RULES: Final[tuple[str, ...]] = (
-    "price_report_without_basis",
-    "conflict_claim_uncorroborated",
-    "conflict_running_storyline",
+
+# ------------------------------------------------------------------- #675 §1: the decision table's rows
+#
+# Every name below is a constant, because `override_rule` is the stored answer to "why did the reader get
+# this", is folded into a top-10 count map on `status.pipeline`, and is rendered in Chinese by
+# `outcome.OVERRIDE_RULE_ZH`. A rule whose name is built by string formatting at the call site cannot be
+# any of those things.
+RULE_RESTATEMENT: Final[str] = "restatement"
+RULE_LISTING_DETERMINISTIC: Final[str] = "listing_deterministic"
+RULE_WATCHLIST_OBJECTIVE_GUARD: Final[str] = "watchlist_objective_guard"
+RULE_ESCALATE_CORROBORATED: Final[str] = "escalate_corroborated"
+RULE_ESCALATE_UNCORROBORATED: Final[str] = "escalate_uncorroborated"
+RULE_PRICE_REPORT_WITHOUT_BASIS: Final[str] = "price_report_without_basis"
+RULE_CONFLICT_CLAIM_UNCORROBORATED: Final[str] = "conflict_claim_uncorroborated"
+RULE_CONFLICT_RUNNING_STORYLINE: Final[str] = "conflict_running_storyline"
+RULE_SINGLE_NAME_WITHOUT_INSTRUMENT: Final[str] = "single_name_without_instrument"
+RULE_STALE_SOURCE_ARTIFACT: Final[str] = "stale_source_artifact"
+FACT_KIND_RULES: Final[dict[str, str]] = {kind: f"fact_kind_{kind}" for kind in FACT_KINDS}
+
+# The six kinds that state a new fact about the world, and the four that do not. A `statement` is somebody
+# saying something, a `recap` is the same fact told again, a `schedule` is a calendar entry, and a
+# `promotion` is somebody selling something; none of them is a reason to interrupt a reader. This is the
+# whole of the push/drop split, and the 2026-09-22 audit is why it is drawn here: 64 of the 232 cards a
+# reviewer wanted demoted were marketing and small-project product announcements, 39 were price
+# broadcasts, 22 were pure opinion and 7 were schedules -- four kinds, not four thresholds.
+PUSH_FACT_KINDS: Final[frozenset[str]] = frozenset(
+    {"state_change", "new_quantity", "level_crossed", "period_record", "quantified_flow", "official_measure"}
 )
+DROP_FACT_KINDS: Final[frozenset[str]] = frozenset({"statement", "recap", "schedule", "promotion"})
+# A new state of the world, however it arrived: a thing that happened, or a measure an authority took.
+# `official_measure` is the half of the retired `development_delta=state_change` the audit named as the
+# conflict rows' only real cost -- "Trump presses Zelensky to stop striking refineries" and "Russia to
+# extend the diesel export ban" were withheld as one more statement on a running storyline because
+# `change_state=announced` cannot tell a measure from a spokesman's opinion. `fact_kind` can, so both
+# kinds are exempt from the conflict rows and both can escalate.
+MATERIAL_FACT_KINDS: Final[frozenset[str]] = frozenset({"state_change", "official_measure"})
+# Where a material change is loud enough to interrupt a reader twice over. Four families, chosen because
+# they are the ones whose state changes are about access, safety or the price of money rather than about
+# one issuer's own product: a closure, a rate decision, a breach, a venue admitting or delisting an
+# instrument. A `financial_results` state change is a push, not an escalate.
+ESCALATE_FAMILIES: Final[frozenset[str]] = frozenset(
+    {"geopolitical_conflict", "macro_policy_data", "security_operational_incident", "market_access"}
+)
+# The kinds whose whole claim is a number the text must actually contain. A model that answers
+# `level_crossed` for "BTC is up 3%" is not observing the text, and the code can check it.
+CONFIRMED_FACT_KINDS: Final[frozenset[str]] = frozenset({"level_crossed", "period_record", "quantified_flow"})
+
+DECISION_TABLE_RULES: Final[tuple[str, ...]] = (
+    RULE_ESCALATE_CORROBORATED,
+    RULE_ESCALATE_UNCORROBORATED,
+    RULE_PRICE_REPORT_WITHOUT_BASIS,
+    RULE_CONFLICT_CLAIM_UNCORROBORATED,
+    RULE_CONFLICT_RUNNING_STORYLINE,
+    *(FACT_KIND_RULES[kind] for kind in FACT_KINDS),
+)
+# The rows that produce an ordinary push from the text alone. `single_name_without_instrument` applies to
+# exactly these: the two objective guards answer a question about the frame rather than about the fact,
+# and an escalate is the one class a missing ticker may not silence.
+_FACT_KIND_PUSH_RULES: Final[frozenset[str]] = frozenset(FACT_KIND_RULES[kind] for kind in PUSH_FACT_KINDS)
+
+
+def confirmed_fact_kind(kind: FactKind | None, text: str, markets: frozenset[str]) -> tuple[FactKind | None, bool]:
+    """The `fact_kind` a `market_flow_price` report's own text supports, and whether the code moved it.
+
+    Two rules, in this order, and both only on the one family whose codebook definition is "the number
+    was printed" (#675 §1.5).
+
+    The owner's exception comes first (#675 §7), because it is an independent admission rather than a
+    confirmation of something the model claimed: a same-day move of >= 5% carried by a `commodity` or
+    `index` primary is itself the fact the reader wants, whatever kind the model read the sentence as.
+    A single stock is excluded by name -- the Tencent card that opened #675 is +7% and stays withheld --
+    so the exception is carried by the primary asset's market and never by the size of the move.
+
+    Then the confirmation. If the model says the number crossed a level, set a period record or moved a
+    quantified flow, the text has to say so in either language, or the card is a quote and the answer is
+    `statement`. The vocabulary is bilingual because the first cut of it was not: 11 of the 14 cards the
+    audit's simulation wrongly dropped were English or a Chinese variant the Chinese-only list did not
+    spell.
+    """
+
+    if _states_large_daily_move(text) and bool(markets & PRICE_MOVE_EXCEPTION_MARKETS):
+        return "new_quantity", False
+    if kind not in CONFIRMED_FACT_KINDS:
+        return kind, False
+    if price_move_basis(text):
+        return kind, False
+    return "statement", True
 
 
 def decision_table_row(
@@ -397,60 +467,93 @@ def decision_table_row(
     status: StorylineStatus | None,
     *,
     now_ms: int | None = None,
-) -> str | None:
-    """The first v15 row that withholds this already-resolved realtime push, or ``None`` (#675 §3).
+) -> tuple[Decision, str]:
+    """The whole model-judgment decision, as one ordered table (#675 §1).
 
-    Every input is a fact the code produced and stored before `decide()` ran: the taxonomy Predictor's four
-    axes, the `source_authority` the registry issued from the evidence, the Deduper's count of distinct
-    member texts, the told ledger, and the Event's own text. None of them is the model's opinion of the
-    reader, which is the thing #675 found had no discriminating power at all.
+    Every input is a fact the code produced and stored, or an observation of the text the model made and
+    the code can check: `fact_kind`, the taxonomy Predictor's four axes, the `source_authority` the
+    registry issued from the evidence, the Deduper's count of distinct member texts, the told ledger, and
+    the Event's own title. None of them is the model's opinion of the reader, which is the thing #675
+    found had no discriminating power at all.
 
-    The whole table is silent when the taxonomy call failed. A classification that does not exist is not
-    evidence of anything, and the alternative -- treating `taxonomy_status=unavailable` as "not a price
-    report, not a conflict" -- would quietly make a Predictor outage the loudest card's ally.
+    Rows that need a classification are silent when the taxonomy call failed, and the `fact_kind` rows
+    still apply. A classification that does not exist is not evidence of anything -- treating
+    `taxonomy_status=unavailable` as "not a price report, not a conflict" would quietly make a Predictor
+    outage the loudest card's ally -- but the kind of fact the text states does not depend on it, so a
+    taxonomy outage costs precision, never the whole table.
     """
 
-    editorial = judgment.editorial
-    taxonomy = editorial.taxonomy
-    if editorial.taxonomy_status != "available" or taxonomy is None:
-        return None
     verdict = judgment.verdict
-    relevance = editorial.relevance
-    family = taxonomy.event_family
+    editorial = judgment.editorial
+    taxonomy = editorial.taxonomy if editorial.taxonomy_status == "available" else None
     text = f"{facts.title}\n{verdict.headline_zh}"
+    primary_markets = frozenset(asset.market_type for asset in verdict.assets if asset.role == "primary")
 
-    # Row 1. A `market_flow_price` fact whose change_state is `reported` is, by the codebook's own
-    # definition, "the number was printed". Unless the text says what about the number is new, the reader is
-    # being woken for a quote. The exception is the owner's, and it is deliberately narrow.
-    if family == "market_flow_price" and taxonomy.change_state == "reported":
-        markets = {asset.market_type for asset in verdict.assets if asset.role == "primary"}
-        exception = _states_large_daily_move(text) and bool(markets & PRICE_MOVE_EXCEPTION_MARKETS)
-        if not price_move_basis(text) and not exception:
-            return "price_report_without_basis"
+    # The code's own reading of the claim, for the one claim it can read. Outside `market_flow_price` +
+    # `reported` the model's answer stands: the check exists because a price quote wearing a level is the
+    # single most common way a card reaches a reader with nothing in it, not because the model is
+    # generally unreliable about its own vocabulary.
+    kind: FactKind | None = verdict.fact_kind
+    unconfirmed = False
+    if taxonomy is not None and taxonomy.event_family == "market_flow_price" and taxonomy.change_state == "reported":
+        kind, unconfirmed = confirmed_fact_kind(kind, text, primary_markets)
 
-    if family != "geopolitical_conflict":
-        return None
-    told_on_key = 0 if status is None else status.told_on_key_within(now_ms=now_ms, window_ms=CONFLICT_TOLD_WINDOW_MS)
-    state_change = relevance.development_delta == "state_change"
+    # Row 1. Four kinds of text that are not a new fact about the world. No taxonomy needed and none read:
+    # a statement is a statement whether or not the classifier answered.
+    if kind in DROP_FACT_KINDS:
+        return "drop", RULE_PRICE_REPORT_WITHOUT_BASIS if unconfirmed else FACT_KIND_RULES[kind]
 
-    # Row 2. One unverified party's word, carried by one text, from a source the registry cannot name. The
-    # #675 refinery card is exactly this: `claimed`, `unknown`, a single member text, 97 minutes after the
-    # reader had already been handed the same storyline. `state_change` is the model's own reading and is
-    # honoured only while the reader is not already two cards into the storyline -- during an escalation the
-    # model marks nearly every strike a state change, which is how it escaped this row in the first place.
-    if (
-        editorial.source_authority == "unknown"
-        and taxonomy.assertion_status in {"claimed", "rumor"}
-        and facts.independent_text_count <= 1
-        and (not state_change or told_on_key >= 2)
-    ):
-        return "conflict_claim_uncorroborated"
+    if kind is None:
+        # A model judgment always carries a kind (`module._assemble` builds the verdict from the typed
+        # EventSemantics, and the CHECK refuses a v3 model row without one). Nothing but a replay of an
+        # archived v2 judgment can arrive here, and it has no observation to decide from.
+        return "drop", FACT_KIND_RULES["statement"]
 
-    # Row 3. One more item on a conflict the reader is already reading. A state change still gets through:
-    # a ceasefire, a closure or a sanction in effect is why the storyline is being followed at all.
-    if str(status.key if status else "").startswith(_CONFLICT_KEY_PREFIX) and told_on_key >= 1 and not state_change:
-        return "conflict_running_storyline"
-    return None
+    if taxonomy is not None:
+        family = taxonomy.event_family
+        told_on_key = (
+            0 if status is None else status.told_on_key_within(now_ms=now_ms, window_ms=CONFLICT_TOLD_WINDOW_MS)
+        )
+        material = kind in MATERIAL_FACT_KINDS
+
+        # Row 2. One unverified party's word, carried by one text, from a source the registry cannot name.
+        # The #675 refinery card is exactly this: `claimed`, `unknown`, a single member text, 97 minutes
+        # after the reader had already been handed the same storyline. A material change is honoured only
+        # while the reader is not already two cards into the storyline -- during an escalation the model
+        # marks nearly every strike a new state, which is how that card escaped this row in the first place.
+        if (
+            family == "geopolitical_conflict"
+            and editorial.source_authority == "unknown"
+            and taxonomy.assertion_status in {"claimed", "rumor"}
+            and facts.independent_text_count <= 1
+            and (not material or told_on_key >= 2)
+        ):
+            return "drop", RULE_CONFLICT_CLAIM_UNCORROBORATED
+
+        # Row 3. One more item on a conflict the reader is already reading. A material change still gets
+        # through: a ceasefire, a closure, a sanction in effect or a measure an authority took is why the
+        # storyline is being followed at all.
+        if (
+            family == "geopolitical_conflict"
+            and str(status.key if status else "").startswith(_CONFLICT_KEY_PREFIX)
+            and told_on_key >= 1
+            and not material
+        ):
+            return "drop", RULE_CONFLICT_RUNNING_STORYLINE
+
+        # Row 4. A new state of the world in one of the four families where a state change is about access,
+        # safety or the price of money. Corroboration is the code's, not the model's: a second independent
+        # member text, or a source the registry can name. 92 of the 126 escalates on 2026-09-02 were one
+        # unknown account's single line, which is what this condition exists to keep out of the loudest
+        # class (#504 D3). An uncorroborated one is still a push -- it keeps every other right of one.
+        if material and family in ESCALATE_FAMILIES:
+            corroborated = editorial.source_authority != "unknown" or facts.independent_text_count >= 2
+            if corroborated:
+                return "escalate", RULE_ESCALATE_CORROBORATED
+            return "push", RULE_ESCALATE_UNCORROBORATED
+
+    # Row 5. Everything the text states as a new fact and no row took away.
+    return "push", FACT_KIND_RULES[kind]
 
 
 def _budget_exhausted(direction: str, status: StorylineStatus, *, now_ms: int, window_ms: int, budget_max: int) -> bool:
@@ -515,18 +618,16 @@ def decide(
     (a pure caller with no ledger time has nothing to measure). Structured and degraded lanes carry their own
     ``DecisionResult`` and cannot enter this function.
 
-    Order is fixed (#504): restatement drop -> admission / reader_value branch -> escalate corroboration ->
-    ``single_name_without_instrument`` -> decision table (v15) -> stale source -> similarity -> storyline
-    budget. Policy v13 changes one condition inside that branch and none of its order: the deterministic
-    listing guard no longer covers a frame the model marked ``reader_value=none``, which falls through to the
-    ``reader_value_none`` drop. Policy v15 (#675) appends :func:`decision_table_row` after the single-name
-    rule; it reads only the realtime push and only withholds, so every other path is unchanged from v14.
+    Order is fixed (#504, #675 §1): restatement drop -> deterministic listing -> watchlist objective guard
+    -> :func:`decision_table_row` -> ``single_name_without_instrument`` -> stale source -> similarity ->
+    storyline budget. v16 replaces one step of that order and leaves the rest of it alone: where v11-v15
+    read the model's `reader_value` and then appended three rows that could downgrade the result, the table
+    now *is* the step, and it produces the action and its rule name together.
     """
 
     if facts.admission in {"telemetry_deterministic", "liquidation_deterministic"}:
         raise ValueError("news_model_decide_structured_admission")
     verdict = judgment.verdict
-    relevance = judgment.editorial.relevance
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
     grounded = {_base(s) for s in facts.grounded_assets}
@@ -540,63 +641,32 @@ def decide(
         template_fact, primaries | grounded, status.told_assets if status else (), verdict.restates
     )
     if policy.restatement_drop and not template_restates_other and grounded_restatement(verdict, status):
-        return DecisionResult("drop", "restatement", None, baseline, watch_hits)
+        return DecisionResult("drop", RULE_RESTATEMENT, None, baseline, watch_hits)
 
     final: Decision
-    rule: str | None
+    rule: str
     # #523 D1: `listing_deterministic` is the provider's `engine_type=listing` tag, not a content judgment, so
     # the admission alone let marketing, trading-competition and operations notices ride the objective guard.
     # Of 56 listing frames in a 24 h window the model scored 17 `reader_value=none`, and 13 of those reached
     # the reader anyway: a Binance trading competition, a "Rug Pulls explained" explainer, a 35% APR
-    # promotion. A frame the model itself scored `reader_value=none` is the one case where the tag is provably
-    # not about a listing the reader can act on, and it is the only condition added: the branch keeps its
-    # position, so a real listing notice still wins over the watchlist guard and over every model rule, and
-    # `background` still pushes (moving the branch instead cost four genuine listings in the same replay).
-    if facts.admission == "listing_deterministic" and relevance.reader_value != "none":
-        final, rule = "push", "listing_deterministic"
+    # promotion. v16 states that condition as what it always was about: a listing frame whose text is a
+    # statement, a recap, a calendar entry or a pitch is not a listing the reader can act on, and it falls
+    # through to the table's own drop row. The branch keeps its position, so a real listing notice still wins
+    # over the watchlist guard and over every table row.
+    if facts.admission == "listing_deterministic" and verdict.fact_kind not in DROP_FACT_KINDS:
+        final, rule = "push", RULE_LISTING_DETERMINISTIC
     elif watch_hits:
-        final, rule = "push", "watchlist_objective_guard"
-    elif relevance.reader_value == "escalate" and realtime_eligible(verdict, relevance):
-        final, rule = "escalate", "trade_relevance_escalate"
-    elif relevance.reader_value == "realtime" and realtime_eligible(verdict, relevance):
-        final, rule = "push", "trade_relevance_realtime"
-    elif relevance.reader_value in {"background", "none"}:
-        final, rule = "drop", f"reader_value_{relevance.reader_value}"
+        final, rule = "push", RULE_WATCHLIST_OBJECTIVE_GUARD
     else:
-        final, rule = "drop", "trade_relevance_inconsistent"
-
-    # #504 D3: an `escalate` needs corroboration the model cannot supply. `source_authority` is the code-owned
-    # editorial field issued once from the evidence (`taxonomy.py`), and `member_count` is the Deduper's count of
-    # independent arrivals. Unknown source *and* a single Item is a claim, not a fact the reader should be woken
-    # for: 92 of the 126 escalates on 2026-09-02 were exactly that (an Iranian MP's statement on a Telegram
-    # channel was the first v9 escalate). The card keeps every other right of a push. Grounded assets are not
-    # corroboration: a provider tag proves which instrument is mentioned, not that a second party confirmed it.
-    # #651 §5.3 is why it reads the envelope rather than `editorial.taxonomy.source_authority`: the taxonomy
-    # Predictor can fail on its own now, and the loudest card class must not lose its corroboration rule to a
-    # classification failure that says nothing about who reported the fact.
-    if (
-        rule == "trade_relevance_escalate"
-        and judgment.editorial.source_authority == "unknown"
-        and facts.member_count <= 1
-    ):
-        final, rule = "push", "trade_relevance_escalate_uncorroborated"
+        final, rule = decision_table_row(judgment, facts, status, now_ms=now_ms)
 
     # #504 PR-A: a single-name fact with no primary instrument names nothing the reader can trade. This checks
     # only that the verdict names *a* primary — never the instrument universe, which has no Hong Kong venue —
     # so an `02015.HK` primary passes and only influences storyline grouping. The seed (PR-B) is the other
-    # half of this rule: it asks the model for the listed ticker whenever the company has one.
-    if rule == "trade_relevance_realtime" and verdict.scope == "single_name" and not primaries:
-        final, rule = "drop", "single_name_without_instrument"
-
-    # #675 §3: the decision table. It sees only a push the *realtime* branch produced -- an escalate, a
-    # deterministic listing and the watchlist objective guard reach the reader under v15 exactly as they did
-    # under v14 -- and it can only withhold, never admit. The result is a `drop` under the row's own name
-    # rather than a `throttled`: a throttle says "the reader got this already", and these three say "this is
-    # background", which is the same thing `reader_value_background` says one branch earlier.
-    if rule == "trade_relevance_realtime" and final == "push":
-        row = decision_table_row(judgment, facts, status, now_ms=now_ms)
-        if row is not None:
-            return DecisionResult("drop", row, None, baseline, watch_hits)
+    # half of this rule: it asks the model for the listed ticker whenever the company has one. It applies to
+    # the table's own pushes, never to the two objective guards or to an escalate, exactly as under v15.
+    if rule in _FACT_KIND_PUSH_RULES and final == "push" and verdict.scope == "single_name" and not primaries:
+        final, rule = "drop", RULE_SINGLE_NAME_WITHOUT_INSTRUMENT
 
     # #154: a replay is not a push, whatever the verdict says about it. `escalate` is exempt for the same reason
     # it is exempt from the similarity check — a false positive is least affordable on the loudest cards.
@@ -609,7 +679,7 @@ def decide(
         # A constant key on purpose: `throttled_by` is folded into a top-10 count map, so embedding the age
         # would give every withhold its own count-1 bucket and hide the rule from `status.pipeline`. The age
         # itself is in the trace.
-        return DecisionResult("throttled", "stale_source_artifact", STALE_SOURCE_KEY, baseline, watch_hits)
+        return DecisionResult("throttled", RULE_STALE_SOURCE_ARTIFACT, STALE_SOURCE_KEY, baseline, watch_hits)
 
     seen_similarity: float | None = None
     seen_against = -1
@@ -672,12 +742,13 @@ def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> D
     baseline = rule_baseline(facts)
     watch_hits = grounded_watchlist_hits(facts)
     wire_headline = " ".join(str(title or "").split())[:60] or "模型不可用（规则兜底）"
+    # No `fact_kind`: the model is what reads the text, and this is the branch where it did not answer.
+    # A kind invented here would be a code-owned observation of a text nothing observed (#675 §1).
     verdict = TriageVerdict(
         novelty="new_fact",
         assets=[],
         direction="neutral",
         scope="macro",
-        magnitude=0,
         confidence=0.0,
         headline_zh=wire_headline,
         why_zh="",
@@ -751,23 +822,39 @@ def storyline_status(
 
 
 __all__ = [
+    "CONFIRMED_FACT_KINDS",
     "CONFLICT_TOLD_WINDOW_MS",
     "DECISION_TABLE_RULES",
     "DEFAULT_POLICY",
+    "DROP_FACT_KINDS",
+    "ESCALATE_FAMILIES",
+    "FACT_KIND_RULES",
+    "MATERIAL_FACT_KINDS",
     "PRICE_MOVE_EXCEPTION_MARKETS",
     "PRICE_MOVE_EXCEPTION_PERCENT",
+    "PUSH_FACT_KINDS",
+    "RULE_CONFLICT_CLAIM_UNCORROBORATED",
+    "RULE_CONFLICT_RUNNING_STORYLINE",
+    "RULE_ESCALATE_CORROBORATED",
+    "RULE_ESCALATE_UNCORROBORATED",
+    "RULE_LISTING_DETERMINISTIC",
+    "RULE_PRICE_REPORT_WITHOUT_BASIS",
+    "RULE_RESTATEMENT",
+    "RULE_SINGLE_NAME_WITHOUT_INSTRUMENT",
+    "RULE_STALE_SOURCE_ARTIFACT",
+    "RULE_WATCHLIST_OBJECTIVE_GUARD",
     "DecidePolicy",
     "DecisionResult",
     "DegradedJudgment",
     "GateFacts",
     "StorylineStatus",
+    "confirmed_fact_kind",
     "decide",
     "decision_table_row",
     "fallback_verdict",
     "grounded_restatement",
     "grounded_watchlist_hits",
     "price_move_basis",
-    "realtime_eligible",
     "rule_baseline",
     "storyline_status",
 ]

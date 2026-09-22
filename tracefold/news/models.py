@@ -12,7 +12,11 @@ from .market_review.instruments import INSTRUMENT_CLASSES, InstrumentClass
 
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v6"
-GATE_POLICY_VERSION = "news_gate_v6"
+# v7 (#675 PR-3): the Gate's grounding moved -- a commodity symbol needs commodity context, and a
+# contradicted primary is taken off the verdict after the model answers -- so a frame admitted today
+# and the same frame admitted last week were admitted under different rules. The version is bumped
+# here because `models.py` owns it; the behaviour it names is #677's.
+GATE_POLICY_VERSION = "news_gate_v7"
 # v10 (#160) removes queue/provider hints from editorial authority and chooses
 # reader actions from the typed trade-relevance contract plus objective guards.
 # v14 (#651 §5.3) moves the input of the uncorroborated-escalate rule: source authority is read from
@@ -26,7 +30,12 @@ GATE_POLICY_VERSION = "news_gate_v6"
 # conflict storyline the reader was already reading. They read the taxonomy axes, `source_authority`, the
 # count of independent member texts and the told ledger -- every one of them a stored fact on the day the
 # two #675 cards shipped -- and they leave the escalate, listing and watchlist paths byte-identical to v14.
-TRIAGE_POLICY_VERSION = "news_triage_policy_v15"
+# v16 (#675 §1) finishes that move. `decide()` is now the whole decision table: it reads `fact_kind`, the
+# four taxonomy axes, `source_authority`, the count of independent member texts, the told ledger and the
+# verdict's own scope, and names the row that produced the action. The model's reader-value opinion is
+# gone with the fields that carried it, so the `trade_relevance_*` and `reader_value_*` rule names are
+# gone too; historical rows keep them and `outcome.py` still renders them.
+TRIAGE_POLICY_VERSION = "news_triage_policy_v16"
 DELIVERY_CARD_VERSION = "news_delivery_card_v11"
 
 # What the editorial Gate can decide about one Event. Three market admissions left this vocabulary
@@ -52,7 +61,39 @@ ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset({"candidate", "listing_de
 # republished — a card the reader would receive half an hour late is worse than no card (#76: one catch-up sent a
 # 30.6 h old exchange notice). Code-owned, not policy: it is a relevance floor, not a tuning knob.
 OUTBOX_MAX_AGE_MS: Final[int] = 30 * 60_000
-Audience = Literal["crypto", "us_equity", "macro", "none"]
+
+# #675 §1: what kind of new thing one Event's text states. It is an observation of the words on the page,
+# not a reading of the reader: `TradeRelevanceV1` asked the model seven questions about who would care and
+# how much, and seven days of 8950 judgments answered all of them with one bit (magnitude 2 <-> reader_value
+# realtime on 3002 of 3759). These ten are separable from the text alone, and what the reader is woken for
+# is decided from them by `triage_rules.decide()`, where a threshold can be replayed and versioned.
+#
+# The order is canonical: the six that state a new fact about the world first, the four that restate,
+# schedule or sell one after them. Nothing here is ranked by importance, and no row reads the order.
+FACT_KINDS: Final[tuple[str, ...]] = (
+    "state_change",
+    "new_quantity",
+    "level_crossed",
+    "period_record",
+    "quantified_flow",
+    "official_measure",
+    "statement",
+    "recap",
+    "schedule",
+    "promotion",
+)
+FactKind = Literal[
+    "state_change",
+    "new_quantity",
+    "level_crossed",
+    "period_record",
+    "quantified_flow",
+    "official_measure",
+    "statement",
+    "recap",
+    "schedule",
+    "promotion",
+]
 AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
 Decision = Literal["push", "escalate", "drop", "throttled"]
@@ -309,6 +350,12 @@ class TriageVerdict(BaseModel):
     last was the one it dropped (issue #61 probe: 7/44 hard inputs omitted it). ``restates`` is an integer sentinel
     (-1 = none) rather than ``int | None`` because the anyOf/null shape raised the empty-tool-call rate. Semantic
     taxonomy lives only in ``EditorialEnvelope.taxonomy`` and every action lives only in ``DecisionResult``.
+
+    ``fact_kind`` and ``evidence_ref`` arrive with `news_judgment_v3` (#675 §1) and replace ``magnitude`` and
+    ``audience``. They are ``None``/``""`` on exactly two kinds of row and on no third: a verdict read back
+    out of the ledger that was written under `news_judgment_v2`, and the code-owned degraded fallback, which
+    made no observation of the text to report. Every model judgment written from here on carries both, and
+    the database CHECK is what says so.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -322,11 +369,29 @@ class TriageVerdict(BaseModel):
     assets: list[TriageAsset] = Field(default_factory=list, max_length=8)
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
     scope: Literal["macro", "sector", "single_name"]
-    magnitude: int = Field(ge=0, le=3)
+    fact_kind: FactKind | None = None
+    evidence_ref: str = Field(default="", max_length=64)
     confidence: float = Field(ge=0.0, le=1.0)
-    audience: Audience = "none"
     headline_zh: str = Field(min_length=1, max_length=60)
     why_zh: str = Field(default="", max_length=140)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_v2_fields(cls, value: Any) -> Any:
+        """Read a `news_judgment_v2` verdict without rewriting it (#675 §1).
+
+        ``magnitude`` and ``audience`` are on every verdict the ledger holds from before this contract,
+        those rows are audit truth addressed by `scored_judgment_sha256`, and they are never migrated.
+        The frozen learning corpus, the review projection and the release metric all validate a stored
+        verdict through this model, so refusing the two keys would make the durable ledger unreadable and
+        keeping them as live fields would leave the deleted policy inputs in the contract. The one place
+        that owns the fields is also the one place that says what a row carrying them means: a v2 row,
+        whose `fact_kind` is unknown rather than any particular kind.
+        """
+
+        if isinstance(value, Mapping) and ("magnitude" in value or "audience" in value):
+            return {key: item for key, item in value.items() if key not in {"magnitude", "audience"}}
+        return value
 
 
 def base_symbol(symbol: str) -> str:
@@ -355,6 +420,7 @@ __all__ = [
     "ADMITTED_ADMISSIONS",
     "DELIVERY_CARD_VERSION",
     "EVENT_IDENTITY_VERSION",
+    "FACT_KINDS",
     "GATE_POLICY_VERSION",
     "MARKET_TYPES",
     "NEWS_BUS_SCHEMA_VERSION",
@@ -362,10 +428,10 @@ __all__ = [
     "TRIAGE_POLICY_VERSION",
     "Admission",
     "AssetClass",
-    "Audience",
     "Decision",
     "EngineType",
     "ExactNewsModel",
+    "FactKind",
     "MarketAsset",
     "MarketType",
     "NewsFeedEntry",

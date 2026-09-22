@@ -85,7 +85,7 @@ def _card(
     title: str = "BTC ETF 净流入",
     lead: str = "连续第三日净流入",
     direction: str = "bullish",
-    magnitude: int = 2,
+    fact_kind: str = "quantified_flow",
     novelty: str = "progression",
     assets: Sequence[str] = ("BTC",),
     origin: str = "CoinDesk",
@@ -109,7 +109,7 @@ def _card(
         },
         verdict={
             "direction": direction,
-            "magnitude": magnitude,
+            "fact_kind": fact_kind,
             "novelty": novelty,
             "headline_zh": title,
             "why_zh": lead,
@@ -209,7 +209,7 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
         "新闻后 暂无\n"
         "1h 暂无，\n"
         "24h 暂无\n\n"
-        "🧭 <b>方向</b>  利多 · 影响明显\n\n"
+        "🧭 <b>方向</b>  利多 · 资金流\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
         "Tracefold · abc12345"
     )
@@ -237,6 +237,7 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
             "压低美光产能利用率与现金流。"
         ),
         direction="bearish",
+        fact_kind="new_quantity",
         assets=("MU",),
         origin="jukan05",
         member_count=1,
@@ -305,7 +306,7 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
         "新闻后 0.00%\n"
         "1h -0.25%，\n"
         "24h -5.11%\n\n"
-        "🧭 <b>方向</b>  利空 · 影响明显\n"
+        "🧭 <b>方向</b>  利空 · 新数据\n"
         "\n"
         "新闻时间  10:48\n"
         "推送时间  10:48\n"
@@ -314,13 +315,14 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
     )
 
 
-def test_sender_does_not_render_unclear_direction_or_magnitude_as_trade_targets() -> None:
+def test_sender_does_not_render_unclear_direction_or_fact_kind_as_trade_targets() -> None:
     observed: dict[str, object] = {}
     card = _card(
         source_url="https://x.com/FirstSquawk/status/1234567890123456789",
         title="中国存储芯片厂商长鑫存储起诉五角大楼，挑战涉军企业清单指定",
         lead="长鑫存储在美国法院起诉，要求撤销五角大楼将其列入涉军企业清单的决定。",
         direction="unclear",
+        fact_kind="state_change",
         novelty="new_fact",
         assets=("CXMT",),
         origin="FirstSquawk",
@@ -372,9 +374,9 @@ def test_sender_does_not_render_unclear_direction_or_magnitude_as_trade_targets(
     text = str(observed["text"])
     assert text.count("🎯 <b>标的</b>") == 1
     assert "🎯 <b>标的</b>  方向待定" not in text
-    assert "🎯 <b>标的</b>  影响明显" not in text
+    assert "🎯 <b>标的</b>  状态变化" not in text
     assert '<a href="https://www.binance.com/en/futures/CXMTUSDT">CXMT</a>' in text
-    assert "🧭 <b>方向</b>  方向待定 · 影响明显" in text
+    assert "🧭 <b>方向</b>  方向待定 · 状态变化" in text
 
 
 def test_sender_puts_new_fact_below_title_and_explains_macro_events_without_a_ticker() -> None:
@@ -384,7 +386,7 @@ def test_sender_puts_new_fact_below_title_and_explains_macro_events_without_a_ti
         title="美国 2026 年初步基准非农就业下修 7.9 万人",
         lead="官方就业基线整体下移，利率市场将重新定价劳动力转弱路径。",
         direction="bearish",
-        magnitude=3,
+        fact_kind="new_quantity",
         novelty="new_fact",
         assets=(),
         origin="jin10",
@@ -424,7 +426,7 @@ def test_sender_puts_new_fact_below_title_and_explains_macro_events_without_a_ti
         "🆕 <b>新事实</b>\n\n"
         "官方就业基线整体下移，利率市场将重新定价劳动力转弱路径。\n\n"
         "🌐 <b>影响范围</b>  宏观市场 · 暂无直接标的\n\n"
-        "🧭 <b>方向</b>  利空 · 影响重大\n\n"
+        "🧭 <b>方向</b>  利空 · 新数据\n\n"
         "新闻时间  22:02\n"
         "推送时间  22:03\n"
         "🔗 <b>来源</b>  金十\n"
@@ -681,7 +683,7 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
         "新闻后 暂无\n"
         "1h 暂无，\n"
         "24h 暂无\n\n"
-        "🧭 <b>方向</b>  利多 · 影响明显\n\n"
+        "🧭 <b>方向</b>  利多 · 资金流\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
         "Tracefold · abc12345"
     )
@@ -693,7 +695,7 @@ def test_sender_renders_each_asset_in_its_own_complete_market_block() -> None:
         source_url="https://x.com/serenity/status/1234567890123456789",
         lead="资金从 BTC 轮动至 ETH",
         direction="bearish",
-        magnitude=3,
+        fact_kind="quantified_flow",
         novelty="",
         assets=("BTC", "ETH"),
         origin="serenity",
@@ -768,7 +770,7 @@ def test_sender_renders_each_asset_in_its_own_complete_market_block() -> None:
         "新闻后 -0.40%\n"
         "1h 暂无，\n"
         "24h +1.70%\n\n"
-        "🧭 <b>方向</b>  利空 · 影响重大\n\n"
+        "🧭 <b>方向</b>  利空 · 资金流\n\n"
         '🔗 <b>来源</b>  <a href="https://x.com/serenity/status/1234567890123456789">serenity 的推特</a>\n'
         "Tracefold · abc12345"
     )
@@ -1127,7 +1129,7 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
     assert _without_timing(observed["text"]) == (
         "🔴 <b>A &lt; B &amp; &lt;inot markup&lt;/i</b>\n\n"
         "利润 &lt; 预期 &amp; 风险上升\n\n"
-        "🧭 <b>方向</b>  利空 · 影响明显\n\n"
+        "🧭 <b>方向</b>  利空 · 资金流\n\n"
         '🔗 <b>来源</b>  <a href="https://www.reuters.com/world/example">路透社</a>\n'
         "Tracefold · abc12345"
     )
@@ -2170,7 +2172,7 @@ def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> Non
         "新闻后 计算中\n"
         "1h 计算中，\n"
         "24h 计算中\n\n"
-        "🧭 <b>方向</b>  利多 · 影响明显\n\n"
+        "🧭 <b>方向</b>  利多 · 资金流\n\n"
         "新闻时间  14:32\n"
         "推送时间  14:32\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
@@ -2187,7 +2189,7 @@ def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> Non
         "新闻后 +1.10%\n"
         "1h +0.80%，\n"
         "24h +7.91%\n\n"
-        "🧭 <b>方向</b>  利多 · 影响明显\n\n"
+        "🧭 <b>方向</b>  利多 · 资金流\n\n"
         "新闻时间  14:32\n"
         "推送时间  14:32\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
@@ -2237,7 +2239,7 @@ def test_a_card_over_the_bound_gives_up_its_bottom_blocks_and_keeps_its_source()
     whole = _sent_text(_wide_card(107))
     clipped = _sent_text(_wide_card(108))
 
-    assert "🧭 <b>方向</b>  利多 · 影响明显" in whole
+    assert "🧭 <b>方向</b>  利多 · 资金流" in whole
     assert _telegram_text_length([clipped]) <= _TELEGRAM_TEXT_MAX
     assert "🧭 <b>方向</b>" not in clipped
     assert "AAA0107" not in clipped and "🎯 <b>标的</b>  AAA0106" in clipped

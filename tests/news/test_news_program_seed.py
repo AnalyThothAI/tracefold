@@ -13,6 +13,7 @@ import re
 
 import pytest
 
+from tracefold.news.models import FACT_KINDS
 from tracefold.news.program.artifact import (
     build_code_owned_program_state,
     build_predictor_state,
@@ -80,16 +81,28 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
     ):
         assert marker in taxonomy, marker
     for marker in (
-        "2: clearly tradable",
-        "A product state change is magnitude 2, not a milestone",
+        "## fact_kind",
+        "It is a reading of the text, not of the reader",
         "Securities Investigation Notice",
         "restatement: the same fact as one told entry",
         # #651 §6.3: the seed's own direction reading stopped being an exemption, because
         # `grounded_restatement` stopped honouring one. The absolute sentence is asserted absent below.
         "Your own direction reading is not a fact about the world",
-        "reader_value is the model-owned editorial intent",
     ):
         assert marker in semantics, marker
+    # #675 §1: the seed stopped carrying policy. No threshold, no reader value, no importance scale —
+    # the words a reviewer would argue with live in `decide()`, where a replay can settle the argument.
+    for retired in (
+        "reader_value",
+        "magnitude",
+        "realtime",
+        "TradeRelevanceV1",
+        "impact_breadth",
+        "at least 5% on the day",
+        "background for",
+        "background or none",
+    ):
+        assert retired not in semantics, retired
     for marker in (
         "Write a faithful Chinese reading of the original headline",
         "every decision-relevant number",
@@ -253,49 +266,63 @@ def test_the_bounds_no_longer_refuse_ordinary_editorial_prose() -> None:
 
 
 def test_the_event_semantics_seed_carries_the_product_definition() -> None:
-    """#504 D4 (PR-B): the seed states who the reader is, defines the three reader_value tiers against that
-    reader, no longer calls "a new actor's own action" a progression, and asks for the listed ticker instead of
-    forbidding one. The rest of the seed — magnitude table, price a-e, crypto product examples — is untouched."""
+    """#504 D4 (PR-B) and #675 §1: the seed states who the reader is, defines the ten `fact_kind` values
+    against the *text* rather than against that reader, no longer calls "a new actor's own action" a
+    progression, and asks for the listed ticker instead of forbidding one.
+
+    The reader sentence stays because it is what grounds asset selection and the macro transmission chain.
+    What left with #675 is every sentence that told the model what the reader should receive: the tier
+    definitions, the importance scale and the five-point price calibration whose condition `e` admitted
+    the Tencent card are `decide()`'s to state, and `decide()` can be replayed.
+    """
 
     semantics = seed_instruction("event_semantics")
     for marker in (
         "Reader: trades coins on Binance/OKX/Hyperliquid and US- and Hong Kong-listed stocks",
-        "reader_value: escalate for a fact that changes what the reader trades today",
-        "realtime for a new fact with a tradable instrument or explicit transmission",
-        "background for small-economy data or central-bank talk without G4, Treasury, oil or risk-asset transmission",
-        "one more strike or statement in a running conflict",
+        "state_change: something in the world is now in a different state",
+        "official_measure: an authority took a measure, or ordered one",
+        "statement: somebody said something",
+        "promotion: somebody selling something",
         "a state change such as a ceasefire, a blockade or a sanction in effect",
         "another strike, statement or casualty figure in a conflict told covers",
         "Give a US- or Hong Kong-listed company (02015.HK form) or a listed-token issuer its ticker as primary",
         '"Iranian MP on Fars Telegram: Tehran will retaliate"',
-        '"RBNZ minutes: inflation falling faster than expected"',
         '"TASS: Ukraine lost 1,200 troops in a day"',
         '"Iran strikes Gulf bases hosting US forces after US attacks"',
     ):
         assert marker in semantics, marker
     for retired in ("a new actor's own action", "Never invent a ticker", "escalate only for an immediate systemic"):
         assert retired not in semantics, retired
-    # Unchanged calibrations the product definition must not have displaced.
-    for kept in ("## Magnitude", "Tesla is finally launching the Cybercab"):
+    # The boundary examples the audit argued over, rewritten to the kind rather than deleted.
+    for kept in ("Tesla is finally launching the Cybercab", "Anuma Crosses 200,000 Users", "## evidence_ref"):
         assert kept in semantics, kept
 
 
-def test_the_escalate_tier_no_longer_contradicts_its_own_positive_example() -> None:
-    """#522 D2: the tier excluded "single-source report" while its own example was a single-source strike.
+def test_the_seed_never_states_an_action_or_a_threshold() -> None:
+    """#675 §1, the whole of the seed half of it.
 
-    The 9 h receipt after the #504 deploy had 11 model escalates and 0 delivered ones: the model followed
-    the example, and policy v12 D3 then downgraded every uncorroborated card. Corroboration is a code
-    decision (`source_authority` plus `member_count`), so the seed must state the editorial bar and stop
-    asking the model to guess at sourcing.
+    Two sentences in this file decided what the reader received: the five-point price calibration whose
+    condition `e` admitted any move of 5% or more, and the `reader_value` tier definitions. Both are
+    thresholds, both were unreplayable where they were, and both are now rows of `decide()`. What the
+    seed keeps is the vocabulary: ten kinds of new thing a text can state, each defined by what the words
+    say rather than by who would care.
     """
 
     semantics = seed_instruction("event_semantics")
-    assert "single-source report never is" not in semantics
-    assert "an observable military escalation or official closure" in semantics
-    assert "a threat, intention, one-sided statement, commentary or market recap never is" in semantics
-    assert "Corroboration is decided by code, not by you." in semantics
-    # The positive example the old exclusion contradicted stays: it is the escalate the reader wants.
-    assert '"Iran strikes Gulf bases hosting US forces after US attacks"' in semantics
+    for value_word in (
+        "reader_value",
+        "realtime",
+        "magnitude",
+        "Price-only",
+        "escalate reader value",
+        "Calibrations:",
+        "background for",
+    ):
+        assert value_word not in semantics, value_word
+    assert "do not weigh how many people care, how tradable it is, or whether it deserves a notification" in semantics
+    # The vocabulary is closed and every member of it is defined in the text the model is sent.
+    for kind in FACT_KINDS:
+        assert f"- {kind}:" in semantics, kind
 
 
 def test_the_reader_card_seed_asks_for_a_condensed_headline_and_a_required_why() -> None:

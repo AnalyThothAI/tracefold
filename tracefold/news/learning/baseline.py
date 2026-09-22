@@ -689,7 +689,7 @@ def _target_predictions(prediction: CandidatePrediction) -> dict[str, dspy.Predi
     editorial = dict(editorial or {})
     return {
         "classification": dspy.Prediction(taxonomy=editorial.get("taxonomy"), editorial=editorial),
-        "understanding": dspy.Prediction(semantics=verdict or None, relevance=editorial.get("relevance")),
+        "understanding": dspy.Prediction(semantics=verdict or None),
         "explanation": dspy.Prediction(card=verdict or None),
     }
 

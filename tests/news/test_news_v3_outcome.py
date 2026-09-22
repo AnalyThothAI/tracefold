@@ -164,10 +164,19 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
     dropped = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
+        triage=_triage("drop", override_rule="fact_kind_promotion"),
+        delivery=None,
+    )
+    assert dropped.reason_zh == "事实类型：营销推广，不推送"
+    # A rule name only historical rows carry still renders, marked as the policy it belongs to: the
+    # verdict retention outlives the policy that wrote it (#675 §1).
+    archived = event_outcome(
+        admission="candidate",
+        published_at_ms=NOW,
         triage=_triage("drop", override_rule="reader_value_none"),
         delivery=None,
     )
-    assert dropped.reason_zh == "无读者价值，不推送"
+    assert archived.reason_zh == "（v15 及以前）无读者价值，不推送"
     degraded = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
@@ -309,13 +318,13 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
     verdict = {
         "headline_zh": "币安上线 XYZ",
         "direction": "bullish",
-        "magnitude": 2,
+        "fact_kind": "state_change",
         "scope": "single_name",
     }
     triage = {
-        **_triage("push", override_rule="trade_relevance_realtime", verdict=verdict),
+        **_triage("push", override_rule="fact_kind_state_change", verdict=verdict),
         "judgment_origin": "model",
-        "judgment_contract_version": "news_judgment_v2",
+        "judgment_contract_version": "news_judgment_v3",
         "model_editorial": {
             "taxonomy": {
                 "event_family": "market_access",
@@ -323,7 +332,6 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
                 "assertion_status": "confirmed",
                 "source_authority": "issuer_first_party",
             },
-            "relevance": {"reader_value": "realtime"},
         },
         "trace": {"storyline_key": "asset:XYZ", "queue_lag_ms": 800},
     }
@@ -352,10 +360,10 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
         event=_event(grounded_assets=["CL", "XYZ-CL", "BTC"]), members=[], verdicts=[], deliveries=[]
     )
     assert cl_steps[1]["summary_zh"] == "已送审 · 关联 CL BTC"
-    assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 影响明显 / 市场准入"
+    assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 状态变化 / 市场准入"
     assert steps[2]["facts"]["taxonomy"]["event_family"] == "market_access"
-    assert steps[2]["facts"]["relevance"] == {"reader_value": "realtime"}
-    assert steps[3]["summary_zh"] == "推送 · 交易相关性达到实时推送标准"
+    assert steps[2]["facts"]["fact_kind"] == "state_change"
+    assert steps[3]["summary_zh"] == "推送 · 事实类型：状态变化，推送"
     assert steps[4]["summary_zh"] == "已送达" and steps[4]["at_ms"] == NOW + 9_500
     assert steps[3]["facts"]["storyline_zh"] == "XYZ"
 
@@ -512,7 +520,7 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
     assert reasons[0] == {
         "stage": "drop",
         "key": "reader_value_none",
-        "label_zh": "无读者价值，不推送",
+        "label_zh": "（v15 及以前）无读者价值，不推送",
         "count": 60,
     }
     assert {r["stage"] for r in reasons} == {"gate", "drop", "throttle", "push", "degraded", "ungrounded"}
