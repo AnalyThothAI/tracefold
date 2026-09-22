@@ -250,10 +250,12 @@ class TriageConsumer:
             return
         if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v3":
             raise PermanentError("news_event_evidence_v3_required")
-        facts = _gate_facts(card, self.watchlist_symbols)
         arm = await self._select_arm(card, event_id=event_id, stamp=stamp)
         prepared_evidence = await prepare_evidence(self.db, card, catalog=bundle.catalog_candidates, clock=now_ms)
         stamp = prepared_evidence.cutoff_at_ms
+        # After the freeze, not before it: the members' text digests are read there, and the independent
+        # text count is a Gate fact the v15 decision table consumes (#675 §3).
+        facts = _gate_facts(card, self.watchlist_symbols, prepared_evidence=prepared_evidence)
         history = await self.db.read(
             "news_triage_prepared_history",
             lambda repos: _read_history(repos.news, event_id=event_id, card=card, now_ms=stamp),
@@ -691,12 +693,13 @@ class TriageConsumer:
             card,
             history,
             event_id=event_id,
-            facts=_gate_facts(card, self.watchlist_symbols),
+            facts=_gate_facts(card, self.watchlist_symbols, prepared_evidence=prepared_evidence),
             stamp=stamp,
             queue_lag_ms=queue_lag_ms,
             catalog_candidates=bundle.catalog_candidates,
             prepared_evidence=prepared_evidence,
         )
+        trace["independent_text_count"] = refreshed.facts.independent_text_count
         if refreshed.prelim_key != route.prelim_key:
             trace["first_storyline_key_preliminary"] = route.prelim_key
             trace["storyline_key_preliminary"] = refreshed.prelim_key

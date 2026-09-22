@@ -15,10 +15,20 @@ independent connected-fact clusters are scored, the result is
 - Taxonomy version: `news_taxonomy_v1`.
 - IPTC Media Topics snapshot: `2026-01-05`, 35 reviewed qcodes.
 - Codebook SHA: `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`.
-- Source-authority classifier: `news_source_authority_v3`, registry SHA
-  `9aa960aa5ff29d08b4a0223c5a745ac767f9161f7862885818d2d0035917da50`.
-- Production Program: `news_semantic_program_v10`, Program SHA
-  `5454071e2981e09f9672b1fdd0490473072c1fb641292c600856b7659b13107a`.
+- Source-authority classifier: `news_source_authority_v4`, registry SHA
+  `5e7c36663b40dd4227a7535eb14496e410ad02e2109139e6b5de64e926f60325`.
+  v4 (#675) adds the official government and military identities a 7-day
+  production sample carried as `unknown` — CENTCOM, the Department of War, the
+  White House, POTUS and the State Department spokesperson as first-party
+  names and handles, `war.gov`, `treasury.gov`, `justice.gov`,
+  `federalreserve.gov` and `house.gov` as first-party registered domains, and
+  the SEC's own account beside `sec.gov` as a regulatory one. The standing
+  exclusions are unchanged: a personal account, a relay and a belligerent's
+  state media stay out, and so does a government press office whose posts are
+  political messaging about a third party.
+- Production Program: `news_semantic_program_v12`, Program SHA
+  `a5b99b8060b7cda22f567b29f2e80580fdaca642fc57a95273e72cb398e02402`.
+- Triage policy: `news_triage_policy_v15`.
 - Review contract: `news_review_v7`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured
@@ -236,14 +246,28 @@ not exist. The Candidate still passes the existing evaluator and release path.
 ## Non-authority and rollback
 
 The four model-owned axes (`subject_codes`, `event_family`, `change_state`,
-`assertion_status`) never enter `decide()`, Gate, ReaderCard, Delivery, or
-Trading, and changing them alone must not change any of those. The code-owned
-`source_authority` field is different: since policy v12 (#504) `decide()`
-reads it once, as issued from the evidence — from `editorial.source_authority`
-since #651 moved it out of the taxonomy object, so that a failed taxonomy call
-cannot take the corroboration fact down with the label —
-as the escalate corroboration fact — an eligible `escalate` from an `unknown`
-source with a single Event member is downgraded to `push`. It is an
+`assertion_status`) never enter Gate, ReaderCard, Delivery, or Trading, and
+changing them alone must not change any of those. They do enter `decide()`, and
+since policy v15 (#675) that is deliberate: `event_family`, `change_state` and
+`assertion_status` are three of the input columns of the decision table, whose
+three rows can downgrade a `trade_relevance_realtime` push to `drop`. Nothing
+else reads them and nothing reads `subject_codes`. The rows are one-directional —
+they withhold and never admit — they are silent whenever
+`taxonomy_status` is `unavailable`, and they cannot reach the escalate,
+deterministic-listing or watchlist-objective paths at all, so a classification
+error can cost a reader a card but can never manufacture one, change a card's
+text, or reach Trading. The earlier wording of this paragraph said the axes never
+enter `decide()`; #117 and #501 wrote it when `decide()` read only the model's
+own relevance enums, and #675 withdraws it in favour of the narrower statement
+above, which is the one the code enforces.
+
+The code-owned `source_authority` field has read this way since policy v12
+(#504): `decide()` reads it as issued from the evidence — from
+`editorial.source_authority` since #651 moved it out of the taxonomy object, so
+that a failed taxonomy call cannot take the corroboration fact down with the
+label — as the escalate corroboration fact, where an eligible `escalate` from an
+`unknown` source with a single Event member is downgraded to `push`, and since
+v15 as the second column of `conflict_claim_uncorroborated`. It is an
 evidence-side fact carried on the editorial envelope, not a model judgment, and
 it is not recomputed inside `decide()`. Since #501 taxonomy is the second of three serial Predictors
 (`event_semantics -> taxonomy -> reader_card`); the common successful production

@@ -1132,6 +1132,7 @@ class CandidateEvaluator:
             judgment,
             self._datasets._policy_metric_projection(case, state, context=context, arm=arm),
             member_count=context.evidence.member_count,
+            independent_text_count=max(1, int(getattr(context.prepared_evidence, "independent_text_count", 0) or 0)),
             now_ms=context.now_ms,
         )
         delivered = decision.final in {"push", "escalate"}

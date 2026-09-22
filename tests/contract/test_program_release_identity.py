@@ -22,7 +22,10 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "d386ec57a6218d3ac1352ebaa43c269308b3b964added6c02736ddc436ec47b6"
+# #675 §3: the envelope carries the source-authority registry, and the registry gained the official
+# government and military accounts the 24 h audit found classified as `unknown`. Nothing about the
+# request shape, the output contracts or the route budget moved.
+NEWS_EXECUTION_ENVELOPE_SHA256 = "bce60aff0045c50c3195ecfe4d0cd29fa3614422cac8500f2e963f1b7c4e6454"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -36,12 +39,19 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "d386ec57a6218d3ac1352ebaa43c269308b3b964added6
 # half of that change a hash can hold: the novelty contract lost the absolute "a direction flip is never a
 # restatement" sentence, so the seed and `grounded_restatement` now say the same thing. The pin is separate
 # from `NEWS_STABLE_PROGRAM_SHA256`, which also moved because the image is now the native state document.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "81dc12423df3d80de595ee349a04e6f4a630f09a3cd2f8ea34f9890f9408ffef"
+# #675 PR-1 moves the EventSemantics instruction twice over: the whole `Price-only a-e calibration`
+# section is deleted, because a threshold the reader can argue with belongs in `decide()` where it can
+# be replayed; and the novelty contract names the 60-minute episode, so a second outlet, another
+# sentence or an added figure of an announcement already told is a restatement rather than a
+# progression. The taxonomy and ReaderCard instructions are byte-identical.
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "d0aba18f914ecce5ee3a169a6c4f5a54263c3c06122a991fd5754c3b5c1b4347"
 
 # #651 re-pins this over the native DSPy state document rather than three instruction strings. The
 # instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
 # the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
-NEWS_STABLE_PROGRAM_SHA256 = "4d60f9a048db6c4d0cf751df1c0a067bc9cab64d0b6aed8a9517137a3fb1f93a"
+# #675 PR-1 re-pins it because the seed moved: the packaged image is the state document, so a seed edit
+# is a new image. Regenerated with `python -m tracefold.app.cli.commands.news_program_artifact`.
+NEWS_STABLE_PROGRAM_SHA256 = "a5b99b8060b7cda22f567b29f2e80580fdaca642fc57a95273e72cb398e02402"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
@@ -85,7 +95,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "program_sha256": load_stable_program_state().program_sha256,
     } == {
         "program_version": "news_semantic_program_v12",
-        "policy_version": "news_triage_policy_v14",
+        "policy_version": "news_triage_policy_v15",
         "review_rubric_version": "news_review_v7",
         "metric_id": "tracefold.news.production_action_trade_relevance_v11",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,

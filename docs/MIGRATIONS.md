@@ -546,3 +546,31 @@ validating the replacement CHECK. Lock timeout is 5 seconds and statement timeou
 and ledger validation at production scale remain unmeasured. Failure rolls back
 atomically; recover by rolling forward or restoring a verified backup. Downgrade
 refuses. Remove the retired webpage configuration key before the new image starts.
+
+
+### 20260922_0386: News triage policy v15 (#675 PR-1)
+
+Adds `news_triage_policy_v15` to the model, OI and degraded branches of
+`news_verdicts_current_judgment_check`. `decide()` gains the #675 §3 decision
+table — three ordered rows that read the taxonomy axes, `source_authority`, the
+Event's count of independent member texts and the told ledger, and downgrade an
+already-resolved realtime push to `drop` — so `TRIAGE_POLICY_VERSION` moves and
+every verdict of every origin is written under the new value. Old Workers cannot
+write under the new CHECK and new Workers cannot write under the old one, so
+there is no overlap window.
+
+The revision restates the existing predicate in place, the way `0385` does,
+rather than retyping a 200-line expression shared by four judgment origins: it
+reads `pg_get_constraintdef`, refuses a definition that does not name v14 or that
+already names v15, adds the new literal to the three policy lists, and re-adds
+the constraint. The liquidation branch carries its own policy version and is
+untouched. No column, index or function changes; the new rule names are ordinary
+`override_rule` text and need no vocabulary change in the database.
+
+Run behind the normal stopped-writer migration gate: one ACCESS EXCLUSIVE drop
+and add on `news_verdicts`, lock timeout 5 seconds, statement timeout 1800
+seconds because ADD CONSTRAINT revalidates every row through the canonical-JSON
+sha256 predicate. No row rewrite, no backfill; verdicts written under v11-v14 keep
+validating and are not rewritten. Failure rolls back atomically; recover by
+rolling forward or restoring a verified backup. Downgrade refuses. The matching
+image also carries a new Program SHA, because the EventSemantics seed moved.

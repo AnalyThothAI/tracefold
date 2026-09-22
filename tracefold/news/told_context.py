@@ -29,6 +29,16 @@ TOLD_SOURCE_MAX: Final[int] = RECENT_HISTORY_MAX + TARGETED_EXACT_MAX + TARGETED
 TOLD_MAX: Final[int] = 16
 TOLD_STORYLINE_TIER_MAX: Final[int] = 8
 TOLD_SYMBOLS_MAX: Final[int] = 6
+# #675 §2 A1: slots the last hour of delivered cards holds whatever tier they earned, newest first, ahead of
+# every ranked row. The 2026-09-22 audit traced 37 reviewer-labelled duplicate pairs through all four layers
+# that measure "same fact": in 21 of them the earlier card was simply *not in the ledger the model judged
+# against*, because 48 h of same-instrument and same-storyline rows outranked it and recency was only filler.
+# The model cannot call a card a restatement of something it was never shown, and it is the only layer that
+# can read a cross-language or rewritten repeat at all. So the fix is to the ledger's membership, not to any
+# threshold: six of the sixteen slots belong to what the reader received in the last hour, which is the window
+# the duplicates actually arrive in, and the other ten still go to the most related rows however old.
+TOLD_RECENCY_RESERVED: Final[int] = 6
+TOLD_RECENCY_WINDOW_MS: Final[int] = 60 * 60_000
 # The tier boundary for a cross-storyline row: at or above this pg_trgm score a row is shown as a same-fact
 # title match rather than as recency filler. On the 2026-09-01 audit 0.15 admits 2.2% of random English title
 # pairs and 0.25 admits 0.10%; the labelled duplicates sit at a median of 0.19 (cross-window) to 0.27 (already
@@ -44,7 +54,7 @@ TOLD_TIER_ORDER: Final[tuple[ToldTier, ...]] = (
     "fact_similarity",
     "recency",
 )
-TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v6"
+TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v7"
 TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
     {
         "selector": TOLD_SELECTOR_ID,
@@ -84,6 +94,12 @@ TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
         "similarity_min": TOLD_FACT_SIMILARITY_MIN,
         "similarity_ranking": "raw_score_in_every_tier",
         "rank_order": ["tier", "-similarity", "-at_ms", "event_id"],
+        "recency_reservation": {
+            "slots": TOLD_RECENCY_RESERVED,
+            "window_ms": TOLD_RECENCY_WINDOW_MS,
+            "fill_order": ["-at_ms", "event_id"],
+            "position": "merged_into_rank_order",
+        },
         "storyline_tier_max": TOLD_STORYLINE_TIER_MAX,
         "dedup": "event_id",
         "excludes_candidate": True,
@@ -205,6 +221,35 @@ def _take_with_tier_caps(ranked: Sequence[_Ranked], *, limit: int) -> list[_Rank
     return chosen[:limit]
 
 
+def _take_with_recency_reservation(ranked: Sequence[_Ranked], *, limit: int, now_ms: int) -> list[_Ranked]:
+    """Reserve slots for the last hour of deliveries, then fill the rest by tier exactly as before (#675 §2).
+
+    The reservation decides *membership*, which is the defect it was written for: in 21 of the 37 duplicate
+    pairs the audit traced, the card that was repeated had simply not been selected, so the model could not
+    have called anything a restatement of it. Six slots go to the newest deliveries inside the window
+    whatever tier they earned, and nothing else about the selection moves.
+
+    It deliberately does not reorder the ledger. Rank order is the one thing the ledger promises the model
+    -- the seed tells it the entries come most-related first, and an exact-fingerprint match from 24 h ago is
+    more use to a novelty judgment than an unrelated card from a minute ago is -- so the reserved rows are
+    merged back into their ranked positions rather than pinned to the front. A row that recency admits and
+    that also earned a tier is selected once, at its tier.
+
+    The reservation is a floor, not a quota: fewer rows inside the window leave their slots to the ranked
+    remainder. It is the only thing that can now take a slot from an evidence tier, and it can take at most
+    ``TOLD_RECENCY_RESERVED`` of them.
+    """
+
+    reserved = max(0, min(TOLD_RECENCY_RESERVED, limit))
+    cutoff = int(now_ms) - TOLD_RECENCY_WINDOW_MS
+    # ``item[2]`` is ``-at_ms``: ascending on it is newest first, and ``item[3]`` breaks a tie by event id.
+    recent = sorted((item for item in ranked if -item[2] >= cutoff), key=lambda item: (item[2], item[3]))[:reserved]
+    taken = {item[3] for item in recent}
+    rest = _take_with_tier_caps([item for item in ranked if item[3] not in taken], limit=limit - len(recent))
+    chosen = taken | {item[3] for item in rest}
+    return [item for item in ranked if item[3] in chosen]
+
+
 class ToldLedgerSnapshot(_ExactContractModel):
     """The candidate-conditioned slice of bounded reader history visible to EventSemantics."""
 
@@ -272,7 +317,7 @@ class ToldLedgerSnapshot(_ExactContractModel):
             # no tier is a better use of a filler slot than the newest of them.
             ranked.append((TOLD_TIER_ORDER.index(tier), -score, -at_ms, event_id, row, tier, score))
         ranked.sort(key=lambda item: item[:4])
-        chosen = _take_with_tier_caps(ranked, limit=bounded)
+        chosen = _take_with_recency_reservation(ranked, limit=bounded, now_ms=now_ms)
         return cls(
             storyline_key=storyline_key,
             source_count=len(deduped),
@@ -306,6 +351,8 @@ __all__ = [
     "NEWS_RETRIEVAL_SHA256",
     "TOLD_FACT_SIMILARITY_MIN",
     "TOLD_MAX",
+    "TOLD_RECENCY_RESERVED",
+    "TOLD_RECENCY_WINDOW_MS",
     "TOLD_SELECTOR_ID",
     "TOLD_SELECTOR_SHA256",
     "TOLD_SOURCE_MAX",

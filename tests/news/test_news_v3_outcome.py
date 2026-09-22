@@ -16,6 +16,7 @@ from tracefold.news.outcome import (
     throttled_by_zh,
 )
 from tracefold.news.timeline import event_timeline
+from tracefold.news.triage_rules import DECISION_TABLE_RULES
 
 NOW = 1_800_000_000_000
 
@@ -264,6 +265,9 @@ def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_c
         "trade_relevance_inconsistent",
         "trade_relevance_realtime",
         "watchlist_objective_guard",
+        # #675 §3: the policy-v15 decision table's three rows. They are ordinary `drop` rules, so they
+        # appear in `dropped_by_rule` beside `restatement` and owe the reader the same named reason.
+        *DECISION_TABLE_RULES,
     }
     missing = sorted(rule for rule in current_rules if rule not in OVERRIDE_RULE_ZH)
     assert missing == []

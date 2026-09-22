@@ -82,8 +82,6 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
     for marker in (
         "2: clearly tradable",
         "A product state change is magnitude 2, not a milestone",
-        "a. The text says a level was crossed",
-        "e. The move itself is at least 5% on the day",
         "Securities Investigation Notice",
         "restatement: the same fact as one told entry",
         # #651 §6.3: the seed's own direction reading stopped being an exemption, because
@@ -161,6 +159,67 @@ def test_the_novelty_contract_no_longer_exempts_the_model_s_own_direction() -> N
         assert counterexample in semantics, counterexample
 
 
+def test_price_move_admissibility_left_the_seed_for_the_decision_table() -> None:
+    """#675 §1: the a-e calibration was the model being handed a policy, and it executed it correctly.
+
+    The Tencent card that opened #675 is condition `e` -- "at least 5% on the day, regardless of asset
+    class" -- applied to a single stock, which is exactly what the sentence said to do. A threshold a
+    reviewer wants to change has to live where it can be tested and replayed, so the whole section is gone
+    and `triage_rules.price_move_basis` owns the question. The seed keeps no shadow copy of it: not the
+    lettered conditions, not the thresholds, and not the worked examples that taught the pairing.
+    """
+
+    semantics = seed_instruction("event_semantics")
+
+    assert "## Price-only a-e calibration" not in semantics
+    for retired in (
+        "The text says a level was crossed",
+        "at least 5% on the day",
+        "Apply the same a-e test",
+        "Spot Palladium Rises Nearly 3%",
+        "Shares of Samsung Electronics Rise Over 3%",
+        "韩国 KOSPI 日内涨 6.00%",
+        "Bitcoin reclaims $66,000",
+    ):
+        assert retired not in semantics, retired
+    # The one price example still in the seed is an exclusion, not an admissibility threshold.
+    assert "Price-only" not in semantics
+
+
+def test_the_novelty_contract_calls_a_second_line_of_one_announcement_a_restatement() -> None:
+    """#675 §2 A2: `progression` was wide enough to cover the three cards of one press release.
+
+    The audit found the model calling 16 of 16 same-fact pairs `progression` or `new_fact` when the earlier
+    card *was* in the ledger, because "a decision-relevant new quantity" and "a new subject action" read as
+    a licence for the second sentence of an announcement. The definition now names the 60-minute episode
+    and the three negative examples the audit produced.
+    """
+
+    semantics = seed_instruction("event_semantics")
+
+    assert (
+        "Within 60 minutes of a told entry about the same announcement, a second outlet, another sentence "
+        "of it, an added figure, a date it already implied or a list of its participants is restatement, "
+        "not progression." in semantics
+    )
+    assert "only a state change, a new subject's own action, or an execution result starts a new one" in semantics
+    # A supplementary figure is no longer listed as a reason to call something a progression.
+    assert "a decision-relevant new quantity" not in semantics
+    for counterexample in (
+        # One Meta press release, three cards in three minutes.
+        '"Meta - Petal Subsea Cable Expected to Enter Service in 2029 Doubling Capacity" is restatement/restates 0',
+        "Partners with NEC, Sumitomo Electric Industries, and Orange for Petal Cable",
+        # The purchase, then an outlet retelling it beside a price line.
+        "BARRONS: Bitcoin Is at Its Highest Price Since January. Strategy Buys Crypto",
+        # The same announcement to a second broadcaster, hours later.
+        "All Iranian airlines to be 'shut down' from Wednesday, Bessent tells CNBC",
+    ):
+        assert counterexample in semantics, counterexample
+    # The selector's reservation is stated where the model reads the ledger (#675 §2 A1).
+    assert "Six of the slots are reserved for whatever the reader received in the last 60 minutes" in semantics
+    assert "ordered most-related first, not newest first" in semantics
+
+
 def test_the_event_semantics_seed_no_longer_carries_any_taxonomy_label() -> None:
     """Taxonomy left EventSemantics for its own Predictor; the old text must not keep teaching it."""
 
@@ -217,7 +276,7 @@ def test_the_event_semantics_seed_carries_the_product_definition() -> None:
     for retired in ("a new actor's own action", "Never invent a ticker", "escalate only for an immediate systemic"):
         assert retired not in semantics, retired
     # Unchanged calibrations the product definition must not have displaced.
-    for kept in ("## Magnitude", "## Price-only a-e calibration", "Tesla is finally launching the Cybercab"):
+    for kept in ("## Magnitude", "Tesla is finally launching the Cybercab"):
         assert kept in semantics, kept
 
 

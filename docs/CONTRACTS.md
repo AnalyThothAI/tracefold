@@ -988,7 +988,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_title_norm_v2`, `news_gate_v6`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v2`,
 `news_semantic_program_v12`,
-`news_triage_policy_v14`, `news_delivery_card_v11`, artifact schema
+`news_triage_policy_v15`, `news_delivery_card_v11`, artifact schema
 `news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and
 `news_liquidation_fact_v2` are retired program versions: the deterministic
@@ -1165,9 +1165,30 @@ grounded watchlist, eligible `reader_value=escalate`, eligible
 (`trade_relevance_escalate_uncorroborated`: eligible `escalate` with
 code-owned `editorial.source_authority = unknown` and a single Event member becomes a
 `push`) and `single_name_without_instrument` (eligible realtime `single_name`
-with no primary asset drops); the retained stale-source and same-fact checks
+with no primary asset drops); then the v15 decision table (#675); the retained
+stale-source and same-fact checks
 and the per-storyline budget run after action selection. There is no
-reader-global quota. Retired quota and v9
+reader-global quota.
+
+The v15 decision table is three ordered rows over facts the code already owns.
+It sees only a push the `trade_relevance_realtime` branch produced — the
+deterministic listing, watchlist-objective and escalate paths are byte-identical
+to v14 — it can only downgrade that push to `drop` under the row's own name, and
+it is silent whenever `editorial.taxonomy_status` is `unavailable`. In order:
+`price_report_without_basis` (taxonomy `market_flow_price` + `reported` whose own
+title and `headline_zh` state no level crossed, period record, quantified flow,
+stablecoin depeg or freight rate in either language, and which is not a same-day
+move of >= 5% on a primary asset whose `market_type` is `commodity` or `index`);
+`conflict_claim_uncorroborated` (`geopolitical_conflict` + `source_authority =
+unknown` + `assertion_status` in `claimed`/`rumor` + at most one independent
+member text, unless `development_delta = state_change` and the told ledger holds
+fewer than two entries on this storyline key inside 4 h); and
+`conflict_running_storyline` (`geopolitical_conflict` on a `conflict:` key with
+at least one told entry on that key inside 4 h and `development_delta` other than
+`state_change`). The corroboration input is the count of distinct
+`evidence_text_sha256` values across the Event's frozen members, carried on the
+verdict trace as `independent_text_count`; the escalate rule above deliberately
+still reads `member_count`. Retired quota and v9
 action/priority keys
 are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and

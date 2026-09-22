@@ -115,6 +115,11 @@ class PreparedEvidence(Exact):
     missing: tuple[str, ...] = ()
     member_candidate_count: int = 0
     member_selected_count: int = 0
+    # #675 §3: distinct `evidence_text_sha256` values across the Event's frozen members, which is the count
+    # of independent texts behind this fact. `member_count` counts arrivals, and the same wire arriving twice
+    # is two arrivals and one text. Defaults to 0 for an archived snapshot written before this field existed,
+    # which is why the consumer floors it at 1 rather than reading 0 as "no evidence at all".
+    independent_text_count: int = 0
     elapsed_ms: int = 0
     token_measurement: str = "utf8_bytes_upper_bound_not_tokenizer"
 
@@ -423,6 +428,29 @@ def frozen_members(card: Mapping[str, Any]) -> tuple[list[dict[str, Any]], tuple
     )
     ordered = [leader, *(dict(row) for row in members if row["item_id"] != leader_id)]
     return ordered[:MEMBER_CANDIDATES], (("member_candidates_truncated",) if len(ordered) > MEMBER_CANDIDATES else ())
+
+
+def independent_text_count(members: Sequence[Mapping[str, Any]], metadata: Sequence[Mapping[str, Any]]) -> int:
+    """How many distinct member texts this Event has (#675 §3).
+
+    One per distinct non-empty `evidence_text_sha256`, plus one for each member whose body has not been
+    persisted yet — a member with no digest is a separate arrival whose text we cannot compare, and
+    collapsing those into one would understate corroboration rather than overstate it. Unlike
+    :func:`select_members` this ignores the availability cutoff: it is a fact about the Event, not about
+    what the Program is allowed to read at this instant.
+    """
+
+    digests = {row["item_id"]: row.get("evidence_text_sha256") for row in metadata}
+    empty = text_sha("")
+    seen: set[str] = set()
+    unhashed = 0
+    for member in members:
+        digest = digests.get(member["item_id"])
+        if digest and digest != empty:
+            seen.add(str(digest))
+        else:
+            unhashed += 1
+    return len(seen) + unhashed
 
 
 def select_members(

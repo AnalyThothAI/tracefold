@@ -20,7 +20,13 @@ GATE_POLICY_VERSION = "news_gate_v6"
 # label the model may have failed to produce. The rule itself is unchanged, and so is every action it
 # takes -- but a judgment whose taxonomy call failed now reaches it with the authority intact, which
 # under v13 it could not have done at all.
-TRIAGE_POLICY_VERSION = "news_triage_policy_v14"
+# v15 (#675 §3) gives `decide()` the facts the code already owned and was not consuming. Three decision
+# rows run after the realtime branch resolves to push and can only downgrade it to `drop`: a price report
+# with no verifiable basis in its own text, an uncorroborated conflict claim, and one more item on a
+# conflict storyline the reader was already reading. They read the taxonomy axes, `source_authority`, the
+# count of independent member texts and the told ledger -- every one of them a stored fact on the day the
+# two #675 cards shipped -- and they leave the escalate, listing and watchlist paths byte-identical to v14.
+TRIAGE_POLICY_VERSION = "news_triage_policy_v15"
 DELIVERY_CARD_VERSION = "news_delivery_card_v11"
 
 # What the editorial Gate can decide about one Event. Three market admissions left this vocabulary
