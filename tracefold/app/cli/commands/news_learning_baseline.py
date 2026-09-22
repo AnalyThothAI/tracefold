@@ -398,10 +398,12 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     from tracefold.news.program.artifact import render_model_evidence_json
     from tracefold.news.review.desk import DeskQuery, Principal, ReviewDesk, TaskRef
     from tracefold.news.review.drafter import (
+        DEFAULT_DRAFT_CONCURRENCY,
         ReviewDrafter,
         TaxonomyBlindDrafter,
         build_draft_batch,
         build_drafter_lm,
+        merge_spend,
     )
 
     taxonomy_models = tuple(part.strip() for part in str(args.taxonomy_models).split(",") if part.strip())
@@ -502,6 +504,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             TaxonomyBlindDrafter(lm_for(taxonomy_models[0])),
             TaxonomyBlindDrafter(lm_for(taxonomy_models[1])),
         ),
+        concurrency=int(getattr(args, "concurrency", 0) or DEFAULT_DRAFT_CONCURRENCY),
     )
     payload = batch.model_dump(mode="json")
     payload["batch_sha256"] = batch.batch_sha256
@@ -523,6 +526,10 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "with_gold": len(with_gold),
             "taxonomy_disagreement": len(batch.taxonomy_drafters["disagreement_task_ids"]),
             "failed": len(batch.drafts) - len(drafted),
+            # The daily audit runs on a paid route (#675 §4), so the receipt states what it cost: physical
+            # calls, tokens and observed cost per model, with the calls whose provider stated no cost
+            # counted separately rather than folded in as zero. `--limit` is the only cap.
+            "spend_by_model": merge_spend(batch.drafter.get("spend"), batch.taxonomy_drafters.get("spend")),
             "note": "proposals only - an owner-authorized reviewer accepts through `tracefold news review submit`",
         },
     }

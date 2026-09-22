@@ -85,6 +85,8 @@ def _open_event(
     bundle_sha: str = ACTIVE_BUNDLE,
     program_sha256: str = "b" * 64,
     relevance_overrides: dict[str, object] | None = None,
+    final_decision: str = "push",
+    throttled_by: str | None = None,
 ) -> str:
     repos = repositories_for_connection(conn)
     wire = {
@@ -154,9 +156,9 @@ def _open_event(
             judgment_contract_version=JUDGMENT_CONTRACT_VERSION,
             judgment_origin="model",
             rule_baseline_decision="drop",
-            final_decision="push",
+            final_decision=final_decision,
             override_rule="trade_relevance_realtime",
-            throttled_by=None,
+            throttled_by=throttled_by,
             verdict=verdict.model_dump(mode="json"),
             model_editorial=editorial.model_dump(mode="json"),
             judgment_sha256=judgment.scored_judgment_sha256,
@@ -708,6 +710,98 @@ def test_high_reaction_accepted_review_is_release_eligible_like_any_other_stratu
     }
     coverage = desk.open(DeskQuery(view="coverage"), principal=PRINCIPAL)
     assert coverage["funnel"]["accepted"] == 1
+
+
+def _accept(conn, desk: ReviewDesk, event_id: str, should_push: str) -> str:
+    repos = repositories_for_connection(conn)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    with repos.transaction():
+        desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            _rubric(should_push=should_push),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+    return str(task["selection"]["stratum"])
+
+
+def test_the_daily_audit_ratios_group_accepted_judgments_by_stratum(conn) -> None:
+    """#675 §4. `keep_ratio_sent_24h` and `missed_ratio_dropped_24h` are shares of *accepted judgments*,
+    not of cards, so each one publishes the two numbers it was divided from. `uncertain` is in both
+    denominators and in neither numerator, and a judgment from another stratum is in neither."""
+
+    desk = ReviewDesk(conn, now_ms=NOW)
+    delivered = [
+        _open_event(conn, hit_id=112101, title="Micron lifts DRAM guidance for the December quarter"),
+        _open_event(conn, hit_id=112102, title="Samsung says HBM4 qualification finished ahead of plan"),
+        _open_event(conn, hit_id=112103, title="SK Hynix raises contract prices for enterprise SSDs"),
+    ]
+    dropped = [
+        _open_event(
+            conn,
+            hit_id=112104,
+            title="Brazil central bank leaves the Selic rate unchanged",
+            delivered=False,
+            final_decision="drop",
+        ),
+        _open_event(
+            conn,
+            hit_id=112105,
+            title="Norwegian sovereign fund posts a quarterly loss on equities",
+            delivered=False,
+            final_decision="drop",
+        ),
+    ]
+    throttled = _open_event(
+        conn,
+        hit_id=112106,
+        title="Tokyo utility signs a ten-year LNG offtake agreement",
+        delivered=False,
+        final_decision="throttled",
+        throttled_by="storyline:asset:MU:budget",
+    )
+    # A task the relevance sampler pulls into its own stratum. It is a real accepted judgment and it must
+    # not land in either product ratio, which is the whole point of grouping by stratum.
+    elsewhere = _open_event(
+        conn,
+        hit_id=112107,
+        title="Weekly column revisits container freight rates",
+        delivered=False,
+        final_decision="drop",
+        relevance_overrides={"development_delta": "color_only"},
+    )
+
+    assert [
+        _accept(conn, desk, event_id, label)
+        for event_id, label in zip(delivered, ("must_push", "should_hold", "uncertain"), strict=True)
+    ] == ["delivered", "delivered", "delivered"]
+    assert [
+        _accept(conn, desk, event_id, label)
+        for event_id, label in zip(dropped, ("should_push", "must_hold"), strict=True)
+    ] == ["model_drop", "model_drop"]
+    assert _accept(conn, desk, throttled, "uncertain") == "throttled"
+    assert _accept(conn, desk, elsewhere, "must_push") == "color_only_progression"
+
+    now_ms = int(
+        conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS n").fetchone()["n"]
+    )
+    pipeline = repositories_for_connection(conn).news.status_snapshot(now_ms=now_ms)["pipeline"]
+
+    assert pipeline["keep_ratio_sent_24h"] == {"ratio": round(1 / 3, 4), "numerator": 1, "denominator": 3}
+    assert pipeline["missed_ratio_dropped_24h"] == {"ratio": round(1 / 3, 4), "numerator": 1, "denominator": 3}
+    # The epoch-clamped release counter still sees every stratum, including the one the ratios exclude.
+    assert pipeline["reviewed_should_push_24h"] == 3
+
+
+def test_a_window_with_no_accepted_judgment_reports_a_null_ratio_over_zero(conn) -> None:
+    """Null over zero, not 0% and not 100%: nobody audited, so there is nothing to read."""
+
+    now_ms = int(
+        conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS n").fetchone()["n"]
+    )
+    pipeline = repositories_for_connection(conn).news.status_snapshot(now_ms=now_ms)["pipeline"]
+    empty = {"ratio": None, "numerator": 0, "denominator": 0}
+    assert pipeline["keep_ratio_sent_24h"] == empty and pipeline["missed_ratio_dropped_24h"] == empty
 
 
 def test_task_version_conflicts_when_delivery_truth_changes(conn) -> None:

@@ -104,6 +104,18 @@ class NewsDuplicatesWithheld24hData(ExactApiSchema):
     all: int = 0
 
 
+class NewsReviewRatio24hData(ExactApiSchema):
+    """One daily-audit product ratio with the two numbers it was divided from (#675 §4).
+
+    The denominator counts accepted review judgments in the window, not cards, so a day nobody audited
+    reads as `null` over zero rather than as a perfect or a catastrophic share.
+    """
+
+    ratio: float | None = None
+    numerator: int = 0
+    denominator: int = 0
+
+
 class NewsPipelineStatusData(ExactApiSchema):
     events_1h: int = 0
     events_24h: int = 0
@@ -132,6 +144,11 @@ class NewsPipelineStatusData(ExactApiSchema):
     pushed_by_rule: dict[str, int] = Field(default_factory=dict)
     reviewed_should_push_24h: int = 0
     reviewed_external_miss_24h: int = 0
+    # The daily sampling loop's two readings. Accepted judgments on the `delivered` stratum that say push,
+    # over all of them; and the same numerator over the `model_drop` + `throttled` strata. No epoch or
+    # release-eligibility filter: these are product metrics, not release evidence.
+    keep_ratio_sent_24h: NewsReviewRatio24hData = Field(default_factory=NewsReviewRatio24hData)
+    missed_ratio_dropped_24h: NewsReviewRatio24hData = Field(default_factory=NewsReviewRatio24hData)
     duplicates_withheld_24h: NewsDuplicatesWithheld24hData = Field(default_factory=NewsDuplicatesWithheld24hData)
     tagged_24h: int = 0
     grounded_24h: int = 0

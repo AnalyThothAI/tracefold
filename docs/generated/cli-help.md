@@ -242,15 +242,18 @@ options:
 
 ```
 usage: tracefold news review [-h]
-                             {queue,evidence,submit,accept-drafts,external-miss} ...
+                             {queue,evidence,submit,accept-drafts,audit-report,external-miss} ...
 
 positional arguments:
-  {queue,evidence,submit,accept-drafts,external-miss}
+  {queue,evidence,submit,accept-drafts,audit-report,external-miss}
     queue               open the deterministic operator review queue
     evidence            show the task-scoped evidence view
     submit              append and accept one rubric or pairwise judgment
     accept-drafts       submit reviewed model drafts through ReviewDesk under
                         the named reviewer's identity
+    audit-report        compare a draft batch with the shipped decisions;
+                        prints disagreements, a one-in-ten agreement sample
+                        and two ratios
     external-miss       append an external miss and its rubric
 
 options:
@@ -353,6 +356,19 @@ options:
                         example taxonomy; omitted keeps null
   --dry-run             report exactly what would be submitted, and write
                         nothing
+
+```
+
+## `news review audit-report`
+
+```
+usage: tracefold news review audit-report [-h] --file FILE [--json]
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE  draft batch produced by `learning draft-reviews`
+  --json       omit the rendered table from the payload, leaving only the
+               machine report
 
 ```
 
@@ -478,7 +494,9 @@ usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
                                              --taxonomy-models TAXONOMY_MODELS
                                              [--limit LIMIT]
                                              [--stratum STRATUM]
-                                             [--include-reviewed] --out OUT
+                                             [--include-reviewed]
+                                             [--concurrency CONCURRENCY]
+                                             --out OUT
 
 options:
   -h, --help            show this help message and exit
@@ -493,6 +511,9 @@ options:
   --stratum STRATUM     restrict the existing ReviewDesk sampler stratum
   --include-reviewed    also draft Events that already carry an accepted
                         review (default: only unjudged ones)
+  --concurrency CONCURRENCY
+                        how many tasks may be drafted at once (1 = the serial
+                        loop); each task still fails on its own
   --out OUT             write the draft batch JSON for authorized review
 
 ```
