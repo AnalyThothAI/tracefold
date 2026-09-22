@@ -25,19 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.identity import comparison_title as normalize_comparison_title
 from ..market_review.storage import MarketReviewCohort, PriceRepository
-from ..models import MarketType
+from ..models import DROP_FACT_KINDS, FACT_KINDS, FactKind, MarketType
 from ..outcome import decision_zh
-from ..program.contracts import (
-    TRADE_AFFECTED_MARKET_ORDER,
-    TRADE_CHANNEL_ORDER,
-    ReaderValue,
-    TradeAffectedMarket,
-    TradeChannel,
-    TradeDevelopmentDelta,
-    TradeImpactBreadth,
-    TradeSurprise,
-    TradeTradability,
-)
 from ..taxonomy import (
     IPTC_CODEBOOK_SHA256,
     IPTC_MEDIA_TOPICS_VERSION,
@@ -47,13 +36,19 @@ from ..taxonomy import (
     ReviewTaxonomyV1,
 )
 
-REVIEW_RUBRIC_VERSION = "news_review_v7"
+REVIEW_RUBRIC_VERSION = "news_review_v8"
 # v7 (#651 §7.2) makes a review task-level: a reviewer answers the questions this Event actually poses
 # and leaves the rest out, instead of having to state a taxonomy, a novelty judgment and a push verdict
 # before one factual defect can be recorded. Earlier rows stay append-only audit history and stay
 # readable through `news_review_records_v1`; they are not eligible for a new dataset, because a v6 row
 # means "every dimension below was answered" and a v7 row does not, so mixing the two contracts would
 # let an absent answer read as a stated one.
+# v8 (#675 §1) changes which questions exist. `magnitude` and the six `trade_*` dimensions labelled
+# fields the Program no longer produces, and `fact_kind` -- a closed ten-value observation of the text --
+# is what replaced them. A v7 row is audit history for the same reason a v6 row is: its `magnitude`
+# label is an accepted answer about a field that is gone, and reading it as supervision for anything
+# current would teach against the Program that exists. The reader contract does not move with it: v8
+# pairs with `reader_contract_v3`, because what the reader is promised did not change here.
 REVIEW_RUBRIC_VERSIONS: tuple[str, ...] = (REVIEW_RUBRIC_VERSION,)
 READER_CONTRACT_VERSION = "reader_contract_v3"
 # This is product truth, not prompt advice.  v2 was the operator-approved
@@ -109,39 +104,32 @@ _DIMENSIONS = {
     "headline_fidelity",
     "asset_grounding",
     "direction",
-    "magnitude",
+    "fact_kind",
     "why_support",
     "why_value",
     "timeliness",
-    "trade_impact_breadth",
-    "trade_tradability",
-    "trade_surprise",
-    "trade_development_delta",
-    "trade_channels",
-    "trade_affected_markets",
-    "reader_value",
     "taxonomy_subject_codes",
     "taxonomy_event_family",
     "taxonomy_change_state",
     "taxonomy_assertion_status",
 }
 _NOVELTY = {"new_fact", "progression", "restatement", "uncertain"}
+# The four `fact_kind` values `decide()` never pushes on their own. It is the same object the policy
+# reads, imported from `models` rather than restated: this module may not import `triage_rules`, but the
+# split belongs to the kinds themselves and a second copy here would be a second policy (#679 review 10).
+_NON_FACT_KINDS: Final[frozenset[str]] = DROP_FACT_KINDS
+# `triage_rules.FACT_KIND_RULES` names every row `fact_kind_<kind>`; this is the half of that name the
+# review plane can read back without importing the policy.
+_FACT_KIND_RULE_PREFIX: Final[str] = "fact_kind_"
 _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
     "asset_grounding": "gate",
     "timeliness": "delivery",
     "direction": "triage_prompt",
-    "magnitude": "triage_prompt",
+    "fact_kind": "triage_prompt",
     "factual_fidelity": "triage_prompt",
     "headline_fidelity": "triage_prompt",
     "why_support": "triage_prompt",
     "why_value": "triage_prompt",
-    "trade_impact_breadth": "triage_prompt",
-    "trade_tradability": "triage_prompt",
-    "trade_surprise": "triage_prompt",
-    "trade_development_delta": "triage_prompt",
-    "trade_channels": "triage_prompt",
-    "trade_affected_markets": "triage_prompt",
-    "reader_value": "triage_prompt",
     "taxonomy_subject_codes": "taxonomy",
     "taxonomy_event_family": "taxonomy",
     "taxonomy_change_state": "taxonomy",
@@ -164,13 +152,16 @@ EXPLANATION_DIMENSIONS: Final[frozenset[str]] = frozenset(
     {"why_support", "why_value", "factual_fidelity", "headline_fidelity"}
 )
 
+# #675 §1: the six `trade_relevance_targeted_stratum` branches are gone with the relevance codes they
+# read. Their labels stay for the audit rows already registered under them; the sampler cannot produce
+# them again, and the cascade now opens at `delivery_ambiguous`.
 _STRATUM_ZH = {
-    "local_macro_false_interrupt": "局部宏观误打断",
-    "systemic_macro_must_interrupt": "系统性宏观必须打断",
-    "regional_direct_exception": "区域事件直接交易例外",
-    "scheduled_or_in_line_macro": "计划内或符合预期宏观",
-    "color_only_progression": "仅补充背景的后续",
-    "macro_random_control": "宏观随机对照",
+    "local_macro_false_interrupt": "局部宏观误打断（v15 及以前）",
+    "systemic_macro_must_interrupt": "系统性宏观必须打断（v15 及以前）",
+    "regional_direct_exception": "区域事件直接交易例外（v15 及以前）",
+    "scheduled_or_in_line_macro": "计划内或符合预期宏观（v15 及以前）",
+    "color_only_progression": "仅补充背景的后续（v15 及以前）",
+    "macro_random_control": "宏观随机对照（v15 及以前）",
     "delivery_ambiguous": "送达状态未知",
     "delivery_failed": "送达明确失败",
     "critical": "重点事件",
@@ -185,8 +176,9 @@ _STRATUM_ZH = {
     "development_pairwise": "开发集候选对比",
 }
 _SELECTION_REASON_ZH = {
-    "trade_relevance_targeted_stratum": "按交易相关性边界定向抽样",
-    "macro_coverage_control": "宏观交易相关性随机对照",
+    # Retired with the six relevance strata above; kept so an audit row still renders (#675 §1).
+    "trade_relevance_targeted_stratum": "按交易相关性边界定向抽样（v15 及以前）",
+    "macro_coverage_control": "宏观交易相关性随机对照（v15 及以前）",
     "delivery_truth_unknown": "投递结果无法确定",
     "delivery_terminal_failure": "投递已明确失败",
     "semantic_escalation": "语义判断为即时重点推送",
@@ -224,18 +216,11 @@ _DIMENSION_ZH = {
     "direction": "方向与机制",
     "factual_fidelity": "事实忠实",
     "headline_fidelity": "标题忠实",
-    "magnitude": "重要程度",
+    "fact_kind": "事实类型",
     "timeliness": "送达时效",
     "why_support": "Why 证据支持",
     "why_value": "Why 读者价值",
     "novelty": "新颖性",
-    "trade_impact_breadth": "影响广度",
-    "trade_tradability": "可交易传导",
-    "trade_surprise": "意外程度",
-    "trade_development_delta": "事态变化",
-    "trade_channels": "传导渠道",
-    "trade_affected_markets": "受影响市场",
-    "reader_value": "读者时效价值",
     "taxonomy_subject_codes": "新闻主题",
     "taxonomy_event_family": "事件家族",
     "taxonomy_change_state": "变化状态",
@@ -346,32 +331,12 @@ class ExpectedCorrection(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    magnitude: int | None = Field(default=None, ge=0, le=3)
+    # #675 §1: three corrections, one per semantic dimension a reviewer can fail. `magnitude` and the
+    # six `trade_*` fields left with the Program output they corrected; `fact_kind` is the closed
+    # vocabulary that replaced them, and it is what gives the understanding target its Gold.
     direction: Literal["bullish", "bearish", "neutral", "unclear"] | None = None
     assets: list[ExpectedAsset] | None = Field(default=None, max_length=16)
-    trade_impact_breadth: TradeImpactBreadth | None = None
-    trade_tradability: TradeTradability | None = None
-    trade_surprise: TradeSurprise | None = None
-    trade_development_delta: TradeDevelopmentDelta | None = None
-    trade_channels: list[TradeChannel] | None = Field(default=None, max_length=4)
-    trade_affected_markets: list[TradeAffectedMarket] | None = Field(default=None, max_length=4)
-    reader_value: ReaderValue | None = None
-
-    @field_validator("trade_channels", mode="after")
-    @classmethod
-    def canonical_channels(cls, value: list[TradeChannel] | None) -> list[TradeChannel] | None:
-        if value is None:
-            return None
-        present = set(value)
-        return [item for item in TRADE_CHANNEL_ORDER if item in present]
-
-    @field_validator("trade_affected_markets", mode="after")
-    @classmethod
-    def canonical_markets(cls, value: list[TradeAffectedMarket] | None) -> list[TradeAffectedMarket] | None:
-        if value is None:
-            return None
-        present = set(value)
-        return [item for item in TRADE_AFFECTED_MARKET_ORDER if item in present]
+    fact_kind: FactKind | None = None
 
     # No `novelty` field: the accepted novelty already *is* gold — `novelty.judgment` is the reviewer's own
     # answer, not a pass/fail on someone else's — and the metric scores against it directly. A second place to
@@ -532,16 +497,9 @@ class EventRubricSubmission(BaseModel):
         # accepted value, which is the one thing an append-only review plane must never let a submission do.
         if self.expected is not None:
             for field, dimension in (
-                ("magnitude", "magnitude"),
                 ("direction", "direction"),
                 ("assets", "asset_grounding"),
-                ("trade_impact_breadth", "trade_impact_breadth"),
-                ("trade_tradability", "trade_tradability"),
-                ("trade_surprise", "trade_surprise"),
-                ("trade_development_delta", "trade_development_delta"),
-                ("trade_channels", "trade_channels"),
-                ("trade_affected_markets", "trade_affected_markets"),
-                ("reader_value", "reader_value"),
+                ("fact_kind", "fact_kind"),
             ):
                 if getattr(self.expected, field) is not None and self.dimensions.get(dimension) != "fail":
                     raise ValueError(f"news_review_expected_requires_failed_dimension:{dimension}")
@@ -2190,7 +2148,7 @@ def _blind_output(observation: Mapping[str, Any]) -> dict[str, Any]:
         "headline_zh": verdict.get("headline_zh") or "",
         "why_zh": verdict.get("why_zh") or "",
         "direction": verdict.get("direction"),
-        "magnitude": verdict.get("magnitude"),
+        "fact_kind": verdict.get("fact_kind"),
         "final_decision": observation.get("final_decision"),
         "final_decision_zh": _review_decision_zh(observation.get("final_decision")),
         "error_code": observation.get("error_code"),
@@ -2198,50 +2156,15 @@ def _blind_output(observation: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _selection(row: Mapping[str, Any]) -> dict[str, Any]:
-    verdict = dict(row.get("verdict") or {})
-    editorial = dict(row.get("model_editorial") or {})
-    relevance = (
-        dict(editorial.get("relevance") or {}) if str(editorial.get("editorial_origin") or "") == "model" else {}
-    )
-    macro = str(verdict.get("scope") or "") == "macro"
-    breadth = str(relevance.get("impact_breadth") or "")
-    tradability = str(relevance.get("tradability") or "")
-    surprise = str(relevance.get("surprise") or "")
-    delta = str(relevance.get("development_delta") or "")
-    reader_value = str(relevance.get("reader_value") or "")
-    if relevance and breadth == "global_systemic" and reader_value == "escalate":
-        stratum, reason, probability = (
-            "systemic_macro_must_interrupt",
-            "trade_relevance_targeted_stratum",
-            1.0,
-        )
-    elif relevance and breadth == "regional" and tradability in {"direct", "second_order"}:
-        stratum, reason, probability = (
-            "regional_direct_exception",
-            "trade_relevance_targeted_stratum",
-            1.0,
-        )
-    elif relevance and (delta == "scheduled" or surprise == "in_line"):
-        stratum, reason, probability = (
-            "scheduled_or_in_line_macro",
-            "trade_relevance_targeted_stratum",
-            1.0,
-        )
-    elif relevance and delta == "color_only":
-        stratum, reason, probability = (
-            "color_only_progression",
-            "trade_relevance_targeted_stratum",
-            1.0,
-        )
-    elif relevance and breadth in {"none", "single_instrument"} and reader_value in {"realtime", "escalate"}:
-        stratum, reason, probability = (
-            "local_macro_false_interrupt",
-            "trade_relevance_targeted_stratum",
-            1.0,
-        )
-    elif relevance and macro:
-        stratum, reason, probability = "macro_random_control", "macro_coverage_control", 0.25
-    elif row.get("delivery_error_code") == "ambiguous_after_crash":
+    """Which review stratum one row belongs to, and with what probability it is offered.
+
+    Six branches opened this cascade until #675 §1 and every one of them read a `TradeRelevanceV1`
+    code. They are deleted rather than left unreachable: five claimed p=1.0 on conditions no judgment
+    can meet any more, and between them they took `macro` rows out of the `delivered` and `model_drop`
+    samples that the daily audit (#675 §4) is built from. The cascade now opens on delivery truth.
+    """
+
+    if row.get("delivery_error_code") == "ambiguous_after_crash":
         stratum, reason, probability = "delivery_ambiguous", "delivery_truth_unknown", 1.0
     elif row.get("delivery_state") == "terminal":
         stratum, reason, probability = "delivery_failed", "delivery_terminal_failure", 1.0
@@ -2265,7 +2188,7 @@ def _selection(row: Mapping[str, Any]) -> dict[str, Any]:
         "reason": reason,
         "reason_zh": _SELECTION_REASON_ZH.get(reason, "未识别抽样原因"),
         "sampling_probability": probability,
-        "selection_version": "news_review_sampler_v3",
+        "selection_version": "news_review_sampler_v4",
     }
 
 
@@ -2329,22 +2252,13 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
     if verdict.get("assets"):
         dimensions.append("asset_grounding")
     if verdict.get("direction") in {"bullish", "bearish"}:
-        dimensions.extend(["direction", "magnitude"])
+        dimensions.append("direction")
+    # Offered whenever the judgment stated one. A `news_judgment_v2` row and a degraded row carry no
+    # `fact_kind`, and a reviewer cannot correct an answer that was never given (#675 §1).
+    if verdict.get("fact_kind"):
+        dimensions.append("fact_kind")
     dimensions.append("timeliness")
     dimensions.extend(_TAXONOMY_DIMENSIONS)
-    editorial = dict(row.get("model_editorial") or {})
-    if editorial.get("editorial_origin") == "model" and editorial.get("relevance") is not None:
-        dimensions.extend(
-            [
-                "trade_impact_breadth",
-                "trade_tradability",
-                "trade_surprise",
-                "trade_development_delta",
-                "trade_channels",
-                "trade_affected_markets",
-                "reader_value",
-            ]
-        )
     return {
         "rubric_version": REVIEW_RUBRIC_VERSION,
         "should_push_values": ["must_push", "should_push", "should_hold", "must_hold", "uncertain"],
@@ -2371,23 +2285,21 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _acted_fact_kind(rule: str, verdict: Mapping[str, Any]) -> str:
+    """The `fact_kind` the stored decision acted on: the override rule's, or else the verdict's own."""
+
+    kind = rule.removeprefix(_FACT_KIND_RULE_PREFIX) if rule.startswith(_FACT_KIND_RULE_PREFIX) else ""
+    return kind if kind in FACT_KINDS else str(verdict.get("fact_kind") or "")
+
+
 def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
     verdict = dict(row.get("verdict") or {})
-    relevance = dict(dict(row.get("model_editorial") or {}).get("relevance") or {})
     final = str(row.get("final_decision") or "")
     rule = str(row.get("override_rule") or "")
     # The thresholds this verdict actually ran under, not today's defaults: a stored decision
     # carries its own policy numbers (#81) so an older row is judged by the rules it obeyed.
     policy = dict(dict(row.get("trace") or {}).get("policy") or {})
     flags: list[dict[str, str]] = []
-    if rule == "trade_relevance_inconsistent":
-        flags.append(
-            {
-                "code": "trade_relevance_inconsistent",
-                "severity": "critical",
-                "message_zh": "交易相关性组合不符合代码固定的实时推送条件。",
-            }
-        )
     objective_rule = rule in {
         "listing_deterministic",
         "telemetry_deterministic",
@@ -2396,15 +2308,27 @@ def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
         "degraded_telemetry_objective",
         "degraded_watchlist_objective",
     }
-    if relevance.get("reader_value") in {"background", "none"} and final in {"push", "escalate"}:
+    # #675 §1: what `background_delivered` used to catch -- a card the model itself called background
+    # reaching the reader anyway -- cannot happen under v16, because the model states no reader value
+    # and `decide()` produces the action it names. A `statement`, `recap`, `schedule` or `promotion`
+    # that still reaches a reader did so through an objective guard, which is what this flag says.
+    #
+    # The kind compared is the one `decide()` acted on, not the one the model wrote (#679 review 5). The
+    # two differ on exactly one path: `confirmed_fact_kind` re-reads a `market_flow_price` report against
+    # its own text, and the >= 5% commodity/index exception can carry a card the model called a
+    # `statement` through as a `new_quantity`. `decide()` already records which kind it acted on -- a
+    # `fact_kind_*` override rule names it -- so the ledger is read rather than a second copy persisted
+    # beside it. A row whose rule is an objective guard has no such record and falls back to the verdict,
+    # which is the case this flag was written for.
+    if _acted_fact_kind(rule, verdict) in _NON_FACT_KINDS and final in {"push", "escalate"}:
         flags.append(
             {
-                "code": "background_delivered",
+                "code": "non_fact_delivered",
                 "severity": "info" if objective_rule else "critical",
                 "message_zh": (
-                    "语义判断为背景信息，但命中了上架、OI 或自选标的客观保护。"
+                    "事实类型不是新事实，但命中了上架或自选标的客观保护。"
                     if objective_rule
-                    else "语义判断为背景信息，却在没有客观保护时送达。"
+                    else "事实类型不是新事实，却在没有客观保护时送达。"
                 ),
             }
         )

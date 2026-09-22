@@ -3,7 +3,7 @@
 Two facts set the whole shape of this module.
 
 First, gold coverage is 0.1226 and *all* of it is `novelty` — no accepted review states a correct
-`magnitude`, `direction` or `assets`, because `expected` only landed in #143 and nobody has used it. Without
+`fact_kind`, `direction` or `assets`, because `expected` only landed in #143 and nobody has used it. Without
 gold, a failed dimension scores on "did anything change", so an optimizer can bank points by changing a value
 to another wrong one. Stating the right answer is worth more than any amount of extra compute.
 
@@ -40,16 +40,7 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_sha
-from ..models import MarketType, market_type_of
-from ..program.contracts import (
-    ReaderValue,
-    TradeAffectedMarket,
-    TradeChannel,
-    TradeDevelopmentDelta,
-    TradeImpactBreadth,
-    TradeSurprise,
-    TradeTradability,
-)
+from ..models import FactKind, MarketType, market_type_of
 from ..program.lm import StructuredOutputMode, physical_call_usage, structured_output_capability
 from ..program.seed import SEED_INSTRUCTIONS
 from ..program.signatures import EventTaxonomySignature
@@ -179,8 +170,11 @@ TAXONOMY_BLIND_DRAFTER_ID = "tracefold.news.taxonomy_blind_drafter_v1"
 # dimensions are computed against. Without it, accepting a draft could only copy the dimensions drafting
 # time wrote, which a reviewer's taxonomy edit had already made wrong. A v5 file carries no such field and
 # is refused by the schema check rather than accepted with stale dimensions.
-ReviewDraftBatchSchema = Literal["tracefold.news.review_draft_batch.v6"]
-DRAFT_SCHEMA: Final[ReviewDraftBatchSchema] = "tracefold.news.review_draft_batch.v6"
+# v7 (#675 §1): the drafter labels `fact_kind` and no longer labels `magnitude` or the six `trade_*`
+# dimensions, because the Program stopped producing them. A v6 file carries labels for fields that do
+# not exist and is refused by the schema check rather than accepted into the corpus.
+ReviewDraftBatchSchema = Literal["tracefold.news.review_draft_batch.v7"]
+DRAFT_SCHEMA: Final[ReviewDraftBatchSchema] = "tracefold.news.review_draft_batch.v7"
 
 _INSTRUCTION = """You are drafting a quality review of one already-published Chinese news card for a
 crypto/US-equity trading desk. An owner-authorized reviewer will accept or reject your draft; never assume it
@@ -196,18 +190,21 @@ For each dimension answer pass / fail / not_applicable:
   fact. Naming an instrument the text does not concern is a fail.
 - direction: is the price implication right for the named assets? `neutral`/`unclear` is correct when the
   evidence does not imply a clear direction; forcing a sign is a fail.
-- magnitude: 0 irrelevant/marketing; 1 a routine update that changes nothing about what the name sells,
-  builds or earns; 2 clearly tradable (earnings, a company's own product/capacity/pricing move, listing or
-  delisting, regulation landing, security incident, notable ETF flow, macro well off consensus); 3 macro
-  turning point, systemic risk or geopolitical escalation.
+- fact_kind: is the stated kind what the text actually says? Judge the text, not the reader:
+  state_change (something is now in a different state: a product, market or service live, cancelled,
+  delayed or repriced; a venue listing, delisting or suspending; a strike, closure, outage or breach
+  that happened; a deal signed or terminated), new_quantity (a figure about the subject's own activity
+  reported for the first time at this value: earnings, guidance, an exact count of users, traders,
+  volume, fees or capacity, an official statistic), level_crossed (the text says a price or rate
+  crossed a stated threshold), period_record (the highest, lowest or largest of a named period),
+  quantified_flow (an amount moved, with a number: liquidated, deposited, withdrawn, net inflow or
+  outflow, holdings raised or cut), official_measure (an authority took or ordered a measure: a rate
+  decision, a sanction, a ban, a licence granted or revoked), statement (somebody said something: a
+  threat, an intention, a forecast, an analyst view, a one-sided claim, a prediction-market quote),
+  recap (the same fact told again, a session summary, a price-reaction piece, a cumulative lifetime
+  total), schedule (a calendar item that has not happened), promotion (somebody selling something:
+  marketing, a trading competition, an airdrop, a law-firm template notice, an unshipped pilot).
 - timeliness: not_applicable unless the evidence shows the card was late enough to matter.
-- trade_impact_breadth: none / single_instrument / sector / regional / cross_asset / global_systemic.
-- trade_tradability: direct / second_order / contextual / none.
-- trade_surprise: unscheduled / material_vs_expectation / in_line / unknown.
-- trade_development_delta: state_change / material_detail / color_only / scheduled.
-- trade_channels: the exact supported causal channels, with no inferred extras.
-- trade_affected_markets: the exact directly or causally affected market surfaces.
-- reader_value: escalate / realtime / background / none under the typed trade-attention contract.
 
 Do NOT judge why_support or why_value. Leave them out of `dimensions` entirely — the accepting reviewer writes
 those. Measured against 25 human-reviewed Events you agree with a reviewer 76-88% of the time on the
@@ -223,11 +220,24 @@ should_push: must_push / should_push / should_hold / must_hold / uncertain — w
 Reserve `must_*` for cases where the opposite decision would be a real failure (a security incident missed,
 marketing pushed).
 
+The reader trades coins on Binance/OKX/Hyperliquid and US- and Hong Kong-listed stocks; a macro fact
+matters only when it reaches those through USD rates, Treasuries, oil or risk assets. The product target
+is 300-500 fact-driven cards a day, 50-60 of them key. Judge a delivered card the way the 2026-09-22
+audit rubric did: `must_push`/`should_push` is a card a trader wanted to be interrupted by (keep);
+`should_hold`/`must_hold` is one they did not (demote) — a price broadcast, one more item in a running
+conflict, marketing, a schedule, a repeat of a fact already sent, a pure opinion, or a name with no
+instrument and no transmission; `uncertain` is the genuinely arguable one (borderline). Judge a card
+that was NOT delivered the same way round: `should_hold`/`must_hold` means dropping it was right
+(ok_drop), and `must_push`/`should_push` means a trader plainly wanted it and the system did not send
+it (missed_valuable) — an important fact, a state change, with an instrument, not a repeat.
+Judge this independently of what the card itself claims about its own importance.
+
 novelty: new_fact / progression / restatement, judged against the told ledger you are shown. Use
 `restatement` only when a told entry carries the same fact, and then name that entry's event_id.
 
-expected: ONLY for dimensions you marked fail, state the exact correct value — including every failed typed
-trade-relevance dimension. Leave a field out when you are not confident. Every asset you state carries
+expected: ONLY for dimensions you marked fail, state the exact correct value — `direction`, `assets` and
+`fact_kind` are the three fields it can hold. Leave a field out when you are not confident.
+Every asset you state carries
 market_type from crypto / equity / commodity / index / fx / pre_ipo / unknown: a ticker without its market is
 not an answer, because the same three letters name a token and a listed company. Say unknown rather than pick
 a market the evidence does not establish.
@@ -263,16 +273,9 @@ class DraftExpected(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    magnitude: int | None = Field(default=None, ge=0, le=3)
     direction: Literal["bullish", "bearish", "neutral", "unclear"] | None = None
     assets: list[DraftAsset] | None = Field(default=None, max_length=16)
-    trade_impact_breadth: TradeImpactBreadth | None = None
-    trade_tradability: TradeTradability | None = None
-    trade_surprise: TradeSurprise | None = None
-    trade_development_delta: TradeDevelopmentDelta | None = None
-    trade_channels: list[TradeChannel] | None = Field(default=None, max_length=4)
-    trade_affected_markets: list[TradeAffectedMarket] | None = Field(default=None, max_length=4)
-    reader_value: ReaderValue | None = None
+    fact_kind: FactKind | None = None
 
 
 class DraftExplanation(BaseModel):
@@ -306,15 +309,8 @@ class DraftDimensions(TypedDict, total=False):
     headline_fidelity: DraftDimensionLabel
     asset_grounding: DraftDimensionLabel
     direction: DraftDimensionLabel
-    magnitude: DraftDimensionLabel
+    fact_kind: DraftDimensionLabel
     timeliness: DraftDimensionLabel
-    trade_impact_breadth: DraftDimensionLabel
-    trade_tradability: DraftDimensionLabel
-    trade_surprise: DraftDimensionLabel
-    trade_development_delta: DraftDimensionLabel
-    trade_channels: DraftDimensionLabel
-    trade_affected_markets: DraftDimensionLabel
-    reader_value: DraftDimensionLabel
 
 
 # The four taxonomy dimensions are written by code (#501): Stable's persisted label against the blind
@@ -329,7 +325,7 @@ TAXONOMY_DIMENSION_AXES: Final[tuple[tuple[str, str], ...]] = (
 TAXONOMY_DIMENSIONS: Final[tuple[str, ...]] = tuple(dimension for dimension, _axis in TAXONOMY_DIMENSION_AXES)
 
 # What the drafter is allowed to judge, measured rather than assumed. Agreement with a human reviewer over 25
-# Events they both saw: direction 88%, factual_fidelity 84%, headline_fidelity 84%, magnitude 76%,
+# Events they both saw: direction 88%, factual_fidelity 84%, headline_fidelity 84%,
 # asset_grounding 70% — against why_support 43% and why_value 42%. Those two also produced 27 of the 46
 # "human passed it, the draft failed it" disagreements, so letting the model touch them would push a large
 # number of failures a reviewer disagrees with into the corpus, where the optimizer would learn from them.

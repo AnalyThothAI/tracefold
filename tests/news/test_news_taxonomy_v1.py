@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from tracefold.news.models import TriageAsset, TriageVerdict
-from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment
 from tracefold.news.taxonomy import (
     IPTC_CODEBOOK_SHA256,
     ModelTaxonomyV1,
@@ -27,32 +27,22 @@ def _taxonomy(**updates: object) -> NewsTaxonomyV1:
 
 
 def _judgment(taxonomy: NewsTaxonomyV1, *, source_authority_value: str = "reputable_secondary") -> ScoredJudgment:
-    relevance = TradeRelevanceV1(
-        impact_breadth="single_instrument",
-        tradability="direct",
-        surprise="unscheduled",
-        development_delta="state_change",
-        channels=("exchange_access",),
-        affected_markets=("single_asset",),
-        reader_value="realtime",
-    )
     return ScoredJudgment.issue(
         verdict=TriageVerdict(
             novelty="new_fact",
             restates=-1,
-            # A named primary: policy v12 drops a single-name realtime verdict that names no instrument (#504),
+            # A named primary: policy v12 drops a single-name push that names no instrument (#504),
             # which is a verdict fact and not a taxonomy one.
             assets=(TriageAsset(symbol="OKB", role="primary"),),
             direction="neutral",
             scope="single_name",
-            magnitude=2,
+            fact_kind="state_change",
+            evidence_ref="c1",
             confidence=0.8,
             headline_zh="某交易所开放新市场",
             why_zh="新增市场改变可交易入口。",
-            audience="crypto",
         ),
         editorial=EditorialEnvelope.issue(
-            relevance=relevance,
             source_authority=source_authority_value,  # type: ignore[arg-type]
             taxonomy=taxonomy,
         ),
@@ -128,25 +118,15 @@ def test_strategy_routing_ids_cannot_claim_source_authority() -> None:
     )
 
 
-def test_taxonomy_has_no_delivery_authority() -> None:
-    """The four model-owned axes never enter `decide()`. The code-owned `source_authority` does since #504 D3, and
-    only as the corroboration fact for an eligible `escalate`; a realtime push is blind to it."""
+def test_taxonomy_subject_codes_have_no_delivery_authority() -> None:
+    """Policy v16 reads three of the four model-owned axes by name — `event_family`, `change_state` and
+    `assertion_status` each appear in a named row of the decision table — and never the subject codes.
+    Re-coding the same Event's topic cannot move what the reader gets."""
 
     facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="semantic")
     access = decide(_judgment(_taxonomy()), facts, None)
-    rumor = decide(
-        _judgment(
-            _taxonomy(
-                subject_codes=(),
-                event_family="geopolitical_conflict",
-                change_state="unknown",
-                assertion_status="rumor",
-            ),
-            source_authority_value="unknown",
-        ),
-        facts,
-        None,
-    )
+    recoded = decide(_judgment(_taxonomy(subject_codes=["medtop:20000385"])), facts, None)
 
-    assert access == rumor
-    assert access.final == "push"
+    assert access == recoded
+    # `market_access` is one of the four escalate families and the registry could name the source.
+    assert (access.final, access.override_rule) == ("escalate", "escalate_corroborated")

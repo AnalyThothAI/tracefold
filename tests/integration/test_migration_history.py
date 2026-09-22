@@ -46,7 +46,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260922_0386"
+HEAD = "20260922_0387"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -253,6 +253,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260922_0386",
         "20260920_0385",
         "20260919_0384",
         "20260919_0383",
@@ -340,12 +341,17 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # The task-level review cut cannot be rolled back by downgrading the contract that admits a v7 row:
-    # every review accepted under it would become unreadable through `news_review_records_v1`.
-    with pytest.raises(RuntimeError, match="news_policy_v15_decision_table_forward_only"):
+    # The judgment v3 cut cannot be rolled back by downgrading the CHECK that admits a v3 verdict: every
+    # judgment written under it carries `fact_kind` and no `magnitude`, and the v2-only predicate refuses
+    # exactly that shape.
+    with pytest.raises(RuntimeError, match="news_judgment_v3_fact_kind_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
-    # And the revision behind it says the same thing about the v12 Program it admitted.
+    # And the revision behind it says the same thing about the v15 policy it admitted.
+    command.stamp(config, "20260922_0386")
+    with pytest.raises(RuntimeError, match="news_policy_v15_decision_table_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260922_0386"
     command.stamp(config, "20260920_0385")
     with pytest.raises(RuntimeError, match="news_local_evidence_forward_only"):
         command.downgrade(config, "base")
@@ -2461,24 +2467,135 @@ def test_the_catalogue_freshness_answer_survives_the_move_off_the_row() -> None:
         conn.close()
 
 
+def _persist_pre_v3_verdict(
+    repos,
+    *,
+    event_id: str,
+    policy_version: str,
+    program_version: str,
+    at_ms: int = 2000,
+) -> None:
+    """One `news_judgment_v2` verdict, written by hand because no builder emits that shape any more.
+
+    A migration test's seed has to be what the ledger actually held before the cut, and after #675 §1
+    that is a verdict carrying `magnitude` and `audience` inside a `news_editorial_v3` envelope carrying
+    `relevance`. `tests.support.news_judgment` builds the current contract and nothing else, so the two
+    canonical digests the CHECK recomputes are built here from the same `canonical_sha` the worker used.
+    """
+
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.taxonomy import IPTC_CODEBOOK_SHA256
+
+    evidence = repos.news.latest_evidence_snapshot(event_id)
+    assert evidence is not None
+    verdict = {
+        "novelty": "new_fact",
+        "restates": -1,
+        "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
+        "direction": "bearish",
+        "scope": "single_name",
+        "magnitude": 2,
+        "confidence": 0.9,
+        "audience": "crypto",
+        "headline_zh": "阿里巴巴配售新股",
+        "why_zh": "",
+    }
+    editorial_payload = {
+        "editorial_contract_version": "news_editorial_v3",
+        "editorial_origin": "model",
+        "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": ["earnings_cashflow"],
+            "affected_markets": ["single_asset"],
+            "reader_value": "realtime",
+        },
+        "source_authority": "unknown",
+        "taxonomy": {
+            "subject_codes": [],
+            "event_family": "other",
+            "change_state": "unknown",
+            "assertion_status": "unknown",
+            "taxonomy_version": "news_taxonomy_v1",
+            "codebook_sha256": IPTC_CODEBOOK_SHA256,
+        },
+        "taxonomy_status": "available",
+        "taxonomy_error_code": None,
+    }
+    editorial = {**editorial_payload, "editorial_sha256": canonical_sha(editorial_payload)}
+    verdict_sha256 = canonical_sha(verdict)
+    judgment_sha256 = canonical_sha(
+        {
+            "judgment_contract_version": "news_judgment_v2",
+            "verdict": verdict,
+            "editorial": editorial,
+            "verdict_sha256": verdict_sha256,
+        }
+    )
+    runtime_manifest_sha = "b" * 64
+    assert repos.news.insert_verdict(
+        event_id=event_id,
+        stage="triage",
+        policy_version=policy_version,
+        judgment_contract_version="news_judgment_v2",
+        judgment_origin="model",
+        rule_baseline_decision="push",
+        final_decision="push",
+        override_rule="trade_relevance_realtime",
+        throttled_by=None,
+        verdict=verdict,
+        model_editorial=editorial,
+        judgment_sha256=judgment_sha256,
+        runtime_manifest_sha=runtime_manifest_sha,
+        model="test",
+        program_version=program_version,
+        program_sha256="a" * 64,
+        degraded=False,
+        error_code=None,
+        trace={
+            "judgment_contract_version": "news_judgment_v2",
+            "judgment_origin": "model",
+            "judgment_sha256": judgment_sha256,
+            "verdict_sha256": verdict_sha256,
+            "editorial_sha256": editorial["editorial_sha256"],
+            "runtime_manifest_sha": runtime_manifest_sha,
+            "program_version": program_version,
+            "program_sha256": "a" * 64,
+            "evidence_version": int(evidence["evidence_version"]),
+            "evidence_sha256": str(evidence["evidence_sha256"]),
+            "focus_fact_id": str(evidence["focus_fact_id"]),
+            "told": [],
+            "told_count": 0,
+        },
+        evidence_version=int(evidence["evidence_version"]),
+        evidence_sha256=str(evidence["evidence_sha256"]),
+        focus_fact_id=str(evidence["focus_fact_id"]),
+        now_ms=at_ms - 1,
+    )
+
+
 def test_local_evidence_migration_preserves_v11_verdict_and_archive(monkeypatch):
     from contextlib import closing
 
-    from tests.integration import test_news_reader_history as history
     from tests.integration.test_news_evidence_material import admit
 
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "20260919_0384")
-    monkeypatch.setattr(history, "SEMANTIC_PROGRAM_VERSION", "news_semantic_program_v11")
-    # The seed is a verdict written *before* this cut, so it carries the policy version the 0384 CHECK
-    # admits. Leaving the current one here would make the seed itself the thing the CHECK rejects, and
-    # the revision under test would never run.
-    monkeypatch.setattr(history, "TRIAGE_POLICY_VERSION", "news_triage_policy_v14")
+    # The seed is a verdict written *before* this cut, so it carries the policy version, the Program
+    # version and the whole judgment contract the 0384 CHECK admits. Leaving any of today's values here
+    # would make the seed itself the thing the CHECK rejects, and the revision under test would never run.
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
         event_id = admit(repos, "BTC acquisition remains pending approval.").results[0].event_id
-        history._persist_triage_verdict(repos, event_id=event_id, at_ms=2000, symbol="BTC")
+        _persist_pre_v3_verdict(
+            repos,
+            event_id=event_id,
+            policy_version="news_triage_policy_v14",
+            program_version="news_semantic_program_v11",
+        )
         conn.execute("""INSERT INTO news_evidence_documents
             (document_id, requested_url, final_url, normalized_url, response_sha256, extracted_text_sha256,
              extractor_version, extracted_text, observed_at_ms, available_at_ms, content_type, extraction_status)
@@ -2499,14 +2616,16 @@ def test_local_evidence_migration_preserves_v11_verdict_and_archive(monkeypatch)
         assert conn.execute("SELECT to_regclass('ix_news_events_evidence_title') AS index").fetchone()["index"]
 
 
-def test_policy_v15_migration_keeps_the_v14_verdict_it_finds_and_admits_the_new_one(monkeypatch):
-    """`20260922_0386`, against the smallest history it can affect: one verdict on the old policy version.
+def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_one():
+    """`20260922_0387`, against the smallest history it can affect: one verdict on the old contract.
 
-    The revision edits one CHECK and nothing else, and the property that matters is the one an operator
-    cannot establish by reading it: the predicate it rewrote is the predicate PostgreSQL actually held, so
-    the rows already under it stay valid and are not touched, while the version the new Workers emit
-    becomes writable in the same transaction. The refusal below is also why the image and the migration
-    cannot be deployed in either order -- the old CHECK rejects exactly what the new image writes.
+    The revision rewrites predicates and one CHECK and touches no row, and the property that matters is
+    the one an operator cannot establish by reading it: the predicate it rewrote is the predicate
+    PostgreSQL actually held, so the rows already under it stay valid and are not touched, while the
+    shape the new Workers emit becomes writable in the same transaction. The refusal below is also why
+    the image and the migration cannot be deployed in either order -- the old CHECK rejects exactly what
+    the new image writes, on two counts at once: a verdict with `fact_kind` and no `magnitude`, under a
+    contract version the v2-only gate does not name.
     """
 
     from contextlib import closing
@@ -2516,17 +2635,21 @@ def test_policy_v15_migration_keeps_the_v14_verdict_it_finds_and_admits_the_new_
 
     config = _config()
     _empty_the_schema()
-    command.upgrade(config, "20260920_0385")
-    monkeypatch.setattr(history, "TRIAGE_POLICY_VERSION", "news_triage_policy_v14")
+    command.upgrade(config, "20260922_0386")
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
         old_event = admit(repos, "BTC acquisition remains pending approval.").results[0].event_id
-        history._persist_triage_verdict(repos, event_id=old_event, at_ms=2000, symbol="BTC")
+        _persist_pre_v3_verdict(
+            repos,
+            event_id=old_event,
+            policy_version="news_triage_policy_v15",
+            program_version="news_semantic_program_v12",
+        )
         conn.commit()
         before = conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall()
-        assert [row["row"]["policy_version"] for row in before] == ["news_triage_policy_v14"]
+        assert [row["row"]["judgment_contract_version"] for row in before] == ["news_judgment_v2"]
+        assert before[0]["row"]["verdict"]["magnitude"] == 2
 
-        monkeypatch.setattr(history, "TRIAGE_POLICY_VERSION", "news_triage_policy_v15")
         blocked = admit(repos, "ETH acquisition remains pending approval.").results[0].event_id
         with pytest.raises(psycopg.errors.CheckViolation):
             history._persist_triage_verdict(repos, event_id=blocked, at_ms=2100, symbol="ETH")
@@ -2542,8 +2665,64 @@ def test_policy_v15_migration_keeps_the_v14_verdict_it_finds_and_admits_the_new_
         new_event = admit(repos, "SOL acquisition remains pending approval.").results[0].event_id
         history._persist_triage_verdict(repos, event_id=new_event, at_ms=2200, symbol="SOL")
         conn.commit()
-        versions = {
-            str(row["policy_version"])
-            for row in conn.execute("SELECT policy_version FROM news_verdicts WHERE stage='triage'").fetchall()
+        rows = conn.execute(
+            "SELECT judgment_contract_version, policy_version, verdict FROM news_verdicts WHERE stage='triage'"
+        ).fetchall()
+        assert {str(row["judgment_contract_version"]) for row in rows} == {
+            "news_judgment_v2",
+            "news_judgment_v3",
         }
-        assert versions == {"news_triage_policy_v14", "news_triage_policy_v15"}
+        assert {str(row["policy_version"]) for row in rows} == {
+            "news_triage_policy_v15",
+            "news_triage_policy_v16",
+        }
+        # And each shape stays bound to the contract that wrote it: a v3 row states a kind and no
+        # magnitude, a v2 row the other way round, and `news_current_verdict_contract_shape_valid` is
+        # what refuses the pair swapped.
+        shapes = {
+            str(row["judgment_contract_version"]): ("fact_kind" in row["verdict"], "magnitude" in row["verdict"])
+            for row in rows
+        }
+        assert shapes == {"news_judgment_v2": (False, True), "news_judgment_v3": (True, False)}
+
+        # The told ledger's predicate is rewritten the same way, and the keys it must keep are the ones
+        # a later revision added to it rather than the ones `0350` first wrote: `20260919_0384` made
+        # `assets` and `provenance_status` optional by rewriting the stored definition in place, so a
+        # rewrite that copied `0350`'s text instead would reject every entry the current writer emits.
+        told_entry = {
+            "i": 0,
+            "event_id": "e" * 64,
+            "at_ms": 1_790_091_183_014,
+            "ago_min": 3,
+            "storyline_key": "asset:crypto:BTC",
+            "comparison_title": "title",
+            "comparison_fingerprint": "fp",
+            "symbols": ["BTC"],
+            "assets": [{"symbol": "BTC", "market_type": "crypto"}],
+            "direction": "bullish",
+            "headline_zh": "\u6807\u9898",
+            "why_zh": "",
+            "provenance_status": "delivery_bound",
+            "tier": "recency",
+            "similarity": 0.0,
+            "history_scope": "recent",
+            "retrieval_reason": "recent",
+        }
+        # And the shape predicate refuses a row with a missing argument instead of abstaining. A STRICT
+        # function returns NULL for a NULL argument, `... AND NULL` is NULL, and a CHECK admits a row
+        # whose predicate is NULL -- so a verdict with no `judgment_origin` would have walked straight
+        # through the one clause written to bind it to its contract (#679 review 4).
+        shape = "SELECT news_current_verdict_contract_shape_valid(%s, %s, %s::jsonb) AS ok"
+        v3_verdict = json.dumps({"fact_kind": "state_change", "evidence_ref": "c1"})
+        assert conn.execute(shape, ("news_judgment_v3", "model", v3_verdict)).fetchone()["ok"] is True
+        for contract, origin, verdict in (
+            (None, "model", v3_verdict),
+            ("news_judgment_v3", None, v3_verdict),
+            ("news_judgment_v3", "model", None),
+        ):
+            assert conn.execute(shape, (contract, origin, verdict)).fetchone()["ok"] is False
+
+        told_valid = "SELECT news_current_told_trace_valid(%s::jsonb) AS ok"
+        assert conn.execute(told_valid, (json.dumps([told_entry]),)).fetchone()["ok"]
+        # And the entry a pre-v3 Worker wrote, magnitude and all, is still accepted unchanged.
+        assert conn.execute(told_valid, (json.dumps([{**told_entry, "magnitude": 2}]),)).fetchone()["ok"]

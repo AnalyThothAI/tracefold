@@ -11,6 +11,8 @@ from .card_format import clock as card_clock
 from .delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from .market_contracts import MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_MS, MARKET_WINDOW_MAX_MS
 from .models import (
+    FACT_KINDS,
+    FactKind,
     MarketType,
     ReaderDeliveryPresentation,
     ReaderMarketMovement,
@@ -25,7 +27,6 @@ from .program.contracts import (
     SemanticJudge,
     SemanticJudgeError,
     SemanticJudgment,
-    TradeRelevanceV1,
     TriageContext,
 )
 from .progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionVerifier
@@ -52,6 +53,7 @@ __all__ = [
     "COMMIT_PHASE_UNKNOWN",
     "EVENT_FAMILIES",
     "EVENT_KINDS",
+    "FACT_KINDS",
     "IPTC_SUBJECT_CODES",
     "LINKABLE_TICKER_RE",
     "MARKET_KINDS",
@@ -65,6 +67,7 @@ __all__ = [
     "SOURCE_AUTHORITIES",
     "UNTRADEABLE_NOTICE_ZH",
     "EventKind",
+    "FactKind",
     "IPTCCodebookSha",
     "MarketType",
     "NetBuySnapshot",
@@ -82,7 +85,6 @@ __all__ = [
     "SemanticJudgment",
     "SourceAuthority",
     "TelegramDeliveryReceipt",
-    "TradeRelevanceV1",
     "TriageContext",
     "card_clock",
     "quote_line",

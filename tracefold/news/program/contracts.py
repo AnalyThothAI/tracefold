@@ -10,11 +10,20 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_sha
 from ..evidence import PreparedEvidence, VisibleEvidenceSpan, assemble_evidence, query_for
-from ..models import MarketAsset, MarketType, TriageAsset, TriageVerdict, base_symbol, market_type_of
+from ..models import (
+    FACT_KINDS,
+    FactKind,
+    MarketAsset,
+    MarketType,
+    TriageAsset,
+    TriageVerdict,
+    base_symbol,
+    market_type_of,
+)
 from ..taxonomy import NewsTaxonomyV1, SourceAuthority
 from ..told_context import TOLD_MAX as _TOLD_MAX
 from ..told_context import TOLD_SYMBOLS_MAX as _TOLD_SYMBOLS_MAX
@@ -32,6 +41,9 @@ from ..told_context import ToldLedgerSnapshot as _ToldLedgerSnapshot
 # Retrieval's own threshold on comparison titles, deliberately not `news.policy.similarity_max`: that knob is
 # operator-owned duplicate policy over reader headlines, and coupling the two would let a policy edit silently
 # change what the model is allowed to see.
+# What a told entry carried before #675 §1 and does not carry now. A ledger entry projects the verdict,
+# so an archived context holds whatever the verdict held on the day it was recorded.
+_RETIRED_TOLD_KEYS: Final[frozenset[str]] = frozenset({"magnitude"})
 WATCHLIST_MAX: Final[int] = 64
 GROUNDED_ASSETS_MAX: Final[int] = 16
 # What the catalogue can say about the symbols this Event already carries, bounded (#651 §A). Eight
@@ -42,150 +54,36 @@ GROUNDED_ASSETS_MAX: Final[int] = 16
 CATALOG_CANDIDATE_SYMBOLS_MAX: Final[int] = 8
 CATALOG_CANDIDATE_CLASSES_MAX: Final[int] = 4
 STRATEGIES_MAX: Final[int] = 16
-TRADE_CODE_SET_MAX: Final[int] = 4
 
-TradeImpactBreadth = Literal[
-    "none",
-    "single_instrument",
-    "sector",
-    "regional",
-    "cross_asset",
-    "global_systemic",
-]
-TradeTradability = Literal["direct", "second_order", "contextual", "none"]
-TradeSurprise = Literal["unscheduled", "material_vs_expectation", "in_line", "unknown"]
-TradeDevelopmentDelta = Literal["state_change", "material_detail", "color_only", "scheduled"]
-# `product_progress` (#173): a first-party product/protocol/market capability reaching a verifiable new state
-# had no true channel — `exchange_access` is only who may trade, `earnings_cashflow` only the money mechanism —
-# so it came back empty, and empty channels may co-exist only with contextual/none + background/none, which
-# structurally held every product event. Never brand marketing, a roadmap, or a cumulative vanity count.
-TradeChannel = Literal[
-    "rates",
-    "liquidity",
-    "risk_premium",
-    "energy_supply",
-    "commodity_supply",
-    "commodity_demand",
-    "regulation",
-    "exchange_access",
-    "product_progress",
-    "earnings_cashflow",
-    "positioning_flow",
-    "security_incident",
-]
-TradeAffectedMarket = Literal[
-    "crypto_broad",
-    "us_equity_broad",
-    "rates",
-    "fx",
-    "energy",
-    "metals",
-    "single_asset",
-]
-ReaderValue = Literal["escalate", "realtime", "background", "none"]
-
-TRADE_CHANNEL_ORDER: Final[tuple[TradeChannel, ...]] = (
-    "rates",
-    "liquidity",
-    "risk_premium",
-    "energy_supply",
-    "commodity_supply",
-    "commodity_demand",
-    "regulation",
-    "exchange_access",
-    "product_progress",
-    "earnings_cashflow",
-    "positioning_flow",
-    "security_incident",
-)
-TRADE_AFFECTED_MARKET_ORDER: Final[tuple[TradeAffectedMarket, ...]] = (
-    "crypto_broad",
-    "us_equity_broad",
-    "rates",
-    "fx",
-    "energy",
-    "metals",
-    "single_asset",
-)
-EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v3"]] = "news_editorial_v3"
-JUDGMENT_CONTRACT_VERSION: Final[Literal["news_judgment_v2"]] = "news_judgment_v2"
+EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v4"]] = "news_editorial_v4"
+JUDGMENT_CONTRACT_VERSION: Final[Literal["news_judgment_v3"]] = "news_judgment_v3"
 
 
 class _ExactContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-def _canonical_code_set(value: Any, *, order: Sequence[str]) -> Any:
-    """Canonicalize a bounded model-emitted set before Pydantic applies its max-length constraint."""
-
-    if not isinstance(value, (list, tuple)):
-        return value
-    if not all(isinstance(item, str) and item in order for item in value):
-        # Preserve an invalid value for the typed Literal validator.  Silently
-        # dropping an unknown code would turn schema-invalid model output into
-        # a different, apparently valid editorial judgment.
-        return value
-    present = set(value)
-    return tuple(item for item in order if item in present)
-
-
-class TradeRelevanceV1(_ExactContractModel):
-    """Typed editorial relevance owned by ``EventSemantics.v2``.
-
-    ``channels`` and ``affected_markets`` are sets on the wire but tuples in the
-    contract.  Canonical code-owned ordering makes exact gold, hashing and replay
-    independent of the order in which a model emitted them.
-    """
-
-    impact_breadth: TradeImpactBreadth
-    tradability: TradeTradability
-    surprise: TradeSurprise
-    development_delta: TradeDevelopmentDelta
-    channels: tuple[TradeChannel, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
-    affected_markets: tuple[TradeAffectedMarket, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
-    reader_value: ReaderValue
-
-    @field_validator("channels", mode="before")
-    @classmethod
-    def _canonical_channels(cls, value: Any) -> Any:
-        return _canonical_code_set(value, order=TRADE_CHANNEL_ORDER)
-
-    @field_validator("affected_markets", mode="before")
-    @classmethod
-    def _canonical_markets(cls, value: Any) -> Any:
-        return _canonical_code_set(value, order=TRADE_AFFECTED_MARKET_ORDER)
-
-    @model_validator(mode="after")
-    def _empty_surfaces_are_background_only(self) -> TradeRelevanceV1:
-        if (not self.channels or not self.affected_markets) and not (
-            self.tradability in {"contextual", "none"} and self.reader_value in {"background", "none"}
-        ):
-            raise ValueError("news_trade_relevance_empty_surface_invalid")
-        return self
-
-
 class ReaderCardSemanticView(_ExactContractModel):
     """The complete semantic Interface visible to ``ReaderCard``.
 
-    It intentionally excludes model delivery intent, surprise, tradability and
-    development state.  ReaderCard writes factual copy; it does not get a second
-    opportunity to infer urgency or final action.
+    It intentionally excludes every judgment about the reader.  ReaderCard writes factual copy; it does
+    not get a second opportunity to infer urgency or final action.  ``fact_kind`` is here because it says
+    what the card is *about* -- a level crossed, a measure taken, a figure restated -- which is copy
+    guidance, and it is the only one of the old seven relevance codes that survived #675 §1.
     """
 
     assets: tuple[TriageAsset, ...] = Field(default=(), max_length=8)
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
-    magnitude: int = Field(ge=0, le=3)
+    fact_kind: FactKind
     novelty: Literal["new_fact", "progression", "restatement"]
     restates: int = Field(default=-1, ge=-1)
     scope: Literal["macro", "sector", "single_name"]
-    channels: tuple[TradeChannel, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
-    affected_markets: tuple[TradeAffectedMarket, ...] = Field(default=(), max_length=TRADE_CODE_SET_MAX)
 
 
 class EditorialEnvelope(_ExactContractModel):
     """The one current editorial sibling persisted atomically with a verdict.
 
-    v3 (#651 §5.3) separates the two things v2 kept in one required object. ``source_authority`` is a
+    v3 (#651 §5.3) separated the two things v2 kept in one required object. ``source_authority`` is a
     code fact: `source_authority_from_evidence` reads it off the frozen evidence, the model never emits
     it, and it is therefore present on every model judgment whatever the taxonomy Predictor did.
     ``taxonomy`` is the taxonomy Predictor's answer, and a Predictor can fail on its own -- a truncated
@@ -193,26 +91,83 @@ class EditorialEnvelope(_ExactContractModel):
     two Predictors produced. ``taxonomy_status`` names which of those two happened and
     ``taxonomy_error_code`` carries the `news_program_*` code when it is the second.
 
-    The uncorroborated-escalate rule (`triage_rules.decide`) is why the split is not cosmetic: under v2
-    the rule read `taxonomy.source_authority`, so a taxonomy failure would have taken the corroboration
-    evidence down with the label, and the loudest card class would have lost its safety rule to an
-    unrelated model failure.
+    v4 (#675 §1) drops ``relevance``. The seven `TradeRelevanceV1` codes were the model's own answer to
+    "should the reader be woken", and the envelope is the place a *code* fact about the evidence is
+    persisted beside the verdict -- which is what the two survivors are. What the model observes about
+    the text now lives on the verdict (`fact_kind`), and what the reader gets is decided from these
+    facts by `triage_rules.decide()`.
+
+    The uncorroborated-escalate rule (`triage_rules.decide`) is why the taxonomy split is not cosmetic:
+    under v2 the rule read `taxonomy.source_authority`, so a taxonomy failure would have taken the
+    corroboration evidence down with the label, and the loudest card class would have lost its safety
+    rule to an unrelated model failure.
     """
 
-    editorial_contract_version: Literal["news_editorial_v3"] = EDITORIAL_CONTRACT_VERSION
+    editorial_contract_version: Literal["news_editorial_v4"] = EDITORIAL_CONTRACT_VERSION
     editorial_origin: Literal["model"] = "model"
-    relevance: TradeRelevanceV1
     source_authority: SourceAuthority
     taxonomy: NewsTaxonomyV1 | None = None
     taxonomy_status: Literal["available", "unavailable"] = "available"
     taxonomy_error_code: str | None = None
     editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _adapt_pre_cut_document(cls, value: Any) -> Any:
+        """Read a stored `news_editorial_v3` or `_v2` document into the v4 shape (#675 §1).
+
+        The ledger holds three editorial contracts and rewrites none of them, so every learning surface
+        that validates a stored envelope -- the release metric, the frozen corpus, the observed-episode
+        projection -- would otherwise raise on the first row written before this cut. That is not a
+        hypothetical: `storage.learning` selects `news_judgment_v2` rows by name so the corpus keeps its
+        history, and a 30-day retention means most of it is still pre-cut.
+
+        The stored hash is *verified before anything is dropped*, which is the whole point of doing this
+        here rather than at each call site: the document is checked against the digest the writer computed
+        over it, and only then is `relevance` -- the seven `TradeRelevanceV1` codes #675 §1 deleted --
+        removed and the v4 digest computed over what is left. A row whose hash does not address its own
+        content is a corrupted row and still raises. v2 additionally nests the authority inside the
+        taxonomy, which #651 §5.3 lifted out; the same lift happens here and is the same lift
+        `storage.decisions.editorial_read_shape` performs for the API.
+        """
+
+        if not isinstance(value, Mapping):
+            return value
+        version = str(value.get("editorial_contract_version") or "")
+        if version in {"", EDITORIAL_CONTRACT_VERSION}:
+            return value
+        if version not in {"news_editorial_v3", "news_editorial_v2"}:
+            raise ValueError("news_editorial_contract_version_unknown")
+        stored = {key: item for key, item in value.items() if key != "editorial_sha256"}
+        if str(value.get("editorial_sha256") or "") != canonical_sha(stored):
+            raise ValueError("news_editorial_hash_mismatch")
+        taxonomy = value.get("taxonomy")
+        if version == "news_editorial_v2":
+            if not isinstance(taxonomy, Mapping):
+                raise ValueError("news_editorial_taxonomy_status_invalid")
+            authority = str(taxonomy.get("source_authority") or "unknown")
+            # A v2 row exists only because its taxonomy validated: the whole judgment failed otherwise.
+            axes: Any = {key: item for key, item in taxonomy.items() if key != "source_authority"}
+            status, error_code = "available", None
+        else:
+            authority = str(value.get("source_authority") or "unknown")
+            axes = dict(taxonomy) if isinstance(taxonomy, Mapping) else None
+            status = str(value.get("taxonomy_status") or "available")
+            error_code = value.get("taxonomy_error_code") or None
+        payload = {
+            "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
+            "editorial_origin": "model",
+            "source_authority": authority,
+            "taxonomy": axes,
+            "taxonomy_status": status,
+            "taxonomy_error_code": error_code,
+        }
+        return {**payload, "editorial_sha256": canonical_sha(payload)}
+
     @classmethod
     def issue(
         cls,
         *,
-        relevance: TradeRelevanceV1,
         source_authority: SourceAuthority,
         taxonomy: NewsTaxonomyV1 | None = None,
         taxonomy_error_code: str | None = None,
@@ -220,7 +175,6 @@ class EditorialEnvelope(_ExactContractModel):
         payload = {
             "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
             "editorial_origin": "model",
-            "relevance": relevance.model_dump(mode="json"),
             "source_authority": source_authority,
             "taxonomy": None if taxonomy is None else taxonomy.model_dump(mode="json"),
             "taxonomy_status": "available" if taxonomy is not None else "unavailable",
@@ -356,7 +310,6 @@ class _ModelVisibleToldEntry(_ExactContractModel):
     comparison_title: str = Field(max_length=600)
     symbols: tuple[str, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
     assets: tuple[MarketAsset, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
-    magnitude: int = Field(ge=0, le=3)
     direction: str
     headline_zh: str = Field(max_length=60)
     why_zh: str = Field(max_length=140)
@@ -502,6 +455,50 @@ class TriageContext(_ExactContractModel):
             queue_lag_ms=max(0, int(queue_lag_ms)),
         )
 
+    @classmethod
+    def adapt_archived(cls, document: Mapping[str, Any]) -> tuple[dict[str, Any], str | None]:
+        """One archived context in the shapes this contract still validates, and what wrote it.
+
+        Two adaptations, both explicit, both named here rather than repeated at each read boundary.
+
+        The first is `news_evidence_input_v1`: a prepared-evidence block from before #651's input version
+        is dropped rather than replayed, because reanalysing it would be today's assembly answering an old
+        question. That one is older than this cut and only moved here.
+
+        The second is #675 §1. A told entry projects the verdict it was written from, so every entry
+        archived before this contract carries the deleted ``magnitude`` -- and `ToldLedgerEntry` and
+        `_ModelVisibleToldEntry` both forbid unknown keys, so a recorded `TriageContext` from last week
+        fails validation outright. `dataset._selected_context` answered that failure with ``None`` and the
+        episode silently left the corpus; the learning plane would have quietly lost its entire pre-cut
+        history to a field nobody reads. The key is stripped and the contract that wrote it is returned,
+        so the caller records a reconstruction instead of inventing an exact replay (#679 review 2).
+
+        Returns the adapted document and the contract version it was written under, or ``None`` when the
+        document already matches the current one and nothing was changed.
+        """
+
+        archived = dict(document)
+        if dict(archived.get("prepared_evidence") or {}).get("input_version") == "news_evidence_input_v1":
+            archived["prepared_evidence"] = None
+        told = archived.get("told")
+        if not isinstance(told, Mapping):
+            return archived, None
+        entries = told.get("entries")
+        if not isinstance(entries, Sequence) or isinstance(entries, str | bytes):
+            return archived, None
+        if not any(isinstance(entry, Mapping) and _RETIRED_TOLD_KEYS & set(entry) for entry in entries):
+            return archived, None
+        archived["told"] = {
+            **told,
+            "entries": [
+                {key: item for key, item in entry.items() if key not in _RETIRED_TOLD_KEYS}
+                if isinstance(entry, Mapping)
+                else entry
+                for entry in entries
+            ],
+        }
+        return archived, "news_judgment_v2"
+
     def adapt_archived_excerpt(self) -> TriageContext:
         """Explicit input-study conversion using only archived previews, never today's database.
 
@@ -570,7 +567,6 @@ class TriageContext(_ExactContractModel):
                         comparison_title=entry.comparison_title,
                         symbols=entry.symbols,
                         assets=entry.assets,
-                        magnitude=entry.magnitude,
                         direction=entry.direction,
                         headline_zh=entry.headline_zh,
                         why_zh=entry.why_zh,
@@ -620,7 +616,6 @@ class TriageContext(_ExactContractModel):
                     "comparison_fingerprint": entry.comparison_fingerprint,
                     "symbols": list(entry.symbols),
                     "assets": [{"symbol": a.symbol, "market_type": a.market_type} for a in entry.assets],
-                    "magnitude": entry.magnitude,
                     "direction": entry.direction,
                     "headline_zh": entry.headline_zh,
                     "why_zh": entry.why_zh,
@@ -633,11 +628,14 @@ class TriageContext(_ExactContractModel):
 
 
 class ProgramNormalizationTrace(_ExactContractModel):
-    normalizer_id: Literal["semantic_normalizer_v2"] = "semantic_normalizer_v2"
-    field: Literal["restates", "channels", "affected_markets"]
-    reason: Literal["non_restatement_index_ignored", "canonical_set_order"]
-    input_value: int | tuple[str, ...]
-    output_value: int | tuple[str, ...]
+    # v3 (#675 §1): the only normalization left is the restatement index. `channels` and
+    # `affected_markets` were bounded code sets whose emission order the model could not control, so the
+    # Program canonicalized them and recorded the rewrite; both fields are gone.
+    normalizer_id: Literal["semantic_normalizer_v3"] = "semantic_normalizer_v3"
+    field: Literal["restates"]
+    reason: Literal["non_restatement_index_ignored"]
+    input_value: int
+    output_value: int
 
     @model_validator(mode="after")
     def _field_and_values_match_reason(self) -> ProgramNormalizationTrace:
@@ -737,7 +735,7 @@ class ProgramCallTrace(_ExactContractModel):
 
 
 class ProgramTrace(_ExactContractModel):
-    program_version: Literal["news_semantic_program_v12"]
+    program_version: Literal["news_semantic_program_v13"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # The computed identity of everything the code decided about this call — request envelope, output
@@ -804,13 +802,76 @@ def aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]
 
 
 class ScoredJudgment(_ExactContractModel):
-    """Canonical verdict/editorial projection shared by every learning surface."""
+    """Canonical verdict/editorial projection shared by every learning surface.
 
-    judgment_contract_version: Literal["news_judgment_v2"] = JUDGMENT_CONTRACT_VERSION
+    Two shapes reach this model and only one of them is written here. `issue()` builds a judgment under
+    the current contract. `from_stored()` -- and `model_validate` on a frozen corpus row -- reads one the
+    ledger already holds, which may be `news_judgment_v2`: a verdict carrying `magnitude` and `audience`
+    and no `fact_kind`, beside a `news_editorial_v3` envelope carrying the deleted `relevance` object.
+
+    Those rows are not migrated and their hashes address the document the writer produced, so a
+    reconstructed judgment keeps `verdict_sha256` and `scored_judgment_sha256` exactly as stored while its
+    `verdict` and `editorial` are read in the current shape. The hashes are verified against the stored
+    document *before* the retired fields are dropped, and `reconstructed_from` names the contract that
+    wrote it so the round trip through the frozen corpus is stable and so no caller mistakes a
+    reconstruction for a hash it can recompute (#679 review 1).
+    """
+
+    judgment_contract_version: Literal["news_judgment_v3", "news_judgment_v2"] = JUDGMENT_CONTRACT_VERSION
     verdict: TriageVerdict
     editorial: EditorialEnvelope
     verdict_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     scored_judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The contract the stored document was written under, when this judgment was read rather than issued.
+    # `None` on everything the current Program produces.
+    reconstructed_from: Literal["news_judgment_v2"] | None = None
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        judgment_contract_version: str,
+        verdict: Mapping[str, Any],
+        editorial: Mapping[str, Any],
+    ) -> ScoredJudgment:
+        """One judgment as the ledger holds it, with the digests the writer computed over it.
+
+        The two columns are hashed in the shape they are stored in, which is what makes the result
+        comparable with the `judgment_sha256` column beside them. Validating them into the current models
+        first would hash the *adapted* shape and no stored row would ever match again.
+        """
+
+        verdict_sha256 = canonical_sha(dict(verdict))
+        payload = {
+            "judgment_contract_version": judgment_contract_version,
+            "verdict": dict(verdict),
+            "editorial": dict(editorial),
+            "verdict_sha256": verdict_sha256,
+        }
+        return cls.model_validate({**payload, "scored_judgment_sha256": canonical_sha(payload)})
+
+    @model_validator(mode="before")
+    @classmethod
+    def _adapt_pre_cut_document(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        version = str(value.get("judgment_contract_version") or "")
+        if version != "news_judgment_v2" or value.get("reconstructed_from"):
+            return value
+        stored_verdict = value.get("verdict")
+        payload = {
+            "judgment_contract_version": version,
+            "verdict": dict(stored_verdict) if isinstance(stored_verdict, Mapping) else stored_verdict,
+            "editorial": value.get("editorial"),
+            "verdict_sha256": value.get("verdict_sha256"),
+        }
+        if isinstance(stored_verdict, Mapping) and str(value.get("verdict_sha256") or "") != canonical_sha(
+            dict(stored_verdict)
+        ):
+            raise ValueError("news_scored_judgment_identity_mismatch")
+        if str(value.get("scored_judgment_sha256") or "") != canonical_sha(payload):
+            raise ValueError("news_scored_judgment_identity_mismatch")
+        return {**value, "reconstructed_from": "news_judgment_v2"}
 
     @classmethod
     def issue(cls, *, verdict: TriageVerdict, editorial: EditorialEnvelope) -> ScoredJudgment:
@@ -830,6 +891,15 @@ class ScoredJudgment(_ExactContractModel):
 
     @model_validator(mode="after")
     def _projection_identity_is_exact(self) -> ScoredJudgment:
+        # A reconstructed judgment's digests address the stored document, not this one, and were already
+        # verified against it in `_adapt_pre_cut_document`. Recomputing them here would compare the v2
+        # hash with a v3 canonicalization and fail every pre-cut row in the corpus.
+        if self.reconstructed_from is not None:
+            if self.judgment_contract_version != self.reconstructed_from:
+                raise ValueError("news_scored_judgment_identity_mismatch")
+            return self
+        if self.judgment_contract_version != JUDGMENT_CONTRACT_VERSION:
+            raise ValueError("news_scored_judgment_identity_mismatch")
         expected_verdict = canonical_sha(self.verdict.model_dump(mode="json"))
         payload = {
             "judgment_contract_version": self.judgment_contract_version,
@@ -914,14 +984,14 @@ __all__ = [
     "CATALOG_CANDIDATE_CLASSES_MAX",
     "CATALOG_CANDIDATE_SYMBOLS_MAX",
     "EDITORIAL_CONTRACT_VERSION",
+    "FACT_KINDS",
     "GROUNDED_ASSETS_MAX",
     "JUDGMENT_CONTRACT_VERSION",
     "STRATEGIES_MAX",
-    "TRADE_AFFECTED_MARKET_ORDER",
-    "TRADE_CHANNEL_ORDER",
     "WATCHLIST_MAX",
     "CatalogCandidate",
     "EditorialEnvelope",
+    "FactKind",
     "FrozenEventEvidence",
     "ModelVisibleCardInput",
     "ModelVisibleSemanticsInput",
@@ -936,7 +1006,6 @@ __all__ = [
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
-    "TradeRelevanceV1",
     "TriageContext",
     "aggregate_program_usage",
     "catalog_candidates_of",

@@ -151,13 +151,7 @@ describe("NewsPage", () => {
     expect(badges[0]).toHaveAttribute("data-variant", "text");
     expect(badges[0]).toHaveAttribute("title", "模型判断值得推送");
     expect(inRow.getByText("模型判断值得推送")).toBeInTheDocument();
-    for (const raw of [
-      "trade_relevance_realtime",
-      "candidate",
-      "asset:BTC",
-      "escalate",
-      "general",
-    ]) {
+    for (const raw of ["escalate_corroborated", "candidate", "asset:BTC", "escalate", "general"]) {
       expect(inRow.queryByText(raw)).not.toBeInTheDocument();
     }
   });
@@ -950,10 +944,10 @@ describe("NewsPage", () => {
     ]);
     expect(steps[0]).toHaveTextContent("来源 Reuters World · 归并 4 条同类报道（2 个来源）");
     expect(steps[3]).toHaveTextContent("推送 · 模型判断值得推送");
-    expect(within(steps[3]).queryByText("trade_relevance_realtime")).not.toBeInTheDocument();
+    expect(within(steps[3]).queryByText("escalate_corroborated")).not.toBeInTheDocument();
     fireEvent.click(within(steps[3]).getByRole("button", { name: /展开字段/ }));
     expect(within(steps[3]).getByText("override_rule")).toBeInTheDocument();
-    expect(within(steps[3]).getByText("trade_relevance_realtime")).toBeInTheDocument();
+    expect(within(steps[3]).getByText("escalate_corroborated")).toBeInTheDocument();
 
     const members = screen.getByRole("region", { name: "同类报道" });
     expect(within(members).getAllByRole("listitem")).toHaveLength(2);
@@ -968,7 +962,7 @@ describe("NewsPage", () => {
     expect(technical).not.toHaveAttribute("open");
     expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
     expect(within(technical).getByText("asset:BTC")).toBeInTheDocument();
-    expect(within(technical).getByText("news_triage_policy_v11")).toBeInTheDocument();
+    expect(within(technical).getByText("news_triage_policy_v16")).toBeInTheDocument();
     for (const [earlier, later] of [
       [hero, timeline],
       [timeline, members],

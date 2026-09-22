@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.news_judgment import scored_judgment, trade_relevance
+from tests.support.news_judgment import news_taxonomy, scored_judgment
 from tracefold.news.models import TriageAsset, TriageVerdict
 from tracefold.news.program.contracts import ScoredJudgment, TriageContext
 from tracefold.news.triage_rules import DecisionResult, GateFacts, decide
@@ -17,12 +17,13 @@ _NO_OBJECTIVE_GUARD = GateFacts(
     watchlist_symbols=frozenset(),
     admission="candidate",
 )
-# #504 D3: an escalate from a source of unknown authority is corroborated by a second independent arrival.
+# #504 D3, narrowed by #675 §3: an escalate from a source of unknown authority is corroborated by a second
+# *independent member text*, not by a second arrival of the same wire line.
 _CORROBORATED = GateFacts(
     grounded_assets=(),
     watchlist_symbols=frozenset(),
     admission="candidate",
-    member_count=2,
+    independent_text_count=2,
 )
 
 
@@ -32,9 +33,9 @@ def _verdict(**overrides: Any) -> TriageVerdict:
         "assets": [],
         "direction": "neutral",
         "scope": "macro",
-        "magnitude": 2,
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.9,
-        "audience": "macro",
         "headline_zh": "固定产品回归案例",
         "why_zh": "",
     }
@@ -87,23 +88,15 @@ def _all_keys(value: Any) -> set[str]:
 
 
 def test_provider_score_95_local_contextual_color_only_is_held() -> None:
+    """A loud provider score is still no reason to interrupt: the text is one official repeating himself."""
+
     context = _context(provider_score=95)
-    relevance = trade_relevance(
-        impact_breadth="single_instrument",
-        tradability="contextual",
-        surprise="unknown",
-        development_delta="color_only",
-        channels=[],
-        affected_markets=[],
-        reader_value="background",
-    )
     judgment = scored_judgment(
         _verdict(
             scope="single_name",
-            magnitude=3,
+            fact_kind="statement",
             headline_zh="地方官员重复既有表态",
         ),
-        relevance=relevance,
     )
 
     assert context.evidence.provider_score == 95
@@ -111,7 +104,7 @@ def test_provider_score_95_local_contextual_color_only_is_held() -> None:
         judgment,
         DecisionResult(
             final="drop",
-            override_rule="reader_value_background",
+            override_rule="fact_kind_statement",
             throttled_by=None,
             rule_baseline="drop",
         ),
@@ -120,18 +113,8 @@ def test_provider_score_95_local_contextual_color_only_is_held() -> None:
 
 def test_queue_high_or_macro_scope_does_not_create_reader_urgency() -> None:
     context = _context(provider_score=95, queue_priority="high")
-    relevance = trade_relevance(
-        impact_breadth="none",
-        tradability="contextual",
-        surprise="in_line",
-        development_delta="color_only",
-        channels=[],
-        affected_markets=[],
-        reader_value="background",
-    )
     judgment = scored_judgment(
-        _verdict(scope="macro", magnitude=3, headline_zh="宏观标签本身不构成打断理由"),
-        relevance=relevance,
+        _verdict(scope="macro", fact_kind="statement", headline_zh="宏观标签本身不构成打断理由"),
     )
 
     assert context.evidence.queue_priority == "high"
@@ -142,7 +125,7 @@ def test_queue_high_or_macro_scope_does_not_create_reader_urgency() -> None:
         judgment,
         DecisionResult(
             final="drop",
-            override_rule="reader_value_background",
+            override_rule="fact_kind_statement",
             throttled_by=None,
             rule_baseline="drop",
         ),
@@ -153,25 +136,17 @@ def test_unexpected_fed_cut_with_rates_and_liquidity_escalates() -> None:
     judgment = scored_judgment(
         _verdict(
             direction="bullish",
-            magnitude=3,
+            fact_kind="official_measure",
             headline_zh="美联储意外降息",
         ),
-        relevance=trade_relevance(
-            impact_breadth="global_systemic",
-            tradability="direct",
-            surprise="unscheduled",
-            development_delta="state_change",
-            channels=["rates", "liquidity"],
-            affected_markets=["rates", "fx", "us_equity_broad", "crypto_broad"],
-            reader_value="escalate",
-        ),
+        taxonomy=news_taxonomy(event_family="macro_policy_data", change_state="effective"),
     )
 
     _exact_decision(
         judgment,
         DecisionResult(
             final="escalate",
-            override_rule="trade_relevance_escalate",
+            override_rule="escalate_corroborated",
             throttled_by=None,
             rule_baseline="drop",
         ),
@@ -182,7 +157,7 @@ def test_unexpected_fed_cut_with_rates_and_liquidity_escalates() -> None:
         judgment,
         DecisionResult(
             final="push",
-            override_rule="trade_relevance_escalate_uncorroborated",
+            override_rule="escalate_uncorroborated",
             throttled_by=None,
             rule_baseline="drop",
         ),
@@ -193,25 +168,17 @@ def test_official_hormuz_closure_with_energy_and_risk_escalates() -> None:
     judgment = scored_judgment(
         _verdict(
             direction="bearish",
-            magnitude=3,
+            fact_kind="state_change",
             headline_zh="霍尔木兹海峡正式关闭",
         ),
-        relevance=trade_relevance(
-            impact_breadth="global_systemic",
-            tradability="direct",
-            surprise="unscheduled",
-            development_delta="state_change",
-            channels=["energy_supply", "risk_premium"],
-            affected_markets=["energy", "us_equity_broad", "crypto_broad"],
-            reader_value="escalate",
-        ),
+        taxonomy=news_taxonomy(event_family="geopolitical_conflict", change_state="effective"),
     )
 
     _exact_decision(
         judgment,
         DecisionResult(
             final="escalate",
-            override_rule="trade_relevance_escalate",
+            override_rule="escalate_corroborated",
             throttled_by=None,
             rule_baseline="drop",
         ),
@@ -219,36 +186,32 @@ def test_official_hormuz_closure_with_energy_and_risk_escalates() -> None:
     )
 
 
-def test_regional_port_supply_state_change_is_realtime() -> None:
+def test_regional_port_supply_state_change_pushes_without_corroboration() -> None:
+    """A regional operational change still reaches the reader — as an ordinary card, not a wake-up."""
+
     judgment = scored_judgment(
         _verdict(
             scope="sector",
-            magnitude=2,
+            fact_kind="state_change",
             headline_zh="地区港口停运中断商品供应",
         ),
-        relevance=trade_relevance(
-            impact_breadth="regional",
-            tradability="second_order",
-            surprise="unscheduled",
-            development_delta="state_change",
-            channels=["commodity_supply", "risk_premium"],
-            affected_markets=["energy", "single_asset"],
-            reader_value="realtime",
-        ),
+        taxonomy=news_taxonomy(event_family="security_operational_incident", change_state="effective"),
     )
 
     _exact_decision(
         judgment,
         DecisionResult(
             final="push",
-            override_rule="trade_relevance_realtime",
+            override_rule="escalate_uncorroborated",
             throttled_by=None,
             rule_baseline="drop",
         ),
     )
 
 
-def test_material_local_regulation_for_us_listed_single_name_is_realtime() -> None:
+def test_material_local_regulation_for_us_listed_single_name_is_pushed() -> None:
+    """A measure an authority took is a fact; outside the four loud families it is an ordinary push."""
+
     facts = GateFacts(
         grounded_assets=("UWMC",),
         watchlist_symbols=frozenset(),
@@ -259,26 +222,17 @@ def test_material_local_regulation_for_us_listed_single_name_is_realtime() -> No
             assets=[TriageAsset(symbol="UWMC", role="primary", market_type="us_equity")],
             direction="bearish",
             scope="single_name",
-            magnitude=2,
-            audience="us_equity",
+            fact_kind="official_measure",
             headline_zh="地方监管新规直接改变 UWMC 业务",
         ),
-        relevance=trade_relevance(
-            impact_breadth="single_instrument",
-            tradability="direct",
-            surprise="unknown",
-            development_delta="material_detail",
-            channels=["regulation", "earnings_cashflow"],
-            affected_markets=["single_asset"],
-            reader_value="realtime",
-        ),
+        taxonomy=news_taxonomy(event_family="regulatory_legal", change_state="effective"),
     )
 
     _exact_decision(
         judgment,
         DecisionResult(
             final="push",
-            override_rule="trade_relevance_realtime",
+            override_rule="fact_kind_official_measure",
             throttled_by=None,
             rule_baseline="drop",
         ),
@@ -287,60 +241,34 @@ def test_material_local_regulation_for_us_listed_single_name_is_realtime() -> No
 
 
 @pytest.mark.parametrize(
-    ("surprise", "reader_value", "expected_rule"),
+    ("fact_kind", "headline_zh"),
     [
-        pytest.param("unknown", "background", "reader_value_background", id="repeated-local-official"),
-        pytest.param("in_line", "none", "reader_value_none", id="in-line-local-data"),
+        pytest.param("statement", "地区官员重复既有表态", id="repeated-local-official"),
+        pytest.param("recap", "重新讲述昨日已送达的地区数据", id="restated-local-data"),
     ],
 )
-def test_repeated_regional_statement_or_in_line_local_data_is_held(
-    surprise: str,
-    reader_value: str,
-    expected_rule: str,
-) -> None:
-    judgment = scored_judgment(
-        _verdict(scope="macro", magnitude=2, headline_zh="地区官员重复表态或数据符合预期"),
-        relevance=trade_relevance(
-            impact_breadth="regional",
-            tradability="contextual",
-            surprise=surprise,
-            development_delta="color_only",
-            channels=[],
-            affected_markets=[],
-            reader_value=reader_value,
-        ),
-    )
+def test_repeated_regional_statement_or_restated_local_data_is_held(fact_kind: str, headline_zh: str) -> None:
+    judgment = scored_judgment(_verdict(scope="macro", fact_kind=fact_kind, headline_zh=headline_zh))
 
     _exact_decision(
         judgment,
         DecisionResult(
             final="drop",
-            override_rule=expected_rule,
+            override_rule=f"fact_kind_{fact_kind}",
             throttled_by=None,
             rule_baseline="drop",
         ),
     )
 
 
-def test_scheduled_calendar_has_no_reader_value() -> None:
-    judgment = scored_judgment(
-        _verdict(magnitude=1, headline_zh="明日公布计划内经济数据"),
-        relevance=trade_relevance(
-            impact_breadth="none",
-            tradability="none",
-            surprise="unknown",
-            development_delta="scheduled",
-            channels=[],
-            affected_markets=[],
-            reader_value="none",
-        ),
-    )
+def test_scheduled_calendar_item_is_held() -> None:
+    judgment = scored_judgment(_verdict(fact_kind="schedule", headline_zh="明日公布计划内经济数据"))
 
     _exact_decision(
         judgment,
         DecisionResult(
             final="drop",
-            override_rule="reader_value_none",
+            override_rule="fact_kind_schedule",
             throttled_by=None,
             rule_baseline="drop",
         ),

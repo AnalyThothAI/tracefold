@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
+from tests.support.news_judgment import news_taxonomy, scored_judgment
 from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
 from tracefold.news.card_format import CHANGE_BASIS_LABEL
 from tracefold.news.delivery import (
@@ -42,6 +42,7 @@ from tracefold.news.events.titles import extract_title
 from tracefold.news.events.tokens import comparison_tokens, jaccard
 from tracefold.news.market_review.pricing import CHANGE_BASIS_ZH
 from tracefold.news.models import (
+    FACT_KINDS,
     MarketAsset,
     ReaderMarketMovement,
     ReaderReceipt,
@@ -53,14 +54,21 @@ from tracefold.news.models import (
 from tracefold.news.opennews import source_artifact_identity
 from tracefold.news.outcome import OVERRIDE_RULE_ZH, storyline_key_zh, throttled_by_zh
 from tracefold.news.pipeline.admission import _event_identity
+from tracefold.news.program.contracts import EditorialEnvelope
 from tracefold.news.reader_card import quote_line, reader_quotes
 from tracefold.news.similarity import similarity
 from tracefold.news.triage_rules import (
+    DECISION_TABLE_RULES,
     DEFAULT_POLICY,
+    DROP_FACT_KINDS,
+    ESCALATE_FAMILIES,
+    MATERIAL_FACT_KINDS,
+    PUSH_FACT_KINDS,
     STALE_SOURCE_KEY,
     DecidePolicy,
     GateFacts,
     StorylineStatus,
+    confirmed_fact_kind,
     fallback_verdict,
     price_move_basis,
     rule_baseline,
@@ -887,7 +895,8 @@ def _verdict(**kw) -> TriageVerdict:
         assets=[TriageAsset(symbol="NVDA", role="primary")],
         direction="bullish",
         scope="single_name",
-        magnitude=2,
+        fact_kind="state_change",
+        evidence_ref="c1",
         confidence=0.8,
         headline_zh="英伟达投资",
         why_zh="",
@@ -909,12 +918,18 @@ def decide(
     status: StorylineStatus | None,
     *,
     policy: DecidePolicy = DEFAULT_POLICY,
-    relevance: dict[str, Any] | None = None,
+    taxonomy: dict[str, Any] | None = None,
+    source_authority: str = "unknown",
     now_ms: int | None = None,
 ) -> Any:
-    """Exercise the current model-only seam without repeating envelope construction in every pure assertion."""
+    """Exercise the current model-only seam without repeating envelope construction in every pure assertion.
 
-    judgment = scored_judgment(verdict, relevance=trade_relevance(**(relevance or {})))
+    The default taxonomy is `other`/`unknown`/`unknown`, which is deliberately the classification none of
+    the family-scoped rows read: a caller that names no taxonomy is asking what the `fact_kind` rows alone
+    do with this verdict.
+    """
+
+    judgment = scored_judgment(verdict, taxonomy=news_taxonomy(**(taxonomy or {})), source_authority=source_authority)
     return production_decide(judgment, facts, status, policy=policy, now_ms=now_ms)
 
 
@@ -954,8 +969,8 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     stale = replace(_FACTS, source_age_s=int(385.6 * 3600))
     status = storyline_status("asset:TTWO")
 
-    assert decide(_verdict(magnitude=2), fresh, status).final == "push"
-    withheld = decide(_verdict(magnitude=2), stale, status)
+    assert decide(_verdict(), fresh, status).final == "push"
+    withheld = decide(_verdict(), stale, status)
     assert withheld.final == "throttled"
     assert withheld.override_rule == "stale_source_artifact"
     # A constant key, not the age: `throttled_by` is counted into a top-10 map and a per-second key would
@@ -967,18 +982,19 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     # (#504 D3: a corroborated escalate — two independent arrivals — is the one that keeps its exemption.)
     assert (
         decide(
-            _verdict(magnitude=3),
-            replace(stale, watchlist_symbols=frozenset(), member_count=2),
+            _verdict(fact_kind="official_measure", scope="macro", assets=[]),
+            replace(stale, watchlist_symbols=frozenset()),
             status,
-            relevance={"reader_value": "escalate"},
+            taxonomy={"event_family": "macro_policy_data", "change_state": "effective"},
+            source_authority="reputable_secondary",
         ).final
         == "escalate"
     )
     # No artifact timestamp (every non-x/twitter frame) is not evidence of staleness.
-    assert decide(_verdict(magnitude=2), replace(_FACTS, source_age_s=None), status).final == "push"
+    assert decide(_verdict(), replace(_FACTS, source_age_s=None), status).final == "push"
     # The knob turns it off without touching anything else.
     off = DecidePolicy(stale_source_max_age_s=0)
-    assert decide(_verdict(magnitude=2), stale, status, policy=off).final == "push"
+    assert decide(_verdict(), stale, status, policy=off).final == "push"
 
 
 def test_policy_v12_has_six_safety_duplicate_and_budget_knobs() -> None:
@@ -994,38 +1010,35 @@ def test_policy_v12_has_six_safety_duplicate_and_budget_knobs() -> None:
     assert len(DEFAULT_POLICY.as_dict()) == 6
 
 
-def test_trade_relevance_is_the_only_model_owned_action_input() -> None:
+def test_fact_kind_is_the_only_model_owned_decision_input() -> None:
+    """#675 §1: the model observes the text, the code decides what the reader gets.
+
+    Every action below is selected by one closed enum the model read off the words on the page, plus
+    facts the code produced. There is no field left through which the model can state an opinion about
+    the reader: `reader_value`, `magnitude` and the six relevance codes are deleted, and with them the
+    `trade_relevance_*` and `reader_value_*` rule names.
+    """
+
     off_watchlist = GateFacts(
         grounded_assets=("SPY",),
         watchlist_symbols=frozenset(),
         admission="candidate",
-        member_count=2,  # #504 D3: an escalate from an `unknown` source needs a second arrival
+        independent_text_count=2,  # #504 D3: an escalate from an `unknown` source needs a second text
     )
-    verdict = _verdict(
-        magnitude=2,
-        assets=[TriageAsset(symbol="SPY", role="primary")],
-    )
-    realtime = decide(verdict, off_watchlist, None)
-    assert realtime.final == "push" and realtime.override_rule == "trade_relevance_realtime"
+    verdict = _verdict(assets=[TriageAsset(symbol="SPY", role="primary")])
 
-    escalated = decide(verdict, off_watchlist, None, relevance={"reader_value": "escalate"})
-    assert escalated.final == "escalate" and escalated.override_rule == "trade_relevance_escalate"
+    pushed = decide(verdict, off_watchlist, None)
+    assert pushed.final == "push" and pushed.override_rule == "fact_kind_state_change"
 
-    background = decide(
-        verdict,
-        off_watchlist,
-        None,
-        relevance={
-            "reader_value": "background",
-            "tradability": "contextual",
-            "channels": [],
-            "affected_markets": [],
-        },
-    )
-    assert background.final == "drop" and background.override_rule == "reader_value_background"
+    escalated = decide(verdict, off_watchlist, None, taxonomy={"event_family": "market_access"})
+    assert escalated.final == "escalate" and escalated.override_rule == "escalate_corroborated"
 
-    ineligible = decide(verdict.model_copy(update={"magnitude": 1}), off_watchlist, None)
-    assert ineligible.final == "drop" and ineligible.override_rule == "trade_relevance_inconsistent"
+    withheld = decide(verdict.model_copy(update={"fact_kind": "statement"}), off_watchlist, None)
+    assert withheld.final == "drop" and withheld.override_rule == "fact_kind_statement"
+
+    # Nothing the model emits is a reader value any more, and nothing on the verdict can be one.
+    assert not {"magnitude", "audience", "relevance"} & set(TriageVerdict.model_fields)
+    assert "relevance" not in EditorialEnvelope.model_fields
 
 
 def test_queue_priority_never_enters_policy_facts() -> None:
@@ -1082,64 +1095,51 @@ def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instrumen
     assert kept.final == "drop" and kept.override_rule == "restatement"
 
 
-def test_policy_v13_listing_admission_yields_only_to_a_reader_value_none_frame() -> None:
-    """#523 D1. `listing_deterministic` is the provider's `engine_type=listing` tag, not a content judgment.
+def test_the_listing_admission_yields_to_a_frame_whose_text_is_not_a_new_fact() -> None:
+    """#523 D1, restated in v16 terms. `listing_deterministic` is the provider's `engine_type=listing`
+    tag, not a content judgment.
 
     Over 24 h it admitted 56 frames: 20 real listings/delistings, 10 marketing/airdrop/rebate posts, 7
-    operations notices and 19 market or company miscellany. The model scored 17 of them `reader_value=none`
-    and 13 of those were pushed anyway (a Binance trading competition, a "Rug Pulls explained" explainer, a
-    35% APR promotion). v13 lets exactly those fall through to the ordinary `reader_value_none` drop; nothing
-    else about the branch moves.
+    operations notices and 19 market or company miscellany. v13 let the frames the model scored
+    `reader_value=none` fall through to an ordinary drop. v16 states the same condition as what it was
+    always about: a listing frame whose text is a statement, a recap, a calendar item or a pitch is not
+    a listing the reader can act on, and it falls through to the table's own drop row. Nothing else about
+    the branch moves -- it keeps its position above the watchlist guard and above every table row.
     """
 
     listing = replace(_NO_WATCHLIST, admission="listing_deterministic", grounded_assets=("BICO",))
     frame = _verdict(assets=[TriageAsset(symbol="BICO", role="primary")], headline_zh="币安上线 BICO 交易竞赛")
-    worthless: dict[str, Any] = {
-        "reader_value": "none",
-        "tradability": "contextual",
-        "channels": [],
-        "affected_markets": [],
-    }
 
-    dropped = decide(frame, listing, None, relevance=worthless)
-    assert dropped.final == "drop" and dropped.override_rule == "reader_value_none"
-    # The degraded lane has no `reader_value` at all, so a listing frame still pushes objectively there —
+    dropped = decide(frame.model_copy(update={"fact_kind": "promotion"}), listing, None)
+    assert dropped.final == "drop" and dropped.override_rule == "fact_kind_promotion"
+    # The degraded lane has no `fact_kind` at all, so a listing frame still pushes objectively there —
     # which is also what the dropped card reports as the baseline it was measured against.
     assert dropped.rule_baseline == "push"
     assert rule_baseline(listing) == "push"
     assert fallback_verdict(listing, error_code="news_program_route_deadline").decision.final == "push"
 
-    # `background` keeps the objective guard: v13 yields to `none` only, because `none` is the one value that
-    # says the model found nothing a reader could use. Moving the branch below `background` instead cost four
-    # genuine listings in the same replay.
-    background = decide(frame, listing, None, relevance={**worthless, "reader_value": "background"})
-    assert background.final == "push" and background.override_rule == "listing_deterministic"
-    # And a real listing notice is untouched, whichever ordinary rule would also have selected it.
-    for relevance in ({}, {"reader_value": "escalate"}):
-        admitted = decide(frame, listing, None, relevance=relevance)
-        assert admitted.final == "push" and admitted.override_rule == "listing_deterministic", relevance
-    # `reader_value` is the whole condition: a `none` frame with a full trade surface still yields.
-    surfaced = decide(frame, listing, None, relevance={"reader_value": "none"})
-    assert surfaced.final == "drop" and surfaced.override_rule == "reader_value_none"
+    # Every kind that states a new fact keeps the objective guard, whichever table row would also have
+    # selected it, and the admission wins over all of them.
+    for kind in sorted(PUSH_FACT_KINDS):
+        admitted = decide(frame.model_copy(update={"fact_kind": kind}), listing, None)
+        assert admitted.final == "push" and admitted.override_rule == "listing_deterministic", kind
+    # All four drop kinds yield, not just the loudest one.
+    for kind in sorted(DROP_FACT_KINDS):
+        yielded = decide(frame.model_copy(update={"fact_kind": kind}), listing, None)
+        assert yielded.final == "drop" and yielded.override_rule == f"fact_kind_{kind}", kind
     # The objective watchlist guard still runs after the listing branch, so a grounded watchlist asset the
-    # model called worthless is pushed by the guard, not by the admission.
-    guarded = decide(frame, replace(_FACTS, admission="listing_deterministic"), None, relevance=worthless)
+    # model called marketing is pushed by the guard, not by the admission.
+    guarded = decide(
+        frame.model_copy(update={"fact_kind": "promotion"}),
+        replace(_FACTS, admission="listing_deterministic"),
+        None,
+    )
     assert guarded.final == "push" and guarded.override_rule == "watchlist_objective_guard"
 
 
 def test_decide_rules_and_throttle() -> None:
-    # The grounded watchlist is an objective guard and wins before model relevance.
-    guarded = decide(
-        _verdict(magnitude=0),
-        _FACTS,
-        None,
-        relevance={
-            "reader_value": "background",
-            "tradability": "contextual",
-            "channels": [],
-            "affected_markets": [],
-        },
-    )
+    # The grounded watchlist is an objective guard and wins before every table row.
+    guarded = decide(_verdict(fact_kind="promotion"), _FACTS, None)
     assert guarded.final == "push" and guarded.override_rule == "watchlist_objective_guard"
 
     # No objective guard: the exact realtime eligibility predicate applies.
@@ -1149,14 +1149,11 @@ def test_decide_rules_and_throttle() -> None:
         admission="candidate",
     )
     assert decide(_verdict(assets=[TriageAsset(symbol="AMD", role="primary")]), off_watchlist, None).final == "push"
-    assert decide(_verdict(magnitude=1), off_watchlist, None).override_rule == "trade_relevance_inconsistent"
-    assert (
-        decide(_verdict(), off_watchlist, None, relevance={"development_delta": "color_only"}).override_rule
-        == "trade_relevance_inconsistent"
-    )
+    assert decide(_verdict(fact_kind="recap"), off_watchlist, None).override_rule == "fact_kind_recap"
+    assert decide(_verdict(fact_kind="schedule"), off_watchlist, None).override_rule == "fact_kind_schedule"
 
     busy = StorylineStatus(key="conflict:mideast_2026")
-    unbounded = decide(_verdict(magnitude=2, scope="sector"), _FACTS, busy)
+    unbounded = decide(_verdict(scope="sector"), _FACTS, busy)
     assert unbounded.final == "push" and unbounded.throttled_by is None
 
 
@@ -1178,7 +1175,9 @@ def test_decide_restatement_drop_is_grounded() -> None:
     )
     assert decide(_verdict(novelty="restatement", restates=0), _FACTS, None).final == "push"
     # An m3 restatement (the duplicated 4.75% yield escalate) drops too.
-    assert decide(_verdict(novelty="restatement", restates=0, magnitude=3), _FACTS, quiet).final == "drop"
+    assert (
+        decide(_verdict(novelty="restatement", restates=0, fact_kind="official_measure"), _FACTS, quiet).final == "drop"
+    )
     # The switch.
     assert (
         decide(
@@ -1228,7 +1227,7 @@ def test_decide_withholds_the_third_card_on_a_storyline_inside_the_budget_window
 
     withheld = decide(third, _NO_WATCHLIST, spent, now_ms=_NOW)
     assert withheld.final == "throttled" and withheld.throttled_by == f"storyline:{key}:budget"
-    assert withheld.override_rule == "trade_relevance_realtime"  # the rule that would have pushed it
+    assert withheld.override_rule == "fact_kind_state_change"  # the rule that would have pushed it
     assert withheld.seen_scope == "all" and withheld.seen_similarity is not None  # similarity still measured
     assert throttled_by_zh(withheld.throttled_by).startswith("同线索预算")
 
@@ -1327,28 +1326,44 @@ def test_policy_v13_budget_reversal_exemption_reads_past_a_non_directional_card(
 def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores_the_budget() -> None:
     """#504 D3. 92 of 126 escalates on 2026-09-02 were a single Item from a source of unknown authority."""
 
-    big = _verdict(magnitude=3, scope="macro", assets=[], direction="bearish", headline_zh="伊朗议员称将报复美军")
-    escalate = trade_relevance(reader_value="escalate")
-    lone = replace(_NO_WATCHLIST, member_count=1)
+    big = _verdict(
+        fact_kind="official_measure",
+        scope="macro",
+        assets=[],
+        direction="bearish",
+        headline_zh="美联储宣布降息50个基点",
+    )
+    macro = news_taxonomy(event_family="macro_policy_data", change_state="effective")
+    lone = replace(_NO_WATCHLIST, independent_text_count=1)
 
-    claim = production_decide(scored_judgment(big, relevance=escalate), lone, None)
-    assert claim.final == "push" and claim.override_rule == "trade_relevance_escalate_uncorroborated"
-    assert OVERRIDE_RULE_ZH["trade_relevance_escalate_uncorroborated"]
-    # Either corroboration keeps the escalate: a source of known authority, or a second independent arrival.
-    wire = scored_judgment(big, relevance=escalate, source_authority="reputable_secondary")
+    claim = production_decide(scored_judgment(big, taxonomy=macro), lone, None)
+    assert claim.final == "push" and claim.override_rule == "escalate_uncorroborated"
+    assert OVERRIDE_RULE_ZH["escalate_uncorroborated"]
+    # Either corroboration keeps the escalate: a source of known authority, or a second independent text.
+    wire = scored_judgment(big, taxonomy=macro, source_authority="reputable_secondary")
     assert production_decide(wire, lone, None).final == "escalate"
-    merged = production_decide(scored_judgment(big, relevance=escalate), replace(lone, member_count=2), None)
-    assert merged.final == "escalate" and merged.override_rule == "trade_relevance_escalate"
+    merged = production_decide(scored_judgment(big, taxonomy=macro), replace(lone, independent_text_count=2), None)
+    assert merged.final == "escalate" and merged.override_rule == "escalate_corroborated"
+    # A second arrival of the same text is not a second party, which is why the row counts distinct texts
+    # and `GateFacts` no longer carries the Deduper's arrival count at all (#679 review 7). Two members of
+    # one wire line, from a source the registry cannot name, is the #675 Tencent shape: one distinct text,
+    # so the escalate is downgraded rather than granted.
+    assert not hasattr(lone, "member_count")
+    two_arrivals_one_text = production_decide(
+        scored_judgment(big, taxonomy=macro), replace(lone, independent_text_count=1), None
+    )
+    assert two_arrivals_one_text.final == "push"
+    assert two_arrivals_one_text.override_rule == "escalate_uncorroborated"
     # A grounded asset is not corroboration: a provider tag says which instrument, not that anyone confirmed it.
     tagged = replace(lone, grounded_assets=("CL", "XYZ-CL"))
-    assert production_decide(scored_judgment(big, relevance=escalate), tagged, None).final == "push"
+    assert production_decide(scored_judgment(big, taxonomy=macro), tagged, None).final == "push"
 
     # The downgraded card is an ordinary push from here on: the budget and similarity apply to it.
     key = "conflict:mideast_2026"
     spent = storyline_status(key, seen=_sent(key, "bearish", "bearish"))
-    budgeted = production_decide(scored_judgment(big, relevance=escalate), lone, spent, now_ms=_NOW)
+    budgeted = production_decide(scored_judgment(big, taxonomy=macro), lone, spent, now_ms=_NOW)
     assert budgeted.final == "throttled" and budgeted.throttled_by == f"storyline:{key}:budget"
-    assert budgeted.override_rule == "trade_relevance_escalate_uncorroborated"
+    assert budgeted.override_rule == "escalate_uncorroborated"
     # A corroborated escalate is the card the budget makes room for.
     assert production_decide(wire, lone, spent, now_ms=_NOW).final == "escalate"
 
@@ -1356,26 +1371,39 @@ def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores
 def test_the_corroboration_rule_still_fires_when_the_taxonomy_predictor_failed() -> None:
     """#651 §5.3. `source_authority` is computed from the evidence, not classified by the model, so a
     judgment whose taxonomy call failed still reaches `decide()` with the corroboration fact intact. Under
-    v13 the rule read it out of the taxonomy object, and such a judgment could not have existed at all."""
+    v13 the rule read it out of the taxonomy object, and such a judgment could not have existed at all.
 
-    big = _verdict(magnitude=3, scope="macro", assets=[], direction="bearish", headline_zh="伊朗议员称将报复美军")
-    escalate = trade_relevance(reader_value="escalate")
-    lone = replace(_NO_WATCHLIST, member_count=1)
+    v16 moves where that matters: the escalate row needs a family, so a judgment with no classification
+    cannot reach it at all, and the card takes its own `fact_kind` push row instead. What the split still
+    buys is that the authority is *there* -- a taxonomy outage costs the escalate, not the fact that the
+    code knows who reported this."""
 
-    unclassified = scored_judgment(big, relevance=escalate, taxonomy_error_code="news_program_output_truncated")
+    big = _verdict(
+        fact_kind="official_measure",
+        scope="macro",
+        assets=[],
+        direction="bearish",
+        headline_zh="美联储宣布降息50个基点",
+    )
+    lone = replace(_NO_WATCHLIST, independent_text_count=1)
+
+    unclassified = scored_judgment(big, taxonomy_error_code="news_program_output_truncated")
     assert unclassified.editorial.taxonomy is None
     assert unclassified.editorial.taxonomy_status == "unavailable"
 
+    # No classification means no escalate row and no conflict row: the card reaches the reader as the
+    # ordinary push its own `fact_kind` names, and the corroboration fact is intact for the row that
+    # would have read it.
     claim = production_decide(unclassified, lone, None)
-    assert claim.final == "push" and claim.override_rule == "trade_relevance_escalate_uncorroborated"
+    assert claim.final == "push" and claim.override_rule == "fact_kind_official_measure"
+    assert unclassified.editorial.source_authority == "unknown"
 
     corroborated = scored_judgment(
         big,
-        relevance=escalate,
         source_authority="reputable_secondary",
         taxonomy_error_code="news_program_output_truncated",
     )
-    assert production_decide(corroborated, lone, None).final == "escalate"
+    assert production_decide(corroborated, lone, None).override_rule == "fact_kind_official_measure"
 
 
 def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
@@ -1391,19 +1419,19 @@ def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
         named = decide(
             nameless.model_copy(update={"assets": [TriageAsset(symbol=symbol, role="primary")]}), _NO_WATCHLIST, None
         )
-        assert named.final == "push" and named.override_rule == "trade_relevance_realtime", symbol
+        assert named.final == "push" and named.override_rule == "fact_kind_state_change", symbol
     # A merely mentioned asset is not a primary.
     affected = decide(
         nameless.model_copy(update={"assets": [TriageAsset(symbol="SPY", role="mentioned")]}), _NO_WATCHLIST, None
     )
     assert affected.final == "drop" and affected.override_rule == "single_name_without_instrument"
-    # Only a realtime single-name verdict: macro/sector scope, a corroborated escalate, a watchlist or listing
+    # Only a single-name push the table produced: macro/sector scope, an escalate, a watchlist or listing
     # guard are untouched.
     assert decide(nameless.model_copy(update={"scope": "macro"}), _NO_WATCHLIST, None).final == "push"
     assert decide(nameless.model_copy(update={"scope": "sector"}), _NO_WATCHLIST, None).final == "push"
     corroborated = scored_judgment(
-        nameless.model_copy(update={"magnitude": 3}),
-        relevance=trade_relevance(reader_value="escalate"),
+        nameless,
+        taxonomy=news_taxonomy(event_family="security_operational_incident", change_state="effective"),
         source_authority="reputable_secondary",
     )
     assert production_decide(corroborated, _NO_WATCHLIST, None).final == "escalate"
@@ -1412,18 +1440,16 @@ def test_decide_drops_a_single_name_fact_that_names_no_instrument() -> None:
 
 
 def _table_judgment(**over: Any) -> Any:
-    """One realtime push whose taxonomy, authority and headline the decision table can read (#675 §3)."""
+    """One judgment whose taxonomy, authority and headline the decision table can read (#675 §1)."""
 
     fields = {
         "event_family": over.pop("event_family", "market_flow_price"),
         "change_state": over.pop("change_state", "reported"),
         "assertion_status": over.pop("assertion_status", "confirmed"),
     }
-    relevance = trade_relevance(**over.pop("relevance", {}))
     verdict = _verdict(**over.pop("verdict", {}))
     return scored_judgment(
         verdict,
-        relevance=relevance,
         taxonomy=news_taxonomy(**fields),
         source_authority=over.pop("source_authority", "unknown"),
         **over,
@@ -1489,25 +1515,33 @@ def test_the_decision_table_withholds_a_price_report_that_states_no_basis() -> N
     never a single name.
     """
 
-    tencent = _table_judgment(verdict={"headline_zh": "腾讯港股盘中涨超7%", "assets": [], "scope": "macro"})
+    claimed = {"headline_zh": "腾讯港股盘中涨超7%", "assets": [], "scope": "macro", "fact_kind": "level_crossed"}
+    tencent = _table_judgment(verdict=claimed)
     quote = replace(_NO_WATCHLIST, title="Tencent Shares Rise More Than 7% Intraday")
     dropped = production_decide(tencent, quote, None)
     assert dropped.final == "drop" and dropped.override_rule == "price_report_without_basis"
     assert dropped.throttled_by is None and OVERRIDE_RULE_ZH["price_report_without_basis"]
+    # The row does not reject the card, it corrects the claim: the kind the text supports is `statement`,
+    # and the drop is the `statement` row's, named for why the kind moved.
+    assert confirmed_fact_kind("level_crossed", f"{quote.title}\n{claimed['headline_zh']}", frozenset()) == (
+        "statement",
+        True,
+    )
 
     # A basis anywhere in the card's own text admits it — including one the 60-character headline dropped.
     assert production_decide(tencent, replace(quote, title="Tencent rises above HK$700"), None).final == "push"
-    crossed = _table_judgment(verdict={"headline_zh": "比特币站上85000美元", "assets": [], "scope": "macro"})
+    crossed = _table_judgment(verdict={**claimed, "headline_zh": "比特币站上85000美元"})
     assert production_decide(crossed, quote, None).final == "push"
 
-    # Only `market_flow_price` + `reported`: the same headline classified as a real fact is not touched.
+    # Only `market_flow_price` + `reported`: the same headline classified as a real fact is not touched,
+    # because the codebook's "the number was printed" is the whole reason the claim is checked at all.
     for family, state in (("financial_results", "reported"), ("market_flow_price", "announced")):
-        other = _table_judgment(
-            event_family=family,
-            change_state=state,
-            verdict={"headline_zh": "腾讯港股盘中涨超7%", "assets": [], "scope": "macro"},
-        )
+        other = _table_judgment(event_family=family, change_state=state, verdict=claimed)
         assert production_decide(other, quote, None).final == "push", (family, state)
+    # And only the three kinds whose whole claim is a number: a `state_change` the taxonomy happened to
+    # file under `market_flow_price` is not a claim this row can check.
+    state_change = _table_judgment(verdict={**claimed, "fact_kind": "state_change"})
+    assert production_decide(state_change, quote, None).override_rule == "fact_kind_state_change"
 
 
 def test_the_five_percent_exception_is_carried_by_the_market_not_by_the_size_of_the_move() -> None:
@@ -1519,16 +1553,46 @@ def test_the_five_percent_exception_is_carried_by_the_market_not_by_the_size_of_
         judgment = _table_judgment(
             verdict={
                 "headline_zh": "标的日内下跌5.00%",
+                "fact_kind": "level_crossed",
                 "assets": [TriageAsset(symbol="CL", market_type=market, role="primary")],
             }
         )
         result = production_decide(judgment, quote, None)
         assert (result.final == "push") is admitted, market
 
+    # It is an admission about a price report, not about any sentence that mentions a number. A
+    # `statement` is rescued, because the move is usually the thing being stated and reading it as a
+    # quote is the mistake the exception exists to correct.
+    stated = _table_judgment(
+        verdict={
+            "headline_zh": "WTI原油期货日内大跌5.00%",
+            "fact_kind": "statement",
+            "assets": [TriageAsset(symbol="CL", market_type="commodity", role="primary")],
+        }
+    )
+    admitted = production_decide(stated, quote, None)
+    assert admitted.final == "push" and admitted.override_rule == "fact_kind_new_quantity"
+
+    # A `recap`, a `schedule` and a `promotion` are not. Each one says the text is about something other
+    # than the move it mentions -- told again, scheduled, or sold beside it -- and admitting them on the
+    # size of a number anywhere in the sentence would push the class the audit counted as its largest
+    # demote bucket (#679 review 3).
+    for kind in ("recap", "schedule", "promotion"):
+        mentions = _table_judgment(
+            verdict={
+                "headline_zh": "WTI原油期货日内大跌5.00%",
+                "fact_kind": kind,
+                "assets": [TriageAsset(symbol="CL", market_type="commodity", role="primary")],
+            }
+        )
+        withheld = production_decide(mentions, quote, None)
+        assert (withheld.final, withheld.override_rule) == ("drop", f"fact_kind_{kind}"), kind
+
     # Below the threshold the market does not matter.
     small = _table_judgment(
         verdict={
             "headline_zh": "原油日内下跌3.00%",
+            "fact_kind": "level_crossed",
             "assets": [TriageAsset(symbol="CL", market_type="commodity", role="primary")],
         }
     )
@@ -1537,6 +1601,7 @@ def test_the_five_percent_exception_is_carried_by_the_market_not_by_the_size_of_
     borrowed = _table_judgment(
         verdict={
             "headline_zh": "某股票日内上涨10.4%",
+            "fact_kind": "level_crossed",
             "assets": [
                 TriageAsset(symbol="META", market_type="equity", role="primary"),
                 TriageAsset(symbol="CL", market_type="commodity", role="mentioned"),
@@ -1556,8 +1621,12 @@ def test_the_decision_table_withholds_an_uncorroborated_conflict_claim() -> None
         event_family="geopolitical_conflict",
         change_state="reported",
         assertion_status="claimed",
-        relevance={"development_delta": "material_detail"},
-        verdict={"headline_zh": "俄防部：俄军打击克列缅丘格炼油厂", "assets": [], "scope": "macro"},
+        verdict={
+            "headline_zh": "俄防部：俄军打击克列缅丘格炼油厂",
+            "assets": [],
+            "scope": "macro",
+            "fact_kind": "new_quantity",
+        },
     )
     lone = replace(_NO_WATCHLIST, independent_text_count=1, title="")
     dropped = production_decide(claim, lone, _told_on(key, 1), now_ms=_NOW)
@@ -1569,14 +1638,20 @@ def test_the_decision_table_withholds_an_uncorroborated_conflict_claim() -> None
     assert production_decide(claim, replace(lone, independent_text_count=2), _told_on(key, 1), now_ms=_NOW).final == (
         "push"
     )
-    assert production_decide(claim, replace(lone, member_count=5), _told_on(key, 1), now_ms=_NOW).final == "drop"
+    assert (
+        production_decide(claim, replace(lone, independent_text_count=1), _told_on(key, 1), now_ms=_NOW).final == "drop"
+    )
     # So does a source the registry can name.
     named = _table_judgment(
         event_family="geopolitical_conflict",
         change_state="reported",
         assertion_status="claimed",
-        relevance={"development_delta": "material_detail"},
-        verdict={"headline_zh": "俄防部：俄军打击克列缅丘格炼油厂", "assets": [], "scope": "macro"},
+        verdict={
+            "headline_zh": "俄防部：俄军打击克列缅丘格炼油厂",
+            "assets": [],
+            "scope": "macro",
+            "fact_kind": "new_quantity",
+        },
         source_authority="reputable_secondary",
     )
     assert production_decide(named, lone, _told_on(key, 1), now_ms=_NOW).final == "push"
@@ -1585,26 +1660,37 @@ def test_the_decision_table_withholds_an_uncorroborated_conflict_claim() -> None
         event_family="geopolitical_conflict",
         change_state="effective",
         assertion_status="confirmed",
-        relevance={"development_delta": "material_detail"},
         verdict={"headline_zh": "俄防部：俄军打击克列缅丘格炼油厂", "assets": [], "scope": "macro"},
     )
     assert production_decide(confirmed, lone, _told_on(key, 1), now_ms=_NOW).final == "push"
 
 
 def test_a_conflict_state_change_survives_until_the_reader_is_two_cards_into_the_storyline() -> None:
-    """#675 §3, the G2x refinement the audit measured: the model marks nearly every strike a `state_change`
-    during an escalation, so honouring it unconditionally is how the refinery card escaped the rule. It is
-    honoured while the storyline is new to the reader and withdrawn once two cards are already delivered."""
+    """#675 §3, the G2x refinement the audit measured: the model marks nearly every strike a new state of
+    the world during an escalation, so honouring it unconditionally is how the refinery card escaped the
+    rule. It is honoured while the storyline is new to the reader and withdrawn once two cards are already
+    delivered. Both material kinds are honoured and both are withdrawn: the exemption is about the kind of
+    thing the text states, not about which of the two words the model chose for it."""
 
     key = "conflict:mideast_2026"
     change = _table_judgment(
         event_family="geopolitical_conflict",
         change_state="effective",
         assertion_status="claimed",
-        relevance={"development_delta": "state_change"},
         verdict={"headline_zh": "俄军称大规模打击乌克兰目标", "assets": [], "scope": "macro"},
     )
     lone = replace(_NO_WATCHLIST, independent_text_count=1, title="")
+
+    for kind in sorted(MATERIAL_FACT_KINDS):
+        material = _table_judgment(
+            event_family="geopolitical_conflict",
+            change_state="effective",
+            assertion_status="claimed",
+            verdict={"headline_zh": "俄军称大规模打击乌克兰目标", "assets": [], "scope": "macro", "fact_kind": kind},
+        )
+        assert production_decide(material, lone, _told_on(key, 1), now_ms=_NOW).final == "push", kind
+        withdrawn = production_decide(material, lone, _told_on(key, 2), now_ms=_NOW)
+        assert withdrawn.override_rule == "conflict_claim_uncorroborated", kind
 
     assert production_decide(change, lone, _told_on(key, 1), now_ms=_NOW).final == "push"
     saturated = production_decide(change, lone, _told_on(key, 2), now_ms=_NOW)
@@ -1627,8 +1713,12 @@ def test_the_decision_table_withholds_one_more_item_on_a_conflict_the_reader_is_
         event_family="geopolitical_conflict",
         change_state="reported",
         assertion_status="confirmed",
-        relevance={"development_delta": "material_detail"},
-        verdict={"headline_zh": "乌军称袭击俄炼油厂", "assets": [], "scope": "macro"},
+        verdict={
+            "headline_zh": "乌军称袭击俄炼油厂",
+            "assets": [],
+            "scope": "macro",
+            "fact_kind": "new_quantity",
+        },
         source_authority="reputable_secondary",
     )
     facts = replace(_NO_WATCHLIST, independent_text_count=3, title="")
@@ -1638,23 +1728,31 @@ def test_the_decision_table_withholds_one_more_item_on_a_conflict_the_reader_is_
     assert OVERRIDE_RULE_ZH["conflict_running_storyline"]
     # The first card on the storyline still reaches the reader.
     assert production_decide(routine, facts, _told_on(key, 0), now_ms=_NOW).final == "push"
-    # A ceasefire, a closure or a sanction in effect is why the storyline is followed at all.
-    change = _table_judgment(
-        event_family="geopolitical_conflict",
-        change_state="effective",
-        assertion_status="confirmed",
-        relevance={"development_delta": "state_change"},
-        verdict={"headline_zh": "双方宣布停火生效", "assets": [], "scope": "macro"},
-        source_authority="reputable_secondary",
-    )
-    assert production_decide(change, facts, _told_on(key, 3), now_ms=_NOW).final == "push"
+    # A ceasefire, a closure or a sanction in effect is why the storyline is followed at all, and so is
+    # a measure an authority took -- `change_state=announced` could not tell that from a spokesman's
+    # opinion, which the audit named as this row's only real cost (#675 §1). Corroborated, in this family,
+    # both of them are the escalate the reader is following the storyline for.
+    for kind in sorted(MATERIAL_FACT_KINDS):
+        change = _table_judgment(
+            event_family="geopolitical_conflict",
+            change_state="effective",
+            assertion_status="confirmed",
+            verdict={"headline_zh": "双方宣布停火生效", "assets": [], "scope": "macro", "fact_kind": kind},
+            source_authority="reputable_secondary",
+        )
+        assert production_decide(change, facts, _told_on(key, 3), now_ms=_NOW).final == "escalate", kind
     # Only a `conflict:` key. An asset storyline with the same shape belongs to the budget, not to this row.
     asset_key = replace(_told_on("asset:crypto:BTC", 1), key="asset:crypto:BTC")
     assert production_decide(routine, facts, asset_key, now_ms=_NOW).final == "push"
 
 
-def test_the_decision_table_never_touches_escalate_listing_or_the_watchlist_guard() -> None:
-    """#675 §5 acceptance: v15 adds rows to one branch and leaves the other three byte-identical."""
+def test_the_two_objective_guards_still_win_over_every_table_row() -> None:
+    """#675 §1: the table decides a model judgment; it never decides a frame the Gate already ruled on.
+
+    A deterministic listing tag and a grounded watchlist hit are facts about the frame rather than about
+    the sentence, and both keep the position they have had since v8: above the table, and therefore above
+    a row that would otherwise have withheld the card.
+    """
 
     key = "conflict:mideast_2026"
     told = _told_on(key, 3)
@@ -1662,28 +1760,15 @@ def test_the_decision_table_never_touches_escalate_listing_or_the_watchlist_guar
         "event_family": "geopolitical_conflict",
         "change_state": "reported",
         "assertion_status": "claimed",
-        "relevance": {"development_delta": "material_detail"},
-        "verdict": {"headline_zh": "某方称再度发动打击", "assets": [], "scope": "macro", "magnitude": 3},
+        "verdict": {
+            "headline_zh": "某方称再度发动打击",
+            "assets": [],
+            "scope": "macro",
+            "fact_kind": "new_quantity",
+        },
     }
     lone = replace(_NO_WATCHLIST, independent_text_count=1, title="")
     assert production_decide(_table_judgment(**routine), lone, told, now_ms=_NOW).final == "drop"
-
-    escalate = _table_judgment(**{**routine, "relevance": {"development_delta": "material_detail"}})
-    escalate = _table_judgment(
-        **{
-            **routine,
-            "relevance": {"development_delta": "material_detail", "reader_value": "escalate"},
-            "source_authority": "reputable_secondary",
-        }
-    )
-    result = production_decide(escalate, lone, told, now_ms=_NOW)
-    assert result.final == "escalate" and result.override_rule == "trade_relevance_escalate"
-
-    uncorroborated = _table_judgment(
-        **{**routine, "relevance": {"development_delta": "material_detail", "reader_value": "escalate"}}
-    )
-    downgraded = production_decide(uncorroborated, lone, told, now_ms=_NOW)
-    assert downgraded.final == "push" and downgraded.override_rule == "trade_relevance_escalate_uncorroborated"
 
     listing = production_decide(_table_judgment(**routine), replace(lone, admission="listing_deterministic"), told)
     assert listing.final == "push" and listing.override_rule == "listing_deterministic"
@@ -1696,18 +1781,168 @@ def test_the_decision_table_never_touches_escalate_listing_or_the_watchlist_guar
     assert watchlist.final == "push" and watchlist.override_rule == "watchlist_objective_guard"
 
 
-def test_the_decision_table_is_silent_when_the_taxonomy_predictor_failed() -> None:
-    """A classification that does not exist is not evidence. Treating `unavailable` as "not a price report,
-    not a conflict" would quietly make a Predictor outage the loudest card's ally (#651 §5.3, #675 §3)."""
+def test_the_escalate_row_reads_the_family_and_the_code_owned_corroboration() -> None:
+    """#675 §1 row 4. What makes a card the loudest one on the page is a new state of the world in one of
+    four families, and a second party the code can point at -- never the model's own reading of urgency.
 
-    unclassified = scored_judgment(
-        _verdict(headline_zh="腾讯港股盘中涨超7%", assets=[], scope="macro"),
-        relevance=trade_relevance(),
+    `official_measure` is in the row beside `state_change` because they are the two halves of a new state:
+    a thing that happened, and a measure an authority took. The audit's only named cost of the conflict
+    rows was that `change_state=announced` could not tell the second from a spokesman's opinion.
+    """
+
+    facts = {"event_family": "market_access", "change_state": "effective", "assertion_status": "confirmed"}
+    lone = replace(_NO_WATCHLIST, independent_text_count=1, title="")
+    named = replace(lone, independent_text_count=2)
+
+    for kind in sorted(MATERIAL_FACT_KINDS):
+        judgment = _table_judgment(**facts, verdict={"fact_kind": kind})
+        corroborated = production_decide(judgment, named, None)
+        assert corroborated.final == "escalate" and corroborated.override_rule == "escalate_corroborated", kind
+        downgraded = production_decide(judgment, lone, None)
+        assert downgraded.final == "push" and downgraded.override_rule == "escalate_uncorroborated", kind
+
+    # Every family in the row, and no family outside it.
+    for family in sorted(ESCALATE_FAMILIES):
+        judgment = _table_judgment(**{**facts, "event_family": family}, verdict={"fact_kind": "state_change"})
+        assert production_decide(judgment, named, None).final == "escalate", family
+    for family in ("financial_results", "product_service_change", "market_flow_price", "other"):
+        judgment = _table_judgment(**{**facts, "event_family": family}, verdict={"fact_kind": "state_change"})
+        result = production_decide(judgment, named, None)
+        assert result.final == "push" and result.override_rule == "fact_kind_state_change", family
+
+    # A kind that is not a new state of the world is an ordinary push in these families too.
+    quantity = _table_judgment(**facts, verdict={"fact_kind": "new_quantity"})
+    assert production_decide(quantity, named, None).override_rule == "fact_kind_new_quantity"
+
+
+def test_every_fact_kind_has_exactly_one_row_and_one_rule_name() -> None:
+    """The whole table, kind by kind, on a classification no family-scoped row reads.
+
+    Six kinds state a new fact about the world and four do not, and that split is the whole of what the
+    reader is interrupted for. There is no eleventh answer and no fallthrough: `FACT_KINDS` is a closed
+    enum, and every member of it is named here with the action and rule name it produces.
+    """
+
+    quiet = replace(_NO_WATCHLIST, title="")
+    for kind in FACT_KINDS:
+        judgment = _table_judgment(event_family="other", change_state="unknown", verdict={"fact_kind": kind})
+        result = production_decide(judgment, quiet, None)
+        expected = "push" if kind in PUSH_FACT_KINDS else "drop"
+        assert (result.final, result.override_rule) == (expected, f"fact_kind_{kind}"), kind
+        assert OVERRIDE_RULE_ZH[f"fact_kind_{kind}"], kind
+    assert set(FACT_KINDS) == PUSH_FACT_KINDS | DROP_FACT_KINDS
+    assert not PUSH_FACT_KINDS & DROP_FACT_KINDS
+    # The review plane flags a delivered card whose kind is in the drop half, and reads the same object
+    # rather than a second copy of the list: two copies are two policies the first time a kind moves.
+    from tracefold.news.review.desk import _NON_FACT_KINDS
+
+    assert _NON_FACT_KINDS is DROP_FACT_KINDS
+    # Every name the table can produce is a constant with reader copy behind it.
+    assert set(DECISION_TABLE_RULES) == {f"fact_kind_{kind}" for kind in FACT_KINDS} | {
+        "escalate_corroborated",
+        "escalate_uncorroborated",
+        "price_report_without_basis",
+        "conflict_claim_uncorroborated",
+        "conflict_running_storyline",
+        # Not a kind: the name a judgment that states none is withheld under.
+        "fact_kind_unavailable",
+    }
+    assert "fact_kind_unavailable" not in {f"fact_kind_{kind}" for kind in FACT_KINDS}
+    assert all(OVERRIDE_RULE_ZH[rule] for rule in DECISION_TABLE_RULES)
+
+
+def test_the_verifier_reads_the_kind_the_policy_acted_on_not_the_one_the_model_wrote() -> None:
+    """#679 review 5. `non_fact_delivered` is critical, and one legitimate path would have tripped it.
+
+    `confirmed_fact_kind` re-reads a `market_flow_price` report against its own text, and the >= 5%
+    commodity/index exception carries a card the model called a `statement` through as a `new_quantity`.
+    The verdict still stores `statement`, so a verifier comparing the stored kind would raise a critical
+    flag on a card the policy deliberately delivered. `decide()` already records which kind it acted on
+    -- the `fact_kind_*` override rule names it -- so the ledger is read rather than a second copy
+    persisted beside it.
+    """
+
+    from tracefold.news.review.desk import _acted_fact_kind, _verifier_flags
+
+    admitted = {
+        "verdict": {"fact_kind": "statement", "novelty": "new_fact"},
+        "final_decision": "push",
+        "override_rule": "fact_kind_new_quantity",
+    }
+    assert _acted_fact_kind("fact_kind_new_quantity", admitted["verdict"]) == "new_quantity"
+    assert not [flag for flag in _verifier_flags(admitted) if flag["code"] == "non_fact_delivered"]
+
+    # The case the flag exists for is untouched: a `statement` that reached a reader through an
+    # objective guard has no `fact_kind_*` rule, so the stored kind is what the verifier reads.
+    guarded = {**admitted, "override_rule": "listing_deterministic"}
+    assert _acted_fact_kind("listing_deterministic", guarded["verdict"]) == "statement"
+    flags = [flag for flag in _verifier_flags(guarded) if flag["code"] == "non_fact_delivered"]
+    assert [flag["severity"] for flag in flags] == ["info"]
+
+    # And a `promotion` delivered with no guard at all is still the critical finding.
+    unguarded = {**admitted, "override_rule": "", "verdict": {"fact_kind": "promotion"}}
+    flags = [flag for flag in _verifier_flags(unguarded) if flag["code"] == "non_fact_delivered"]
+    assert [flag["severity"] for flag in flags] == ["critical"]
+
+
+def test_a_verdict_that_states_no_fact_kind_is_withheld_rather_than_guessed() -> None:
+    """A replayed `news_judgment_v2` verdict and the degraded fallback both carry no observation.
+
+    The table has nothing to decide from, and inventing a kind for them would be the code making the
+    observation the model exists to make. `statement` is the honest answer: nobody said what this text
+    states.
+    """
+
+    archived = TriageVerdict.model_validate(
+        {
+            "novelty": "new_fact",
+            "restates": -1,
+            "assets": [],
+            "direction": "neutral",
+            "scope": "macro",
+            "magnitude": 2,
+            "confidence": 0.8,
+            "audience": "macro",
+            "headline_zh": "某事发生",
+            "why_zh": "",
+        }
+    )
+    assert archived.fact_kind is None and archived.evidence_ref == ""
+    result = production_decide(scored_judgment(archived), replace(_NO_WATCHLIST, title=""), None)
+    # Named for the absence, not folded into `fact_kind_statement`: the ledger may not record an
+    # observation the model never made (#679 review 9).
+    assert result.final == "drop" and result.override_rule == "fact_kind_unavailable"
+    assert OVERRIDE_RULE_ZH["fact_kind_unavailable"]
+    assert fallback_verdict(_NO_WATCHLIST, error_code="news_program_route_deadline").verdict.fact_kind is None
+
+
+def test_the_family_scoped_rows_are_silent_when_the_taxonomy_predictor_failed() -> None:
+    """A classification that does not exist is not evidence. Treating `unavailable` as "not a price report,
+    not a conflict" would quietly make a Predictor outage the loudest card's ally (#651 §5.3, #675 §1).
+
+    The `fact_kind` rows still apply, because what kind of thing the text states does not depend on the
+    classifier having answered: a taxonomy outage costs precision, never the whole table.
+    """
+
+    quote = _verdict(headline_zh="腾讯港股盘中涨超7%", assets=[], scope="macro", fact_kind="level_crossed")
+    unclassified = scored_judgment(quote, taxonomy_error_code="news_program_output_truncated")
+    assert unclassified.editorial.taxonomy_status == "unavailable"
+    # No classification, so no price-report row: the claim the text does not support is honoured.
+    result = production_decide(unclassified, replace(_NO_WATCHLIST, title=""), None)
+    assert result.final == "push" and result.override_rule == "fact_kind_level_crossed"
+
+    # The `fact_kind` drop rows are not silent, and neither is the escalate row's absence.
+    marketing = scored_judgment(
+        quote.model_copy(update={"fact_kind": "promotion"}), taxonomy_error_code="news_program_output_truncated"
+    )
+    dropped = production_decide(marketing, replace(_NO_WATCHLIST, title=""), None)
+    assert dropped.final == "drop" and dropped.override_rule == "fact_kind_promotion"
+    measure = scored_judgment(
+        quote.model_copy(update={"fact_kind": "official_measure"}),
+        source_authority="reputable_secondary",
         taxonomy_error_code="news_program_output_truncated",
     )
-    assert unclassified.editorial.taxonomy_status == "unavailable"
-    result = production_decide(unclassified, replace(_NO_WATCHLIST, title=""), None)
-    assert result.final == "push" and result.override_rule == "trade_relevance_realtime"
+    assert production_decide(measure, replace(_NO_WATCHLIST, title=""), None).final == "push"
 
 
 def test_the_shown_ledger_answers_how_much_of_this_storyline_the_reader_already_has() -> None:
@@ -1805,7 +2040,6 @@ def _told_row(event_id: str, at_ms: int, **overrides: Any) -> dict[str, Any]:
         "comparison_title": "",
         "comparison_fingerprint": "",
         "dedupe_family": "general",
-        "magnitude": 2,
         "direction": "bullish",
         "headline_zh": event_id,
         "why_zh": "",
@@ -2019,7 +2253,6 @@ def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fac
         "storyline_key",
         "comparison_title",
         "symbols",
-        "magnitude",
         "direction",
         "headline_zh",
         "why_zh",
@@ -2184,9 +2417,9 @@ def test_fallback_is_not_silent() -> None:
         "assets",
         "direction",
         "scope",
-        "magnitude",
+        "fact_kind",
+        "evidence_ref",
         "confidence",
-        "audience",
         "headline_zh",
         "why_zh",
     }
@@ -2230,7 +2463,7 @@ def test_card_is_the_reader_contract() -> None:
         },
         verdict={
             "direction": "bullish",
-            "magnitude": 2,
+            "fact_kind": "state_change",
             "headline_zh": "英伟达千亿美元投资 OpenAI 数据中心",
             "why_zh": "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
             "scope": "single_name",
@@ -2248,7 +2481,7 @@ def test_card_is_the_reader_contract() -> None:
     assert card["header"]["title"]["content"] == "英伟达千亿美元投资 OpenAI 数据中心"
     assert card["elements"][0]["content"].splitlines() == [
         "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
-        "利多 · 影响明显 · NVDA · ft（3 条报道） · 22:40",
+        "利多 · 状态变化 · NVDA · ft（3 条报道） · 22:40",
     ]
     text = json.dumps(card, ensure_ascii=False)
     for machine_word in (
@@ -2266,12 +2499,23 @@ def test_card_is_the_reader_contract() -> None:
     assert "打开来源" in text and "news_delivery_card" not in text
     escalated = render_first_card(
         event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
-        verdict={"direction": "bullish", "magnitude": 3, "headline_zh": "x https://x.y"},
+        verdict={"direction": "bullish", "fact_kind": "official_measure", "headline_zh": "x https://x.y"},
         decision="escalate",
         grounded_assets=[],
     )
     assert escalated["header"]["title"]["content"] == "⚡ Nvidia to invest $100bn"  # URL in AI copy -> code fallback
-    assert escalated["elements"][0]["content"] == "利多 · 影响重大 · -"
+    assert escalated["elements"][0]["content"] == "利多 · 官方措施 · -"
+    # A verdict written under `news_judgment_v2` has a direction and a novelty and no kind at all, and
+    # the review desk, the fidelity corpus and the console detail all re-render those rows. The facts
+    # line is gated on the direction, so the card keeps 利多 and 新进展 and simply omits the third word
+    # instead of losing all three to a field the writer never had (#679 review 6).
+    archived = render_first_card(
+        event={"event_id": "e3", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
+        verdict={"direction": "bullish", "novelty": "progression", "headline_zh": "英伟达加码投资"},
+        decision="push",
+        grounded_assets=[],
+    )
+    assert archived["elements"][0]["content"].splitlines()[-1] == "利多 · 新进展 · -"
     # Degraded (model chain failed, rule baseline pushes): the wire text itself, no verdict words the model never gave.
     degraded = render_first_card(
         event={
@@ -2283,7 +2527,11 @@ def test_card_is_the_reader_contract() -> None:
             "member_count": 1,
             "leader_published_at_ms": 1787064000000,
         },
-        verdict={"direction": "neutral", "magnitude": 2, "headline_zh": "BREAKING: SEC approves spot ETH ETF options"},
+        verdict={
+            "direction": "neutral",
+            "fact_kind": "state_change",
+            "headline_zh": "BREAKING: SEC approves spot ETH ETF options",
+        },
         decision="escalate",
         grounded_assets=["ETH"],
         # Degraded: no model answered, so the card may print only what the catalogue proves on its own
@@ -2349,7 +2597,7 @@ def _quote(symbol: str, price: str, change: float | None, **overrides: Any) -> d
 def _market_lines(**overrides: Any) -> list[str]:
     card = render_first_card(
         event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
-        verdict={"direction": "bearish", "magnitude": 3, "headline_zh": "标题"},
+        verdict={"direction": "bearish", "fact_kind": "official_measure", "headline_zh": "标题"},
         decision="push",
         grounded_assets=["CL"],
         # This verdict names no asset, so the only ticker the card may print is one the catalogue proves
@@ -2363,7 +2611,7 @@ def _market_lines(**overrides: Any) -> list[str]:
 def test_card_market_line_is_display_only() -> None:
     # The market's own number, on its own line, for the assets the facts line already named (#113).
     assert _market_lines(quotes=[_quote("CL", "86.43", 2.296, instrument_class="commodity")]) == [
-        "利空 · 影响重大 · CL · jin10",
+        "利空 · 官方措施 · CL · jin10",
         "行情 CL $86.43 24h +2.30%（永续）",
     ]
     # Formatting is the console's `formatPrice`/`formatChangePct` character for character: thousands and two
@@ -2385,7 +2633,7 @@ def test_card_market_line_is_display_only() -> None:
     # Only `fresh` renders. Everything else leaves no line at all — never a placeholder, never a zero.
     for absent in ("stale", "unavailable", "unlisted"):
         assert _quote_line([_quote("BTC", "74757.60", 7.914, state=absent)]) == ""
-        assert _market_lines(quotes=[_quote("CL", "86.43", 2.3, state=absent)]) == ["利空 · 影响重大 · CL · jin10"]
+        assert _market_lines(quotes=[_quote("CL", "86.43", 2.3, state=absent)]) == ["利空 · 官方措施 · CL · jin10"]
     assert _quote_line([_quote("X", "0", 1.0)]) == "" and _quote_line([_quote("X", "not-a-price", 1.0)]) == ""
     # `parse_price` bounds a price to finite-and-positive, not to a magnitude, and quantizing 1e40 raises.
     # `_quote_line` runs in the renderer, outside the consumer's guard, so it must lose the entry, not the card.
@@ -2393,7 +2641,7 @@ def test_card_market_line_is_display_only() -> None:
     assert (
         _quote_line([_quote("HUGE", "1e40", 1.0), _quote("BTC", "74757.60", 7.914)]) == "行情 BTC $74,757.60 24h +7.91%"
     )
-    assert _quote_line([]) == "" and _market_lines() == ["利空 · 影响重大 · CL · jin10"]
+    assert _quote_line([]) == "" and _market_lines() == ["利空 · 官方措施 · CL · jin10"]
     # The mark is attached per asset, never once for the line: a trailing mark on a mixed line cannot say
     # whether it covers the last asset or all of them.
     equities = [
@@ -2417,7 +2665,7 @@ def test_card_market_line_is_display_only() -> None:
     # A degraded card keeps its price: it is our fact, not the model's. The facts line still names no judgment.
     degraded = render_first_card(
         event={"event_id": "e2", "leader_title": "wire", "reporting_origin": "wire", "member_count": 1},
-        verdict={"direction": "neutral", "magnitude": 2, "novelty": "progression", "headline_zh": "x"},
+        verdict={"direction": "neutral", "fact_kind": "state_change", "novelty": "progression", "headline_zh": "x"},
         decision="push",
         grounded_assets=["ETH"],
         degraded=True,
@@ -2516,7 +2764,7 @@ def test_reader_trade_targets_bind_ticker_to_exact_binance_contracts_without_cha
         ),
     )
     assert _market_lines(quotes=[perpetual_quote], assets=["LRCX"]) == [
-        "利空 · 影响重大 · LRCX · jin10",
+        "利空 · 官方措施 · LRCX · jin10",
         "行情 LRCX $317.53 24h +1.12%（永续）",
     ]
 
@@ -2616,14 +2864,19 @@ def test_card_marks_a_progression() -> None:
     # 28.8% of a week's cards advanced a story the reader already had one for and the card said nothing (#113).
     card = render_first_card(
         event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
-        verdict={"direction": "bearish", "magnitude": 3, "novelty": "progression", "headline_zh": "标题"},
+        verdict={
+            "direction": "bearish",
+            "fact_kind": "official_measure",
+            "novelty": "progression",
+            "headline_zh": "标题",
+        },
         decision="push",
         grounded_assets=["CL"],
         catalog_candidates={"CL": ("commodity",)},
     )
-    assert card["elements"][0]["content"].splitlines() == ["利空 · 新进展 · 影响重大 · CL · jin10"]
+    assert card["elements"][0]["content"].splitlines() == ["利空 · 新进展 · 官方措施 · CL · jin10"]
     for quiet in ("new_fact", "restatement", "", None):
-        verdict = {"direction": "bearish", "magnitude": 3, "novelty": quiet, "headline_zh": "标题"}
+        verdict = {"direction": "bearish", "fact_kind": "official_measure", "novelty": quiet, "headline_zh": "标题"}
         card = render_first_card(
             event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
             verdict=verdict,
@@ -2631,7 +2884,7 @@ def test_card_marks_a_progression() -> None:
             grounded_assets=["CL"],
             catalog_candidates={"CL": ("commodity",)},
         )
-        assert card["elements"][0]["content"].splitlines() == ["利空 · 影响重大 · CL · jin10"]
+        assert card["elements"][0]["content"].splitlines() == ["利空 · 官方措施 · CL · jin10"]
 
 
 def test_bus_envelope_roundtrip() -> None:
@@ -2841,17 +3094,20 @@ def test_decide_measures_every_ordinary_push_for_duplicate_evidence() -> None:
 
 
 def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
-    """Character bigrams over a fixed topic vocabulary mistake one Trump headline for another. On a magnitude-3
-    card that mistake is not affordable, so `escalate` skips deterministic similarity."""
+    """Character bigrams over a fixed topic vocabulary mistake one Trump headline for another. On the
+    loudest card on the page that mistake is not affordable, so `escalate` skips deterministic
+    similarity."""
 
     told = ("特朗普称其政府已结束对加密的战争",)
-    big = _verdict(magnitude=3, headline_zh="特朗普称美国正考虑购买大量比特币及其他加密资产")
-    facts = replace(_FACTS, watchlist_symbols=frozenset(), member_count=2)  # corroborated (#504 D3)
+    big = _verdict(fact_kind="official_measure", headline_zh="特朗普称美国正考虑购买大量比特币及其他加密资产")
+    escalating = {"event_family": "macro_policy_data", "change_state": "effective"}
+    # Corroborated (#504 D3), so the escalate row keeps it rather than downgrading it to a push.
+    facts = replace(_FACTS, watchlist_symbols=frozenset(), independent_text_count=2)
     on_fresh = decide(
         big,
         facts,
         _fresh(seen_headlines=told, seen_event_ids=("a",)),
-        relevance={"reader_value": "escalate"},
+        taxonomy=escalating,
     )
     assert on_fresh.final == "escalate" and on_fresh.throttled_by is None
     # #491: the comparison is still made and recorded, so the exemption is observable in the trace.
@@ -2863,7 +3119,7 @@ def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
         seen_headlines=("特朗普称美国正考虑购买大量比特币及其他加密资产",),
         seen_event_ids=("a",),
     )
-    repeat = decide(big, facts, hot, relevance={"reader_value": "escalate"})
+    repeat = decide(big, facts, hot, taxonomy=escalating)
     assert repeat.final == "escalate" and repeat.seen_scope == "all" and repeat.seen_similarity == 1.0
     assert repeat.throttled_by is None
 
@@ -2956,7 +3212,7 @@ def test_invalid_model_headline_falls_back_to_the_wire_title() -> None:
         event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "reporting_origin": "ft"},
         verdict={
             "direction": "bullish",
-            "magnitude": 2,
+            "fact_kind": "state_change",
             "headline_zh": "看 https://evil.example",
             "why_zh": "算力供给链再加码",
             "assets": [],

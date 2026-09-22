@@ -148,7 +148,6 @@ def test_delivery_history_uses_sent_context_not_mutable_verdict_or_event(postgre
             assets=[dict(symbol="BTC", market_type="crypto")],
             canonical_assets=["BTC"],
             grounded_assets=["BTC"],
-            magnitude=2,
             direction="bullish",
             headline_zh="已发送原卡片",
             why_zh="原判断",

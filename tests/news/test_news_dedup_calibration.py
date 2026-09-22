@@ -72,7 +72,6 @@ def _receipt(card: dict[str, Any]) -> dict[str, Any]:
         "grounded_assets": list(card["grounded_assets"]),
         "assets": [asset["symbol"] for asset in card["assets"]],
         "canonical_assets": sorted(_symbols(card)),
-        "magnitude": card["magnitude"],
         "direction": card["direction"],
         "headline_zh": card["headline_zh"],
         "why_zh": card["why_zh"],
@@ -191,7 +190,9 @@ def _judgment(card: dict[str, Any]) -> ScoredJudgment:
             "assets": [{"symbol": asset["symbol"], "role": asset["role"]} for asset in card["assets"]],
             "direction": card["direction"],
             "scope": "macro",
-            "magnitude": max(2, card["magnitude"]),
+            # Every card in these groups states a number the text prints: a PMI, a forecast, a chain metric.
+            "fact_kind": "new_quantity",
+            "evidence_ref": "c1",
             "confidence": 0.8,
             "headline_zh": card["headline_zh"],
             "why_zh": card["why_zh"],

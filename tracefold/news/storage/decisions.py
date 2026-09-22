@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any
+from typing import Any, Final
 
 # S608 exemptions below interpolate only closed, module-owned history predicates; all values stay bound.
 from ..liquidations import LiquidationFact
@@ -80,7 +80,6 @@ _READER_HISTORY_PROJECTION = """
                     d.card #>> '{header,title,content}', '') AS comparison_title,
            COALESCE(d.history_context ->> 'comparison_fingerprint', '') AS comparison_fingerprint,
            COALESCE(d.history_context ->> 'dedupe_family', 'general') AS dedupe_family,
-           COALESCE((d.history_context ->> 'magnitude')::int, 0) AS magnitude,
            COALESCE(d.history_context ->> 'direction', 'unclear') AS direction,
            COALESCE(NULLIF(d.card #>> '{header,title,content}', ''),
                     d.history_context ->> 'headline_zh', '') AS headline_zh,
@@ -669,7 +668,7 @@ class DecisionStorage:
     def get_verdict(self, *, event_id: str, stage: str, policy_version: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = %s AND policy_version = %s "
-            "AND judgment_contract_version = 'news_judgment_v2'",
+            "AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')",
             (event_id, stage, policy_version),
         ).fetchone()
         return dict(row) if row else None
@@ -677,7 +676,8 @@ class DecisionStorage:
     def latest_verdict(self, *, event_id: str, stage: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = %s "
-            "AND judgment_contract_version = 'news_judgment_v2' ORDER BY created_at_ms DESC LIMIT 1",
+            "AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3') "
+            "ORDER BY created_at_ms DESC LIMIT 1",
             (event_id, stage),
         ).fetchone()
         return dict(row) if row else None
@@ -687,7 +687,7 @@ class DecisionStorage:
             """
             UPDATE news_verdicts SET published_at_ms = %s
              WHERE event_id = %s AND stage = %s AND policy_version = %s
-               AND judgment_contract_version = 'news_judgment_v2' AND published_at_ms IS NULL
+               AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3') AND published_at_ms IS NULL
             """,
             (int(now_ms), event_id, stage, policy_version),
         )
@@ -1053,21 +1053,46 @@ def _telegram_receipt(
 # this projection; re-hashing the converted shape would publish an identity no row carries, and carrying
 # the original would attach an address to bytes it does not describe. The identity stays where it is
 # written -- in the row and in `trace.editorial_sha256`.
+# The two fields `news_judgment_v2` carried and `news_judgment_v3` does not (#675 §1). They are on every
+# verdict the ledger holds from before the cut, those rows are audit truth addressed by
+# `scored_judgment_sha256`, and they are never migrated -- so the projection drops them on the way out
+# rather than publishing a field the current contract has no place for.
+_RETIRED_VERDICT_KEYS: Final[frozenset[str]] = frozenset({"magnitude", "audience"})
+
+
+def triage_verdict_read_shape(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """One persisted verdict in the current `news_judgment_v3` read shape.
+
+    The sibling of `editorial_read_shape`, and here for the same reason: `NewsPresentationVerdictData`
+    is an exact schema, the Event detail serves whatever the 30-day retention holds, and a v2 row would
+    otherwise fail it on two keys. A v2 verdict reads with `fact_kind` and `evidence_ref` absent, which
+    is the honest answer -- it stated neither.
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    return {key: item for key, item in value.items() if key not in _RETIRED_VERDICT_KEYS}
+
+
 def editorial_read_shape(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """One persisted editorial document in the current v3 read shape, or ``None`` when there is none."""
+    """One persisted editorial document in the current v4 read shape, or ``None`` when there is none.
+
+    Three contract versions are in the ledger and none of them is rewritten. v4 (#675 §1) is what the
+    worker writes: the code-owned authority and the taxonomy Predictor's answer, and nothing about the
+    reader. v3 carries the same two fields beside the deleted `relevance` object, which is dropped here
+    rather than surfaced -- a projection that kept publishing the seven codes would keep the console, the
+    API schema and the review desk reading a judgment the Program no longer makes. v2 additionally nests
+    the authority inside the taxonomy, which #651 §5.3 lifted out.
+    """
 
     if not isinstance(value, Mapping):
         return None
-    relevance = value.get("relevance")
-    if not isinstance(relevance, Mapping):
-        return None
     version = str(value.get("editorial_contract_version") or "")
     taxonomy = value.get("taxonomy")
-    if version == "news_editorial_v3":
+    if version in {"news_editorial_v4", "news_editorial_v3"}:
         status = str(value.get("taxonomy_status") or "")
         error_code = value.get("taxonomy_error_code")
         return {
-            "relevance": dict(relevance),
             "source_authority": str(value.get("source_authority") or "unknown"),
             "taxonomy": dict(taxonomy) if isinstance(taxonomy, Mapping) else None,
             "taxonomy_status": status if status in {"available", "unavailable"} else "unavailable",
@@ -1077,7 +1102,6 @@ def editorial_read_shape(value: Mapping[str, Any] | None) -> dict[str, Any] | No
         return None
     axes = {key: item for key, item in taxonomy.items() if key != "source_authority"}
     return {
-        "relevance": dict(relevance),
         "source_authority": str(taxonomy.get("source_authority") or "unknown"),
         "taxonomy": axes,
         # A v2 row exists only because its taxonomy validated: the whole judgment failed otherwise.

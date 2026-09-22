@@ -12,7 +12,6 @@ from tracefold.news.program.contracts import (
     ProgramUsage,
     ScoredJudgment,
     SemanticJudgment,
-    TradeRelevanceV1,
     canonical_sha,
 )
 from tracefold.news.taxonomy import NewsTaxonomyV1, SourceAuthority
@@ -29,36 +28,20 @@ def news_taxonomy(**overrides: Any) -> NewsTaxonomyV1:
     return NewsTaxonomyV1.model_validate(values)
 
 
-def trade_relevance(**overrides: Any) -> TradeRelevanceV1:
-    values: dict[str, Any] = {
-        "impact_breadth": "single_instrument",
-        "tradability": "direct",
-        "surprise": "material_vs_expectation",
-        "development_delta": "state_change",
-        "channels": ["earnings_cashflow"],
-        "affected_markets": ["single_asset"],
-        "reader_value": "realtime",
-    }
-    values.update(overrides)
-    return TradeRelevanceV1.model_validate(values)
-
-
 def scored_judgment(
     verdict: dict[str, Any] | TriageVerdict,
     *,
-    relevance: TradeRelevanceV1 | None = None,
     taxonomy: NewsTaxonomyV1 | None = None,
     source_authority: SourceAuthority = "unknown",
     taxonomy_error_code: str | None = None,
 ) -> ScoredJudgment:
-    """One `news_editorial_v3` judgment. Naming ``taxonomy_error_code`` is how a test asks for the
+    """One `news_editorial_v4` judgment. Naming ``taxonomy_error_code`` is how a test asks for the
     taxonomy-unavailable judgment the Program now produces when only that Predictor failed."""
 
     typed_verdict = verdict if isinstance(verdict, TriageVerdict) else TriageVerdict.model_validate(verdict)
     return ScoredJudgment.issue(
         verdict=typed_verdict,
         editorial=EditorialEnvelope.issue(
-            relevance=relevance or trade_relevance(),
             source_authority=source_authority,
             taxonomy=None if taxonomy_error_code is not None else (taxonomy or news_taxonomy()),
             taxonomy_error_code=taxonomy_error_code,
@@ -98,7 +81,6 @@ def semantic_judgment(
 
     typed = verdict if isinstance(verdict, TriageVerdict) else TriageVerdict.model_validate(verdict)
     editorial = EditorialEnvelope.issue(
-        relevance=trade_relevance(),
         source_authority="unknown",
         taxonomy=news_taxonomy(),
     )
@@ -177,9 +159,9 @@ def triage_verdict(**overrides: Any) -> TriageVerdict:
         "assets": [{"symbol": "NVDA", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
-        "magnitude": 2,
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.8,
-        "audience": "us_equity",
         "headline_zh": "\u82f1\u4f1f\u8fbe\u6295\u8d44 OpenAI",
         "why_zh": "\u91cd\u5927\u6295\u8d44\u4f1a\u6539\u53d8\u7b97\u529b\u9700\u6c42",
     }

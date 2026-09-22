@@ -884,13 +884,20 @@ candidate sets; current drift and success cohorts never cross.
 Fingerprints of at most two tokens never share an Event.
 
 Verdict identity is `(event_id, stage, policy_version)`. Current rows also carry
-`judgment_contract_version=news_judgment_v2` and an exact
+`judgment_contract_version=news_judgment_v3` and an exact
 `judgment_origin=model|oi|liquidation|degraded`. `TriageVerdict` is a
 presentation-only atom: `novelty`, `restates`, `assets`, `direction`, `scope`,
-`magnitude 0..3`, `confidence`, `audience`, `headline_zh`, and `why_zh`.
-Model delivery intent has exactly one owner: the model editorial envelope's
-`TradeRelevanceV1.reader_value`; final action has exactly one owner in the
-origin-matched `DecisionResult`.
+`fact_kind`, `evidence_ref`, `confidence`, `headline_zh`, and `why_zh`.
+The model has no delivery intent to own any more (#675 §1): `magnitude`,
+`audience` and the whole `TradeRelevanceV1` object are deleted, and the final
+action has exactly one owner in the origin-matched `DecisionResult`.
+
+Rows written under `news_judgment_v2` carry `magnitude 0..3` and `audience`
+instead of `fact_kind`/`evidence_ref`, are audit truth addressed by
+`scored_judgment_sha256`, and are never rewritten.
+`news_current_verdict_contract_shape_valid` binds each shape to the contract
+version that wrote it, `TriageVerdict` reads both, and the feed projection
+publishes `fact_kind: null` for a v2 row rather than inventing one.
 
 Each `assets[]` entry is `{symbol, market_type, role}`, and `market_type` is
 required over the instrument-class vocabulary
@@ -907,21 +914,21 @@ rewritten. The v10 branch of `news_verdicts_current_judgment_check` enforces the
 vocabulary in PostgreSQL for new rows only, for the same reason. A non-listed
 institution is a text subject and never gets an invented ticker.
 
-`TradeRelevanceV1` is the nested output of `EventSemantics.v2`:
+`fact_kind` is the model's observation of what kind of new thing one Event's
+text states, over the closed code-owned vocabulary
+`state_change|new_quantity|level_crossed|period_record|quantified_flow|official_measure|statement|recap|schedule|promotion`
+(#675 §1). It describes the words on the page, never the reader: six of the
+kinds state a new fact about the world and four restate, schedule or sell one,
+and which of those two groups a card is in is the whole of the push/drop split
+`decide()` makes. `evidence_ref` is the `ref_id` of the current or related
+evidence span the kind was read off, validated against the spans the Program
+actually showed the model, exactly as `ReaderCard.source_refs` is.
 
-- `impact_breadth`: `none|single_instrument|sector|regional|cross_asset|global_systemic`;
-- `tradability`: `direct|second_order|contextual|none`;
-- `surprise`: `unscheduled|material_vs_expectation|in_line|unknown`;
-- `development_delta`: `state_change|material_detail|color_only|scheduled`;
-- at most four unique `channels`, canonicalized in the code-owned order
-  `rates|liquidity|risk_premium|energy_supply|commodity_supply|commodity_demand|regulation|exchange_access|product_progress|earnings_cashflow|positioning_flow|security_incident`;
-  `product_progress` (#173) is a first-party confirmed product, protocol, or
-  market capability reaching a verifiable new state, or a first-party
-  active-use/economic adoption metric reaching a new quantified step — never
-  brand marketing, a roadmap, or a cumulative address/account total;
-- at most four unique `affected_markets`, canonicalized in the code-owned order
-  `crypto_broad|us_equity_broad|rates|fx|energy|metals|single_asset`;
-- `reader_value`: `escalate|realtime|background|none`.
+It replaces the seven `TradeRelevanceV1` codes and `magnitude`. Seven days of
+8950 judgments collapsed all eight into one bit — `magnitude 2` matched
+`reader_value realtime` on 3002 of 3759 — and the seed had to teach a threshold
+("at least 5% on the day") to make them answerable at all. Both the threshold
+and the answer are `decide()`'s, where they can be replayed and versioned.
 
 The sibling `news_taxonomy_v1` is a fact projection, not delivery intent:
 
@@ -943,18 +950,18 @@ still carries it.
 qcodes, and a pinned parent together with one of its pinned descendants fail
 schema validation. `NewsTaxonomyV1` is the only model semantic classification.
 
-Empty channels/markets are valid only for contextual/none tradability with a
-background/none reader value. The normalizer records the raw arrays, then
-de-duplicates and orders them before exact gold, hashing and replay.
-The ordinary policy reads `reader_value` with the current presentation facts
-and objective guards to issue one `DecisionResult`; no action copy is stored in
-the Verdict.
+The ordinary policy reads `fact_kind`, the four taxonomy axes,
+`source_authority`, the count of independent member texts, the told ledger and
+the verdict's own scope, and issues one `DecisionResult`; no action copy is
+stored in the Verdict.
 
 `SemanticJudgment` atomically carries verdict, an `EditorialEnvelope`, trace,
 usage and runtime identities. The envelope is
-`{editorial_contract_version=news_editorial_v3, editorial_origin=model,
-relevance, source_authority, taxonomy, taxonomy_status, taxonomy_error_code,
-editorial_sha256}` and exists only for model origin. `source_authority` is a
+`{editorial_contract_version=news_editorial_v4, editorial_origin=model,
+source_authority, taxonomy, taxonomy_status, taxonomy_error_code,
+editorial_sha256}` and exists only for model origin. v4 (#675 §1) drops
+`relevance`: the envelope is where a *code* fact about the evidence is persisted
+beside the verdict, and the seven model-owned codes were not that. `source_authority` is a
 code fact and is always present. `taxonomy` is the taxonomy Predictor's answer
 and is `null` when that one call failed while the other two answered, in which
 case `taxonomy_status` is `unavailable` and `taxonomy_error_code` names the
@@ -987,10 +994,10 @@ commits to it and the call trace no longer repeats a signature, instruction or
 demo digest. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
-`news_title_norm_v2`, `news_gate_v6`, `news_storyline_registry_v1`,
-`news_event_evidence_v3`, `news_judgment_v2`,
-`news_semantic_program_v12`,
-`news_triage_policy_v15`, `news_delivery_card_v11`, artifact schema
+`news_title_norm_v2`, `news_gate_v7`, `news_storyline_registry_v1`,
+`news_event_evidence_v3`, `news_judgment_v3`,
+`news_semantic_program_v13`,
+`news_triage_policy_v16`, `news_delivery_card_v11`, artifact schema
 `news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and
 `news_liquidation_fact_v2` are retired program versions: the deterministic
@@ -1126,8 +1133,8 @@ ledger re-ask is a separate execution with the same ceiling (normally another
 three calls), and both executions remain in the verdict audit.
 The `EventSemantics.v2` model-visible projection excludes queue priority,
 provider score, Gate macro lexicon, queue lag and watchlist. ReaderCard receives
-only the explicit `ReaderCardSemanticView`; it cannot read ToldContext,
-`reader_value`, tradability, surprise or development delta.
+only the explicit `ReaderCardSemanticView` — typed assets, direction,
+`fact_kind`, novelty, `restates` and scope — and it cannot read ToldContext.
 There is no `news.oi` section. Its four keys — `window_ms`,
 `max_rank_in_window`, `whale_oi_ratio_above_bps` and `oi_change_at_least_bps` —
 were the deterministic open-interest lane's notification thresholds (#137) and
@@ -1137,7 +1144,7 @@ figure at all since #553: the `telemetry_received_24h`,
 `telemetry_parsed_24h`, `telemetry_parse_failed_24h` and `telemetry_events_24h`
 counters counted Events, and an OI frame opens none. `/api/news/market`
 reports what the OI Strategy actually did.
-`news.policy` has exactly six v14 keys: `restatement_drop` (true),
+`news.policy` has exactly six keys: `restatement_drop` (true),
 `similarity_max` (0.25), `listing_exempt_from_duplicate` (true),
 `stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older
 than this when the provider pushed it is a replay, withheld as
@@ -1149,48 +1156,67 @@ reversal of the newest *directional* delivered card on the key (#523: neutral,
 unclear and direction-less cards are read past, and still counted) and the
 `none` key are exempt; either key at 0 disables
 the budget).
-Trade-relevance eligibility and objective-guard ordering are code-owned, not
-operator thresholds. `direct_surface` requires direct/second-order tradability
-and non-empty channels/markets. `material_change` requires `state_change`, or
-`material_detail` plus direct tradability or an unscheduled/material surprise;
-`realtime_eligible` requires both and magnitude >= 2. The grounded-restatement
-guard drops a `restatement` that cites a told entry the model was shown,
-whatever the two directions are (#651: the model's `direction` is its reading of
-a fact, not a fact, so it cannot decide whether the reader already has it; a
-real reversal arrives as `progression` or `new_fact`, which the same-fact and
-budget exemptions still cover). After that guard, the generic v10 action order is
-deterministic listing/telemetry — which since v13 (#523) does not cover a listing
-frame the model marked `reader_value=none`, leaving it to the `reader_value_none` drop —
-grounded watchlist, eligible `reader_value=escalate`, eligible
-`reader_value=realtime`, background/none, then
-`trade_relevance_inconsistent`; then the v12 escalate corroboration
-(`trade_relevance_escalate_uncorroborated`: eligible `escalate` with
-code-owned `editorial.source_authority = unknown` and a single Event member becomes a
-`push`) and `single_name_without_instrument` (eligible realtime `single_name`
-with no primary asset drops); then the v15 decision table (#675); the retained
-stale-source and same-fact checks
-and the per-storyline budget run after action selection. There is no
-reader-global quota.
+The decision table and objective-guard ordering are code-owned, not operator
+thresholds. The grounded-restatement guard drops a `restatement` that cites a
+told entry the model was shown, whatever the two directions are (#651: the
+model's `direction` is its reading of a fact, not a fact, so it cannot decide
+whether the reader already has it; a real reversal arrives as `progression` or
+`new_fact`, which the same-fact and budget exemptions still cover). After that
+guard the v16 order is: deterministic listing/telemetry — which since v13 (#523)
+does not cover a frame whose text is not a new fact, and states that in v16 as
+`fact_kind` in `statement|recap|schedule|promotion`, leaving it to that kind's
+own drop row — grounded watchlist, the decision table, then
+`single_name_without_instrument` (a table push on a `single_name` verdict with
+no primary asset drops); the retained stale-source and same-fact checks and the
+per-storyline budget run after action selection. There is no reader-global
+quota.
 
-The v15 decision table is three ordered rows over facts the code already owns.
-It sees only a push the `trade_relevance_realtime` branch produced — the
-deterministic listing, watchlist-objective and escalate paths are byte-identical
-to v14 — it can only downgrade that push to `drop` under the row's own name, and
-it is silent whenever `editorial.taxonomy_status` is `unavailable`. In order:
-`price_report_without_basis` (taxonomy `market_flow_price` + `reported` whose own
-title and `headline_zh` state no level crossed, period record, quantified flow,
-stablecoin depeg or freight rate in either language, and which is not a same-day
-move of >= 5% on a primary asset whose `market_type` is `commodity` or `index`);
-`conflict_claim_uncorroborated` (`geopolitical_conflict` + `source_authority =
-unknown` + `assertion_status` in `claimed`/`rumor` + at most one independent
-member text, unless `development_delta = state_change` and the told ledger holds
-fewer than two entries on this storyline key inside 4 h); and
-`conflict_running_storyline` (`geopolitical_conflict` on a `conflict:` key with
-at least one told entry on that key inside 4 h and `development_delta` other than
-`state_change`). The corroboration input is the count of distinct
-`evidence_text_sha256` values across the Event's frozen members, carried on the
-verdict trace as `independent_text_count`; the escalate rule above deliberately
-still reads `member_count`. Retired quota and v9
+The v16 decision table (#675 §1) is the whole of the model-judgment decision.
+Every input is a fact the code produced and stored, or an observation of the
+text the code can check; every row has a name that is a constant, is rendered in
+Chinese by `outcome.OVERRIDE_RULE_ZH`, and is stored in `override_rule`. Rows
+that need a classification are silent when `editorial.taxonomy_status` is
+`unavailable`, and the `fact_kind` rows still apply. In order:
+
+1. `fact_kind_statement` / `fact_kind_recap` / `fact_kind_schedule` /
+   `fact_kind_promotion` drop, before and independently of any classification.
+2. On taxonomy `market_flow_price` + `reported`, a same-day move of >= 5% on a
+   primary asset whose `market_type` is `commodity` or `index` is admitted as
+   `fact_kind_new_quantity` (the owner's one exception, #675 §7) -- unless the
+   model's own kind is `recap`, `schedule` or `promotion`, which say the text is
+   about something other than the move it mentions; a `statement` stays eligible,
+   because the move is usually the thing being stated. Otherwise a
+   claimed `level_crossed`, `period_record` or `quantified_flow` whose own title
+   and `headline_zh` state no level crossed, period record, quantified flow,
+   stablecoin depeg or freight rate in either language becomes a `statement` and
+   drops under `price_report_without_basis`.
+3. `conflict_claim_uncorroborated`: `geopolitical_conflict` +
+   `source_authority = unknown` + `assertion_status` in `claimed`/`rumor` + at
+   most one independent member text, unless `fact_kind` is `state_change` or
+   `official_measure` and the told ledger holds fewer than two entries on this
+   storyline key inside 4 h.
+4. `conflict_running_storyline`: `geopolitical_conflict` on a `conflict:` key
+   with at least one told entry on that key inside 4 h and a `fact_kind` that is
+   neither `state_change` nor `official_measure`.
+5. `escalate_corroborated`: `fact_kind` in `state_change|official_measure` and
+   `event_family` in
+   `geopolitical_conflict|macro_policy_data|security_operational_incident|market_access`,
+   with `source_authority != unknown` or at least two independent member texts;
+   an uncorroborated one is a `push` under `escalate_uncorroborated`.
+6. Otherwise `fact_kind_<kind>` pushes.
+
+A judgment that states no `fact_kind` at all -- only a replay of an archived
+`news_judgment_v2` verdict can be one -- drops under its own
+`fact_kind_unavailable`, never folded into `fact_kind_statement`: the ledger does
+not record an observation the model never made.
+
+The corroboration input is the count of distinct `evidence_text_sha256` values
+across the Event's frozen members, carried on the verdict trace as
+`independent_text_count`. It replaced the Deduper's arrival count outright, and
+`GateFacts.member_count` is gone with it: two arrivals of one wire line are one
+party, which is the #675 card that opened the Issue. `member_count` remains on
+the Event and on the evidence snapshot, where it counts arrivals and nothing
+reads it as corroboration. Retired quota and v9
 action/priority keys
 are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
@@ -1561,7 +1587,7 @@ denominator — a separate gate from `schema_invalid`, because no instruction
 produced it and no instruction repairs it. A gated case keeps its resolved action and its per-dimension
 outcomes: the zero enters every denominator rather than leaving it, or a
 candidate with more hard failures could publish a higher per-dimension hit rate.
-Metric `tracefold.news.production_action_trade_relevance_v8` weights 45% exact
+Metric `tracefold.news.production_action_fact_kind_v12` weights 45% exact
 final production action, 35% exact TradeRelevance dimensions, 10% existing
 semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
 ReaderCard copy lint, normalized over the components a case carries. The four
@@ -1664,10 +1690,10 @@ Evidence that changed *under* the reviewed version — a different
 excluded.
 
 The `0336` genesis removed the retired replay fixture. Current metric evidence
-comes only from exact `news_judgment_v2` rows created in the post-genesis active
+comes only from exact `news_judgment_v3` rows created in the post-genesis active
 epoch; no repository fixture provides a legacy recorded-mode input.
 
-Reviews are accepted under `news_review_v7`, which is task-level: a submission
+Reviews are accepted under `news_review_v8`, which is task-level: a submission
 must carry a non-empty `dimensions` map and may leave every other field out, so
 a reviewer answers what this Event poses instead of inventing a taxonomy, a
 novelty judgment and a push verdict to record one defect. A stated taxonomy is
@@ -1679,18 +1705,17 @@ non-gold `reference_why_zh` — is the supervision a `why_support` failure needs
 to be trainable; without it the row is stored and flagged
 `explanation_supervision: "pending"`. The `taxonomy_source_authority` dimension
 is deleted: source authority is a code fact derived from the reporting source.
-Its optional `expected` block continues to cover magnitude,
-direction, assets and the seven TradeRelevance fields
-(`trade_impact_breadth`, `trade_tradability`, `trade_surprise`,
-`trade_development_delta`, `trade_channels`, `trade_affected_markets`, and
-`reader_value`). Accepted `novelty` and `should_push` are already their own
-typed truth rather than duplicate `expected` fields. Every failed scored
-dimension must have expected gold; otherwise it is not scored, with no
-any-change fallback. Channels/markets canonicalize before exact comparison. Historical
-v2-v4 rows remain readable audit history but cannot enter current metric/GEPA/release
-evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
-cases are separated as policy evidence. `gold_coverage` reports how much of each
-component is actually scored.
+Its optional `expected` block covers exactly the three semantic dimensions a
+reviewer can fail: `direction`, `assets` and `fact_kind` (#675 §1). `magnitude`
+and the seven TradeRelevance fields left with the Program output they corrected
+— an accepted label for a field the Program does not produce is Gold for
+nothing. Accepted `novelty` and `should_push` are already their own typed truth
+rather than duplicate `expected` fields. Every failed scored dimension must have
+expected gold; otherwise it is not scored, with no any-change fallback.
+Historical v2-v7 rows remain readable audit history but cannot enter current
+metric/GEPA/release evidence. Listing/telemetry do not enter gold;
+grounded-watchlist cases are separated as policy evidence. `gold_coverage`
+reports how much of each component is actually scored.
 
 One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient ordinary taxonomy Gold.
 Development readiness asks for no calibration set, no second primary reviewer and no adjudicator: #501
@@ -1757,7 +1782,7 @@ returns that result, `0` for a zero-call preflight refusal, and `null` when an i
 publish an exact count. It never guesses from model calls or parses private GEPA state.
 
 `news learning draft-reviews --rubric-model MODEL --taxonomy-models A,B --out FILE
-[--hours N] [--limit N] [--include-reviewed]` proposes `news_review_v7` rubrics
+[--hours N] [--limit N] [--include-reviewed]` proposes `news_review_v8` rubrics
 for an owner-authorized reviewer to accept and writes a file, never a review.
 The two taxonomy models label each Event blind — from the Program's own
 bounded taxonomy input through the taxonomy Predictor's Signature and seed,
@@ -1823,7 +1848,7 @@ remain audit-only.
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. A corpus is made of evidence
 and accepted labels (#651 §9): a case needs a frozen, release-eligible observed
-evidence snapshot inside the window and an accepted `news_review_v7` review of
+evidence snapshot inside the window and an accepted `news_review_v8` review of
 it, whichever arm answered the Event. The answering arm is recorded on the case
 as `provenance` and the sealing arm beside the corpus; neither admits or refuses
 a case. A `v5` dataset seals no learning epoch, names the `targets` its cases

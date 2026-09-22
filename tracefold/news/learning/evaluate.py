@@ -343,7 +343,7 @@ def _target_release_evidence(
             editorial = _output_editorial(dict(output)) or {}
             predictions = {
                 "classification": dspy.Prediction(taxonomy=editorial.get("taxonomy"), editorial=dict(editorial)),
-                "understanding": dspy.Prediction(semantics=verdict or None, relevance=editorial.get("relevance")),
+                "understanding": dspy.Prediction(semantics=verdict or None),
                 "explanation": dspy.Prediction(card=verdict or None),
             }
             for target in LEARNING_TARGETS:
@@ -1131,7 +1131,6 @@ class CandidateEvaluator:
         decision = production_decision(
             judgment,
             self._datasets._policy_metric_projection(case, state, context=context, arm=arm),
-            member_count=context.evidence.member_count,
             independent_text_count=max(1, int(getattr(context.prepared_evidence, "independent_text_count", 0) or 0)),
             now_ms=context.now_ms,
         )

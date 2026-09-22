@@ -81,7 +81,7 @@ EVENT_VERDICTS_SQL: Final = """
            program_version, program_sha256, editorial, scored_judgment_sha256,
            judgment_contract_version, judgment_origin
       FROM news_verdicts
-     WHERE event_id = %s AND judgment_contract_version = 'news_judgment_v2'
+     WHERE event_id = %s AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
      ORDER BY created_at_ms
 """
 EVENT_MEMBERS_SQL: Final = """
@@ -116,7 +116,7 @@ STATUS_SOURCE_CONTRACTS_SQL: Final = """
         SELECT bool_or(true) AS has_verdict
          FROM news_verdicts
          WHERE event_id = e.event_id AND stage = 'triage'
-           AND judgment_contract_version = 'news_judgment_v2'
+           AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
       ) v ON true
      WHERE e.opened_at_ms >= %s
        AND EXISTS (
@@ -176,7 +176,7 @@ STATUS_PIPELINE_SQL: Final = """
         count(*) FILTER (WHERE reasked_after_told_change) AS reasked_24h
         FROM news_verdicts
        WHERE stage = 'triage' AND created_at_ms >= %s
-         AND judgment_contract_version = 'news_judgment_v2'
+         AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
     )
     SELECT event_counts.events_1h, event_counts.events_24h, event_counts.candidates_24h,
            verdict_counts.triage_24h, verdict_counts.model_triage_24h,
@@ -246,7 +246,7 @@ STATUS_FUNNEL_VERDICTS_SQL: Final = """
            count(*) AS n
      FROM news_verdicts
      WHERE stage = 'triage' AND created_at_ms >= %s
-       AND judgment_contract_version = 'news_judgment_v2'
+       AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
      GROUP BY 1, 2, 3, 4, 5
 """
 
@@ -304,7 +304,7 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
                AND EXISTS (
                  SELECT 1 FROM news_verdicts v
                   WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
-                    AND v.judgment_contract_version = 'news_judgment_v2'
+                    AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
                )
            ) AS triaged,
            count(*) FILTER (
@@ -312,7 +312,7 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
                AND EXISTS (
                  SELECT 1 FROM news_verdicts v
                   WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
-                    AND v.judgment_contract_version = 'news_judgment_v2'
+                    AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
                )
                AND EXISTS (
                  SELECT 1 FROM news_deliveries d
@@ -350,7 +350,7 @@ def feed_page_sql(where_sql: str) -> str:
                t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
                t.error_code AS triage_error_code, t.created_at_ms AS verdict_created_at_ms,
                t.published_at_ms AS verdict_published_at_ms,
-               t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
+               t.verdict ->> 'direction' AS direction,
                t.verdict ->> 'headline_zh' AS headline_zh, t.verdict ->> 'scope' AS scope,
                t.verdict AS triage_verdict, t.editorial AS model_editorial,
                d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code,
@@ -371,7 +371,7 @@ def feed_page_sql(where_sql: str) -> str:
                    v.verdict ->> 'direction' AS direction
               FROM news_verdicts v
              WHERE v.event_id = e.event_id AND v.stage = 'triage'
-               AND v.judgment_contract_version = 'news_judgment_v2'
+               AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
              ORDER BY v.created_at_ms DESC LIMIT 1
           ) t ON true
           LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
@@ -406,7 +406,7 @@ def feed_counts_sql(where_sql: str) -> str:
                    v.verdict ->> 'direction' AS direction
               FROM news_verdicts v
              WHERE v.event_id = e.event_id AND v.stage = 'triage'
-               AND v.judgment_contract_version = 'news_judgment_v2'
+               AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
              ORDER BY v.created_at_ms DESC LIMIT 1
           ) t ON true
           LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'

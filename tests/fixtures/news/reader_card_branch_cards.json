@@ -18,7 +18,7 @@
         },
         "verdict": {
           "direction": "bullish",
-          "magnitude": 3,
+          "fact_kind": "state_change",
           "novelty": "progression",
           "headline_zh": "重点推送的标题",
           "why_zh": "为什么现在重要，对谁重要。"
@@ -219,7 +219,7 @@
     {
       "source": "news",
       "id": "news-plain-no-quote-no-link",
-      "why": "magnitude 0, a single report, no button and no quote line",
+      "why": "a statement fact kind, a single report, no button and no quote line",
       "inputs": {
         "event": {
           "event_id": "d0d1d2d3d4d5d6d7d8d9e0e1e2e3e4e5f0f1f2f3f4f5f6f7a0a1a2a3a4a5a6a7",
@@ -231,7 +231,7 @@
         },
         "verdict": {
           "direction": "bearish",
-          "magnitude": 0,
+          "fact_kind": "statement",
           "novelty": "new_fact",
           "headline_zh": "标题",
           "why_zh": ""
@@ -285,7 +285,7 @@
         },
         "verdict": {
           "direction": "neutral",
-          "magnitude": 1,
+          "fact_kind": "new_quantity",
           "novelty": "restatement",
           "headline_zh": "标题",
           "why_zh": "理由"
@@ -403,7 +403,7 @@
         },
         "verdict": {
           "direction": "unclear",
-          "magnitude": 2,
+          "fact_kind": "state_change",
           "novelty": "new_fact",
           "headline_zh": "标题",
           "why_zh": "理由"
@@ -469,7 +469,7 @@
         },
         "verdict": {
           "direction": "bullish",
-          "magnitude": 2,
+          "fact_kind": "state_change",
           "novelty": "new_fact",
           "headline_zh": "",
           "why_zh": "理由"

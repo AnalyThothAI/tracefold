@@ -248,7 +248,7 @@ class LearningStorage:
                 SELECT true AS present, x.degraded, x.error_code
                   FROM news_verdicts x
                  WHERE x.event_id = a.event_id AND x.stage = 'triage'
-                   AND x.judgment_contract_version = 'news_judgment_v2'
+                   AND x.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
                  ORDER BY x.created_at_ms DESC LIMIT 1
               ) v ON true
              WHERE a.activation_id = %s AND a.arm = 'candidate'
@@ -924,7 +924,7 @@ class LearningStorage:
       LEFT JOIN LATERAL (
         SELECT x.* FROM news_verdicts x
          WHERE x.event_id = e.event_id AND x.stage = 'triage'
-           AND x.judgment_contract_version = 'news_judgment_v2'
+           AND x.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
          ORDER BY x.created_at_ms DESC LIMIT 1
       ) v ON true
       JOIN LATERAL (
@@ -1120,7 +1120,7 @@ class LearningStorage:
                       FROM news_verdicts x
                      WHERE x.event_id = s.event_id
                        AND x.stage = 'triage'
-                       AND x.judgment_contract_version = 'news_judgment_v2'
+                       AND x.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
                        AND x.judgment_origin = 'model'
                        AND x.evidence_version = s.evidence_version
                        AND x.evidence_sha256 = s.evidence_sha256
@@ -1188,7 +1188,7 @@ class LearningStorage:
               FROM news_verdicts v
              JOIN news_events e ON e.event_id = v.event_id
              WHERE v.stage = 'triage' AND v.event_id = ANY(%s)
-               AND v.judgment_contract_version = 'news_judgment_v2'
+               AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
              ORDER BY v.event_id, v.created_at_ms DESC
             """,
             (list(event_ids),),

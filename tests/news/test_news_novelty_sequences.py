@@ -17,7 +17,7 @@ from dataclasses import replace
 
 import pytest
 
-from tests.support.news_judgment import scored_judgment, trade_relevance, triage_verdict
+from tests.support.news_judgment import scored_judgment, triage_verdict
 from tests.support.news_novelty_sequences import (
     event,
     frozen_policy,
@@ -139,6 +139,10 @@ def test_the_recorded_visa_judgment_still_pushes_because_it_claims_a_progression
     novelty label -- so the replayed action is `push`, exactly as recorded. Calling this release a
     progression is the seed's error, and the seed half of #651 §6.3 is NOT VERIFIED here: proving the
     model now labels it a restatement needs a model call, which this suite does not make.
+
+    The rule name is the one thing that moved: production named this push `trade_relevance_realtime`,
+    and v16 names the observation it pushed on. `product_service_change` is not one of the four escalate
+    families, so a state change in it is an ordinary card.
     """
 
     first, second = _steps(VISA)
@@ -153,7 +157,7 @@ def test_the_recorded_visa_judgment_still_pushes_because_it_claims_a_progression
     )
 
     assert result.final == second["recorded"]["final_decision"] == "push"
-    assert result.override_rule == second["recorded"]["override_rule"]
+    assert result.override_rule == "fact_kind_state_change"
     assert second["recorded"]["novelty"] == "progression"
     assert second["expected_duplicate_of"] == str(first["event_id"])
 
@@ -261,8 +265,12 @@ def test_a_reversal_reaches_as_a_progression_and_drops_as_a_restatement() -> Non
     The told entry here is `neutral`, so this half is a P2P for the label path rather than for the flip;
     the flip is proven on the Visa pair above, whose told entry is directional.
 
-    The receipt's `direction` is the controlled variable: the Upbit card was judged `neutral`, and a
-    neutral row cannot be contradicted, so this holds it `bullish` to make the reversal a real one.
+    Two things are controlled. The receipt's `direction`: the Upbit card was judged `neutral`, and a
+    neutral row cannot be contradicted, so this holds it `bullish` to make the reversal a real one. And
+    the notice's `source_authority`, held at `unknown`: the same-fact check is a rule about an ordinary
+    push, and a `market_access` state change the registry can name is an `escalate` under v16, exempt
+    from the check for its own reason. Held unknown and carried by one text, the card is the ordinary
+    push the exemption is being measured on.
     """
 
     upbit, cross_channel, _bithumb = _steps(CP)
@@ -286,7 +294,7 @@ def test_a_reversal_reaches_as_a_progression_and_drops_as_a_restatement() -> Non
     facts = gate_facts(case_key)
 
     reversal = decide(
-        judgment(case_key, novelty="progression", restates=-1, direction="bearish"),
+        judgment(case_key, novelty="progression", restates=-1, direction="bearish", source_authority="unknown"),
         facts,
         status,
         policy=policy,
@@ -296,7 +304,7 @@ def test_a_reversal_reaches_as_a_progression_and_drops_as_a_restatement() -> Non
     assert (reversal.final, reversal.throttled_by) == ("push", None)
 
     repeat = decide(
-        judgment(case_key, novelty="restatement", restates=6, direction="bearish"),
+        judgment(case_key, novelty="restatement", restates=6, direction="bearish", source_authority="unknown"),
         facts,
         status,
         policy=policy,
@@ -312,7 +320,9 @@ def test_a_reversal_still_escapes_an_exhausted_storyline_budget() -> None:
     `bullish`, so an ordinary third card is withheld. A `progression` that reverses it is not -- that is
     the #504 D2 / #523 D2 rule, and dropping the restatement exemption does not touch it. `similarity_max`
     is set to zero here, which is the documented way to switch the same-fact check off, so that the only
-    rule this test can be measuring is the budget.
+    rule this test can be measuring is the budget. The notice's `source_authority` is held at `unknown`
+    for the same reason it is on the same-fact check above: the budget only ever withholds an ordinary
+    push, and v16 escalates a `market_access` state change whose source the registry can name.
     """
 
     upbit, cross_channel, bithumb = _steps(CP)
@@ -340,7 +350,7 @@ def test_a_reversal_still_escapes_an_exhausted_storyline_budget() -> None:
     facts = gate_facts(case_key)
 
     withheld = decide(
-        judgment(case_key, novelty="progression", restates=-1, direction="neutral"),
+        judgment(case_key, novelty="progression", restates=-1, direction="neutral", source_authority="unknown"),
         facts,
         status,
         policy=policy,
@@ -349,7 +359,7 @@ def test_a_reversal_still_escapes_an_exhausted_storyline_budget() -> None:
     assert (withheld.final, withheld.throttled_by) == ("throttled", "storyline:asset:CP:budget")
 
     reversal = decide(
-        judgment(case_key, novelty="progression", restates=-1, direction="bearish"),
+        judgment(case_key, novelty="progression", restates=-1, direction="bearish", source_authority="unknown"),
         facts,
         status,
         policy=policy,
@@ -394,7 +404,6 @@ def test_different_economic_events_in_one_storyline_reach_the_reader_as_new_fact
             "storyline_key": key,
             "comparison_title": told_headline,
             "symbols": [],
-            "magnitude": 2,
             "direction": "neutral",
             "headline_zh": told_headline,
             "why_zh": "",
@@ -410,13 +419,14 @@ def test_different_economic_events_in_one_storyline_reach_the_reader_as_new_fact
         assets=[],
         scope="macro",
         direction="neutral",
+        # An official statistic printed at a new value, which is what every headline in the pairs is.
+        fact_kind="new_quantity",
         headline_zh=candidate_headline,
         why_zh="宏观数据更新。",
     )
-    relevance = trade_relevance(impact_breadth="global_systemic", channels=["rates"], affected_markets=["rates"])
 
     new_fact = decide(
-        scored_judgment(verdict, relevance=relevance),
+        scored_judgment(verdict),
         facts,
         status,
         policy=DEFAULT_POLICY,
@@ -425,7 +435,7 @@ def test_different_economic_events_in_one_storyline_reach_the_reader_as_new_fact
     assert (new_fact.final, new_fact.throttled_by) == ("push", None)
 
     mislabelled = decide(
-        scored_judgment(verdict.model_copy(update={"novelty": "restatement", "restates": 0}), relevance=relevance),
+        scored_judgment(verdict.model_copy(update={"novelty": "restatement", "restates": 0})),
         facts,
         status,
         policy=DEFAULT_POLICY,

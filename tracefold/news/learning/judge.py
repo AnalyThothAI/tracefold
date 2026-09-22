@@ -51,7 +51,7 @@ For each question answer only whether the candidate still carries the same subst
   mechanism, a vaguer restatement of the headline, or an added consequence the accepted text did not claim is
   NOT equivalent.
 - facts_preserved: does the candidate contradict the accepted card on any fact — a number, an entity, a
-  direction, a causal link? You are also given each side's structured judgment (magnitude, direction, assets,
+  direction, a causal link? You are also given each side's structured judgment (fact_kind, direction, assets,
   event type). A candidate whose structured judgment contradicts the accepted one — the opposite direction, a
   different primary instrument — is NOT preserving the facts, even when the two texts read the same.
 
@@ -253,7 +253,7 @@ JUDGE_PROGRAM_SHA256 = canonical_sha(_JUDGE_PROGRAM_IDENTITY)
 
 # `factual_fidelity` is a judgment about the whole card, so text alone cannot answer it: a candidate can copy
 # both sentences verbatim and still flip `direction`. These fields travel with the text for that reason.
-_SEMANTIC_FIELDS = ("magnitude", "direction", "scope", "assets")
+_SEMANTIC_FIELDS = ("fact_kind", "direction", "scope", "assets")
 
 
 def _semantics(verdict: Mapping[str, Any]) -> str:

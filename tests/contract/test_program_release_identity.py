@@ -30,7 +30,12 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # (`assembly.contradicted_primary_symbols`). That decides what lands in the verdict, so it is rendered
 # and hashed here for the same reason `normalize_restates` is. The request shape, both output contracts
 # and the route budget are unchanged.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "88f7e059ebf9d449feb752ff4dc54be31b0894104705bd50836d5e9ed486a0d5"
+# #675 PR-2 moves it for the opposite reason: the EventSemantics output contract itself changes shape.
+# `TradeRelevanceV1`, `magnitude` and `audience` are deleted, `fact_kind` and `evidence_ref` replace
+# them, the two canonical code-set orders the envelope pinned go with the fields they ordered, and the
+# closed fact-kind vocabulary is pinned in their place. That is a different question asked of the
+# provider, so it is a different Program version and a different envelope.
+NEWS_EXECUTION_ENVELOPE_SHA256 = "22ab36aadd6b811b6c56180d44f8e64b94b43150d402b259305d9269e4815401"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -49,14 +54,21 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "88f7e059ebf9d449feb752ff4dc54be31b0894104705bd
 # be replayed; and the novelty contract names the 60-minute episode, so a second outlet, another
 # sentence or an added figure of an announcement already told is a restatement rather than a
 # progression. The taxonomy and ReaderCard instructions are byte-identical.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "d0aba18f914ecce5ee3a169a6c4f5a54263c3c06122a991fd5754c3b5c1b4347"
+# #675 PR-2 moves EventSemantics again and ReaderCard by one sentence. The magnitude table, the
+# product-state-change section and the whole `Typed trade relevance and reader attention` section are
+# replaced by `## fact_kind` and `## evidence_ref`: the seed defines ten kinds of new thing a text can
+# state and no longer says what the reader should receive, and the card seed stops naming a magnitude
+# label it can no longer render. The taxonomy instruction is byte-identical.
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "ae90195509063bf98de4f021fe4e3c2b6161627d2d312883431666d1439e7033"
 
 # #651 re-pins this over the native DSPy state document rather than three instruction strings. The
 # instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
 # the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
 # #675 PR-1 re-pins it because the seed moved: the packaged image is the state document, so a seed edit
-# is a new image. Regenerated with `python -m tracefold.app.cli.commands.news_program_artifact`.
-NEWS_STABLE_PROGRAM_SHA256 = "a5b99b8060b7cda22f567b29f2e80580fdaca642fc57a95273e72cb398e02402"
+# is a new image. #675 PR-2 re-pins it for the same reason and a second one: the EventSemantics and
+# ReaderCard seeds both moved, and the Signature they are bound to changed shape.
+# Regenerated with `python -m tracefold.app.cli.commands.news_program_artifact`.
+NEWS_STABLE_PROGRAM_SHA256 = "f152602341ddfef9d041b2f656eea3f1a507eac38cfbc2fe5a6a1ab1eed531ae"
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
@@ -99,10 +111,10 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_state().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v12",
-        "policy_version": "news_triage_policy_v15",
-        "review_rubric_version": "news_review_v7",
-        "metric_id": "tracefold.news.production_action_trade_relevance_v11",
+        "program_version": "news_semantic_program_v13",
+        "policy_version": "news_triage_policy_v16",
+        "review_rubric_version": "news_review_v8",
+        "metric_id": "tracefold.news.production_action_fact_kind_v12",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
 
@@ -171,8 +183,6 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "contracts.EditorialEnvelope",
         "contracts.ProgramTrace",
         "contracts.TriageContext",
-        "contracts.TradeRelevanceV1",
-        "contracts._canonical_code_set",
         "contracts.aggregate_program_usage",
         "contracts.catalog_candidates_of",
         "lm.AuditedConfiguredLM",
@@ -216,8 +226,8 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "module._prepare",
         "module._reader_card_semantic_view",
         "module._rejected",
-        "module._relevance_normalizations",
         "module._taxonomy_call_failure_code",
+        "module._visible_refs",
         "module._validate_taxonomy",
         "routing.__module__",
         "signatures.EventSemantics",
@@ -248,8 +258,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "normalization_capture",
         "restatement_index",
         "normalize_restates",
-        "trade_channel_order",
-        "trade_affected_market_order",
+        "fact_kinds",
         "taxonomy",
     }
     assert set(envelope["assembly"]["taxonomy"]) == {
@@ -380,7 +389,7 @@ class RoutedSemanticJudge:
             lambda e: e["assembly"]["restatement_index"].__setitem__("restatement|restates=0|told=0", None),
             id="restatement_index_rule",
         ),
-        pytest.param(lambda e: e["assembly"]["trade_channel_order"].reverse(), id="trade_channel_order"),
+        pytest.param(lambda e: e["assembly"]["fact_kinds"].reverse(), id="fact_kinds"),
         pytest.param(
             lambda e: e["assembly"]["taxonomy"].__setitem__("source_authority_registry_sha256", "0" * 64),
             id="source_authority_registry",

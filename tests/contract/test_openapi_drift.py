@@ -164,7 +164,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsVerdictData",
         "NewsPresentationVerdictData",
         "NewsModelEditorialData",
-        "NewsTradeRelevanceData",
         "NewsDeliveryData",
         "NewsStatusData",
         "NewsIngestStatusData",
@@ -436,7 +435,7 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     }
     assert set(filters["required"]) == {"limit"}
     triage = schema["components"]["schemas"]["NewsTriageSummaryData"]["properties"]
-    assert {"taxonomy", "relevance", "headline_zh", "final_decision"} <= set(triage)
+    assert {"taxonomy", "fact_kind", "headline_zh", "final_decision"} <= set(triage)
     assert {
         "event_type",
         "event_type_zh",
@@ -457,14 +456,15 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "assets",
         "direction",
         "scope",
-        "magnitude",
+        # #675 §1: the model's observation of the text, and the evidence span it read it off. `magnitude`
+        # and `audience` left with the reader judgment they carried.
+        "fact_kind",
+        "evidence_ref",
         "confidence",
-        "audience",
         "headline_zh",
         "why_zh",
     }
     assert set(schema["components"]["schemas"]["NewsModelEditorialData"]["properties"]) == {
-        "relevance",
         # #651 §5.3: the code-owned authority is published beside the classification, and the two
         # status fields say whether the taxonomy Predictor answered at all.
         "source_authority",
@@ -551,20 +551,21 @@ def test_generated_contracts_have_no_retired_product_ai_surface() -> None:
         assert token not in openapi_ts_text
 
 
-def test_contracts_md_lists_the_same_trade_channels_as_the_code() -> None:
+def test_contracts_md_lists_the_same_fact_kinds_as_the_code() -> None:
     """`docs/CONTRACTS.md` is the hand-written public-surface truth CLAUDE.md points readers at.
 
-    It spells the channel enum out in prose, so nothing else notices when the code-owned order gains a value:
-    #173 added `product_progress` and the doc kept listing eleven codes until a reviewer read both. A client
-    validating a current accepted-review payload against the stale list rejects a legitimate channel.
+    It spells the closed vocabulary out in prose, so nothing else notices when the code-owned order gains
+    a value: #173 added `product_progress` to the retired channel enum and the doc kept listing eleven
+    codes until a reviewer read both. A client validating a current accepted-review payload against a
+    stale list rejects a legitimate answer.
     """
 
-    from tracefold.news.program.contracts import TRADE_CHANNEL_ORDER
+    from tracefold.news.models import FACT_KINDS
 
     document = (Path(__file__).resolve().parents[2] / "docs" / "CONTRACTS.md").read_text(encoding="utf-8")
-    documented = "|".join(TRADE_CHANNEL_ORDER)
+    documented = "|".join(FACT_KINDS)
     assert f"`{documented}`" in document, (
-        f"docs/CONTRACTS.md does not spell the current code-owned channel order; expected the literal `{documented}`"
+        f"docs/CONTRACTS.md does not spell the current code-owned fact-kind order; expected `{documented}`"
     )
 
 

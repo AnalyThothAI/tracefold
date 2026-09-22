@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 # S608 exemptions below compose fixed cohort/CTE fragments selected by code; all runtime values stay bound.
-from ..outcome import decision_zh, direction_zh, magnitude_zh, override_rule_zh, throttled_by_zh
+from ..outcome import decision_zh, direction_zh, fact_kind_zh, override_rule_zh, throttled_by_zh
 from ..row_values import optional_int
 from ..similarity import similarity
 from ..taxonomy import event_family_zh
@@ -53,14 +53,14 @@ _REVIEW_FACTS_CTE: Final = """
              e.opened_at_ms <= %s - 14400000 AS mature_4h,
              v.final_decision, v.degraded, v.override_rule, v.throttled_by,
              v.verdict ->> 'direction' AS direction,
-             COALESCE((v.verdict ->> 'magnitude')::int, 0) AS magnitude,
+             v.verdict ->> 'fact_kind' AS fact_kind,
              COALESCE(v.editorial #>> '{{taxonomy,event_family}}', 'unknown') AS event_family,
              (d.state = 'sent') AS delivered
         FROM news_verdicts v
         JOIN news_events e ON e.event_id = v.event_id
         LEFT JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first'
        WHERE v.stage = 'triage' AND e.ingest_mode = 'live'
-         AND v.judgment_contract_version = 'news_judgment_v2'
+         AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
          AND e.opened_at_ms >= %s AND e.opened_at_ms < %s
          {cohort_filter}
        ORDER BY v.event_id, v.created_at_ms DESC
@@ -85,7 +85,7 @@ _REVIEW_FACTS_CTE: Final = """
     fact AS (
       SELECT ev.event_id, ev.opened_at_ms, ev.mature_1h, ev.mature_4h,
              ev.final_decision, ev.degraded, ev.override_rule, ev.throttled_by,
-             ev.direction, ev.magnitude, ev.event_family, ev.delivered,
+             ev.direction, ev.fact_kind, ev.event_family, ev.delivered,
              a.event_id IS NOT NULL AS has_primary,
              COALESCE(a.asset_n, 0) AS asset_n,
              COALESCE(a.priced_1h, 0) AS priced_1h,
@@ -138,7 +138,7 @@ class ReviewStorage:
             "directions": [],
             # Retired from the product surface in #112: these post-event price rankings were not causal
             # quality evidence, and their ordered aggregates dominated the 30-day query budget.
-            "magnitudes": [],
+            "fact_kinds": [],
             "event_families": [],
             "potential_misses": self._miss_rows(sections["miss"]),
             "summary": {
@@ -207,7 +207,7 @@ class ReviewStorage:
         sql = f"""
             WITH {facts_cte},
             -- One coverage aggregate and one bounded discovery queue over one materialized fact set.  #112
-            -- retired the direction/magnitude/event-family price rankings: they were neither causal quality
+            -- retired the direction/fact-kind/event-family price rankings: they were neither causal quality
             -- evidence nor rendered by ReviewDesk, and they consumed the 30-day query budget.
             coverage AS (
               SELECT count(*) FILTER (WHERE mature_1h) AS eligible_1h,
@@ -234,7 +234,7 @@ class ReviewStorage:
             ),
             miss AS (
               SELECT event_id, opened_at_ms, final_decision, override_rule, throttled_by, direction,
-                     magnitude, event_family, bps_1h, bps_4h, asset_n
+                     fact_kind, event_family, bps_1h, bps_4h, asset_n
                 FROM fact
                WHERE COALESCE(delivered, false) IS NOT TRUE AND NOT degraded AND bps_1h IS NOT NULL
                ORDER BY abs(bps_1h) DESC, opened_at_ms DESC
@@ -275,8 +275,8 @@ class ReviewStorage:
                 "throttled_by_zh": throttled_by_zh(data.get("throttled_by")),
                 "direction": data.get("direction"),
                 "direction_zh": direction_zh(data.get("direction")),
-                "magnitude": optional_int(data.get("magnitude")),
-                "magnitude_zh": magnitude_zh(optional_int(data.get("magnitude"))),
+                "fact_kind": data.get("fact_kind"),
+                "fact_kind_zh": fact_kind_zh(data.get("fact_kind")),
                 "event_family": data.get("event_family"),
                 "event_family_zh": event_family_zh(data.get("event_family")),
                 "return_1h_bps": optional_int(data.get("bps_1h")),
@@ -342,7 +342,7 @@ class ReviewStorage:
             SELECT e.event_id, e.leader_title, e.storyline_key,
                    (SELECT v.verdict ->> 'headline_zh' FROM news_verdicts v
                      WHERE v.event_id = e.event_id AND v.stage = 'triage'
-                       AND v.judgment_contract_version = 'news_judgment_v2'
+                       AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
                      ORDER BY v.created_at_ms DESC LIMIT 1) AS headline_zh
               FROM news_events e
              WHERE e.event_id = ANY(%s)

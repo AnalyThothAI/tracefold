@@ -14,7 +14,7 @@
       },
       "verdict": {
         "direction": "bullish",
-        "magnitude": 2,
+        "fact_kind": "new_quantity",
         "novelty": "progression",
         "headline_zh": "英伟达支持的 AI 初创公司 Nscale 披露 1030 亿美元合同收入",
         "why_zh": "Nscale 公布百亿级合同收入，验证了英伟达算力生态的商业化落地能力，为英伟达后续数据中心芯片订单提供下游需求支撑."
@@ -51,7 +51,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "Nscale 公布百亿级合同收入，验证了英伟达算力生态的商业化落地能力，为英伟达后续数据中心芯片订单提供下游需求支撑.\n利多 · 新进展 · 影响明显 · NVDA · www.thestreet.com（2 条报道） · 04:17\n行情 NVDA $231.03 24h +0.39%（永续）"
+          "content": "Nscale 公布百亿级合同收入，验证了英伟达算力生态的商业化落地能力，为英伟达后续数据中心芯片订单提供下游需求支撑.\n利多 · 新进展 · 新数据 · NVDA · www.thestreet.com（2 条报道） · 04:17\n行情 NVDA $231.03 24h +0.39%（永续）"
         },
         {
           "tag": "action",
@@ -135,7 +135,7 @@
       },
       "verdict": {
         "direction": "bearish",
-        "magnitude": 2,
+        "fact_kind": "state_change",
         "novelty": "new_fact",
         "headline_zh": "伊拉克石油部长：伊拉克已将石油出口能力提高至每日300万桶以上",
         "why_zh": "伊拉克出口能力突破 300 万桶/日，中东供应预期增加直接压制原油价格。"
@@ -172,7 +172,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "伊拉克出口能力突破 300 万桶/日，中东供应预期增加直接压制原油价格。\n利空 · 影响明显 · CL · jin10 · 04:15\n行情 CL $91.96 24h +0.86%（永续）"
+          "content": "伊拉克出口能力突破 300 万桶/日，中东供应预期增加直接压制原油价格。\n利空 · 状态变化 · CL · jin10 · 04:15\n行情 CL $91.96 24h +0.86%（永续）"
         },
         {
           "tag": "note",
@@ -228,7 +228,7 @@
       },
       "verdict": {
         "direction": "bullish",
-        "magnitude": 2,
+        "fact_kind": "state_change",
         "novelty": "new_fact",
         "headline_zh": "德国初创公司 Isar 无人火箭从挪威基地发射升空",
         "why_zh": "SpaceX 的供应链竞争对手成功完成首飞，验证了欧洲本土低成本入轨能力，为相关航天概念股提供基本面支撑."
@@ -265,7 +265,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "SpaceX 的供应链竞争对手成功完成首飞，验证了欧洲本土低成本入轨能力，为相关航天概念股提供基本面支撑.\n利多 · 影响明显 · SPACE · opennews · 04:12\n行情 SPACE $0.005193 24h +3.30%"
+          "content": "SpaceX 的供应链竞争对手成功完成首飞，验证了欧洲本土低成本入轨能力，为相关航天概念股提供基本面支撑.\n利多 · 状态变化 · SPACE · opennews · 04:12\n行情 SPACE $0.005193 24h +3.30%"
         },
         {
           "tag": "note",
@@ -321,7 +321,7 @@
       },
       "verdict": {
         "direction": "bullish",
-        "magnitude": 2,
+        "fact_kind": "quantified_flow",
         "novelty": "progression",
         "headline_zh": "UBS、Jane Street 等机构合计持有 7500 万美元 Hyperliquid ETF",
         "why_zh": "传统银行与顶级做市商直接配置代币化资产，为 HYPE 提供机构级流动性背书并降低散户交易滑点。"
@@ -358,7 +358,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "传统银行与顶级做市商直接配置代币化资产，为 HYPE 提供机构级流动性背书并降低散户交易滑点。\n利多 · 新进展 · 影响明显 · HYPE · opennews（2 条报道） · 04:01\n行情 HYPE $85.353 24h +0.45%"
+          "content": "传统银行与顶级做市商直接配置代币化资产，为 HYPE 提供机构级流动性背书并降低散户交易滑点。\n利多 · 新进展 · 资金流 · HYPE · opennews（2 条报道） · 04:01\n行情 HYPE $85.353 24h +0.45%"
         },
         {
           "tag": "note",
@@ -414,7 +414,7 @@
       },
       "verdict": {
         "direction": "bullish",
-        "magnitude": 3,
+        "fact_kind": "statement",
         "novelty": "progression",
         "headline_zh": "IRGC海军警告波斯湾及霍尔木兹海峡附近船只防范可疑活动",
         "why_zh": "伊朗革命卫队对关键航道发出航行警告，地缘风险溢价上升推动原油供应预期收紧。"
@@ -451,7 +451,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "伊朗革命卫队对关键航道发出航行警告，地缘风险溢价上升推动原油供应预期收紧。\n利多 · 新进展 · 影响重大 · CL · opennews · 03:59\n行情 CL $91.91 24h +0.73%（永续）"
+          "content": "伊朗革命卫队对关键航道发出航行警告，地缘风险溢价上升推动原油供应预期收紧。\n利多 · 新进展 · 表态 · CL · opennews · 03:59\n行情 CL $91.91 24h +0.73%（永续）"
         },
         {
           "tag": "note",
@@ -507,7 +507,7 @@
       },
       "verdict": {
         "direction": "bearish",
-        "magnitude": 3,
+        "fact_kind": "statement",
         "novelty": "progression",
         "headline_zh": "伊朗革命卫队海军称霍尔木兹海峡每日有2至5艘船只被打击",
         "why_zh": "霍尔木兹海峡航运受阻推高能源运输风险溢价，直接冲击原油供给预期并压制全球风险资产估值."
@@ -544,7 +544,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "霍尔木兹海峡航运受阻推高能源运输风险溢价，直接冲击原油供给预期并压制全球风险资产估值.\n利空 · 新进展 · 影响重大 · LINK · خبرگزاری فارس · 03:47\n行情 LINK $12.014 24h +2.71%"
+          "content": "霍尔木兹海峡航运受阻推高能源运输风险溢价，直接冲击原油供给预期并压制全球风险资产估值.\n利空 · 新进展 · 表态 · LINK · خبرگزاری فارس · 03:47\n行情 LINK $12.014 24h +2.71%"
         },
         {
           "tag": "action",
@@ -628,7 +628,7 @@
       },
       "verdict": {
         "direction": "bullish",
-        "magnitude": 3,
+        "fact_kind": "state_change",
         "novelty": "progression",
         "headline_zh": "美国特使威特科夫、库什纳赴莫斯科与普京举行高级别和谈，乌克兰实施72小时停火",
         "why_zh": "美俄直接对话配合短期空中停火，为结束冲突提供窗口，可能降低能源供应中断风险并缓解地缘政治溢价。"
@@ -653,7 +653,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "美俄直接对话配合短期空中停火，为结束冲突提供窗口，可能降低能源供应中断风险并缓解地缘政治溢价。\n利多 · 新进展 · 影响重大 · zerohedge · 03:41"
+          "content": "美俄直接对话配合短期空中停火，为结束冲突提供窗口，可能降低能源供应中断风险并缓解地缘政治溢价。\n利多 · 新进展 · 状态变化 · zerohedge · 03:41"
         },
         {
           "tag": "action",
@@ -737,7 +737,7 @@
       },
       "verdict": {
         "direction": "bullish",
-        "magnitude": 3,
+        "fact_kind": "statement",
         "novelty": "progression",
         "headline_zh": "伊朗革命卫队海军称打击霍尔木兹海峡违规航线三艘船只",
         "why_zh": "霍尔木兹海峡是全球约两成原油的必经通道，袭击事件直接抬升油运风险溢价，推高布伦特原油价格预期并压缩全球风险资产估值。"
@@ -774,7 +774,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "霍尔木兹海峡是全球约两成原油的必经通道，袭击事件直接抬升油运风险溢价，推高布伦特原油价格预期并压缩全球风险资产估值。\n利多 · 新进展 · 影响重大 · CL · opennews · 03:37\n行情 CL $91.81 24h +0.60%（永续）"
+          "content": "霍尔木兹海峡是全球约两成原油的必经通道，袭击事件直接抬升油运风险溢价，推高布伦特原油价格预期并压缩全球风险资产估值。\n利多 · 新进展 · 表态 · CL · opennews · 03:37\n行情 CL $91.81 24h +0.60%（永续）"
         },
         {
           "tag": "note",
@@ -830,7 +830,7 @@
       },
       "verdict": {
         "direction": "bearish",
-        "magnitude": 3,
+        "fact_kind": "statement",
         "novelty": "progression",
         "headline_zh": "伊朗称回应美军袭击三艘油轮行为",
         "why_zh": "地缘冲突升级风险推高能源供应中断预期，原油及风险资产面临避险抛压"
@@ -855,7 +855,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "地缘冲突升级风险推高能源供应中断预期，原油及风险资产面临避险抛压\n利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:35"
+          "content": "地缘冲突升级风险推高能源供应中断预期，原油及风险资产面临避险抛压\n利空 · 新进展 · 表态 · خبرگزاری فارس · 03:35"
         },
         {
           "tag": "action",
@@ -939,7 +939,7 @@
       },
       "verdict": {
         "direction": "bearish",
-        "magnitude": 3,
+        "fact_kind": "statement",
         "novelty": "progression",
         "headline_zh": "伊朗革命卫队海军警告：任何可疑举动都将遭到打击",
         "why_zh": "美军袭击三艘伊朗油船引发军事对峙升级，霍尔木兹海峡原油运输风险溢价抬升，推高能源成本并压制全球风险资产估值."
@@ -964,7 +964,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "美军袭击三艘伊朗油船引发军事对峙升级，霍尔木兹海峡原油运输风险溢价抬升，推高能源成本并压制全球风险资产估值.\n利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:32"
+          "content": "美军袭击三艘伊朗油船引发军事对峙升级，霍尔木兹海峡原油运输风险溢价抬升，推高能源成本并压制全球风险资产估值.\n利空 · 新进展 · 表态 · خبرگزاری فارس · 03:32"
         },
         {
           "tag": "action",
@@ -1048,7 +1048,7 @@
       },
       "verdict": {
         "direction": "bullish",
-        "magnitude": 2,
+        "fact_kind": "state_change",
         "novelty": "new_fact",
         "headline_zh": "StonkFun 正式在 Raydium LaunchLab 上线",
         "why_zh": "Raydium 作为 Solana 核心流动性枢纽，新代币接入其 LaunchLab 可获得更深流动性与更优成交，直接提升该平台的交易活跃度与生态吸引力."
@@ -1085,7 +1085,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "Raydium 作为 Solana 核心流动性枢纽，新代币接入其 LaunchLab 可获得更深流动性与更优成交，直接提升该平台的交易活跃度与生态吸引力.\n利多 · 影响明显 · RAYDIUM · x.com · 03:14\n行情 RAYDIUM $0.8652 24h +5.72%"
+          "content": "Raydium 作为 Solana 核心流动性枢纽，新代币接入其 LaunchLab 可获得更深流动性与更优成交，直接提升该平台的交易活跃度与生态吸引力.\n利多 · 状态变化 · RAYDIUM · x.com · 03:14\n行情 RAYDIUM $0.8652 24h +5.72%"
         },
         {
           "tag": "action",
@@ -1169,7 +1169,7 @@
       },
       "verdict": {
         "direction": "bullish",
-        "magnitude": 2,
+        "fact_kind": "official_measure",
         "novelty": "new_fact",
         "headline_zh": "Revolut获OCC有条件批准，迈出成为美国银行关键一步",
         "why_zh": "获得联邦存款保险与监管框架后，Revolut可直接为美国用户开设合规银行账户，降低其接入加密资产服务的监管门槛."
@@ -1194,7 +1194,7 @@
       "elements": [
         {
           "tag": "markdown",
-          "content": "获得联邦存款保险与监管框架后，Revolut可直接为美国用户开设合规银行账户，降低其接入加密资产服务的监管门槛.\n利多 · 影响明显 · opennews · 02:23"
+          "content": "获得联邦存款保险与监管框架后，Revolut可直接为美国用户开设合规银行账户，降低其接入加密资产服务的监管门槛.\n利多 · 官方措施 · opennews · 02:23"
         },
         {
           "tag": "note",

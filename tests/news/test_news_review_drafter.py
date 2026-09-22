@@ -33,7 +33,7 @@ from tracefold.news.review.drafter import (
 from tracefold.news.taxonomy import ModelTaxonomyV1
 
 NEWS_REVIEW_DRAFTER_ID = "tracefold.news.review_drafter_v7"
-NEWS_REVIEW_DRAFT_BATCH_SCHEMA = "tracefold.news.review_draft_batch.v6"
+NEWS_REVIEW_DRAFT_BATCH_SCHEMA = "tracefold.news.review_draft_batch.v7"
 
 _TAXONOMY = {
     "subject_codes": ["medtop:20000199"],
@@ -55,12 +55,12 @@ _RUBRIC = {
     "dimensions": {
         "factual_fidelity": "pass",
         "headline_fidelity": "pass",
-        "magnitude": "fail",
+        "fact_kind": "fail",
         "timeliness": "not_applicable",
     },
     "novelty": {"judgment": "new_fact", "duplicate_of": ""},
-    "expected": {"magnitude": 2},
-    "expected_correction": "产能承诺属于公司自身产品线变化，应为 magnitude 2",
+    "expected": {"fact_kind": "state_change"},
+    "expected_correction": "产能承诺让公司自身的产能进入新状态，事实类型应为 state_change",
     "confidence": 0.8,
     "reasoning": "卡片把一项产能承诺记成了例行更新",
 }
@@ -159,7 +159,6 @@ def _context() -> TriageContext:
                 "dedupe_family": "general",
                 "comparison_title": "Company commits capacity",
                 "comparison_fingerprint": "f" * 64,
-                "magnitude": 1,
                 "direction": "bullish",
                 "headline_zh": _TOLD_HEADLINE,
                 "why_zh": "历史卡片原因",
@@ -195,8 +194,8 @@ def test_a_draft_becomes_a_valid_submission_without_hand_reshaping() -> None:
     draft = ReviewDraft.model_validate(_GOOD)
     submission = EventRubricSubmission(**submission_payload(draft, stable_taxonomy=_TAXONOMY))
     assert submission.should_push == "should_push"
-    assert submission.expected is not None and submission.expected.magnitude == 2
-    assert submission.dimensions["magnitude"] == "fail"
+    assert submission.expected is not None and submission.expected.fact_kind == "state_change"
+    assert submission.dimensions["fact_kind"] == "fail"
 
 
 def test_the_rubric_model_output_carries_no_taxonomy_and_no_taxonomy_dimensions() -> None:
@@ -231,11 +230,11 @@ def test_gold_on_a_passed_dimension_is_refused_by_the_rubric_not_by_the_drafter(
     draft = ReviewDraft.model_validate(
         {
             **_GOOD,
-            "dimensions": {**_GOOD["dimensions"], "magnitude": "pass"},
-            "expected": {"magnitude": 2},
+            "dimensions": {**_GOOD["dimensions"], "fact_kind": "pass"},
+            "expected": {"fact_kind": "state_change"},
         }
     )
-    with pytest.raises(ValueError, match="news_review_expected_requires_failed_dimension:magnitude"):
+    with pytest.raises(ValueError, match="news_review_expected_requires_failed_dimension:fact_kind"):
         EventRubricSubmission(**submission_payload(draft, stable_taxonomy=_TAXONOMY))
 
 
@@ -409,8 +408,8 @@ def test_a_reviewer_taxonomy_edit_is_recomputed_into_the_submitted_dimensions() 
     submission = EventRubricSubmission(**payload)
     assert submission.dimensions["taxonomy_event_family"] == "pass"
     assert submission.taxonomy.event_family == _TAXONOMY["event_family"]
-    # The rubric's own `magnitude` fail is untouched by the taxonomy recompute.
-    assert payload["dimensions"]["magnitude"] == "fail"
+    # The rubric's own `fact_kind` fail is untouched by the taxonomy recompute.
+    assert payload["dimensions"]["fact_kind"] == "fail"
 
 
 def test_an_event_stable_never_labelled_stays_not_applicable_on_every_axis() -> None:

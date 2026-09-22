@@ -16,7 +16,7 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
-from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
+from tests.support.news_judgment import news_taxonomy, scored_judgment
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.baseline import BaselineCase, run_baseline
 from tracefold.news.learning.objective import DevelopmentEpisode
@@ -38,12 +38,12 @@ _SEMANTICS: dict[str, Any] = {
     "novelty": "new_fact",
     "restates": -1,
     "assets": [{"symbol": "TSLA", "market_type": "spot", "role": "primary"}],
-    "magnitude": 2,
     "direction": "bullish",
-    "audience": "us_equity",
     "scope": "single_name",
+    "fact_kind": "state_change",
+    # The one span this context puts in front of the model; `EventSemantics` has to cite a visible `ref_id`.
+    "evidence_ref": "c1",
     "confidence": 0.9,
-    "relevance": trade_relevance().model_dump(mode="json"),
 }
 _TAXONOMY: dict[str, Any] = {
     "subject_codes": ["medtop:20000205"],
@@ -53,10 +53,7 @@ _TAXONOMY: dict[str, Any] = {
 }
 _CARD: dict[str, Any] = {"headline_zh": "特斯拉承诺新增产线", "why_zh": "新增产能改变该名字的交付预期"}
 
-_VERDICT: dict[str, Any] = {
-    **{key: value for key, value in _SEMANTICS.items() if key != "relevance"},
-    **_CARD,
-}
+_VERDICT: dict[str, Any] = {**_SEMANTICS, **_CARD}
 
 
 def _context(index: int, *, title: str | None = None) -> TriageContext:
@@ -108,15 +105,11 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
         context=_context(index, title=title),
         accepted_review={
             "should_push": "should_push",
-            "dimensions": {"factual_fidelity": "pass", "headline_fidelity": "pass", "magnitude": "pass"},
+            "dimensions": {"factual_fidelity": "pass", "headline_fidelity": "pass", "fact_kind": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
             "taxonomy": dict(_TAXONOMY),
         },
-        production_judgment=scored_judgment(
-            _VERDICT,
-            relevance=trade_relevance(),
-            taxonomy=news_taxonomy(**_TAXONOMY),
-        ),
+        production_judgment=scored_judgment(_VERDICT, taxonomy=news_taxonomy(**_TAXONOMY)),
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"], "admission": "candidate"},
             "storyline": {"title": "Tesla", "dedupe_family": "general"},

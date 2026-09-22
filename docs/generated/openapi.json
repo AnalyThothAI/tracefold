@@ -4354,11 +4354,8 @@
       },
       "NewsModelEditorialData": {
         "additionalProperties": false,
-        "description": "The editorial sibling of one model verdict, in the current `news_editorial_v3` read shape.\n\n``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer\nand is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads\n``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under\n`news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row\nreads as ``available`` with its authority lifted out of the taxonomy object (#651 \u00a75.3).",
+        "description": "The editorial sibling of one model verdict, in the current `news_editorial_v4` read shape.\n\n``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer\nand is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads\n``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under\n`news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row\nreads as ``available`` with its authority lifted out of the taxonomy object (#651 \u00a75.3), and a\n`news_editorial_v3` row loses the `relevance` object the Program no longer produces (#675 \u00a71).",
         "properties": {
-          "relevance": {
-            "$ref": "#/components/schemas/NewsTradeRelevanceData"
-          },
           "source_authority": {
             "enum": [
               "regulatory_filing",
@@ -4406,8 +4403,7 @@
           }
         },
         "required": [
-          "source_authority",
-          "relevance"
+          "source_authority"
         ],
         "title": "NewsModelEditorialData",
         "type": "object"
@@ -4726,16 +4722,6 @@
             "title": "Assets",
             "type": "array"
           },
-          "audience": {
-            "enum": [
-              "crypto",
-              "us_equity",
-              "macro",
-              "none"
-            ],
-            "title": "Audience",
-            "type": "string"
-          },
           "confidence": {
             "maximum": 1.0,
             "minimum": 0.0,
@@ -4752,17 +4738,39 @@
             "title": "Direction",
             "type": "string"
           },
+          "evidence_ref": {
+            "default": "",
+            "title": "Evidence Ref",
+            "type": "string"
+          },
+          "fact_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "state_change",
+                  "new_quantity",
+                  "level_crossed",
+                  "period_record",
+                  "quantified_flow",
+                  "official_measure",
+                  "statement",
+                  "recap",
+                  "schedule",
+                  "promotion"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Kind"
+          },
           "headline_zh": {
             "maxLength": 60,
             "minLength": 1,
             "title": "Headline Zh",
             "type": "string"
-          },
-          "magnitude": {
-            "maximum": 3.0,
-            "minimum": 0.0,
-            "title": "Magnitude",
-            "type": "integer"
           },
           "novelty": {
             "enum": [
@@ -4799,9 +4807,7 @@
           "restates",
           "direction",
           "scope",
-          "magnitude",
           "confidence",
-          "audience",
           "headline_zh"
         ],
         "title": "NewsPresentationVerdictData",
@@ -5905,114 +5911,6 @@
         "title": "NewsTimelineStepData",
         "type": "object"
       },
-      "NewsTradeRelevanceData": {
-        "additionalProperties": false,
-        "description": "The current typed market-relevance judgment; no free-form compatibility payload crosses HTTP.",
-        "properties": {
-          "affected_markets": {
-            "default": [],
-            "items": {
-              "enum": [
-                "crypto_broad",
-                "us_equity_broad",
-                "rates",
-                "fx",
-                "energy",
-                "metals",
-                "single_asset"
-              ],
-              "type": "string"
-            },
-            "maxItems": 4,
-            "title": "Affected Markets",
-            "type": "array"
-          },
-          "channels": {
-            "default": [],
-            "items": {
-              "enum": [
-                "rates",
-                "liquidity",
-                "risk_premium",
-                "energy_supply",
-                "commodity_supply",
-                "commodity_demand",
-                "regulation",
-                "exchange_access",
-                "product_progress",
-                "earnings_cashflow",
-                "positioning_flow",
-                "security_incident"
-              ],
-              "type": "string"
-            },
-            "maxItems": 4,
-            "title": "Channels",
-            "type": "array"
-          },
-          "development_delta": {
-            "enum": [
-              "state_change",
-              "material_detail",
-              "color_only",
-              "scheduled"
-            ],
-            "title": "Development Delta",
-            "type": "string"
-          },
-          "impact_breadth": {
-            "enum": [
-              "none",
-              "single_instrument",
-              "sector",
-              "regional",
-              "cross_asset",
-              "global_systemic"
-            ],
-            "title": "Impact Breadth",
-            "type": "string"
-          },
-          "reader_value": {
-            "enum": [
-              "escalate",
-              "realtime",
-              "background",
-              "none"
-            ],
-            "title": "Reader Value",
-            "type": "string"
-          },
-          "surprise": {
-            "enum": [
-              "unscheduled",
-              "material_vs_expectation",
-              "in_line",
-              "unknown"
-            ],
-            "title": "Surprise",
-            "type": "string"
-          },
-          "tradability": {
-            "enum": [
-              "direct",
-              "second_order",
-              "contextual",
-              "none"
-            ],
-            "title": "Tradability",
-            "type": "string"
-          }
-        },
-        "required": [
-          "impact_breadth",
-          "tradability",
-          "surprise",
-          "development_delta",
-          "reader_value"
-        ],
-        "title": "NewsTradeRelevanceData",
-        "type": "object"
-      },
       "NewsTriageAssetData": {
         "additionalProperties": false,
         "description": "One typed asset of a Triage verdict (#651 \u00a76.2).\n\n``market_type`` is the catalogue's instrument-class vocabulary, never a free string: the browser has\nto be able to tell `SEI` the token from `SEI` the listed insurer, and so does anything reading this\nAPI. Verdicts written before #651 carry `null` or a provider-tag word; the projection normalizes\nthose to `unknown` rather than publishing a market nobody established.",
@@ -6064,22 +5962,6 @@
             "title": "Assets",
             "type": "array"
           },
-          "audience": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Audience"
-          },
-          "audience_zh": {
-            "default": "",
-            "title": "Audience Zh",
-            "type": "string"
-          },
           "confidence": {
             "anyOf": [
               {
@@ -6128,6 +6010,45 @@
             ],
             "title": "Error Code"
           },
+          "evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Ref"
+          },
+          "fact_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "state_change",
+                  "new_quantity",
+                  "level_crossed",
+                  "period_record",
+                  "quantified_flow",
+                  "official_measure",
+                  "statement",
+                  "recap",
+                  "schedule",
+                  "promotion"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Kind"
+          },
+          "fact_kind_zh": {
+            "default": "",
+            "title": "Fact Kind Zh",
+            "type": "string"
+          },
           "final_decision": {
             "enum": [
               "push",
@@ -6148,22 +6069,6 @@
               }
             ],
             "title": "Headline Zh"
-          },
-          "magnitude": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Magnitude"
-          },
-          "magnitude_zh": {
-            "default": "",
-            "title": "Magnitude Zh",
-            "type": "string"
           },
           "novelty": {
             "anyOf": [
@@ -6191,16 +6096,6 @@
               }
             ],
             "title": "Override Rule"
-          },
-          "relevance": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsTradeRelevanceData"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "scope": {
             "anyOf": [
@@ -6354,7 +6249,10 @@
             "type": "string"
           },
           "judgment_contract_version": {
-            "const": "news_judgment_v2",
+            "enum": [
+              "news_judgment_v2",
+              "news_judgment_v3"
+            ],
             "title": "Judgment Contract Version",
             "type": "string"
           },

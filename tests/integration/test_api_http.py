@@ -19,7 +19,7 @@ from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
-from tracefold.news.program.contracts import EditorialEnvelope, TradeRelevanceV1
+from tracefold.news.program.contracts import EditorialEnvelope
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.platform.config.models import NewsSettings, Settings
 
@@ -368,34 +368,53 @@ def test_api_retired_market_routes_and_websocket_are_absent(tmp_path):
     assert websocket_missing
 
 
-def _editorial_relevance() -> TradeRelevanceV1:
-    return TradeRelevanceV1(
-        impact_breadth="single_instrument",
-        tradability="direct",
-        surprise="unscheduled",
-        development_delta="state_change",
-        channels=("exchange_access",),
-        affected_markets=("single_asset",),
-        reader_value="realtime",
-    )
-
-
 def _historical_v2_editorial(*, source_authority: str) -> dict:
     """One `news_editorial_v2` document, exactly as the worker wrote it before #651 §5.3.
 
-    Written by hand because the Python contract can no longer produce it: `EditorialEnvelope` is v3 and
-    `NewsTaxonomyV1` has no `source_authority` field. That is the point — these rows are audit truth that
-    is never rewritten, and the feed's source-authority filter has to keep answering over them.
+    Written by hand because the Python contract can no longer produce it: `EditorialEnvelope` is v4, it
+    carries no `relevance` block at all, and `NewsTaxonomyV1` has no `source_authority` field. That is
+    the point — these rows are audit truth that is never rewritten, and the feed's source-authority
+    filter has to keep answering over them.
     """
 
     payload = {
         "editorial_contract_version": "news_editorial_v2",
         "editorial_origin": "model",
-        "relevance": _editorial_relevance().model_dump(mode="json"),
+        "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": ["exchange_access"],
+            "affected_markets": ["single_asset"],
+            "reader_value": "realtime",
+        },
         "taxonomy": news_taxonomy(event_family="market_access", change_state="effective").model_dump(mode="json")
         | {"source_authority": source_authority},
     }
     return payload | {"editorial_sha256": canonical_sha(payload)}
+
+
+def _verdict_payload(*, judgment_contract_version: str) -> dict:
+    """The verdict document the named judgment contract binds its rows to (#675 §1).
+
+    `news_judgment_v3` is the shape the Python contract produces; the v2 shape is hand-written for the
+    same reason its editorial is, because `TriageVerdict` drops `magnitude`/`audience` on the way in.
+    """
+
+    common = {
+        "novelty": "new_fact",
+        "restates": -1,
+        "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
+        "direction": "bullish",
+        "scope": "single_name",
+        "confidence": 0.8,
+        "headline_zh": "比特币获得新的市场准入",
+        "why_zh": "新增入口扩大可交易范围。",
+    }
+    if judgment_contract_version == "news_judgment_v3":
+        return TriageVerdict(**common, fact_kind="state_change", evidence_ref="c1").model_dump(mode="json")
+    return common | {"magnitude": 2, "audience": "crypto"}
 
 
 def _write_model_verdict(
@@ -403,24 +422,15 @@ def _write_model_verdict(
     event_id: str,
     editorial: dict,
     policy_version: str,
+    judgment_contract_version: str,
+    override_rule: str,
     now_ms: int,
 ) -> None:
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        restates=-1,
-        assets=[{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
-        direction="bullish",
-        scope="single_name",
-        magnitude=2,
-        confidence=0.8,
-        audience="crypto",
-        headline_zh="比特币获得新的市场准入",
-        why_zh="新增入口扩大可交易范围。",
-    ).model_dump(mode="json")
+    verdict = _verdict_payload(judgment_contract_version=judgment_contract_version)
     verdict_sha = canonical_sha(verdict)
     judgment_sha = canonical_sha(
         {
-            "judgment_contract_version": "news_judgment_v2",
+            "judgment_contract_version": judgment_contract_version,
             "verdict": verdict,
             "editorial": editorial,
             "verdict_sha256": verdict_sha,
@@ -432,7 +442,7 @@ def _write_model_verdict(
         evidence = repos.news.latest_evidence_snapshot(event_id)
         assert evidence is not None
         trace = {
-            "judgment_contract_version": "news_judgment_v2",
+            "judgment_contract_version": judgment_contract_version,
             "judgment_origin": "model",
             "judgment_sha256": judgment_sha,
             "verdict_sha256": verdict_sha,
@@ -451,11 +461,11 @@ def _write_model_verdict(
                 event_id=event_id,
                 stage="triage",
                 policy_version=policy_version,
-                judgment_contract_version="news_judgment_v2",
+                judgment_contract_version=judgment_contract_version,
                 judgment_origin="model",
                 rule_baseline_decision="push",
                 final_decision="push",
-                override_rule="trade_relevance_realtime",
+                override_rule=override_rule,
                 throttled_by=None,
                 verdict=verdict,
                 model_editorial=editorial,
@@ -491,7 +501,6 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
     unavailable_event, historical_event = event_ids[0], event_ids[1]
 
     unavailable = EditorialEnvelope.issue(
-        relevance=_editorial_relevance(),
         source_authority="issuer_first_party",
         taxonomy=None,
         taxonomy_error_code="news_program_output_truncated",
@@ -500,6 +509,8 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
         event_id=unavailable_event,
         editorial=unavailable,
         policy_version=TRIAGE_POLICY_VERSION,
+        judgment_contract_version="news_judgment_v3",
+        override_rule="fact_kind_state_change",
         now_ms=now_ms,
     )
     _write_model_verdict(
@@ -507,6 +518,8 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
         editorial=_historical_v2_editorial(source_authority="reputable_secondary"),
         # The policy the pre-cut worker wrote under: a historical row, not a re-issued one.
         policy_version="news_triage_policy_v13",
+        judgment_contract_version="news_judgment_v2",
+        override_rule="trade_relevance_realtime",
         now_ms=now_ms,
     )
 
@@ -526,7 +539,7 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
     assert triage["source_authority_zh"]
     assert triage["headline_zh"] == "比特币获得新的市场准入"
     verdict_row = next(row for row in detail.json()["data"]["verdicts"] if row["stage"] == "triage")
-    assert verdict_row["policy_version"] == TRIAGE_POLICY_VERSION == "news_triage_policy_v15"
+    assert verdict_row["policy_version"] == TRIAGE_POLICY_VERSION == "news_triage_policy_v16"
     assert verdict_row["model_editorial"]["taxonomy"] is None
     assert verdict_row["model_editorial"]["taxonomy_status"] == "unavailable"
     assert verdict_row["model_editorial"]["source_authority"] == "issuer_first_party"

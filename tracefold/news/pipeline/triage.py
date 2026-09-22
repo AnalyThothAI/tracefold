@@ -786,7 +786,7 @@ class TriageConsumer:
         else:
             classification = str(s.card.get("event_kind") or s.origin)
         context_line = (
-            f"[{s.origin}:{classification}/{s.verdict.audience}/{s.verdict.direction} m{s.verdict.magnitude}"
+            f"[{s.origin}:{classification}/{s.verdict.direction}/{s.verdict.fact_kind or '-'}"
             f" → {final}·{reason}] {s.verdict.headline_zh}"
         )
         verdict = json_ready(s.verdict)

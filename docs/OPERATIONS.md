@@ -1559,13 +1559,13 @@ Diagnose News in this order:
 
 Evidence eligibility is not a window on the clock (#651 §9). A review enters a
 dataset when its evidence snapshot is frozen and release-eligible, it opened
-inside the window the freeze asked for, and an accepted `news_review_v7` label
+inside the window the freeze asked for, and an accepted `news_review_v8` label
 is attached to it — whichever arm answered the Event. The arm is recorded on the
 frozen case as `provenance` and the sealing arm beside the corpus; neither
-admits or refuses a case. `news_review_v6` rows stay readable audit history and
-are counted as `rubric_ineligible_n` rather than silently dropped, because "no
-reviews in this window" and "every review here predates the current rubric" have
-different operator actions behind them.
+admits or refuses a case. `news_review_v6` and `news_review_v7` rows stay readable audit
+history and are counted as `rubric_ineligible_n` rather than silently dropped,
+because "no reviews in this window" and "every review here predates the current
+rubric" have different operator actions behind them.
 
 `news_learning_epochs` is still the runtime's own identity and audit row, and
 the appointed Agent still decides which candidate may be evaluated and which
@@ -2018,8 +2018,13 @@ and each moves an identity the running Workers emit: `0378` takes
 database fact and moves the Reaction ledger to `reaction_v2`; `0379` takes the
 editorial contract to `news_editorial_v3` and `TRIAGE_POLICY_VERSION` to
 `news_triage_policy_v14`; `0380` replaces the review contract functions for
-`news_review_v7` with `reader_contract_v3`. Old Workers cannot write under the
-new CHECKs and new Workers cannot write under the old ones, so there is no
+`news_review_v7` with `reader_contract_v3`. `20260922_0387` is the #675 PR-2 cut
+and goes out the same way: it takes the judgment contract to `news_judgment_v3`,
+the editorial contract to `news_editorial_v4`, `TRIAGE_POLICY_VERSION` to
+`news_triage_policy_v16`, `PROGRAM_VERSION` to `news_semantic_program_v13` and
+the review contract to `news_review_v8`, all in one transaction. Old Workers
+cannot write under the new CHECKs and new Workers cannot write under the old
+ones, so there is no
 overlap window: stop Serve and Workers, drain the News queues, apply the three
 revisions under the existing maintenance gate, then start the matching new
 image. The separate Nautilus runtime writes no `news_*` table and needs no stop

@@ -54,7 +54,7 @@ TOLD_TIER_ORDER: Final[tuple[ToldTier, ...]] = (
     "fact_similarity",
     "recency",
 )
-TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v7"
+TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v8"
 TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
     {
         "selector": TOLD_SELECTOR_ID,
@@ -64,7 +64,6 @@ TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
             "event_id",
             "at_ms",
             "storyline_key",
-            "magnitude",
             "direction",
             "headline_zh",
             "grounded_assets",
@@ -110,7 +109,6 @@ TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
             "storyline_key",
             "comparison_title",
             "symbols",
-            "magnitude",
             "direction",
             "headline_zh",
             "why_zh",
@@ -130,7 +128,6 @@ _TOLD_SOURCE_FIELDS: Final = frozenset(
         "grounded_assets",
         "assets",
         "canonical_assets",
-        "magnitude",
         "direction",
         "headline_zh",
         "why_zh",
@@ -157,7 +154,6 @@ class ToldLedgerEntry(_ExactContractModel):
     comparison_fingerprint: str = ""
     symbols: tuple[str, ...] = Field(default=(), max_length=TOLD_SYMBOLS_MAX)
     assets: tuple[MarketAsset, ...] = Field(default=(), max_length=TOLD_SYMBOLS_MAX)
-    magnitude: int = Field(ge=0, le=3)
     direction: str
     headline_zh: str = Field(max_length=60)
     why_zh: str = Field(default="", max_length=140)
@@ -283,7 +279,7 @@ class ToldLedgerSnapshot(_ExactContractModel):
             unexpected = set(row).difference(_TOLD_SOURCE_FIELDS)
             if unexpected:
                 raise ValueError(f"news_told_context_fields_unexpected:{','.join(sorted(unexpected))}")
-            required = {"dedupe_family", "magnitude", "direction", "headline_zh", "why_zh"}
+            required = {"dedupe_family", "direction", "headline_zh", "why_zh"}
             missing = required.difference(row)
             if missing:
                 raise ValueError(f"news_told_context_fields_missing:{','.join(sorted(missing))}")
@@ -332,7 +328,6 @@ class ToldLedgerSnapshot(_ExactContractModel):
                     comparison_fingerprint=str(row.get("comparison_fingerprint") or ""),
                     symbols=tuple(sorted(_row_symbols(row)))[:TOLD_SYMBOLS_MAX],
                     assets=tuple(sorted(_row_assets(row), key=lambda asset: asset.key))[:TOLD_SYMBOLS_MAX],
-                    magnitude=int(row["magnitude"]),
                     direction=str(row["direction"]),
                     headline_zh=str(row["headline_zh"])[:60],
                     why_zh=str(row["why_zh"])[:140],

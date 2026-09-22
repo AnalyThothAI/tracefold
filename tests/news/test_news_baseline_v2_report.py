@@ -59,10 +59,10 @@ _VERDICT: dict[str, Any] = {
     "novelty": "new_fact",
     "restates": -1,
     "assets": [{"symbol": "TSLA", "role": "primary"}],
-    "magnitude": 2,
     "direction": "bullish",
-    "audience": "us_equity",
     "scope": "single_name",
+    "fact_kind": "state_change",
+    "evidence_ref": "c1",
     "confidence": 0.9,
     "headline_zh": "特斯拉承诺在得州新增一条电池产线",
     "why_zh": "新增产能直接改变该名字的交付预期",
@@ -99,7 +99,7 @@ def _case(
         ),
         accepted_review={
             "should_push": should_push,
-            "dimensions": {"factual_fidelity": "pass", "magnitude": "pass"},
+            "dimensions": {"factual_fidelity": "pass", "fact_kind": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
             "taxonomy": {
                 "subject_codes": [],
@@ -265,7 +265,7 @@ def test_prediction_dimensions_move_with_predictions_while_labels_do_not() -> No
                 episode=changed_case.episode.model_copy(
                     update={
                         "production_judgment": scored_judgment(
-                            {**_VERDICT, "magnitude": 0, "headline_zh": "另一种说法同样描述这条产线的落地"}
+                            {**_VERDICT, "fact_kind": "recap", "headline_zh": "另一种说法同样描述这条产线的落地"}
                         )
                     }
                 ),
@@ -279,8 +279,8 @@ def test_prediction_dimensions_move_with_predictions_while_labels_do_not() -> No
     assert kept.prediction_dimensions == changed.prediction_dimensions, (
         "recorded mode scores the stored verdict against itself, so both stay retention hits"
     )
-    assert "magnitude" in kept.prediction_dimensions
-    assert kept.prediction_dimensions["magnitude"]["retention_hit"] == 1
+    assert "fact_kind" in kept.prediction_dimensions
+    assert kept.prediction_dimensions["fact_kind"]["retention_hit"] == 1
 
 
 def test_report_exposes_complete_diagnostics_for_each_score_component() -> None:
@@ -296,32 +296,18 @@ def test_report_exposes_complete_diagnostics_for_each_score_component() -> None:
         "gold_coverage": 1.0,
         "field_n": {"should_push": 1},
     }
-    assert diagnostics["trade_relevance"] == {
-        "denominator": 0,
-        "effective_weight_mass": 0.0,
-        "gold_scored_n": 0,
-        "labelled_n": 0,
-        "gold_coverage": None,
-        "field_n": {
-            "trade_impact_breadth": 0,
-            "trade_tradability": 0,
-            "trade_surprise": 0,
-            "trade_development_delta": 0,
-            "trade_channels": 0,
-            "trade_affected_markets": 0,
-            "reader_value": 0,
-        },
-    }
+    # #675 §1: the deleted `trade_relevance` component's weight sits here, on the component that scores
+    # `fact_kind` — the observation that replaced the seven relevance codes.
     assert diagnostics["semantics_novelty"] == {
         "denominator": 3,
-        "effective_weight_mass": 0.1,
+        "effective_weight_mass": 0.45,
         "gold_scored_n": 2,
         "labelled_n": 3,
         "gold_coverage": 0.666667,
         "field_n": {
             "asset_grounding": 0,
             "direction": 0,
-            "magnitude": 1,
+            "fact_kind": 1,
             "novelty": 1,
             "taxonomy": 1,
         },
@@ -452,13 +438,13 @@ def test_every_identity_component_moves_the_report_sha() -> None:
 
 
 def test_the_metric_version_label_moves_with_the_metric_definition() -> None:
-    """v3 (#150): `timeliness` left the scored set, the policy stopped being process-global, and the metric
-    started returning typed outcomes. A label that stays put while the definition moves is a label that lies.
+    """v12 (#675 §1): the `trade_relevance` component left the scored set and its weight moved to
+    `semantics_novelty`. A label that stays put while the definition moves is a label that lies.
     """
 
     from tracefold.news.learning.metric import METRIC_ID
 
-    assert METRIC_ID.endswith("_v11")
+    assert METRIC_ID.endswith("_v12")
     assert _report([_case(1)]).identity["metric_id"] == METRIC_ID
 
 
@@ -477,7 +463,7 @@ def test_a_dimension_reports_how_often_nobody_labelled_it() -> None:
         ]
     )
     assert report.prediction_dimensions["factual_fidelity"]["not_labelled"] == 0
-    assert report.prediction_dimensions["magnitude"]["not_labelled"] == 1
+    assert report.prediction_dimensions["fact_kind"]["not_labelled"] == 1
 
 
 def test_the_published_policy_hash_is_recomputed_not_forwarded() -> None:

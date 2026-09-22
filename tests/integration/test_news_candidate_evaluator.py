@@ -56,7 +56,6 @@ from tracefold.news.program.contracts import (
     ScoredJudgment,
     SemanticJudgeError,
     SemanticJudgment,
-    TradeRelevanceV1,
     TriageContext,
 )
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
@@ -281,31 +280,22 @@ def _proposal(conn, **values: object) -> ProposalReceipt:
     return receipt
 
 
-def _verdict() -> dict[str, object]:
+def _verdict(fact_kind: str = "new_quantity") -> dict[str, object]:
+    """The fixture arm's answer. A contract price that rose again is a number the text prints, so the
+    corpus default kind is `new_quantity`; a case that has to resolve to `drop` names its own."""
+
     return {
         "novelty": "new_fact",
         "restates": -1,
         "assets": [],
         "direction": "bullish",
         "scope": "sector",
-        "magnitude": 2,
+        "fact_kind": fact_kind,
+        "evidence_ref": "c1",
         "confidence": 0.8,
-        "audience": "us_equity",
         "headline_zh": "DRAM 合约价续涨",
         "why_zh": "行业价格继续改善，但持续性仍需后续数据确认。",
     }
-
-
-def _relevance() -> TradeRelevanceV1:
-    return TradeRelevanceV1(
-        impact_breadth="sector",
-        tradability="direct",
-        surprise="material_vs_expectation",
-        development_delta="state_change",
-        channels=("commodity_demand",),
-        affected_markets=("us_equity_broad",),
-        reader_value="realtime",
-    )
 
 
 _OUTPUT_FIELD = {"event_semantics": "semantics", "taxonomy": "taxonomy", "reader_card": "card"}
@@ -320,7 +310,7 @@ def _model_taxonomy(editorial: EditorialEnvelope) -> dict[str, object]:
 
 
 def _review_taxonomy(**axes: object) -> dict[str, object]:
-    """The taxonomy a `news_review_v7` rubric states: the four model axes, and nothing else.
+    """The taxonomy a `news_review_v8` rubric states: the four model axes, and nothing else.
 
     Not `news_taxonomy()`, which builds the persisted seven-key shape. `source_authority` is a fact about
     the publisher that the code derives from the evidence, and `taxonomy_version` / `codebook_sha256` are
@@ -336,7 +326,6 @@ _STABLE_TAXONOMY_INSTRUCTION = load_stable_program_state().instruction_for("taxo
 
 def _editorial() -> EditorialEnvelope:
     return EditorialEnvelope.issue(
-        relevance=_relevance(),
         source_authority="reputable_secondary",
         taxonomy=news_taxonomy(
             event_family="regulatory_legal",
@@ -367,7 +356,6 @@ def _trace(
 ) -> ProgramTrace:
     context_sha = _sha(context.model_dump(mode="json"))
     semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "why_zh"}}
-    semantics["relevance"] = _relevance().model_dump(mode="json")
     card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
     editorial = editorial or _editorial()
     runtime_model_sha = _sha({"provider": "fixture-provider", "model": "fixture-model"})
@@ -492,7 +480,7 @@ class _StaticJudge:
         if self.candidate:
             verdict["headline_zh"] = "候选：DRAM 合约价续涨"
         if self.candidate and self.unstable and len(self.calls) == 3:
-            verdict.update(magnitude=0)
+            verdict.update(fact_kind="statement")
         editorial = self._editorial_for(context)
         trace = _trace(self.arm, context, verdict, editorial)
         return SemanticJudgment(
@@ -658,7 +646,7 @@ _STABLE_ARM_AXES: Mapping[str, str] = {
 class _TaxonomyArmJudge(_StaticJudge):
     """One arm whose taxonomy answer is chosen per case, so a taxonomy-only delta is observable.
 
-    Everything else — verdict, relevance, card — stays what `_StaticJudge` answers, which is the whole
+    Everything else — verdict, editorial, card — stays what `_StaticJudge` answers, which is the whole
     point of the class under test: the two arms are byte-identical everywhere a reader can see.
     """
 
@@ -677,7 +665,6 @@ class _TaxonomyArmJudge(_StaticJudge):
     def _editorial_for(self, context: TriageContext) -> EditorialEnvelope:
         axes = {**self._default_axes, **self._axes_by_title.get(context.evidence.title, {})}
         return EditorialEnvelope.issue(
-            relevance=_relevance(),
             source_authority="reputable_secondary",
             taxonomy=news_taxonomy(**axes),
         )
@@ -1000,7 +987,7 @@ def _open_event(
     # of it has to be able to say when each Event happened. Every fixture Event used to share one instant,
     # which left the split ordered by the hash of the focus fact.
     published_at_ms: int | None = None,
-    relevance: TradeRelevanceV1 | None = None,
+    fact_kind: str = "new_quantity",
     final_decision: str = "push",
     throttled_by: str | None = None,
 ) -> str:
@@ -1010,7 +997,6 @@ def _open_event(
     effective_program_sha = program_sha256 or stable.program_sha256
     repos = repositories_for_connection(conn)
     published_at_ms = NOW - 3_600_000 if published_at_ms is None else published_at_ms
-    effective_relevance = relevance or _relevance()
     wire = {
         "id": hit_id,
         "text": title,
@@ -1037,12 +1023,10 @@ def _open_event(
         )
         evidence = repos.news.latest_evidence_snapshot(opened.event_id)
         assert evidence is not None
-        verdict = _verdict()
+        verdict = _verdict(fact_kind)
         semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "why_zh"}}
-        semantics["relevance"] = effective_relevance.model_dump(mode="json")
         card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
         editorial = EditorialEnvelope.issue(
-            relevance=effective_relevance,
             source_authority="reputable_secondary",
             taxonomy=news_taxonomy(
                 event_family="regulatory_legal",
@@ -1205,7 +1189,7 @@ def _open_event(
             judgment_origin="model",
             rule_baseline_decision="push",
             final_decision=final_decision,
-            override_rule="trade_relevance_realtime",
+            override_rule="fact_kind_new_quantity",
             throttled_by=throttled_by,
             verdict=verdict,
             model_editorial=editorial.model_dump(mode="json"),
@@ -1281,9 +1265,9 @@ def _accepted_event(
     should_push: str = "must_push",
     first_bad_owner: str | None = "triage_prompt",
     taxonomy_mismatch: bool = False,
-    magnitude: str | None = None,
+    fact_kind_dimension: str | None = None,
     published_at_ms: int | None = None,
-    relevance: TradeRelevanceV1 | None = None,
+    verdict_fact_kind: str = "new_quantity",
     delivered: bool = True,
     final_decision: str = "push",
     throttled_by: str | None = None,
@@ -1299,7 +1283,7 @@ def _accepted_event(
         hit_id=hit_id,
         title=title,
         published_at_ms=published_at_ms,
-        relevance=relevance,
+        fact_kind=verdict_fact_kind,
         delivered=delivered,
         final_decision=final_decision,
         throttled_by=throttled_by,
@@ -1325,10 +1309,12 @@ def _accepted_event(
     rubric = _rubric(
         why=why,
         should_push=should_push,
-        magnitude=magnitude,
+        fact_kind=fact_kind_dimension,
         # A taxonomy target is authorized only by this explicit owner; other failed dimensions are
         # diagnostics under #456 and grant no optimizer authority.
-        first_bad_owner=first_bad_owner if (why != "pass" or magnitude == "fail" or taxonomy_mismatch) else None,
+        first_bad_owner=(
+            first_bad_owner if (why != "pass" or fact_kind_dimension == "fail" or taxonomy_mismatch) else None
+        ),
     )
     if taxonomy_mismatch:
         rubric = EventRubricSubmission.model_validate(
@@ -1349,7 +1335,7 @@ def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_
 
     The source-authority half of this test used to submit a taxonomy whose `source_authority` disagreed
     with the code the evidence implies, and read back `news_review_taxonomy_source_authority_code_mismatch`.
-    Under `news_review_v7` that desk check is gone because the field it guarded is gone: a submission
+    Since `news_review_v7` that desk check is gone because the field it guarded is gone: a submission
     states the four model axes, and the publisher's authority is derived from the evidence rather than
     copied out of it by a reviewer. What replaced the check is the submission contract itself, asserted
     below — a payload that states `source_authority` is refused before it can reach the desk at all, so
@@ -1460,8 +1446,9 @@ def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_
 # answer already matched that Gold — `stable_exact`, a readiness diagnostic — which is what gives
 # `test_k3_stability_reports_each_trial_and_pass_k` both a passing and a failing case on one corpus.
 #
-# `held` carries `reader_value=background`, so the frozen policy resolves it to `drop`: a `must_hold` case
-# the stable Program already gets right is what makes `negative_action` a control rather than a failure.
+# `held` states a `fact_kind` the v16 table drops, so the frozen policy resolves it to `drop`: a
+# `must_hold` case the stable Program already gets right is what makes `negative_action` a control rather
+# than a failure.
 _COMPILABLE_CORPUS: tuple[tuple[str, int, str, str, bool], ...] = (
     # role, hit id, title, should_push, held
     ("target", 112001, "Micron says DRAM contract prices rose again in August", "must_push", False),
@@ -1517,7 +1504,7 @@ def _accepted_compilable_event(
                 title=title,
                 should_push=should_push,
                 published_at_ms=NOW - 3_600_000 + index * 60_000,
-                relevance=_relevance().model_copy(update={"reader_value": "background"}) if held else None,
+                verdict_fact_kind="statement" if held else "new_quantity",
             )
         )
     assert len(set(event_ids)) == len(_COMPILABLE_CORPUS)
@@ -1764,7 +1751,7 @@ def test_development_compile_episodes_is_a_read_only_projection_of_one_sealed_co
     assert episodes[0]["accepted_review"]["should_push"] == "must_push"
     assert episodes[0]["accepted_review"]["dimensions"]["why_support"] == "fail"
     assert episodes[0]["production_judgment"]["verdict"]["headline_zh"] == "DRAM 合约价续涨"
-    assert episodes[0]["production_judgment"]["editorial"]["relevance"] == _relevance().model_dump(mode="json")
+    assert episodes[0]["production_judgment"]["editorial"] == _editorial().model_dump(mode="json")
     assert conn.execute("SELECT count(*) AS n FROM news_model_recordings").fetchone()["n"] == 0
 
 
@@ -3983,7 +3970,7 @@ def _holdout_request(*, development_sha: str, validation_sha: str, candidate_sha
 def test_a_taxonomy_only_holdout_is_decided_by_its_per_axis_evidence(conn) -> None:
     """#548: the blind-pairwise holdout is vacuous for a candidate no reader can see, so the axes decide.
 
-    Both arms render the identical card here — same verdict, same relevance, same headline and why — which
+    Both arms render the identical card here — same verdict, same editorial, same headline and why — which
     is exactly what a taxonomy-only write-set guarantees in production. A blind reviewer comparing them
     reports a coin flip, so the pairwise endpoint returned `unknown` forever. What the arms do differ on
     is the accepted Gold they match, and this test drives that difference in both directions on one

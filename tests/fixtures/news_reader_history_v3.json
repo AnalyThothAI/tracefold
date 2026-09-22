@@ -18,7 +18,6 @@
           "assets": ["BABA"],
           "headline_zh": "阿里巴巴宣布香港配股融资",
           "why_zh": "已有读者收据",
-          "magnitude": 2,
           "direction": "bearish"
         }
       ],
@@ -41,7 +40,6 @@
           "assets": [],
           "headline_zh": "监管机构公布同一项决定",
           "why_zh": "已有读者收据",
-          "magnitude": 2,
           "direction": "neutral"
         }
       ],
@@ -64,7 +62,6 @@
           "assets": ["ETH"],
           "headline_zh": "协议宣布升级计划",
           "why_zh": "已有读者收据",
-          "magnitude": 2,
           "direction": "bullish"
         }
       ],
@@ -87,7 +84,6 @@
           "assets": ["BABA"],
           "headline_zh": "阿里巴巴公布季度业绩",
           "why_zh": "已有读者收据",
-          "magnitude": 2,
           "direction": "bullish"
         }
       ],
@@ -110,7 +106,6 @@
           "assets": ["BTC"],
           "headline_zh": "比特币 ETF 录得净流入",
           "why_zh": "已有读者收据",
-          "magnitude": 2,
           "direction": "bullish"
         }
       ],
@@ -134,7 +129,6 @@
           "assets": ["SOL"],
           "headline_zh": "SOL 持仓量异动",
           "why_zh": "已有读者收据",
-          "magnitude": 2,
           "direction": "bullish"
         }
       ],

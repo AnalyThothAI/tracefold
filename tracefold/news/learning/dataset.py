@@ -23,8 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from ..artifact_identity import canonical_sha
 from ..events.storyline import NO_STORYLINE_KEY
 from ..evidence import EVIDENCE_INPUT_VERSION
-from ..models import TRIAGE_POLICY_VERSION, MarketAsset, TriageVerdict
-from ..program.contracts import EditorialEnvelope, ScoredJudgment, TriageContext
+from ..models import TRIAGE_POLICY_VERSION, MarketAsset
+from ..program.contracts import JUDGMENT_CONTRACT_VERSION, ScoredJudgment, TriageContext
 from ..review.desk import (
     READER_CONTRACT_SHA256,
     READER_CONTRACT_VERSION,
@@ -734,7 +734,6 @@ class DevelopmentDatasetStore:
                         event_id=str(case_ref.event_id or case_ref.case_id),
                         at_ms=int(receipt_at_ms),
                         storyline_key=str(card.get("storyline_key") or NO_STORYLINE_KEY),
-                        magnitude=verdict.magnitude,
                         direction=verdict.direction,
                         headline_zh=verdict.headline_zh,
                         why_zh=verdict.why_zh,
@@ -795,7 +794,6 @@ class DevelopmentDatasetStore:
                     "event_id": entry.event_id,
                     "at_ms": entry.at_ms,
                     "storyline_key": entry.storyline_key,
-                    "magnitude": entry.magnitude,
                     "direction": entry.direction,
                     "headline_zh": entry.headline_zh,
                     "assets": list(entry.symbols),
@@ -1023,12 +1021,12 @@ class DevelopmentDatasetStore:
     def build_context(self, case: Mapping[str, Any], state: ArmState) -> TriageContext:
         frozen = case.get("frozen_context") or case.get("actual_context")
         if frozen is not None:
-            archived = dict(frozen)
-            prepared = dict(archived.get("prepared_evidence") or {})
-            if prepared.get("input_version") == "news_evidence_input_v1":
-                # Reanalysis is an explicit preview adaptation, never exact replay of v11.
-                # Keep the original frozen execution intact; no material lookup is allowed.
-                archived["prepared_evidence"] = None
+            # Reanalysis is an explicit preview adaptation, never exact replay: `adapt_archived` drops a
+            # pre-#651 prepared-evidence block rather than reassembling it, and strips the `magnitude` a
+            # told entry carried before #675 §1. The original frozen execution is untouched either way.
+            archived, _ = TriageContext.adapt_archived(
+                {key: item for key, item in dict(frozen).items() if key != "reconstructed_from"}
+            )
             context = TriageContext.model_validate(archived)
             if case.get("evaluation_protocol") != "counterfactual_sequence":
                 return context.adapt_archived_excerpt()
@@ -1096,9 +1094,12 @@ class DevelopmentDatasetStore:
                 raise ValueError("news_learning_verdict_identity_mismatch")
             production_judgment: dict[str, Any] | None = None
             if row.get("verdict") is not None and row.get("model_editorial") is not None:
-                scored = ScoredJudgment.issue(
-                    verdict=TriageVerdict.model_validate(row["verdict"]),
-                    editorial=EditorialEnvelope.model_validate(row["model_editorial"]),
+                # `from_stored`, not `issue`: the lateral admits `news_judgment_v2` rows by name so the
+                # corpus keeps its history, and only the stored shape hashes to the stored column.
+                scored = ScoredJudgment.from_stored(
+                    judgment_contract_version=str(row.get("judgment_contract_version") or JUDGMENT_CONTRACT_VERSION),
+                    verdict=row["verdict"],
+                    editorial=row["model_editorial"],
                 )
                 if str(row.get("judgment_sha256") or "") != scored.scored_judgment_sha256:
                     raise ValueError("news_learning_scored_judgment_identity_mismatch")
@@ -1168,10 +1169,10 @@ class DevelopmentDatasetStore:
         if index is None:
             return None
         frozen = trace["program_executions"][index]["context"]
-        archived = dict(frozen)
-        legacy_prepared = dict(archived.get("prepared_evidence") or {}).get("input_version") == "news_evidence_input_v1"
-        if legacy_prepared:
-            archived["prepared_evidence"] = None
+        legacy_prepared = dict(dict(frozen).get("prepared_evidence") or {}).get("input_version") == (
+            "news_evidence_input_v1"
+        )
+        archived, reconstructed_from = TriageContext.adapt_archived(frozen)
         try:
             context = TriageContext.model_validate(archived)
         except ValidationError:
@@ -1179,7 +1180,12 @@ class DevelopmentDatasetStore:
             return None
         if context.evidence.evidence_sha256 != row["evidence_sha256"]:
             raise ValueError("news_learning_selected_context_evidence_mismatch")
-        return dict(frozen) if legacy_prepared else context.model_dump(mode="json")
+        if legacy_prepared:
+            return dict(frozen)
+        selected = context.model_dump(mode="json")
+        # The one place the corpus says a context was read rather than recorded. `adapt_archived` returns
+        # it only when it actually changed the document, so a native v3 recording carries no marker.
+        return selected if reconstructed_from is None else {**selected, "reconstructed_from": reconstructed_from}
 
     def _load_dataset_payload(self, artifact_sha: str) -> dict[str, Any]:
         row = self._repository.learning_artifact(artifact_sha, kind="dataset")

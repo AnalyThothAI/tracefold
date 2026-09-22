@@ -15,8 +15,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from ..artifact_identity import canonical_sha
-from ..models import TriageVerdict
-from ..program.contracts import EditorialEnvelope, ScoredJudgment
+from ..program.contracts import JUDGMENT_CONTRACT_VERSION, ScoredJudgment
 from .contracts import ArmManifest, DatasetCaseRef, ProposalReceipt
 
 
@@ -250,9 +249,10 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
     if verdict is not None:
         if editorial is None:
             raise ValueError("news_learning_observed_editorial_missing")
-        scored = ScoredJudgment.issue(
-            verdict=TriageVerdict.model_validate(verdict),
-            editorial=EditorialEnvelope.model_validate(editorial),
+        scored = ScoredJudgment.from_stored(
+            judgment_contract_version=str(row.get("judgment_contract_version") or JUDGMENT_CONTRACT_VERSION),
+            verdict=verdict,
+            editorial=editorial,
         )
         if str(row.get("judgment_sha256") or "") != scored.scored_judgment_sha256:
             raise ValueError("news_learning_observed_scored_judgment_identity_mismatch")

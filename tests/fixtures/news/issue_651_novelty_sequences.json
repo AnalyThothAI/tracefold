@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/AnalyThothAI/tracefold/issues/651",
-  "purpose": "Ordered novelty sequences over the frozen #651 production snapshots. Each step names the raw case it replays, the clock its card settled on, the recorded production judgment, and the gold novelty target: expected_duplicate_of is the event_id of the told entry this card repeats (null when it repeats nothing) and told_index_of_target is that entry's visible index i in this step's own told ledger. A controlled block is a judgment this step did not produce, held against the same frozen evidence to isolate one policy condition.",
+  "purpose": "Ordered novelty sequences over the frozen #651 production snapshots. Each step names the raw case it replays, the clock its card settled on, the recorded production judgment, and the gold novelty target: expected_duplicate_of is the event_id of the told entry this card repeats (null when it repeats nothing) and told_index_of_target is that entry's visible index i in this step's own told ledger. fact_kind is what this card's own text states under the news_judgment_v3 vocabulary: the exported verdicts are news_judgment_v2 rows that carry magnitude instead, and policy v16 decides from the kind. A controlled block is a judgment this step did not produce, held against the same frozen evidence to isolate one policy condition.",
   "raw_cases": "issue_651_raw_cases.json",
   "schema": "tracefold.news.novelty_sequences.v1",
   "sequences": [
@@ -11,6 +11,7 @@
           "case": "visa_first",
           "event_id": "ec2e5a29405b1d8fb671a85472a39036a2e4f1f43240b824d23a1246401bc105",
           "expected_duplicate_of": null,
+          "fact_kind": "state_change",
           "recorded": {
             "direction": "bullish",
             "final_decision": "push",
@@ -35,6 +36,7 @@
           },
           "event_id": "727ffc0bafe3e94ee2ceccc772a504f6ee62bd1cb6dab0a8cbb19361966478af",
           "expected_duplicate_of": "ec2e5a29405b1d8fb671a85472a39036a2e4f1f43240b824d23a1246401bc105",
+          "fact_kind": "state_change",
           "recorded": {
             "direction": "bullish",
             "final_decision": "push",
@@ -58,6 +60,7 @@
           "case": "cp_upbit_first",
           "event_id": "c28bbbd0957ba033b7298440cf853b148f2bc336785a45d557cc43f8316ce89e",
           "expected_duplicate_of": null,
+          "fact_kind": "state_change",
           "recorded": {
             "direction": "neutral",
             "final_decision": "push",
@@ -74,6 +77,7 @@
           "case": "cp_upbit_cross_channel",
           "event_id": "1e469a0456e1645cde468cbbf44d28a0ce131f523b5dee1dd2f874acddff4918",
           "expected_duplicate_of": "c28bbbd0957ba033b7298440cf853b148f2bc336785a45d557cc43f8316ce89e",
+          "fact_kind": "state_change",
           "recorded": {
             "direction": "bullish",
             "final_decision": "drop",
@@ -90,6 +94,7 @@
           "case": "cp_bithumb_new_venue",
           "event_id": "d6ce507db803bfccd99005588a86c0dd43e524039375a77e7f07a8141c6af179",
           "expected_duplicate_of": null,
+          "fact_kind": "state_change",
           "recorded": {
             "direction": "bullish",
             "final_decision": "push",

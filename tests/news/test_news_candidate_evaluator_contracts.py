@@ -14,7 +14,7 @@ from tracefold.news.learning.evaluate import ArmManifest
 from tracefold.news.learning.profile import _PROFILE
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.artifact import NewsProgramStateV1
-from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.triage_rules import DEFAULT_POLICY
@@ -357,25 +357,16 @@ def _verdict() -> dict[str, object]:
         "assets": [],
         "direction": "bullish",
         "scope": "sector",
-        "magnitude": 2,
+        "fact_kind": "new_quantity",
+        "evidence_ref": "c1",
         "confidence": 0.8,
-        "audience": "us_equity",
         "headline_zh": "DRAM 合约价续涨",
         "why_zh": "行业价格继续改善，但持续性仍需后续数据确认。",
     }
 
 
 def _observed_judgment_fields(verdict: dict[str, object]) -> dict[str, object]:
-    relevance = TradeRelevanceV1(
-        impact_breadth="sector",
-        tradability="direct",
-        surprise="material_vs_expectation",
-        development_delta="state_change",
-        channels=("commodity_demand",),
-        affected_markets=("us_equity_broad",),
-        reader_value="realtime",
-    )
-    editorial = EditorialEnvelope.issue(relevance=relevance, source_authority="unknown", taxonomy=news_taxonomy())
+    editorial = EditorialEnvelope.issue(source_authority="unknown", taxonomy=news_taxonomy())
     scored = ScoredJudgment.issue(
         verdict=TriageVerdict.model_validate(verdict),
         editorial=editorial,

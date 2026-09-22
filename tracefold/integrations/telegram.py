@@ -2,7 +2,7 @@
 
 It serializes a `ReaderCard` into the one text shape this channel sends. It used to receive Feishu's
 card JSON and read the card back out of it -- splitting the markdown body on ` · `, recognising the
-direction, novelty and magnitude words by table, pulling the report count out of a full-width
+direction, novelty and fact-kind words by table, pulling the report count out of a full-width
 "N 条报道" suffix by regex and stripping the `行情 ` prefix -- so one channel's serializer stood
 downstream of another's. That cost the market families their whole card: a market subject became a
 News "标的" block with three `暂无` prices, the event time was stripped so the reader saw the send
@@ -572,7 +572,7 @@ def _telegram_message(
         scope_line = _telegram_scope_html(view.market_scope)
         if scope_line:
             groups.append(scope_line)
-    judgment = " · ".join(part for part in (card.direction_word(), card.magnitude_word()) if part)
+    judgment = " · ".join(part for part in (card.direction_word(), card.fact_kind_word()) if part)
     if judgment:
         groups.append(f"🧭 <b>方向</b>  {_escape_html(judgment)}")
 

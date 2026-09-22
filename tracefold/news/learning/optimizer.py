@@ -416,16 +416,18 @@ def _recorded_semantics_json(judgment: ScoredJudgment) -> str:
     """Re-render the episode's recorded semantics in exactly the view the Program feeds ReaderCard."""
 
     verdict = judgment.verdict
-    relevance = judgment.editorial.relevance
+    if verdict.fact_kind is None:
+        # A `news_judgment_v2` episode states no kind, and the view requires one: the ReaderCard
+        # Predictor is being fed the semantics a v3 Program produces, so a v2 recording cannot be
+        # rendered into it without inventing the field (#675 §1).
+        raise ValueError("news_program_recorded_semantics_pre_v3")
     view = ReaderCardSemanticView(
         assets=verdict.assets,
         direction=verdict.direction,
-        magnitude=verdict.magnitude,
+        fact_kind=verdict.fact_kind,
         novelty=verdict.novelty,
         restates=verdict.restates,
         scope=verdict.scope,
-        channels=relevance.channels,
-        affected_markets=relevance.affected_markets,
     )
     return canonical_json(view.model_dump(mode="json"))
 

@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import BaseModel
 
 from ..artifact_identity import canonical_json
 from ..models import TriageVerdict
@@ -78,49 +77,30 @@ def _prepare(context: TriageContext | Mapping[str, Any]) -> _PreparedRun:
     )
 
 
+def _visible_refs(context: TriageContext) -> frozenset[str]:
+    """Every `ref_id` this Program put in front of the model, current and related.
+
+    One definition for the two answers that cite evidence: `ReaderCard.source_refs` and, since #675 §1,
+    `EventSemantics.evidence_ref`. A second copy is how the two would come to mean different things.
+    """
+
+    if not context.prepared_evidence:
+        return frozenset()
+    return frozenset(
+        span.ref_id
+        for span in (*context.prepared_evidence.current_evidence, *context.prepared_evidence.related_evidence)
+    )
+
+
 def _reader_card_semantic_view(semantics: EventSemantics) -> ReaderCardSemanticView:
     return ReaderCardSemanticView(
         assets=semantics.assets,
         direction=semantics.direction,
-        magnitude=semantics.magnitude,
+        fact_kind=semantics.fact_kind,
         novelty=semantics.novelty,
         restates=semantics.restates,
         scope=semantics.scope,
-        channels=semantics.relevance.channels,
-        affected_markets=semantics.relevance.affected_markets,
     )
-
-
-def _relevance_normalizations(
-    raw_semantics: Any,
-    semantics: EventSemantics,
-) -> tuple[ProgramNormalizationTrace, ...]:
-    traces: list[ProgramNormalizationTrace] = []
-    for field in ("channels", "affected_markets"):
-        if isinstance(raw_semantics, EventSemantics):
-            before = raw_semantics.raw_relevance_codes(field)
-        elif isinstance(raw_semantics, BaseModel):
-            before = None
-        elif isinstance(raw_semantics, Mapping) and isinstance(raw_semantics.get("relevance"), Mapping):
-            raw = raw_semantics["relevance"].get(field)
-            before = (
-                tuple(raw) if isinstance(raw, (list, tuple)) and all(isinstance(item, str) for item in raw) else None
-            )
-        else:
-            before = None
-        if before is None:
-            continue
-        after = tuple(getattr(semantics.relevance, field))
-        if before != after:
-            traces.append(
-                ProgramNormalizationTrace(
-                    field=field,
-                    reason="canonical_set_order",
-                    input_value=before,
-                    output_value=after,
-                )
-            )
-    return tuple(traces)
 
 
 def _demote_contradicted_primaries(
@@ -151,12 +131,18 @@ def _normalize_and_validate_semantics(
     raw_semantics: Any,
     *,
     told_count: int,
+    visible_refs: frozenset[str],
     catalog_candidates: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[EventSemantics, tuple[ProgramNormalizationTrace, ...]]:
     try:
         semantics = EventSemantics.model_validate(raw_semantics)
+        # #675 §1: `evidence_ref` has to point at a span this Program actually showed the model, checked
+        # the same way and in the same place `ReaderCard.source_refs` is. The failure is attributed to
+        # `event_semantics` rather than to the card, because this is that Predictor's own answer.
+        if semantics.evidence_ref not in visible_refs:
+            raise ValueError("news_program_evidence_ref_invalid")
         semantics = _demote_contradicted_primaries(semantics, catalog_candidates or {})
-        normalizations = list(_relevance_normalizations(raw_semantics, semantics))
+        normalizations: list[ProgramNormalizationTrace] = []
         normalized_restates = normalize_restates(novelty=semantics.novelty, restates=semantics.restates)
         if normalized_restates != semantics.restates:
             normalizations.append(
@@ -232,14 +218,7 @@ def _assemble(
 ) -> NativeProgramResult:
     try:
         card = ReaderCard.model_validate(raw_card)
-        visible_refs = (
-            {
-                span.ref_id
-                for span in (*context.prepared_evidence.current_evidence, *context.prepared_evidence.related_evidence)
-            }
-            if context.prepared_evidence
-            else set()
-        )
+        visible_refs = _visible_refs(context)
         if not set(card.source_refs).issubset(visible_refs):
             raise ValueError("news_program_source_ref_invalid")
         error = restatement_index_error(
@@ -256,9 +235,9 @@ def _assemble(
                 "assets": [asset.model_dump(mode="json") for asset in semantics.assets],
                 "direction": semantics.direction,
                 "scope": semantics.scope,
-                "magnitude": semantics.magnitude,
+                "fact_kind": semantics.fact_kind,
+                "evidence_ref": semantics.evidence_ref,
                 "confidence": semantics.confidence,
-                "audience": semantics.audience,
                 "headline_zh": card.headline_zh.strip(),
                 "why_zh": card.why_zh.strip(),
             }
@@ -273,7 +252,6 @@ def _assemble(
             # what `decide()` needs to keep the uncorroborated-escalate rule working on a judgment whose
             # classification is missing.
             editorial=EditorialEnvelope.issue(
-                relevance=semantics.relevance,
                 source_authority=source_authority_from_evidence(context.evidence),
                 taxonomy=None if taxonomy is None else NewsTaxonomyV1.issue(taxonomy),
                 taxonomy_error_code=taxonomy_error_code,
@@ -396,6 +374,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         semantics, normalizations = _normalize_and_validate_semantics(
             prediction.semantics,
             told_count=len(prepared.context.told.entries),
+            visible_refs=_visible_refs(prepared.context),
             catalog_candidates={row.symbol: row.classes for row in prepared.context.gate.catalog_candidates},
         )
         semantics_json = canonical_json(_reader_card_semantic_view(semantics).model_dump(mode="json"))

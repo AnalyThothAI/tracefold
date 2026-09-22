@@ -2,8 +2,8 @@
 
     header  ⚡? headline_zh            (model: one complete headline incl. the decisive fact, Chinese)
     line 1  why_zh                     (model: why it matters now and to whom, Chinese)
-    line 2  利多 · 新进展 · 影响明显 · BTC ETH · CoinDesk, 2 条报道 · 14:32
-            (code: direction, novelty, magnitude, tickers, source, local time)
+    line 2  利多 · 新进展 · 状态变化 · BTC ETH · CoinDesk, 2 条报道 · 14:32
+            (code: direction, novelty, fact_kind, tickers, source, local time)
     line 3  行情 BTC $74,553.10 24h +7.91%
             (code: the market's own number, only when a fresh quote exists — see `reader_card.quote_line`)
 
@@ -18,7 +18,7 @@ quote; the rest simply have no line, because a stale or absent price is worse th
 
 Degraded Events (the model chain failed and the rule baseline still pushes) get the wire text instead of a
 verdict view (issue #65): the header is the original headline, the body is the original description when there
-is one, and the facts line carries only tickers / source / time — no direction, magnitude or novelty the model
+is one, and the facts line carries only tickers / source / time — no direction, fact kind or novelty the model
 never judged, and no "model unavailable" copy in the reader's face. The quote line still renders: the price is
 our own fact and does not depend on the model having answered.
 
@@ -260,10 +260,10 @@ def news_reader_card(
         header_text = _wire_text(original_title, limit=100)
         lead = _wire_text(event.get("leader_description"), limit=140)
         direction: str | None = None
-        magnitude: int | None = None
+        fact_kind: str | None = None
     else:
         direction = str(verdict.get("direction") or "unclear")
-        magnitude = int(verdict.get("magnitude") or 0)
+        fact_kind = str(verdict.get("fact_kind") or "") or None
         novelty = str(verdict.get("novelty") or "") or None
         headline = sanitize_ai_text(verdict.get("headline_zh"), limit=60)
         lead = sanitize_ai_text(verdict.get("why_zh"), limit=140)
@@ -279,7 +279,7 @@ def news_reader_card(
         facts=ReaderCardFacts(
             direction=direction,
             novelty=novelty,
-            magnitude=magnitude,
+            fact_kind=fact_kind,
             tickers=tuple(
                 assets
                 if assets is not None

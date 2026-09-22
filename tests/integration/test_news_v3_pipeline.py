@@ -180,7 +180,8 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         assets=[],
         direction="bullish",
         scope="macro",
-        magnitude=2,
+        fact_kind="state_change",
+        evidence_ref="c1",
         confidence=0.7,
         headline_zh="测试",
         why_zh="",
@@ -276,7 +277,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     assert repeated.final == "throttled" and repeated.throttled_by.endswith(":seen")
     distinct_judgment = scored_judgment(verdict.model_copy(update={"headline_zh": "另一件完全不同的事情"}))
     distinct = decide(distinct_judgment, facts, seen)
-    assert distinct.final == "push" and distinct.override_rule == "trade_relevance_realtime"
+    assert distinct.final == "push" and distinct.override_rule == "fact_kind_state_change"
     # A decision is only a reservation.  With no settled first delivery there
     # is no ReaderReceipt and therefore no semantic told memory.
     assert not repos.news.reader_history(
@@ -337,7 +338,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         ).recent_seen_rows
     ]
     assert [t["event_id"] for t in told] == [row["event_id"]]
-    assert told[0]["headline_zh"] == "测试" and told[0]["magnitude"] == 2 and told[0]["direction"] == "bullish"
+    assert told[0]["headline_zh"] == "测试" and told[0]["direction"] == "bullish"
     assert told[0]["storyline_key"] == row["storyline_key"] and told[0]["at_ms"] == now_ms + 20
     # The projection is the selector's input contract: everything it ranks on comes from this one query.
     assert told[0]["comparison_title"] and told[0]["dedupe_family"] == "general"
@@ -864,7 +865,8 @@ def _insert_test_verdict(
         assets=[],
         direction=direction,
         scope="single_name",
-        magnitude=1,
+        fact_kind="state_change",
+        evidence_ref="c1",
         confidence=0.5,
         headline_zh="筛选测试",
         why_zh="",
@@ -896,7 +898,7 @@ def _insert_test_verdict(
         judgment_origin="model",
         rule_baseline_decision=final_decision,
         final_decision=final_decision,
-        override_rule="trade_relevance_realtime" if final_decision == "push" else "reader_value_none",
+        override_rule="fact_kind_state_change" if final_decision == "push" else "fact_kind_statement",
         throttled_by=None,
         verdict=verdict.model_dump(),
         model_editorial=judgment.editorial.model_dump(mode="json"),
@@ -2009,16 +2011,17 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
         assets=[],
         direction="bearish",
         scope="macro",
-        magnitude=2,
+        fact_kind="state_change",
+        evidence_ref="c1",
         confidence=0.8,
         headline_zh="伊朗封锁霍尔木兹海峡，油轮停运",
         why_zh="",
     )
     judgment = scored_judgment(verdict)
-    facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate", member_count=1)
+    facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate")
     decision = decide(judgment, facts, status, now_ms=now_ms)
     assert decision.final == "throttled" and decision.throttled_by == "storyline:conflict:mideast_2026:budget"
-    assert decision.override_rule == "trade_relevance_realtime" and decision.seen_scope == "all"
+    assert decision.override_rule == "fact_kind_state_change" and decision.seen_scope == "all"
     # A reversal on the same key is not budgeted.
     reversal = scored_judgment(verdict.model_copy(update={"direction": "bullish", "headline_zh": "伊朗宣布停火"}))
     assert decide(reversal, facts, status, now_ms=now_ms).final == "push"
@@ -2071,7 +2074,7 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
     row = conn.execute(
         "SELECT policy_version, final_decision, throttled_by FROM news_verdicts WHERE event_id = %s", (third,)
     ).fetchone()
-    assert row is not None and row["policy_version"] == "news_triage_policy_v15"
+    assert row is not None and row["policy_version"] == "news_triage_policy_v16"
     assert row["final_decision"] == "throttled" and row["throttled_by"] == "storyline:conflict:mideast_2026:budget"
     pipeline = repos.news.status_snapshot(now_ms=now_ms)["pipeline"]
     assert pipeline["throttled_by_key"]["storyline:conflict:mideast_2026:budget"] == 1
@@ -2314,9 +2317,9 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
         ],
         direction="neutral",
         scope="single_name",
-        magnitude=2,
+        fact_kind="state_change",
+        evidence_ref="c1",
         confidence=0.8,
-        audience="us_equity",
         headline_zh="Visa 在稳定币卡业务中引入链上信贷",
         why_zh="发卡方以链上借贷提供营运资金。",
     )

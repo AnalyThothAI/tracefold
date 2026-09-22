@@ -284,7 +284,7 @@ def test_factual_repair_is_verified_against_immutable_event_evidence() -> None:
         '<tracefold-untrusted-event-json-v1>{"leader_title":"issuer filed no update"}'
         "</tracefold-untrusted-event-json-v1>"
     )
-    candidate = {**_REWORDED, "direction": "bullish", "magnitude": 2}
+    candidate = {**_REWORDED, "direction": "bullish", "fact_kind": "state_change"}
 
     supported = CardEquivalenceJudge(supported_lm).facts_supported(evidence, candidate)
     contradicted = CardEquivalenceJudge(contradicted_lm).facts_supported(evidence, candidate)
@@ -323,14 +323,14 @@ def test_an_unrelated_card_does_not_keep_the_pass() -> None:
 
 
 def test_enum_dimensions_never_consult_the_judge() -> None:
-    """`magnitude` and `direction` are supposed to be exact; a judge there would only add noise."""
+    """`fact_kind` and `direction` are supposed to be exact; a judge there would only add noise."""
 
     lm = _ScriptedJudgeLM()
     judge = CardEquivalenceJudge(lm)
-    production = {**_ACCEPTED, "magnitude": 2, "direction": "bearish"}
-    candidate = {**_ACCEPTED, "magnitude": 1, "direction": "bullish"}
+    production = {**_ACCEPTED, "fact_kind": "state_change", "direction": "bearish"}
+    candidate = {**_ACCEPTED, "fact_kind": "statement", "direction": "bullish"}
     scored = _component(
-        {"magnitude": "pass", "direction": "pass"}, ("magnitude", "direction"), candidate, production, None, judge
+        {"fact_kind": "pass", "direction": "pass"}, ("fact_kind", "direction"), candidate, production, None, judge
     )
     assert scored is not None and scored[0] == 0.0
     assert lm.calls == 0
@@ -547,8 +547,8 @@ def test_identical_text_does_not_excuse_a_flipped_direction() -> None:
 
     lm = _ScriptedJudgeLM(verdict=CardEquivalence(headline_equivalent=True, why_equivalent=True, facts_preserved=False))
     judge = CardEquivalenceJudge(lm)
-    accepted = {**_ACCEPTED, "direction": "bullish", "magnitude": 2}
-    flipped = {**_ACCEPTED, "direction": "bearish", "magnitude": 2}
+    accepted = {**_ACCEPTED, "direction": "bullish", "fact_kind": "state_change"}
+    flipped = {**_ACCEPTED, "direction": "bearish", "fact_kind": "state_change"}
     scored = _component({"factual_fidelity": "pass"}, ("factual_fidelity",), flipped, accepted, None, judge)
     assert scored is not None and scored[0] == 0.0
     assert lm.calls == 1, "the structured fields differ, so the judge must actually be asked"
@@ -557,6 +557,6 @@ def test_identical_text_does_not_excuse_a_flipped_direction() -> None:
 def test_the_short_circuit_still_applies_when_everything_matches() -> None:
     lm = _ScriptedJudgeLM()
     judge = CardEquivalenceJudge(lm)
-    same = {**_ACCEPTED, "direction": "bullish", "magnitude": 2}
+    same = {**_ACCEPTED, "direction": "bullish", "fact_kind": "state_change"}
     verdict = judge.equivalence(same, dict(same))
     assert verdict.facts_preserved and lm.calls == 0

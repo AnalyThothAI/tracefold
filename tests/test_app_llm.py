@@ -118,18 +118,9 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
         "assets": [],
         "direction": "bullish",
         "scope": "single_name",
-        "magnitude": 1,
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.8,
-        "audience": "crypto",
-        "relevance": {
-            "impact_breadth": "single_instrument",
-            "tradability": "direct",
-            "surprise": "unscheduled",
-            "development_delta": "state_change",
-            "channels": ["exchange_access"],
-            "affected_markets": ["single_asset"],
-            "reader_value": "realtime",
-        },
     }
     delegate_kwargs: dict[str, Any] = {
         "api_key": endpoint.api_key,
@@ -646,18 +637,9 @@ def test_dedicated_reader_endpoint_produces_exact_three_model_trace() -> None:
         "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
-        "magnitude": 1,
+        "fact_kind": "state_change",
+        "evidence_ref": "c1",
         "confidence": 0.8,
-        "audience": "crypto",
-        "relevance": {
-            "impact_breadth": "single_instrument",
-            "tradability": "direct",
-            "surprise": "unscheduled",
-            "development_delta": "state_change",
-            "channels": ["exchange_access"],
-            "affected_markets": ["single_asset"],
-            "reader_value": "realtime",
-        },
     }
     taxonomy = {
         "subject_codes": ["medtop:20001279"],

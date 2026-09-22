@@ -40,6 +40,12 @@ PUBLIC_NEWS_INTERFACE = {
     # it, so the browser contract and the Program contract cannot disagree about what a market is. The
     # normalizer and the comparison rule that read it stay private.
     "MarketType",
+    # #675 §1: the closed vocabulary EventSemantics answers `fact_kind` from. The HTTP triage summary and
+    # the review submission are both typed by it, so the browser contract, the review contract and the
+    # Program contract cannot disagree about what kinds of fact exist. `decide()`'s own groupings of it
+    # (`PUSH_FACT_KINDS` and the rest) stay private: they are policy, not vocabulary.
+    "FACT_KINDS",
+    "FactKind",
     "NEWS_RETRIEVAL_SHA256",
     "NewsTaxonomyV1",
     "NetBuySnapshot",
@@ -66,7 +72,6 @@ PUBLIC_NEWS_INTERFACE = {
     "SemanticJudgeError",
     "SemanticJudgment",
     "SourceAuthority",
-    "TradeRelevanceV1",
     "TriageContext",
     "source_authority_from_evidence",
 }

@@ -203,9 +203,9 @@ def _episode(index: int, *, target: bool, **review_updates: Any) -> DevelopmentE
                 "novelty": "new_fact",
                 "restates": -1,
                 "assets": [{"symbol": "TSLA", "role": "primary"}],
-                "magnitude": 2,
+                "fact_kind": "state_change",
+                "evidence_ref": "c1",
                 "direction": "bullish",
-                "audience": "us_equity",
                 "scope": "single_name",
                 "confidence": 0.9,
                 "headline_zh": "特斯拉发布产品",
@@ -660,18 +660,9 @@ _SEMANTICS_ANSWER: dict[str, Any] = {
     "assets": [{"symbol": "TSLA", "role": "primary"}],
     "direction": "bullish",
     "scope": "single_name",
-    "magnitude": 2,
+    "fact_kind": "state_change",
+    "evidence_ref": "c1",
     "confidence": 0.9,
-    "audience": "us_equity",
-    "relevance": {
-        "impact_breadth": "single_name",
-        "tradability": "direct",
-        "surprise": "expected",
-        "development_delta": "new_fact",
-        "channels": ["us_equity"],
-        "affected_markets": ["us_equity"],
-        "reader_value": "actionable",
-    },
 }
 _CARD_ANSWER: dict[str, Any] = {"headline_zh": "特斯拉发布产品", "why_zh": "产品变化影响交付预期。"}
 
