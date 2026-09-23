@@ -1,22 +1,24 @@
 """The three execution facts the App watchdog reads, and nothing it could act on.
 
 Each statement answers one question an operator was not told the answer to until #680: is the Runtime
-still beating, did it keep starting over, what did it do with the last Signals, and is a plan still
-open long after its own time exit. They read columns the execution Runtime already writes and
-change nothing; alerting, thresholds and de-duplication are App's (#680 RC11).
+still beating, did it keep starting over, does it hold exposure no plan claims or the venue disagrees
+with, what did it do with the last Signals, and is a plan still open long after its own time exit.
+They read columns the execution Runtime already writes and change nothing; alerting, thresholds and
+de-duplication are App's (#680 RC11, PR-3).
 
-Deliberately narrow. The Runtime's projection and observation shapes are being rewritten (#680 PR-1),
-so this reads the two clocks of the Runtime row, the plan columns that define "open past its time
-exit", and the `disposition` of `signal_disposition` observations -- and no other Runtime vocabulary.
+Deliberately narrow: the Runtime row's two clocks and its exposure summary, the plan columns that
+define "open past its time exit", and the `disposition` of `signal_disposition` observations -- and no
+other Runtime vocabulary.
 """
 
 from __future__ import annotations
 
 from typing import Any, Final, TypedDict
 
-# The Runtime row's two clocks. One row per account slot; a missing row is itself the answer.
+# The Runtime row's two clocks and its exposure summary. One row per account slot; a missing row is
+# itself the answer.
 RUNTIME_LIVENESS_SQL: Final = """
-    SELECT heartbeat_at_ns, started_at_ns
+    SELECT heartbeat_at_ns, started_at_ns, unexpected_exposure, positions_count, protection_status
       FROM trading_execution_runtime_state
      WHERE account_slot = %s
 """
@@ -44,6 +46,10 @@ RECENT_SIGNAL_DISPOSITIONS_SQL: Final = """
 class RuntimeLiveness(TypedDict):
     heartbeat_at_ns: int
     started_at_ns: int
+    # Exposure no plan claims, or a venue that disagrees with the Runtime's Cache (#680 PR-3).
+    unexpected_exposure: bool
+    positions_count: int
+    protection_status: str
 
 
 class OverduePlan(TypedDict):
@@ -57,12 +63,18 @@ class ExecutionHealthStorage:
     conn: Any
 
     def runtime_liveness(self, *, account_slot: str) -> RuntimeLiveness | None:
-        """The last heartbeat and the start of the Runtime generation that wrote it, or None."""
+        """The last heartbeat, the start of the generation that wrote it and its exposure, or None."""
 
         row = self.conn.execute(RUNTIME_LIVENESS_SQL, (account_slot,)).fetchone()
         if row is None:
             return None
-        return RuntimeLiveness(heartbeat_at_ns=int(row["heartbeat_at_ns"]), started_at_ns=int(row["started_at_ns"]))
+        return RuntimeLiveness(
+            heartbeat_at_ns=int(row["heartbeat_at_ns"]),
+            started_at_ns=int(row["started_at_ns"]),
+            unexpected_exposure=bool(row["unexpected_exposure"]),
+            positions_count=int(row["positions_count"]),
+            protection_status=str(row["protection_status"]),
+        )
 
     def overdue_open_plans(self, *, now_ns: int, grace_ns: int, limit: int) -> list[OverduePlan]:
         """Plans opened more than their own `max_holding_ns` plus `grace_ns` ago and still not terminal."""

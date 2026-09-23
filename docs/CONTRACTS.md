@@ -250,7 +250,11 @@ endpoint and never enter the brief.
 `disabled`. `execution.account_slot` identifies the one Binance USD-M account
 and deterministic client-order namespace. Operator-owned credential file paths
 belong only to the Runtime. `watchdog_enabled` controls the Workers alert task;
-its old OI v5 lane condition is retired at the Analysis cutover.
+its old OI v5 lane condition is retired at the Analysis cutover. The watchdog
+still alerts on Runtime heartbeat and restart faults, repeated Signal refusals,
+overdue plans, and unexpected exposure, including venue/Cache disagreement
+(#680 PR-3). Its per-condition episode state is written only by Workers to
+`platform_watchdog_alerts` (`20260922_0388`).
 
 `trading` has no `control` or `notifications` block: #528 deleted the Telegram
 command ingress and both never-run notification senders, and a config that still
@@ -314,7 +318,16 @@ immediately before the close, `exit_price` is Nautilus
 `leg` one of `entry | stop | take_profit | exit | unknown` (`protection` for the
 stop and take-profit legs); a `fill` summary is `{leg, last_quantity, last_price,
 commission, commission_currency}`. Realized PnL is not an observation: readers fold
-it from the fills (#680).
+it from the fills (#680). An unexpected-exposure `risk` summary is `{risk_fact:
+unexpected_exposure, count, exposure}`, written whenever the set changes (an empty
+set is the all-clear); `exposure` joins, with commas, `position:<id>` and
+`order:<client order id>` (exposure no plan claims, or reduce-only protection kept
+on an instrument the Cache holds no position on), `unconfirmed_close:<instrument>`
+(a close none of the Runtime's legs sent, waiting for a flat venue read) and
+`venue:<SYMBOL>:venue=<qty>:cache=<qty>` (two venue reads in a row disagreed with
+the Cache, #680 PR-3). The execution Runtime's `entry_block_reason` adds
+`venue_unverified`, and a `signal_disposition` can be `venue_unverified` when a
+Signal's TTL ran out waiting for the venue.
 
 All database consumers use `storage.postgres.dsn` and `password_file`. Process
 identity is the connection's stable `application_name`; Serve's HTTP pool is
@@ -1351,7 +1364,8 @@ Runtime facts, and status carries readiness plus bounded totals.
   frozen Case as its only durable liveness; execution exposes mode and account
   slot, independent `alive` and `entries_armed` facts, `entry_block_reason`, the
   two operator control flags, `unexpected_exposure`, `protection_status`
-  (`not_applicable | protected | unprotected`), `routes_count`,
+  (`not_applicable | protected | unprotected`, counting positions only the
+  latest fresh venue read holds as well as the Cache's), `routes_count`,
   `facts_expire_at_ms` and `current_account`. #537 PR-4 deleted the six identity
   fields beside them — `runtime_release`, `config_sha256`, `runtime_revision`,
   `image_digest`, `credential_fingerprint` and `lifecycle_state` — which named the

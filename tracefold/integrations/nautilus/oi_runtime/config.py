@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Literal
 
 from nautilus_trader.adapters.binance import (
@@ -43,6 +44,11 @@ _MIN_RECONCILIATION_LOOKBACK_MINS = 1_440
 _RECONCILIATION_LOOKBACK_MARGIN_MINS = 60
 # Nautilus' own continuous checks. Five seconds is the invariant cadence the Strategy converges on too.
 CONTINUOUS_CHECK_SECONDS = 5.0
+# Nautilus' own WARN and ERROR lines, kept on disk beside `nautilus.log` so a reconciliation decision
+# outlives the container that made it (#680 PR-3): at most 1 + 5 files of 10 MiB each.
+NAUTILUS_LOG_FILE_NAME = "nautilus-engine"
+NAUTILUS_LOG_FILE_MAX_BYTES = 10 * 1024 * 1024
+NAUTILUS_LOG_FILE_BACKUPS = 5
 
 # What a Runtime that is actually going to trade can be. `disabled` is not one of them: `run_nautilus`
 # returns on it before any profile exists (#589 PR-2).
@@ -253,6 +259,8 @@ def binance_environment(mode: ActiveRuntimeMode) -> BinanceEnvironment:
 def build_oi_node_config(
     profile: OiRuntimeProfile,
     credentials: BinanceRuntimeCredentials,
+    *,
+    log_directory: Path | None = None,
 ) -> TradingNodeConfig:
     """The pinned paper/live graph, in which Nautilus owns every order and position (#680).
 
@@ -260,6 +268,16 @@ def build_oi_node_config(
     and position checks keep it converged every five seconds after that, over open orders only so the
     REST weight stays inside the live budget. There is no Cache database: the venue is the store, and a
     restart is the same reconciliation a start is.
+
+    Reconciliation applies the venue's own orders and fills and never invents one to make the Cache
+    match a position report (`generate_missing_orders=False`, #680 PR-3). On 1.231.0 the Binance
+    adapter answers a positionRisk error (`-1021`) with no position reports at all, and the 5 s position
+    check read that as "flat" and closed a position the venue still held with a synthetic fill (Path B).
+    What the flag gives up is adopting, at startup, a venue position with no fill inside the lookback;
+    the Strategy's venue-truth invariant names that position instead, blocks entries on it, and
+    `/flatten account` can close it.
+
+    With `log_directory`, Nautilus' WARN and ERROR lines also go to a size-rotated file there.
     """
 
     environment = binance_environment(profile.mode)
@@ -293,7 +311,22 @@ def build_oi_node_config(
     return TradingNodeConfig(
         trader_id=_trader_id(profile),
         instance_id=_instance_id(profile),
-        logging=LoggingConfig(log_level="WARNING", log_colors=False, use_pyo3=True),
+        logging=LoggingConfig(
+            log_level="WARNING",
+            log_colors=False,
+            use_pyo3=True,
+            **(
+                {}
+                if log_directory is None
+                else {
+                    "log_level_file": "WARNING",
+                    "log_directory": str(log_directory),
+                    "log_file_name": NAUTILUS_LOG_FILE_NAME,
+                    "log_file_max_size": NAUTILUS_LOG_FILE_MAX_BYTES,
+                    "log_file_max_backup_count": NAUTILUS_LOG_FILE_BACKUPS,
+                }
+            ),
+        ),
         cache=CacheConfig(
             database=None,
             flush_on_start=False,
@@ -308,7 +341,7 @@ def build_oi_node_config(
             reconciliation_instrument_ids=None,
             filter_unclaimed_external_orders=False,
             filter_position_reports=False,
-            generate_missing_orders=True,
+            generate_missing_orders=False,
             inflight_check_interval_ms=2_000,
             inflight_check_threshold_ms=5_000,
             inflight_check_retries=5,
@@ -329,6 +362,9 @@ def build_oi_node_config(
 
 __all__ = [
     "CONTINUOUS_CHECK_SECONDS",
+    "NAUTILUS_LOG_FILE_BACKUPS",
+    "NAUTILUS_LOG_FILE_MAX_BYTES",
+    "NAUTILUS_LOG_FILE_NAME",
     "ActiveRuntimeMode",
     "BinanceRuntimeCredentials",
     "OiExitPolicy",

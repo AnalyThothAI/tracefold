@@ -365,7 +365,8 @@ no parallel order or position state machine beside Nautilus:
 
 | Fact | The one owner | How it is kept |
 | --- | --- | --- |
-| Positions, open orders, fills | The venue; the in-process projection is the Nautilus Cache | Startup reconciliation (`reconciliation=True`, a lookback longer than the longest holding time) rebuilds the Cache before the Strategy starts; the 5 s open-order and position checks keep it converged. No Cache database: a restart is the same reconciliation a start is. |
+| Positions, open orders, fills | The venue; the in-process projection is the Nautilus Cache | Startup reconciliation (`reconciliation=True`, a lookback longer than the longest holding time) rebuilds the Cache before the Strategy starts; the 5 s open-order and position checks keep it converged. Reconciliation applies only the venue's own orders and fills: it never generates one to match a position report (`generate_missing_orders=False`), and the Binance client's fill reports name each venue trade once. No Cache database: a restart is the same reconciliation a start is. |
+| Whether the Cache agrees with the venue | The venue's own positions, read by the Runtime | Signed `positionRisk` every 30 s. A failed read is unknown, never flat; a disagreement on two reads in a row is unexpected exposure. Detect-only. |
 | Trading intent (a plan) | `trading_trade_plans` | Written when the entry is admitted (before its order exists), when its position opens, and when it ends. Read back only as intent — instrument, direction, distances, maximum holding time — never as order or position state. |
 | Execution event log | `trading_execution_observations` | An append-only journal of verdicts, orders, fills (with the venue's commission) and positions, one row per transaction. |
 | Realized PnL | The fill journal | Exit minus entry notional, signed by direction, less every commission; folded by the read models. Not a Nautilus position field. |
@@ -375,12 +376,25 @@ no parallel order or position state machine beside Nautilus:
 The Strategy converges the Cache on intent every five seconds, and on every fill and
 position event: a position whose entry order is terminal gets one reduce-only stop and
 one reduce-only take-profit on the mark price, a missing one is placed again, a position
-past its maximum holding time is closed, and orders left on a flat instrument are
-canceled. Exposure no plan claims blocks new entries and is recorded; nothing is ever
-flattened because the picture is unclear. App supplies process, database and probe
-composition and never reads a private member of a Nautilus object. Paper and live use
-the same path with their respective account and environment; neither mode turns a local
-command into a fill.
+past its maximum holding time is closed, and when one of the Runtime's own closing legs
+closes a position the orders left on its instrument are canceled. Exposure no plan
+claims blocks new entries and is recorded; nothing is ever flattened because the picture
+is unclear. App supplies process, database and probe composition and never reads a
+private member of a Nautilus object. Paper and live use the same path with their
+respective account and environment; neither mode turns a local command into a fill.
+
+The Cache is not trusted alone (#680 PR-3). Nautilus 1.231.0 reconciliation could
+"repair" a disagreement by inventing a fill, and on 2026-09-23 it twice closed an open
+Demo position in the Cache while the venue still held it, after which the Strategy
+canceled the position's protection. So a close none of the Runtime's closing legs sent
+is only a Cache event: the stop, the take-profit and the plan stay until a venue read
+confirms the instrument flat, and until then the instrument is unexpected exposure.
+Reduce-only protection on an instrument with no Cache position is canceled only on a
+flat venue read. Entries need a venue read younger than two minutes that agrees with the
+Cache (`venue_unverified` otherwise). `/flatten account` closes, with reduce-only market
+orders, what the Cache holds and what only the venue holds. The Workers watchdog alerts
+on unexpected exposure; Nautilus' WARN/ERROR lines are kept in a rotated file under the
+logs directory.
 
 The pure Trading engine imports no adapter, database or Nautilus engine and has
 no order authority. The historical OI v5 Signal lane is not scheduled by Workers.

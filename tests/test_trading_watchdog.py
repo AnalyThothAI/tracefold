@@ -35,6 +35,16 @@ def _ms(text: str) -> int:
     return int(datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=UTC).timestamp() * 1000)
 
 
+def _liveness(*, heartbeat_at_ns: int, started_at_ns: int, unexpected: bool = False) -> RuntimeLiveness:
+    return RuntimeLiveness(
+        heartbeat_at_ns=heartbeat_at_ns,
+        started_at_ns=started_at_ns,
+        unexpected_exposure=unexpected,
+        positions_count=1 if unexpected else 0,
+        protection_status="protected" if unexpected else "not_applicable",
+    )
+
+
 def _facts(now_ms: int, **overrides: Any) -> wd.WatchdogFacts:
     values: dict[str, Any] = {
         "now_ms": now_ms,
@@ -127,7 +137,9 @@ def _run(watchdog: wd.TradingWatchdog, clock: list[int], *, start_ms: int, end_m
 def test_each_condition_is_named_by_the_fact_that_holds_it() -> None:
     now = _ms("2026-09-22 18:40")
     reads = wd.WatchdogReads(
-        runtime=RuntimeLiveness(heartbeat_at_ns=(now - 90_000) * 1_000_000, started_at_ns=(now - HOUR_MS) * 1_000_000),
+        runtime=_liveness(
+            heartbeat_at_ns=(now - 90_000) * 1_000_000, started_at_ns=(now - HOUR_MS) * 1_000_000, unexpected=True
+        ),
         dispositions=("unexpected_exposure",) * 4 + ("instrument_busy", "accepted", "unexpected_exposure"),
         overdue_plans=(
             OverduePlan(
@@ -157,12 +169,26 @@ def test_each_condition_is_named_by_the_fact_that_holds_it() -> None:
         "拒因：unexpected_exposure ×4 · instrument_busy ×1",
     )
     assert "crypto:perp:UNI:USDT open" in found[wd.PLAN_OVERDUE].lines[0]
+    assert "1 个持仓，保护 protected" in found[wd.RUNTIME_UNEXPECTED_EXPOSURE].lines[0]
+
+
+def test_exposure_the_runtime_cannot_claim_is_an_alert_until_it_clears() -> None:
+    """The Runtime blocks entries on it and never flattens it, so someone has to hear about it (#680 PR-3)."""
+
+    now = _ms("2026-09-23 12:20")
+    exposed = wd.WatchdogReads(runtime=_liveness(heartbeat_at_ns=now * 1_000_000, started_at_ns=1, unexpected=True))
+    cleared = wd.WatchdogReads(runtime=_liveness(heartbeat_at_ns=now * 1_000_000, started_at_ns=1))
+
+    assert set(wd.findings(_facts(now, reads=exposed, runtime_expected=True))) == {wd.RUNTIME_UNEXPECTED_EXPOSURE}
+    assert wd.findings(_facts(now, reads=cleared, runtime_expected=True)) == {}
+    # No configured Runtime, no Runtime condition: the row is history.
+    assert wd.findings(_facts(now, reads=exposed, runtime_expected=False)) == {}
 
 
 def test_a_healthy_deployment_holds_no_condition() -> None:
     now = _ms("2026-09-22 18:40")
     reads = wd.WatchdogReads(
-        runtime=RuntimeLiveness(heartbeat_at_ns=(now - 5_000) * 1_000_000, started_at_ns=(now - HOUR_MS) * 1_000_000),
+        runtime=_liveness(heartbeat_at_ns=(now - 5_000) * 1_000_000, started_at_ns=(now - HOUR_MS) * 1_000_000),
         dispositions=("position_limit",) * 4 + ("accepted",) + ("unexpected_exposure",) * 10,
     )
 
@@ -190,7 +216,7 @@ def test_runtime_conditions_need_a_configured_runtime() -> None:
 def _beating(now_ms: int) -> RuntimeLiveness:
     """A Runtime row that is beating now and started long ago: no Runtime condition holds."""
 
-    return RuntimeLiveness(heartbeat_at_ns=now_ms * 1_000_000, started_at_ns=1_000_000)
+    return _liveness(heartbeat_at_ns=now_ms * 1_000_000, started_at_ns=1_000_000)
 
 
 def test_a_full_window_of_refusals_says_it_may_be_longer() -> None:
@@ -319,7 +345,7 @@ def test_the_restart_count_is_the_generations_seen_start_within_the_hour() -> No
     sender = RecordingSender()
 
     def reads(_at: int) -> wd.WatchdogReads:
-        return wd.WatchdogReads(runtime=RuntimeLiveness(heartbeat_at_ns=clock[0] * 1_000_000, started_at_ns=starts[-1]))
+        return wd.WatchdogReads(runtime=_liveness(heartbeat_at_ns=clock[0] * 1_000_000, started_at_ns=starts[-1]))
 
     watchdog = _watchdog(TimelineDatabase(reads), sender, clock, runtime_expected=True)
     for minutes in (0, 5, 10, 15):

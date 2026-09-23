@@ -11,10 +11,13 @@ from typing import Any, cast
 import pytest
 from nautilus_trader.adapters.binance import BINANCE, BinanceAccountType
 from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import AccountId
+from nautilus_trader.model.objects import Quantity
 
 from tests.nautilus_oi_runtime_fixtures import RESUMED, oi_profile
 from tracefold.app.nautilus.root import _build_active_node, _discover_routes
+from tracefold.integrations.nautilus.oi_runtime.binance import OiBinanceFuturesExecutionClient
 from tracefold.integrations.nautilus.oi_runtime.config import (
     ActiveRuntimeMode,
     BinanceRuntimeCredentials,
@@ -55,7 +58,10 @@ def test_paper_and_live_change_only_cold_identity_and_binance_environment(
     assert engine.reconciliation is True
     assert engine.reconciliation_lookback_mins == profile.reconciliation_lookback_mins >= 1_440
     assert engine.reconciliation_instrument_ids is None
-    assert engine.generate_missing_orders is True
+    # Reconciliation applies the venue's own orders and fills and never invents one to make the Cache
+    # match a position report: a positionRisk error answered "no reports", and the position check
+    # closed a held position with a synthetic fill (#680 PR-3, Path B).
+    assert engine.generate_missing_orders is False
     assert engine.inflight_check_retries > 0
     assert engine.open_check_interval_secs == 5.0
     assert engine.open_check_open_only is True
@@ -65,6 +71,24 @@ def test_paper_and_live_change_only_cold_identity_and_binance_environment(
     assert config.cache.flush_on_start is False
     assert config.cache.use_trader_prefix is True
     assert config.cache.use_instance_id is True
+    # Without a log directory (every test) Nautilus writes to stdout only.
+    assert config.logging.log_directory is None and config.logging.log_file_name is None
+
+
+def test_nautilus_warnings_and_errors_are_kept_in_a_bounded_file_under_the_logs_directory(tmp_path: Path) -> None:
+    """A reconciliation decision must outlive the container that made it (#680 PR-3)."""
+
+    config = build_oi_node_config(
+        oi_profile("paper"), BinanceRuntimeCredentials("paper-key", "paper-secret"), log_directory=tmp_path
+    )
+
+    logging = config.logging
+    assert (logging.log_level, logging.log_level_file) == ("WARNING", "WARNING")
+    assert logging.log_directory == str(tmp_path)
+    assert logging.log_file_name == "nautilus-engine"
+    # Size-rotated: at most one current file and five backups of 10 MiB.
+    assert logging.log_file_max_size == 10 * 1024 * 1024
+    assert logging.log_file_max_backup_count == 5
 
 
 def test_disabled_is_not_a_runtime_profile_at_all() -> None:
@@ -138,6 +162,7 @@ def _real_node() -> Iterator[Any]:
         inputs=RuntimeInputs(control=RESUMED),
         dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: True,
+        venue_reads=True,
     )
     loop = asyncio.new_event_loop()
     node = _build_active_node(
@@ -157,3 +182,10 @@ def test_the_canonical_root_builds_one_binance_execution_client_and_one_claiming
     assert [client.value for client in real_node.kernel.exec_engine.registered_clients] == [BINANCE]
     [strategy] = real_node.trader.strategies()
     assert strategy.external_order_claims == [route.instrument_id for route in oi_profile().routes]
+    # Every order routes to Nautilus' own Binance USD-M client, the one whose fill reports name each
+    # venue trade once (#680 PR-3).
+    order = strategy.order_factory.market(
+        instrument_id=oi_profile().routes[0].instrument_id, order_side=OrderSide.BUY, quantity=Quantity.from_str("1")
+    )
+    [client] = real_node.kernel.exec_engine.get_clients_for_orders([order])
+    assert type(client) is OiBinanceFuturesExecutionClient

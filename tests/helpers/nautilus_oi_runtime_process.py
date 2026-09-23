@@ -117,6 +117,7 @@ def run_runtime_on_postgres(
         inputs=inputs,
         dispatch_pump=dispatch,
         singleton_ready=lambda: True,
+        venue_reads=False,
         day_start=DayStartBaseline("2030-03-17", Decimal(starting_balance), NOW_NS - 1, "4" * 64),
     )
     bridge = OiRuntimeDatabaseBridge(

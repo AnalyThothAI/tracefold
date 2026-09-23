@@ -2,8 +2,9 @@
 
 Nautilus owns execution state (#680): its startup reconciliation rebuilds the Cache from the venue
 before the Strategy starts, and its continuous checks keep it converged. This root only supervises.
-It holds the account-slot lock, builds a node generation, publishes what the Strategy reports, and
-rebuilds the generation after a failure it can outlive. The process exits for exactly three reasons:
+It holds the account-slot lock, builds a node generation, reads the venue's positions every 30 s for
+the Strategy's venue-truth invariant (#680 PR-3), publishes what the Strategy reports, and rebuilds
+the generation after a failure it can outlive. The process exits for exactly three reasons:
 a configuration or credential file it cannot use, a database schema it cannot read, and the loss of
 the account-slot lock. A network, venue or database blip is never one of them (#680 RC1).
 """
@@ -15,6 +16,7 @@ import time
 from collections.abc import Callable
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, replace
+from pathlib import Path
 from threading import Lock
 from typing import Any
 from uuid import uuid4
@@ -28,7 +30,6 @@ from nautilus_trader.adapters.binance import (
     BinanceFuturesInstrumentProvider,
     BinanceInstrumentProviderConfig,
     BinanceLiveDataClientFactory,
-    BinanceLiveExecClientFactory,
 )
 from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
 from nautilus_trader.common.component import LiveClock
@@ -43,6 +44,7 @@ from tracefold.app.nautilus.oi_runtime import (
 )
 from tracefold.app.process import create_probe_app, install_signal_handlers, remove_signal_handlers
 from tracefold.app.repository_session import RepositorySession, postgres_connection, repositories_for_connection
+from tracefold.integrations.nautilus.oi_runtime.binance import BinanceVenuePositions, OiBinanceExecClientFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
     ActiveRuntimeMode,
     BinanceRuntimeCredentials,
@@ -59,6 +61,7 @@ from tracefold.integrations.nautilus.oi_runtime.risk import account_equity_usd
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy, RuntimeView
+from tracefold.integrations.nautilus.oi_runtime.venue import watch_venue
 from tracefold.platform.config.models import Settings, TradingExitPolicySettings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import postgres_health_check
@@ -289,14 +292,28 @@ async def _run_generation(
         inputs=inputs,
         dispatch_pump=dispatch_pump_on_loop,
         singleton_ready=lambda: singleton.acquired,
+        venue_reads=True,
     )
-    node = _build_active_node(profile=profile, credentials=credentials, strategy=strategy, loop=loop)
+    node = _build_active_node(
+        profile=profile,
+        credentials=credentials,
+        strategy=strategy,
+        loop=loop,
+        log_directory=settings.log_file.parent,
+    )
     node_task = asyncio.create_task(node.run_async(), name="oi-nautilus-node")
     bridge: OiRuntimeDatabaseBridge | None = None
     projector: RuntimeStateProjector | None = None
+    venue_task: asyncio.Task[None] | None = None
     try:
         if not await _await_node_started(node=node, node_task=node_task, stop=stop):
             return
+        # The venue-truth read runs beside the node on the same loop, so every reading reaches the
+        # Strategy on the thread that owns the Cache. It reads, and nothing else (#680 PR-3).
+        venue = BinanceVenuePositions(mode=mode, credentials=credentials)
+        venue_task = asyncio.create_task(
+            watch_venue(venue.read, strategy.observe_venue, stop), name="oi-venue-positions"
+        )
         started_at_ns = time.time_ns()
         state = _runtime_state(
             profile=profile,
@@ -348,6 +365,10 @@ async def _run_generation(
             with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
     finally:
+        if venue_task is not None:
+            venue_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await venue_task
         await _shutdown_generation(
             node=node,
             node_task=node_task,
@@ -482,11 +503,13 @@ def _build_active_node(
     credentials: BinanceRuntimeCredentials,
     strategy: OiNautilusStrategy,
     loop: asyncio.AbstractEventLoop,
+    log_directory: Path | None = None,
 ) -> TradingNode:
-    node = TradingNode(config=build_oi_node_config(profile, credentials), loop=loop)
+    node = TradingNode(config=build_oi_node_config(profile, credentials, log_directory=log_directory), loop=loop)
     node.trader.add_strategy(strategy)
     node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
-    node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
+    # Nautilus' Binance client, with fill reports that name each venue trade once (#680 PR-3).
+    node.add_exec_client_factory(BINANCE, OiBinanceExecClientFactory)
     node.build()
     if len(node.kernel.exec_engine.registered_clients) != 1:
         raise RuntimeFatal("oi_runtime_execution_client_ambiguous")

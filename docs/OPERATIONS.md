@@ -77,8 +77,22 @@ TradePlan), the append-only execution journal and the operator's inputs. Realize
 PnL is folded from the journal's fills, net of every commission the venue charged.
 See [Architecture](ARCHITECTURE.md#runtime-ownership) for the ownership table.
 
+What reconciliation may do, and what it may not (#680 PR-3). It applies the
+venue's own orders and fills to the Cache. It does not invent an order or a fill
+to make the Cache match a position report (`generate_missing_orders=False`), and
+the Binance fill reports it replays name each venue trade once. On 2026-09-23 both
+of those happened on Nautilus 1.231.0 and closed an open Demo APT long in the Cache
+while the venue still held it: a user-data re-subscribe asked for a full mass
+status whose fill reports were duplicated (the adapter queries `APTUSDT-PERP` and
+`APTUSDT` for one market), and the fill adjustment added a synthetic SELL; later a
+positionRisk `-1021` came back as "no position report" and the position check
+closed the position as flat. The cost of the flag: at startup, a venue position
+with no fill inside the reconciliation lookback is no longer adopted into the
+Cache. The venue-truth invariant below names it instead.
+
 On top of the Cache the Strategy runs one invariant every five seconds, and on
-every fill and position event, and it reads nothing but the Cache and the plans:
+every fill and position event, over the Cache, the plans and the latest read of
+the venue's own positions:
 
 - a position with any entry fill gets one reduce-only `STOP_MARKET` and one
   reduce-only `MARKET_IF_TOUCHED` take-profit order, both triggered on the
@@ -90,31 +104,66 @@ every fill and position event, and it reads nothing but the Cache and the plans:
   reason;
 - a position held past the plan's maximum holding time is closed with a
   reduce-only market order (`time_exit`);
-- when a position closes, every order left on its instrument is canceled and its
-  plan ends with the reason its closing order implies: `stop_filled`,
-  `take_profit`, `time_exit`, `operator_flatten`, or `external` for a close this
-  Runtime did not originate. A plan whose end the Runtime never saw (the account
-  was already flat for it when it looked) ends as `venue_unknown`;
-- orders on an instrument with no position and no plan are canceled;
+- when one of the Runtime's own closing legs closes a position — its stop
+  (`stop_filled`), take-profit (`take_profit`), time exit (`time_exit`) or an
+  operator flatten (`operator_flatten`) — every order left on its instrument is
+  canceled and its plan ends with that reason;
+- any other close — one placed on the venue by hand, or a fill Nautilus'
+  reconciliation invented — is not evidence that the venue is flat. The position
+  observation records `exit_reason=external`, but the stop, the take-profit and
+  the plan stay, and the instrument is unexpected exposure
+  (`unconfirmed_close:<instrument>`) until a venue read confirms it flat; only
+  then are the orders canceled and the plan ended (`external`, or the reason of a
+  closing leg that filled meanwhile). A plan whose end the Runtime never saw ends
+  as `venue_unknown`, also only on a flat venue read;
+- on an instrument with no position and no plan, an order that could add
+  exposure is canceled at once; a reduce-only order may be the only protection a
+  position the Cache lost still has, so it is canceled only after a venue read
+  says the instrument is flat, and is named (`order:<id>`) until then;
+- **venue truth**: the Runtime reads the account's signed positions from Binance
+  (`GET /fapi/v3/positionRisk`, the same credentials and Nautilus HTTP stack)
+  every 30 s, bounded by a 25 s timeout, outside any database transaction. A read
+  that fails is *unknown*, never flat, and never clears anything. A symbol whose
+  venue quantity differs from the Cache's net position — a position only the
+  venue holds, one only the Cache holds, or a different size — is a suspect on the
+  first read and unexpected exposure (`venue:<SYMBOL>:venue=<q>:cache=<q>`) on the
+  second; one agreeing read clears it. An instrument with a fill or position event
+  less than 5 s before a read began is judged by the next read, not that one. The
+  invariant is detect-only: it submits and cancels nothing. A position only the
+  Cache holds gets no new stop, take-profit or time exit, since the venue would
+  refuse them;
 - a position, or a non-reduce-only order, that no plan claims is *unexpected
-  exposure*: new entries are refused with `unexpected_exposure` and a `risk`
-  observation names it. **Nothing is ever flattened because the picture is
-  unclear**; the operator decides, with `/flatten account`.
+  exposure* too: new entries are refused with `unexpected_exposure` and a `risk`
+  observation names every entry. **Nothing is ever flattened because the picture
+  is unclear**; the operator decides, with `/flatten account`.
 
 Nautilus 1.231 behaviours this design routes around rather than patches: orders it
 reconciles carry no account id, so the Runtime only asks the Cache by instrument and
 strategy; a failed Algo-order report during reconciliation is only logged, which
 the invariant, the next 5 s open-order check and the entry precondition (no order
-and no position on the instrument) cover; and a lost user-data listen key is
-recovered once, after which the 5 s checks keep the Cache honest. No Runtime
-module reads a private (`_`-prefixed) member of a Nautilus object
-(`tests/architecture/test_nautilus_runtime_ownership.py`).
+and no position on the instrument) cover; a lost user-data listen key is
+recovered once, after which the 5 s checks keep the Cache honest; the Binance
+adapter's duplicated fill reports are de-duplicated by the Runtime's execution
+client (`OiBinanceFuturesExecutionClient`, which overrides only the public
+`generate_fill_reports`); and a positionRisk error reported as "no position" can
+no longer close anything because nothing is generated from a position report.
+No Runtime module reads a private (`_`-prefixed) member of a Nautilus object
+(`tests/architecture/test_nautilus_runtime_ownership.py`); both 2026-09-23 paths
+are replayed offline in `tests/test_nautilus_reconciliation_regression.py`.
+
+Nautilus' own WARN and ERROR lines — every reconciliation decision among them —
+also go to `~/.tracefold/logs/nautilus-engine_*.log`, rotated at 10 MiB with five
+backups, so they outlive the container that wrote them. The Runtime's own log is
+`nautilus.log` beside it.
 
 #### Entries
 
 A Signal (or a manual `/long`/`/short`) passes these gates in order, and the first
 one it fails is its disposition: `emergency_halted`, `entries_paused`,
-`unexpected_exposure`, `post_stop_cooldown` (Signals only: a stop-out on the same
+`unexpected_exposure`, `venue_unverified` (it waits, inside its TTL, for a venue
+read younger than two minutes that agreed with the Cache on every instrument; at
+startup that is the first read, seconds after the node starts),
+`post_stop_cooldown` (Signals only: a stop-out on the same
 market inside `post_stop_cooldown_seconds`, read from the durable plans),
 `position_limit` (`max_positions`), `daily_loss_limit` (what the UTC day already
 lost plus this trade's risk exceeds `max_daily_loss_usd`), `instrument_unmapped`.
@@ -281,7 +330,9 @@ the payload is the diagnosis; the container healthcheck asks `/healthz`, because
 runtime that is alive but blocked is exactly the process an operator must be able
 to reach, and restarting the owner of an open position is not a repair. The
 Runtime's own `entry_block_reason` is one of `emergency_halted`,
-`entries_paused`, `singleton_lost` and `unexpected_exposure`, and the read
+`entries_paused`, `singleton_lost`, `unexpected_exposure` and `venue_unverified`
+(no successful venue read in the last two minutes, or the latest one does not yet
+agree with the Cache), and the read
 projection adds only its own `disabled` / `runtime_*` reasons
 (`runtime_starting`, `runtime_rebuilding`, `runtime_stopped`,
 `runtime_heartbeat_stale`, `runtime_state_missing`, `runtime_identity_mismatch`)
@@ -289,7 +340,9 @@ for a row that is missing, stale or from another identity. Use
 `entry_block_reason`, `positions_count`, `open_orders_count`, `protection_status`
 (`not_applicable`, `protected`, or `unprotected` while a position lacks its stop or
 take-profit) and `unexpected_exposure` to locate the blocked layer; none is an
-order, fill, or account-flat receipt.
+order, fill, or account-flat receipt. `positions_count` and `protection_status`
+count, beside the Cache's positions, every position the latest fresh venue read
+holds where the Cache holds none; `current_account` is the Cache alone.
 
 A restart while in a position is Nautilus reconciliation: the position and its
 resting stop and take-profit are rebuilt into the Cache from the venue and the
@@ -299,13 +352,30 @@ Config edits affect new plans: existing positions retain the admitted stop
 distance, TP and maximum holding duration.
 
 `unexpected_exposure=true` means a position, or a non-reduce-only order, exists on
-an instrument no open plan of this account slot and mode claims. Read
-`current_account` in `trading status` or the Trading page for the instrument,
-side, quantity and `owned` flag. `/flatten account TTL_SECONDS` pauses entries,
-closes every open position of the account with a reduce-only market order and
-cancels working entry orders; its disposition is `accepted` with
-`flatten_submitted` once the closes were sent, and the flat account is read from
-`current_account`, not from the disposition.
+an instrument no open plan of this account slot and mode claims; or the venue and
+the Cache disagree about a position; or a close none of the Runtime's legs sent is
+waiting for the venue to confirm it. The latest `risk` observation
+(`tracefold trading observations`) names each one; the watchdog alerts on it
+(`runtime_unexpected_exposure`). Read `current_account` in `trading status` or the
+Trading page for what the Cache holds, and `nautilus.log` /
+`nautilus-engine_*.log` for what Nautilus decided. `/flatten account TTL_SECONDS`
+pauses entries, closes every open position the Cache holds with a reduce-only
+market order, closes every position the latest fresh venue read reports on an
+instrument where the Cache holds none with a reduce-only market order for the
+venue's quantity, and cancels working entry orders. Reduce-only makes that safe
+on a read up to two minutes old: the venue refuses an order that would open or
+flip a position, and Nautilus never opens a netting position from a reduce-only
+fill. Its disposition is `accepted` with `flatten_submitted` once the closes were
+sent, with `positions` (Cache), `venue_only_positions`, `venue_positions`
+(`read`, or `unknown` when no fresh read existed and only the Cache was closed)
+and `venue_unroutable_positions` (a venue symbol this Runtime loaded no
+instrument for — close it on the Binance UI). The flat account is read from the
+next venue read clearing `unexpected_exposure`, not from the disposition; the
+kept stop and take-profit are canceled by that same read. With
+`venue_positions=unknown`, wait until `entry_block_reason` stops saying
+`venue_unverified` and flatten again, or close the position on the Binance UI;
+either way the next flat venue read cancels what was kept and ends the plan. Then
+`/resume`.
 
 ### TradePlan cutover and paper exit policy (#644)
 
@@ -396,6 +466,7 @@ retries or repairs anything.
 | `runtime_restart_loop` | more than 3 Runtime generations (distinct `started_at_ns`) seen starting within the last hour | the same row, sampled every pass |
 | `signal_refusal_streak` | the newest 5 or more `signal_disposition` observations are all something other than `accepted`; the message carries the reason histogram | `trading_execution_observations` |
 | `plan_overdue` | a plan still not terminal was opened more than `max_holding` + 15 minutes ago | `trading_trade_plans` |
+| `runtime_unexpected_exposure` | the Runtime row says `unexpected_exposure`: exposure no plan claims, a venue that disagrees with the Cache, or a close the venue has not confirmed | `trading_execution_runtime_state` |
 
 Each condition is one episode: a message when it starts, a repeat at most every
 4 hours while it lasts, and one recovery message once it has stayed clear for 10
@@ -544,7 +615,8 @@ The cutover order for a release that changes both halves is
 change the Trading schema needs no runtime step at all.
 
 Each container writes its own log file under `~/.tracefold/logs/`:
-`serve.log`, `workers.log`, `nautilus.log`.
+`serve.log`, `workers.log`, `nautilus.log`; the execution runtime also keeps
+Nautilus' own WARN/ERROR lines in `nautilus-engine_*.log` (10 MiB, five backups).
 
 Fresh PostgreSQL bootstrap belongs only to the image's `initdb` phase. It
 creates one ordinary non-superuser `tracefold` application login from the

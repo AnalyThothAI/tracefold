@@ -59,10 +59,11 @@ export function policyLabel(policyId: string | null | undefined): string {
 /**
  * Why `entries_armed` is false, keyed exactly as `app/execution_status.py` and the Runtime write it.
  *
- * The projection's own words come first, then the Runtime lifecycle words, then the four the Runtime
+ * The projection's own words come first, then the Runtime lifecycle words, then the five the Runtime
  * itself blocks entries on. The reconciliation and ownership gates went with the Runtime's private account
- * proof (#680). A reason with no entry renders as itself: a missing translation is a gap in this table,
- * never a reason to hide a refusal.
+ * proof (#680); `venue_unverified` is its venue-truth read (#680 PR-3): no fresh read of the venue's
+ * positions, or one that does not yet agree with the Runtime's Cache. A reason with no entry renders as
+ * itself: a missing translation is a gap in this table, never a reason to hide a refusal.
  */
 export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   // The read projection's own words.
@@ -80,6 +81,7 @@ export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   entries_paused: "开仓已暂停",
   singleton_lost: "账户槽位已被他人持有",
   unexpected_exposure: "出现无计划认领的敞口",
+  venue_unverified: "交易所持仓尚未核实",
 };
 
 export function entryBlockReasonLabel(reason: string | null | undefined): string {

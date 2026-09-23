@@ -49,6 +49,7 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import (
     RuntimeControlSnapshot,
     RuntimeInputs,
 )
+from tracefold.integrations.nautilus.oi_runtime.venue import VENUE_SETTLE_NS, VenueReading
 from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
 from tracefold.trading.trade_plan import TradePlan
 
@@ -230,6 +231,8 @@ def backtest_runtime(
     refuse_plans: bool = False,
     starting_balance: int = 1_000,
 ) -> BacktestRuntime:
+    """The simulated venue fills straight into the Cache, so the Cache is the venue (`venue_reads=False`)."""
+
     profile = profile or oi_profile()
     signal_client = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
     if commands:
@@ -261,6 +264,7 @@ def backtest_runtime(
         inputs=RuntimeInputs(control=control, open_plans=tuple(open_plans), stop_exits=stop_exits or {}),
         dispatch_pump=dispatch,
         singleton_ready=lambda: True,
+        venue_reads=False,
         day_start=DayStartBaseline("2030-03-17", Decimal(starting_balance), NOW_NS - 1, "4" * 64),
     )
     engine = BacktestEngine(
@@ -434,6 +438,26 @@ class UnitRuntime:
     def add_quote(self, bid: float, ask: float, *, at_ns: int | None = None) -> None:
         self.cache.add_quote_tick(quote(bid, ask, self.clock.timestamp_ns() if at_ns is None else at_ns))
 
+    def venue(self, positions: dict[str, str] | None, *, failure: str = "BinanceClientError:-1021") -> None:
+        """Let everything so far settle, hand the Strategy one venue read that starts then, and pump.
+
+        `positions` maps Binance symbols to signed quantities; `None` is a read that failed.
+        """
+
+        self.advance(VENUE_SETTLE_NS)
+        started_at_ns = self.clock.timestamp_ns()
+        reading = (
+            VenueReading(started_at_ns, started_at_ns + 1, None, failure=failure)
+            if positions is None
+            else VenueReading(
+                started_at_ns,
+                started_at_ns + 1,
+                {symbol: Decimal(quantity) for symbol, quantity in positions.items()},
+            )
+        )
+        self.strategy.observe_venue(reading)
+        self.pump()
+
 
 def _usdt_margin_account(balance: int) -> Any:
     state = AccountState(
@@ -463,7 +487,10 @@ def unit_runtime(
     day_start_equity: Decimal | None = None,
     with_quote: bool = True,
     singleton: list[bool] | None = None,
+    venue_reads: bool = False,
 ) -> UnitRuntime:
+    """A bare Cache. With `venue_reads`, the venue is what the test hands `UnitRuntime.venue`."""
+
     profile = profile or oi_profile()
     signal_client = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
     if commands:
@@ -480,6 +507,7 @@ def unit_runtime(
         # `TestClock` fires timers on the calling thread, so the harness is the callback thread.
         dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: singleton_state[0],
+        venue_reads=venue_reads,
         day_start=DayStartBaseline(
             "2030-03-17", Decimal(balance) if day_start_equity is None else day_start_equity, NOW_NS - 1, "4" * 64
         ),
@@ -543,6 +571,37 @@ def cached_position(
     return position
 
 
+def close_cached_position(runtime: UnitRuntime, position: Position, order: Any, *, price: Decimal) -> None:
+    """`order` fills the whole position, the Cache closes it, and the Strategy hears both events.
+
+    A resting stop or take-profit is the Runtime's own leg; a plain market order nobody tagged is what
+    Nautilus' reconciliation submits for a fill it invented, and what a close by hand on the venue
+    becomes.
+    """
+
+    if order.status_string() == "INITIALIZED":
+        runtime.cache.add_order(order)
+        order.apply(TestEventStubs.order_submitted(order, account_id=ACCOUNT_ID, ts_event=runtime.clock.timestamp_ns()))
+        runtime.cache.update_order(order)
+    fill = TestEventStubs.order_filled(
+        order=order,
+        instrument=INSTRUMENT,
+        strategy_id=runtime.strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position.id,
+        last_qty=position.quantity,
+        last_px=INSTRUMENT.make_price(price),
+        commission=Money(0, INSTRUMENT.quote_currency),
+        ts_event=runtime.clock.timestamp_ns(),
+    )
+    order.apply(fill)
+    runtime.cache.update_order(order)
+    position.apply(fill)
+    runtime.cache.update_position(position)
+    runtime.strategy.on_order_filled(fill)
+    runtime.strategy.on_position_closed(TestEventStubs.position_closed(position))
+
+
 def cached_protection(
     runtime: UnitRuntime,
     *,
@@ -585,6 +644,7 @@ __all__ = [
     "backtest_runtime",
     "cached_position",
     "cached_protection",
+    "close_cached_position",
     "oi_profile",
     "open_plan",
     "operator_intent",

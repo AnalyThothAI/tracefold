@@ -428,6 +428,9 @@ def test_flatten_pauses_entries_and_closes_every_position_this_strategy_holds() 
             "reason": "flatten_submitted",
             "positions": "1",
             "unowned_positions": "0",
+            # A backtest's venue is its Cache, so there is no separate venue read to close from.
+            "venue_positions": "cache",
+            "venue_only_positions": "0",
         }
     ]
 
