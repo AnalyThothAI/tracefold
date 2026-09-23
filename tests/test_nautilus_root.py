@@ -28,6 +28,11 @@ from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 
+def test_recovery_horizon_starts_with_no_open_plans_and_covers_longer_existing_plans() -> None:
+    assert nautilus_root._recovery_max_holding_ns(86_400, ()) == 86_400
+    assert nautilus_root._recovery_max_holding_ns(86_400, (3_600, 172_800)) == 172_800
+
+
 def _perpetual(base: str, *, contract_type: str = "PERPETUAL", status: str = "TRADING") -> CryptoPerpetual:
     values = CryptoPerpetual.to_dict(TestInstrumentProvider.btcusdt_perp_binance())
     values.update(
