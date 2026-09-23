@@ -88,7 +88,7 @@ docker compose up -d --no-build --force-recreate rabbitmq-policy migrate || fail
 	migrate_exit_code=$$(docker wait "$$migrate_id") || fail; \
 	if [ "$$migrate_exit_code" != 0 ]; then \
 		docker compose logs --no-color --tail=50 migrate >&2 || true; \
-		echo "migrate exited $$migrate_exit_code; serve and workers were not started." >&2; \
+		echo "migrate exited $$migrate_exit_code; serve, workers and analysis were not started." >&2; \
 		fail; \
 	fi; \
 	docker compose up -d --no-build --force-recreate --no-deps --wait \
