@@ -65,6 +65,8 @@ describe("execution labels", () => {
     expect(entryBlockReasonLabel("runtime_rebuilding")).toBe("Runtime 正在重建");
     expect(entryBlockReasonLabel("entries_paused")).toBe("开仓已暂停");
     expect(entryBlockReasonLabel("singleton_lost")).toBe("账户槽位已被他人持有");
+    // The venue-truth read has not seen the venue agree with the Runtime's Cache (#680 PR-3).
+    expect(entryBlockReasonLabel("venue_unverified")).toBe("交易所持仓尚未核实");
     expect(entryBlockReasonLabel("a_gate_nobody_translated")).toBe("a_gate_nobody_translated");
     // The reconciliation gates went with the Runtime's private account proof (#680); nothing writes them.
     for (const gone of [
@@ -102,6 +104,7 @@ describe("execution labels", () => {
     }
     // The entry path forwards the readiness gate's own word, so that vocabulary resolves here too.
     expect(signalDispositionLabel("unexpected_exposure")).toBe("出现无计划认领的敞口");
+    expect(signalDispositionLabel("venue_unverified")).toBe("交易所持仓尚未核实");
     expect(signalDispositionLabel("a_refusal_nobody_translated")).toBe(
       "a_refusal_nobody_translated",
     );

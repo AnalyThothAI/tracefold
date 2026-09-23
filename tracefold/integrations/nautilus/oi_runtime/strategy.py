@@ -15,10 +15,17 @@ Everything this module decides is level-triggered from the Cache and idempotent:
   reduce-only `TAKE_PROFIT_MARKET`, both triggered on the mark price, placed once from the average
   fill price; a missing one is placed again, a present one is never compared, resized or replaced;
 * exits: past its maximum holding time a position is closed with a reduce-only market order; when a
-  position closes, every order left on its instrument is canceled and its plan ends with the reason
-  its closing order implies;
-* uncertainty: exposure no plan claims blocks new entries and is recorded. Nothing is ever flattened
-  because the picture is unclear.
+  position is closed by one of this Runtime's own closing legs (stop, take-profit, time exit, operator
+  flatten), every order left on its instrument is canceled and its plan ends with that leg's reason;
+* venue truth (#680 PR-3): the Cache is compared with the venue's own positions, read by the root every
+  30 s. A close no closing leg explains -- a venue-side close, or a fill Nautilus' reconciliation
+  invented -- keeps the instrument's stop and take-profit and its plan until a venue read confirms the
+  instrument flat; only then are they canceled and the plan ended. A venue position the Cache does not
+  hold, or a Cache position the venue does not, is unexpected exposure once two reads in a row agree
+  on it;
+* uncertainty: exposure no plan claims blocks new entries and is recorded, and so does a venue this
+  Runtime could not read or has not yet seen agree with the Cache. Nothing is ever flattened because
+  the picture is unclear.
 
 No callback here lets an exception escape into Nautilus or the event loop, and nothing here reads a
 private (`_`-prefixed) member of a Nautilus object.
@@ -56,6 +63,7 @@ from .journal import ExecutionJournal
 from .observations import RuntimeObservations, bounded_text, spread_detail
 from .risk import DayStartBaseline, account_equity_usd, decimal_value
 from .signal_client import ExecutionSignalClient
+from .venue import VENUE_SETTLE_NS, VENUE_STALE_AFTER_NS, VenueReading
 
 _STRATEGY_ID = "OI-RUNTIME"
 _CALLBACK_BATCH = 16
@@ -151,6 +159,11 @@ class OiNautilusStrategy(Strategy):
         # single-threaded `BacktestEngine` passes direct invocation (#510 F).
         dispatch_pump: Callable[[Callable[[], None]], None],
         singleton_ready: Callable[[], bool],
+        # Whether the venue's positions arrive through `observe_venue` (the live root, which reads
+        # Binance) or the venue is the Cache itself (a `BacktestEngine`, whose simulated venue fills
+        # straight into it). Named at every construction, so the live path cannot default into trusting
+        # the Cache.
+        venue_reads: bool,
         day_start: DayStartBaseline | None = None,
         config: StrategyConfig | None = None,
     ) -> None:
@@ -178,6 +191,24 @@ class OiNautilusStrategy(Strategy):
         self._converge_due_ns = 0
         self._day_start = day_start
         self._day_start_lock = Lock()
+        # Venue truth (#680 PR-3). The latest successful read and the last failure's name; the read the
+        # last convergence judged; per Binance symbol, a disagreement seen once (`suspect`) and one seen
+        # on two reads in a row (`mismatch`, which is unexpected exposure).
+        self._venue_reads = venue_reads
+        self._venue: VenueReading | None = None
+        self._venue_failure: str | None = None
+        self._venue_judged_at_ns = 0
+        self._venue_suspect: dict[str, str] = {}
+        self._venue_mismatch: dict[str, str] = {}
+        # When something last moved on an instrument, by this process's clock: a read that began before
+        # it settled describes a different moment than the Cache does.
+        self._activity_ns: dict[InstrumentId, int] = {}
+        # A plan whose position the Cache closed without one of this Runtime's closing legs, waiting for
+        # a venue read to confirm the instrument flat: entry id and the Cache's close time.
+        self._unattributed_closes: dict[InstrumentId, tuple[str, int]] = {}
+        # The last fill of one of this Runtime's own closing legs on a plan's instrument: entry id,
+        # reason and fill time. A plan whose position the Cache never saw close ends with it.
+        self._closing_fills: dict[InstrumentId, tuple[str, ExitReason, int]] = {}
 
     # -- lifecycle ---------------------------------------------------------------------------------
 
@@ -272,35 +303,88 @@ class OiNautilusStrategy(Strategy):
         elif command.action == "manual_entry":
             self._admit_guarded(RuntimeEntryRequest.from_manual_command(command), now_ns)
         elif command.action == "flatten" and command.scope == "account":
-            self._flatten(command)
+            self._flatten(command, now_ns)
         else:
             self._observations.reject_command(command, "flatten_scope_unsupported")
 
-    def _flatten(self, command: OperatorIntentV1) -> None:
-        """Pause entries, cancel working entries and close every position this Strategy holds.
+    def _flatten(self, command: OperatorIntentV1, now_ns: int) -> None:
+        """Pause entries, cancel working entries and close every position this account holds.
 
-        Protective orders stay until each position is closed, so a close the venue refuses leaves the
-        position protected; the close handler cancels them once it is gone.
+        Every Cache position of this Strategy is closed with a reduce-only market order, and so is every
+        position the latest venue read (if it is fresh) reports on an instrument where the Cache holds
+        none -- the exposure a close Nautilus invented would otherwise leave out of reach. Reduce-only is
+        what makes the second safe on a read up to two minutes old: the venue refuses an order that would
+        open or flip anything, and Nautilus never opens a netting position from a reduce-only fill.
+        Protective orders stay until the venue says each instrument is flat, so a close the venue refuses
+        leaves the position protected.
         """
 
         self._entries_paused = True
         owned = 0
         unowned = 0
+        held: set[InstrumentId] = set()
         for position in self.cache.positions_open():
+            held.add(position.instrument_id)
             if position.strategy_id != self.id:
                 unowned += 1
                 continue
             owned += 1
+            self._touch(position.instrument_id)
             self.close_position(position, tags=["operator_flatten"])
+        venue, venue_only, unroutable = self._flatten_venue_only(held, now_ns)
         for plan in self._plans.values():
             entry = self.cache.order(ClientOrderId(plan.entry_client_order_id))
             if entry is not None and (entry.is_open or entry.is_inflight) and not entry.is_pending_cancel:
                 self.cancel_order(entry)
-        self._observations.accept_command(
-            command,
-            "flatten_submitted",
-            {"positions": str(owned), "unowned_positions": str(unowned)},
-        )
+        detail = {
+            "positions": str(owned),
+            "unowned_positions": str(unowned),
+            "venue_positions": venue,
+            "venue_only_positions": str(venue_only),
+        }
+        if unroutable:
+            detail["venue_unroutable_positions"] = str(unroutable)
+        self._observations.accept_command(command, "flatten_submitted", detail)
+
+    def _flatten_venue_only(self, held: set[InstrumentId], now_ns: int) -> tuple[str, int, int]:
+        """Close what only the venue holds; say whether the venue was read (`read`, `unknown`, `cache`)."""
+
+        if not self._venue_reads:
+            return "cache", 0, 0
+        reading = self._fresh_venue(now_ns)
+        if reading is None or reading.positions is None:
+            return "unknown", 0, 0
+        held_symbols = {self._venue_symbol(instrument_id) for instrument_id in held}
+        instruments = self._venue_instruments()
+        closed = 0
+        unroutable = 0
+        for symbol, quantity in sorted(reading.positions.items()):
+            if not quantity or symbol in held_symbols:
+                continue
+            instrument_id = instruments.get(symbol)
+            instrument = None if instrument_id is None else self.cache.instrument(instrument_id)
+            if instrument is None:
+                # A symbol this generation loaded no instrument for: nothing here can route an order.
+                unroutable += 1
+                continue
+            order = self.order_factory.market(
+                instrument_id=instrument.id,
+                order_side=OrderSide.SELL if quantity > 0 else OrderSide.BUY,
+                quantity=instrument.make_qty(abs(quantity)),
+                reduce_only=True,
+                tags=["operator_flatten"],
+            )
+            self._observations.order(
+                correlation=self._correlation(self._plan_on(instrument.id)),
+                client_order_id=order.client_order_id.value,
+                leg="exit",
+                status="submitted",
+                occurred_at_ns=now_ns,
+            )
+            self._touch(instrument.id)
+            self.submit_order(order)
+            closed += 1
+        return "read", closed, unroutable
 
     # -- entry -------------------------------------------------------------------------------------
 
@@ -350,6 +434,8 @@ class OiNautilusStrategy(Strategy):
             return _Verdict("defer", "singleton_lost")
         if self._unexpected:
             return _Verdict("refuse", "unexpected_exposure")
+        if self._venue_unverified(now_ns):
+            return _Verdict("defer", "venue_unverified")
         if request.source == "signal":
             stopped_at = self._stop_exits.get(request.market_key)
             if stopped_at is not None and now_ns < stopped_at + risk.post_stop_cooldown_ns:
@@ -541,9 +627,14 @@ class OiNautilusStrategy(Strategy):
 
     def _order_filled(self, event: Any) -> None:
         plan, leg = self._order_context(event.client_order_id, event.instrument_id)
+        self._touch(event.instrument_id)
         self._observations.fill(correlation=self._correlation(plan), leg=leg, event=event)
         if plan is not None and leg == "entry":
             self._dispose_owed(plan, "accepted")
+        if plan is not None and leg in {"stop", "take_profit", "exit"}:
+            reason = self._exit_reason(event.client_order_id)
+            if reason != "external":
+                self._closing_fills[event.instrument_id] = (plan.entry_id, reason, int(event.ts_event))
         self._converge_due_ns = 0
 
     def _order_refused(self, event: Any, status: str) -> None:
@@ -577,6 +668,7 @@ class OiNautilusStrategy(Strategy):
 
     def _position_opened(self, event: Any) -> None:
         plan = self._plan_on(event.instrument_id)
+        self._touch(event.instrument_id)
         self._converge_due_ns = 0
         if plan is None:
             return
@@ -592,11 +684,20 @@ class OiNautilusStrategy(Strategy):
         self._dispose_owed(opened, "accepted")
 
     def _position_closed(self, event: Any) -> None:
-        """The position is gone: clear its instrument, and end its plan with the reason and the clock."""
+        """The Cache closed a position: end its plan now if one of this Runtime's legs closed it.
+
+        A close by the plan's stop, take-profit, time exit or an operator flatten is a venue fill of an
+        order this Runtime sent, so every order left on the instrument is canceled and the plan ends with
+        that leg's reason. Any other close -- one placed on the venue by hand, or a fill Nautilus'
+        reconciliation invented to repair a disagreement (#680 PR-3) -- is not evidence the venue is
+        flat: the stop and take-profit stay, the plan stays open, and the convergence ends both only once
+        a venue read confirms the instrument flat. Until then the instrument is unexpected exposure.
+        """
 
         instrument_id = event.instrument_id
+        now_ns = self._now_ns()
+        self._touch(instrument_id)
         reason = self._exit_reason(event.closing_order_id)
-        self._cancel_working_orders(instrument_id)
         self._converge_due_ns = 0
         plan = self._plan_on(instrument_id)
         if plan is not None and plan.opened_at_ns is None:
@@ -611,10 +712,22 @@ class OiNautilusStrategy(Strategy):
             exit_price=event.avg_px_close,
             exit_reason=reason,
         )
+        if plan is not None:
+            self._dispose_owed(plan, "accepted")
+        if reason == "external" and not self._venue_confirms_flat(instrument_id, now_ns):
+            self.log.warning(
+                f"OI Runtime position {event.position_id.value} closed by an order none of its legs sent "
+                f"({event.closing_order_id}); protection stays until the venue reads flat"
+            )
+            if plan is not None:
+                self._unattributed_closes[instrument_id] = (plan.entry_id, int(event.ts_closed))
+            return
+        self._unattributed_closes.pop(instrument_id, None)
+        self._closing_fills.pop(instrument_id, None)
+        self._cancel_working_orders(instrument_id)
         if plan is None:
             return
-        self._dispose_owed(plan, "accepted")
-        self._close_plan(plan, reason, terminal_at_ns=int(event.ts_closed), now_ns=self._now_ns())
+        self._close_plan(plan, reason, terminal_at_ns=int(event.ts_closed), now_ns=now_ns)
 
     def _exit_reason(self, closing_order_id: ClientOrderId | None) -> ExitReason:
         order = None if closing_order_id is None else self.cache.order(closing_order_id)
@@ -633,7 +746,7 @@ class OiNautilusStrategy(Strategy):
     # -- the invariant -----------------------------------------------------------------------------
 
     def _converge(self, now_ns: int) -> None:
-        """Read the Cache, make it match intent, and name whatever intent cannot claim.
+        """Read the Cache, judge it against the venue, make it match intent, and name what nothing claims.
 
         Startup and steady state are the same call: the first pump after Nautilus reconciled runs it.
         """
@@ -648,7 +761,8 @@ class OiNautilusStrategy(Strategy):
         working: dict[InstrumentId, list[Any]] = defaultdict(list)
         for order in (*open_orders, *inflight):
             working[order.instrument_id].append(order)
-        unexpected: list[str] = []
+        self._judge_venue(positions)
+        unexpected: list[str] = list(self._venue_mismatch.values())
         planned = {InstrumentId.from_str(plan.instrument_id): plan for plan in self._plans.values()}
         for instrument_id, plan in planned.items():
             self._converge_plan(
@@ -660,9 +774,26 @@ class OiNautilusStrategy(Strategy):
         for instrument_id, orders in working.items():
             if instrument_id in planned:
                 continue
-            if instrument_id not in positions:
+            if instrument_id in positions:
+                unexpected.extend(
+                    f"order:{order.client_order_id.value}" for order in orders if not order.is_reduce_only
+                )
+                continue
+            # No position in the Cache and no plan. An order that can add exposure goes now; a reduce-only
+            # one may be the only protection a position the Cache lost still has, so it goes only once
+            # the venue says the instrument is flat, and until then it is named (#680 PR-3).
+            if self._venue_confirms_flat(instrument_id, now_ns):
                 self._cancel_working_orders(instrument_id)
-            unexpected.extend(f"order:{order.client_order_id.value}" for order in orders if not order.is_reduce_only)
+                continue
+            for order in orders:
+                if (
+                    order.strategy_id == self.id
+                    and not order.is_reduce_only
+                    and order.is_open
+                    and not order.is_pending_cancel
+                ):
+                    self.cancel_order(order)
+            unexpected.extend(f"order:{order.client_order_id.value}" for order in orders if not order.is_pending_cancel)
         self._set_unexpected(tuple(sorted(set(unexpected))), now_ns)
 
     def _converge_plan(
@@ -687,8 +818,14 @@ class OiNautilusStrategy(Strategy):
         if not own:
             if entry_working or (entry is not None and not entry.is_closed) or positions:
                 return
+            never_opened = plan.opened_at_ns is None and entry is not None and entry.filled_qty.as_decimal() == 0
+            if not never_opened and not self._venue_confirms_flat(instrument_id, now_ns):
+                # The Cache is flat and the venue has not said so: the plan and every order resting for
+                # it stay, and the instrument is named until a venue read settles it (#680 PR-3).
+                unexpected.append(f"unconfirmed_close:{instrument_id.value}")
+                return
             self._cancel_working_orders(instrument_id)
-            self._end_unobserved(plan, entry, now_ns)
+            self._end_flat(plan, entry, now_ns)
             return
         position = own[0]
         if plan.opened_at_ns is None:
@@ -697,10 +834,37 @@ class OiNautilusStrategy(Strategy):
         self._dispose_owed(plan, "accepted")
         if entry_working:
             return
+        if self._venue_reads and self._venue_confirms_flat(instrument_id, now_ns):
+            # The Cache holds a position the venue says is not there: there is nothing to protect or
+            # exit, and a reduce-only order would only be refused, again, every convergence. The
+            # disagreement itself is already unexpected exposure.
+            return
         self._ensure_protection(plan, position, orders, now_ns)
         opened_at_ns = plan.opened_at_ns or plan.created_at_ns
         if now_ns >= opened_at_ns + plan.max_holding_ns:
             self._time_exit(position, orders)
+
+    def _end_flat(self, plan: TradePlan, entry: Any, now_ns: int) -> None:
+        """End a plan whose instrument is flat on the venue, with the best account of how it got there.
+
+        One of this Runtime's closing legs filled for it (the Cache may never have seen the position
+        close, if Nautilus had closed it first): that leg's reason and fill time. A close no leg explains:
+        `external`, at the Cache's close time. Neither: nobody saw the end.
+        """
+
+        instrument_id = InstrumentId.from_str(plan.instrument_id)
+        closing = self._closing_fills.pop(instrument_id, None)
+        unattributed = self._unattributed_closes.pop(instrument_id, None)
+        opened_at_ns = plan.opened_at_ns or plan.created_at_ns
+        if closing is not None and closing[0] == plan.entry_id:
+            self._dispose_owed(plan, "accepted")
+            self._close_plan(plan, closing[1], terminal_at_ns=max(closing[2], opened_at_ns), now_ns=now_ns)
+            return
+        if unattributed is not None and unattributed[0] == plan.entry_id:
+            self._dispose_owed(plan, "accepted")
+            self._close_plan(plan, "external", terminal_at_ns=max(unattributed[1], opened_at_ns), now_ns=now_ns)
+            return
+        self._end_unobserved(plan, entry, now_ns)
 
     def _end_unobserved(self, plan: TradePlan, entry: Any, now_ns: int) -> None:
         """A plan whose instrument is flat and whose entry is not working, and whose end nobody saw.
@@ -820,6 +984,143 @@ class OiNautilusStrategy(Strategy):
             self.log.warning(f"OI Runtime exposure no plan claims: {', '.join(unexpected)}")
         self._observations.exposure(unexpected=unexpected, observed_at_ns=now_ns)
 
+    # -- venue truth (#680 PR-3) -------------------------------------------------------------------
+
+    def observe_venue(self, reading: VenueReading) -> None:
+        """Take one venue read from the root's reader, on the callback thread; it is judged next pump.
+
+        A failed read changes nothing but the log: it is not evidence of anything, least of all of a
+        flat account, and the last successful read stays the one entries and orphan cancels rely on
+        until it is too old to.
+        """
+
+        if reading.positions is None:
+            if reading.failure != self._venue_failure:
+                self.log.warning(
+                    f"OI Runtime cannot read the venue's positions ({reading.failure}); they are unknown, not flat"
+                )
+            self._venue_failure = reading.failure
+            return
+        if self._venue_failure is not None:
+            self.log.warning("OI Runtime reads the venue's positions again")
+            self._venue_failure = None
+        if self._venue is None or reading.started_at_ns >= self._venue.started_at_ns:
+            self._venue = reading
+            self._converge_due_ns = 0
+
+    def _touch(self, instrument_id: InstrumentId) -> None:
+        self._activity_ns[instrument_id] = self._now_ns()
+
+    def _settled(self, instrument_id: InstrumentId, reading: VenueReading) -> bool:
+        """Did this read start after the instrument's last local activity had settled?"""
+
+        return self._activity_ns.get(instrument_id, 0) + VENUE_SETTLE_NS <= reading.started_at_ns
+
+    def _fresh_venue(self, now_ns: int) -> VenueReading | None:
+        reading = self._venue
+        if reading is None or now_ns - reading.completed_at_ns > VENUE_STALE_AFTER_NS:
+            return None
+        return reading
+
+    def _venue_unverified(self, now_ns: int) -> bool:
+        """Entries need a fresh venue read that agreed with the Cache on every instrument."""
+
+        return self._venue_reads and (self._fresh_venue(now_ns) is None or bool(self._venue_suspect))
+
+    def _venue_confirms_flat(self, instrument_id: InstrumentId, now_ns: int) -> bool:
+        """Does the venue itself say this instrument holds nothing, as of after its last activity?
+
+        Without venue reads the venue is the Cache (a backtest), and the Cache answers.
+        """
+
+        if not self._venue_reads:
+            return not self.cache.positions_open(instrument_id=instrument_id)
+        reading = self._fresh_venue(now_ns)
+        return (
+            reading is not None
+            and self._settled(instrument_id, reading)
+            and reading.quantity(self._venue_symbol(instrument_id)) == 0
+        )
+
+    def _judge_venue(self, positions: Mapping[InstrumentId, list[Any]]) -> None:
+        """Compare the newest venue read, once, with the Cache's net position per Binance symbol.
+
+        A disagreement is a suspect the first time and a mismatch -- unexpected exposure -- when the next
+        read agrees with it, so a read that crossed a fill in flight is never an alarm; one agreeing read
+        clears either. An instrument something moved on since the read began keeps its last verdict.
+        """
+
+        reading = self._venue
+        if reading is None or reading.positions is None or reading.completed_at_ns == self._venue_judged_at_ns:
+            return
+        self._venue_judged_at_ns = reading.completed_at_ns
+        held: dict[str, Decimal] = defaultdict(Decimal)
+        instruments: dict[str, InstrumentId] = {}
+        for instrument_id, open_positions in positions.items():
+            symbol = self._venue_symbol(instrument_id)
+            instruments[symbol] = instrument_id
+            for position in open_positions:
+                held[symbol] += decimal_value(position.signed_decimal_qty())
+        if any(symbol not in instruments for symbol in reading.positions):
+            instruments = {**self._venue_instruments(), **instruments}
+        suspects: dict[str, str] = {}
+        for symbol in sorted({*held, *reading.positions, *self._venue_suspect, *self._venue_mismatch}):
+            instrument_id = instruments.get(symbol)
+            if instrument_id is not None and not self._settled(instrument_id, reading):
+                if symbol in self._venue_suspect:
+                    suspects[symbol] = self._venue_suspect[symbol]
+                continue
+            venue_quantity = reading.quantity(symbol)
+            cache_quantity = held.get(symbol, Decimal(0))
+            if venue_quantity == cache_quantity:
+                self._venue_mismatch.pop(symbol, None)
+                continue
+            finding = f"venue:{symbol}:venue={_quantity_text(venue_quantity)}:cache={_quantity_text(cache_quantity)}"
+            if symbol in self._venue_mismatch or self._venue_suspect.get(symbol) == finding:
+                if self._venue_mismatch.get(symbol) != finding:
+                    self.log.warning(f"OI Runtime venue and Cache disagree: {finding}")
+                self._venue_mismatch[symbol] = finding
+            else:
+                suspects[symbol] = finding
+        self._venue_suspect = suspects
+
+    def _venue_symbol(self, instrument_id: InstrumentId) -> str:
+        """The venue's spelling of an instrument (`APTUSDT` for `APTUSDT-PERP.BINANCE`)."""
+
+        instrument = self.cache.instrument(instrument_id)
+        if instrument is not None:
+            return str(instrument.raw_symbol.value)
+        return instrument_id.symbol.value.removesuffix("-PERP")
+
+    def _venue_instruments(self) -> dict[str, InstrumentId]:
+        return {str(instrument.raw_symbol.value): instrument.id for instrument in self.cache.instruments()}
+
+    def _venue_only_positions(self, now_ns: int) -> dict[str, Decimal]:
+        """What the latest fresh venue read holds on symbols the Cache holds no position on."""
+
+        reading = self._fresh_venue(now_ns) if self._venue_reads else None
+        if reading is None or reading.positions is None:
+            return {}
+        held = {self._venue_symbol(position.instrument_id) for position in self.cache.positions_open()}
+        return {symbol: quantity for symbol, quantity in reading.positions.items() if quantity and symbol not in held}
+
+    def _rests_protection(self, symbol: str, quantity: Decimal, instruments: Mapping[str, InstrumentId]) -> bool:
+        """Do a reduce-only stop and a reduce-only take-profit rest against this venue-only position?"""
+
+        instrument_id = instruments.get(symbol)
+        if instrument_id is None:
+            return False
+        closing_side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
+        open_orders, inflight = open_and_inflight_orders(self.cache)
+        resting = [
+            order
+            for order in (*open_orders, *inflight)
+            if order.instrument_id == instrument_id and order.is_reduce_only and order.side == closing_side
+        ]
+        return any(order.order_type == OrderType.STOP_MARKET for order in resting) and any(
+            order.order_type == OrderType.MARKET_IF_TOUCHED for order in resting
+        )
+
     # -- plans -------------------------------------------------------------------------------------
 
     def _mark_open(self, plan: TradePlan, opened_at_ns: int) -> TradePlan:
@@ -930,18 +1231,27 @@ class OiNautilusStrategy(Strategy):
             baseline = self._day_start
         return baseline if baseline is not None and baseline.utc_day == _utc_day(now_ns) else None
 
-    def entry_block_reason(self) -> str | None:
+    def entry_block_reason(self, now_ns: int | None = None) -> str | None:
+        at_ns = self._now_ns() if now_ns is None else now_ns
         for blocked, reason in (
             (self._emergency_halted, "emergency_halted"),
             (self._entries_paused, "entries_paused"),
             (not self._singleton_ready(), "singleton_lost"),
             (bool(self._unexpected), "unexpected_exposure"),
+            (self._venue_unverified(at_ns), "venue_unverified"),
         ):
             if blocked:
                 return reason
         return None
 
     def runtime_view(self, now_ns: int) -> RuntimeView:
+        """What the projection and the probe publish: the Cache, plus what only the venue holds.
+
+        `current_account` is the Cache's picture. `positions_count` and `protection_status` also count
+        every position the latest fresh venue read holds where the Cache holds none, so a position the
+        Cache lost is never reported as a flat account.
+        """
+
         snapshot = account_snapshot(
             cache=self.cache,
             account_id=self._profile.account_id,
@@ -952,20 +1262,28 @@ class OiNautilusStrategy(Strategy):
             now_ns=now_ns,
             market_stale_after_ns=self._profile.risk.market_stale_after_ns,
         )
+        venue_only = self._venue_only_positions(now_ns)
+        instruments = self._venue_instruments() if venue_only else {}
         owned = [position for position in snapshot.positions if position.owned]
+        cache_protected = not snapshot.positions or (
+            bool(owned) and len(owned) == len(snapshot.positions) and all(position.protected for position in owned)
+        )
+        venue_protected = all(
+            self._rests_protection(symbol, quantity, instruments) for symbol, quantity in venue_only.items()
+        )
         protection: Literal["not_applicable", "protected", "unprotected"] = (
             "not_applicable"
-            if not snapshot.positions
+            if not snapshot.positions and not venue_only
             else "protected"
-            if owned and len(owned) == len(snapshot.positions) and all(position.protected for position in owned)
+            if cache_protected and venue_protected
             else "unprotected"
         )
-        reason = self.entry_block_reason()
+        reason = self.entry_block_reason(now_ns)
         return RuntimeView(
             entries_armed=reason is None,
             entry_block_reason=reason,
             unexpected_exposure=bool(self._unexpected),
-            positions_count=len(snapshot.positions),
+            positions_count=len(snapshot.positions) + len(venue_only),
             open_orders_count=snapshot.open_orders_count,
             protection_status=protection,
             account_snapshot=snapshot,
@@ -974,6 +1292,10 @@ class OiNautilusStrategy(Strategy):
 
 def _utc_day(now_ns: int) -> str:
     return datetime.fromtimestamp(now_ns // 1_000_000_000, tz=UTC).date().isoformat()
+
+
+def _quantity_text(value: Decimal) -> str:
+    return format(value.normalize(), "f") if value else "0"
 
 
 __all__ = [

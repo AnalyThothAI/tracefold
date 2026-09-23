@@ -6,7 +6,7 @@ restarted 110 times a day, and 21 Signals in a row were refused for three and a 
 nothing told anyone (#680 RC11).
 
 **Alert-only.** It reads the Signal lane's capability as this process reports it, the News OI ledger,
-the admission ledger and three Runtime facts, and it writes nothing but its own alert ledger
+the admission ledger and four Runtime facts, and it writes nothing but its own alert ledger
 (`platform_watchdog_alerts`). It never pauses, blocks, retries or repairs anything: a watchdog that
 could stop trading would be one more thing to fail closed at the wrong moment.
 
@@ -80,11 +80,13 @@ RUNTIME_HEARTBEAT_STALE: Final = "runtime_heartbeat_stale"
 RUNTIME_RESTART_LOOP: Final = "runtime_restart_loop"
 SIGNAL_REFUSAL_STREAK: Final = "signal_refusal_streak"
 PLAN_OVERDUE: Final = "plan_overdue"
+RUNTIME_UNEXPECTED_EXPOSURE: Final = "runtime_unexpected_exposure"
 CONDITION_TITLES: Final[dict[str, str]] = {
     SIGNAL_LANE_FAULTED: "Signal lane 已停止",
     OI_FRAMES_UNANSWERED: "OI 帧没有准入答复",
     RUNTIME_HEARTBEAT_STALE: "执行 Runtime 心跳中断",
     RUNTIME_RESTART_LOOP: "执行 Runtime 频繁重启",
+    RUNTIME_UNEXPECTED_EXPOSURE: "执行 Runtime 出现无计划认领的敞口",
     SIGNAL_REFUSAL_STREAK: "Signal 连续被拒",
     PLAN_OVERDUE: "持仓超过最长持有时间",
 }
@@ -173,6 +175,17 @@ def findings(facts: WatchdogFacts) -> dict[str, Finding]:
                         "Runtime 不在运行时，新 Signal 会在 TTL 内过期。",
                     ),
                 )
+        # Exposure no plan claims, or a venue that disagrees with the Runtime's Cache (#680 PR-3): the
+        # Runtime blocks entries on it and never flattens it, so the operator has to be told.
+        if runtime is not None and runtime["unexpected_exposure"]:
+            found[RUNTIME_UNEXPECTED_EXPOSURE] = Finding(
+                RUNTIME_UNEXPECTED_EXPOSURE,
+                (
+                    f"{facts.account_slot}：{runtime['positions_count']} 个持仓，保护 {runtime['protection_status']}；"
+                    "交易所或 Cache 里有计划没有认领、或两者不一致的敞口，新开仓已阻断",
+                    "Runtime 不会自行平仓：核对交易所持仓与 nautilus.log，必要时 /flatten account。",
+                ),
+            )
         if facts.runtime_starts_last_hour > RUNTIME_STARTS_PER_HOUR_MAX:
             found[RUNTIME_RESTART_LOOP] = Finding(
                 RUNTIME_RESTART_LOOP,
@@ -602,6 +615,7 @@ __all__ = [
     "RUNTIME_HEARTBEAT_STALE",
     "RUNTIME_RESTART_LOOP",
     "RUNTIME_STARTS_PER_HOUR_MAX",
+    "RUNTIME_UNEXPECTED_EXPOSURE",
     "SIGNAL_LANE_FAULTED",
     "SIGNAL_REFUSAL_STREAK",
     "TRADING_WATCHDOG_TASK_NAME",
