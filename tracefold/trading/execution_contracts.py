@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from decimal import Decimal
 from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -23,6 +24,8 @@ MARKET_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"
 # same numbers the durable writer accepts, or a batch it assembles is refused on arrival.
 MAX_OBSERVATION_APPEND_BATCH = 128
 MAX_OBSERVATION_APPEND_BYTES = 1_048_576
+# Stable execution stream identity retained for existing journal history.
+EXECUTION_STRATEGY_ID = "oi_nautilus_v1"
 _METADATA_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _MAX_METADATA_ENTRIES = 16
 _MAX_METADATA_BYTES = 2_048
@@ -59,7 +62,7 @@ class _FrozenContract(BaseModel):
 def market_key(base_symbol: str) -> str:
     """The venue-neutral perpetual market identity carried across the execution boundary.
 
-    The Signal lane spells it onto every `TradeSignalV1` and the Runtime's route catalogue spells it
+    Analysis spells it onto each Signal and the Runtime's route catalogue spells it
     onto every instrument it can reach; the entry path joins the two by string equality. Both sides
     used to write the same f-string, so one of them could be edited alone and every Signal would be
     answered `instrument_unmapped` with no test red anywhere (#604 T2). It lives here, beside the
@@ -134,6 +137,51 @@ class TradeSignalV1(_FrozenContract):
     def validate_clock(self) -> Self:
         if self.expires_at_ns <= self.observed_at_ns:
             raise ValueError("trade_signal_clock_invalid")
+        return self
+
+
+class SignalExitPlanV1(_FrozenContract):
+    version: Literal["analysis_dynamic_v1"] = "analysis_dynamic_v1"
+    stop_distance_bps: int = Field(ge=1, le=5_000)
+    take_profit_bps: int = Field(ge=1, le=20_000)
+    max_holding_ns: int = Field(gt=0, le=86_400_000_000_000)
+
+
+class SignalEntryEnvelopeV1(_FrozenContract):
+    version: Literal["entry_envelope_v1"] = "entry_envelope_v1"
+    root_expires_at_ns: int = Field(gt=0)
+    reference_price: Decimal = Field(gt=0)
+    max_price_drift_bps: int = Field(ge=1, le=2_000)
+    universe_version: str = Field(min_length=1, max_length=64)
+
+
+class TradeSignalV2(_FrozenContract):
+    """Scoped, bounded Analysis intent. Runtime alone sizes and owns execution."""
+
+    signal_version: Literal["trade_signal_v2"] = "trade_signal_v2"
+    seq: int = Field(ge=1)
+    signal_id: str = Field(pattern=SHA256_PATTERN)
+    case_id: str = Field(min_length=1, max_length=128)
+    decision_id: str = Field(pattern=SHA256_PATTERN)
+    account_slot: str = Field(pattern=IDENTITY_PATTERN)
+    runtime_mode: Literal["paper", "live"]
+    entry_scope_id: str = Field(pattern=SHA256_PATTERN)
+    asset_id: str = Field(pattern=r"^crypto:[A-Z0-9._-]{1,32}$")
+    market_key: str = Field(pattern=MARKET_KEY_PATTERN)
+    native_symbol: str = Field(pattern=r"^[A-Z0-9]{2,32}$")
+    mapping_semantics_digest: str = Field(pattern=SHA256_PATTERN)
+    direction: Literal["long", "short"]
+    observed_at_ns: int = Field(gt=0)
+    expires_at_ns: int = Field(gt=0)
+    exit_plan: SignalExitPlanV1
+    entry_envelope: SignalEntryEnvelopeV1
+
+    @model_validator(mode="after")
+    def validate_v2(self) -> Self:
+        if self.expires_at_ns <= self.observed_at_ns:
+            raise ValueError("trade_signal_clock_invalid")
+        if self.expires_at_ns > self.entry_envelope.root_expires_at_ns:
+            raise ValueError("trade_signal_root_expiry_invalid")
         return self
 
 
@@ -238,6 +286,7 @@ class ExecutionObservationV1(_FrozenContract):
 
 
 __all__ = [
+    "EXECUTION_STRATEGY_ID",
     "IDENTITY_PATTERN",
     "MARKET_KEY_PATTERN",
     "MAX_OBSERVATION_APPEND_BATCH",
@@ -245,7 +294,10 @@ __all__ = [
     "SHA256_PATTERN",
     "ExecutionObservationV1",
     "OperatorIntentV1",
+    "SignalEntryEnvelopeV1",
+    "SignalExitPlanV1",
     "TradeSignalV1",
+    "TradeSignalV2",
     "market_key",
     "postgres_text_valid",
 ]

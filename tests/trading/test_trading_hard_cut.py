@@ -1,4 +1,4 @@
-"""The 433-C cut has one Signal producer and no Tracefold execution authority."""
+"""Analysis owns current Signals and obsolete OI v5 modules stay removed."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
         {"capital": {"mode": "paused"}},
         {"venues": {"hyperliquid_enabled": True}},
         {"nautilus": {"accept_intents": True}},
+        {"candidates": {"max_age_seconds": 300}},
     ),
 )
 def test_retired_execution_configuration_fails_closed(retired: dict[str, object]) -> None:
@@ -29,8 +30,8 @@ def test_retired_execution_configuration_fails_closed(retired: dict[str, object]
         Settings.model_validate({"trading": retired})
 
 
-def test_public_http_is_case_execution_and_readiness_only() -> None:
-    """#537 PR-5, #589 PR-2. Three reads; every retired execution surface stays deleted.
+def test_public_http_is_case_execution_replay_and_readiness_only() -> None:
+    """#537 PR-5, #589 PR-2, #683. Retired execution surfaces stay deleted.
 
     The Signal list and the raw observation stream were two more public shapes over the ledgers
     `/api/trading/executions` already reads folded, and nothing in the browser called either. The two
@@ -44,6 +45,7 @@ def test_public_http_is_case_execution_and_readiness_only() -> None:
     assert {path for path in paths if path.startswith("/api/trading/")} == {
         "/api/trading/status",
         "/api/trading/cases",
+        "/api/trading/cases/{case_id}/replay",
         "/api/trading/executions",
     }
     assert "/api/trading/execution/commands" not in paths
@@ -53,9 +55,9 @@ def test_public_http_is_case_execution_and_readiness_only() -> None:
 
 def test_active_signal_path_has_no_execution_or_nautilus_import() -> None:
     paths = (
-        ROOT / "tracefold/trading/signal_lane.py",
-        ROOT / "tracefold/trading/policy.py",
-        ROOT / "tracefold/trading/storage/lane.py",
+        ROOT / "tracefold/trading/engine/policy.py",
+        ROOT / "tracefold/trading/engine/target.py",
+        ROOT / "tracefold/trading/engine/features.py",
     )
     forbidden = (
         "nautilus",
@@ -77,6 +79,17 @@ def test_active_signal_path_has_no_execution_or_nautilus_import() -> None:
 
 def test_legacy_execution_modules_are_deleted_instead_of_forwarded() -> None:
     retired = (
+        "tracefold/trading/signal_lane.py",
+        "tracefold/trading/policy.py",
+        "tracefold/trading/admission.py",
+        "tracefold/trading/sources.py",
+        "tracefold/trading/market_context.py",
+        "tracefold/trading/storage/lane.py",
+        "tracefold/trading/contracts.py",
+        "tracefold/trading/telemetry.py",
+        "tracefold/app/trading_config.py",
+        "tracefold/app/workers/wiring/trading.py",
+        "tracefold/app/workers/wiring/news_to_trading.py",
         "tracefold/trading/capital_authority.py",
         "tracefold/trading/intent.py",
         "tracefold/trading/execution_policy.py",

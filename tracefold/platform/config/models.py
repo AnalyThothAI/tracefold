@@ -546,29 +546,6 @@ class NewsSettings(BaseModel):
         return frozenset(entry.symbol for entry in self.watchlist)
 
 
-class TradingCandidateSettings(BaseModel):
-    """What may be admitted to the Signal lane at all.
-
-    Every bound here is a universe or timing filter, never sizing and never Alpha. The policy's own
-    thresholds are code-owned and frozen onto each Case, so an operator cannot move an Alpha rule
-    without a versioned identity moving with it.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    max_age_seconds: int = 300
-    # 20M, not the 1M a "universe-quality floor" suggests. `docs/research/oi-agent-design-2026-08-22.md`
-    # §1.5 measured the 10-50M OI bucket as the *worst* (+4h -0.77%, 48% win) and >200M as the best; a
-    # one-million floor admits the losing bucket wholesale.
-    min_oi_value_usd: int = 20_000_000
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> TradingCandidateSettings:
-        if not 30 <= self.max_age_seconds <= 3_600:
-            raise ValueError("trading_candidate_max_age_invalid")
-        return self
-
-
 class TradingExecutionCredentialsSettings(BaseModel):
     """Operator-owned Binance USD-M credential references; values never enter config output."""
 
@@ -694,17 +671,84 @@ class TradingExecutionSettings(BaseModel):
         return value
 
 
+class TradingVerifiedRouteSettings(BaseModel):
+    """Operator-reviewed economic identity for a nonstandard native contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_symbol: str = Field(pattern=r"^[A-Z0-9]+$")
+    asset_id: str = Field(pattern=r"^crypto:[A-Z0-9]+$")
+    native_symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
+    units_per_contract: Decimal = Field(gt=0)
+    evidence_ref: str = Field(min_length=1, max_length=240)
+
+
+class TradingAnalysisSettings(BaseModel):
+    """One shadow-first analysis deployment; model credentials use the existing LLM endpoint."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    model_name: str | None = None
+    active_policy: Literal["trade_assessment_v1"] = "trade_assessment_v1"
+    publish_signals: bool = False
+    verified_routes: list[TradingVerifiedRouteSettings] = Field(default_factory=list)
+    excluded_asset_ids: list[str] = Field(
+        default_factory=lambda: [
+            "commodity:CL",
+            "crypto:BTC",
+            "crypto:ETH",
+            "crypto:USDT",
+            "crypto:USDC",
+        ]
+    )
+    root_ttl_seconds: int = Field(default=600, ge=60, le=3_600)
+    max_active_cases: int = Field(default=8, ge=1, le=32)
+    model_timeout_seconds: int = Field(default=60, ge=1, le=120)
+    max_model_input_bytes: int = Field(default=32_768, ge=1_024, le=131_072)
+    max_model_output_tokens: int = Field(default=2_000, ge=256, le=4_096)
+    max_model_concurrent_calls: int = Field(default=2, ge=1, le=8)
+    model_cost_budget_microusd: int | None = Field(default=5_000_000, ge=1)
+    model_input_price_ceiling_usd_per_million: Decimal | None = Field(default=Decimal("100"), gt=0)
+    model_output_price_ceiling_usd_per_million: Decimal | None = Field(default=Decimal("500"), gt=0)
+    market_max_connections: int = Field(default=8, ge=1, le=32)
+    market_max_cached_rows: int = Field(default=50_000, ge=1_000, le=200_000)
+    market_weight_soft_limit_1m: int = Field(default=1_800, ge=100, le=5_000)
+    max_watch_rechecks: int = Field(default=2, ge=0, le=4)
+
+    @model_validator(mode="after")
+    def validate_model_cost_budget(self) -> TradingAnalysisSettings:
+        values = (
+            self.model_cost_budget_microusd,
+            self.model_input_price_ceiling_usd_per_million,
+            self.model_output_price_ceiling_usd_per_million,
+        )
+        if any(value is not None for value in values) and any(value is None for value in values):
+            raise ValueError("trading_analysis_model_cost_budget_incomplete")
+        return self
+
+    @field_validator("excluded_asset_ids")
+    @classmethod
+    def validate_exclusions(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)) or any(
+            value not in {"commodity:CL", "crypto:BTC", "crypto:ETH", "crypto:USDT", "crypto:USDC"}
+            and not re.fullmatch(r"crypto:[A-Z0-9]+", value)
+            for value in values
+        ):
+            raise ValueError("trading_analysis_exclusions_invalid")
+        return values
+
+
 class TradingSettings(BaseModel):
-    """Alpha producer plus one cold Binance USD-M Runtime profile (#433)."""
+    """Analysis process plus one cold Binance USD-M Runtime profile."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = False
-    # The Workers watchdog over the Signal lane, the Runtime and open plans (#680 RC11). On by default:
+    # The Workers watchdog over the Runtime and open plans (#680 RC11). On by default:
     # it runs whenever Trading is enabled and News push can deliver, and alerts through that provider.
     # Its thresholds are code-owned; this is only the switch.
     watchdog_enabled: bool = True
-    candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
+    analysis: TradingAnalysisSettings = Field(default_factory=TradingAnalysisSettings)
     execution: TradingExecutionSettings = Field(default_factory=TradingExecutionSettings)
 
 

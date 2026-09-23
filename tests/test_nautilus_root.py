@@ -235,7 +235,7 @@ def test_paper_defaults_are_explicit_engineering_values_and_live_requires_values
     assert paper.exit_policy.take_profit_bps == 200
     assert paper.exit_policy.max_holding_ns == 14_400_000_000_000
     # Nautilus reconciles at least a day of history, and always more than the longest holding time.
-    assert paper.reconciliation_lookback_mins == 1_440
+    assert paper.reconciliation_lookback_mins == 1_500
     long_hold = replace(paper, exit_policy=replace(paper.exit_policy, max_holding_ns=72 * 3_600_000_000_000))
     assert long_hold.reconciliation_lookback_mins == 72 * 60 + 60
     with pytest.raises(ValidationError, match="trading_execution_live_exit_policy_required"):

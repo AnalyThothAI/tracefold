@@ -29,6 +29,9 @@ class _Trading:
     def latest_case_created_at_ms(self) -> int:
         return NOW
 
+    def analysis_runtime(self, _runtime_id: str) -> None:
+        return None
+
     def execution_runtime_state(self, _account_slot: str) -> None:
         return None
 
@@ -252,7 +255,15 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     data = api.get("/api/trading/status", params={"token": TOKEN}).json()["data"]
 
     assert set(data) == {"decision", "execution"}
-    assert data["decision"] == {"last_case_at_ms": NOW}
+    assert data["decision"] == {
+        "last_case_at_ms": NOW,
+        "state": "disabled",
+        "active_policy": "trade_assessment_v1",
+        "model_name": None,
+        "publish_signals": False,
+        "config_digest": None,
+        "heartbeat_at_ms": None,
+    }
     expected = {
         "mode": "disabled",
         "account_slot": "binance_usdm_primary",

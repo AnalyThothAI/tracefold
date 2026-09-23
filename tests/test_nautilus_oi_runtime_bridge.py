@@ -84,6 +84,9 @@ class _FakeTrading:
     def trade_plan(self, _entry_id: str) -> dict[str, Any] | None:
         return self.stored_plan
 
+    def trade_plan_for_scope(self, **_kwargs: Any) -> dict[str, Any] | None:
+        return self.stored_plan
+
 
 class _FakeRepos:
     def __init__(self, trading: _FakeTrading) -> None:

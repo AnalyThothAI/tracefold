@@ -1,0 +1,313 @@
+{
+  "mode": "local_read_only_shadow_diagnostic",
+  "production_case_or_order_written": false,
+  "raw_sources_and_provider_payloads": "local_content_addressed_archive_only",
+  "receipt_version": "issue_683_real_model_shadow_v1",
+  "runs": [
+    {
+      "archive_ref": "9c0c4b8a3166122465c59c07faaacb478c416931742189e07242f11b73d2d87a",
+      "brief_sha": "a75254317672ee0b793b6807eff2d89355462fabdfd2803e89fd1817fdb473d3",
+      "compiled_action": "NO_TRADE",
+      "diagnostic_at_ms": 1790185903635,
+      "factors": [
+        {
+          "candidate_id": "crypto:PENDLE:long:v1",
+          "factors": [
+            {
+              "evidence_refs": [
+                "source"
+              ],
+              "factor_id": "catalyst",
+              "status": "known",
+              "support_score": 60,
+              "weight_bps": 2000
+            },
+            {
+              "evidence_refs": [
+                "market:perp_bars"
+              ],
+              "factor_id": "price_structure",
+              "status": "known",
+              "support_score": 70,
+              "weight_bps": 2500
+            },
+            {
+              "evidence_refs": [
+                "market:open_interest",
+                "source"
+              ],
+              "factor_id": "volume_and_oi",
+              "status": "known",
+              "support_score": 80,
+              "weight_bps": 2500
+            },
+            {
+              "evidence_refs": [],
+              "factor_id": "crowding",
+              "status": "unknown",
+              "support_score": null,
+              "weight_bps": 1000
+            },
+            {
+              "evidence_refs": [
+                "market:perp_bars"
+              ],
+              "factor_id": "entry_timing",
+              "status": "known",
+              "support_score": -20,
+              "weight_bps": 1500
+            },
+            {
+              "evidence_refs": [
+                "market:funding_basis"
+              ],
+              "factor_id": "trading_cost",
+              "status": "known",
+              "support_score": 0,
+              "weight_bps": 500
+            }
+          ]
+        },
+        {
+          "candidate_id": "crypto:PENDLE:short:v1",
+          "factors": [
+            {
+              "evidence_refs": [
+                "source"
+              ],
+              "factor_id": "catalyst",
+              "status": "known",
+              "support_score": -60,
+              "weight_bps": 2000
+            },
+            {
+              "evidence_refs": [
+                "market:perp_bars"
+              ],
+              "factor_id": "price_structure",
+              "status": "known",
+              "support_score": -70,
+              "weight_bps": 2500
+            },
+            {
+              "evidence_refs": [
+                "market:open_interest",
+                "source"
+              ],
+              "factor_id": "volume_and_oi",
+              "status": "known",
+              "support_score": -80,
+              "weight_bps": 2500
+            },
+            {
+              "evidence_refs": [],
+              "factor_id": "crowding",
+              "status": "unknown",
+              "support_score": null,
+              "weight_bps": 1000
+            },
+            {
+              "evidence_refs": [
+                "market:perp_bars"
+              ],
+              "factor_id": "entry_timing",
+              "status": "known",
+              "support_score": 20,
+              "weight_bps": 1500
+            },
+            {
+              "evidence_refs": [
+                "market:funding_basis"
+              ],
+              "factor_id": "trading_cost",
+              "status": "known",
+              "support_score": 0,
+              "weight_bps": 500
+            }
+          ]
+        }
+      ],
+      "input_tokens": 2965,
+      "kind": "oi",
+      "market_evidence_ref": "c18ea0967fd11e51fad936721246201c18ea35b15bd8fff01aec1c83d6bfb376",
+      "model": "openai/qwen3.8-27b",
+      "output_tokens": 1341,
+      "prompt_sha": "664d26ed4427d23f085c9faee053dec30e3aed048d8036e98f02b43d58a1047a",
+      "provider_status": "provider_success",
+      "reported_cost_microusd": null,
+      "request_ref": "2be2e5437b699b81ad288a8659f70700b14690aa323854907202b5c9e73723d4",
+      "response_ref": "3dcec5fa7be532f3e35643454b2bea3909ae262e2daff96e72c7ec2460d29982",
+      "scores": [
+        {
+          "candidate_id": "crypto:PENDLE:long:v1",
+          "covered_weight_bps": 9000,
+          "kind": "agent_support",
+          "unit": "score_-100_100",
+          "value": null,
+          "version": "agent_weighted_support_v1"
+        },
+        {
+          "candidate_id": "crypto:PENDLE:short:v1",
+          "covered_weight_bps": 9000,
+          "kind": "agent_support",
+          "unit": "score_-100_100",
+          "value": null,
+          "version": "agent_weighted_support_v1"
+        }
+      ],
+      "source_event_ref_sha256": "30197a2802383e01546c31892deb73882427a23531f03c0d35f3a52eff72c8da"
+    },
+    {
+      "archive_ref": "ff079dd0d3b95837d7ffa22c0e6c6f28f7545693defb1400028b22e040cf2aff",
+      "brief_sha": "d370e8035e59e622c6ab0b477ed7d20e462e53f4ac1ce0e4c0bce95797b87ac1",
+      "compiled_action": "WATCH",
+      "diagnostic_at_ms": 1790185958411,
+      "factors": [
+        {
+          "candidate_id": "crypto:POL:long:v1",
+          "factors": [
+            {
+              "evidence_refs": [
+                "source"
+              ],
+              "factor_id": "catalyst",
+              "status": "known",
+              "support_score": 65,
+              "weight_bps": 3000
+            },
+            {
+              "evidence_refs": [
+                "market:perp_bars"
+              ],
+              "factor_id": "price_structure",
+              "status": "known",
+              "support_score": -10,
+              "weight_bps": 2000
+            },
+            {
+              "evidence_refs": [
+                "market:open_interest"
+              ],
+              "factor_id": "volume_and_oi",
+              "status": "unknown",
+              "support_score": null,
+              "weight_bps": 2000
+            },
+            {
+              "evidence_refs": [
+                "market:funding_basis"
+              ],
+              "factor_id": "crowding",
+              "status": "unknown",
+              "support_score": null,
+              "weight_bps": 1000
+            },
+            {
+              "evidence_refs": [
+                "market:perp_bars"
+              ],
+              "factor_id": "entry_timing",
+              "status": "known",
+              "support_score": -20,
+              "weight_bps": 1500
+            },
+            {
+              "evidence_refs": [],
+              "factor_id": "trading_cost",
+              "status": "not_applicable",
+              "support_score": null,
+              "weight_bps": 500
+            }
+          ]
+        },
+        {
+          "candidate_id": "crypto:POL:short:v1",
+          "factors": [
+            {
+              "evidence_refs": [
+                "source"
+              ],
+              "factor_id": "catalyst",
+              "status": "known",
+              "support_score": -65,
+              "weight_bps": 3000
+            },
+            {
+              "evidence_refs": [
+                "market:perp_bars"
+              ],
+              "factor_id": "price_structure",
+              "status": "known",
+              "support_score": 10,
+              "weight_bps": 2000
+            },
+            {
+              "evidence_refs": [
+                "market:open_interest"
+              ],
+              "factor_id": "volume_and_oi",
+              "status": "unknown",
+              "support_score": null,
+              "weight_bps": 2000
+            },
+            {
+              "evidence_refs": [
+                "market:funding_basis"
+              ],
+              "factor_id": "crowding",
+              "status": "unknown",
+              "support_score": null,
+              "weight_bps": 1000
+            },
+            {
+              "evidence_refs": [
+                "market:perp_bars"
+              ],
+              "factor_id": "entry_timing",
+              "status": "known",
+              "support_score": 20,
+              "weight_bps": 1500
+            },
+            {
+              "evidence_refs": [],
+              "factor_id": "trading_cost",
+              "status": "not_applicable",
+              "support_score": null,
+              "weight_bps": 500
+            }
+          ]
+        }
+      ],
+      "input_tokens": 2956,
+      "kind": "catalyst",
+      "market_evidence_ref": "019da5bbe1d8d6eeee3b764e5fa2931bfc635249dc0f1c0ebcd3fba82bb793ad",
+      "model": "openai/qwen3.8-27b",
+      "output_tokens": 1515,
+      "prompt_sha": "664d26ed4427d23f085c9faee053dec30e3aed048d8036e98f02b43d58a1047a",
+      "provider_status": "provider_success",
+      "reported_cost_microusd": null,
+      "request_ref": "45b3e9692b598807a8cc6d752f7042827d36044f584f458a1e48b826207c4afc",
+      "response_ref": "23420c2c5ef1eaa98c07972a7c0a938eba6d2a681879bc29dcac3d0ea238325c",
+      "scores": [
+        {
+          "candidate_id": "crypto:POL:long:v1",
+          "covered_weight_bps": 6500,
+          "kind": "agent_support",
+          "unit": "score_-100_100",
+          "value": null,
+          "version": "agent_weighted_support_v1"
+        },
+        {
+          "candidate_id": "crypto:POL:short:v1",
+          "covered_weight_bps": 6500,
+          "kind": "agent_support",
+          "unit": "score_-100_100",
+          "value": null,
+          "version": "agent_weighted_support_v1"
+        }
+      ],
+      "source_event_ref_sha256": "de8f30caeceb0cb51b05e838baceb8ec50f6702bf68eab9d5dbfcf5b1e388092"
+    }
+  ],
+  "source": "read_only_news_ledger_and_public_binance_marketdata"
+}

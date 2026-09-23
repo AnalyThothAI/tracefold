@@ -75,7 +75,7 @@ class _Loop:
 async def _close_composition(composed: ChainTapeComposition) -> None:
     stop = asyncio.Event()
     stop.set()
-    for task in worker_business_tasks(news_pipeline=None, signal_lane=None, chain_tape=composed):
+    for task in worker_business_tasks(news_pipeline=None, chain_tape=composed):
         await task.run(stop)
 
 
@@ -116,7 +116,7 @@ def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(
     assert capabilities.payload()[WALLET_NET_BUY]["state"] == "running"
     assert capabilities.payload()[WALLET_PRICES]["state"] == "running"
     assert capabilities.payload()[WALLET_ROSTER]["state"] == "running"
-    tasks = worker_business_tasks(news_pipeline=None, signal_lane=None, chain_tape=composed)
+    tasks = worker_business_tasks(news_pipeline=None, chain_tape=composed)
     assert [(task.name, task.capability, task.foundational) for task in tasks] == [
         (WALLET_ROSTER_TASK_NAME, WALLET_ROSTER, False),
         (CHAIN_TAPE_TASK_NAME, CHAIN_TAPE, False),
@@ -203,7 +203,7 @@ def test_the_configured_cadence_is_what_the_workers_task_actually_polls_with(
     tape = ChainTapeComposition(  # type: ignore[arg-type]
         loop=_Tape(), roster=_Loop(), detector=_Loop(), prices=_Loop(), poll_seconds=11.0
     )
-    tasks = worker_business_tasks(news_pipeline=None, signal_lane=None, chain_tape=tape)
+    tasks = worker_business_tasks(news_pipeline=None, chain_tape=tape)
     task = next(item for item in tasks if item.name == CHAIN_TAPE_TASK_NAME)
 
     monkeypatch.setattr("tracefold.app.workers.task_contract.run_chain_tape", _record)
@@ -350,7 +350,7 @@ def test_a_slow_price_does_not_stop_the_production_ingestion_task(monkeypatch: p
             capabilities=CapabilityStates(),
         )
         assert composed is not None
-        declarations = worker_business_tasks(news_pipeline=None, signal_lane=None, chain_tape=composed)
+        declarations = worker_business_tasks(news_pipeline=None, chain_tape=composed)
         tasks = [asyncio.create_task(item.run(stop)) for item in declarations]
         try:
             await asyncio.wait_for(price_entered.wait(), timeout=1)

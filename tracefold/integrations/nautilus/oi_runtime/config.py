@@ -33,7 +33,8 @@ from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.identifiers import AccountId, ClientId, InstrumentId, TraderId
 from nautilus_trader.model.instruments import CryptoPerpetual
 
-from tracefold.trading import IDENTITY_PATTERN, MARKET_KEY_PATTERN, market_key
+from tracefold.platform.market_identity import AssetId, InstrumentRef, UniversePolicy
+from tracefold.trading.execution_contracts import IDENTITY_PATTERN, MARKET_KEY_PATTERN, market_key
 
 _IDENTITY = re.compile(IDENTITY_PATTERN)
 _MARKET_KEY = re.compile(MARKET_KEY_PATTERN)
@@ -162,6 +163,17 @@ class OiRuntimeProfile:
     routes: tuple[OiInstrumentRoute, ...]
     risk: OiRiskLimits
     exit_policy: OiExitPolicy
+    excluded_asset_ids: frozenset[str] = frozenset(
+        {
+            "commodity:CL",
+            "crypto:BTC",
+            "crypto:ETH",
+            "crypto:USDT",
+            "crypto:USDC",
+        }
+    )
+    verified_routes: tuple[tuple[str, str, Decimal], ...] = ()
+    recovery_max_holding_ns: int = 86_400_000_000_000
 
     def __post_init__(self) -> None:
         if self.mode not in ("paper", "live"):
@@ -181,8 +193,38 @@ class OiRuntimeProfile:
 
     @property
     def reconciliation_lookback_mins(self) -> int:
-        holding_mins = math.ceil(self.exit_policy.max_holding_ns / 60_000_000_000)
+        holding_mins = math.ceil(max(self.exit_policy.max_holding_ns, self.recovery_max_holding_ns) / 60_000_000_000)
         return max(_MIN_RECONCILIATION_LOOKBACK_MINS, holding_mins + _RECONCILIATION_LOOKBACK_MARGIN_MINS)
+
+    @property
+    def universe_digest(self) -> str:
+        assets = frozenset(AssetId(*item.split(":", 1)) for item in self.excluded_asset_ids)
+        return UniversePolicy(version="universe_v1", excluded_asset_ids=assets).digest
+
+    def route_semantics(self, route: OiInstrumentRoute) -> tuple[str, str] | None:
+        """Rebuild the Analysis mapping from the Runtime's current reviewed config."""
+
+        native = route.instrument_id.value.split("-PERP.", 1)[0]
+        if not native.endswith("USDT") or len(native) <= 4:
+            return None
+        base = native[:-4]
+        reviewed = {item[0]: item for item in self.verified_routes}.get(native)
+        if reviewed is None and base[0].isdigit():
+            return None
+        asset = AssetId("crypto", reviewed[1].split(":", 1)[1] if reviewed else base)
+        ref = InstrumentRef(
+            venue="binance.usdm",
+            environment="demo" if self.mode == "paper" else "live",
+            product="perpetual",
+            native_symbol=native,
+            asset_id=asset,
+            quote_asset="USDT",
+            settlement_asset="USDT",
+            units_per_contract=reviewed[2] if reviewed else Decimal(1),
+            price_unit="native_quote",
+            quantity_unit="native_base",
+        )
+        return asset.key, ref.semantics_digest
 
 
 @dataclass(frozen=True, slots=True)

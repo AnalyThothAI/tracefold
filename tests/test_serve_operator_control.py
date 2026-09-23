@@ -6,7 +6,11 @@ import pytest
 
 from tracefold.app.serve_runtime import bootstrap_serve
 from tracefold.platform.config.models import Settings
-from tracefold.trading import OperatorCommandError, parse_operator_command, prepare_parsed_operator_intent
+from tracefold.trading.operator_control import (
+    OperatorCommandError,
+    parse_operator_command,
+    prepare_parsed_operator_intent,
+)
 
 _SEALED_NS = 1_900_000_000_000_000_000
 

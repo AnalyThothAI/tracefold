@@ -134,7 +134,7 @@ if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
   service=''
   for argument do service="$argument"; done
   case "$service" in
-    postgres|rabbitmq|rabbitmq-policy|migrate|serve|workers) printf '%s\\n' "${service}-id" ;;
+    postgres|rabbitmq|rabbitmq-policy|migrate|serve|workers|analysis) printf '%s\\n' "${service}-id" ;;
     nautilus)
       if [ -e "$TRACEFOLD_TEST_NAUTILUS_STOPPED" ]; then
         :
@@ -170,6 +170,7 @@ if [ "$1" = "inspect" ]; then
         migrate-id|rabbitmq-policy-id) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATE_IMAGE" ;;
         serve-id) printf '%s\\n' "$TRACEFOLD_TEST_SERVE_IMAGE" ;;
         workers-id) printf '%s\\n' "$TRACEFOLD_TEST_WORKERS_IMAGE" ;;
+        analysis-id) printf '%s\\n' "$TRACEFOLD_TEST_ANALYSIS_IMAGE" ;;
         nautilus-id) printf '%s\\n' "$TRACEFOLD_TEST_NAUTILUS_IMAGE" ;;
       esac
       ;;
@@ -269,6 +270,7 @@ esac
         "TRACEFOLD_TEST_RECEIPT": "ok",
         "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_ANALYSIS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
@@ -743,7 +745,9 @@ def test_serve_and_workers_start_only_after_the_migration_exited_zero(tmp_path: 
     calls = Path(env["TRACEFOLD_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8").splitlines()
     migrate_up = next(i for i, call in enumerate(calls) if call.startswith("compose up") and " migrate" in call)
     waited = calls.index("wait migrate-id")
-    app_up = next(i for i, call in enumerate(calls) if call.startswith("compose up") and call.endswith("serve workers"))
+    app_up = next(
+        i for i, call in enumerate(calls) if call.startswith("compose up") and call.endswith("serve workers analysis")
+    )
     stopped = next(i for i, call in enumerate(calls) if call.startswith("compose stop") and "workers" in call)
     assert stopped < migrate_up < waited < app_up
     assert "--wait" not in calls[migrate_up].split()
@@ -758,7 +762,7 @@ def test_a_failed_migration_leaves_serve_and_workers_stopped(tmp_path: Path, tar
     result = subprocess.run(_deploy_command(target), cwd=repo, env=env, capture_output=True, check=False, text=True)
 
     assert result.returncode != 0
-    assert "migrate exited 1; serve and workers were not started." in result.stderr
+    assert "migrate exited 1; serve, workers and analysis were not started." in result.stderr
     calls = Path(env["TRACEFOLD_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8").splitlines()
     assert "wait migrate-id" in calls
     assert not [call for call in calls if call.startswith("compose up") and "serve" in call.split()]

@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.restore_drill import run_restore_drill as run_platform_restore_drill
-from tracefold.trading import EXECUTION_STRATEGY_ID, ExecutionObservationV1
+from tracefold.trading.execution_contracts import EXECUTION_STRATEGY_ID, ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
     materialize_operator_intents,
     prepare_execution_observations,

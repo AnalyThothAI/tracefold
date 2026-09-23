@@ -12,7 +12,7 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
     "news": {"news", "platform"},
     # #104: Trading is a sibling capability, not a News extension. It never imports News and News
     # never imports it; `tracefold.app` is the only seam that knows both, and it is what turns a
-    # public News projection row into a Trading candidate.
+    # public News projection row into a Trading trigger.
     "trading": {"trading", "platform"},
 }
 # Private implementation imports are ownership rules, not historical file exceptions. Only the
@@ -73,6 +73,12 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.contracts",
     ),
     "app.composition": (
+        # Analysis composition maps News' public projection into Trading's
+        # typed target/evidence contracts and persists the frozen decision.
+        "tracefold.trading.engine",
+        "tracefold.trading.execution_contracts",
+        "tracefold.trading.storage.analysis",
+        "tracefold.trading.storage.execution_stream",
         # The code-owned Program contract: the version every verdict row is stamped with, the route
         # budget the composition seam builds its LM clients against, and the computed identity of that
         # code (#314) — which the composition root stamps onto the arm manifest and the epoch it opens,
@@ -104,23 +110,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # #433-A. App owns the dormant transport's query-audit registration and restore-drill seed.
         # Neither path activates a producer or consumer; both compose the Trading-owned storage seam.
         "tracefold.trading.storage.execution_stream",
-        # #269/#286. Three surfaces have to describe the *same* capital rules — the Workers wiring that
-        # executes them, the CLI replay that reports what they did, and the HTTP status the console
-        # reads — so `app/trading_config.py` assembles them from settings once and every reader gets
-        # the same digest. #286 extends that assembly to the runtime's regime, trade and notional config
-        # so replay cannot silently use defaults. These are pure code-owned values; composition is App's,
-        # which is why this belongs here rather than in `app.http` or either business package.
-        "tracefold.trading.admission",
-        "tracefold.trading.signal_lane",
-        "tracefold.trading.contracts",
-        "tracefold.trading.market_context",
-        "tracefold.trading.policy",
+        # Read-only history and the new Analysis process are composed by App.
         "tracefold.trading.storage.queries",
         "tracefold.trading.storage.gate",
-        # #537 PR-5. `GET /api/trading/status` runs exactly one statement over `trading_cases` -- the
-        # lane's own liveness probe -- and the query-plan audit registers the production constant
-        # rather than a copy of the SQL that an edit can leave behind.
-        "tracefold.trading.storage.lane",
+        "tracefold.trading.storage.history",
     ),
     "app.http": (
         "tracefold.news.health",
@@ -138,33 +131,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.wallet_contracts",
         "tracefold.news.review.desk",
         "tracefold.trading.intent",
+        "tracefold.trading.stages",
     ),
-    "app.trading_cli": (
-        "tracefold.trading.contracts",
-        # #265 PR-C's read-only replay. It exists precisely so the report and the scanner are the same
-        # code: it drives the production source stage, the Candidate Gate and the strategy rather than
-        # re-implementing a funnel that would drift the first time a rule moved. That means importing
-        # the pure modules by name, which is what these five entries are — every one of them a pure
-        # function over frozen values, with no storage, provider or execution path behind it.
-        "tracefold.trading.blacklist",
-        "tracefold.trading.capabilities",
-        "tracefold.trading.contracts",
-        "tracefold.trading.execution_policy",
-        "tracefold.trading.intent",
-        "tracefold.trading.market_context",
-        "tracefold.trading.policy",
-        "tracefold.trading.replay",
-        # #377's credential-free CLI is the App composition seam for the evidence clock.  These
-        # modules are pure contracts and transformations; provider and PostgreSQL I/O stay in App.
-        "tracefold.trading.contract_receipt",
-        "tracefold.trading.evidence_clock",
-        "tracefold.trading.evidence_research",
-        "tracefold.trading.evidence_verification",
-        "tracefold.trading.routing",
-        # The OI lane's measurement version, so the replay reads the same rows the scanner does. A
-        # literal here would silently stop matching the day `oi_signals` bumps it.
-        "tracefold.news.oi_signals",
-    ),
+    "app.trading_cli": ("tracefold.trading.operator_control",),
     # #572 PR-1. The JSON-RPC adapter answers in the tape's own address and topic encoding rather than
     # keeping a second copy of it, the same way the venue catalogue adapters answer in the instrument
     # vocabulary. `evm` is pure string work with no network, no ABI library and no business rule.
@@ -189,8 +158,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
         # #553 PR-2. The market notification loop is one News-owned object with one business action,
-        # `advance()`. App composes it, declares its capability key and owns its tick, exactly as it
-        # does the Trading Signal lane's; the rules and the durable state stay inside News.
+        # `advance()`. App composes it, declares its capability key and owns its tick.
         "tracefold.news.market_notifications",
         # #572 PR-1. The wallet tape joins the same way and for the same reason: one News-owned object
         # with one business action, `advance()`. App composes it, builds the two provider adapters that
@@ -208,16 +176,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.market_review.storage",
         "tracefold.news.program.contracts",
         "tracefold.news.storage.root",
-        # The News-owned row contract for the Trading handoff. Only the composition root's mapper reads
-        # it, and it reads the contract rather than the repository: the SELECTs stay News's business.
-        "tracefold.news.storage.trade_projection",
         "tracefold.news.triage_rules",
-        "tracefold.trading.signal_lane",
-        "tracefold.trading.contracts",
-        # #537 PR-3: the one table of supported source venues. The bar fetcher at this seam reads
-        # which provider family answers a venue and how that venue spells the market off it, rather
-        # than keeping a fourth copy of that mapping.
-        "tracefold.trading.sources",
         "tracefold.trading.storage.root",
         # #680 RC11. The Trading watchdog alerts through the Deliverer's one send entry, which takes
         # the card model and the frozen channel payload together, so the composition builds both the
@@ -230,6 +189,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.storage.health",
     ),
     "app.nautilus": (
+        "tracefold.trading.execution_contracts",
+        "tracefold.trading.trade_plan",
         # #433-B: the dormant Runtime composition root materializes Trading-owned execution rows,
         # prepares bounded Observation batches, and supplies the wake channel to the PostgreSQL
         # integration. Nautilus adapters receive only public values and narrow callables.
@@ -252,11 +213,18 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.market_review.pricing",
         "tracefold.news.tradability",
     ),
+    "integrations.marketdata": ("tracefold.trading.engine.marketdata",),
+    "integrations.nautilus": (
+        "tracefold.trading.execution_contracts",
+        "tracefold.trading.trade_plan",
+        "tracefold.trading.storage.execution_stream",
+    ),
 }
 # Concrete integration families may own one business-facing adapter. This is a module-family rule,
 # not a filename inventory: converting `opentrade.py` into an `opentrade/` package keeps the seam.
 INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
     "nautilus": {"trading"},
+    "marketdata": {"trading"},
     "robinhood_chain": {"news"},
     "opentrade": {"trading"},
     "trading_catalog": {"trading"},
@@ -410,6 +378,8 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
         family = "integrations.opennews"
     elif parts[:3] == ["tracefold", "integrations", "venues"]:
         family = "integrations.venues"
+    elif parts[:3] == ["tracefold", "integrations", "marketdata"]:
+        family = "integrations.marketdata"
     elif parts[:3] == ["tracefold", "integrations", "nautilus"]:
         family = "integrations.nautilus"
     elif parts == ["tracefold", "integrations", "rabbitmq"]:
@@ -661,7 +631,7 @@ def test_external_consumers_use_declared_business_interfaces() -> None:
                 and not _private_import_allowed(importer, imported)
                 and imported not in _migration_parser_imports(path)
             )
-    assert violations == []
+    assert violations == [], "\n".join(violations)
 
 
 def test_business_sql_uses_only_owned_tables() -> None:

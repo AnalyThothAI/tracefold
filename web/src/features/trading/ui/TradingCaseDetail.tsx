@@ -5,6 +5,8 @@ import type { TradingCase } from "../api/tradingQueries";
 import { caseChecks, caseVerdict } from "../model/tradingCases";
 import { bpsPercent, caseClock, policyLabel } from "../model/tradingLabels";
 
+import { TradingAnalysisDetail } from "./TradingAnalysisDetail";
+
 /**
  * One Case in full: its terminal answer, and every condition the policy executed to reach it.
  *
@@ -23,7 +25,8 @@ import { bpsPercent, caseClock, policyLabel } from "../model/tradingLabels";
  * #604 T3 removed the field from the contract for that reason. `policy_config_digest` stays in the card
  * hint: the identity of the configuration is release evidence, its restated values were not.
  */
-export function TradingCaseDetail({ item }: { item: TradingCase }) {
+export function TradingCaseDetail({ item, token }: { item: TradingCase; token: string }) {
+  if (item.trigger_id) return <TradingAnalysisDetail item={item} token={token} />;
   const checks = caseChecks(item);
   return (
     <section aria-label={`案例 ${item.base_symbol}`} className="trading-case-detail">

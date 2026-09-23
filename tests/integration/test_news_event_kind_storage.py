@@ -11,7 +11,6 @@ from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.liquidations import parse_liquidation
-from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.news.oi_signals import OiSignal, measurement_definition, oi_source_contract
@@ -205,18 +204,12 @@ def _insert_oi(news: Any, *, event_id: str, item_id: str, signal: OiSignal, **ov
         )
 
 
-def test_oi_trade_projection_reads_the_ledger_without_an_event_or_a_verdict(conn) -> None:
-    """#553. The projection is one ledger and one Item column, and Triage never runs.
-
-    This is the acceptance case in one test: an OI fact written at admission is readable by Trading
-    with no News Event, no verdict and no reader history anywhere in the database.
-    """
-
+def test_oi_fact_enqueues_a_trade_event_without_editorial_verdict(conn) -> None:
     repos = repositories_for_connection(conn)
     news = repos.news
     signal = OiSignal(
         symbol="BTC",
-        raw_instrument="XYZ-BTC",
+        raw_instrument="BTC",
         direction="rise",
         oi_change_bps=455,
         oi_value_usd=32_170_000,
@@ -224,45 +217,12 @@ def test_oi_trade_projection_reads_the_ledger_without_an_event_or_a_verdict(conn
         whale_oi_ratio_bps=10_071,
     )
     with repos.transaction():
-        repos.instruments.apply_snapshot(
-            [Instrument("binance.perp", "BTCUSDT", "BTC", "crypto", "USDT")],
-            now_ms=NOW - 1,
-        )
         _item(news, "projection-oi-item")
         _insert_oi(news, event_id="projection-oi-event", item_id="projection-oi-item", signal=signal)
-
-    def projected() -> list[dict[str, Any]]:
-        return news.trade_candidate_oi_rows(
-            metric_version=OI_METRIC_VERSION,
-            after_created_at_ms=NOW - 1,
-            until_created_at_ms=NOW,
-        )
-
-    assert conn.execute("SELECT count(*) AS n FROM news_events").fetchone()["n"] == 0
     assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 0
-    assert [(row["symbol"], row["ingest_mode"], row["venue"]) for row in projected()] == [("BTC", "live", "binance")]
-    # `trade_evidence_catalog_rows` is gone with the fourth copy of the source-venue table it carried
-    # inside a SQL `CASE`. Nothing in `tracefold/` ever called it, and the copy had already drifted:
-    # it mapped no `hl.xyz` at all (#537 PR-3).
-    assert not hasattr(news, "trade_evidence_catalog_rows")
-    source_rows = news.trade_fixed_window_oi_sources(
-        metric_version=OI_METRIC_VERSION,
-        start_observed_at_ms=NOW,
-        end_observed_at_ms=NOW + 1,
-        drain_cutoff_ms=NOW,
-        limit=20,
-    )
-    assert [(row["event_id"], row["source_venue"]) for row in source_rows] == [("projection-oi-event", "binance")]
-    # Ingest provenance is published, never filtered here (#510): the Signal lane refuses a recovery
-    # frame by name, and a read that dropped it would make "no rows" and "no eligible rows" the same
-    # absence again. The mode is the Item's, because the Item is what the parser read.
-    conn.execute("UPDATE news_items SET first_ingest_mode = 'recovery' WHERE item_id = 'projection-oi-item'")
-    assert [row["ingest_mode"] for row in projected()] == ["recovery"]
-    conn.execute("UPDATE news_items SET first_ingest_mode = 'live' WHERE item_id = 'projection-oi-item'")
-    conn.execute(
-        "UPDATE news_oi_signals SET oi_value_usd = oi_value_usd + 1 WHERE source_item_id = 'projection-oi-item'"
-    )
-    assert [row["oi_value_usd"] for row in projected()] == [32_170_001]
+    [event] = news.unacknowledged_trade_events(limit=10)
+    assert event["kind"] == "oi" and event["source_fact_key"] == "projection-oi-event"
+    assert event["payload"]["assets"] == [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}]
 
 
 def test_one_item_is_one_observation_and_a_replay_of_it_adds_no_row(conn) -> None:
@@ -325,26 +285,6 @@ def test_a_historical_rebuild_is_readable_and_stays_out_of_the_live_trigger_set(
     assert stored["historical"] is True
     # The original provider stamp is untouched; only the first-available instant is the rebuild's.
     assert stored["observed_at_ms"] == NOW
-    # It is not a trigger: no scan could have seen it at the time, so authoring a Case from it would
-    # invent a decision, and a replay of the frozen window would then disagree with the live lane.
-    assert (
-        news.trade_candidate_oi_rows(
-            metric_version=OI_METRIC_VERSION,
-            after_created_at_ms=NOW - 1,
-            until_created_at_ms=NOW,
-        )
-        == []
-    )
-    assert (
-        news.trade_evidence_oi_rows(
-            metric_version=OI_METRIC_VERSION,
-            start_observed_at_ms=NOW - 1,
-            end_observed_at_ms=NOW + 1,
-            known_at_or_before_ms=NOW,
-            available_at_or_before_ms=NOW,
-        )
-        == []
-    )
     # And it is readable, which is the whole reason it was reconstructed.
     live, _ = news.market_groups(
         kinds=("oi",),

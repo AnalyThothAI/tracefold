@@ -48,7 +48,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260923_0390"
+HEAD = "20260923_0392"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -255,6 +255,8 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260923_0391",
+        "20260923_0390",
         "20260922_0389",
         "20260922_0388",
         "20260922_0387",
@@ -346,11 +348,21 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
+    # The scoped V2 cut preserves existing plans but cannot reconstruct the
+    # unexecuted V1 signal stream it retired.
+    with pytest.raises(RuntimeError, match="trading_signal_v2_scope_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == HEAD
+    command.stamp(config, "20260923_0391")
+    with pytest.raises(RuntimeError, match="trading_analysis_foundation_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260923_0391"
+    command.stamp(config, "20260923_0390")
     # The v17 policy cut cannot be rolled back by downgrading the CHECK that admits a v17 verdict: every
     # verdict written after it carries that version, and the v16 list refuses it.
     with pytest.raises(RuntimeError, match="news_policy_v17_no_storyline_budget_forward_only"):
         command.downgrade(config, "base")
-    assert _stamped_revision() == HEAD
+    assert _stamped_revision() == "20260923_0390"
     # The Nautilus ownership cut deleted the private proof's rows and columns; nothing can put them back.
     command.stamp(config, "20260922_0389")
     with pytest.raises(RuntimeError, match="trading_nautilus_owned_execution_forward_only"):
@@ -2809,7 +2821,6 @@ def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_eve
         "audit_gap",
     )
     with closing(connect_postgres_test(read_only=False)) as conn:
-        repo = TradingRepository(conn)
         with conn.transaction():
             conn.execute(
                 """
@@ -2822,15 +2833,30 @@ def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_eve
                 """,
                 ("4" * 64,),
             )
-            repo.append_trade_signal(
-                prepare_trade_signal(
-                    signal_id="1" * 64,
-                    case_id="case-0389",
-                    market_key="crypto:perp:BTC:USDT",
-                    direction="long",
-                    observed_at_ns=1_000,
-                    expires_at_ns=2_000,
-                )
+            # Seed the 0387 schema with its own V1 columns. The current
+            # append method writes V2 scope fields introduced five revisions
+            # later, so it cannot seed historical migration fixtures.
+            legacy = prepare_trade_signal(
+                signal_id="1" * 64,
+                case_id="case-0389",
+                market_key="crypto:perp:BTC:USDT",
+                direction="long",
+                observed_at_ns=1_000,
+                expires_at_ns=2_000,
+            )
+            conn.execute(
+                "INSERT INTO trading_trade_signals "
+                "(signal_id,case_id,market_key,direction,observed_at_ns,expires_at_ns,payload) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                (
+                    legacy.value.signal_id,
+                    legacy.value.case_id,
+                    legacy.value.market_key,
+                    legacy.value.direction,
+                    legacy.value.observed_at_ns,
+                    legacy.value.expires_at_ns,
+                    legacy.payload_json,
+                ),
             )
             for index, kind in enumerate(kinds):
                 conn.execute(
@@ -2910,6 +2936,7 @@ def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_eve
 
         plan = conn.execute("SELECT * FROM trading_trade_plans").fetchone()
         assert plan["exit_reason"] == "recovery_safety_flatten" and "history_gap_reason" not in plan
+        assert plan["entry_scope_id"] == "legacy:" + "1" * 64
         with pytest.raises(psycopg.errors.RaiseException, match="trade_plan_terminal_immutable"):
             conn.execute("UPDATE trading_trade_plans SET exit_reason = 'external'")
         conn.rollback()

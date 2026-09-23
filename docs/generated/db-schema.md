@@ -764,6 +764,21 @@
 | `source` | `TEXT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_trade_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `BIGINT` | False | `None` |
+| `kind` | `TEXT` | False | `None` |
+| `source_fact_key` | `TEXT` | False | `None` |
+| `source_revision` | `TEXT` | False | `None` |
+| `payload_sha256` | `TEXT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `source_recorded_at_ms` | `BIGINT` | False | `None` |
+| `acknowledged_at_ms` | `BIGINT` | True | `None` |
+| `rejected_reason` | `TEXT` | True | `None` |
+| `conflict_sha256` | `TEXT` | True | `None` |
+
 ## `news_verdicts`
 
 | Column | Type | Nullable | Default |
@@ -810,6 +825,18 @@
 | `detail` | `TEXT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `trading_analysis_runtime`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `runtime_id` | `TEXT` | False | `None` |
+| `heartbeat_at_ms` | `BIGINT` | False | `None` |
+| `active_policy` | `TEXT` | False | `None` |
+| `model_name` | `TEXT` | True | `None` |
+| `model_configured` | `BOOLEAN` | False | `None` |
+| `publish_signals` | `BOOLEAN` | False | `None` |
+| `config_digest` | `TEXT` | False | `None` |
+
 ## `trading_candidate_gate_decisions`
 
 | Column | Type | Nullable | Default |
@@ -827,6 +854,38 @@
 | `first_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `last_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `attempt_count` | `INTEGER` | False | `1` |
+
+## `trading_case_decisions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `case_id` | `TEXT` | False | `None` |
+| `decision_id` | `TEXT` | False | `None` |
+| `policy_id` | `TEXT` | False | `None` |
+| `policy_version` | `TEXT` | False | `None` |
+| `input_ref` | `TEXT` | False | `None` |
+| `assessment_ref` | `TEXT` | True | `None` |
+| `action` | `TEXT` | False | `None` |
+| `decision` | `JSONB` | False | `None` |
+| `publish_status` | `TEXT` | False | `None` |
+| `publish_reason` | `TEXT` | True | `None` |
+| `decided_at_ms` | `BIGINT` | False | `None` |
+| `valid_until_ms` | `BIGINT` | False | `None` |
+
+## `trading_case_outcomes`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `case_id` | `TEXT` | False | `None` |
+| `axis` | `TEXT` | False | `None` |
+| `horizon_seconds` | `INTEGER` | False | `None` |
+| `label_version` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `return_bps` | `NUMERIC` | True | `None` |
+| `available_at_ms` | `BIGINT` | False | `None` |
+| `next_attempt_at_ms` | `BIGINT` | False | `0` |
+| `labeled_at_ms` | `BIGINT` | True | `None` |
+| `path_ref` | `TEXT` | True | `None` |
 
 ## `trading_cases`
 
@@ -849,6 +908,32 @@
 | `source_observed_at_ms` | `BIGINT` | True | `None` |
 | `trigger_persisted_at_ms` | `BIGINT` | True | `None` |
 | `policy_checks` | `JSONB` | True | `None` |
+| `trigger_id` | `TEXT` | True | `None` |
+| `run_kind` | `TEXT` | True | `None` |
+| `recheck_seq` | `INTEGER` | True | `None` |
+| `target_asset_id` | `TEXT` | True | `None` |
+| `target_selection` | `JSONB` | True | `None` |
+| `entry_scope_id` | `TEXT` | True | `None` |
+| `mapping_semantics_digest` | `TEXT` | True | `None` |
+| `root_expires_at_ms` | `BIGINT` | True | `None` |
+| `work_deadline_at_ms` | `BIGINT` | True | `None` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `claim_token` | `TEXT` | True | `None` |
+| `lease_until_ms` | `BIGINT` | True | `None` |
+| `claim_attempt` | `INTEGER` | False | `0` |
+| `analysis_status` | `TEXT` | True | `None` |
+| `evidence_ref` | `TEXT` | True | `None` |
+
+## `trading_entry_validity_checks`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `check_id` | `BIGINT` | False | `None` |
+| `entry_id` | `TEXT` | False | `None` |
+| `check_version` | `TEXT` | False | `None` |
+| `checked_at_ns` | `BIGINT` | False | `None` |
+| `allowed` | `BOOLEAN` | False | `None` |
+| `reason` | `TEXT` | False | `None` |
 
 ## `trading_execution_observations`
 
@@ -916,6 +1001,14 @@
 | `direction` | `TEXT` | True | `None` |
 | `payload` | `JSONB` | False | `None` |
 
+## `trading_signal_retirements`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `signal_id` | `TEXT` | False | `None` |
+| `reason` | `TEXT` | False | `None` |
+| `retired_at_ns` | `BIGINT` | False | `None` |
+
 ## `trading_trade_plans`
 
 | Column | Type | Nullable | Default |
@@ -943,6 +1036,7 @@
 | `terminal_at_ns` | `BIGINT` | True | `None` |
 | `exit_reason` | `TEXT` | True | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
+| `entry_scope_id` | `TEXT` | False | `None` |
 
 ## `trading_trade_signals`
 
@@ -956,6 +1050,40 @@
 | `observed_at_ns` | `BIGINT` | False | `None` |
 | `expires_at_ns` | `BIGINT` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
+| `account_slot` | `TEXT` | True | `None` |
+| `runtime_mode` | `TEXT` | True | `None` |
+| `entry_scope_id` | `TEXT` | True | `None` |
+| `asset_id` | `TEXT` | True | `None` |
+| `mapping_semantics_digest` | `TEXT` | True | `None` |
+
+## `trading_trigger_conflicts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `kind` | `TEXT` | False | `None` |
+| `source_fact_key` | `TEXT` | False | `None` |
+| `source_revision` | `TEXT` | False | `None` |
+| `attempted_sha256` | `TEXT` | False | `None` |
+| `original_sha256` | `TEXT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_triggers`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `trigger_id` | `TEXT` | False | `None` |
+| `kind` | `TEXT` | False | `None` |
+| `source_fact_key` | `TEXT` | False | `None` |
+| `source_revision` | `TEXT` | False | `None` |
+| `payload_sha256` | `TEXT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `asset_id` | `TEXT` | True | `None` |
+| `target_selection` | `JSONB` | False | `None` |
+| `first_visible_at_ms` | `BIGINT` | False | `None` |
+| `source_observed_at_ms` | `BIGINT` | False | `None` |
+| `root_expires_at_ms` | `BIGINT` | False | `None` |
+| `supersedes_ref` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `workers_runtime`
 

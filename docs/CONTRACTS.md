@@ -228,34 +228,33 @@ unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a
 delivery consumer settles `terminal/delivery_unavailable`.
 
-`trading.*` is the whole Trading surface and is `enabled: false` by default.
-`trading.enabled` controls only the Alpha/Signal lane. The accepted keys are:
+`trading.*` is `enabled: false` by default. When enabled, a separate Analysis
+process consumes the News trade-event outbox and runs a real model in shadow by
+default. `trading.analysis` accepts `model_name` (or the configured News triage
+model), `active_policy=trade_assessment_v1`, `publish_signals=false`,
+`root_ttl_seconds`, `model_timeout_seconds`, `max_active_cases`,
+`max_model_input_bytes`, `max_model_output_tokens`, `max_model_concurrent_calls`,
+`model_cost_budget_microusd` (default 5,000,000) with both route price ceilings
+in USD per million tokens (defaults 100 input / 500 output; all three are set or
+disabled together). These are conservative admission assumptions supplied by
+the operator, not the provider's reported charge; a returned actual cost over
+the cap blocks publication. The market budgets are `market_max_connections`,
+`market_max_cached_rows`, `market_weight_soft_limit_1m`,
+`max_watch_rechecks`, excluded economic asset IDs and reviewed native routes.
+A reviewed route states source symbol, canonical `asset_id`, exact native
+symbol, units per contract and an evidence reference. Unknown multipliers do
+not silently become one-unit routes. Model credentials use the existing `llm`
+endpoint and never enter the brief.
 
-- `enabled`;
-- `watchdog_enabled`, default `true`: the Workers Trading watchdog that alerts
-  through the configured News push provider when the Signal lane faults, a live
-  OI frame goes unanswered, the Runtime stops beating or keeps restarting,
-  Signals keep being refused, or a plan outlives its time exit (#680). It is the
-  only switch; thresholds are code-owned, and it is not a notification channel
-  of its own. It also alerts when the Runtime reports unexpected exposure,
-  including a venue that disagrees with its Cache (#680 PR-3). Its per-condition
-  episode state is the platform table
-  `platform_watchdog_alerts` (`20260922_0388`), written only by Workers;
-- `candidates.*`: `max_age_seconds`, `min_oi_value_usd` — a freshness budget and
-  a venue liquidity prior, never sizing and never Alpha. `symbol_cooldown_seconds`
-  and `max_rank_in_window` were retired by #348: a per-symbol re-entry delay is
-  what a lane needs when several positions can be open at once, and a rank ceiling
-  is selectivity, which the policy already owns. Signal TTL is the smaller of
-  180 seconds and this accepted freshness budget, so every valid setting keeps
-  the resulting Signal inside its absolute
-  `source_observed_at + max_age_seconds` deadline; a Case reaching that deadline
-  is `BLOCKED/source_stale` and emits no Signal;
-- `execution.mode`: `disabled|paper|live`, default `disabled`;
-- `execution.account_slot`, the one Binance USD-M account this deployment
-  executes for; with `execution.mode` it is the whole execution identity, and it
-  is also the namespace every deterministic client order id is derived from;
-- `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
-  Binance USD-M secret references;
+`trading.execution.mode` independently selects `disabled|paper|live`, default
+`disabled`. `execution.account_slot` identifies the one Binance USD-M account
+and deterministic client-order namespace. Operator-owned credential file paths
+belong only to the Runtime. `watchdog_enabled` controls the Workers alert task;
+its old OI v5 lane condition is retired at the Analysis cutover. The watchdog
+still alerts on Runtime heartbeat and restart faults, repeated Signal refusals,
+overdue plans, and unexpected exposure, including venue/Cache disagreement
+(#680 PR-3). Its per-condition episode state is written only by Workers to
+`platform_watchdog_alerts` (`20260922_0388`).
 
 `trading` has no `control` or `notifications` block: #528 deleted the Telegram
 command ingress and both never-run notification senders, and a config that still
@@ -269,27 +268,22 @@ TradingNode. `paper` and `live` require secure non-empty files and select the
 same canonical Nautilus owner with Binance `DEMO` and `LIVE` environments,
 respectively.
 
-There is no live symbol, route, quantity, notional, leverage, grant, reservation,
-approval, backend selector, or Intent-acceptance configuration, and no
-`regime.*`, `policy.*`, or model budget: an Alpha threshold in YAML is a rule
-with no version and no frozen evidence. Unknown retired keys fail strict
-settings validation. The Signal lane's poll cadence is App-owned and the
-Nautilus cadence is code-owned.
+The `trade_assessment_v1` policy compiles a frozen structured Agent answer:
+TRADE, NO_TRADE or bounded WATCH, six weighted factors per candidate, explicit
+known/unknown coverage, and evidence-key references. A TRADE can select only
+one offered long or short candidate and its code-generated exit plan. A partial
+score is not a calibrated probability or expected return. Invalid model output
+is named `invalid_assessment`; it never falls back to the retired v5 policy.
 
-The one production policy, `source_native_oi_smart_money_long_v5`, is
-code-owned and frozen onto every Case it decides, together with the per-check
-evidence (`policy_checks`: threshold, operator, measured value, pass/fail).
-It answers `long` or `no_trade` only; it cannot express a permission, an
-execution environment or a venue. There is no Trading model call and no
-`llm.trading_decision_model` key.
-
-`GET /api/trading/status` reports `decision.last_case_at_ms`, the newest
-`trading_cases.created_at_ms`: the Signal lane keeps no heartbeat row of its own,
-and Workers `/readyz` already states whether its process is alive. A pure-policy
-LONG is
-committed as exactly one `TradeSignalV1` plus `Case=SIGNAL_EMITTED`; `NO_TRADE`
-creates no Signal. The Signal is venue-neutral and carries no execution
-authority. The retired binding, Capital, capability, catalog, Intent, order,
+`GET /api/trading/status` reports current decision and Runtime projections.
+`GET /api/trading/cases/{case_id}/replay` reads frozen source, evidence and
+assessment references without calling market data or the model. A published
+TRADE commits one `TradeSignalV2` with the Case decision and state in one
+transaction; shadow TRADE and NO_TRADE create no online Signal. SignalV2
+contains account/mode isolation, `entry_scope_id`, native mapping digest,
+versioned exit parameters and a bounded entry-price envelope. Nautilus
+rechecks current Trading fact validity after persisting its scoped TradePlan
+and before sending an order. The retired binding, Capital, capability, catalog, Intent, order,
 replay and evidence-clock tables were dropped by `20260901_0347`; execution
 writes only `trading_operator_intents`, append-only
 `trading_execution_observations`, the slot-keyed current control projection, and
@@ -424,7 +418,7 @@ or a live path is unmentioned.
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/events`, `/api/news/wallets/events/{episode_id}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, market observations read straight from `news_items` and their typed facts, one observation with its group timeline, four-layer status, bounded quotes, one symbol's identity, and the chain wallet tape's own state — its roster, its ingest position, and every card it opened with the price receipt taken after it |
-| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions` | one owner per question the console asks: current execution/account readiness, frozen Case decisions, and the folded per-entry execution table. Three GETs; no write authority. #537 PR-5 deleted `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections, and #589 PR-2 the two `GET /api/trading/gate*` admission reads — five more public shapes over ledgers `/api/trading/executions` already reads folded or that no browser surface called, all still readable through `tracefold trading signals \| observations \| commands \| gate` |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/cases/{case_id}/replay`, `/api/trading/executions` | Execution readiness, scoped Case and analysis decisions, read-only frozen replay, and the folded per-entry execution table. Replay reads content-addressed evidence and the recorded assessment; it makes no market or model call. These GETs carry no order authority. |
 
 The public API is exactly the paths in `docs/generated/openapi.json` plus
 `/healthz`, `/readyz`, and `/metrics`; the table above says which owner answers
@@ -872,11 +866,9 @@ every Event this code can open.
   an invisible one.
 
 There is no `oi` block on `/api/news/status` and no `pipeline.telemetry_*_24h`
-counter (#553). The deterministic open-interest lane they described judged an
-Event, and market frames no longer open one; what the OI Strategy did in a
-window is answered by `/api/news/market?kind=oi`, and there is still no
-`trade_floors` (#331) — Admission's own answers are read with `tracefold
-trading gate`, and the thresholds that decided a Case travel with that Case.
+counter (#553). OI facts are readable at `/api/news/market?kind=oi`; current
+Trading admission is recorded in `news_trade_events`, `trading_triggers` and
+`trading_cases`. `tracefold trading gate` reads only historical OI v5 answers.
 
 The Chinese vocabulary behind `outcome`, `*_zh`, and `label_zh` lives in
 `tracefold.news.outcome` (admissions, `decide()` rules, throttle keys, error
@@ -1356,8 +1348,8 @@ the schema integration test instead of a duplicated prose allowlist.
   `known: false` with empty lists and **200**, not 404: every asset chip on the
   console links here, including tags that resolved to nothing, and that answer
   is what a reader following one came for. `underlying_key` is deliberately
-  absent — `crypto:{BASE}` is a Trading identity owned by
-  `tracefold.trading.contracts`, and a News route must not assert it.
+  absent — the canonical economic asset is owned by
+  `tracefold.platform.market_identity`, and a News route must not assert it.
 - Trading reads source-native public bars directly for Case evidence. The
   retired Trading venue-catalog and replay/evidence command surfaces have no
   current worker, CLI, or HTTP path.
@@ -1453,17 +1445,17 @@ Runtime facts, and status carries readiness plus bounded totals.
 - The HTTP console is read-only (#624). Operator commands are available through
   the local CLI only. The former browser command route, command request/receipt
   schemas, and the orphan `commands[]` control ledger payload are removed.
-- The admission ledger has no HTTP route. `GET /api/trading/gate` and
+- The historical OI v5 admission ledger has no HTTP route. `GET /api/trading/gate` and
   `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2: `/news/oi` was
   their one browser reader and #553 PR-1 deleted that console page with the OI
   Event each row was joined to. `tracefold trading gate [--source-key KEY]
-  [--since-ms N] [--limit N]` runs the same two statements — one bounded index
+  [--since-ms N] [--limit N]` runs two read-only statements — one bounded index
   scan of `trading_candidate_gate_decisions` in frame order, and one row by
   source key — and answers per Source the status, stage, named reason,
   retryability, frozen evidence (which carries the `gate_version` and
   `gate_config_digest` that decided the row), timestamps, attempt count and the
-  linked `case_id` when one exists. It publishes no Case state and no execution
-  state.
+  linked `case_id` when one exists. No current Analysis writer updates this
+  ledger; it publishes no current Case state or execution state.
 - `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
   Event Reaction: the feed the compact event-level aggregate (median signed
   return of the Triage primaries that price, with `state`

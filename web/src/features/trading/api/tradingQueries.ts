@@ -14,6 +14,7 @@ export type TradingExecutions = TradingSchemas["TradingExecutionsData"];
 export type TradingExecutionRow = TradingSchemas["TradingExecutionRowData"];
 export type TradingRealizedTotals = TradingSchemas["TradingRealizedTotalsData"];
 export type TradingAdmissionCount = TradingSchemas["TradingAdmissionCountData"];
+export type TradingAnalysisReplay = TradingSchemas["TradingAnalysisReplayData"];
 
 export const TRADING_REFETCH_MS = 15_000;
 // Runtime heartbeat facts last at most 5 s; live status must refresh before that budget ends.
@@ -76,6 +77,20 @@ export const useTradingCaseWithToken = (token: string, caseId: string | null) =>
         })
       ).data,
     staleTime: 5_000,
+  });
+
+export const useTradingAnalysisReplay = (token: string, caseId: string, enabled: boolean) =>
+  useQuery({
+    enabled: Boolean(token && caseId && enabled),
+    queryKey: [...queryKeys.tradingCases(caseId), "replay"],
+    queryFn: async () =>
+      (
+        await getApi<TradingAnalysisReplay>(`/api/trading/cases/${caseId}/replay`, {
+          etagKey: `trading-case-replay:${caseId}`,
+          token,
+        })
+      ).data,
+    staleTime: 60_000,
   });
 
 /**

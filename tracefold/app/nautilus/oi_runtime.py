@@ -9,6 +9,7 @@ and it lives on its own session.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import asdict
@@ -25,6 +26,7 @@ from tracefold.app.repository_session import RepositorySession
 from tracefold.app.repository_session import repositories as open_repositories
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.journal import (
+    EntryValidityReceipt,
     ExecutionJournal,
     JournalRow,
     ObservationFactory,
@@ -35,7 +37,7 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.strategy import OpenPlan, RuntimeControlSnapshot, RuntimeInputs
-from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradePlan, TradeSignalV1
+from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1, TradeSignalV2
 from tracefold.trading.storage.execution_stream import (
     ExecutionRuntimeState,
     materialize_execution_observation,
@@ -48,6 +50,7 @@ from tracefold.trading.storage.trade_plans import (
     prepare_trade_plan,
     prepare_trade_plan_update,
 )
+from tracefold.trading.trade_plan import TradePlan
 
 # How often the current row is rewritten when nothing about it changed. It is well inside the public
 # five-second stale budget, so a Runtime that stops projecting reads as stale rather than as healthy.
@@ -137,13 +140,25 @@ def load_runtime_inputs(
         mode=profile.mode,
         limit=MAX_OPEN_TRADE_PLANS,
     )
-    open_plans = tuple(
-        OpenPlan(
-            plan=TradePlan.model_validate({key: value for key, value in row.items() if key != "disposition_pending"}),
-            disposition_pending=bool(row["disposition_pending"]),
+    materialized: list[OpenPlan] = []
+    for row in rows:
+        plan = TradePlan.model_validate({key: value for key, value in row.items() if key != "disposition_pending"})
+        signal: TradeSignalV2 | None = None
+        checked = False
+        if plan.source == "signal" and plan.status == "prepared":
+            stored = repos.trading.trade_signal(plan.entry_id)
+            if stored is not None and stored[1].get("signal_version") == "trade_signal_v2":
+                signal = TradeSignalV2.model_validate_json(json.dumps(stored[1] | {"seq": stored[0]}))
+            checked = repos.trading.latest_entry_validity_check(plan.entry_id) is not None
+        materialized.append(
+            OpenPlan(
+                plan=plan,
+                disposition_pending=bool(row["disposition_pending"]),
+                signal=signal,
+                final_check_started=checked,
+            )
         )
-        for row in rows
-    )
+    open_plans = tuple(materialized)
     stop_exits = repos.trading.recent_stop_exits(
         account_slot=profile.account_slot,
         since_ns=now_ns - profile.risk.post_stop_cooldown_ns,
@@ -163,6 +178,13 @@ def commit_entry_plan(repos: RepositorySession, plan: TradePlan) -> PlanReceipt:
 
     values = prepare_trade_plan(plan)
     with repos.transaction():
+        scoped = repos.trading.trade_plan_for_scope(
+            account_slot=plan.account_slot,
+            mode=plan.runtime_mode_at_creation,
+            entry_scope_id=plan.entry_scope_id,
+        )
+        if scoped is not None and scoped["entry_id"] != plan.entry_id:
+            return PlanReceipt(plan, committed=False, reason="entry_scope_already_used")
         repos.trading.insert_trade_plan(values)
         stored = repos.trading.trade_plan(plan.entry_id)
     if stored is None:
@@ -291,11 +313,14 @@ class OiRuntimeDatabaseBridge:
             ),
         )
         self._step("entry_plan", lambda: self._commit_entry_plan(repos))
+        self._step("entry_validity", lambda: self._check_entry_validity(repos))
         self._step("journal", lambda: self._flush_journal(repos))
         self._step(
             "signals",
             lambda: self._signals.poll_once(
-                lambda slot, strategy, limit: load_unresolved_trade_signals(repos, slot, strategy, limit),
+                lambda slot, strategy, limit: load_unresolved_trade_signals(
+                    repos, slot, strategy, limit, runtime_mode=self._profile.mode
+                ),
             ),
         )
         self._step("projection", lambda: self._projector.write_once(repos))
@@ -309,8 +334,36 @@ class OiRuntimeDatabaseBridge:
             receipt = commit_entry_plan(repos, plan)
         except _ROW_REFUSALS as exc:
             logger.error("OI Runtime entry plan refused ({}): {}", plan.entry_id, type(exc).__name__)
-            receipt = PlanReceipt(plan, committed=False, reason="trade_plan_rejected")
+            scoped = repos.trading.trade_plan_for_scope(
+                account_slot=plan.account_slot,
+                mode=plan.runtime_mode_at_creation,
+                entry_scope_id=plan.entry_scope_id,
+            )
+            receipt = PlanReceipt(
+                plan,
+                committed=False,
+                reason="entry_scope_already_used" if scoped is not None else "trade_plan_rejected",
+            )
         self._journal.settle_prepare(receipt)
+
+    def _check_entry_validity(self, repos: RepositorySession) -> None:
+        plan = self._journal.pending_entry_validity()
+        if plan is None:
+            return
+        checked_at_ns = time.time_ns()
+        with repos.transaction():
+            allowed, reason = repos.trading.validate_signal_entry(
+                entry_id=plan.entry_id,
+                now_ns=checked_at_ns,
+            )
+        self._journal.settle_entry_validity(
+            EntryValidityReceipt(
+                entry_id=plan.entry_id,
+                allowed=allowed,
+                reason=reason,
+                checked_at_ns=checked_at_ns,
+            )
+        )
 
     def _flush_journal(self, repos: RepositorySession) -> None:
         """Write every due row in its own transaction; one failing row never holds up the next."""
@@ -402,7 +455,8 @@ def load_unresolved_trade_signals(
     account_slot: str,
     execution_strategy: str,
     limit: int,
-) -> tuple[TradeSignalV1, ...]:
+    runtime_mode: str | None = None,
+) -> tuple[TradeSignalV1 | TradeSignalV2, ...]:
     """Materialize Trading-owned rows at the App composition boundary."""
 
     rows = repos.trading.unresolved_trade_signals(
@@ -410,6 +464,7 @@ def load_unresolved_trade_signals(
         execution_strategy=execution_strategy,
         now_ns=time.time_ns(),
         limit=limit,
+        runtime_mode=runtime_mode,
     )
     return materialize_trade_signals(rows)
 

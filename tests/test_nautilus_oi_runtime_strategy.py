@@ -357,14 +357,15 @@ def test_a_spread_that_narrows_within_the_ttl_admits_the_entry() -> None:
     assert plan is not None and plan.entry_quantity > 0
 
 
-def test_orders_resting_on_the_instrument_make_the_entry_wait_rather_than_share_it() -> None:
+def test_orders_resting_on_the_instrument_end_the_new_entry_without_defer() -> None:
     runtime = unit_runtime(signals=(trade_signal(expires_at_ns=NOW_NS + 5 * SECOND_NS),))
     cached_protection(runtime, leg="stop", trigger=Decimal(9_800))
     runtime.pump()
     assert runtime.journal.pending_prepare() is None
+    assert {"disposition": "exposure_already_present"} in runtime.dispositions()
     runtime.advance(6 * SECOND_NS)
     runtime.pump()
-    assert {"disposition": "instrument_busy"} in runtime.dispositions()
+    assert runtime.journal.pending_prepare() is None
 
 
 def test_exposure_no_plan_claims_blocks_entries_is_recorded_and_is_never_flattened() -> None:

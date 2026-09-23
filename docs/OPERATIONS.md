@@ -16,14 +16,24 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
-### Trading Signal and Binance execution operation (#433-E)
+### Trading Analysis and Binance execution operation (#683)
 
 Execution remains `disabled` by default, so credentials are optional for the
-ordinary deployment. `trading.enabled` controls only the Alpha/Signal lane;
+ordinary deployment. `trading.enabled` starts the separate Analysis process;
 `trading.execution.mode` independently selects `disabled`, Binance USD-M
 `paper` (Demo), or Binance USD-M `live`. Paper and live run the same one-owner
 Nautilus Strategy/Risk/OMS/reconciliation path and differ only by account slot,
 mode, credential namespace, and Binance environment.
+
+Analysis runs `tracefold analysis` beside Serve and Workers. It
+drains News' durable catalyst/OI outbox independently of delivery, claims
+per-asset Cases with fenced leases, freezes market and model records under
+`~/.tracefold/cache/trading-analysis`, and labels due opportunity paths.
+`trading.analysis.publish_signals` is false by default. An unavailable model
+is recorded as unavailable; it never silently activates the retired OI v5
+policy. Turning on publication requires an operator-selected paper or live
+Runtime mode and a separately running Nautilus deployment. Changing that flag
+does not itself start Nautilus or grant execution authority.
 
 Run `uv run tracefold init` before the first current startup; canonical
 `make up` and `make deploy-image` already do so. It creates and permissions the
@@ -31,6 +41,8 @@ operator directory and never rewrites config content: a config still holding a
 retired key is refused by `Settings` validation naming that key, and the
 operator edits it (#589). For a direct schema upgrade, require this order:
 `uv run tracefold init`, `uv run tracefold config`, then `make db-migrate`.
+This cut removes the old `trading.candidates` setting; remove that key from an
+existing operator config before starting the new image.
 
 Run `uv run tracefold config` to inspect only the execution mode, account slot,
 risk section and resolved secret-file references. Never print or copy a
@@ -82,10 +94,11 @@ On top of the Cache the Strategy runs one invariant every five seconds, and on
 every fill and position event, over the Cache, the plans and the latest read of
 the venue's own positions:
 
-- a position whose entry order is terminal gets one reduce-only `STOP_MARKET` and
-  one reduce-only `TAKE_PROFIT_MARKET`, both triggered on the **mark price**, at the
-  plan's stop and take-profit distance from the average fill. A missing one is
-  placed again; a present one is never compared, resized or replaced. A stop or
+- a position with any entry fill gets one reduce-only `STOP_MARKET` and one
+  reduce-only `MARKET_IF_TOUCHED` take-profit order, both triggered on the
+  **mark price**, at the plan's stop and take-profit distance from the average
+  fill. A missing one is placed again; an existing one is resized or repriced
+  as partial fills change the position quantity or average price. A stop or
   take-profit the venue refuses with `-2021 would immediately trigger` means the
   condition is already met, so the position is closed at market under that leg's
   reason;
@@ -273,7 +286,7 @@ manual TTL are 5–120 seconds; control TTL is five minutes. There is no quantit
 notional, leverage, venue, order type, or direct order option. Manual direction
 enters the same Runtime gates, sizing, deterministic client-ID, order,
 protection and journal path as a Signal; it has no bypass (it only skips the
-post-stop cooldown, which belongs to the Signal lane).
+post-stop cooldown, which applies to automatic Signals).
 An accepted emergency halt is sticky for the Runtime lifetime: `/resume` is
 explicitly rejected as `emergency_halt_sticky` and cannot manufacture a resumed
 state.
@@ -432,7 +445,7 @@ idempotently creates empty mode-`0600` Binance credential placeholders. Restores
 must land in a fresh PostgreSQL cluster carrying that same current login shape.
 
 Do not seed a Case to make the console non-empty. A Case exists only because a
-source frame passed live admission.
+News trade event passed Analysis admission.
 
 Rollback is permitted only while the Binance account is authoritatively flat and
 only to an image compatible with the live schema. A non-flat incident rolls
@@ -441,19 +454,14 @@ closed, and `/flatten account` is the operator's convergence command.
 
 ### Trading watchdog
 
-Every failure the #680 audit found was silent: the Signal lane stopped 35 times
-for up to 31 hours, 391 live OI frames were never answered, the Runtime
-restarted 110 times a day, and 21 Signals in a row were refused for three and a
-half days. The `trading-watchdog` Workers task (capability `trading_watchdog`)
-reads durable facts every 60 seconds and tells the operator through the push
+The `trading-watchdog` Workers task (capability `trading_watchdog`)
+reads durable execution facts every 60 seconds and tells the operator through the push
 provider `news.push.*` already configures — the Feishu webhook in this
 deployment, or Telegram. It is alert-only: it never pauses, blocks, flattens,
 retries or repairs anything.
 
 | Condition | Fires when | Read from |
 | --- | --- | --- |
-| `signal_lane_faulted` | `trading_signal_lane` is `faulted` | this Workers process's capability report |
-| `oi_frames_unanswered` | a live, non-historical OI frame durable for over 10 minutes (and under 12 hours) has no admission row | `news_oi_signals`, `trading_candidate_gate_decisions` |
 | `runtime_heartbeat_stale` | `execution.mode` is `paper`/`live` and the Runtime row's heartbeat is over 60 s old, or there is no row | `trading_execution_runtime_state` |
 | `runtime_restart_loop` | more than 3 Runtime generations (distinct `started_at_ns`) seen starting within the last hour | the same row, sampled every pass |
 | `signal_refusal_streak` | the newest 5 or more `signal_disposition` observations are all something other than `accepted`; the message carries the reason histogram | `trading_execution_observations` |
@@ -1027,17 +1035,16 @@ tracefold workers
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
      news-triage, news-deliverer, news-janitor); the bounded polling loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
-     when Trading is enabled, trading-signal-lane, and trading-watchdog when
+     when Trading is enabled, trading-watchdog when
      News push can deliver;
      workers-control
 ```
 
-Quote plan/store, the wallet tape and the Trading Signal lane use ordinary
+Quote plan/store and the wallet tape use ordinary
 business permits. Event Reaction and the Janitor keep the one-slot
 heavy-business gate over the same pool, so heavy work is serialized without
 blocking display quote progress or consuming the four News hot-path slots. The
-Signal lane shared that gate until #680: queued behind a retention sweep for
-the gate's 16 s admission budget, one refused turn stopped it for good. Quote provider calls are
+Quote provider calls are
 bounded to 12 mandatory current source groups (concurrency 4, 10 s deadline)
 plus at most two post-store Binance day reads; its 20 s cadence is start-based,
 non-overlapping, and does not catch up. Reactions remain bounded to 32 merged
@@ -1194,7 +1201,7 @@ The separate loopback Workers probe answers two questions, not one. `ok` is
 basic readiness: this process still owns PostgreSQL, its schema and its
 singleton session. `capabilities` is a separate object keyed by capability name
 -- `news_ingestion`, `news_editorial`, `news_delivery`, `news_instruments`,
-`news_quotes`, `news_reactions`, `market_notifications`, `trading_signal_lane`,
+`news_quotes`, `news_reactions`, `market_notifications`,
 `trading_watchdog` -- each with a `state` of
 `running`, `faulted`, `unavailable` or `disabled` and the reason that put it
 there. The same object is persisted on `workers_runtime.capabilities` and
@@ -1208,13 +1215,8 @@ An unexpected program error in one *optional* business task stops that task,
 records its capability `faulted` with the failure that stopped it, and leaves
 every other task running. Nothing restarts it: recovery is an operator restart
 after the fix, which is why a `faulted` capability is a page-worthy fact even
-while readiness stays 200 -- and why the Trading watchdog pages a faulted
-`trading_signal_lane` (see [Trading watchdog](#trading-watchdog)). A Signal lane
-turn the database refused (`ResourceAdmissionTimeout`: admission, lock,
-statement, transaction or connection timeout) is not a program error: the lane
-logs it, counts an errored turn, and runs the next one after a doubling backoff
-capped at 30 s. Until #680 that timeout faulted the lane, 33 times out of 35,
-for up to 31 hours. A push sender that cannot be constructed from the
+while readiness stays 200. Analysis has its own process and its status is
+reported on `/api/trading/status`; Workers does not own its lifecycle. A push sender that cannot be constructed from the
 current configuration reports `news_delivery` `unavailable` with the
 configuration reason, the Deliverer settles those Events `delivery_unavailable`
 rather than presenting them as sent, and `/api/news/status` reports
@@ -1868,87 +1870,30 @@ remaining eligible count, last-turn deletes, oldest retained age and error.
 Feed shows Events from the first frame after deployment; there is no backfill
 of pre-V3 history.
 
-### Why an OI frame produced no case
+### Current Analysis handoff and historical OI admission
 
-`trading_candidate_gate_decisions` — the admission ledger — holds one row per
-`source_key` and answers this without a replay. It is the only answer: there is
-no counter beside it that can disagree, and no second row for the same frame
-under a different rulebook.
+For current OI and catalyst inputs, inspect the News outbox and Trading
+Trigger/Case facts. `news_trade_events` records the immutable source payload,
+its first recorded time, acknowledgement or rejection, and any conflicting
+digest. `trading_triggers` preserves the accepted revision; `trading_cases`
+records the target selection, pending/running/terminal state and named analysis
+status. `GET /api/trading/status` reports the Analysis heartbeat and configured
+policy. `GET /api/trading/cases` and the read-only Case replay show what was
+frozen, judged and published. News card delivery is independent of this path.
 
-Start from the window of answers. #589 PR-2 deleted `GET /api/trading/gate` and
-`GET /api/trading/gate/{event_id}` — #553 PR-1 had already removed the OI frame
-table that was their only browser reader — and this command runs the same two
-statements against the same ledger:
+`trading_candidate_gate_decisions` contains **historical OI v5 answers only**.
+The retired lane no longer writes, sweeps or purges it. For a pre-cutover
+source, the local read-only command remains available:
 
 ```bash
 tracefold trading gate --limit 100
 tracefold trading gate --source-key 'oi:<event_id>:oi_signal_v1'
 ```
 
-Without `--source-key` it is one admission answer per source in the window
-(`--since-ms`, default 24 h), newest frame first. Every row carries `status`,
-`stage`, `reason`, `retryable`, `attempt_count`, `case_id` and the stored
-`evidence` — the measurement it failed on and the threshold it failed against.
-
-The status vocabulary is `DEFERRED | REJECTED | CASE_CREATED | EXPIRED` and
-`20260903_0355` narrowed the CHECK to exactly those four; the stages run
-`source -> venue -> eligibility -> market_context -> freeze` and the reason
-vocabulary is closed. Anything outside either set is a bug, not a new rule.
-
-For the same population as a distribution, or for the two clocks on either side
-of admission, ask the ledger directly. A recent source with no recent
-`CASE_CREATED` is an admission question; a recent `CASE_CREATED` with no Signal
-is a strategy question, and `trading signals` plus the `signal_disposition`
-observations answer what the Runtime then did with it:
-
-```sql
-SELECT status, stage, reason, count(*) AS n
-  FROM trading_candidate_gate_decisions
- WHERE trigger_kind = 'oi'
-   AND source_observed_at_ms >= (extract(epoch FROM now()) * 1000)::bigint - 86400000
- GROUP BY GROUPING SETS ((status), (stage, reason))
- ORDER BY n DESC;
-
-SELECT status, stage, reason, retryable, attempt_count, evidence, case_id
-  FROM trading_candidate_gate_decisions
- WHERE source_key = 'oi:<event_id>:oi_signal_v1';
-```
-
-The distribution is keyed on the *frame's* own observation time, so a runner
-that restarts and re-reads a backlog cannot move yesterday's frames into today.
-
-`evidence` carries the rulebook that reached the answer — `gate_version` and
-`gate_config_digest` — beside the numbers it read (`20260904_0360`).
-
-The ledger is the lane's cursor (#680 RC7). Every turn reads the frames that
-became durable inside the last `max_age` — the only ones that can still be
-admitted — asks the ledger which of them already have an answer, and evaluates
-only the rest: frames with no row, and frames whose row is still `DEFERRED`. A
-terminal answer is written once and never read again, so `attempt_count` is 1
-for a frame answered on first look and counts the re-evaluations of a row that
-was `DEFERRED`; before #680 every terminal row was rewritten every two-second
-turn (median 148 times per frame). Once a minute, and on the first turn after a
-restart, the turn is a *sweep*: it reads the last 12 hours instead
-(`ANSWER_HORIZON_MS`), so every frame an outage hid gets its answer —
-`EXPIRED` with `eligibility:trigger_stale`, since nothing about the fact was
-wrong and the lane simply was not looking — instead of no row at all, which is
-what 391 live frames were left with before. The sweep also closes a
-`DEFERRED` row whose frame is past the trigger budget as `EXPIRED`, keeping the
-stage and reason it was waiting on, and runs the 90-day retention in bounded
-batches. `DEFERRED` is the only non-terminal state and means a later scan could
-genuinely answer differently (`market_data_unavailable` is the only rule that
-still writes one).
-
-Two adjacent situations are *not* refusals and read as such: no row at all for a
-live frame means the lane has not answered it — outside the 12-hour horizon, or
-the lane is not running, which the [Trading watchdog](#trading-watchdog) pages
-after ten minutes — and a source whose case was already created reports
-`CASE_CREATED` with the `case_id`, which is the link to `trading_cases`.
-
-Changing a threshold does not rewrite an answer: a terminal row keeps the status,
-stage, reason and evidence it was decided with, including the digest of the
-configuration that decided it. Only a still-`DEFERRED` row can be answered
-differently by the next scan, which is what `DEFERRED` means.
+A current source absent from that ledger is expected; use its outbox and Case
+records. Historical rows retain their original status, stage, reason, evidence
+and timestamps for audit. Neither the old ledger nor its CLI has current
+signal or order authority.
 
 ### OI research replay
 

@@ -43,7 +43,6 @@ MARKET_PATH = (
     "tracefold/news/storage/market.py",
     "tracefold/app/http/routes/market.py",
     "tracefold/app/http/schemas/market.py",
-    "tracefold/app/workers/wiring/news_to_trading.py",
     "tracefold/news/storage/trade_projection.py",
 )
 

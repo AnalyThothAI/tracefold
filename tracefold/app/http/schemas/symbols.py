@@ -5,7 +5,7 @@ Deliberately identity only. Everything else the page shows already has an endpoi
 second copy of any of those here would be a second answer to a question that already has one.
 
 `underlying_key` is deliberately absent even though the design's card shows it. `crypto:{BASE}` is a
-Trading identity — `tracefold.trading.contracts.underlying_key` owns it — and a News route emitting it
+Trading identity — `tracefold.platform.market_identity.AssetId` owns it — and a News route emitting it
 would be News asserting something about the Signal lane. The card gets it from the trading section, whose
 own endpoint resolved it (#207 PR-W4).
 """

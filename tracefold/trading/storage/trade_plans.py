@@ -49,6 +49,20 @@ class TradePlanStorage:
         ).fetchone()
         return None if row is None else dict(row)
 
+    def trade_plan_for_scope(
+        self,
+        *,
+        account_slot: str,
+        mode: str,
+        entry_scope_id: str,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            f"SELECT {_PLAN_COLUMNS} FROM trading_trade_plans "  # noqa: S608
+            "WHERE account_slot=%s AND runtime_mode_at_creation=%s AND entry_scope_id=%s",
+            (account_slot, mode, entry_scope_id),
+        ).fetchone()
+        return None if row is None else dict(row)
+
     def open_trade_plans(self, *, account_slot: str, mode: str, limit: int) -> tuple[dict[str, Any], ...]:
         """Every plan of this slot and mode that has not ended, with whether its input still owes a verdict.
 

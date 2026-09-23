@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any, Final
+from typing import Any, Final, cast
 
 # S608 exemptions below interpolate only closed, module-owned history predicates; all values stay bound.
 from ..liquidations import LiquidationFact
@@ -25,6 +25,7 @@ from ..smart_money import SmartMoneyFact
 from ..source_contracts import MARKET_PROVIDER
 from .feed_sql import EDITORIAL_EVENT_SQL
 from .sql_values import _dumps
+from .trade_projection import TradeProjectionStorage
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
 # The claim, and the whole of it. `FOR UPDATE SKIP LOCKED` inside the CTE is what lets two claimers
@@ -427,6 +428,7 @@ class DecisionStorage:
         measurement_definition: str,
         source_item_id: str,
         source_venue: str | None,
+        ingest_mode: str = "live",
     ) -> None:
         """Append one parsed frame to the OI ledger. Idempotent on the Item that produced it.
 
@@ -448,7 +450,7 @@ class DecisionStorage:
         proven = (
             source_strategy_id is not None and source_contract_version is not None and measurement_window_ms is not None
         )
-        self.conn.execute(
+        cursor = self.conn.execute(
             """
             INSERT INTO news_oi_signals (
               event_id, metric_version, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,
@@ -484,6 +486,36 @@ class DecisionStorage:
                 int(now_ms),
             ),
         )
+        if cursor.rowcount:
+            cast(TradeProjectionStorage, self).enqueue_trade_event(
+                kind="oi",
+                source_fact_key=event_id,
+                source_revision=metric_version,
+                payload={
+                    "kind": "oi",
+                    "source_event_ref": event_id,
+                    "evidence_ref": source_item_id,
+                    "evidence_sha": None,
+                    "producer_identity": {
+                        "provider": provider,
+                        "strategy": source_strategy_id,
+                        "contract": source_contract_version,
+                    },
+                    "assets": [{"symbol": symbol, "market_type": "crypto", "role": "primary"}],
+                    "direction": direction,
+                    "oi_change_bps": int(oi_change_bps),
+                    "oi_value_usd": int(oi_value_usd),
+                    "whale_long_profit_bps": int(whale_long_profit_bps),
+                    "whale_oi_ratio_bps": int(whale_oi_ratio_bps),
+                    "measurement_window_ms": measurement_window_ms,
+                    "source_venue": source_venue,
+                    "provider_event_at_ms": int(observed_at_ms),
+                    "source_received_at_ms": int(received_at_ms),
+                    "source_recorded_at_ms": int(now_ms),
+                    "ingest_mode": ingest_mode,
+                },
+                source_recorded_at_ms=now_ms,
+            )
 
     def insert_market_liquidation(self, *, fact: LiquidationFact, ingest_mode: str, now_ms: int) -> None:
         """Append one normalized liquidation report. Provider replays are idempotent by source key."""

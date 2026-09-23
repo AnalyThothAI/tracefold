@@ -1,5 +1,4 @@
 """News-owned point-in-time projection read by App composition for Trading.
-
 The row contracts below are the published shape of that projection. They are `TypedDict`s
 because the rows *are* the SELECT lists — naming the columns is the whole contract, and a runtime
 model here would coerce values PostgreSQL already typed and turn a nullable LEFT JOIN column into a
@@ -8,62 +7,16 @@ which is what makes the App-side mapper break at type-check time instead of at 0
 A version string sat above them for thirteen revisions, restating in prose what the `TypedDict`s
 already state in types, and it was never compared with anything in production (#537 PR-4).
 
-They say nothing about *trade* eligibility: freshness, the venue rule and the liquidity floor live in
-the Signal lane's own pure rules. This side owns the point-in-time boundaries and the deterministic
-order, and nothing about the editorial pipeline that runs beside the OI ledger (#510).
+The outbox freezes News facts in their owning transaction. Analysis applies Trading
+identity and policy after acknowledging the public projection.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any, TypedDict
-
-# A fact this ledger reconstructed rather than received is excluded from every read below (#553).
-# `historical` rows carry their original provider and host stamps but became durable at the rebuild
-# moment, so treating one as a trigger would author a Case from a measurement no scan could have seen
-# at the time -- and replaying a frozen window would then disagree with what the live lane did. They
-# stay fully readable through the market surface, which is where a reader asks about them.
-#
-# One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
-# 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
-# is about eleven rows an hour on the News lane and nothing like a full lane on the OI one, so this is
-# roughly twenty times the volume it has to carry. It is still a ceiling, not a promise: a lane that
-# comes back with exactly this many rows was truncated, and the funnel's `oi_rows` / `news_rows`
-# counters are where that shows.
-TRADE_PROJECTION_ROW_LIMIT = 256
-
-
-class OiTradeProjectionRow(TypedDict):
-    """One row of the deterministic OI ledger, with the ingest mode of the Item it was parsed from.
-
-    Sixteen keys and no judgment: `news_oi_signals` is the fact, and whether the fact may reach capital
-    is the Signal lane's own question. `metric_version` is half the row's primary key, so the pair
-    `(event_id, metric_version)` is the durable source identity a consumer files its answer under.
-    """
-
-    event_id: str
-    metric_version: str
-    source_item_id: str
-    symbol: str
-    direction: str
-    oi_change_bps: int
-    oi_value_usd: int
-    whale_long_profit_bps: int
-    whale_oi_ratio_bps: int
-    observed_at_ms: int
-    # When the ledger row became durable, which is the earliest instant any consumer could have read it.
-    available_at_ms: int
-    ingest_mode: str
-    # What the provider proves about the measurement, not about the market (#265). Nullable together:
-    # a `NULL` window means unproven, and it is the answer a consumer must act on rather than default.
-    # `whale_long_profit_bps` is the provider's own `Whale Long Profit N%` and nothing more — not an
-    # account count, not a total unrealised PnL, and not "every smart-money account is in profit".
-    source_strategy_id: str | None
-    source_contract_version: str | None
-    measurement_window_ms: int | None
-    # The provider's own venue text, as the ledger froze it. Nullable: a frame whose provider metadata
-    # carried no source is still a fact, and the consumer refuses it by name rather than guessing.
-    venue: str | None
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
+from typing import Any, TypedDict, cast
 
 
 class TradeInstrumentProjectionRow(TypedDict):
@@ -85,186 +38,91 @@ class TradeInstrumentProjectionRow(TypedDict):
     observed_at_ms: int
 
 
-class TradeFixedWindowOiSourceRow(TypedDict):
-    """Complete News-owned OI source identity for one fixed acceptance window."""
-
-    event_id: str
-    metric_version: str
-    source_venue: str | None
-    observed_at_ms: int
-    available_at_ms: int
-    created_at_ms: int
+class TradeEventRow(TypedDict):
+    event_id: int
+    kind: str
+    source_fact_key: str
+    source_revision: str
+    payload_sha256: str
+    payload: dict[str, object]
+    source_recorded_at_ms: int
+    conflict_sha256: str | None
 
 
 class TradeProjectionStorage:
     conn: Any
 
-    def trade_candidate_oi_rows(
+    def enqueue_trade_event(
         self,
         *,
-        metric_version: str,
-        after_created_at_ms: int,
-        until_created_at_ms: int,
-        limit: int = TRADE_PROJECTION_ROW_LIMIT,
-    ) -> list[OiTradeProjectionRow]:
-        """Every OI fact this metric version persisted in the window, and the ingest mode behind it.
+        kind: str,
+        source_fact_key: str,
+        source_revision: str,
+        payload: Mapping[str, object],
+        source_recorded_at_ms: int,
+    ) -> bool:
+        """Freeze a public fact in the producer's own transaction.
 
-        The read is one ledger and one Item column (#510). It used to reach the same numbers through the
-        editorial pipeline: the triage verdict for the frame, six `jsonb` equalities re-proving that the
-        verdict's copy of the measurements still matched the ledger's, the currently active learning
-        arm's epoch, four News version literals, and the leader Item's title split on whitespace for the
-        provider token. Every one of those was upstream of the numbers rather than part of them, so a
-        News policy bump — `news_triage_policy_v11` to `v12` in #504 — silently stopped Trading's
-        projection and forced an edit to Trading's own contract. `news_oi_signals` is where the parser
-        writes the fact; this reads the fact.
-
-        What this read proves is only that the fact exists and where it came from. It decides nothing
-        about eligibility: `ingest_mode`, the liquidity floor, freshness and the venue rule are all the
-        Signal lane's, with a named durable answer each, which is what keeps `oi_rows = 0` answerable.
-
-        The window is on `created_at_ms` — when the ledger row became durable — because that, not the
-        provider's observation clock, is when a scan could first have seen it. Newest first at the limit
-        (#211): every row a consumer can act on *now* is at the recent end of a window wide enough to
-        hold an hour of superseded context, so truncating the far end costs context and truncating the
-        near end would cost the triggers.
+        Retries retain the first payload and first recorded time. A different
+        payload on the same identity is visible as a conflict, never an overwrite.
         """
 
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        cursor = self.conn.execute(
+            """
+            INSERT INTO news_trade_events
+              (kind, source_fact_key, source_revision, payload_sha256, payload, source_recorded_at_ms)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s)
+            ON CONFLICT (kind, source_fact_key, source_revision) DO UPDATE
+              SET conflict_sha256 = CASE
+                  WHEN news_trade_events.payload_sha256 <> EXCLUDED.payload_sha256
+                  THEN EXCLUDED.payload_sha256 ELSE news_trade_events.conflict_sha256 END
+            RETURNING payload_sha256
+            """,
+            (kind, source_fact_key, source_revision, digest, serialized, int(source_recorded_at_ms)),
+        )
+        row = cursor.fetchone()
+        return row is not None and row["payload_sha256"] == digest
+
+    def unacknowledged_trade_events(self, *, limit: int) -> list[TradeEventRow]:
+        """Drain the unconfirmed set, never a sequence high-water mark."""
+
+        if not 1 <= limit <= 512:
+            raise ValueError("trade_event_batch_invalid")
         rows = self.conn.execute(
             """
-            SELECT s.event_id,
-                   s.metric_version,
-                   s.source_item_id,
-                   s.symbol,
-                   s.direction,
-                   s.oi_change_bps,
-                   s.oi_value_usd,
-                   s.whale_long_profit_bps,
-                   s.whale_oi_ratio_bps,
-                   s.observed_at_ms,
-                   s.available_at_ms,
-                   i.first_ingest_mode AS ingest_mode,
-                   s.source_strategy_id,
-                   s.source_contract_version,
-                   s.measurement_window_ms,
-                   s.source_venue AS venue
-              FROM news_oi_signals s
-              JOIN news_items i ON i.item_id = s.source_item_id
-             WHERE s.metric_version = %s
-               AND NOT s.historical
-               AND s.created_at_ms > %s
-               AND s.created_at_ms <= %s
-             ORDER BY s.created_at_ms DESC, s.event_id DESC
-             LIMIT %s
+            SELECT event_id, kind, source_fact_key, source_revision, payload_sha256,
+                   payload, source_recorded_at_ms, conflict_sha256
+              FROM news_trade_events
+             WHERE acknowledged_at_ms IS NULL AND rejected_reason IS NULL
+             ORDER BY event_id LIMIT %s
             """,
-            (
-                metric_version,
-                int(after_created_at_ms),
-                int(until_created_at_ms),
-                int(limit),
-            ),
+            (limit,),
         ).fetchall()
-        return [_oi_projection_row(row) for row in rows]
+        return [cast(TradeEventRow, dict(row)) for row in rows]
 
-    def trade_evidence_oi_rows(
-        self,
-        *,
-        metric_version: str,
-        start_observed_at_ms: int,
-        end_observed_at_ms: int,
-        known_at_or_before_ms: int,
-        available_at_or_before_ms: int,
-        limit: int = TRADE_PROJECTION_ROW_LIMIT,
-    ) -> list[OiTradeProjectionRow]:
-        """Freeze sources observed in the batch window and durable by its capture clock (#377).
-
-        The same ledger the live read takes (#510). The two used to differ only in their window and in
-        nothing else that mattered, yet both carried the verdict join, so a News identity move broke
-        replay and the live lane in one step.
-        """
-
-        rows = self.conn.execute(
+    def acknowledge_trade_event(self, *, event_id: int, payload_sha256: str, now_ms: int) -> bool:
+        cursor = self.conn.execute(
             """
-            SELECT s.event_id,
-                   s.metric_version,
-                   s.source_item_id,
-                   s.symbol,
-                   s.direction,
-                   s.oi_change_bps,
-                   s.oi_value_usd,
-                   s.whale_long_profit_bps,
-                   s.whale_oi_ratio_bps,
-                   s.observed_at_ms,
-                   s.available_at_ms,
-                   i.first_ingest_mode AS ingest_mode,
-                   s.source_strategy_id,
-                   s.source_contract_version,
-                   s.measurement_window_ms,
-                   s.source_venue AS venue
-              FROM news_oi_signals s
-              JOIN news_items i ON i.item_id = s.source_item_id
-             WHERE s.metric_version = %s
-               AND NOT s.historical
-               AND s.available_at_ms <= %s
-               AND s.observed_at_ms >= %s
-               AND s.observed_at_ms < %s
-               AND s.created_at_ms <= %s
-             ORDER BY s.observed_at_ms, s.event_id
-             LIMIT %s
+            UPDATE news_trade_events SET acknowledged_at_ms = %s
+             WHERE event_id = %s AND payload_sha256 = %s
+               AND acknowledged_at_ms IS NULL AND rejected_reason IS NULL
             """,
-            (
-                metric_version,
-                int(available_at_or_before_ms),
-                int(start_observed_at_ms),
-                int(end_observed_at_ms),
-                int(known_at_or_before_ms),
-                int(limit),
-            ),
-        ).fetchall()
-        return [_oi_projection_row(row) for row in rows]
+            (int(now_ms), int(event_id), payload_sha256),
+        )
+        return bool(cursor.rowcount)
 
-    def trade_fixed_window_oi_sources(
-        self,
-        *,
-        metric_version: str,
-        start_observed_at_ms: int,
-        end_observed_at_ms: int,
-        drain_cutoff_ms: int,
-        limit: int,
-    ) -> list[TradeFixedWindowOiSourceRow]:
-        """Complete, bounded News source universe known by the preregistered drain cutoff."""
-
-        rows = self.conn.execute(
+    def reject_trade_event(self, *, event_id: int, payload_sha256: str, reason: str) -> bool:
+        cursor = self.conn.execute(
             """
-            SELECT s.event_id, s.metric_version, s.source_venue,
-                   s.observed_at_ms, s.available_at_ms, s.created_at_ms
-              FROM news_oi_signals s
-             WHERE s.metric_version = %s
-               AND NOT s.historical
-               AND s.observed_at_ms >= %s AND s.observed_at_ms < %s
-               AND s.available_at_ms <= %s AND s.created_at_ms <= %s
-             ORDER BY s.observed_at_ms, s.event_id
-             LIMIT %s
+            UPDATE news_trade_events SET rejected_reason = %s
+             WHERE event_id = %s AND payload_sha256 = %s
+               AND acknowledged_at_ms IS NULL AND rejected_reason IS NULL
             """,
-            (
-                metric_version,
-                int(start_observed_at_ms),
-                int(end_observed_at_ms),
-                int(drain_cutoff_ms),
-                int(drain_cutoff_ms),
-                int(limit),
-            ),
-        ).fetchall()
-        return [
-            TradeFixedWindowOiSourceRow(
-                event_id=str(row["event_id"]),
-                metric_version=str(row["metric_version"]),
-                source_venue=None if row["source_venue"] is None else str(row["source_venue"]),
-                observed_at_ms=int(row["observed_at_ms"]),
-                available_at_ms=int(row["available_at_ms"]),
-                created_at_ms=int(row["created_at_ms"]),
-            )
-            for row in rows
-        ]
+            (reason, int(event_id), payload_sha256),
+        )
+        return bool(cursor.rowcount)
 
     def trade_candidate_instrument(
         self,
@@ -355,26 +213,3 @@ class TradeProjectionStorage:
             )
             for row in rows
         ]
-
-
-def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
-    """Name every selected column. No coercion: psycopg already returns the column's own type."""
-
-    return OiTradeProjectionRow(
-        event_id=row["event_id"],
-        metric_version=row["metric_version"],
-        source_item_id=row["source_item_id"],
-        symbol=row["symbol"],
-        direction=row["direction"],
-        oi_change_bps=row["oi_change_bps"],
-        oi_value_usd=row["oi_value_usd"],
-        whale_long_profit_bps=row["whale_long_profit_bps"],
-        whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
-        observed_at_ms=row["observed_at_ms"],
-        available_at_ms=row["available_at_ms"],
-        ingest_mode=row["ingest_mode"],
-        source_strategy_id=row["source_strategy_id"],
-        source_contract_version=row["source_contract_version"],
-        measurement_window_ms=row["measurement_window_ms"],
-        venue=row["venue"],
-    )

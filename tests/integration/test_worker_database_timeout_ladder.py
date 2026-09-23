@@ -65,7 +65,7 @@ def test_quote_and_the_signal_lane_progress_while_reaction_holds_the_heavy_gate(
         return read_one(repos)
 
     def lane_turn(repos) -> int:
-        repos.trading.gate_answers(source_keys=["oi:ladder:oi_signal_v1"])
+        repos.trading.recent_signal_dispositions(limit=1)
         return 1
 
     async def scenario() -> None:
@@ -84,7 +84,7 @@ def test_quote_and_the_signal_lane_progress_while_reaction_holds_the_heavy_gate(
 
             assert (
                 await asyncio.wait_for(
-                    trading.read("trading_signal_lane_answers", lane_turn, timeout_seconds=1.0),
+                    trading.read("trading_analysis_facts", lane_turn, timeout_seconds=1.0),
                     timeout=1.0,
                 )
                 == 1

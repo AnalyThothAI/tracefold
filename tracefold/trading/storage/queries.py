@@ -49,7 +49,9 @@ TRADING_GATE_COUNTS_SQL = (
 _CASE_COLUMNS = """
     case_id, underlying_key, trigger_kind, primary_source_key, manifest,
     manifest_sha256, state, policy_decision, policy_reason, policy_checks,
-    observed_at_ms, created_at_ms AS case_created_at_ms, decided_at_ms
+    observed_at_ms, created_at_ms AS case_created_at_ms, decided_at_ms,
+    trigger_id, target_asset_id, target_selection, entry_scope_id,
+    mapping_semantics_digest, analysis_status, evidence_ref
 """
 
 # `GET /api/trading/cases?case_id=<id>`: the drawer's whole Case read, by primary key.
@@ -65,6 +67,17 @@ CONSOLE_CASE_BY_ID_SQL = f"""
       FROM trading_cases
      WHERE case_id = %(case_id)s
 """  # noqa: S608 -- a module-owned column list; the identity stays bound
+
+TRADING_CASE_DECISION_SQL = (
+    "SELECT decision_id, policy_id, policy_version, assessment_ref, "
+    "action, decision, publish_status, publish_reason, decided_at_ms, valid_until_ms "
+    "FROM trading_case_decisions WHERE case_id=%s"
+)
+TRADING_CASE_OUTCOMES_SQL = (
+    "SELECT axis,horizon_seconds,label_version,status,return_bps,available_at_ms,"
+    "labeled_at_ms,path_ref FROM trading_case_outcomes WHERE case_id=%s "
+    "ORDER BY axis,horizon_seconds"
+)
 
 
 def console_cases_statement(
@@ -409,7 +422,20 @@ class QueryStorage:
         """The one frozen Case behind `?case_id=<id>`. There is at most one: it is the primary key."""
 
         row = self.conn.execute(CONSOLE_CASE_BY_ID_SQL, {"case_id": str(case_id)}).fetchone()
-        return None if row is None else dict(row)
+        if row is None:
+            return None
+        result = dict(row)
+        if result["trigger_id"] is not None:
+            decision = self.conn.execute(TRADING_CASE_DECISION_SQL, (case_id,)).fetchone()
+            result["analysis_decision"] = dict(decision) if decision is not None else None
+            result["analysis_outcomes"] = [
+                dict(item)
+                for item in self.conn.execute(
+                    TRADING_CASE_OUTCOMES_SQL,
+                    (case_id,),
+                ).fetchall()
+            ]
+        return result
 
     def signal_ledger(self, *, since_ns: int, limit: int) -> list[dict[str, Any]]:
         sql, params = signal_ledger_statement(since_ns=since_ns, limit=limit)

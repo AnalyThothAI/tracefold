@@ -1,12 +1,6 @@
-"""The Trading watchdog: read durable facts, alert the operator through the configured push provider.
+"""The Trading watchdog: read durable execution facts and alert the operator.
 
-It exists because every failure the #680 audit found was silent. The Signal lane stopped 35 times and
-stayed stopped for up to 31 hours, 391 live OI frames were never answered, the execution Runtime
-restarted 110 times a day, and 21 Signals in a row were refused for three and a half days -- and
-nothing told anyone (#680 RC11).
-
-**Alert-only.** It reads the Signal lane's capability as this process reports it, the News OI ledger,
-the admission ledger and four Runtime facts, and it writes nothing but its own alert ledger
+**Alert-only.** It reads Runtime and open-plan facts, and writes nothing but its own alert ledger
 (`platform_watchdog_alerts`). It never pauses, blocks, retries or repairs anything: a watchdog that
 could stop trading would be one more thing to fail closed at the wrong moment.
 
@@ -38,28 +32,19 @@ from typing import Any, Final, Literal, Protocol
 
 from loguru import logger
 
-from tracefold.app.trading_config import signal_lane_config
 from tracefold.app.worker_database import WorkerDatabase
-from tracefold.app.workers.runtime import TRADING_SIGNAL_LANE, TRADING_WATCHDOG, CapabilityState, CapabilityStates
+from tracefold.app.workers.runtime import TRADING_WATCHDOG, CapabilityStates
 from tracefold.app.workers.watchdog_storage import WatchdogAlertRepository, WatchdogAlertState
-from tracefold.app.workers.wiring.news_to_trading import news_oi_sources
 from tracefold.news import ReaderCard
 from tracefold.news.feishu_card import feishu_card
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.reader_card import ReaderCardFacts, ReaderCardHeader, ReaderCardNote
 from tracefold.platform.config.models import Settings
 from tracefold.platform.resource import ResourceAdmissionTimeout
-from tracefold.trading.contracts import OiCandidateRow, oi_source_key
-from tracefold.trading.signal_lane import ANSWER_HORIZON_MS
 from tracefold.trading.storage.health import OverduePlan, RuntimeLiveness
 
 TRADING_WATCHDOG_TASK_NAME = "trading-watchdog"
 WATCHDOG_POLL_SECONDS = 60.0
-
-# A live frame the lane has had this long to answer and has not. The lane answers a fresh frame within
-# a turn and sweeps every missed one within a minute of `max_age`, so ten minutes of silence means it is
-# not running.
-FRAME_ANSWER_BUDGET_MS: Final = 10 * 60_000
 RUNTIME_HEARTBEAT_STALE_MS: Final = 60_000
 # Starts in the last hour. A deploy is one; the audit's Runtime managed 110 a day.
 RUNTIME_STARTS_PER_HOUR_MAX: Final = 3
@@ -69,21 +54,16 @@ REALERT_AFTER_MS: Final = 4 * 3_600_000
 RESOLVE_AFTER_MS: Final = 10 * 60_000
 _DISPOSITION_WINDOW: Final = 50
 _OVERDUE_PLANS_MAX: Final = 10
-_FRAMES_NAMED_MAX: Final = 5
 _READ_TIMEOUT_SECONDS: Final = 10.0
 _WRITE_TIMEOUT_SECONDS: Final = 3.0
 _HOUR_NS: Final = 3_600_000_000_000
 
-SIGNAL_LANE_FAULTED: Final = "signal_lane_faulted"
-OI_FRAMES_UNANSWERED: Final = "oi_frames_unanswered"
 RUNTIME_HEARTBEAT_STALE: Final = "runtime_heartbeat_stale"
 RUNTIME_RESTART_LOOP: Final = "runtime_restart_loop"
 SIGNAL_REFUSAL_STREAK: Final = "signal_refusal_streak"
 PLAN_OVERDUE: Final = "plan_overdue"
 RUNTIME_UNEXPECTED_EXPOSURE: Final = "runtime_unexpected_exposure"
 CONDITION_TITLES: Final[dict[str, str]] = {
-    SIGNAL_LANE_FAULTED: "Signal lane 已停止",
-    OI_FRAMES_UNANSWERED: "OI 帧没有准入答复",
     RUNTIME_HEARTBEAT_STALE: "执行 Runtime 心跳中断",
     RUNTIME_RESTART_LOOP: "执行 Runtime 频繁重启",
     RUNTIME_UNEXPECTED_EXPOSURE: "执行 Runtime 出现无计划认领的敞口",
@@ -103,7 +83,6 @@ _HEADINGS: Final[dict[str, str]] = {
 class WatchdogReads:
     """What one pass read from PostgreSQL."""
 
-    unanswered_frames: tuple[OiCandidateRow, ...] = ()
     runtime: RuntimeLiveness | None = None
     dispositions: tuple[str, ...] = ()
     overdue_plans: tuple[OverduePlan, ...] = ()
@@ -114,7 +93,6 @@ class WatchdogFacts:
     """Everything one pass judges, as of `now_ms`. Pure data: `findings` reads nothing else."""
 
     now_ms: int
-    lane: CapabilityState | None
     reads: WatchdogReads
     # Whether a Runtime is configured at all. `execution.mode: disabled` has no Runtime to be silent.
     runtime_expected: bool
@@ -137,27 +115,6 @@ def findings(facts: WatchdogFacts) -> dict[str, Finding]:
 
     found: dict[str, Finding] = {}
     now_ms = facts.now_ms
-    lane = facts.lane
-    if lane is not None and lane.state == "faulted":
-        found[SIGNAL_LANE_FAULTED] = Finding(
-            SIGNAL_LANE_FAULTED,
-            (
-                f"{TRADING_SIGNAL_LANE}: faulted · {lane.reason or 'unknown'}",
-                "新的 OI 帧不会再被准入；修复原因后重启 Workers。",
-            ),
-        )
-    frames = sorted(facts.reads.unanswered_frames, key=lambda row: (int(row["available_at_ms"] or 0), row["event_id"]))
-    if frames:
-        oldest = int(frames[0]["available_at_ms"] or 0)
-        named = " · ".join(str(row["symbol"]) for row in frames[:_FRAMES_NAMED_MAX])
-        more = f" 等 {len(frames)} 个" if len(frames) > _FRAMES_NAMED_MAX else ""
-        found[OI_FRAMES_UNANSWERED] = Finding(
-            OI_FRAMES_UNANSWERED,
-            (
-                f"{len(frames)} 个 live OI 帧入账超过 {FRAME_ANSWER_BUDGET_MS // 60_000} 分钟仍没有准入记录",
-                f"最早 {_utc(oldest)}（{_duration(now_ms - oldest)}前）：{named}{more}",
-            ),
-        )
     if facts.runtime_expected:
         runtime = facts.reads.runtime
         if runtime is None:
@@ -370,14 +327,12 @@ class TradingWatchdog:
         *,
         db: WatchdogDatabase,
         sender: AlertSender,
-        capabilities: CapabilityStates,
         runtime_expected: bool,
         account_slot: str,
         clock: Callable[[], int] | None = None,
     ) -> None:
         self._db = db
         self._sender = sender
-        self._capabilities = capabilities
         self._runtime_expected = runtime_expected
         self._account_slot = account_slot
         self._clock = clock or _now_ms
@@ -391,7 +346,6 @@ class TradingWatchdog:
         reads = await self._db.reads(now_ms=now_ms, runtime_expected=self._runtime_expected)
         facts = WatchdogFacts(
             now_ms=now_ms,
-            lane=self._capabilities.get(TRADING_SIGNAL_LANE),
             reads=reads,
             runtime_expected=self._runtime_expected,
             account_slot=self._account_slot,
@@ -437,27 +391,18 @@ class TradingWatchdog:
 class WorkerWatchdogDatabase:
     """`WatchdogDatabase` on ordinary business admission, one short session per question.
 
-    The News frames and the Trading facts are two reads rather than one session: App composes the two
-    owners' public reads and never a transaction across both.
+    Runtime and plan facts are read in one short Trading transaction.
     """
 
-    def __init__(self, database: WorkerDatabase, *, oi_metric_version: str, account_slot: str) -> None:
+    def __init__(self, database: WorkerDatabase, *, account_slot: str) -> None:
         self._database = database
-        self._oi_metric_version = oi_metric_version
         self._account_slot = account_slot
 
     async def reads(self, *, now_ms: int, runtime_expected: bool) -> WatchdogReads:
-        frames = await self._database.run_business(
-            "trading_watchdog_oi_frames",
-            self._frames,
-            now_ms,
-            operation_timeout_seconds=_READ_TIMEOUT_SECONDS,
-        )
         return await self._database.run_business(
             "trading_watchdog_trading_facts",
             self._trading_facts,
             now_ms,
-            frames,
             runtime_expected,
             operation_timeout_seconds=_READ_TIMEOUT_SECONDS,
         )
@@ -479,26 +424,10 @@ class WorkerWatchdogDatabase:
             operation_timeout_seconds=_WRITE_TIMEOUT_SECONDS,
         )
 
-    def _frames(self, now_ms: int) -> list[OiCandidateRow]:
-        """Every live frame that became durable inside the lane's answer horizon and is old enough to owe one."""
-
-        with self._database.worker_session("trading_watchdog_oi_frames", _READ_TIMEOUT_SECONDS) as repos:
-            return list(
-                news_oi_sources(
-                    repos,
-                    self._oi_metric_version,
-                    now_ms - ANSWER_HORIZON_MS,
-                    now_ms - FRAME_ANSWER_BUDGET_MS,
-                )
-            )
-
-    def _trading_facts(self, now_ms: int, frames: list[OiCandidateRow], runtime_expected: bool) -> WatchdogReads:
-        keys = [oi_source_key(row["event_id"], row["metric_version"]) for row in frames]
+    def _trading_facts(self, now_ms: int, runtime_expected: bool) -> WatchdogReads:
         with self._database.worker_session("trading_watchdog_trading_facts", _READ_TIMEOUT_SECONDS) as repos:
             trading = repos.trading
-            answered = trading.gate_answers(source_keys=keys)
             return WatchdogReads(
-                unanswered_frames=tuple(row for row, key in zip(frames, keys, strict=True) if key not in answered),
                 runtime=trading.runtime_liveness(account_slot=self._account_slot) if runtime_expected else None,
                 dispositions=(
                     tuple(trading.recent_signal_dispositions(limit=_DISPOSITION_WINDOW)) if runtime_expected else ()
@@ -547,13 +476,8 @@ def wire_trading_watchdog(
         return None
     execution = settings.trading.execution
     watchdog = TradingWatchdog(
-        db=WorkerWatchdogDatabase(
-            db,
-            oi_metric_version=signal_lane_config(settings).oi_metric_version,
-            account_slot=execution.account_slot,
-        ),
+        db=WorkerWatchdogDatabase(db, account_slot=execution.account_slot),
         sender=sender,
-        capabilities=capabilities,
         runtime_expected=execution.mode != "disabled",
         account_slot=execution.account_slot,
     )
@@ -570,8 +494,8 @@ async def run_trading_watchdog(
     """Poll `advance()` until the process stops.
 
     A pass the database refused is skipped and the next one runs on schedule: the watchdog judges
-    durable state, so a skipped pass loses nothing but a minute. A program error is raised and faults
-    `trading_watchdog`, exactly like the Signal lane's.
+    durable state, so a skipped pass loses nothing but a minute. A program error faults
+    `trading_watchdog`.
     """
 
     while not stop_event.is_set():
@@ -606,8 +530,6 @@ def _now_ms() -> int:
 
 __all__ = [
     "CONDITION_TITLES",
-    "FRAME_ANSWER_BUDGET_MS",
-    "OI_FRAMES_UNANSWERED",
     "PLAN_OVERDUE",
     "REALERT_AFTER_MS",
     "REFUSAL_STREAK_MIN",
@@ -616,7 +538,6 @@ __all__ = [
     "RUNTIME_RESTART_LOOP",
     "RUNTIME_STARTS_PER_HOUR_MAX",
     "RUNTIME_UNEXPECTED_EXPOSURE",
-    "SIGNAL_LANE_FAULTED",
     "SIGNAL_REFUSAL_STREAK",
     "TRADING_WATCHDOG_TASK_NAME",
     "WATCHDOG_POLL_SECONDS",

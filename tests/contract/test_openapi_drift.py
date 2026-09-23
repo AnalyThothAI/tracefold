@@ -71,6 +71,7 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         # `/api/trading/execution/*` projections were three more shapes over the same ledgers the
         # desk reads already folded, and nothing in the browser called any of them (#537 PR-5).
         "/api/trading/cases",
+        "/api/trading/cases/{case_id}/replay",
         # #528 PR-1: the desk table. One row per entry folded from the Runtime's own observations,
         # with account-wide realized totals; it appends nothing.
         "/api/trading/executions",

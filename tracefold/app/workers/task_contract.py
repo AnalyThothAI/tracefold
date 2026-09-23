@@ -15,10 +15,8 @@ key, so a fault always names exactly what stopped.
 
 A new optional loop joins by returning one more `WorkerTask` from `worker_business_tasks` with its
 own capability name; nothing else has to change. #553 PR-2's market notification loop is exactly
-that: one task, one capability, one `advance()`-shaped runner. It is declared here beside the Signal
-lane rather than through `NewsPipeline.runners()` because App owns its polling for the same reason it
-owns the lane's: the loop exposes one business action, `advance()`, and the tick, the stop event and
-the process lifecycle are the root's.
+that: one task, one capability, one `advance()`-shaped runner. It is declared here rather than through
+`NewsPipeline.runners()` because App owns its polling, stop event and process lifecycle.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
 from tracefold.app.workers.runtime import (
     CHAIN_TAPE,
@@ -37,7 +34,6 @@ from tracefold.app.workers.runtime import (
     NEWS_INSTRUMENTS,
     NEWS_QUOTES,
     NEWS_REACTIONS,
-    TRADING_SIGNAL_LANE,
     TRADING_WATCHDOG,
     WALLET_NET_BUY,
     WALLET_PRICES,
@@ -55,10 +51,6 @@ from tracefold.app.workers.wiring.news import (
     MARKET_NOTIFICATIONS_TASK_NAME,
     run_market_notifications,
 )
-from tracefold.app.workers.wiring.trading import (
-    SIGNAL_LANE_TASK_NAME,
-    run_signal_lane,
-)
 from tracefold.app.workers.wiring.watchdog import (
     TRADING_WATCHDOG_TASK_NAME,
     TradingWatchdog,
@@ -66,7 +58,6 @@ from tracefold.app.workers.wiring.watchdog import (
 )
 from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.pipeline.root import NewsPipeline
-from tracefold.trading.signal_lane import SignalLane
 
 WORKERS_PROBE_TASK_NAME = "workers-probe"
 WORKERS_CONTROL_TASK_NAME = "workers-control"
@@ -108,16 +99,11 @@ class WorkerTask:
 def worker_business_tasks(
     *,
     news_pipeline: NewsPipeline | None,
-    signal_lane: SignalLane | None,
     market_notifications: MarketNotificationLoop | None = None,
     chain_tape: ChainTapeComposition | None = None,
-    telemetry: Any | None = None,
     trading_watchdog: TradingWatchdog | None = None,
 ) -> tuple[WorkerTask, ...]:
     """Return the ordered task declarations consumed by the Workers root.
-
-    The Signal lane's loop is declared here rather than inside `tracefold.trading`: the lane
-    exposes one business action and App owns polling, the stop event and the process lifecycle.
 
     These declarations do not set capability states. Composition already did, and it knows more than
     a task list can: a Deliverer task runs whether or not a sender could be built, so "a task exists"
@@ -187,19 +173,9 @@ def worker_business_tasks(
                     foundational=False,
                 )
             )
-    if signal_lane is not None:
-        lane = signal_lane
-        tasks.append(
-            WorkerTask(
-                name=SIGNAL_LANE_TASK_NAME,
-                capability=TRADING_SIGNAL_LANE,
-                run=lambda stop: run_signal_lane(lane, stop_event=stop, telemetry=telemetry),
-                foundational=False,
-            )
-        )
     if trading_watchdog is not None:
         watchdog = trading_watchdog
-        # Declared after the lane it watches. Alert-only: a watchdog fault stops the watchdog and
+        # Alert-only: a watchdog fault stops the watchdog and
         # nothing it watches (#680 RC11).
         tasks.append(
             WorkerTask(

@@ -88,11 +88,11 @@ docker compose up -d --no-build --force-recreate rabbitmq-policy migrate || fail
 	migrate_exit_code=$$(docker wait "$$migrate_id") || fail; \
 	if [ "$$migrate_exit_code" != 0 ]; then \
 		docker compose logs --no-color --tail=50 migrate >&2 || true; \
-		echo "migrate exited $$migrate_exit_code; serve and workers were not started." >&2; \
+		echo "migrate exited $$migrate_exit_code; serve, workers and analysis were not started." >&2; \
 		fail; \
 	fi; \
 	docker compose up -d --no-build --force-recreate --no-deps --wait \
-		--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) serve workers || fail
+		--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) serve workers analysis || fail
 endef
 
 # One read-only psql invocation, reused by every head comparison. `$$1` is the statement.
@@ -466,7 +466,7 @@ _up-locked:
 		target_manifest=$$(printf '%s' "$$manifest_document" \
 			| uv run python -c 'import json,sys; print(json.load(sys.stdin)["data"]["runtime_manifest_sha"])') || fail; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
-		docker compose stop -t 40 workers serve || fail; \
+		docker compose stop -t 40 workers serve analysis || fail; \
 		$(START_APPLICATION_AFTER_MIGRATE); \
 		make --no-print-directory status-app || fail; \
 		ready_manifest=$$(curl -fsS "$(TRACEFOLD_WORKERS_URL)/readyz" \
@@ -577,8 +577,8 @@ _deploy-image-locked:
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		runtime_services="migrate rabbitmq-policy serve workers"; \
-		docker compose stop -t 40 workers serve || fail; \
+		runtime_services="migrate rabbitmq-policy serve workers analysis"; \
+		docker compose stop -t 40 workers serve analysis || fail; \
 		$(START_APPLICATION_AFTER_MIGRATE); \
 		for service in $$runtime_services; do \
 			container_id=$$(docker compose ps --all -q "$$service"); \
@@ -616,7 +616,7 @@ status-app: ## fail closed unless PostgreSQL, migration, Serve and Workers are r
 		COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; \
 		docker compose ps --all; \
 		failed=0; \
-		for service in postgres rabbitmq serve workers; do \
+		for service in postgres rabbitmq serve workers analysis; do \
 			container_id=$$(docker compose ps -q "$$service"); \
 			if [ -z "$$container_id" ]; then \
 				echo "$$service: missing or stopped" >&2; \

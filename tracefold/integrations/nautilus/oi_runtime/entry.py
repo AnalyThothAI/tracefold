@@ -9,7 +9,14 @@ from typing import Any, Literal
 
 from nautilus_trader.model.identifiers import ClientOrderId
 
-from tracefold.trading import OperatorIntentV1, TradePlan, TradeSignalV1
+from tracefold.trading.execution_contracts import (
+    OperatorIntentV1,
+    SignalEntryEnvelopeV1,
+    SignalExitPlanV1,
+    TradeSignalV1,
+    TradeSignalV2,
+)
+from tracefold.trading.trade_plan import TradePlan
 
 from .risk import decimal_value, fixed_risk_quantity
 
@@ -35,9 +42,17 @@ class RuntimeEntryRequest:
     expires_at_ns: int
     source: Literal["signal", "manual"]
     case_id: str | None = None
+    entry_scope_id: str = ""
+    exit_plan: SignalExitPlanV1 | None = None
+    entry_envelope: SignalEntryEnvelopeV1 | None = None
+    native_symbol: str | None = None
+    asset_id: str | None = None
+    mapping_semantics_digest: str | None = None
+    account_slot: str | None = None
+    runtime_mode: Literal["paper", "live"] | None = None
 
     @classmethod
-    def from_signal(cls, signal: TradeSignalV1) -> RuntimeEntryRequest:
+    def from_signal(cls, signal: TradeSignalV1 | TradeSignalV2) -> RuntimeEntryRequest:
         return cls(
             entry_id=signal.signal_id,
             market_key=signal.market_key,
@@ -45,6 +60,16 @@ class RuntimeEntryRequest:
             expires_at_ns=signal.expires_at_ns,
             source="signal",
             case_id=signal.case_id,
+            entry_scope_id=(
+                signal.entry_scope_id if isinstance(signal, TradeSignalV2) else f"legacy:{signal.signal_id}"
+            ),
+            exit_plan=signal.exit_plan if isinstance(signal, TradeSignalV2) else None,
+            entry_envelope=signal.entry_envelope if isinstance(signal, TradeSignalV2) else None,
+            native_symbol=signal.native_symbol if isinstance(signal, TradeSignalV2) else None,
+            asset_id=signal.asset_id if isinstance(signal, TradeSignalV2) else None,
+            mapping_semantics_digest=(signal.mapping_semantics_digest if isinstance(signal, TradeSignalV2) else None),
+            account_slot=signal.account_slot if isinstance(signal, TradeSignalV2) else None,
+            runtime_mode=signal.runtime_mode if isinstance(signal, TradeSignalV2) else None,
         )
 
     @classmethod
@@ -57,6 +82,7 @@ class RuntimeEntryRequest:
             direction=command.direction,
             expires_at_ns=command.expires_at_ns,
             source="manual",
+            entry_scope_id=f"manual:{command.command_id}",
         )
 
     @classmethod
@@ -68,6 +94,7 @@ class RuntimeEntryRequest:
             expires_at_ns=plan.entry_expires_at_ns,
             source=plan.source,
             case_id=plan.case_id,
+            entry_scope_id=plan.entry_scope_id,
         )
 
 

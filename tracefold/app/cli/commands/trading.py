@@ -15,11 +15,12 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from tracefold.app.analysis_status import analysis_status_projection
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories
 from tracefold.platform.config.loader import load_settings
-from tracefold.trading import (
+from tracefold.trading.operator_control import (
     OperatorCommandError,
     parse_operator_command,
     prepare_parsed_operator_intent,
@@ -44,6 +45,9 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         if command == "status":
             last_case_at_ms = trading.latest_case_created_at_ms()
             execution = settings.trading.execution
+            analysis_runtime = trading.analysis_runtime(
+                f"{execution.account_slot}:{execution.mode}",
+            )
             execution_status = execution_readiness_projection(
                 execution,
                 trading.execution_runtime_state(execution.account_slot),
@@ -56,7 +60,12 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             return 0, {
                 "ok": True,
                 "data": {
-                    "decision": {"last_case_at_ms": last_case_at_ms},
+                    "decision": analysis_status_projection(
+                        settings,
+                        analysis_runtime,
+                        now_ms=now_ms,
+                        last_case_at_ms=last_case_at_ms,
+                    ),
                     "execution": execution_status,
                 },
             }

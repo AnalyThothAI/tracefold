@@ -58,7 +58,16 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
     response = json.loads(stdout.getvalue())
     assert exit_code == 0
     data = response["data"]
-    assert set(data["decision"]) == {"last_case_at_ms"}
+    assert set(data["decision"]) == {
+        "last_case_at_ms",
+        "state",
+        "active_policy",
+        "model_name",
+        "publish_signals",
+        "config_digest",
+        "heartbeat_at_ms",
+    }
+    assert data["decision"]["state"] == "disabled"
     # #528 deleted the `alpha` block: the frozen policy identity is on every Case row it decided.
     assert "alpha" not in data
     # #537 PR-5 deleted the `counts` block with it: two `count(*)` per call for figures the console
@@ -128,26 +137,19 @@ def test_trading_gate_reads_the_admission_ledger_the_deleted_routes_read(postgre
     """
 
     from tests.postgres_test_utils import connect_postgres_test
-    from tracefold.trading.storage.root import TradingRepository
 
     now_ms = int(time.time() * 1000)
     source_key = "oi:cli-gate-evt:oi_signal_v1"
     conn = connect_postgres_test(read_only=False)
     try:
-        repo = TradingRepository(conn)
         with conn.transaction():
-            repo.record_gate_decision(
-                source_key=source_key,
-                trigger_kind="oi",
-                underlying_key="crypto:DELL",
-                source_observed_at_ms=now_ms - 60_000,
-                status="REJECTED",
-                stage="venue",
-                reason="instrument_unmapped",
-                retryable=False,
-                evidence={"market_key": "crypto:perp:DELL:USDT", "venue": "binance.usdm"},
-                case_id=None,
-                now_ms=now_ms,
+            conn.execute(
+                "INSERT INTO trading_candidate_gate_decisions "
+                "(source_key,trigger_kind,underlying_key,source_observed_at_ms,status,stage,reason,"
+                "retryable,evidence,case_id,first_evaluated_at_ms,last_evaluated_at_ms,attempt_count) "
+                "VALUES (%s,'oi','crypto:DELL',%s,'REJECTED','venue','instrument_unmapped',"
+                'false,\'{"market_key":"crypto:perp:DELL:USDT"}\'::jsonb,NULL,%s,%s,1)',
+                (source_key, now_ms - 60_000, now_ms, now_ms),
             )
     finally:
         conn.close()

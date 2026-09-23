@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
-from tracefold.trading import ExecutionStage
+from tracefold.trading.stages import ExecutionStage
 
 from .common import ExactApiSchema
 
 
 class TradingDecisionRuntimeData(ExactApiSchema):
-    """When the Signal lane last froze a Case; `None` means it has not frozen one yet (#520)."""
+    """Analysis process liveness and the last durable Case for this deployment."""
 
     last_case_at_ms: int | None = None
+    state: Literal["disabled", "unavailable", "model_unconfigured", "running"]
+    active_policy: str
+    model_name: str | None = None
+    publish_signals: bool
+    config_digest: str | None = None
+    heartbeat_at_ms: int | None = None
 
 
 class TradingExecutionPositionData(ExactApiSchema):
@@ -107,6 +113,30 @@ class TradingPolicyCheckData(ExactApiSchema):
     passed: bool
 
 
+class TradingAnalysisDecisionData(ExactApiSchema):
+    decision_id: str
+    policy_id: str
+    policy_version: str
+    assessment_ref: str | None = None
+    action: str
+    decision: dict[str, Any]
+    publish_status: str
+    publish_reason: str | None = None
+    decided_at_ms: int
+    valid_until_ms: int
+
+
+class TradingAnalysisOutcomeData(ExactApiSchema):
+    axis: str
+    horizon_seconds: int
+    label_version: str
+    status: str
+    return_bps: str | None = None
+    available_at_ms: int
+    labeled_at_ms: int | None = None
+    path_ref: str | None = None
+
+
 class TradingCaseData(ExactApiSchema):
     """One frozen Case, as the drawer behind `?case=<id>` renders it.
 
@@ -138,6 +168,15 @@ class TradingCaseData(ExactApiSchema):
     observed_at_ms: int
     created_at_ms: int
     decided_at_ms: int | None = None
+    trigger_id: str | None = None
+    target_asset_id: str | None = None
+    target_selection: dict[str, Any] | None = None
+    entry_scope_id: str | None = None
+    mapping_semantics_digest: str | None = None
+    analysis_status: str | None = None
+    evidence_ref: str | None = None
+    analysis_decision: TradingAnalysisDecisionData | None = None
+    analysis_outcomes: list[TradingAnalysisOutcomeData] = Field(default_factory=list)
 
 
 class TradingAdmissionCountData(ExactApiSchema):
@@ -176,6 +215,15 @@ class TradingCasesData(ExactApiSchema):
     admission_counts_24h: list[TradingAdmissionCountData] = Field(default_factory=list, max_length=64)
     complete: bool
     window_hours: int
+
+
+class TradingAnalysisReplayData(ExactApiSchema):
+    case_id: str
+    status: str
+    source_fact: dict[str, Any] | None = None
+    evidence: dict[str, Any] | None = None
+    assessment: dict[str, Any] | None = None
+    decision: TradingAnalysisDecisionData | None = None
 
 
 class TradingExecutionRowData(ExactApiSchema):

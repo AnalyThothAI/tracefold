@@ -540,6 +540,7 @@ def _write_market_fact(news: Any, prepared: _PreparedMarket, *, ingest_mode: str
             measurement_definition=oi_signals.measurement_definition(source),
             source_item_id=prepared.item_id,
             source_venue=prepared.source_venue,
+            ingest_mode=ingest_mode,
         )
         return True
     if prepared.liquidation is not None:

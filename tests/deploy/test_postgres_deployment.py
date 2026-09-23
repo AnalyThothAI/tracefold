@@ -40,6 +40,7 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     services = compose["services"]
 
     assert set(services) == {
+        "analysis",
         "migrate",
         "nautilus",
         "postgres",
@@ -87,10 +88,10 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
         "args": {"TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}"},
         "secrets": ["github_token"],
     }
-    for service_name in ("migrate", "serve", "workers", "nautilus"):
+    for service_name in ("migrate", "serve", "workers", "analysis", "nautilus"):
         assert credential in services[service_name]["volumes"]
         assert services[service_name]["depends_on"]["postgres"]["condition"] == "service_healthy"
-    for service_name in ("migrate", "serve", "workers", "rabbitmq-policy"):
+    for service_name in ("migrate", "serve", "workers", "analysis", "rabbitmq-policy"):
         assert services[service_name]["image"] == shared_app_image
         assert services[service_name]["build"] == shared_app_build
     # The execution runtime is not on the shared anchor (#537 PR-2): its own image tag and its own
@@ -110,13 +111,14 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     # Image identity and nothing else. The News genesis preflight JSON that used to travel with it
     # is deleted along with the `db migrate` broker check that read it (#598 D5-d).
     assert services["migrate"]["environment"] == {"TRACEFOLD_IMAGE_DIGEST": "${TRACEFOLD_IMAGE_DIGEST:-}"}
-    for service_name in ("serve", "workers", "nautilus"):
+    for service_name in ("serve", "workers", "analysis", "nautilus"):
         assert "rsshub" not in services[service_name]["depends_on"]
-    for service_name in ("serve", "workers"):
+    for service_name in ("serve", "workers", "analysis"):
         assert services[service_name]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     assert services["migrate"]["command"] == ["tracefold", "db", "migrate"]
     assert services["serve"]["command"] == ["tracefold", "serve"]
     assert services["workers"]["command"] == ["tracefold", "workers"]
+    assert services["analysis"]["command"] == ["tracefold", "analysis"]
     assert services["nautilus"]["command"] == ["tracefold", "nautilus", "run"]
     assert services["nautilus"]["profiles"] == ["execution"]
     assert services["serve"]["ports"] == ["${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"]

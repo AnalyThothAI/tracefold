@@ -23,14 +23,17 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 from typing import Annotated, Any, Final, Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
+from tracefold.app.analysis_files import AnalysisFiles
+from tracefold.app.analysis_status import analysis_status_projection
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from tracefold.trading import execution_stage
+from tracefold.trading.stages import execution_stage
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -43,6 +46,7 @@ router = APIRouter()
 _StatusEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingStatusData]
 _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
 _ExecutionsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionsData]
+_ReplayEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingAnalysisReplayData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
 _DAY_MS: Final = 86_400_000
@@ -62,6 +66,9 @@ def get_trading_status(request: Request) -> Response:
     with runtime.repositories() as repos:
         last_case_at_ms = repos.trading.latest_case_created_at_ms()
         execution = runtime.settings.trading.execution
+        analysis_runtime = repos.trading.analysis_runtime(
+            f"{execution.account_slot}:{execution.mode}",
+        )
         execution_status = execution_readiness_projection(
             execution,
             repos.trading.execution_runtime_state(execution.account_slot),
@@ -69,7 +76,15 @@ def get_trading_status(request: Request) -> Response:
             now_ns=now_ms * 1_000_000,
         )
     return _etagged(
-        {"decision": {"last_case_at_ms": last_case_at_ms}, "execution": execution_status},
+        {
+            "decision": analysis_status_projection(
+                runtime.settings,
+                analysis_runtime,
+                now_ms=now_ms,
+                last_case_at_ms=last_case_at_ms,
+            ),
+            "execution": execution_status,
+        },
         request,
         envelope=_StatusEnvelope,
     )
@@ -80,7 +95,9 @@ def get_trading_cases(
     request: Request,
     case_id: Annotated[str, Query(max_length=256)] = "",
     view: Literal["summary", "list"] = "summary",
-    state: Literal["", "PENDING", "RUNNING", "NO_TRADE", "SIGNAL_EMITTED", "BLOCKED"] = "",
+    state: Literal[
+        "", "PENDING", "RUNNING", "DONE", "FAILED", "EXCLUDED", "NO_TRADE", "SIGNAL_EMITTED", "BLOCKED"
+    ] = "",
     asset: Annotated[str, Query(max_length=64)] = "",
     reason: Annotated[str, Query(max_length=128)] = "",
     source_item_id: Annotated[str, Query(max_length=64, pattern=r"^([0-9a-f]{64})?$")] = "",
@@ -185,6 +202,55 @@ def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_l
     )
 
 
+@router.get("/trading/cases/{case_id}/replay", response_model=_ReplayEnvelope)
+def get_trading_case_replay(request: Request, case_id: str) -> Response:
+    """Read recorded input and answer only; replay never invokes a model."""
+    _validate_query_params(request, supported={"token"})
+    identity = _case_id(case_id)
+    if identity is None:
+        raise ApiBadRequest("trading_cases_case_id_invalid", field="case_id")
+    runtime = _authenticated_runtime(request)
+    with runtime.repositories() as repos:
+        row = repos.trading.console_case(case_id=identity)
+        source = (
+            repos.trading.analysis_trigger(str(row["trigger_id"]))
+            if row is not None and row.get("trigger_id")
+            else None
+        )
+    if row is None:
+        result: dict[str, Any] = {"case_id": identity, "status": "case_missing"}
+    else:
+        decision = row.get("analysis_decision")
+        files = AnalysisFiles(Path(runtime.settings.app_home) / "cache" / "trading-analysis")
+        evidence = None
+        assessment = None
+        status = "ok"
+        for key, ref in (
+            ("evidence", row.get("evidence_ref")),
+            ("assessment", decision.get("assessment_ref") if decision else None),
+        ):
+            if not ref:
+                continue
+            try:
+                value = files.read(str(ref))
+            except (OSError, ValueError):
+                status = "archive_missing"
+                continue
+            if key == "evidence":
+                evidence = value
+            else:
+                assessment = value
+        result = {
+            "case_id": identity,
+            "status": status,
+            "source_fact": source["payload"] if source else None,
+            "evidence": evidence,
+            "assessment": assessment,
+            "decision": decision,
+        }
+    return _etagged(result, request, envelope=_ReplayEnvelope)
+
+
 def _case(row: dict[str, Any]) -> dict[str, Any]:
     manifest_value = row.get("manifest")
     manifest: dict[str, Any] = manifest_value if isinstance(manifest_value, dict) else {}
@@ -194,6 +260,8 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
     oi = oi_value if isinstance(oi_value, dict) else {}
     market_value = contexts.get("market")
     market: dict[str, Any] = market_value if isinstance(market_value, dict) else {}
+    decision = row.get("analysis_decision")
+    outcomes = row.get("analysis_outcomes") or []
     return {
         "case_id": str(row["case_id"]),
         "event_id": _oi_event_id(row.get("primary_source_key")),
@@ -213,6 +281,15 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "observed_at_ms": int(row["observed_at_ms"]),
         "created_at_ms": int(row["case_created_at_ms"]),
         "decided_at_ms": _int_or_none(row.get("decided_at_ms")),
+        "trigger_id": _string_or_none(row.get("trigger_id")),
+        "target_asset_id": _string_or_none(row.get("target_asset_id")),
+        "target_selection": row.get("target_selection"),
+        "entry_scope_id": _string_or_none(row.get("entry_scope_id")),
+        "mapping_semantics_digest": _string_or_none(row.get("mapping_semantics_digest")),
+        "analysis_status": _string_or_none(row.get("analysis_status")),
+        "evidence_ref": _string_or_none(row.get("evidence_ref")),
+        "analysis_decision": decision,
+        "analysis_outcomes": [{**item, "return_bps": _string_or_none(item.get("return_bps"))} for item in outcomes],
     }
 
 

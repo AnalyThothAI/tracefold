@@ -229,6 +229,30 @@ services:
       retries: 5
       start_period: 90s
 
+  # Analysis is a separate failure domain from News delivery and the execution Runtime.
+  # It uses public market data and the configured model endpoint; default policy records shadow only.
+  analysis:
+    <<: *tracefold-app
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
+      - ${HOME}/.tracefold/cache:/root/.tracefold/cache
+      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+    command: ["tracefold", "analysis"]
+    stop_grace_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
   # The execution runtime does not share the application anchor (#537 PR-2). It owns a live Binance
   # account, so it owns its own image tag and its own lifecycle: `make runtime-build` produces
   # `tracefold-runtime:<sha>` and `make runtime-up` starts exactly that tag, while `make up` never

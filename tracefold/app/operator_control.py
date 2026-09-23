@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from tracefold.trading import PreparedOperatorIntent
+from tracefold.trading.storage.execution_stream import PreparedOperatorIntent
 
 
 @dataclass(frozen=True, slots=True)

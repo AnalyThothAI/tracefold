@@ -23,7 +23,8 @@ from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Money
 
-from tests.nautilus_oi_runtime_fixtures import INSTRUMENT, NOW_NS, oi_profile
+from tests.helpers.published_signal_v2 import execution_fixture_profile
+from tests.nautilus_oi_runtime_fixtures import INSTRUMENT, NOW_NS
 from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, RuntimeStateProjector, load_runtime_inputs
 from tracefold.app.repository_session import RepositorySession
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
@@ -87,7 +88,7 @@ def run_runtime_on_postgres(
 ) -> PostgresRuntime:
     """One Runtime generation over `tape`. `stop_after_commit` is a crash between plan and order."""
 
-    profile = profile or oi_profile()
+    profile = profile or execution_fixture_profile()
     inputs = load_runtime_inputs(repos, profile, now_ns=NOW_NS)
     signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1")
     journal = ExecutionJournal(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1"))
