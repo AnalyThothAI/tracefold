@@ -276,6 +276,9 @@ def test_the_three_execution_facts_read_only_what_they_name(conn: Any) -> None:
     assert trading.runtime_liveness(account_slot=SLOT) == {
         "heartbeat_at_ns": NOW_NS - 90 * 1_000_000_000,
         "started_at_ns": NOW_NS - 60 * MINUTE_NS,
+        "unexpected_exposure": False,
+        "positions_count": 0,
+        "protection_status": "not_applicable",
     }
     assert trading.runtime_liveness(account_slot="another_slot") is None
     overdue = trading.overdue_open_plans(now_ns=NOW_NS, grace_ns=15 * MINUTE_NS, limit=10)
