@@ -997,17 +997,16 @@ def test_stale_source_artifact_is_withheld_but_never_an_escalation() -> None:
     assert decide(_verdict(), stale, status, policy=off).final == "push"
 
 
-def test_policy_v12_has_six_safety_duplicate_and_budget_knobs() -> None:
+def test_policy_v17_has_four_safety_and_duplicate_knobs() -> None:
+    """v17 deleted the #504 per-storyline budget with its two knobs; what is left is duplicate and safety evidence."""
+
     assert {item.name for item in fields(DecidePolicy)} == {
         "restatement_drop",
         "similarity_max",
         "stale_source_max_age_s",
         "listing_exempt_from_duplicate",
-        "storyline_budget_window_s",
-        "storyline_budget_max",
     }
-    assert DEFAULT_POLICY.storyline_budget_window_s == 3600 and DEFAULT_POLICY.storyline_budget_max == 2
-    assert len(DEFAULT_POLICY.as_dict()) == 6
+    assert len(DEFAULT_POLICY.as_dict()) == 4
 
 
 def test_fact_kind_is_the_only_model_owned_decision_input() -> None:
@@ -1217,113 +1216,44 @@ def _sent(
     ]
 
 
-def test_decide_withholds_the_third_card_on_a_storyline_inside_the_budget_window() -> None:
-    """#504 D2. Prior *volume on the reader* never blocks a card, but prior delivered cards *on this storyline*
-    do once the budget is spent: the third same-key card inside an hour is `storyline:<key>:budget`."""
+def test_policy_v17_pushes_the_third_card_on_a_storyline_inside_an_hour() -> None:
+    """The owner withdrew #504 D2 on 2026-09-23. Under v12-v16 the third ordinary push on one storyline key
+    inside an hour was withheld as `storyline:<key>:budget`; under v17 how many cards the reader already got on
+    a key withholds nothing, and the same-fact similarity check is what still holds a repeat."""
 
     key = "conflict:mideast_2026"
     third = _verdict(scope="macro", assets=[], direction="bearish", headline_zh="伊朗宣布封锁霍尔木兹海峡")
-    spent = storyline_status(key, seen=_sent(key, "bearish", "bearish"))
+    two_sent = storyline_status(key, seen=_sent(key, "bearish", "bearish"))
 
-    withheld = decide(third, _NO_WATCHLIST, spent, now_ms=_NOW)
-    assert withheld.final == "throttled" and withheld.throttled_by == f"storyline:{key}:budget"
-    assert withheld.override_rule == "fact_kind_state_change"  # the rule that would have pushed it
-    assert withheld.seen_scope == "all" and withheld.seen_similarity is not None  # similarity still measured
-    assert throttled_by_zh(withheld.throttled_by).startswith("同线索预算")
-
-    # One delivered card is under budget; so are two delivered cards older than the window.
-    assert decide(third, _NO_WATCHLIST, storyline_status(key, seen=_sent(key, "bearish")), now_ms=_NOW).final == "push"
-    aged = storyline_status(key, seen=_sent(key, "bearish", "bearish", minutes_ago=90))
-    assert decide(third, _NO_WATCHLIST, aged, now_ms=_NOW).final == "push"
-    # Cards on other keys do not count against this one, however many.
-    other = storyline_status(key, seen=_sent("conflict:ru_ua", "bearish", "bearish", "bearish"))
-    assert decide(third, _NO_WATCHLIST, other, now_ms=_NOW).final == "push"
-
-    # Exemption: a direction reversal against the newest delivered card on the key is new information.
-    flip = decide(third.model_copy(update={"direction": "bullish"}), _NO_WATCHLIST, spent, now_ms=_NOW)
-    assert flip.final == "push" and flip.throttled_by is None
-    # ... but only against the *newest* one: newest bullish, older bearish, candidate bullish is not a flip.
-    mixed = storyline_status(key, seen=_sent(key, "bullish", "bearish"))
-    assert (
-        decide(third.model_copy(update={"direction": "bullish"}), _NO_WATCHLIST, mixed, now_ms=_NOW).final
-        == "throttled"
-    )
-    # Neutral on either side is not a reversal.
-    assert (
-        decide(third.model_copy(update={"direction": "neutral"}), _NO_WATCHLIST, spent, now_ms=_NOW).final
-        == "throttled"
-    )
-
-    # Exemption: the `none` key is not a storyline (the registry matched nothing) and is never budgeted.
-    fallback = storyline_status(NO_STORYLINE_KEY, seen=_sent(NO_STORYLINE_KEY, "bearish", "bearish", "bearish"))
-    assert decide(third, _NO_WATCHLIST, fallback, now_ms=_NOW).final == "push"
-
-    # Either knob at 0 switches the budget off; a caller without a clock has nothing to measure.
-    for policy in (DecidePolicy(storyline_budget_max=0), DecidePolicy(storyline_budget_window_s=0)):
-        assert decide(third, _NO_WATCHLIST, spent, policy=policy, now_ms=_NOW).final == "push"
-    assert decide(third, _NO_WATCHLIST, spent).final == "push"
-    # `max=3` is the replay's other candidate (#504 §9.1): the third card passes, the fourth does not.
-    three = DecidePolicy(storyline_budget_max=3)
-    assert decide(third, _NO_WATCHLIST, spent, policy=three, now_ms=_NOW).final == "push"
-    fourth = storyline_status(key, seen=_sent(key, "bearish", "bearish", "bearish"))
-    assert decide(third, _NO_WATCHLIST, fourth, policy=three, now_ms=_NOW).throttled_by == f"storyline:{key}:budget"
-
-    # A watchlist push is still a push: the budget is the last throttle whatever rule selected the action.
+    released = decide(third, _NO_WATCHLIST, two_sent, now_ms=_NOW)
+    assert released.final == "push" and released.throttled_by is None
+    assert released.override_rule == "fact_kind_state_change"
+    # The duplicate check still measured it against the two cards, and found a different fact.
+    assert released.seen_scope == "all" and released.seen_similarity is not None
+    assert released.seen_similarity < DEFAULT_POLICY.similarity_max
+    # However many cards the key already carries, whichever direction they read.
+    crowded = storyline_status(key, seen=_sent(key, "bearish", "neutral", "bearish", "bullish", "bearish"))
+    assert decide(third, _NO_WATCHLIST, crowded, now_ms=_NOW).final == "push"
+    # A watchlist push on a busy asset key goes out as well.
     guarded = decide(
         _verdict(headline_zh="英伟达宣布回购"),
         _FACTS,
         storyline_status("asset:NVDA", seen=_sent("asset:NVDA", "bullish", "bullish")),
         now_ms=_NOW,
     )
-    assert guarded.final == "throttled" and guarded.override_rule == "watchlist_objective_guard"
+    assert guarded.final == "push" and guarded.override_rule == "watchlist_objective_guard"
+
+    # The similarity check is untouched: the same fact again on that key is still a `:seen` withhold, and a
+    # reversal of it is still exempt from the check.
+    same_fact = storyline_status(key, seen=_sent(key, "bearish", headline="伊朗宣布封锁霍尔木兹海峡"))
+    repeat = decide(third, _NO_WATCHLIST, same_fact, now_ms=_NOW)
+    assert repeat.final == "throttled" and repeat.throttled_by == f"storyline:{key}:seen"
+    assert repeat.seen_similarity is not None and repeat.seen_similarity >= DEFAULT_POLICY.similarity_max
+    reversal = decide(third.model_copy(update={"direction": "bullish"}), _NO_WATCHLIST, same_fact, now_ms=_NOW)
+    assert reversal.final == "push" and reversal.throttled_by is None
 
 
-def test_policy_v13_budget_reversal_exemption_reads_past_a_non_directional_card() -> None:
-    """#523 D2. The reversal exemption compares against the newest *directional* delivered card.
-
-    v12 compared against the newest delivered card whatever its direction, so one neutral card landing on a
-    key hid a real reversal behind it: "Russia will raise output" was withheld against a "will cut output"
-    card 55 minutes earlier. Reading past non-directional cards released 5 more cards over the 2888-judgment
-    replay, all genuine reversals, at most one per key per hour. Only the newest directional card is
-    consulted; "against any delivered card" would have released 101 and let 10 escape on one key in an hour.
-    """
-
-    key = "conflict:mideast_2026"
-    bullish = _verdict(scope="macro", assets=[], direction="bullish", headline_zh="俄罗斯宣布增产")
-
-    # [neutral newest, bearish older] + bullish candidate: the budget is spent, and the newest card the
-    # reader could read a direction from is the bearish one this contradicts.
-    behind_neutral = storyline_status(key, seen=_sent(key, "neutral", "bearish"))
-    freed = decide(bullish, _NO_WATCHLIST, behind_neutral, now_ms=_NOW)
-    assert freed.final == "push" and freed.throttled_by is None
-    # Still only the newest *directional* one: newest bullish, older bearish, bullish candidate is no flip.
-    same_direction = storyline_status(key, seen=_sent(key, "bullish", "bearish"))
-    assert decide(bullish, _NO_WATCHLIST, same_direction, now_ms=_NOW).throttled_by == f"storyline:{key}:budget"
-    # `unclear` and a direction-less row are not directions either, and are read past the same way.
-    for hidden in ("unclear", ""):
-        blind = storyline_status(key, seen=_sent(key, hidden, "bearish"))
-        assert decide(bullish, _NO_WATCHLIST, blind, now_ms=_NOW).final == "push", hidden
-
-    # The count is unchanged: a neutral card is still a card the reader received, so two of them spend the
-    # budget and, with no directional card to contradict, nothing is exempt.
-    neutral_only = storyline_status(key, seen=_sent(key, "neutral", "neutral"))
-    spent = decide(bullish, _NO_WATCHLIST, neutral_only, now_ms=_NOW)
-    assert spent.final == "throttled" and spent.throttled_by == f"storyline:{key}:budget"
-    # Two neutrals plus the bearish card is three delivered cards, over budget, and still exempt as a flip.
-    over_budget = storyline_status(key, seen=_sent(key, "neutral", "neutral", "bearish"))
-    assert decide(bullish, _NO_WATCHLIST, over_budget, now_ms=_NOW).final == "push"
-    # A neutral candidate is not a reversal of anything, whatever the ledger holds.
-    assert (
-        decide(bullish.model_copy(update={"direction": "neutral"}), _NO_WATCHLIST, behind_neutral, now_ms=_NOW).final
-        == "throttled"
-    )
-    # Only in-window rows on this key are read: the directional card behind the neutral one still has to be
-    # inside the budget window to be reversed, and an out-of-window ledger is under budget anyway.
-    aged = storyline_status(key, seen=_sent(key, "neutral", "bearish", minutes_ago=90))
-    assert decide(bullish, _NO_WATCHLIST, aged, now_ms=_NOW).final == "push"
-
-
-def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores_the_budget() -> None:
+def test_decide_escalate_needs_corroboration() -> None:
     """#504 D3. 92 of 126 escalates on 2026-09-02 were a single Item from a source of unknown authority."""
 
     big = _verdict(
@@ -1358,14 +1288,14 @@ def test_decide_escalate_needs_corroboration_and_a_corroborated_escalate_ignores
     tagged = replace(lone, grounded_assets=("CL", "XYZ-CL"))
     assert production_decide(scored_judgment(big, taxonomy=macro), tagged, None).final == "push"
 
-    # The downgraded card is an ordinary push from here on: the budget and similarity apply to it.
-    key = "conflict:mideast_2026"
-    spent = storyline_status(key, seen=_sent(key, "bearish", "bearish"))
-    budgeted = production_decide(scored_judgment(big, taxonomy=macro), lone, spent, now_ms=_NOW)
-    assert budgeted.final == "throttled" and budgeted.throttled_by == f"storyline:{key}:budget"
-    assert budgeted.override_rule == "escalate_uncorroborated"
-    # A corroborated escalate is the card the budget makes room for.
-    assert production_decide(wire, lone, spent, now_ms=_NOW).final == "escalate"
+    # The downgraded card is an ordinary push from here on: the similarity check applies to it, and an
+    # escalate is measured but never withheld by it.
+    key = "topic:fed_rates"
+    told_same = storyline_status(key, seen=_sent(key, "bearish", headline="美联储宣布降息50个基点"))
+    held = production_decide(scored_judgment(big, taxonomy=macro), lone, told_same, now_ms=_NOW)
+    assert held.final == "throttled" and held.throttled_by == f"storyline:{key}:seen"
+    assert held.override_rule == "escalate_uncorroborated"
+    assert production_decide(wire, lone, told_same, now_ms=_NOW).final == "escalate"
 
 
 def test_the_corroboration_rule_still_fires_when_the_taxonomy_predictor_failed() -> None:
@@ -1741,7 +1671,7 @@ def test_the_decision_table_withholds_one_more_item_on_a_conflict_the_reader_is_
             source_authority="reputable_secondary",
         )
         assert production_decide(change, facts, _told_on(key, 3), now_ms=_NOW).final == "escalate", kind
-    # Only a `conflict:` key. An asset storyline with the same shape belongs to the budget, not to this row.
+    # Only a `conflict:` key. An asset storyline with the same shape is not this row's to withhold.
     asset_key = replace(_told_on("asset:crypto:BTC", 1), key="asset:crypto:BTC")
     assert production_decide(routine, facts, asset_key, now_ms=_NOW).final == "push"
 
@@ -1974,7 +1904,7 @@ def test_the_shown_ledger_answers_how_much_of_this_storyline_the_reader_already_
 
 def test_decide_uses_content_duplicate_evidence_without_a_reader_quota() -> None:
     """Prior volume on the *reader* never blocks a card; only evidence that the reader already got this fact
-    (or, since v12, this storyline's budget) can."""
+    can. v12-v16 also counted this storyline's delivered cards; v17 deleted that budget."""
 
     # Nothing in the window to compare against: the reader received nothing, so nothing can be a repeat.
     empty = decide(_verdict(), _FACTS, _busy())
@@ -2009,8 +1939,8 @@ def test_decide_uses_content_duplicate_evidence_without_a_reader_quota() -> None
 
 
 def test_storyline_status_carries_only_content_evidence() -> None:
-    """Every field is receipt evidence about delivered cards. `seen_at_ms`/`seen_keys` (#504) are when and under
-    which storyline key each delivered card settled — the budget ledger — never a count or capacity field."""
+    """Every field is receipt evidence about delivered cards, never a count or capacity field. `seen_at_ms` and
+    `seen_keys` went with the #504 budget they were the ledger of (policy v17)."""
 
     assert {item.name for item in fields(StorylineStatus)} == {
         "key",
@@ -2025,11 +1955,9 @@ def test_storyline_status_carries_only_content_evidence() -> None:
         "seen_event_ids",
         "seen_directions",
         "seen_assets",
-        "seen_at_ms",
-        "seen_keys",
     }
     status = storyline_status("asset:BTC", seen=[_told_row("a", 5, storyline_key="topic:rates"), _told_row("b", 3)])
-    assert status.seen_at_ms == (5, 3) and status.seen_keys == ("topic:rates", "asset:BTC")
+    assert status.seen_event_ids == ("a", "b") and status.seen_headlines == ("a", "b")
 
 
 def _told_row(event_id: str, at_ms: int, **overrides: Any) -> dict[str, Any]:

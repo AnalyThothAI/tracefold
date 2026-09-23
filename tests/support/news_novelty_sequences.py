@@ -78,7 +78,7 @@ def storyline_key(case_key: str) -> str:
 
 
 def triage_stamp(case_key: str) -> int:
-    """The clock `decide()` measured the storyline budget from for this card."""
+    """The settle stamp `decide()` measured this card's told window from."""
 
     return int(verdict_row(case_key)["created_at_ms"])
 
@@ -90,10 +90,20 @@ def settled_at_ms(case_key: str) -> int | None:
     return int(delivered[0]["settled_at_ms"]) if delivered else None
 
 
-def frozen_policy(case_key: str) -> DecidePolicy:
-    """The exact knob values the arm ran, carried by the verdict trace rather than read from the process."""
+# Knobs policy v17 deleted with the #504 per-storyline budget. The exported traces predate v17 and still carry
+# them; the export is audit truth and is never rewritten, so they are dropped here on read.
+_RETIRED_POLICY_KNOBS = frozenset({"storyline_budget_window_s", "storyline_budget_max"})
 
-    return DecidePolicy(**dict(verdict_row(case_key)["trace"]["policy"]))
+
+def frozen_policy(case_key: str) -> DecidePolicy:
+    """The exact knob values the arm ran, carried by the verdict trace rather than read from the process.
+
+    Only the knobs the current policy still has: the two budget knobs are removed by name, so any other key
+    the current `DecidePolicy` does not know still fails loudly.
+    """
+
+    stored = dict(verdict_row(case_key)["trace"]["policy"])
+    return DecidePolicy(**{name: value for name, value in stored.items() if name not in _RETIRED_POLICY_KNOBS})
 
 
 def judgment(case_key: str, *, source_authority: str | None = None, **overrides: Any) -> ScoredJudgment:
@@ -111,8 +121,8 @@ def judgment(case_key: str, *, source_authority: str | None = None, **overrides:
 
     ``source_authority`` is the one editorial fact a caller can hold, because it is the only code fact
     outside the verdict that v16's escalate row reads. A test measuring a rule that applies to ordinary
-    pushes -- the same-fact check, the storyline budget -- has to be able to say "and this notice came
-    from a source the registry cannot name", or the card it is measuring is not one of them.
+    pushes -- the same-fact check -- has to be able to say "and this notice came from a source the
+    registry cannot name", or the card it is measuring is not one of them.
     """
 
     row = verdict_row(case_key)

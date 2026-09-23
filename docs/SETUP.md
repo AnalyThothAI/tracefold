@@ -284,13 +284,11 @@ news:
     # Alternative provider (do not configure both):
     # feishu_webhook_url: "<Feishu v2 webhook>"
     # feishu_signing_secret:
-  policy:                     # policy-v14 duplicate/safety/budget knobs (all optional; these are the defaults)
+  policy:                     # policy-v17 duplicate/safety knobs (all optional; these are the defaults)
     restatement_drop: true      # a restatement of a card the reader already received never pushes, either direction
     similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
     listing_exempt_from_duplicate: true  # exchange listing frames are duplicates only per instrument
     stale_source_max_age_s: 43200  # an x/twitter artifact already older than 12 h on arrival is a replay
-    storyline_budget_window_s: 3600  # #504: per-storyline budget window; 0 disables
-    storyline_budget_max: 2     # #504: delivered cards per storyline key inside the window; 0 disables
   retention:
     raw_days: 30                # an Item nobody judged is storage
     judged_days: 365            # an Item behind a verdict or accepted review is retained as learning evidence
@@ -386,13 +384,17 @@ prior-factory judgments are audit-only under exact current-bundle eligibility,
 so the factory-v7 cohort starts at zero.
 The production image has one loader only: the content-addressed
 `news_program_state_v1` document executed as
-`news_semantic_program_v13` under `news_triage_policy_v16`. Prior roots remain
+`news_semantic_program_v13` under `news_triage_policy_v17`. Prior roots remain
 immutable audit history and are not executable by the current image. Rollback
 uses the recorded previous same-schema runtime image, never an alternate
 registry entry or runtime switch.
-`tracefold config` prints the effective values. Policy v11 retains policy v7's
-removal of every 1 h/2 h/4 h reader-count veto: every distinct fact that passes the semantic contract moves
-to delivery; the sent-reader ledger remains only for same-fact suppression.
+`tracefold config` prints the effective values. Policy v17 keeps policy v7's
+removal of every 1 h/2 h/4 h reader-count veto and deletes the #504 per-storyline
+budget that v12-v16 added (`storyline_budget_window_s` and `storyline_budget_max`
+are no longer keys; a config file that still sets either fails at startup): every
+distinct fact that passes the semantic contract moves to delivery; the sent-reader
+ledger remains for same-fact suppression and for the two conflict rows of the
+decision table.
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. With `news.push.enabled: false`,

@@ -1007,7 +1007,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_title_norm_v2`, `news_gate_v7`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v3`,
 `news_semantic_program_v13`,
-`news_triage_policy_v16`, `news_delivery_card_v11`, artifact schema
+`news_triage_policy_v17`, `news_delivery_card_v11`, artifact schema
 `news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and
 `news_liquidation_fact_v2` are retired program versions: the deterministic
@@ -1154,32 +1154,31 @@ figure at all since #553: the `telemetry_received_24h`,
 `telemetry_parsed_24h`, `telemetry_parse_failed_24h` and `telemetry_events_24h`
 counters counted Events, and an OI frame opens none. `/api/news/market`
 reports what the OI Strategy actually did.
-`news.policy` has exactly six keys: `restatement_drop` (true),
-`similarity_max` (0.25), `listing_exempt_from_duplicate` (true),
+`news.policy` has exactly four keys: `restatement_drop` (true),
+`similarity_max` (0.25), `listing_exempt_from_duplicate` (true) and
 `stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older
 than this when the provider pushed it is a replay, withheld as
-`stale_source_artifact`; `escalate` is exempt and 0 disables the rule),
-`storyline_budget_window_s` (3600) and `storyline_budget_max` (2; #504: at
-most this many delivered cards per final storyline key inside the window,
-withheld as `storyline:<key>:budget`; a corroborated `escalate`, a direction
-reversal of the newest *directional* delivered card on the key (#523: neutral,
-unclear and direction-less cards are read past, and still counted) and the
-`none` key are exempt; either key at 0 disables
-the budget).
+`stale_source_artifact`; `escalate` is exempt and 0 disables the rule).
+`storyline_budget_window_s` and `storyline_budget_max` are gone with the #504 D2
+per-storyline budget, which policy v17 deletes (owner decision 2026-09-23,
+reversing #675 §6); `extra="forbid"` means a config file that still sets either
+fails at startup. Verdicts written under v12-v16 keep their
+`storyline:<key>:budget` throttle key as history; no v17 decision writes it.
 The decision table and objective-guard ordering are code-owned, not operator
 thresholds. The grounded-restatement guard drops a `restatement` that cites a
 told entry the model was shown, whatever the two directions are (#651: the
 model's `direction` is its reading of a fact, not a fact, so it cannot decide
 whether the reader already has it; a real reversal arrives as `progression` or
-`new_fact`, which the same-fact and budget exemptions still cover). After that
-guard the v16 order is: deterministic listing/telemetry — which since v13 (#523)
-does not cover a frame whose text is not a new fact, and states that in v16 as
+`new_fact`, which the same-fact reversal exemption still covers). After that
+guard the order (v16, unchanged by v17) is: deterministic listing/telemetry —
+which since v13 (#523) does not cover a frame whose text is not a new fact, and
+states that in v16 as
 `fact_kind` in `statement|recap|schedule|promotion`, leaving it to that kind's
 own drop row — grounded watchlist, the decision table, then
 `single_name_without_instrument` (a table push on a `single_name` verdict with
-no primary asset drops); the retained stale-source and same-fact checks and the
-per-storyline budget run after action selection. There is no reader-global
-quota.
+no primary asset drops); the retained stale-source and same-fact checks run
+after action selection. There is no reader-global quota and, since v17, no
+per-storyline delivery budget.
 
 The v16 decision table (#675 §1) is the whole of the model-judgment decision.
 Every input is a fact the code produced and stored, or an observation of the

@@ -163,11 +163,11 @@ def test_the_recorded_visa_judgment_still_pushes_because_it_claims_a_progression
 
 
 def test_the_cp_listing_chain_drops_the_channel_repeat_and_keeps_the_new_venue() -> None:
-    """One notice, the same notice on another channel, then a different venue -- under the storyline budget.
+    """One notice, the same notice on another channel, then a different venue.
 
     The middle card is the repeat and the third is a real progression: Bithumb listing CP is not Upbit
-    listing CP. The three cards share `asset:CP`, so the budget is consulted on the third; it is not
-    exhausted, because a dropped card is not a receipt and only one CP card was ever delivered.
+    listing CP. The three cards share `asset:CP`, and a dropped card is not a receipt, so the third is
+    measured against the one CP card that was ever delivered.
     """
 
     upbit, cross_channel, bithumb = _steps(CP)
@@ -190,7 +190,7 @@ def test_the_cp_listing_chain_drops_the_channel_repeat_and_keeps_the_new_venue()
         assert (result.final, result.override_rule, result.throttled_by) == expected, case_key
         assert result.final == step["recorded"]["final_decision"], case_key
         # The receipt ledger the third card was measured against carries the delivered notice and not the
-        # dropped one, which is the whole reason the budget had room.
+        # dropped one.
         assert list(status.seen_event_ids) == [str(upbit["event_id"])] * len(delivered)
 
     assert cross_channel["told_index_of_target"] == 6
@@ -313,16 +313,16 @@ def test_a_reversal_reaches_as_a_progression_and_drops_as_a_restatement() -> Non
     assert (repeat.final, repeat.override_rule) == ("drop", "restatement")
 
 
-def test_a_reversal_still_escapes_an_exhausted_storyline_budget() -> None:
-    """The second exemption #651 §6.3 keeps, isolated from the first.
+def test_a_third_cp_card_inside_the_hour_is_not_withheld_by_how_many_came_before() -> None:
+    """Policy v17 over frozen production receipts: the #504 D2 per-storyline budget is gone.
 
-    Two CP cards were delivered on `asset:CP` inside the budget window and the newest directional one is
-    `bullish`, so an ordinary third card is withheld. A `progression` that reverses it is not -- that is
-    the #504 D2 / #523 D2 rule, and dropping the restatement exemption does not touch it. `similarity_max`
-    is set to zero here, which is the documented way to switch the same-fact check off, so that the only
-    rule this test can be measuring is the budget. The notice's `source_authority` is held at `unknown`
-    for the same reason it is on the same-fact check above: the budget only ever withholds an ordinary
-    push, and v16 escalates a `market_access` state change whose source the registry can name.
+    Two CP cards were delivered on `asset:CP` inside one hour, the newest directional one `bullish`. Under
+    v12-v16 an ordinary third card on the key was withheld as `storyline:asset:CP:budget` unless it reversed
+    that card; the owner withdrew the rule on 2026-09-23, and under v17 neither the count nor the direction
+    decides anything. `similarity_max` is set to zero, the documented way to switch the same-fact check off,
+    so the only rule this test could be measuring is the deleted one. The notice's `source_authority` is
+    held at `unknown` so the card is an ordinary push rather than the `market_access` escalate v16 grants a
+    source the registry can name.
     """
 
     upbit, cross_channel, bithumb = _steps(CP)
@@ -332,6 +332,7 @@ def test_a_reversal_still_escapes_an_exhausted_storyline_budget() -> None:
     receipts = [history_row(str(upbit["case"])), history_row(str(bithumb["case"]))]
     assert {row["storyline_key"] for row in receipts} == {"asset:CP"}
     assert [row["direction"] for row in receipts] == ["neutral", "bullish"]
+    assert now_ms - min(int(row["at_ms"]) for row in receipts) < 3_600_000
 
     snapshot = build_reader_history(
         receipts,
@@ -347,25 +348,18 @@ def test_a_reversal_still_escapes_an_exhausted_storyline_budget() -> None:
         told=told(case_key),
         seen=[row.as_told_row() for row in snapshot.recent_seen_rows],
     )
+    assert len(status.seen_event_ids) == 2
     facts = gate_facts(case_key)
 
-    withheld = decide(
-        judgment(case_key, novelty="progression", restates=-1, direction="neutral", source_authority="unknown"),
-        facts,
-        status,
-        policy=policy,
-        now_ms=now_ms,
-    )
-    assert (withheld.final, withheld.throttled_by) == ("throttled", "storyline:asset:CP:budget")
-
-    reversal = decide(
-        judgment(case_key, novelty="progression", restates=-1, direction="bearish", source_authority="unknown"),
-        facts,
-        status,
-        policy=policy,
-        now_ms=now_ms,
-    )
-    assert (reversal.final, reversal.throttled_by) == ("push", None)
+    for direction in ("neutral", "bullish", "bearish"):
+        result = decide(
+            judgment(case_key, novelty="progression", restates=-1, direction=direction, source_authority="unknown"),
+            facts,
+            status,
+            policy=policy,
+            now_ms=now_ms,
+        )
+        assert (result.final, result.throttled_by) == ("push", None), direction
 
 
 _MACRO_PAIRS = (

@@ -39,7 +39,8 @@ _REGISTRY_RESOURCE: Final = "storyline_registry.json"
 
 # The key for "this headline names no storyline". It replaces `macro:<dedupe_family>`: the dedupe family is a
 # column on the Event row already, and pretending it was a storyline gave policy v12's budget one enormous
-# bucket to count. `decide()` exempts exactly this key from the budget (#509 D6).
+# bucket to count (#509 D6). The budget is gone (policy v17); the told-ledger count the conflict rows read
+# still never counts this key.
 NO_STORYLINE_KEY: Final = "none"
 
 StorylineKind = Literal["conflict", "actor", "geo", "topic"]

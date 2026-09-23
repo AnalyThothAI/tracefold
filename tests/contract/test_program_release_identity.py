@@ -112,7 +112,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "program_sha256": load_stable_program_state().program_sha256,
     } == {
         "program_version": "news_semantic_program_v13",
-        "policy_version": "news_triage_policy_v16",
+        "policy_version": "news_triage_policy_v17",
         "review_rubric_version": "news_review_v8",
         "metric_id": "tracefold.news.production_action_fact_kind_v12",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,

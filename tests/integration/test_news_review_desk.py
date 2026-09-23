@@ -749,7 +749,9 @@ def test_the_daily_audit_ratios_group_accepted_judgments_by_stratum(conn) -> Non
         title="Tokyo utility signs a ten-year LNG offtake agreement",
         delivered=False,
         final_decision="throttled",
-        throttled_by="storyline:asset:MU:budget",
+        # A v17 throttle key: the `:budget` key this used went with the #504 budget, and `:seen` would need
+        # the trace's `seen_scope`, which this helper does not write.
+        throttled_by="artifact:stale",
     )
     # A task the sampler pulls into its own stratum. It is a real accepted judgment and it must not land
     # in either product ratio, which is the whole point of grouping by stratum. `critical` is that

@@ -1939,10 +1939,11 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
     conn.commit()
 
 
-def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(conn) -> None:
-    """#504 D2 across the real seam: three Events key to one storyline, two are delivered, the third is measured
-    against the sent ledger PostgreSQL projects, withheld as `storyline:<key>:budget`, persisted under the v12
-    judgment CHECK, and counted in `status.pipeline.throttled_by_key`."""
+def test_the_third_card_on_one_storyline_inside_an_hour_is_pushed(conn) -> None:
+    """Policy v17 across the real seam: three Events key to one storyline, two are delivered, and the third is
+    measured against the sent ledger PostgreSQL projects and pushed. Under v12-v16 it was withheld as
+    `storyline:<key>:budget`; the owner withdrew #504 D2 on 2026-09-23. The row persists under the v17
+    judgment CHECK, and the same-fact check still withholds a repeat of a delivered card on that key."""
 
     repos = repositories_for_connection(conn)
     first, second, third = _admit_test_events(
@@ -2020,11 +2021,12 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
     judgment = scored_judgment(verdict)
     facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate")
     decision = decide(judgment, facts, status, now_ms=now_ms)
-    assert decision.final == "throttled" and decision.throttled_by == "storyline:conflict:mideast_2026:budget"
+    assert decision.final == "push" and decision.throttled_by is None
     assert decision.override_rule == "fact_kind_state_change" and decision.seen_scope == "all"
-    # A reversal on the same key is not budgeted.
-    reversal = scored_judgment(verdict.model_copy(update={"direction": "bullish", "headline_zh": "伊朗宣布停火"}))
-    assert decide(reversal, facts, status, now_ms=now_ms).final == "push"
+    # The same fact as a delivered card on that key is still the similarity check's to withhold.
+    repeat = scored_judgment(verdict.model_copy(update={"headline_zh": seen[0]["headline_zh"]}))
+    withheld = decide(repeat, facts, status, now_ms=now_ms)
+    assert withheld.final == "throttled" and withheld.throttled_by == "storyline:conflict:mideast_2026:seen"
 
     evidence = repos.news.latest_evidence_snapshot(third)
     assert evidence is not None
@@ -2074,11 +2076,11 @@ def test_the_third_card_on_one_storyline_inside_the_budget_window_is_withheld(co
     row = conn.execute(
         "SELECT policy_version, final_decision, throttled_by FROM news_verdicts WHERE event_id = %s", (third,)
     ).fetchone()
-    assert row is not None and row["policy_version"] == "news_triage_policy_v16"
-    assert row["final_decision"] == "throttled" and row["throttled_by"] == "storyline:conflict:mideast_2026:budget"
+    assert row is not None and row["policy_version"] == TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
+    assert row["final_decision"] == "push" and row["throttled_by"] is None
     pipeline = repos.news.status_snapshot(now_ms=now_ms)["pipeline"]
-    assert pipeline["throttled_by_key"]["storyline:conflict:mideast_2026:budget"] == 1
-    assert pipeline["duplicates_withheld_24h"]["all"] == 0  # a budget withhold is not a same-fact duplicate
+    assert not any(key.endswith(":budget") for key in pipeline["throttled_by_key"])
+    assert pipeline["duplicates_withheld_24h"]["all"] == 0
     conn.commit()
 
 

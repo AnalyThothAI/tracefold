@@ -189,7 +189,8 @@ DECISION_ZH: Final[dict[str, str]] = {
 }
 
 _SEEN_SUFFIX: Final = ":seen"
-# #504 D2: the per-storyline budget withhold, `storyline:<key>:budget`.
+# #504 D2's per-storyline budget withhold, `storyline:<key>:budget`. History only: policy v17 deleted the
+# rule and no current decision writes the key, but the v12-v16 rows that carry it stay in the ledger.
 _BUDGET_SUFFIX: Final = ":budget"
 # #154. Constant rather than per-age so the top-10 `throttled_by_key` map keeps one bucket for the rule.
 _STALE_ARTIFACT_KEY: Final = STALE_SOURCE_KEY
