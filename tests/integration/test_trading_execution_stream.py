@@ -944,6 +944,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "ix_trading_trade_signals_observed_at",
         "ix_trading_trade_signals_expires_at",
         "ix_trading_trade_signals_unresolved",
+        "ix_trading_trade_signals_v2_account",
         "trading_operator_intents_pkey",
         "trading_operator_intent_slot_unique",
         "ix_trading_operator_intents_pending",
@@ -963,6 +964,10 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     )
     assert indexes["ix_trading_trade_signals_observed_at"].endswith("USING btree (observed_at_ns)")
     assert indexes["ix_trading_trade_signals_expires_at"].endswith("USING btree (expires_at_ns)")
+    assert (
+        "USING btree (account_slot, runtime_mode, expires_at_ns, seq)" in indexes["ix_trading_trade_signals_v2_account"]
+    )
+    assert "account_slot IS NOT NULL" in indexes["ix_trading_trade_signals_v2_account"]
     assert indexes["ix_trading_operator_intents_pending"].endswith(
         "USING btree (account_slot, seq) INCLUDE (command_id, expires_at_ns)"
     )
@@ -980,6 +985,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_trade_signal_case_check",
             "trading_trade_signal_market_check",
             "trading_trade_signal_direction_check",
+            "trading_trade_signals_runtime_mode_check",
             "trading_trade_signal_clock_check",
         },
         "trading_operator_intents": {

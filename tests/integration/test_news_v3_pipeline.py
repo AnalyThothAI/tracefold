@@ -69,6 +69,8 @@ NEWS_TABLES = {
     "news_quote_snapshots",
     "news_event_reactions",
     "news_oi_signals",
+    # #683 immutable catalyst/OI facts are handed to Trading independently of delivery.
+    "news_trade_events",
     "news_market_liquidations",
     "news_market_smart_money",
     # #553 PR-2. The notification loop's two durable states: one track per group -- when is this group
