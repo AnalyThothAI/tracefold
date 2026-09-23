@@ -26,6 +26,7 @@ from tracefold.integrations.nautilus.oi_runtime.journal import (
     day_start_baseline_from_observation,
 )
 from tracefold.news.events.facts import extract_fact_units
+from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.news.smart_money import PARSER_VERSION
 from tracefold.news.smart_money import source_key as smart_money_source_key
@@ -47,7 +48,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260922_0389"
+HEAD = "20260923_0390"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -254,6 +255,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260922_0389",
         "20260922_0388",
         "20260922_0387",
         "20260922_0386",
@@ -344,10 +346,16 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    # The Nautilus ownership cut deleted the private proof's rows and columns; nothing can put them back.
-    with pytest.raises(RuntimeError, match="trading_nautilus_owned_execution_forward_only"):
+    # The v17 policy cut cannot be rolled back by downgrading the CHECK that admits a v17 verdict: every
+    # verdict written after it carries that version, and the v16 list refuses it.
+    with pytest.raises(RuntimeError, match="news_policy_v17_no_storyline_budget_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    # The Nautilus ownership cut deleted the private proof's rows and columns; nothing can put them back.
+    command.stamp(config, "20260922_0389")
+    with pytest.raises(RuntimeError, match="trading_nautilus_owned_execution_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260922_0389"
     # The judgment v3 cut cannot be rolled back by downgrading the CHECK that admits a v3 verdict: every
     # judgment written under it carries `fact_kind` and no `magnitude`, and the v2-only predicate refuses
     # exactly that shape.
@@ -2679,9 +2687,11 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
             "news_judgment_v2",
             "news_judgment_v3",
         }
+        # The current Workers' version, which is v17 since `20260923_0390` rather than the v16 this revision
+        # itself admitted; the v15 row is the one that matters here.
         assert {str(row["policy_version"]) for row in rows} == {
             "news_triage_policy_v15",
-            "news_triage_policy_v16",
+            TRIAGE_POLICY_VERSION,
         }
         # And each shape stays bound to the contract that wrote it: a v3 row states a kind and no
         # magnitude, a v2 row the other way round, and `news_current_verdict_contract_shape_valid` is
@@ -2921,3 +2931,77 @@ def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_eve
         )
         assert state["entry_block_reason"] == "runtime_stopped"
         assert repositories_for_connection(conn).trading.execution_runtime_state(slot) is not None
+
+
+def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17() -> None:
+    """`20260923_0390`, against the smallest history it can affect: v16 verdicts, one a budget withhold.
+
+    The revision only widens the three policy lists of the judgment CHECK, restated from the definition
+    PostgreSQL actually holds. What an operator cannot establish by reading it: the v16 rows -- including a
+    `storyline:<key>:budget` withhold the deleted rule wrote, which stays in the ledger as its history --
+    keep validating and are not touched; a v17 verdict is refused before the revision and admitted after;
+    the literal lands in the model, OI and degraded branches and nowhere else; and a second run is a no-op.
+    """
+
+    from contextlib import closing
+
+    from tests.integration import test_news_reader_history as history
+    from tests.integration.test_news_evidence_material import admit
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260922_0389")
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        pushed = admit(repos, "Kraken opens BTC options trading to US customers.", record=69001).results[0].event_id
+        history._persist_triage_verdict(
+            repos, event_id=pushed, at_ms=2000, symbol="BTC", policy_version="news_triage_policy_v16"
+        )
+        withheld = admit(repos, "Lido pauses ETH withdrawals after an oracle fault.", record=69002).results[0].event_id
+        history._persist_triage_verdict(
+            repos,
+            event_id=withheld,
+            at_ms=2100,
+            symbol="ETH",
+            policy_version="news_triage_policy_v16",
+            final_decision="throttled",
+            throttled_by="storyline:asset:crypto:ETH:budget",
+        )
+        conn.commit()
+        before = conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v ORDER BY event_id").fetchall()
+        assert {row["row"]["throttled_by"] for row in before} == {None, "storyline:asset:crypto:ETH:budget"}
+        definition_before = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint "
+            "WHERE conrelid = 'news_verdicts'::regclass AND conname = 'news_verdicts_current_judgment_check'"
+        ).fetchone()["d"]
+        assert "news_triage_policy_v17" not in definition_before
+
+        blocked = admit(repos, "Solana validators vote to cut the SOL issuance rate.", record=69003).results[0].event_id
+        with pytest.raises(psycopg.errors.CheckViolation):
+            history._persist_triage_verdict(repos, event_id=blocked, at_ms=2200, symbol="SOL")
+        conn.rollback()
+
+    command.upgrade(config, "head")
+    # Head to head is a no-op: the revision refuses a predicate it has already rewritten.
+    command.upgrade(config, "head")
+
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        assert conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v ORDER BY event_id").fetchall() == before
+        definition = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint "
+            "WHERE conrelid = 'news_verdicts'::regclass AND conname = 'news_verdicts_current_judgment_check'"
+        ).fetchone()["d"]
+        # The model, OI and degraded branches each gained the literal; nothing else in the predicate moved.
+        assert definition.count("'news_triage_policy_v17'::text") == 3
+        assert definition.replace(", 'news_triage_policy_v17'::text", "") == definition_before
+        repos = repositories_for_connection(conn)
+        current = admit(repos, "Ripple wins an XRP custody licence in Singapore.", record=69004).results[0].event_id
+        history._persist_triage_verdict(repos, event_id=current, at_ms=2300, symbol="XRP")
+        conn.commit()
+        rows = conn.execute("SELECT policy_version FROM news_verdicts WHERE stage = 'triage'").fetchall()
+        assert sorted(str(row["policy_version"]) for row in rows) == [
+            "news_triage_policy_v16",
+            "news_triage_policy_v16",
+            "news_triage_policy_v17",
+        ]
+        assert TRIAGE_POLICY_VERSION == "news_triage_policy_v17"

@@ -129,8 +129,8 @@ def production_decision(
     it. A receipt is not re-decided because the rule moved.
 
     ``independent_text_count`` and ``now_ms`` come from the frozen ``TriageContext`` the episode already
-    carries (`prepared_evidence.independent_text_count`, `now_ms`), so the corroboration rules, the storyline
-    budget and the v16 decision table replay without a new projection root (#504, #675). An archived context
+    carries (`prepared_evidence.independent_text_count`, `now_ms`), so the corroboration rules and the
+    decision table's told-window rows replay without a new projection root (#504, #675). An archived context
     that predates the count replays at 1, which is the value that lets the conflict row fire — the same
     conservative answer production takes when the Deduper could not tell it otherwise. The Deduper's arrival
     count went with `GateFacts.member_count`: no row reads it any more (#679 review 7).

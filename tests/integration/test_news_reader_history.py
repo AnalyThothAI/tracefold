@@ -75,6 +75,9 @@ def _persist_triage_verdict(
     symbol: str,
     direction: str = "bearish",
     headline_zh: str = "阿里巴巴配售新股",
+    policy_version: str = TRIAGE_POLICY_VERSION,
+    final_decision: str = "push",
+    throttled_by: str | None = None,
 ) -> None:
     evidence = repos.news.latest_evidence_snapshot(event_id)
     assert evidence is not None
@@ -109,13 +112,13 @@ def _persist_triage_verdict(
     assert repos.news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version=TRIAGE_POLICY_VERSION,
+        policy_version=policy_version,
         judgment_contract_version=judgment.judgment_contract_version,
         judgment_origin="model",
         rule_baseline_decision="push",
-        final_decision="push",
+        final_decision=final_decision,
         override_rule="fact_kind_state_change",
-        throttled_by=None,
+        throttled_by=throttled_by,
         verdict=verdict.model_dump(mode="json"),
         model_editorial=judgment.editorial.model_dump(mode="json"),
         judgment_sha256=judgment.scored_judgment_sha256,

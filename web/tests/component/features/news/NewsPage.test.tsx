@@ -962,7 +962,7 @@ describe("NewsPage", () => {
     expect(technical).not.toHaveAttribute("open");
     expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
     expect(within(technical).getByText("asset:BTC")).toBeInTheDocument();
-    expect(within(technical).getByText("news_triage_policy_v16")).toBeInTheDocument();
+    expect(within(technical).getByText("news_triage_policy_v17")).toBeInTheDocument();
     for (const [earlier, later] of [
       [hero, timeline],
       [timeline, members],

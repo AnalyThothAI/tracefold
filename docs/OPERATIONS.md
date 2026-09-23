@@ -1445,26 +1445,19 @@ Diagnose News in this order:
    policy. A storyline key reads `asset:<SYM>`, `conflict:<id>`, `actor:<id>`,
    `geo:<id>`, `topic:<id>` or `none`; `tracefold news why` renders the
    registry's `label_zh` for it.
-   A `storyline:<key>:budget` throttle key is the policy-v14 per-storyline
-   budget (#504): the reader already received `storyline_budget_max` cards on
-   that final storyline key inside `storyline_budget_window_s`, and this one
-   was neither a corroborated escalate nor a direction reversal of the newest
-   *directional* card delivered on that key (#523: neutral, unclear and
-   direction-less cards are read past when looking for it, and still count
-   toward the budget). The `none` key never appears there.
-   After a deploy that changes the key format, the budget counts only the cards
-   delivered inside `storyline_budget_window_s` (1 h), and for that first hour
-   those rows still carry the previous format, so they match no new key and are
-   not counted. The 4 h `recent_seen_rows` ledger is unaffected: the similarity
-   check compares headlines, not keys. The effect is bounded, one-directional
-   (it releases rather than withholds) and needs no backfill: do not recompute
-   historical `storyline_key` values, and read the first hour of
-   `throttled_by_key` after such a deploy as a floor, not as a regression. Every budget-withheld card is a `throttled`
-   verdict, so the ReviewDesk sampler queues it at probability 1.0; a
-   `must_push` label on one is a reason to revisit the exemptions, not to
-   raise `storyline_budget_max`. The day's receipt is the two D5 SQL numbers
-   in #504 (`storyline_hour_p95`, `told_saturated_push_share`) against the
-   300-500 / 50-60 product target, which is a receipt metric and not a gate.
+   A `storyline:<key>:budget` throttle key is history: it is the #504
+   per-storyline budget that policy v12-v16 applied (at most two delivered cards
+   per storyline key per hour), which policy v17 deletes (owner decision
+   2026-09-23). Those rows stay in the ledger and still render as 同线索预算; no
+   v17 decision writes the key, so after the v17 deploy a `:budget` count in the
+   24 h `throttled_by_key` map only drains. The throttle keys a current verdict
+   can carry are `storyline:<key>:seen` (same-fact similarity) and
+   `artifact:stale`. A storyline key format change needs no backfill: do not
+   recompute historical `storyline_key` values; the 4 h `recent_seen_rows`
+   ledger the similarity check reads compares headlines, not keys. The day's
+   receipt is still the #504 D5 SQL (`storyline_hour_p95`,
+   `told_saturated_push_share`) against the 300-500 / 50-60 product target,
+   which is a receipt metric and not a gate.
    Strategy 1019 is no longer in these numbers at all: the four
    `pipeline.telemetry_*_24h` counters and the whole `status.oi` block counted
    Events, and a market frame opens none (#553). Use
@@ -2153,6 +2146,15 @@ rewritten: v8/v9 verdicts, `news_editorial_v2` judgments, `reaction_v1` rows and
 measured before `0378` reports no reaction number until the typed planner has
 measured it again. All three refuse their downgrade; recover by roll-forward or
 verified backup restore.
+
+`20260923_0390` takes `TRIAGE_POLICY_VERSION` to `news_triage_policy_v17` (the
+#504 per-storyline budget is deleted) and only widens the judgment CHECK's policy
+lists, so it needs no step beyond the ordinary stopped-writer `make up`: the
+revision lands before the new Workers start, and the old image's v16 writes
+would still validate. It drops and re-adds `news_verdicts_current_judgment_check`,
+revalidating every verdict row like `0386`. The new image refuses to start while
+the operator config still sets `news.policy.storyline_budget_window_s` or
+`storyline_budget_max`.
 
 `20260904_0360` needs no operator step and refuses nothing: it collapses any
 duplicate admission `source_key` to the row every reader already showed. It is

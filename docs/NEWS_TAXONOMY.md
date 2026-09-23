@@ -28,7 +28,7 @@ independent connected-fact clusters are scored, the result is
   political messaging about a third party.
 - Production Program: `news_semantic_program_v13`, Program SHA
   `f152602341ddfef9d041b2f656eea3f1a507eac38cfbc2fe5a6a1ab1eed531ae`.
-- Triage policy: `news_triage_policy_v16`.
+- Triage policy: `news_triage_policy_v17`.
 - Review contract: `news_review_v8`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` only from the structured

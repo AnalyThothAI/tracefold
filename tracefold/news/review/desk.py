@@ -61,6 +61,15 @@ READER_CONTRACT_VERSION = "reader_contract_v3"
 # it is a new action, so it arrives as `progression` or `new_fact`, which is
 # where the reversal exemption still lives.  Changing this text requires a new
 # version and invalidates old development/validation manifests.
+#
+# Its "or the per-storyline budget" clause describes policy v12-v16. Policy v17
+# deleted the budget (owner decision 2026-09-23), and the clause is deliberately
+# left in place: this text is hashed, never sent to a model, and it is the identity
+# every accepted `reader_contract_v3` review was written under. Rewriting it means
+# `reader_contract_v4`, which the review CHECK function does not admit without a
+# migration, which moves every review task id, and which puts every accepted v3
+# label outside `accepted_event_reviews_in_window` and every v3 dataset outside
+# `evaluate`. Move it with the next contract change that has to pay that cost.
 READER_CONTRACT_TEXT = (
     "Audience: Chinese market-research operator.\n"
     "Coverage: crypto; global macro/geopolitics with broad risk-asset impact; US-listed securities/ADRs; "

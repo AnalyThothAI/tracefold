@@ -35,7 +35,12 @@ GATE_POLICY_VERSION = "news_gate_v7"
 # verdict's own scope, and names the row that produced the action. The model's reader-value opinion is
 # gone with the fields that carried it, so the `trade_relevance_*` and `reader_value_*` rule names are
 # gone too; historical rows keep them and `outcome.py` still renders them.
-TRIAGE_POLICY_VERSION = "news_triage_policy_v16"
+# v17 deletes the #504 D2 per-storyline budget (owner decision 2026-09-23, reversing #675 §6): an ordinary
+# push is no longer withheld as `storyline:<key>:budget` because the reader already received two cards on
+# its storyline key inside an hour, and `news.policy` loses `storyline_budget_window_s` and
+# `storyline_budget_max`. Every other row, guard and duplicate check is byte-identical to v16; the v12-v16
+# `:budget` rows stay in the ledger as history and `outcome.py` still renders them.
+TRIAGE_POLICY_VERSION = "news_triage_policy_v17"
 DELIVERY_CARD_VERSION = "news_delivery_card_v11"
 
 # What the editorial Gate can decide about one Event. Three market admissions left this vocabulary

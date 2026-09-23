@@ -548,6 +548,37 @@ atomically; recover by rolling forward or restoring a verified backup. Downgrade
 refuses. Remove the retired webpage configuration key before the new image starts.
 
 
+### 20260923_0390: News triage policy v17, no storyline budget
+
+Adds `news_triage_policy_v17` to the model, OI and degraded branches of
+`news_verdicts_current_judgment_check`. The owner withdrew the #504 D2
+per-storyline budget on 2026-09-23 (reversing #675 §6), so `decide()` no longer
+withholds an ordinary push as `storyline:<key>:budget`; removing a withhold
+changes decisions, so `TRIAGE_POLICY_VERSION` moves and every verdict of every
+origin is written under the new value. Old Workers keep writing v16, which the
+new CHECK still admits; new Workers write v17, which only the new CHECK admits,
+so the revision lands before the new image starts, as the ordinary `make up`
+order already does.
+
+The revision restates the predicate in place exactly as `0386` does: it reads
+`pg_get_constraintdef`, refuses a definition that does not name v16 or that
+already names v17, adds the new literal to the three policy lists, and re-adds
+the constraint. The liquidation branch carries its own policy version and is
+untouched. No column, index, function or row changes; the v12-v16 `:budget`
+verdicts stay as written.
+
+Run behind the normal stopped-writer migration gate: one ACCESS EXCLUSIVE drop
+and add on `news_verdicts`, lock timeout 5 seconds, statement timeout 1800
+seconds because ADD CONSTRAINT revalidates every row through the canonical-JSON
+sha256 predicate. `NOT VALID` plus `VALIDATE CONSTRAINT` does not shorten that
+here: every pending revision runs in one transaction and the `DROP CONSTRAINT`
+already holds ACCESS EXCLUSIVE until commit, and stopping at `NOT VALID` would
+carry an unvalidated CHECK into every later restatement read from the live
+definition. Failure rolls back atomically; recover by rolling forward or
+restoring a verified backup. Downgrade refuses. The matching image also drops
+`news.policy.storyline_budget_window_s` and `storyline_budget_max`: remove them
+from the operator config before the new image starts, or it refuses to start.
+
 ### 20260922_0389: Nautilus owns execution state (#680 PR-1)
 
 Deletes the private account proof the Runtime no longer writes. The

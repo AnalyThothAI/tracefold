@@ -539,7 +539,7 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
     assert triage["source_authority_zh"]
     assert triage["headline_zh"] == "比特币获得新的市场准入"
     verdict_row = next(row for row in detail.json()["data"]["verdicts"] if row["stage"] == "triage")
-    assert verdict_row["policy_version"] == TRIAGE_POLICY_VERSION == "news_triage_policy_v16"
+    assert verdict_row["policy_version"] == TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
     assert verdict_row["model_editorial"]["taxonomy"] is None
     assert verdict_row["model_editorial"]["taxonomy_status"] == "unavailable"
     assert verdict_row["model_editorial"]["source_authority"] == "issuer_first_party"
