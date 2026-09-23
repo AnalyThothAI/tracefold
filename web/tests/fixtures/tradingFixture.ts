@@ -21,6 +21,12 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
   return {
     decision: {
       last_case_at_ms: TRADING_NOW_MS - 1_000,
+      state: "disabled",
+      active_policy: "trade_assessment_v1",
+      model_name: null,
+      publish_signals: false,
+      config_digest: null,
+      heartbeat_at_ms: null,
     },
     execution: {
       account_slot: "binance_usdm_primary",

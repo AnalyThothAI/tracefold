@@ -11,15 +11,18 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
+from tracefold.trading.storage.analysis import TRADING_ANALYSIS_RUNTIME_SQL, TRADING_TRIGGER_BY_ID_SQL
 from tracefold.trading.storage.execution_stream import execution_stream_query_specs
 from tracefold.trading.storage.gate import (
     GATE_DECISION_FOR_SOURCE_KEY_SQL,
     GATE_DECISIONS_SINCE_SQL,
 )
-from tracefold.trading.storage.lane import LATEST_CASE_CREATED_AT_SQL
+from tracefold.trading.storage.history import LATEST_CASE_CREATED_AT_SQL
 from tracefold.trading.storage.queries import (
     CONSOLE_CASE_BY_ID_SQL,
     TRADING_CASE_COUNTS_SQL,
+    TRADING_CASE_DECISION_SQL,
+    TRADING_CASE_OUTCOMES_SQL,
     TRADING_CASE_REASON_COUNTS_SQL,
     TRADING_GATE_COUNTS_SQL,
     console_cases_statement,
@@ -107,11 +110,13 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     ),
     # One statement over `trading_cases`, where the two 24 h `count(*)` scans this route also ran on
     # every 15 s poll were rendered nowhere the desk still has (#537 PR-5).
-    "/api/trading/status": ("trading_status_latest_case",),
+    "/api/trading/status": ("trading_status_latest_case", "trading_analysis_runtime"),
     # #621 adds scope-bound Case browsing alongside retained identity lookup and the independent
     # 24 h distributions. Both filtered and count plans are audited before pagination.
     "/api/trading/cases": (
         "trading_console_cases_by_id",
+        "trading_case_decision_by_id",
+        "trading_case_outcomes_by_id",
         "trading_console_cases",
         "trading_console_cases_filtered",
         "trading_console_scope_cases",
@@ -119,6 +124,12 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "trading_case_counts",
         "trading_case_reason_counts",
         "trading_gate_counts",
+    ),
+    "/api/trading/cases/{case_id}/replay": (
+        "trading_console_cases_by_id",
+        "trading_case_decision_by_id",
+        "trading_case_outcomes_by_id",
+        "trading_trigger_by_id",
     ),
     # #528 PR-1, #604 T3. The desk table plans three statements: its own per-entry fold, the
     # unfiltered window of the Command ledger it renders beside it, and the realized totals that are
@@ -219,6 +230,13 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
+            name="trading_analysis_runtime",
+            sql=TRADING_ANALYSIS_RUNTIME_SQL,
+            params=("binance_usdm_primary:paper",),
+            max_read_return_amplification=4.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
             name="trading_gate_decision_for_source_key",
             sql=GATE_DECISION_FOR_SOURCE_KEY_SQL,
             params=("oi:not-a-real-event:oi_signal_v1",),
@@ -242,6 +260,27 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="trading_console_cases_by_id",
             sql=CONSOLE_CASE_BY_ID_SQL,
             params={"case_id": "0" * 32},
+            max_read_return_amplification=4.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="trading_case_decision_by_id",
+            sql=TRADING_CASE_DECISION_SQL,
+            params=("0" * 64,),
+            max_read_return_amplification=4.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="trading_case_outcomes_by_id",
+            sql=TRADING_CASE_OUTCOMES_SQL,
+            params=("0" * 64,),
+            max_read_return_amplification=8.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="trading_trigger_by_id",
+            sql=TRADING_TRIGGER_BY_ID_SQL,
+            params=("0" * 64,),
             max_read_return_amplification=4.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),

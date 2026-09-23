@@ -272,7 +272,7 @@ def test_real_workers_process_gracefully_stops_and_closes_probe() -> None:
 
 
 @pytest.mark.slow
-def test_real_workers_signal_lane_never_reads_execution_credentials(tmp_path: Path) -> None:
+def test_real_workers_analysis_is_separate_from_execution_credentials(tmp_path: Path) -> None:
     for name in ("binance_usdm_api_key", "binance_usdm_api_secret"):
         (tmp_path / name).symlink_to(tmp_path / f"missing-{name}")
     port = _free_port()
@@ -282,95 +282,10 @@ def test_real_workers_signal_lane_never_reads_execution_credentials(tmp_path: Pa
         extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
     )
     try:
-        # Readiness is the Decision Plane's whole liveness statement since #520 PR-A: the lane keeps
-        # no heartbeat row, and a lane that cannot advance fails the process instead.
         _wait_ready(process, port)
 
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=5.0) == 0
-    finally:
-        _ensure_process_stopped(process)
-
-
-@pytest.mark.slow
-def test_real_trading_wiring_fault_stays_inside_the_trading_capability(tmp_path: Path) -> None:
-    """#553 PR-3. A lane that cannot be composed is a Trading fault, not a Workers fault."""
-
-    port = _free_port()
-    process = _start_workers_process(
-        "trading_wiring_fault",
-        port,
-        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
-    )
-    try:
-        _wait_ready(process, port)
-        capabilities = _readiness_payload(port)["capabilities"]
-        assert capabilities["trading_signal_lane"] == {
-            "state": "faulted",
-            "reason": "trading_signal_lane_wiring_failed:RuntimeError",
-        }
-        assert _runtime_row()["lifecycle_state"] == "running"
-        assert _runtime_capabilities()["trading_signal_lane"]["state"] == "faulted"
-
-        process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=5.0) == 0
-    finally:
-        _ensure_process_stopped(process)
-
-
-@pytest.mark.slow
-def test_real_trading_lane_fault_keeps_news_fact_writes_and_reads_running(tmp_path: Path) -> None:
-    """#553 PR-3 acceptance 1: inject a Trading lane exception; ingestion, writes and reads continue."""
-
-    _create_test_fact_table()
-    port = _free_port()
-    process = _start_workers_process(
-        "trading_lane_fault",
-        port,
-        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
-    )
-    try:
-        _wait_ready(process, port)
-        _wait_for_output(process, "TRADING_LANE_ABOUT_TO_FAIL")
-        _wait_capability(port, "trading_signal_lane", "faulted")
-
-        # The lane is gone; the process is not, and the News ingestion task beside it keeps
-        # committing facts. The count has to keep moving *after* the fault, not merely be non-zero.
-        after_fault = _test_fact_count()
-        _wait_until(lambda: _test_fact_count() > after_fault, "News fact writes stopped with the lane")
-
-        payload = _readiness_payload(port)
-        assert payload["ok"] is True
-        assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
-        assert payload["capabilities"]["trading_signal_lane"] == {
-            "state": "faulted",
-            "reason": "trading_signal_lane:RuntimeError",
-        }
-        # A running Deliverer task beside a sender that could not be built is still `unavailable`:
-        # declaring a task is not a claim that its capability works.
-        assert payload["capabilities"]["news_delivery"] == {
-            "state": "unavailable",
-            "reason": "news_item_push_telegram_bot_token_unavailable",
-        }
-        row = _runtime_row()
-        assert row["lifecycle_state"] == "running"
-        assert row["fatal_code"] is None
-        assert _runtime_capabilities()["trading_signal_lane"]["state"] == "faulted"
-
-        # A faulted lane must not be read back as a reason to switch off the healthy fact APIs.
-        settings = Settings(ws_token="secret", storage=postgres_settings_storage())
-        settings.set_config_dir(tmp_path / "app-home")
-        with TestClient(create_app(settings=settings)) as client:
-            status = client.get("/api/status", headers={"Authorization": "Bearer secret"})
-        assert status.status_code == 200
-        runtime = status.json()["data"]["runtime"]
-        assert runtime["ok"] is True
-        assert runtime["workers_runtime"]["state"] == "running"
-        assert runtime["workers_runtime"]["capabilities"]["trading_signal_lane"]["state"] == "faulted"
-
-        process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=5.0) == 0
-        assert _runtime_row()["lifecycle_state"] == "stopped"
     finally:
         _ensure_process_stopped(process)
 
@@ -609,8 +524,6 @@ def test_real_workers_accept_active_execution_without_owning_the_nautilus_runtim
         extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
     )
     try:
-        # Readiness is the Decision Plane's whole liveness statement since #520 PR-A: the lane keeps
-        # no heartbeat row, and a lane that cannot advance fails the process instead.
         _wait_ready(process, port)
 
         process.send_signal(signal.SIGTERM)

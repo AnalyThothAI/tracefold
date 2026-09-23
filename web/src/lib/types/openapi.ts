@@ -270,6 +270,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trading/cases/{case_id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Case Replay
+         * @description Read recorded input and answer only; replay never invokes a model.
+         */
+        get: operations["get_trading_case_replay_api_trading_cases__case_id__replay_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/trading/executions": {
         parameters: {
             query?: never;
@@ -475,6 +495,16 @@ export interface components {
         /** ApiEnvelope[StatusData] */
         ApiEnvelope_StatusData_: {
             data?: components["schemas"]["StatusData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingAnalysisReplayData] */
+        ApiEnvelope_TradingAnalysisReplayData_: {
+            data?: components["schemas"]["TradingAnalysisReplayData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -3122,6 +3152,70 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** TradingAnalysisDecisionData */
+        TradingAnalysisDecisionData: {
+            /** Action */
+            action: string;
+            /** Assessment Ref */
+            assessment_ref?: string | null;
+            /** Decided At Ms */
+            decided_at_ms: number;
+            /** Decision */
+            decision: {
+                [key: string]: unknown;
+            };
+            /** Decision Id */
+            decision_id: string;
+            /** Policy Id */
+            policy_id: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Publish Reason */
+            publish_reason?: string | null;
+            /** Publish Status */
+            publish_status: string;
+            /** Valid Until Ms */
+            valid_until_ms: number;
+        };
+        /** TradingAnalysisOutcomeData */
+        TradingAnalysisOutcomeData: {
+            /** Available At Ms */
+            available_at_ms: number;
+            /** Axis */
+            axis: string;
+            /** Horizon Seconds */
+            horizon_seconds: number;
+            /** Label Version */
+            label_version: string;
+            /** Labeled At Ms */
+            labeled_at_ms?: number | null;
+            /** Path Ref */
+            path_ref?: string | null;
+            /** Return Bps */
+            return_bps?: string | null;
+            /** Status */
+            status: string;
+        };
+        /** TradingAnalysisReplayData */
+        TradingAnalysisReplayData: {
+            /** Assessment */
+            assessment?: {
+                [key: string]: unknown;
+            } | null;
+            /** Case Id */
+            case_id: string;
+            decision?: components["schemas"]["TradingAnalysisDecisionData"] | null;
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            } | null;
+            /** Source Fact */
+            source_fact?: {
+                [key: string]: unknown;
+            } | null;
+            /** Status */
+            status: string;
+        };
         /**
          * TradingCaseData
          * @description One frozen Case, as the drawer behind `?case=<id>` renders it.
@@ -3136,6 +3230,11 @@ export interface components {
          *     are the terminal answer; `base_symbol` is the identity the drawer titles itself with.
          */
         TradingCaseData: {
+            analysis_decision?: components["schemas"]["TradingAnalysisDecisionData"] | null;
+            /** Analysis Outcomes */
+            analysis_outcomes?: components["schemas"]["TradingAnalysisOutcomeData"][];
+            /** Analysis Status */
+            analysis_status?: string | null;
             /** Base Symbol */
             base_symbol: string;
             /** Case Id */
@@ -3144,10 +3243,16 @@ export interface components {
             created_at_ms: number;
             /** Decided At Ms */
             decided_at_ms?: number | null;
+            /** Entry Scope Id */
+            entry_scope_id?: string | null;
             /** Event Id */
             event_id?: string | null;
+            /** Evidence Ref */
+            evidence_ref?: string | null;
             /** Manifest Version */
             manifest_version?: string | null;
+            /** Mapping Semantics Digest */
+            mapping_semantics_digest?: string | null;
             /** Mark Price */
             mark_price?: string | null;
             /** Market Key */
@@ -3168,6 +3273,14 @@ export interface components {
             source_item_id?: string | null;
             /** State */
             state: string;
+            /** Target Asset Id */
+            target_asset_id?: string | null;
+            /** Target Selection */
+            target_selection?: {
+                [key: string]: unknown;
+            } | null;
+            /** Trigger Id */
+            trigger_id?: string | null;
         };
         /**
          * TradingCasesData
@@ -3217,11 +3330,26 @@ export interface components {
         };
         /**
          * TradingDecisionRuntimeData
-         * @description When the Signal lane last froze a Case; `None` means it has not frozen one yet (#520).
+         * @description Analysis process liveness and the last durable Case for this deployment.
          */
         TradingDecisionRuntimeData: {
+            /** Active Policy */
+            active_policy: string;
+            /** Config Digest */
+            config_digest?: string | null;
+            /** Heartbeat At Ms */
+            heartbeat_at_ms?: number | null;
             /** Last Case At Ms */
             last_case_at_ms?: number | null;
+            /** Model Name */
+            model_name?: string | null;
+            /** Publish Signals */
+            publish_signals: boolean;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "disabled" | "unavailable" | "model_unconfigured" | "running";
         };
         /**
          * TradingExecutionAccountData
@@ -3947,7 +4075,7 @@ export interface operations {
             query?: {
                 case_id?: string;
                 view?: "summary" | "list";
-                state?: "" | "PENDING" | "RUNNING" | "NO_TRADE" | "SIGNAL_EMITTED" | "BLOCKED";
+                state?: "" | "PENDING" | "RUNNING" | "DONE" | "FAILED" | "EXCLUDED" | "NO_TRADE" | "SIGNAL_EMITTED" | "BLOCKED";
                 asset?: string;
                 reason?: string;
                 source_item_id?: string;
@@ -3967,6 +4095,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingCasesData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_trading_case_replay_api_trading_cases__case_id__replay_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingAnalysisReplayData_"];
                 };
             };
             /** @description Validation Error */

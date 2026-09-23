@@ -56,7 +56,6 @@ def _arguments() -> argparse.Namespace:
             "wallet_net_buy_fault",
             "wallet_prices_fault",
             "ingestion_task_fault",
-            "trading_lane_fault",
             "schema_mismatch",
             "finite_overrun",
             "finite_never_returns",
@@ -70,7 +69,6 @@ def _arguments() -> argparse.Namespace:
             "provider_publication",
             "trading_enabled",
             "trading_execution_requested",
-            "trading_wiring_fault",
             "push_misconfigured",
         ),
     )
@@ -621,31 +619,6 @@ async def _main() -> None:
             return None, _TurnPipeline((("news-receiver", fail, 1.0),)), None
 
         workers_wiring._wire_news_pipeline = wire_ingestion_fault
-    elif arguments.mode == "trading_lane_fault":
-        from tracefold.trading.signal_lane import SignalLane
-
-        async def wire_trading_lane_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, None]:
-            # A Deliverer task runs beside an `unavailable` sender on purpose: it settles those
-            # Events `delivery_unavailable` rather than dropping them, so declaring the task must not
-            # overwrite what composition recorded about the sender it could not build.
-            _declare_news_capabilities(kwargs["capabilities"], delivery="unavailable")
-            return (
-                None,
-                _TurnPipeline(
-                    (
-                        ("news-deduper", _fact_writer(kwargs["db"]), 1.0),
-                        ("news-deliverer", _idle_turn(), 1.0),
-                    )
-                ),
-                None,
-            )
-
-        async def failing_advance(_self: Any) -> None:
-            print("TRADING_LANE_ABOUT_TO_FAIL", flush=True)
-            raise RuntimeError("test_trading_lane_fault")
-
-        workers_wiring._wire_news_pipeline = wire_trading_lane_fault
-        SignalLane.advance = failing_advance  # type: ignore[method-assign]
     elif arguments.mode == "push_misconfigured":
         # Nothing is stubbed: the real `_wire_components`, the real News composition, the real broker
         # and the real push wiring, against a configured push target the adapter will refuse. What is
@@ -653,24 +626,13 @@ async def _main() -> None:
         pass
     elif arguments.mode == "schema_mismatch":
         workers.latest_migration_version = lambda: "00000000_0000"
-    elif arguments.mode in {
-        "trading_enabled",
-        "trading_execution_requested",
-        "trading_wiring_fault",
-    }:
-        if arguments.mode == "trading_wiring_fault":
-
-            def fail_trading_wiring(**_kwargs: Any) -> None:
-                raise RuntimeError("test_trading_wiring_fault")
-
-            workers_wiring._wire_signal_lane = fail_trading_wiring
+    elif arguments.mode in {"trading_enabled", "trading_execution_requested"}:
+        pass
     else:
         workers._wire_components = wire_components
     trading_process = arguments.mode in {
         "trading_enabled",
         "trading_execution_requested",
-        "trading_wiring_fault",
-        "trading_lane_fault",
     }
     news_process = arguments.mode in {
         "manifest_barrier",
@@ -682,7 +644,6 @@ async def _main() -> None:
         "wallet_net_buy_fault",
         "wallet_prices_fault",
         "ingestion_task_fault",
-        "trading_lane_fault",
         "push_misconfigured",
     }
     news: dict[str, Any] = {"enabled": news_process}

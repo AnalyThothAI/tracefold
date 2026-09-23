@@ -17,7 +17,6 @@ from tracefold.app.workers.runtime import (
     NEWS_QUOTES,
     NEWS_REACTIONS,
     SHARED_RESOURCE_FAILURES,
-    TRADING_SIGNAL_LANE,
     WALLET_NET_BUY,
     WALLET_PRICES,
     WALLET_ROSTER,
@@ -25,14 +24,12 @@ from tracefold.app.workers.runtime import (
 )
 from tracefold.app.workers.wiring.chain_tape import ChainTapeComposition, _wire_chain_tape
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
-from tracefold.app.workers.wiring.trading import _wire_signal_lane
 from tracefold.app.workers.wiring.watchdog import TradingWatchdog, wire_trading_watchdog
 from tracefold.news.bus import BrokerBackpressure, BrokerUnavailable
 from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.trading.signal_lane import SignalLane
 
 if TYPE_CHECKING:
     from tracefold.integrations.rabbitmq import RabbitMQBus
@@ -48,7 +45,6 @@ class _Components:
     runtime_manifest_sha: str | None = None
     market_notifications: MarketNotificationLoop | None = None
     chain_tape: ChainTapeComposition | None = None
-    signal_lane: SignalLane | None = None
     trading_watchdog: TradingWatchdog | None = None
     capabilities: CapabilityStates = field(default_factory=CapabilityStates)
 
@@ -124,7 +120,6 @@ async def _wire_components(
             "unavailable" if push.requested else "disabled",
             reason="news_item_push_news_disabled" if push.requested else "news_disabled",
         )
-    signal_lane = _wire_trading_lane(settings=settings, db=db, telemetry=telemetry, capabilities=capabilities)
     # The watchdog alerts through the Deliverer's one send entry, so it exists only beside a News
     # pipeline; which provider that entry reaches is composition's answer, not the watchdog's.
     trading_watchdog = wire_trading_watchdog(
@@ -136,7 +131,6 @@ async def _wire_components(
         runtime_manifest_sha=runtime_manifest_sha,
         market_notifications=market_notifications,
         chain_tape=chain_tape,
-        signal_lane=signal_lane,
         trading_watchdog=trading_watchdog,
         telemetry=telemetry,
         capabilities=capabilities,
@@ -170,29 +164,3 @@ async def _register_runtime_manifest(
         )
         return None
     return news_pipeline.runtime_manifest_sha
-
-
-def _wire_trading_lane(
-    *,
-    settings: Settings,
-    db: WorkerDatabase,
-    telemetry: TelemetryRegistry,
-    capabilities: CapabilityStates,
-) -> SignalLane | None:
-    if not settings.trading.enabled:
-        capabilities.disabled(TRADING_SIGNAL_LANE, "trading_disabled")
-        return None
-    try:
-        lane = _wire_signal_lane(settings=settings, db=db, telemetry=telemetry)
-    except SHARED_RESOURCE_FAILURES:
-        raise
-    except Exception as exc:
-        logger.opt(exception=exc).error("Trading Signal lane wiring failed; Trading capability faulted")
-        capabilities.faulted(
-            TRADING_SIGNAL_LANE,
-            f"{TRADING_SIGNAL_LANE}_wiring_failed:{type(exc).__name__}",
-        )
-        return None
-    # `_wire_signal_lane` returns None only for a disabled Decision Plane, and that was answered above.
-    capabilities.running(TRADING_SIGNAL_LANE)
-    return lane

@@ -15,20 +15,20 @@ TRADING = SRC / "trading"
 NEWS = SRC / "news"
 
 SIGNAL_PATH = (
-    "trading/signal_lane.py",
-    "trading/policy.py",
-    "trading/admission.py",
-    "trading/sources.py",
-    "trading/market_context.py",
-    "trading/contracts.py",
-    "trading/telemetry.py",
+    "trading/engine/brief.py",
+    "trading/engine/contracts.py",
+    "trading/engine/features.py",
+    "trading/engine/marketdata.py",
+    "trading/engine/outcomes.py",
+    "trading/engine/policy.py",
+    "trading/engine/target.py",
+    "trading/storage/analysis.py",
+    "app/trading_analysis.py",
+    "app/trading_analyst.py",
     "trading/storage/root.py",
-    "trading/storage/lane.py",
+    "trading/storage/history.py",
     "trading/storage/gate.py",
     "trading/storage/queries.py",
-    "app/workers/wiring/trading.py",
-    "app/workers/wiring/news_to_trading.py",
-    "app/trading_config.py",
 )
 EXECUTION_PATH = {
     "trading/execution_contracts.py",
@@ -194,9 +194,8 @@ def test_news_and_trading_never_import_each_other() -> None:
 
 
 def test_relative_imports_resolve_to_full_module_paths() -> None:
-    modules = _imports(TRADING / "signal_lane.py")
-    assert "tracefold.trading.policy" in modules
-    assert "tracefold.trading.storage.root" in modules
+    modules = _imports(TRADING / "engine/policy.py")
+    assert "tracefold.trading.engine.contracts" in modules
 
 
 def test_trading_sql_reads_and_writes_only_trading_tables() -> None:
@@ -307,123 +306,28 @@ def test_research_left_the_service_package_without_a_forwarder() -> None:
     assert offenders == []
 
 
-def test_live_wiring_uses_source_native_public_bars_and_no_model_runner() -> None:
-    modules = _imports(SRC / "app/workers/wiring/trading.py")
-    assert "tracefold.integrations.venues.fetch_binance_candles" in modules
-    assert "tracefold.integrations.venues.fetch_hyperliquid_candles" in modules
-    assert not any("dspy" in module.lower() for module in modules)
+def test_analysis_composition_owns_market_adapter_and_model_runner() -> None:
+    modules = _imports(SRC / "app/cli/commands/analysis.py")
+    assert "tracefold.integrations.marketdata.binance" in modules
+    assert "tracefold.app.trading_analyst" in modules
+    assert not any("dspy" in module.lower() for module in _imports(TRADING / "engine/policy.py"))
 
 
-def test_package_root_exports_only_current_app_facing_values() -> None:
+def test_package_root_has_no_implicit_exports() -> None:
     from tracefold import trading
 
-    # #589 PR-2. Every name here is imported from `tracefold.trading` by an application seam. Nine
-    # were not imported from here by anything and are gone: a package root that re-exports whatever
-    # the package happens to contain is not a boundary, it is a second spelling of every module in it.
-    assert trading.__all__ == [
-        # The read-model stage vocabulary #528 PR-1 derives once for `/api/trading/executions`.
-        "ACCEPTED_ENTRY_DISPOSITIONS",
-        "EXECUTION_STRATEGY_ID",
-        # The identity shapes and the durable append bounds every Trading fact is checked against.
-        # The Runtime reads them from here instead of re-typing its own copies (#510 E).
-        "IDENTITY_PATTERN",
-        "MARKET_KEY_PATTERN",
-        "MAX_OBSERVATION_APPEND_BATCH",
-        "MAX_OBSERVATION_APPEND_BYTES",
-        "ExecutionAccountOrder",
-        "ExecutionAccountPosition",
-        "ExecutionAccountSnapshot",
-        "ExecutionObservationV1",
-        "ExecutionStage",
-        "ExitReason",
-        "OiTradeCandidate",
-        "OperatorCommandError",
-        "OperatorIntentV1",
-        "PreparedOperatorIntent",
-        "TradePlan",
-        "TradeSignalV1",
-        "execution_stage",
-        # #604 T2. The one spelling of the market identity the Signal carries and the Runtime's route
-        # catalogue is keyed on. `app/nautilus/root.py` wrote the same f-string by hand.
-        "market_key",
-        "parse_operator_command",
-        "prepare_parsed_operator_intent",
-    ]
-    assert "TradingRepository" not in trading.__dict__
-    assert "CapitalLane" not in trading.__dict__
-    assert "TradeIntent" not in trading.__dict__
+    assert "__all__" not in trading.__dict__
     assert "__getattr__" not in trading.__dict__
+    assert "TradeSignalV1" not in trading.__dict__
+    assert "TradeSignalV2" not in trading.__dict__
 
 
-def test_disabled_trading_constructs_no_signal_lane() -> None:
-    from tracefold.app.workers.wiring.trading import _wire_signal_lane
-    from tracefold.platform.config.models import Settings
-
-    settings = Settings()
-    assert settings.trading.enabled is False
-    assert _wire_signal_lane(settings=settings, db=object()) is None  # type: ignore[arg-type]
-
-
-def test_enabled_signal_wiring_fault_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tracefold.app.workers.wiring import trading as wiring
-    from tracefold.platform.config.models import Settings
-
-    def fail_config(_settings: Settings) -> object:
-        raise RuntimeError("signal_lane_wiring_fault")
-
-    class Database:
-        def heavy_business(self) -> object:
-            return object()
-
-    monkeypatch.setattr(wiring, "signal_lane_config", fail_config)
-    with pytest.raises(RuntimeError, match="signal_lane_wiring_fault"):
-        wiring._wire_signal_lane(  # type: ignore[arg-type]
-            settings=Settings(trading={"enabled": True}),
-            db=Database(),
-        )
-
-
-def test_enabled_signal_wiring_reads_no_news_learning_arm() -> None:
-    """#510 PR-4: the seam hands the lane a projection reader, not a News cohort label."""
-
-    import inspect
-
-    from tracefold.app.workers.wiring import trading as wiring
-    from tracefold.trading.signal_lane import SignalLane
-
-    assert "news_generation" not in inspect.signature(SignalLane.__init__).parameters
-    modules = _imports(SRC / "app/workers/wiring/trading.py")
-    assert "tracefold.app.learning_runtime.active_arm_manifest" not in modules
-    assert not any("learning" in module for module in modules)
-    assert not hasattr(wiring, "epoch_id_for_bundle")
-
-
-def test_workers_declares_one_signal_task_and_app_owns_its_loop() -> None:
-    import asyncio
-
+def test_workers_have_no_retired_signal_task() -> None:
     from tracefold.app.workers.task_contract import worker_business_tasks
-    from tracefold.trading.signal_lane import LaneTurn, SignalLane
 
-    turns = 0
-
-    class Lane:
-        async def advance(self) -> LaneTurn:
-            nonlocal turns
-            turns += 1
-            return LaneTurn(sources=0, cases_created=0)
-
-    async def exercise() -> None:
-        tasks = worker_business_tasks(news_pipeline=None, signal_lane=Lane())  # type: ignore[arg-type]
-        # One task, and it answers for the Trading capability alone: a lane fault names Trading and
-        # stops there rather than travelling up as a Workers-wide fatal (#553 PR-3).
-        assert [(task.name, task.capability) for task in tasks] == [("trading-signal-lane", "trading_signal_lane")]
-        stop = asyncio.Event()
-        stop.set()
-        await asyncio.gather(*(task.run(stop) for task in tasks))
-
-    asyncio.run(exercise())
-    assert not hasattr(SignalLane, "run")
-    assert turns == 0
+    assert worker_business_tasks(news_pipeline=None) == ()
+    assert not (SRC / "app/workers/wiring/trading.py").exists()
+    assert not (TRADING / "signal_lane.py").exists()
 
 
 def test_execution_configuration_has_no_alpha_sizing_or_route() -> None:
@@ -438,9 +342,9 @@ def test_execution_configuration_has_no_alpha_sizing_or_route() -> None:
             TradingSettings.model_validate({retired: {}})
 
 
-def test_source_native_bar_fetcher_accepts_candidate_and_no_execution_route() -> None:
+def test_market_data_port_accepts_explicit_request_identity() -> None:
     import inspect
 
-    from tracefold.app.workers.wiring.trading import _source_native_bars
+    from tracefold.integrations.marketdata.binance import BinanceMarketData
 
-    assert list(inspect.signature(_source_native_bars).parameters) == ["candidate", "start_ms", "end_ms"]
+    assert list(inspect.signature(BinanceMarketData.fetch).parameters) == ["self", "request"]

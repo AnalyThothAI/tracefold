@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from decimal import Decimal
@@ -14,10 +13,9 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.app.workers.runtime import CapabilityStates
 from tracefold.app.workers.watchdog_storage import WatchdogAlertRepository, WatchdogAlertState
 from tracefold.app.workers.wiring import watchdog as wd
-from tracefold.news import OI_METRIC_VERSION, ReaderCard
+from tracefold.news import ReaderCard
 from tracefold.trading.execution_contracts import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
     ExecutionRuntimeState,
@@ -79,74 +77,6 @@ class RecordingSender:
         return {"provider": "feishu", "code": 0}
 
 
-def _oi_frame(conn: Any, event_id: str, *, at_ms: int, historical: bool = False) -> None:
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.news.upsert_item(
-            item_id=f"item-{event_id}",
-            source_id="opennews",
-            source_item_key=f"item-{event_id}",
-            title="SOL\tOI Rise 7.20%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
-            raw_first_line="",
-            description="",
-            canonical_url=None,
-            reporting_origin="OpenNews",
-            published_at_ms=at_ms,
-            observed_at_ms=at_ms,
-            provider_metadata_json='{"source": "binance"}',
-            strategy_ids_json='["1019"]',
-            ingest_mode="live",
-            trace_id="trace",
-            now_ms=at_ms,
-            market_kind="oi",
-            market_source_strategy_id="1019",
-            market_parse_status="parsed",
-            market_parse_error=None,
-        )
-        repos.news.insert_oi_signal(
-            event_id=event_id,
-            metric_version=OI_METRIC_VERSION,
-            symbol="SOL",
-            raw_instrument="SOL",
-            direction="rise",
-            oi_change_bps=720,
-            oi_value_usd=32_170_000,
-            whale_long_profit_bps=8_021,
-            whale_oi_ratio_bps=10_071,
-            observed_at_ms=at_ms,
-            received_at_ms=at_ms,
-            now_ms=at_ms,
-            provider="opennews",
-            source_strategy_id="1019",
-            source_contract_version="opennews_oi_source_v1",
-            measurement_window_ms=300_000,
-            measurement_definition="oi_signal_v1|opennews_oi_source_v1|300000",
-            source_item_id=f"item-{event_id}",
-            source_venue="binance",
-        )
-    if historical:
-        conn.execute("UPDATE news_oi_signals SET historical = true WHERE event_id = %s", (event_id,))
-        conn.commit()
-
-
-def _answer(conn: Any, event_id: str) -> None:
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.trading.record_gate_decision(
-            source_key=f"oi:{event_id}:{OI_METRIC_VERSION}",
-            trigger_kind="oi",
-            underlying_key="crypto:SOL",
-            source_observed_at_ms=NOW_MS - 30 * 60_000,
-            status="EXPIRED",
-            stage="eligibility",
-            reason="trigger_stale",
-            retryable=False,
-            evidence={},
-            case_id=None,
-            now_ms=NOW_MS - 20 * 60_000,
-        )
-
-
 def _runtime(conn: Any, *, heartbeat_at_ns: int, started_at_ns: int) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():
@@ -173,6 +103,7 @@ def _plan(conn: Any, suffix: str, *, opened_ago_ns: int | None, closed: bool = F
     created = NOW_NS - (opened_ago_ns or MINUTE_NS) - MINUTE_NS
     plan = TradePlan(
         entry_id=sha256(suffix.encode()).hexdigest(),
+        entry_scope_id=f"legacy:{sha256(suffix.encode()).hexdigest()}",
         source="manual",
         account_slot=SLOT,
         runtime_mode_at_creation="paper",
@@ -251,18 +182,6 @@ def _dispositions(conn: Any, *reasons: str) -> None:
             )
 
 
-def test_gate_answers_names_only_the_sources_that_have_one(conn: Any) -> None:
-    _answer(conn, "answered")
-    trading = repositories_for_connection(conn).trading
-
-    answers = trading.gate_answers(
-        source_keys=[f"oi:answered:{OI_METRIC_VERSION}", f"oi:never:{OI_METRIC_VERSION}", "oi:answered:oi_signal_v1"]
-    )
-
-    assert answers == {f"oi:answered:{OI_METRIC_VERSION}": "EXPIRED"}
-    assert trading.gate_answers(source_keys=[]) == {}
-
-
 def test_the_three_execution_facts_read_only_what_they_name(conn: Any) -> None:
     trading = repositories_for_connection(conn).trading
     assert trading.runtime_liveness(account_slot=SLOT) is None
@@ -286,54 +205,21 @@ def test_the_three_execution_facts_read_only_what_they_name(conn: Any) -> None:
 
 def test_the_alert_ledger_is_one_row_per_condition(conn: Any) -> None:
     ledger = WatchdogAlertRepository(conn)
-    opened = WatchdogAlertState(wd.SIGNAL_LANE_FAULTED, active=True, opened_at_ms=NOW_MS)
+    opened = WatchdogAlertState(wd.RUNTIME_HEARTBEAT_STALE, active=True, opened_at_ms=NOW_MS)
 
     with conn.transaction():
         ledger.save(opened, detail="x" * 5_000, now_ms=NOW_MS)
     with conn.transaction():
         ledger.save(
-            WatchdogAlertState(wd.SIGNAL_LANE_FAULTED, active=True, opened_at_ms=NOW_MS, notified_at_ms=NOW_MS + 1),
+            WatchdogAlertState(wd.RUNTIME_HEARTBEAT_STALE, active=True, opened_at_ms=NOW_MS, notified_at_ms=NOW_MS + 1),
             detail="told",
             now_ms=NOW_MS + 1,
         )
 
     assert ledger.states() == {
-        wd.SIGNAL_LANE_FAULTED: WatchdogAlertState(
-            wd.SIGNAL_LANE_FAULTED, active=True, opened_at_ms=NOW_MS, notified_at_ms=NOW_MS + 1
+        wd.RUNTIME_HEARTBEAT_STALE: WatchdogAlertState(
+            wd.RUNTIME_HEARTBEAT_STALE, active=True, opened_at_ms=NOW_MS, notified_at_ms=NOW_MS + 1
         )
     }
     row = conn.execute("SELECT detail, updated_at_ms FROM platform_watchdog_alerts").fetchone()
     assert (row["detail"], row["updated_at_ms"]) == ("told", NOW_MS + 1)
-
-
-def test_one_pass_over_the_real_ledger_alerts_the_unanswered_frame_and_records_it(conn: Any) -> None:
-    """Frames, answers and alert state all come from PostgreSQL; only the provider is a fake."""
-
-    _oi_frame(conn, "answered", at_ms=NOW_MS - 30 * 60_000)
-    _answer(conn, "answered")
-    _oi_frame(conn, "unanswered", at_ms=NOW_MS - 25 * 60_000)
-    _oi_frame(conn, "too-fresh", at_ms=NOW_MS - 2 * 60_000)
-    _oi_frame(conn, "too-old", at_ms=NOW_MS - 13 * 3_600_000)
-    _oi_frame(conn, "reconstructed", at_ms=NOW_MS - 20 * 60_000, historical=True)
-    sender = RecordingSender()
-    watchdog = wd.TradingWatchdog(
-        db=wd.WorkerWatchdogDatabase(
-            ConnectionDatabase(conn),  # type: ignore[arg-type]
-            oi_metric_version=OI_METRIC_VERSION,
-            account_slot=SLOT,
-        ),
-        sender=sender,
-        capabilities=CapabilityStates(),
-        runtime_expected=False,
-        account_slot=SLOT,
-        clock=lambda: NOW_MS,
-    )
-
-    asyncio.run(watchdog.advance())
-    asyncio.run(watchdog.advance())
-
-    assert [card.header.subject for card in sender.cards] == ["Tracefold 告警 · OI 帧没有准入答复"]
-    assert sender.cards[0].lead.startswith("1 个 live OI 帧入账超过 10 分钟仍没有准入记录")
-    states = WatchdogAlertRepository(conn).states()
-    assert set(states) == {wd.OI_FRAMES_UNANSWERED}
-    assert states[wd.OI_FRAMES_UNANSWERED].notified_at_ms == NOW_MS

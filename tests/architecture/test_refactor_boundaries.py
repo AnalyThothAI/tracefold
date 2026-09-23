@@ -246,7 +246,6 @@ def test_importing_worker_wiring_does_not_start_the_worker_runtime() -> None:
     probe = (
         "import json, sys\n"
         "from tracefold.app.workers import run_workers\n"
-        "import tracefold.app.workers.wiring.news_to_trading\n"
         "print(json.dumps({'callable': callable(run_workers), **{name: name in sys.modules for name in "
         "('dspy', 'tracefold.app.workers.root')}}))\n"
     )
@@ -357,10 +356,9 @@ def test_owning_packages_have_acyclic_internal_import_graphs() -> None:
 
 
 CROSS_CONTEXT_BOUNDARY_MODULES = (
-    "app/workers/wiring/news_to_trading.py",
     "news/pipeline/runtime.py",
     "news/storage/trade_projection.py",
-    "trading/signal_lane.py",
+    "trading/engine/target.py",
 )
 
 

@@ -6,12 +6,13 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,workers,nautilus,init,config,db,news,trading,ops} ...
+                 {serve,workers,analysis,nautilus,init,config,db,news,trading,ops} ...
 
 positional arguments:
-  {serve,workers,nautilus,init,config,db,news,trading,ops}
+  {serve,workers,analysis,nautilus,init,config,db,news,trading,ops}
     serve               run the HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
+    analysis            run the shadow-first Trading analysis runtime
     nautilus            run the single OI Nautilus Runtime
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
@@ -40,6 +41,16 @@ options:
 
 ```
 usage: tracefold workers [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `analysis`
+
+```
+usage: tracefold analysis [-h]
 
 options:
   -h, --help  show this help message and exit

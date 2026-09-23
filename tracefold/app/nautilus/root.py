@@ -63,7 +63,7 @@ from tracefold.platform.config.models import Settings, TradingExitPolicySettings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import postgres_health_check
 from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
-from tracefold.trading import EXECUTION_STRATEGY_ID
+from tracefold.trading.execution_contracts import EXECUTION_STRATEGY_ID
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
@@ -264,6 +264,13 @@ async def _run_generation(
     routes = await _discover_routes(mode, credentials, stop_distance_bps=execution.risk.stop_distance_bps)
     profile = _active_profile(settings, mode, routes)
     inputs = load_runtime_inputs(repos, profile, now_ns=time.time_ns())
+    profile = replace(
+        profile,
+        recovery_max_holding_ns=max(
+            profile.recovery_max_holding_ns,
+            *(value.plan.max_holding_ns for value in inputs.open_plans),
+        ),
+    )
     signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy=_EXECUTION_STRATEGY)
     journal = ExecutionJournal(
         factory=ObservationFactory(account_slot=profile.account_slot, execution_strategy=_EXECUTION_STRATEGY)
@@ -456,6 +463,11 @@ def _active_profile(
                 policy_id=exit_policy.policy_id,
                 take_profit_bps=exit_policy.take_profit_bps,
                 max_holding_ns=exit_policy.max_holding_seconds * 1_000_000_000,
+            ),
+            excluded_asset_ids=frozenset(settings.trading.analysis.excluded_asset_ids),
+            verified_routes=tuple(
+                (route.native_symbol, route.asset_id, route.units_per_contract)
+                for route in settings.trading.analysis.verified_routes
             ),
         )
     except ValueError as exc:

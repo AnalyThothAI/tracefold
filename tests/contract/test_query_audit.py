@@ -196,6 +196,8 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     # would certify a plan it never executes.
     assert catalog.query_routes["/api/trading/cases"] == (
         "trading_console_cases_by_id",
+        "trading_case_decision_by_id",
+        "trading_case_outcomes_by_id",
         "trading_console_cases",
         "trading_console_cases_filtered",
         "trading_console_scope_cases",

@@ -245,10 +245,8 @@ async def run_workers(settings: Settings) -> None:
                 )
                 for task in worker_business_tasks(
                     news_pipeline=components.news_pipeline,
-                    signal_lane=components.signal_lane,
                     market_notifications=components.market_notifications,
                     chain_tape=components.chain_tape,
-                    telemetry=components.telemetry,
                     trading_watchdog=components.trading_watchdog,
                 )
             ]

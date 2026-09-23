@@ -20,7 +20,7 @@ from tests.postgres_test_utils import (
 )
 from tracefold.platform.postgres.client import connect_postgres
 from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
-from tracefold.trading.contracts import EXECUTION_STRATEGY_ID
+from tracefold.trading.execution_contracts import EXECUTION_STRATEGY_ID
 from tracefold.trading.storage.execution_stream import (
     PreparedTradeSignal,
     materialize_trade_signals,

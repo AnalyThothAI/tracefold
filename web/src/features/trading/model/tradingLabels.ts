@@ -2,6 +2,9 @@
 export const CASE_STATE_ZH: Record<string, string> = {
   PENDING: "待决",
   RUNNING: "判定中",
+  DONE: "分析完成",
+  FAILED: "分析不可用",
+  EXCLUDED: "目标排除",
   BLOCKED: "无法安全判定",
   NO_TRADE: "不交易",
   SIGNAL_EMITTED: "已发出 Signal",

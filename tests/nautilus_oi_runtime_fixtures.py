@@ -49,7 +49,8 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import (
     RuntimeControlSnapshot,
     RuntimeInputs,
 )
-from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradePlan, TradeSignalV1
+from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
+from tracefold.trading.trade_plan import TradePlan
 
 NOW_NS = 1_900_000_000_000_000_000
 ACCOUNT_ID = AccountId("BINANCE-001")
@@ -141,6 +142,7 @@ def open_plan(
     profile = profile or oi_profile()
     return TradePlan(
         entry_id=entry_id,
+        entry_scope_id=f"legacy:{entry_id}",
         source="signal",
         case_id=f"case-{entry_id[:8]}",
         account_slot=profile.account_slot,

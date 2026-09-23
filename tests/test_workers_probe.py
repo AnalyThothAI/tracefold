@@ -111,14 +111,14 @@ def test_a_stale_runtime_publishes_no_capability_report() -> None:
         "started_at_ms": 1_000,
         "heartbeat_at_ms": 1_000,
         "fatal_code": None,
-        "capabilities": {"trading_signal_lane": {"state": "running", "reason": None}},
+        "capabilities": {"trading_watchdog": {"state": "running", "reason": None}},
     }
 
     fresh = workers_runtime_status(row, now_ms=2_000)
     stale = workers_runtime_status(row, now_ms=1_000 + 15_001)
 
     assert fresh["state"] == "running"
-    assert fresh["capabilities"] == {"trading_signal_lane": {"state": "running", "reason": None}}
+    assert fresh["capabilities"] == {"trading_watchdog": {"state": "running", "reason": None}}
     assert stale["state"] == "stale"
     assert stale["capabilities"] == {}
 

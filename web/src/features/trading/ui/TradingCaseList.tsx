@@ -70,6 +70,9 @@ export function TradingCaseList({
           >
             <option value="">全部状态</option>
             <option value="NO_TRADE">不交易</option>
+            <option value="DONE">分析完成</option>
+            <option value="FAILED">分析不可用</option>
+            <option value="EXCLUDED">目标排除</option>
             <option value="SIGNAL_EMITTED">已发出信号</option>
             <option value="BLOCKED">判定受阻</option>
             <option value="PENDING">等待判定</option>

@@ -299,7 +299,7 @@ def test_a_sender_that_cannot_be_constructed_leaves_the_fact_chain_composed_and_
     # The Deliverer task still runs -- it settles those Events `delivery_unavailable` rather than
     # dropping them -- so "a task exists" must not be read back as "the capability works". Declaring
     # the task must leave the composition's `unavailable` exactly where composition put it.
-    tasks = worker_business_tasks(news_pipeline=pipeline, signal_lane=None)
+    tasks = worker_business_tasks(news_pipeline=pipeline)
     assert ("news-deliverer", NEWS_DELIVERY) in {(task.name, task.capability) for task in tasks}
     assert capabilities.payload()[NEWS_DELIVERY]["state"] == "unavailable"
 

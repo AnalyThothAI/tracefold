@@ -11,7 +11,6 @@ against Nautilus' own realized PnL for the same position.
 from __future__ import annotations
 
 import time
-from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -21,11 +20,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.helpers.nautilus_oi_runtime_process import PostgresRuntime, run_runtime_on_postgres
+from tests.helpers.published_signal_v2 import append_published_v2_signal, execution_fixture_profile
 from tests.nautilus_oi_runtime_fixtures import (
     MARKET,
     NOW_NS,
     SECOND_NS,
-    oi_profile,
     open_plan,
     quotes,
     seed_reconciled_position,
@@ -38,7 +37,6 @@ from tracefold.trading.execution_contracts import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
     prepare_execution_observations,
     prepare_operator_intent,
-    prepare_trade_signal,
 )
 from tracefold.trading.storage.root import TradingRepository
 from tracefold.trading.storage.trade_plans import prepare_trade_plan
@@ -58,37 +56,21 @@ def _seed_signal(
     case_id: str = "case-1",
     observed_at_ns: int = NOW_NS - 1_000_000,
     expires_at_ns: int = NOW_NS + 60 * SECOND_NS,
+    max_holding_ns: int = 4 * 3_600 * SECOND_NS,
 ) -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
             repo.ensure_execution_runtime_control_state(_ACCOUNT_SLOT, now_ns=NOW_NS)
-            conn.execute(
-                """
-                INSERT INTO trading_cases (
-                  case_id, underlying_key, trigger_kind, primary_source_key,
-                  manifest, manifest_sha256, state,
-                  policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-                  updated_at_ms
-                ) VALUES (
-                  %s, 'crypto:BTC', 'oi', %s,
-                  '{"test":"executions"}'::jsonb, %s, 'SIGNAL_EMITTED', 'long',
-                  'executions_read_model', 1, 1, 1, 1
-                )
-                """,
-                (case_id, f"runtime-source:{case_id}", "4" * 64),
-            )
-            repo.append_trade_signal(
-                prepare_trade_signal(
-                    signal_id=signal_id,
-                    case_id=case_id,
-                    market_key=MARKET,
-                    direction="long",
-                    observed_at_ns=observed_at_ns,
-                    expires_at_ns=expires_at_ns,
-                )
-            )
+        append_published_v2_signal(
+            repo,
+            signal_id=signal_id,
+            case_id=case_id,
+            observed_at_ns=observed_at_ns,
+            expires_at_ns=expires_at_ns,
+            max_holding_ns=max_holding_ns,
+        )
     finally:
         conn.close()
 
@@ -181,16 +163,16 @@ def test_a_stopped_out_signal_is_one_closed_row_whose_pnl_is_folded_from_its_fil
 
 @pytest.mark.parametrize("exit_reason", ["take_profit", "time_exit"])
 def test_a_normal_exit_is_one_native_close_with_complete_pnl(tmp_path: Path, exit_reason: str) -> None:
-    _seed_signal()
+    _seed_signal(max_holding_ns=SECOND_NS if exit_reason == "time_exit" else 4 * 3_600 * SECOND_NS)
     if exit_reason == "take_profit":
         tape = [
             *quotes(9_999, 10_000, start_ns=NOW_NS, count=10),
             *quotes(10_300, 10_301, start_ns=NOW_NS + 2 * SECOND_NS, count=10),
         ]
-        profile = oi_profile()
+        profile = execution_fixture_profile()
     else:
         tape = quotes(9_999, 10_000, start_ns=NOW_NS, count=80)
-        profile = replace(oi_profile(), exit_policy=replace(oi_profile().exit_policy, max_holding_ns=SECOND_NS))
+        profile = execution_fixture_profile()
     runtime = _run(tape=tape, profile=profile)
 
     row = _row(tmp_path)

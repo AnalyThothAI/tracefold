@@ -104,6 +104,7 @@ NEWS_TABLES = (
     "news_quote_snapshots",
     "news_event_reactions",
     "news_oi_signals",
+    "news_trade_events",
     "news_market_liquidations",
     "news_market_smart_money",
     "news_market_tracks",
@@ -129,8 +130,15 @@ NEWS_TABLES = (
 # it, because "exactly these tables" is a per-capability claim: a trading table appearing under the
 # News heading would make the News schema audit pass for the wrong reason.
 TRADING_TABLES = (
+    "trading_analysis_runtime",
     "trading_candidate_gate_decisions",
     "trading_cases",
+    "trading_triggers",
+    "trading_trigger_conflicts",
+    "trading_case_decisions",
+    "trading_case_outcomes",
+    "trading_signal_retirements",
+    "trading_entry_validity_checks",
     "trading_trade_signals",
     "trading_trade_plans",
     "trading_operator_intents",

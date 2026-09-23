@@ -11,7 +11,7 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, Final, Literal
 
-from tracefold.trading import ExecutionObservationV1, OperatorIntentV1
+from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1
 
 from .account_projection import OrderLeg
 from .journal import ExecutionJournal

@@ -21,7 +21,12 @@ OpenNews Strategy WSS / history recovery
        |      -> verdict + delivery intent -> sender -> durable delivery outcome
        |-- market: typed OI / liquidation / smart-money fact
               |-- market notification rules -> durable intent -> sender -> outcome
-              `-- public OI projection -> App mapper -> Trading Source / Case / Signal
+              `-- News trade-event outbox -> App relay -> Trading Trigger / Case
+
+Editorial verdict -> same News trade-event outbox, independent of reader-card delivery
+Trading Analysis process -> bounded market data -> frozen evidence -> Agent assessment
+  -> pure Decision -> optional TradeSignalV2 -> Nautilus final validity check
+  -> scoped TradePlan -> order / fill / protection / exit observations
 
 Tracked-wallet roster + chain receipts
   -> wallet fill ledger -> net-buy detector -> episode + first notification intent
@@ -37,8 +42,8 @@ PostgreSQL read projections -> Serve -> HTTP / React console
 The editorial and market paths deliberately diverge at admission. A market
 measurement does not need an editorial Event, model verdict, learning cohort, or
 reader card before it can be stored or reach the Trading source projection.
-The current Trading policy consumes OI evidence; an arbitrary news explanation is
-not itself an implemented automatic-trading strategy.
+Trading analyzes only one verified target asset per source fact. The Agent sees
+a finite candidate menu; source text cannot provide order authority.
 
 The canonical Compose application path includes PostgreSQL, RabbitMQ, the one-shot
 broker-policy application, migration, Serve, and Workers. `make up` manages that
@@ -58,7 +63,7 @@ Production code is under `tracefold/`, without a `src/` parent:
 | Package | Responsibility |
 | --- | --- |
 | `tracefold.news` | Admission, editorial Events, Program, deterministic decisions, delivery, review/learning/release, market observations, wallet episodes, and `news_*` storage. |
-| `tracefold.trading` | OI source admission, frozen Cases, Alpha evaluation, engine-neutral Signals, execution transport contracts, and `trading_*` storage. |
+| `tracefold.trading` | Target, evidence, assessment and decision contracts, frozen Cases, scoped Signals, execution transport contracts, and `trading_*` storage. |
 | `tracefold.integrations` | Provider, broker, delivery, public-market, and Nautilus/Binance adapters. |
 | `tracefold.platform` | Configuration, PostgreSQL/Alembic, telemetry, identity, and bounded process resources. |
 | `tracefold.app` | Serve/Workers/Nautilus composition, HTTP/CLI adapters, database-port implementations, and News → Trading mapping. |
@@ -85,11 +90,11 @@ composite metric also reports, and the outcome vocabulary a denominator is state
 metric judge (`news/learning/judge.py`) belongs to the metric, never to the Program, and
 cannot change `program_sha256`. A caller passes it in; nothing reads it from ambient state.
 
-`app/workers/wiring/news_to_trading.py` maps the public News OI projection to Trading's
-own row contract field by field. The News read finishes before the Trading transaction
-starts. There is no callback holding both repositories and no cross-context transaction.
-A change to editorial policy or Program identity does not by itself change this OI
-projection contract.
+`news_trade_events` is committed with each News OI fact or editorial verdict.
+The separate Analysis process selects a target through News' public instrument
+projection, commits an idempotent Trading Trigger and initial Case, then confirms
+the News outbox row. A crash between those commits repeats safely. Neither domain
+imports or queries the other's internal tables.
 
 `tests/architecture/test_backend_boundaries.py` enforces the implemented dependency
 and SQL boundaries. Installed-distribution tests verify the wheel outside the checkout;
@@ -171,7 +176,7 @@ model names, refresh intervals, and historical tasks:
 | Instruments, current quotes, Event reactions | News market-review owners and their provider adapters |
 | OI, liquidation, smart-money notifications | `tracefold/news/market_notifications.py` |
 | Wallet receipts, net-buy detection, price sampling | App chain-tape wiring and its three independently supervised task declarations |
-| OI Source → Case → Signal | `tracefold/trading/signal_lane.py` |
+| News/OI Trigger → Case → assessment → Decision | `tracefold/app/trading_analysis.py` and `tracefold/trading/engine/` |
 | Account, orders, protection, reconciliation | Nautilus (the Cache, reconciled with the venue), driven by the Runtime Strategy composed in `tracefold/app/nautilus/` |
 
 The code-owned limits still apply. Inspect their definitions and consumer tests when
@@ -194,9 +199,9 @@ cancellation, and supervision; business runners own their action and durable sta
 
 Reception, recovery, admission, and retention are foundational News tasks. Optional
 capabilities include editorial judgment, delivery, instrument/quote/reaction review,
-market notifications, the wallet tasks, the Trading Signal lane when configured, and
-the Trading watchdog beside it when News push can deliver. The watchdog is App's: it
-reads the lane's capability, the OI and admission ledgers and three Runtime facts,
+market notifications, the wallet tasks, and the Trading watchdog when News push
+can deliver. Analysis has its own process and its own market/Agent budgets.
+The watchdog is App's: it reads Trading facts and Runtime state,
 keeps its episode state in the platform table `platform_watchdog_alerts`, and alerts
 through the Deliverer's one send entry; it never blocks or repairs anything.
 The root also owns the probe and singleton/control work.
@@ -300,51 +305,58 @@ historical manual declared one transport universally faster or permanently forbi
 
 ## Trading core
 
-`tracefold.trading` is disabled by default and owns Source → Case → Signal, not account
-execution. Its implementation is separate from News classification and reader delivery.
+`tracefold.trading` is disabled by default and owns Trigger → Case → Decision →
+Signal, not account execution. Its implementation is separate from News
+classification and reader delivery.
 
 ### The domain language
 
 | Term | Meaning |
 | --- | --- |
-| Source | An OI observation with provenance and an admissible source contract. |
-| Case | Frozen point-in-time source, market, and policy evidence for an Alpha decision. |
-| Signal | An engine-neutral decision; not an account, size, leverage, or order instruction. |
+| Trigger | One accepted News catalyst or OI fact with source identity, revision and target selection. |
+| Case | One fenced work item and its frozen source, target, market evidence, assessment and decision. |
+| Decision | Pure compilation of an Agent assessment and finite candidate menu, including NO_TRADE and WATCH. |
+| SignalV2 | A time-bounded, scoped entry suggestion with side, exit plan and price envelope; not an order or capital grant. |
 | OperatorIntent | An authenticated durable control request, not proof of Runtime acceptance. |
 | ExecutionObservation | A recorded Runtime/venue outcome, not a promised future fill. |
 
 ### The one live path
 
 ```text
-public News OI projection -> explicit App mapping -> Trading admission
-  -> frozen Case -> pure Alpha evaluation
-  -> NO_TRADE on the Case, or atomic SIGNAL_EMITTED + TradeSignalV1
-  -> separate Runtime authority -> order / fill / protection / exit observations
+News OI fact or editorial verdict -> durable trade-event outbox
+  -> App relay -> Trading Trigger + initial Case
+  -> per-asset fenced claim -> bounded MarketDataPort reads -> frozen evidence
+  -> one structured Agent call -> pure Decision
+  -> NO_TRADE / WATCH / shadow TRADE, or atomic published TradeSignalV2
+  -> separate Nautilus Runtime -> final validity check -> scoped TradePlan
+  -> venue order / fill / protection / exit observations
 ```
 
-The handoff reads the OI ledger and Item provenance, not editorial verdicts, Events,
-Program identity, or learning epochs. Trading does not use RabbitMQ as an execution
-queue. The current Alpha is long-only; extending strategies is a product/code change,
-not something a news explanation or architecture diagram already implements.
+The default Agent policy is shadow only (`publish_signals: false`). Missing model
+configuration, incomplete evidence, invalid model output and an active NO_TRADE
+have distinct Case statuses. Long and short candidates share the same pure
+compiler. Neither News delivery nor RabbitMQ is an execution queue.
 
 ### Admission
 
-Admission owns source validation, supported venues, freshness, market context,
-liquidity, and source idempotency. Rejections and deferred work remain explainable
-through the admission ledger, which is also the lane's cursor: a frame with a terminal
-row is not evaluated again, a frame with no row is answered whatever its age, and a
-once-a-minute sweep over the last 12 hours gives every frame an outage hid an
-`EXPIRED` answer. The lane runs on ordinary business database admission, and a turn
-the database refuses ends that turn only (#680). `sources.py` owns the supported source vocabulary;
-`admission.py` owns current admission semantics. Do not maintain a second source or
-venue-priority registry in documentation or App wiring.
+News freezes source provenance in its outbox. The App maps its public asset and
+instrument projection into Trading's versioned economic identity. Only one
+eligible primary asset can proceed; exclusions and unresolved native units
+terminate by name while retaining the input denominator. An accepted Trigger
+creates exactly one initial Case; a bounded WATCH may create a child Case with
+the same `entry_scope_id`. Per-asset advisory locks coordinate fact handoff,
+publication and the final Trading validity read. Claims use a fresh token and
+lease; late Agent responses cannot commit.
 
 ### The Case and its manifest
 
-A Case freezes source identity, cutoff, market context, and exact policy configuration.
-The policy runs against that frozen evidence. A successful signal insert and its
-Case transition are atomic. Account/risk sizing and executable venue routing do not
-belong in the Signal lane or its manifest as shadow Runtime state.
+A Case freezes source identity, target mapping, knowledge cutoff, raw market
+results, feature values, brief, assessment and policy decision as content-addressed
+references. The market adapter shares closed bars and records physical request
+receipts; it does not decide trade eligibility. A successful SignalV2 insert,
+decision and Case transition are atomic. Source corrections/revocations and
+the Runtime's final validity check can prevent a later order without rewriting
+the frozen recommendation. Account risk, sizing and venue orders stay in Nautilus.
 
 ### Runtime ownership
 
@@ -370,7 +382,8 @@ composition and never reads a private member of a Nautilus object. Paper and liv
 the same path with their respective account and environment; neither mode turns a local
 command into a fill.
 
-The business Signal lane imports no Nautilus engine and has no order authority.
+The pure Trading engine imports no adapter, database or Nautilus engine and has
+no order authority. The historical OI v5 Signal lane is not scheduled by Workers.
 
 ### Failure semantics
 

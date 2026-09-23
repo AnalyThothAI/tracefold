@@ -29,6 +29,7 @@ Output: `docs/research/oi-chain-backtest-2026-09-03.json`, the receipt every tab
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -49,9 +50,77 @@ from tracefold.integrations.venues.candles import (  # noqa: E402
     HYPERLIQUID_BASE_URL,
 )
 from tracefold.integrations.venues.http import get_json, post_json, price_client  # noqa: E402
-from tracefold.trading.admission import ADMISSION_VERSION, AdmissionConfig  # noqa: E402
-from tracefold.trading.market_context import PriceWindow  # noqa: E402
-from tracefold.trading.policy import ALPHA_POLICY  # noqa: E402
+
+# This notebook replays the retired v5 lane's 2026-09-03 population. Keep its
+# tiny identity snapshot here so an archival receipt does not import the new
+# online analysis engine or require the removed production lane.
+ADMISSION_VERSION = "trading_admission_v10"
+_SOURCE_VENUE_KEYS = ("binance.usdm", "hyperliquid.perp", "hyperliquid.xyz")
+
+
+def _historical_digest(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class AdmissionConfig:
+    max_age_ms: int = 300_000
+    min_oi_value_usd: int = 20_000_000
+
+    @property
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "max_age_ms": self.max_age_ms,
+            "min_oi_value_usd": self.min_oi_value_usd,
+            "source_venues": list(_SOURCE_VENUE_KEYS),
+        }
+
+    @property
+    def digest(self) -> str:
+        return _historical_digest(self.snapshot)
+
+
+@dataclass(frozen=True)
+class PriceWindow:
+    lookback_ms: int = 3_600_000
+    bar_gap_tolerance_ms: int = 330_000
+
+
+@dataclass(frozen=True)
+class _HistoricalPolicyConfig:
+    measurement_window_ms: int = 300_000
+    min_oi_change_bps: int = 500
+    min_whale_oi_ratio_bps: int = 5_000
+    min_price_move_bps: int = 0
+    max_price_move_bps: int = 1_000
+
+    @property
+    def snapshot(self) -> dict[str, int]:
+        return {
+            "max_price_move_bps": self.max_price_move_bps,
+            "measurement_window_ms": self.measurement_window_ms,
+            "min_oi_change_bps": self.min_oi_change_bps,
+            "min_price_move_bps": self.min_price_move_bps,
+            "min_whale_oi_ratio_bps": self.min_whale_oi_ratio_bps,
+        }
+
+
+@dataclass(frozen=True)
+class _HistoricalPolicy:
+    config: _HistoricalPolicyConfig = _HistoricalPolicyConfig()
+    policy_id: str = "source_native_oi_smart_money_long_v5"
+
+    @property
+    def config_snapshot(self) -> dict[str, int]:
+        return self.config.snapshot
+
+    @property
+    def config_digest(self) -> str:
+        return _historical_digest(self.config.snapshot)
+
+
+ALPHA_POLICY = _HistoricalPolicy()
 
 # The lane's own window (#537 PR-3 retired the module constant this receipt imported).
 DEFAULT_PRICE_WINDOW = PriceWindow()

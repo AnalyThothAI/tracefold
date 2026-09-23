@@ -6,12 +6,12 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from threading import Lock
 
-from tracefold.trading import OperatorIntentV1, TradeSignalV1
+from tracefold.trading.execution_contracts import OperatorIntentV1, TradeSignalV1, TradeSignalV2
 
 _DEFAULT_MAX_COUNT = 256
 _DEFAULT_MAX_BYTES = 1_048_576
 
-type SignalReader = Callable[[str, str, int], Sequence[TradeSignalV1]]
+type SignalReader = Callable[[str, str, int], Sequence[TradeSignalV1 | TradeSignalV2]]
 type CommandReader = Callable[[str, str, int], Sequence[OperatorIntentV1]]
 
 
@@ -32,7 +32,7 @@ class ExecutionSignalClient:
         self.execution_strategy = execution_strategy
         self._max_count = max_count
         self._max_bytes = max_bytes
-        self._values: deque[tuple[TradeSignalV1, int]] = deque()
+        self._values: deque[tuple[TradeSignalV1 | TradeSignalV2, int]] = deque()
         self._commands: deque[tuple[OperatorIntentV1, int]] = deque()
         self._pending_ids: set[str] = set()
         self._pending_command_ids: set[str] = set()
@@ -120,7 +120,7 @@ class ExecutionSignalClient:
         self._pending_ids.remove(value.signal_id)
         self._bytes -= size
 
-    def next_nowait(self) -> TradeSignalV1 | None:
+    def next_nowait(self) -> TradeSignalV1 | TradeSignalV2 | None:
         with self._lock:
             if not self._values:
                 return None

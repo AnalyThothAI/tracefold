@@ -41,7 +41,9 @@ from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, Posit
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading import ExecutionAccountSnapshot, ExitReason, OperatorIntentV1, TradePlan
+from tracefold.trading.execution_contracts import OperatorIntentV1, TradeSignalV2
+from tracefold.trading.storage.execution_stream import ExecutionAccountSnapshot
+from tracefold.trading.trade_plan import ExitReason, TradePlan
 
 from .account_projection import OrderLeg, account_snapshot, open_and_inflight_orders, order_leg
 from .config import CONTINUOUS_CHECK_SECONDS, OiInstrumentRoute, OiRuntimeProfile
@@ -95,6 +97,8 @@ class OpenPlan:
 
     plan: TradePlan
     disposition_pending: bool
+    signal: TradeSignalV2 | None = None
+    final_check_started: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +177,11 @@ class OiNautilusStrategy(Strategy):
         self._stop_exits: dict[str, int] = dict(inputs.stop_exits)
         self._deferred: dict[str, _Deferred] = {}
         self._submitting: RuntimeEntryRequest | None = None
+        self._awaiting_final: dict[str, RuntimeEntryRequest] = {}
+        self._final_requested: set[str] = set()
+        for value in inputs.open_plans:
+            if value.plan.status == "prepared" and value.signal is not None and not value.final_check_started:
+                self._awaiting_final[value.plan.entry_id] = RuntimeEntryRequest.from_signal(value.signal)
         self._unexpected: tuple[str, ...] = ()
         self._subscribed: set[InstrumentId] = set()
         self._converge_due_ns = 0
@@ -342,6 +351,19 @@ class OiNautilusStrategy(Strategy):
         """The first gate an entry fails, in the order an operator reads them, or the plan it becomes."""
 
         risk = self._profile.risk
+        if request.account_slot is not None and request.account_slot != self._profile.account_slot:
+            return _Verdict("refuse", "account_slot_mismatch")
+        if request.runtime_mode is not None and request.runtime_mode != self._profile.mode:
+            return _Verdict("refuse", "runtime_mode_mismatch")
+        if request.asset_id is not None and request.asset_id in self._profile.excluded_asset_ids:
+            return _Verdict("refuse", "asset_excluded")
+        if request.entry_envelope is not None and request.entry_envelope.root_expires_at_ns <= now_ns:
+            return _Verdict("refuse", "root_expired")
+        if (
+            request.entry_envelope is not None
+            and request.entry_envelope.universe_version != self._profile.universe_digest
+        ):
+            return _Verdict("refuse", "universe_changed")
         if self._emergency_halted:
             return _Verdict("refuse", "emergency_halted")
         if self._entries_paused:
@@ -372,6 +394,13 @@ class OiNautilusStrategy(Strategy):
         route = self._routes.get(request.market_key)
         if route is None:
             return _Verdict("refuse", "instrument_unmapped")
+        if (
+            request.native_symbol is not None
+            and route.instrument_id.value.split("-PERP.", 1)[0] != request.native_symbol
+        ):
+            return _Verdict("refuse", "mapping_changed")
+        if request.mapping_semantics_digest is not None and not self._mapping_current(request):
+            return _Verdict("refuse", "mapping_changed")
         self._subscribe(route.instrument_id)
         instrument = self.cache.instrument(route.instrument_id)
         if instrument is None:
@@ -382,17 +411,26 @@ class OiNautilusStrategy(Strategy):
         spread = spread_bps(quote)
         if spread is None:
             return _Verdict("defer", "market_unavailable")
-        if spread > risk.max_spread_fraction_of_stop * Decimal(route.stop_distance_bps):
+        if request.entry_envelope is not None:
+            reference = request.entry_envelope.reference_price
+            executable = decimal_value(quote.ask_price if request.direction == "long" else quote.bid_price)
+            drift = abs(executable / reference - Decimal(1)) * Decimal(10_000)
+            if drift > request.entry_envelope.max_price_drift_bps:
+                return _Verdict("refuse", "entry_price_outside_envelope")
+        stop_distance_bps = (
+            request.exit_plan.stop_distance_bps if request.exit_plan is not None else route.stop_distance_bps
+        )
+        if spread > risk.max_spread_fraction_of_stop * Decimal(stop_distance_bps):
             return _Verdict("defer", "spread_limit", spread_detail(spread))
         if self._instrument_busy(route.instrument_id):
-            return _Verdict("defer", "instrument_busy")
+            return _Verdict("refuse", "exposure_already_present")
         if self._submitting is not None:
             return _Verdict("defer", "trade_plan_busy")
         quantity = entry_quantity(
             direction=request.direction,
             quote=quote,
             instrument=instrument,
-            stop_distance_bps=route.stop_distance_bps,
+            stop_distance_bps=stop_distance_bps,
             allowed_risk_usd=allowed_risk,
             equity_usd=equity,
             max_leverage=risk.max_leverage,
@@ -405,6 +443,7 @@ class OiNautilusStrategy(Strategy):
         )
         plan = TradePlan(
             entry_id=request.entry_id,
+            entry_scope_id=request.entry_scope_id,
             source=request.source,
             case_id=request.case_id,
             account_slot=self._profile.account_slot,
@@ -416,48 +455,144 @@ class OiNautilusStrategy(Strategy):
             created_at_ns=now_ns,
             entry_expires_at_ns=request.expires_at_ns,
             entry_quantity=quantity.as_decimal(),
-            stop_distance_bps=route.stop_distance_bps,
+            stop_distance_bps=stop_distance_bps,
             risk_budget_usd=allowed_risk,
             max_leverage_at_creation=risk.max_leverage,
-            exit_policy_id=self._profile.exit_policy.policy_id,
-            take_profit_bps=self._profile.exit_policy.take_profit_bps,
-            max_holding_ns=self._profile.exit_policy.max_holding_ns,
+            exit_policy_id=(
+                request.exit_plan.version if request.exit_plan is not None else self._profile.exit_policy.policy_id
+            ),
+            take_profit_bps=(
+                request.exit_plan.take_profit_bps
+                if request.exit_plan is not None
+                else self._profile.exit_policy.take_profit_bps
+            ),
+            max_holding_ns=(
+                request.exit_plan.max_holding_ns
+                if request.exit_plan is not None
+                else self._profile.exit_policy.max_holding_ns
+            ),
             updated_at_ns=now_ns,
         )
         return _Verdict("admit", plan=plan, detail=spread_detail(spread))
 
     def _submit_committed(self, now_ns: int) -> None:
-        """Send the entry order of the plan the bridge just committed. No receipt, no order."""
+        """A V2 order needs both a durable plan and a fresh durable validity check."""
 
+        checked = self._journal.take_entry_validity()
+        if checked is not None:
+            request = self._awaiting_final.pop(checked.entry_id, None)
+            self._final_requested.discard(checked.entry_id)
+            plan = self._plans.get(checked.entry_id)
+            if request is None or plan is None:
+                self.log.error(f"OI Runtime final check without plan ({checked.entry_id})")
+            elif not checked.allowed:
+                self._close_plan(plan, "not_submitted", terminal_at_ns=now_ns, now_ns=now_ns)
+                self._dispose_owed(plan, checked.reason)
+            else:
+                self._send_prepared_entry(plan, request, now_ns)
         receipt = self._journal.take_receipt()
-        if receipt is None:
-            return
-        request, self._submitting = self._submitting, None
-        plan = receipt.plan
-        if request is None or request.entry_id != plan.entry_id:
-            self.log.error(f"OI Runtime receipt without its request ({plan.entry_id})")
-            return
-        if not receipt.committed:
-            self._answer(request, receipt.reason or "trade_plan_rejected")
-            return
-        self._plans[plan.entry_id] = plan
-        self._owed.add(plan.entry_id)
+        if receipt is not None:
+            request, self._submitting = self._submitting, None
+            plan = receipt.plan
+            if request is None or request.entry_id != plan.entry_id:
+                self.log.error(f"OI Runtime receipt without its request ({plan.entry_id})")
+            elif not receipt.committed:
+                self._answer(request, receipt.reason or "trade_plan_rejected")
+            else:
+                self._plans[plan.entry_id] = plan
+                self._owed.add(plan.entry_id)
+                if request.exit_plan is not None:
+                    self._awaiting_final[plan.entry_id] = request
+                else:
+                    # Historical/manual inputs keep their existing submission
+                    # path; the online reader only offers V2 Signals.
+                    self._send_prepared_entry(plan, request, now_ns)
+        self._request_waiting_final()
+
+    def _request_waiting_final(self) -> None:
+        for entry_id in self._awaiting_final:
+            if entry_id not in self._final_requested:
+                if self._journal.request_entry_validity(self._plans[entry_id]):
+                    self._final_requested.add(entry_id)
+                return
+
+    def _mapping_current(self, request: RuntimeEntryRequest) -> bool:
+        route = self._routes.get(request.market_key)
+        return route is not None and self._profile.route_semantics(route) == (
+            request.asset_id,
+            request.mapping_semantics_digest,
+        )
+
+    def _send_prepared_entry(
+        self,
+        plan: TradePlan,
+        request: RuntimeEntryRequest,
+        now_ns: int,
+    ) -> None:
+        """Use the frozen quantity only if every current local gate still holds."""
+
+        now_ns = max(now_ns, self._now_ns())
         instrument_id = InstrumentId.from_str(plan.instrument_id)
         instrument = self.cache.instrument(instrument_id)
-        # The plan is durable and its order is not sent yet. Nothing the entry was sized on is
-        # re-measured here -- a plan is sent at the size it was committed at -- but an operator who
-        # paused or halted in between, or a Signal that lapsed while the insert committed, still wins.
-        refusal = (
-            "emergency_halted"
-            if self._emergency_halted
-            else "entries_paused"
-            if self._entries_paused
-            else "expired"
-            if plan.entry_expires_at_ns <= now_ns
-            else "instrument_unavailable"
-            if instrument is None
-            else None
-        )
+        risk = self._profile.risk
+        refusal: str | None = None
+        if self._emergency_halted:
+            refusal = "emergency_halted"
+        elif self._entries_paused:
+            refusal = "entries_paused"
+        elif not self._singleton_ready():
+            refusal = "singleton_lost"
+        elif plan.entry_expires_at_ns <= now_ns:
+            refusal = "expired"
+        elif request.entry_envelope is not None and request.entry_envelope.root_expires_at_ns <= now_ns:
+            refusal = "root_expired"
+        elif (
+            request.entry_envelope is not None
+            and request.entry_envelope.universe_version != self._profile.universe_digest
+        ):
+            refusal = "universe_changed"
+        elif request.asset_id is not None and request.asset_id in self._profile.excluded_asset_ids:
+            refusal = "asset_excluded"
+        elif request.mapping_semantics_digest is not None and not self._mapping_current(request):
+            refusal = "mapping_changed"
+        elif instrument is None:
+            refusal = "instrument_unavailable"
+        elif self.cache.positions_open(instrument_id=instrument_id) or any(
+            order.client_order_id.value != plan.entry_client_order_id
+            for order in (
+                *self.cache.orders_open(instrument_id=instrument_id),
+                *self.cache.orders_inflight(instrument_id=instrument_id),
+            )
+        ):
+            refusal = "exposure_already_present"
+        elif len(self._exposed_instruments() - {instrument_id}) >= risk.max_positions:
+            refusal = "position_limit"
+        elif self._unexpected:
+            refusal = "unexpected_exposure"
+        else:
+            quote = self.cache.quote_tick(instrument_id)
+            if quote is None or now_ns - int(quote.ts_event) > risk.market_stale_after_ns:
+                refusal = "market_unavailable"
+            else:
+                spread = spread_bps(quote)
+                if spread is None:
+                    refusal = "market_unavailable"
+                elif spread > risk.max_spread_fraction_of_stop * Decimal(plan.stop_distance_bps):
+                    refusal = "spread_limit"
+                else:
+                    executable = decimal_value(quote.ask_price if plan.direction == "long" else quote.bid_price)
+                    envelope = request.entry_envelope
+                    if (
+                        envelope is not None
+                        and abs(executable / envelope.reference_price - Decimal(1)) * Decimal(10_000)
+                        > envelope.max_price_drift_bps
+                    ):
+                        refusal = "entry_price_outside_envelope"
+                    elif (
+                        plan.entry_quantity * executable * Decimal(plan.stop_distance_bps) / Decimal(10_000)
+                        > plan.risk_budget_usd
+                    ):
+                        refusal = "frozen_risk_exceeded"
         if refusal is not None or instrument is None:
             self._close_plan(plan, "not_submitted", terminal_at_ns=now_ns, now_ns=now_ns)
             self._dispose_owed(plan, refusal or "instrument_unavailable")
@@ -684,6 +819,8 @@ class OiNautilusStrategy(Strategy):
         expected_side = PositionSide.LONG if plan.direction == "long" else PositionSide.SHORT
         own = [position for position in positions if position.strategy_id == self.id and position.side == expected_side]
         unexpected.extend(f"position:{position.id.value}" for position in positions if position not in own)
+        if plan.entry_id in self._awaiting_final and not own and not entry_working:
+            return
         if not own:
             if entry_working or (entry is not None and not entry.is_closed) or positions:
                 return
@@ -695,11 +832,11 @@ class OiNautilusStrategy(Strategy):
             filled = entry is not None and entry.filled_qty.as_decimal() > 0
             plan = self._mark_open(plan, int(position.ts_opened) if filled else plan.created_at_ns)
         self._dispose_owed(plan, "accepted")
-        if entry_working:
-            return
         self._ensure_protection(plan, position, orders, now_ns)
         opened_at_ns = plan.opened_at_ns or plan.created_at_ns
         if now_ns >= opened_at_ns + plan.max_holding_ns:
+            if entry_working and entry is not None and not entry.is_pending_cancel:
+                self.cancel_order(entry)
             self._time_exit(position, orders)
 
     def _end_unobserved(self, plan: TradePlan, entry: Any, now_ns: int) -> None:
@@ -730,18 +867,29 @@ class OiNautilusStrategy(Strategy):
             for order in orders
             if order.strategy_id == self.id and order.is_reduce_only and order.side == closing_side
         ]
-        have_stop = any(order.order_type == OrderType.STOP_MARKET for order in protective)
-        have_take_profit = any(order.order_type == OrderType.MARKET_IF_TOUCHED for order in protective)
-        if have_stop and have_take_profit:
-            return
         instrument = self.cache.instrument(position.instrument_id)
         if instrument is None:
             return
         average = decimal_value(position.avg_px_open)
-        if not have_stop:
-            self._submit_protection(plan, position, instrument, closing_side, "stop", average, now_ns)
-        if not have_take_profit:
-            self._submit_protection(plan, position, instrument, closing_side, "take_profit", average, now_ns)
+        for leg, order_type in (("stop", OrderType.STOP_MARKET), ("take_profit", OrderType.MARKET_IF_TOUCHED)):
+            existing = next((order for order in protective if order.order_type == order_type), None)
+            if existing is None:
+                self._submit_protection(plan, position, instrument, closing_side, leg, average, now_ns)
+                continue
+            trigger = instrument.make_price(
+                protective_trigger(
+                    direction=plan.direction,
+                    average_entry_price=average,
+                    distance_bps=plan.stop_distance_bps if leg == "stop" else plan.take_profit_bps,
+                    leg=leg,
+                )
+            )
+            if (
+                (existing.quantity != position.quantity or existing.trigger_price != trigger)
+                and not existing.is_pending_cancel
+                and not existing.is_pending_update
+            ):
+                self.modify_order(existing, quantity=position.quantity, trigger_price=trigger)
 
     def _submit_protection(
         self,

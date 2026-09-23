@@ -9,11 +9,12 @@ that stood between the operator and the two commands that *reduce* risk (#520 PR
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Literal
 
-from tracefold.trading.contracts import canonical_sha256
 from tracefold.trading.storage.execution_stream import PreparedOperatorIntent, prepare_operator_intent
 
 _COMMAND_MAX_BYTES = 1_024
@@ -24,6 +25,11 @@ _MARKET_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 # How far ahead of the ingress's own clock a caller-sealed `requested_at_ns` may be. One number, so
 # the HTTP console and the local CLI cannot disagree about which sealed commands are from the future.
 _MAX_FUTURE_SKEW_NS = 30_000_000_000
+
+
+def _canonical_sha256(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class OperatorCommandError(ValueError):
@@ -115,7 +121,7 @@ def prepare_parsed_operator_intent(
     codes are unchanged.
     """
 
-    command_id = canonical_sha256(
+    command_id = _canonical_sha256(
         {
             "contract": "operator-command-source-v1",
             "source": source,

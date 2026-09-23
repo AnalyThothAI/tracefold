@@ -24,7 +24,6 @@ from tracefold.integrations.telegram import _telegram_message
 from tracefold.news import ReaderCard, ReaderDeliveryPresentation
 from tracefold.news.feishu_card import feishu_card
 from tracefold.platform.config.models import Settings
-from tracefold.trading.contracts import OiCandidateRow
 from tracefold.trading.storage.health import OverduePlan, RuntimeLiveness
 
 MINUTE_MS = 60_000
@@ -36,31 +35,9 @@ def _ms(text: str) -> int:
     return int(datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=UTC).timestamp() * 1000)
 
 
-def _frame(event_id: str, *, at_ms: int, symbol: str = "BCH") -> OiCandidateRow:
-    return OiCandidateRow(  # type: ignore[typeddict-item]
-        event_id=event_id,
-        metric_version="oi_signal_v1",
-        source_item_id=f"item-{event_id}",
-        symbol=symbol,
-        direction="rise",
-        oi_change_bps=720,
-        oi_value_usd=32_000_000,
-        whale_long_profit_bps=8_000,
-        whale_oi_ratio_bps=10_000,
-        observed_at_ms=at_ms,
-        available_at_ms=at_ms,
-        ingest_mode="live",
-        source_strategy_id="1019",
-        source_contract_version="opennews_oi_source_v1",
-        measurement_window_ms=300_000,
-        venue="binance",
-    )
-
-
 def _facts(now_ms: int, **overrides: Any) -> wd.WatchdogFacts:
     values: dict[str, Any] = {
         "now_ms": now_ms,
-        "lane": CapabilityStates().get("trading_signal_lane"),
         "reads": wd.WatchdogReads(),
         "runtime_expected": False,
         "account_slot": SLOT,
@@ -119,14 +96,12 @@ def _watchdog(
     sender: RecordingSender,
     clock: list[int],
     *,
-    capabilities: CapabilityStates | None = None,
     runtime_expected: bool = False,
 ) -> wd.TradingWatchdog:
     sender.clock = lambda: clock[0]
     return wd.TradingWatchdog(
         db=db,
         sender=sender,
-        capabilities=capabilities or CapabilityStates(),
         runtime_expected=runtime_expected,
         account_slot=SLOT,
         clock=lambda: clock[0],
@@ -151,10 +126,7 @@ def _run(watchdog: wd.TradingWatchdog, clock: list[int], *, start_ms: int, end_m
 
 def test_each_condition_is_named_by_the_fact_that_holds_it() -> None:
     now = _ms("2026-09-22 18:40")
-    lane = CapabilityStates()
-    lane.faulted("trading_signal_lane", "trading_signal_lane:RuntimeError")
     reads = wd.WatchdogReads(
-        unanswered_frames=(_frame("a", at_ms=now - 40 * MINUTE_MS), _frame("b", at_ms=now - 12 * MINUTE_MS)),
         runtime=RuntimeLiveness(heartbeat_at_ns=(now - 90_000) * 1_000_000, started_at_ns=(now - HOUR_MS) * 1_000_000),
         dispositions=("unexpected_exposure",) * 4 + ("instrument_busy", "accepted", "unexpected_exposure"),
         overdue_plans=(
@@ -170,7 +142,6 @@ def test_each_condition_is_named_by_the_fact_that_holds_it() -> None:
     found = wd.findings(
         _facts(
             now,
-            lane=lane.get("trading_signal_lane"),
             reads=reads,
             runtime_expected=True,
             runtime_starts_last_hour=4,
@@ -178,9 +149,6 @@ def test_each_condition_is_named_by_the_fact_that_holds_it() -> None:
     )
 
     assert set(found) == set(wd.CONDITION_TITLES)
-    assert "trading_signal_lane:RuntimeError" in found[wd.SIGNAL_LANE_FAULTED].lines[0]
-    assert found[wd.OI_FRAMES_UNANSWERED].lines[0].startswith("2 个 live OI 帧")
-    assert "09-22 18:00 UTC" in found[wd.OI_FRAMES_UNANSWERED].lines[1]
     assert "1 分钟前" in found[wd.RUNTIME_HEARTBEAT_STALE].lines[0]
     assert "启动 4 次" in found[wd.RUNTIME_RESTART_LOOP].lines[0]
     # The histogram names every refusal in the streak and stops at the accepted one.
@@ -193,18 +161,12 @@ def test_each_condition_is_named_by_the_fact_that_holds_it() -> None:
 
 def test_a_healthy_deployment_holds_no_condition() -> None:
     now = _ms("2026-09-22 18:40")
-    lane = CapabilityStates()
-    lane.running("trading_signal_lane")
     reads = wd.WatchdogReads(
         runtime=RuntimeLiveness(heartbeat_at_ns=(now - 5_000) * 1_000_000, started_at_ns=(now - HOUR_MS) * 1_000_000),
         dispositions=("position_limit",) * 4 + ("accepted",) + ("unexpected_exposure",) * 10,
     )
 
-    found = wd.findings(
-        _facts(
-            now, lane=lane.get("trading_signal_lane"), reads=reads, runtime_expected=True, runtime_starts_last_hour=3
-        )
-    )
+    found = wd.findings(_facts(now, reads=reads, runtime_expected=True, runtime_starts_last_hour=3))
 
     assert found == {}
 
@@ -292,12 +254,12 @@ def test_a_flap_inside_the_hold_is_the_same_episode() -> None:
 def test_an_episode_nobody_was_told_about_closes_without_a_recovery_message() -> None:
     t0 = 1_000 * HOUR_MS
     untold = WatchdogAlertState(
-        wd.SIGNAL_LANE_FAULTED, active=True, opened_at_ms=t0, notified_at_ms=None, clear_since_ms=t0
+        wd.RUNTIME_HEARTBEAT_STALE, active=True, opened_at_ms=t0, notified_at_ms=None, clear_since_ms=t0
     )
 
-    steps = wd.plan_alerts({}, {wd.SIGNAL_LANE_FAULTED: untold}, now_ms=t0 + wd.RESOLVE_AFTER_MS)
+    steps = wd.plan_alerts({}, {wd.RUNTIME_HEARTBEAT_STALE: untold}, now_ms=t0 + wd.RESOLVE_AFTER_MS)
 
-    assert _step_kinds(steps) == [(wd.SIGNAL_LANE_FAULTED, None)]
+    assert _step_kinds(steps) == [(wd.RUNTIME_HEARTBEAT_STALE, None)]
     assert steps[0].delivered.active is False
 
 
@@ -374,59 +336,6 @@ def test_the_restart_count_is_the_generations_seen_start_within_the_hour() -> No
 # -- the two incidents the audit found, replayed ----------------------------------------------------------
 
 
-def test_replay_09_10_lane_outage_alerts_within_minutes_and_resolves_once() -> None:
-    """09-10 18:33 -> 09-12 02:25: the lane faulted and 129 live frames got no ledger row.
-
-    The watchdog must page within 30 minutes (#680 §8), not page again more often than the re-alert
-    interval, and say once that it is over after the restart.
-    """
-
-    fault_at = _ms("2026-09-10 18:33")
-    restart_at = _ms("2026-09-12 02:25")
-    frames = [_frame(f"f{index}", at_ms=fault_at + index * 13 * MINUTE_MS) for index in range(145)]
-    capabilities = CapabilityStates()
-    capabilities.running("trading_signal_lane")
-
-    def reads(now_ms: int) -> wd.WatchdogReads:
-        # While the lane is down nothing is answered; the first sweep after the restart answers every
-        # frame inside the horizon. The read's own window is the watchdog's: 12 h back, 10 min old.
-        lane_down = fault_at <= now_ms < restart_at
-        unanswered = tuple(
-            frame
-            for frame in frames
-            if now_ms - wd.ANSWER_HORIZON_MS < frame["available_at_ms"] <= now_ms - wd.FRAME_ANSWER_BUDGET_MS
-            and (lane_down or frame["available_at_ms"] < restart_at - wd.ANSWER_HORIZON_MS)
-        )
-        return wd.WatchdogReads(unanswered_frames=unanswered)
-
-    def lane_state(now_ms: int) -> None:
-        if fault_at <= now_ms < restart_at:
-            capabilities.faulted("trading_signal_lane", "trading_signal_lane:ResourceAdmissionTimeout")
-        else:
-            capabilities.running("trading_signal_lane")
-
-    clock = [fault_at - 10 * MINUTE_MS]
-    sender = RecordingSender()
-    watchdog = _watchdog(TimelineDatabase(reads), sender, clock, capabilities=capabilities)
-
-    _run(watchdog, clock, start_ms=fault_at - 10 * MINUTE_MS, end_ms=restart_at + HOUR_MS, before=lane_state)
-
-    by_subject: dict[str, list[int]] = {}
-    for at, subject, _card, _payload in sender.sent:
-        by_subject.setdefault(subject, []).append(at)
-    lane_onset = by_subject["Tracefold 告警 · Signal lane 已停止"]
-    frames_onset = by_subject["Tracefold 告警 · OI 帧没有准入答复"]
-    assert lane_onset[0] - fault_at <= 30 * MINUTE_MS
-    assert frames_onset[0] - fault_at <= 30 * MINUTE_MS
-    outage_hours = (restart_at - fault_at) / HOUR_MS
-    repeats = by_subject["Tracefold 告警（持续） · Signal lane 已停止"]
-    assert len(repeats) == int(outage_hours // (wd.REALERT_AFTER_MS / HOUR_MS))
-    assert all(later - earlier >= wd.REALERT_AFTER_MS for earlier, later in pairwise(repeats))
-    resolved = by_subject["Tracefold 已恢复 · Signal lane 已停止"]
-    assert len(resolved) == 1 and 0 < resolved[0] - restart_at <= wd.RESOLVE_AFTER_MS + MINUTE_MS
-    assert len(by_subject["Tracefold 已恢复 · OI 帧没有准入答复"]) == 1
-
-
 def test_replay_09_18_refusal_streak_alerts_at_the_fifth_refusal_and_resolves_on_the_next_accept() -> None:
     """09-18 03:36 -> 09-21 15:56: 21 Signals refused `unexpected_exposure` and one `instrument_busy`.
 
@@ -473,10 +382,10 @@ def test_replay_09_18_refusal_streak_alerts_at_the_fifth_refusal_and_resolves_on
 @pytest.mark.parametrize("kind", ["onset", "repeat", "resolved"])
 def test_the_alert_is_one_card_both_providers_can_send(kind: str) -> None:
     step = wd.AlertStep(
-        condition_key=wd.SIGNAL_LANE_FAULTED,
+        condition_key=wd.RUNTIME_HEARTBEAT_STALE,
         kind=kind,  # type: ignore[arg-type]
-        lines=("trading_signal_lane: faulted · trading_signal_lane:RuntimeError", "第二行"),
-        delivered=WatchdogAlertState(wd.SIGNAL_LANE_FAULTED, active=True, opened_at_ms=1),
+        lines=("binance_usdm_primary：执行 Runtime 心跳中断", "第二行"),
+        delivered=WatchdogAlertState(wd.RUNTIME_HEARTBEAT_STALE, active=True, opened_at_ms=1),
         undelivered=None,
     )
 
@@ -484,9 +393,9 @@ def test_the_alert_is_one_card_both_providers_can_send(kind: str) -> None:
     feishu = feishu_card(card)
     telegram = _telegram_message(card, view=ReaderDeliveryPresentation(), pushed_at_ms=_ms("2026-09-22 18:40"))
 
-    assert feishu["header"]["title"]["content"].endswith("Signal lane 已停止")
-    assert "trading_signal_lane:RuntimeError" in feishu["elements"][0]["content"]
-    assert "Signal lane 已停止" in telegram and "第二行" in telegram
+    assert feishu["header"]["title"]["content"].endswith("执行 Runtime 心跳中断")
+    assert "执行 Runtime 心跳中断" in feishu["elements"][0]["content"]
+    assert "执行 Runtime 心跳中断" in telegram and "第二行" in telegram
 
 
 def test_the_watchdog_is_built_only_beside_trading_and_a_working_sender() -> None:

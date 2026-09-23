@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.trading import ACCEPTED_ENTRY_DISPOSITIONS, execution_stage
+from tracefold.trading.stages import ACCEPTED_ENTRY_DISPOSITIONS, execution_stage
 
 _NOW_NS = 1_900_000_000_000_000_000
 

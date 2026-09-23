@@ -19,6 +19,7 @@ import psycopg
 import pytest
 
 from tests.helpers.nautilus_oi_runtime_process import run_runtime_on_postgres
+from tests.helpers.published_signal_v2 import append_published_v2_signal
 from tests.nautilus_oi_runtime_fixtures import (
     MARKET,
     NOW_NS,
@@ -49,7 +50,6 @@ from tracefold.trading.storage.execution_stream import (
     PreparedOperatorIntent,
     prepare_execution_observations,
     prepare_operator_intent,
-    prepare_trade_signal,
 )
 from tracefold.trading.storage.root import TradingRepository
 
@@ -67,32 +67,13 @@ def _control_row(repo: TradingRepository) -> None:
 def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> str:
     case_id = f"case-{suffix}"
     signal_id = suffix * 64
-    with repo.conn.transaction():
-        repo.conn.execute(
-            """
-            INSERT INTO trading_cases (
-              case_id, underlying_key, trigger_kind, primary_source_key,
-              manifest, manifest_sha256, state,
-              policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
-              updated_at_ms
-            ) VALUES (
-              %s, %s, 'oi', %s, '{"test":"nautilus-runtime"}'::jsonb,
-              %s, 'SIGNAL_EMITTED', 'long', 'nautilus_runtime_fixture', 1, 1, 1, 1
-            )
-            """,
-            (case_id, f"runtime:{case_id}", f"runtime-source:{case_id}", "4" * 64),
-        )
-        repo.append_trade_signal(
-            prepare_trade_signal(
-                signal_id=signal_id,
-                case_id=case_id,
-                market_key=MARKET,
-                direction="long",
-                observed_at_ns=NOW_NS - 1_000_000,
-                expires_at_ns=NOW_NS + 60 * SECOND_NS,
-            )
-        )
-    return signal_id
+    return append_published_v2_signal(
+        repo,
+        signal_id=signal_id,
+        case_id=case_id,
+        observed_at_ns=NOW_NS - 1_000_000,
+        expires_at_ns=NOW_NS + 60 * SECOND_NS,
+    )
 
 
 def _append_command(repo: TradingRepository, *, suffix: str, action: str) -> PreparedOperatorIntent:
@@ -237,7 +218,7 @@ def test_a_restart_adopts_the_reconciled_position_and_its_orders_and_writes_noth
         conn.close()
 
 
-def test_a_crash_between_plan_and_order_is_resolved_by_the_next_generation_without_an_order() -> None:
+def test_a_crash_before_final_check_resumes_the_original_plan_once() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repos = repositories_for_connection(conn)
@@ -249,6 +230,31 @@ def test_a_crash_between_plan_and_order_is_resolved_by_the_next_generation_witho
         assert crashed.engine.cache.orders() == []
         assert _plan(conn)["status"] == "prepared"
         assert load_runtime_inputs(repos, oi_profile(), now_ns=NOW_NS).open_plans[0].disposition_pending
+
+        restarted = run_runtime_on_postgres(repos, tape=quotes(9_999, 10_000, start_ns=NOW_NS + SECOND_NS, count=10))
+
+        assert len(restarted.engine.cache.orders()) == 3
+        plan = _plan(conn)
+        assert (plan["status"], plan["exit_reason"]) == ("open", None)
+        assert _rows(conn, "SELECT count(*) AS n FROM trading_trade_plans") == [{"n": 1}]
+        assert _rows(conn, "SELECT count(*) AS n FROM trading_entry_validity_checks") == [{"n": 1}]
+        assert ("signal_disposition", {"disposition": "accepted"}) in _kinds(conn)
+    finally:
+        conn.close()
+
+
+def test_a_crash_after_final_check_keeps_an_unknown_send_from_retrying() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repos = repositories_for_connection(conn)
+        _control_row(repos.trading)
+        _append_signal(repos.trading)
+        crashed = run_runtime_on_postgres(
+            repos, tape=quotes(9_999, 10_000, start_ns=NOW_NS, count=10), stop_after_commit=True
+        )
+        assert crashed.engine.cache.orders() == []
+        with conn.transaction():
+            assert repos.trading.validate_signal_entry(entry_id=_SIGNAL_ID, now_ns=NOW_NS) == (True, "valid")
 
         restarted = run_runtime_on_postgres(repos, tape=quotes(9_999, 10_000, start_ns=NOW_NS + SECOND_NS, count=10))
 

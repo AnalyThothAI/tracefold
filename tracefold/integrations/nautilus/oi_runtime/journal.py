@@ -19,7 +19,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from threading import Lock
 
-from tracefold.trading import ExecutionObservationV1, TradePlan
+from tracefold.trading.execution_contracts import ExecutionObservationV1
+from tracefold.trading.trade_plan import TradePlan
 
 from .risk import DayStartBaseline
 
@@ -168,6 +169,15 @@ class PlanReceipt:
     reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class EntryValidityReceipt:
+    entry_id: str
+    allowed: bool
+    reason: str
+    checked_at_ns: int
+    version: str = "entry_validity_v1"
+
+
 @dataclass(slots=True, eq=False)
 class JournalRow:
     value: ExecutionObservationV1 | TradePlan
@@ -192,6 +202,8 @@ class ExecutionJournal:
         self._index: dict[str, JournalRow] = {}
         self._prepare: TradePlan | None = None
         self._receipt: PlanReceipt | None = None
+        self._validity_request: TradePlan | None = None
+        self._validity_receipt: EntryValidityReceipt | None = None
         self._lock = Lock()
 
     # -- the Strategy's side ---------------------------------------------------------------------
@@ -245,6 +257,29 @@ class ExecutionJournal:
             receipt, self._receipt = self._receipt, None
             return receipt
 
+    def request_entry_validity(self, plan: TradePlan) -> bool:
+        with self._lock:
+            if self._validity_request is not None or self._validity_receipt is not None:
+                return False
+            self._validity_request = plan
+            return True
+
+    def pending_entry_validity(self) -> TradePlan | None:
+        with self._lock:
+            return self._validity_request
+
+    def settle_entry_validity(self, receipt: EntryValidityReceipt) -> None:
+        with self._lock:
+            if self._validity_request is None or self._validity_request.entry_id != receipt.entry_id:
+                raise RuntimeError("entry_validity_identity_lost")
+            self._validity_receipt = receipt
+            self._validity_request = None
+
+    def take_entry_validity(self) -> EntryValidityReceipt | None:
+        with self._lock:
+            receipt, self._validity_receipt = self._validity_receipt, None
+            return receipt
+
     # -- the bridge's side -----------------------------------------------------------------------
 
     def pending_prepare(self) -> TradePlan | None:
@@ -294,6 +329,7 @@ class ExecutionJournal:
 
 
 __all__ = [
+    "EntryValidityReceipt",
     "ExecutionJournal",
     "JournalRow",
     "ObservationFactory",

@@ -38,6 +38,7 @@ class TradePlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, allow_inf_nan=False)
 
     entry_id: str = Field(pattern=SHA256_PATTERN)
+    entry_scope_id: str = Field(min_length=1, max_length=128)
     source: Literal["signal", "manual"]
     case_id: str | None = Field(default=None, min_length=1, max_length=128)
     account_slot: str = Field(pattern=IDENTITY_PATTERN)
@@ -52,7 +53,7 @@ class TradePlan(BaseModel):
     stop_distance_bps: int = Field(ge=1, le=5_000)
     risk_budget_usd: Decimal = Field(gt=0)
     max_leverage_at_creation: int = Field(ge=1, le=125)
-    exit_policy_id: Literal["oi_fixed_v1"] = "oi_fixed_v1"
+    exit_policy_id: Literal["oi_fixed_v1", "analysis_dynamic_v1"] = "oi_fixed_v1"
     take_profit_bps: int = Field(ge=1, le=50_000)
     max_holding_ns: int = Field(gt=0)
     status: TradePlanStatus = "prepared"

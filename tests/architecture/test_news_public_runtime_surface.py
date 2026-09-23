@@ -240,6 +240,7 @@ def test_dspy_is_confined_to_model_implementation_families() -> None:
         for path in SRC.rglob("*.py")
         if "dspy" in _imported_roots(path)
         and path != SRC / "app" / "learning_runtime.py"
+        and path != SRC / "app" / "trading_analyst.py"
         and not any(root in path.parents for root in allowed_roots)
     ]
     assert offenders == []

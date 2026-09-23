@@ -113,6 +113,24 @@ export function TradingPage({ token }: { token: string }) {
         <div className="trading-heading-aside">
           <span>最近策略判定 {caseClock(status?.decision.last_case_at_ms)}</span>
           <small>
+            分析
+            {status?.decision.state === "running"
+              ? "运行中"
+              : status?.decision.state === "model_unconfigured"
+                ? "模型未配置"
+                : status?.decision.state === "disabled"
+                  ? "已停用"
+                  : "不可用"}
+            {status?.decision.model_name ? ` · ${status.decision.model_name}` : ""}
+            {status?.decision.publish_signals ? " · Signal 发布已开启" : " · 只观察"}
+          </small>
+          <small>
+            {status?.decision.active_policy ?? "策略未取得"}
+            {status?.decision.config_digest
+              ? ` · 配置 ${status.decision.config_digest.slice(0, 12)}`
+              : ""}
+          </small>
+          <small>
             {status?.execution.mode === "live"
               ? "实盘模式"
               : status?.execution.mode === "paper"
@@ -153,7 +171,7 @@ export function TradingPage({ token }: { token: string }) {
               }
             >
               {selectedCase ? (
-                <TradingCaseDetail item={selectedCase} />
+                <TradingCaseDetail item={selectedCase} token={token} />
               ) : (
                 <EmptyNote className="trading-empty-note">
                   {caseQuery.isPending || caseQuery.isError

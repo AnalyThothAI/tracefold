@@ -855,6 +855,34 @@ class TriageConsumer:
             focus_fact_id=s.focus_fact_id,
             now_ms=s.stamp,
         )
+        # The semantic fact becomes available with the verdict, independent of
+        # whether a reader card is owed, sent, retried or later removed.
+        repos.news.enqueue_trade_event(
+            kind="catalyst",
+            source_fact_key=s.event_id,
+            source_revision=f"{s.evidence_version}:{s.evidence_sha256}",
+            payload={
+                "kind": "catalyst",
+                "source_event_ref": s.event_id,
+                "evidence_ref": s.focus_fact_id or s.event_id,
+                "evidence_sha": s.evidence_sha256,
+                "semantic_payload_sha": canonical_sha(prepared.verdict),
+                "producer_identity": {"origin": s.origin, "program_sha": s.program_sha256},
+                "assets": prepared.verdict.get("assets", []),
+                "direction": prepared.verdict.get("direction"),
+                "novelty": prepared.verdict.get("novelty"),
+                "fact_kind": prepared.verdict.get("fact_kind"),
+                "headline": prepared.verdict.get("headline_zh"),
+                "why": prepared.verdict.get("why_zh"),
+                "provider_event_at_ms": s.card.get("leader_published_at_ms"),
+                "source_received_at_ms": s.card.get("opened_at_ms"),
+                "source_recorded_at_ms": s.stamp,
+                "editorial_decision": prepared.decision.final,
+                "suppression_reason": prepared.decision.throttled_by or prepared.decision.override_rule,
+                "ingest_mode": s.card.get("ingest_mode"),
+            },
+            source_recorded_at_ms=s.stamp,
+        )
         repos.news.set_storyline_key(event_id=s.event_id, storyline_key=s.final_key, now_ms=s.stamp)
         repos.news.set_context_line(
             event_id=s.event_id,

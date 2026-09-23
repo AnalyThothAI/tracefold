@@ -553,6 +553,52 @@
         "title": "ApiEnvelope[StatusData]",
         "type": "object"
       },
+      "ApiEnvelope_TradingAnalysisReplayData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingAnalysisReplayData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingAnalysisReplayData]",
+        "type": "object"
+      },
       "ApiEnvelope_TradingCasesData_": {
         "additionalProperties": false,
         "properties": {
@@ -7634,10 +7680,242 @@
         "title": "TradingAdmissionCountData",
         "type": "object"
       },
+      "TradingAnalysisDecisionData": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "assessment_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assessment Ref"
+          },
+          "decided_at_ms": {
+            "title": "Decided At Ms",
+            "type": "integer"
+          },
+          "decision": {
+            "additionalProperties": true,
+            "title": "Decision",
+            "type": "object"
+          },
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "policy_id": {
+            "title": "Policy Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "publish_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publish Reason"
+          },
+          "publish_status": {
+            "title": "Publish Status",
+            "type": "string"
+          },
+          "valid_until_ms": {
+            "title": "Valid Until Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decision_id",
+          "policy_id",
+          "policy_version",
+          "action",
+          "decision",
+          "publish_status",
+          "decided_at_ms",
+          "valid_until_ms"
+        ],
+        "title": "TradingAnalysisDecisionData",
+        "type": "object"
+      },
+      "TradingAnalysisOutcomeData": {
+        "additionalProperties": false,
+        "properties": {
+          "available_at_ms": {
+            "title": "Available At Ms",
+            "type": "integer"
+          },
+          "axis": {
+            "title": "Axis",
+            "type": "string"
+          },
+          "horizon_seconds": {
+            "title": "Horizon Seconds",
+            "type": "integer"
+          },
+          "label_version": {
+            "title": "Label Version",
+            "type": "string"
+          },
+          "labeled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labeled At Ms"
+          },
+          "path_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path Ref"
+          },
+          "return_bps": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Bps"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "axis",
+          "horizon_seconds",
+          "label_version",
+          "status",
+          "available_at_ms"
+        ],
+        "title": "TradingAnalysisOutcomeData",
+        "type": "object"
+      },
+      "TradingAnalysisReplayData": {
+        "additionalProperties": false,
+        "properties": {
+          "assessment": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assessment"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingAnalysisDecisionData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "source_fact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Fact"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "status"
+        ],
+        "title": "TradingAnalysisReplayData",
+        "type": "object"
+      },
       "TradingCaseData": {
         "additionalProperties": false,
         "description": "One frozen Case, as the drawer behind `?case=<id>` renders it.\n\nThe four measured OI numbers here were a second copy of what `policy_checks` already carries with\nthe threshold each was measured against, `policy_version` a second copy of `policy_id`, and\n`policy_decision` a required Literal over a nullable column -- exactly the shape that turned a\nstored `NULL` into a 500 on a read route (#532, #537 PR-5). `policy_config` was the same duplicate\none level up: the frozen dictionary it published is where `policy_checks[].threshold` comes from,\nso every number that was actually tested is already on the row beside what it was measured against,\nand `policy_config_digest` still identifies the whole set (#604 T3). `state` and `policy_reason`\nare the terminal answer; `base_symbol` is the identity the drawer titles itself with.",
         "properties": {
+          "analysis_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingAnalysisDecisionData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "analysis_outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/TradingAnalysisOutcomeData"
+            },
+            "title": "Analysis Outcomes",
+            "type": "array"
+          },
+          "analysis_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Status"
+          },
           "base_symbol": {
             "title": "Base Symbol",
             "type": "string"
@@ -7661,6 +7939,17 @@
             ],
             "title": "Decided At Ms"
           },
+          "entry_scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Scope Id"
+          },
           "event_id": {
             "anyOf": [
               {
@@ -7672,6 +7961,17 @@
             ],
             "title": "Event Id"
           },
+          "evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Ref"
+          },
           "manifest_version": {
             "anyOf": [
               {
@@ -7682,6 +7982,17 @@
               }
             ],
             "title": "Manifest Version"
+          },
+          "mapping_semantics_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mapping Semantics Digest"
           },
           "mark_price": {
             "anyOf": [
@@ -7774,6 +8085,40 @@
           "state": {
             "title": "State",
             "type": "string"
+          },
+          "target_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Asset Id"
+          },
+          "target_selection": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Selection"
+          },
+          "trigger_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Id"
           }
         },
         "required": [
@@ -7863,8 +8208,34 @@
       },
       "TradingDecisionRuntimeData": {
         "additionalProperties": false,
-        "description": "When the Signal lane last froze a Case; `None` means it has not frozen one yet (#520).",
+        "description": "Analysis process liveness and the last durable Case for this deployment.",
         "properties": {
+          "active_policy": {
+            "title": "Active Policy",
+            "type": "string"
+          },
+          "config_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Digest"
+          },
+          "heartbeat_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At Ms"
+          },
           "last_case_at_ms": {
             "anyOf": [
               {
@@ -7875,8 +8246,38 @@
               }
             ],
             "title": "Last Case At Ms"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "publish_signals": {
+            "title": "Publish Signals",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "disabled",
+              "unavailable",
+              "model_unconfigured",
+              "running"
+            ],
+            "title": "State",
+            "type": "string"
           }
         },
+        "required": [
+          "state",
+          "active_policy",
+          "publish_signals"
+        ],
         "title": "TradingDecisionRuntimeData",
         "type": "object"
       },
@@ -9724,6 +10125,9 @@
                 "",
                 "PENDING",
                 "RUNNING",
+                "DONE",
+                "FAILED",
+                "EXCLUDED",
                 "NO_TRADE",
                 "SIGNAL_EMITTED",
                 "BLOCKED"
@@ -9813,6 +10217,49 @@
           }
         },
         "summary": "Get Trading Cases",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/trading/cases/{case_id}/replay": {
+      "get": {
+        "description": "Read recorded input and answer only; replay never invokes a model.",
+        "operationId": "get_trading_case_replay_api_trading_cases__case_id__replay_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingAnalysisReplayData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Trading Case Replay",
         "tags": [
           "api"
         ]
