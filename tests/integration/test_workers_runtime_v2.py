@@ -453,7 +453,8 @@ def test_real_news_program_registration_fault_stays_inside_the_editorial_capabil
     port = _free_port()
     process = _start_workers_process("manifest_registration_fault", port)
     try:
-        _wait_for_output(process, "MANIFEST_REGISTRATION_ABOUT_TO_FAIL")
+        # Cold process imports and the schema gate precede editorial registration on loaded CI runners.
+        _wait_for_output(process, "MANIFEST_REGISTRATION_ABOUT_TO_FAIL", timeout_seconds=20.0)
         _wait_ready(process, port)
         payload = _readiness_payload(port)
         assert payload["runtime_manifest_sha"] is None
@@ -506,7 +507,8 @@ def test_real_shared_schema_failure_still_fails_the_workers_root() -> None:
     port = _free_port()
     process = _start_workers_process("schema_mismatch", port)
     try:
-        assert process.wait(timeout=10.0) != 0
+        # This includes Python import and schema setup time, not just the mismatch check itself.
+        assert process.wait(timeout=25.0) != 0
         _assert_probe_closed(port)
         # The schema gate runs before the singleton row is claimed, so the refusal leaves no runtime
         # to report on: no probe, no row, no capability report claiming anything works.
