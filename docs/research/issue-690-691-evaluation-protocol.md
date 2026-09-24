@@ -88,7 +88,8 @@ an absent child is not inferred to mean that a complete no-crossing path was
 observed.
 
 For Cases written by the new schema, the read-only exporter joins root/child
-identities, attempt costs, shadow receipts and archived evidence, then derives
+identities, all attempt and physical-call cost/status/clock refs, shadow receipts
+and archived evidence, then derives
 the independent rule watch path from the root market tape. It writes a SHA-256
 manifest with missing archive refs and coverage counts; missing data is not
 recovered from today's market. Use a restricted local output directory:

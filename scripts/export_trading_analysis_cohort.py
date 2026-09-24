@@ -357,12 +357,26 @@ def export_cases(
     case_ids = [str(row["case_id"]) for row in cases]
     attempts: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for attempt in conn.execute(
-        "SELECT case_id,claim_attempt,brief_ref,evidence_ref,analysis_status,error_code,"
-        "physical_call_count,cost_microusd,known_cost_microusd,unknown_cost_calls "
+        "SELECT case_id,claim_attempt,brief_ref,evidence_ref,assessment_ref,model_name,prompt_sha,"
+        "started_at_ms,ended_at_ms,provider_status,analysis_status,error_code,validation_errors,"
+        "physical_call_count,cost_microusd,known_cost_microusd,unknown_cost_calls,"
+        "cost_upper_estimate_microusd,cost_unknown_reason,settled "
         "FROM trading_case_attempts WHERE case_id=ANY(%s) ORDER BY case_id,claim_attempt",
         (case_ids,),
     ).fetchall():
         attempts[str(attempt["case_id"])].append(dict(attempt))
+    calls: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for call in conn.execute(
+        "SELECT case_id,claim_attempt,call_index,status,started_at_ms,finished_at_ms,timeout_ms,"
+        "remaining_deadline_ms,reserved_cost_microusd,request_ref,response_ref,input_tokens,"
+        "output_tokens,cost_microusd,cost_unknown_reason "
+        "FROM trading_model_calls WHERE case_id=ANY(%s) ORDER BY case_id,claim_attempt,call_index",
+        (case_ids,),
+    ).fetchall():
+        calls[(str(call["case_id"]), int(call["claim_attempt"]))].append(dict(call))
+    for case_id, case_attempts in attempts.items():
+        for attempt in case_attempts:
+            attempt["calls"] = calls[(case_id, int(attempt["claim_attempt"]))]
     evaluations: dict[str, dict[str, Any]] = defaultdict(dict)
     for evaluation in conn.execute(
         "SELECT case_id,source,status,result FROM trading_case_evaluations "
@@ -376,6 +390,14 @@ def export_cases(
     complete_paths = simulated_rule_receipts = 0
     for case in cases:
         case_id = str(case["case_id"])
+        for attempt in attempts[case_id]:
+            for field, kind in (("brief_ref", "brief"), ("assessment_ref", "assessment")):
+                if attempt.get(field):
+                    _read_ref(files, attempt[field], missing, case_id, kind)
+            for call in attempt["calls"]:
+                for field, kind in (("request_ref", "model_request"), ("response_ref", "model_response")):
+                    if call.get(field):
+                        _read_ref(files, call[field], missing, case_id, kind)
         first_complete = next(
             (item for item in attempts[case_id] if item.get("evidence_ref") and item.get("brief_ref")),
             None,

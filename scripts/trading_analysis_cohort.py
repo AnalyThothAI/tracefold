@@ -472,9 +472,21 @@ def evaluate(
         group = str(row.get("source_group_id") or root_id)
         possibilities = group_splits[group]
         partitions[root_id] = next(iter(possibilities)) if len(possibilities) == 1 else "cross_split_excluded"
+    model_identities = {
+        (str(attempt.get("model_name") or ""), str(attempt.get("prompt_sha") or ""))
+        for row in cases
+        for attempt in row.get("attempts", [])
+        if isinstance(attempt, dict) and (attempt.get("model_name") or attempt.get("prompt_sha"))
+    }
     return {
         "protocol_version": "trading_cohort_v2",
         "strategy_version": STRATEGY_VERSION,
+        "decision_policy_versions": sorted(
+            {str(row["decision_policy_version"]) for row in cases if row.get("decision_policy_version")}
+        ),
+        "model_identities": [
+            {"model_name": model_name, "prompt_sha": prompt_sha} for model_name, prompt_sha in sorted(model_identities)
+        ],
         "denominator": {"root_triggers": len(roots), "cases": len(cases)},
         "funnel": {
             "initial_excluded": sum(row.get("state") == "EXCLUDED" for row in initial.values()),

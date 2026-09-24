@@ -91,6 +91,18 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
                 "(%s,2,'second','analyzed','second-evidence')",
                 (case_id, case_id),
             )
+            conn.execute(
+                "INSERT INTO trading_model_calls "
+                "(case_id,claim_attempt,call_index,status,request_ref,cost_unknown_reason) "
+                "VALUES (%s,1,0,'result_unknown','request-ref','response_unrecoverable')",
+                (case_id,),
+            )
+            conn.execute(
+                "UPDATE trading_case_attempts SET physical_call_count=1,unknown_cost_calls=1,"
+                "model_name='fixture-model',prompt_sha='fixture-prompt' "
+                "WHERE case_id=%s AND claim_attempt=1",
+                (case_id,),
+            )
         due_evaluation = trading.due_shadow_evaluations(now_ms=182_000)
         assert len(due_evaluation) == 1
         assert due_evaluation[0]["evidence_ref"] == "first-evidence"
@@ -121,10 +133,17 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
         assert len(export) == 1 and export[0]["root_trigger_id"]
         assert export[0]["decision_policy_version"] == "v1"
         assert export[0]["attempts"][0]["evidence_ref"] == "first-evidence"
+        assert export[0]["attempts"][0]["calls"][0]["request_ref"] == "request-ref"
         assert export[0]["rule_watch_status"] == "missing"
-        assert {item["kind"] for item in manifest["missing_archive_items"]} == {"evidence", "root_market_tape"}
+        assert {item["kind"] for item in manifest["missing_archive_items"]} == {
+            "evidence",
+            "model_request",
+            "root_market_tape",
+        }
         report = evaluate_cohort(export, expected_roots=1, cutoff_ms=1_100, invalid_outputs=[], expected_invalid=0)
         assert report["arms"]["holdout"]["dspy"]["net_unknown"] == 1
+        assert report["arms"]["holdout"]["dspy"]["model_cost_unknown_calls"] == 1
+        assert report["model_identities"] == [{"model_name": "fixture-model", "prompt_sha": "fixture-prompt"}]
         with conn.transaction():
             _, excluded_case_id, _ = trading.accept_trigger(
                 kind="oi",

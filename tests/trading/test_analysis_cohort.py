@@ -39,7 +39,10 @@ def test_time_purge_and_source_group_keep_complete_roots_together() -> None:
         _case("c", "root-c", cutoff + 1),
     ]
     cases.append({**_case("child", "root-c", cutoff + 2), "run_kind": "conditional"})
+    cases[-1]["attempts"] = [{"model_name": "fixture-model", "prompt_sha": "fixture-prompt"}]
     report = evaluate(cases, expected_roots=3, cutoff_ms=cutoff, invalid_outputs=[], expected_invalid=0)
+    assert report["model_identities"] == [{"model_name": "fixture-model", "prompt_sha": "fixture-prompt"}]
+    assert report["decision_policy_versions"] == ["v3"]
     assert report["denominator"] == {"root_triggers": 3, "cases": 4}
     assert report["split_roots"] == {"cross_split_excluded": 2, "holdout": 1}
     assert report["funnel"]["conditional_cases"] == 1
