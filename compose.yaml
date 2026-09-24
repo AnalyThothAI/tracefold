@@ -252,6 +252,19 @@ services:
         limits:
           cpus: "2.0"
           memory: 2G
+    healthcheck:
+      # The runner writes a heartbeat every five seconds. The status projection
+      # checks its freshness and that a model endpoint is configured, so a live
+      # container without a working Analysis loop cannot pass the deployment gate.
+      test:
+        - CMD-SHELL
+        - >-
+          tracefold trading status |
+          python -c 'import json,sys; status=json.load(sys.stdin)["data"]["decision"]["state"]; sys.exit(0 if status == "running" else 1)'
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # The execution runtime does not share the application anchor (#537 PR-2). It owns a live Binance
   # account, so it owns its own image tag and its own lifecycle: `make runtime-build` produces

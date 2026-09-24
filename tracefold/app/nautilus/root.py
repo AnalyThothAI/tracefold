@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -79,6 +79,12 @@ _HEARTBEAT_INTERVAL_SECONDS = RUNTIME_HEARTBEAT_INTERVAL_NS / 1_000_000_000
 # failed it gets time to come back, and a persistent failure costs one attempt a minute.
 _REBUILD_BACKOFF_SECONDS = (5.0, 10.0, 20.0, 40.0, 60.0)
 _BINANCE_USDM_ACCOUNT_ID = AccountId("BINANCE-USDT_FUTURES-master")
+
+
+def _recovery_max_holding_ns(configured_ns: int, open_plan_holding_ns: Iterable[int]) -> int:
+    """Keep the configured lookback when there are no plans to recover."""
+
+    return max((configured_ns, *open_plan_holding_ns))
 
 
 class RuntimeFatal(RuntimeError):
@@ -269,9 +275,9 @@ async def _run_generation(
     inputs = load_runtime_inputs(repos, profile, now_ns=time.time_ns())
     profile = replace(
         profile,
-        recovery_max_holding_ns=max(
+        recovery_max_holding_ns=_recovery_max_holding_ns(
             profile.recovery_max_holding_ns,
-            *(value.plan.max_holding_ns for value in inputs.open_plans),
+            (value.plan.max_holding_ns for value in inputs.open_plans),
         ),
     )
     signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy=_EXECUTION_STRATEGY)

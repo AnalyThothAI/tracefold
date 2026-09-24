@@ -513,7 +513,7 @@ make down
 CLI, the project interpreter (3.13, matching the image), and daemon access; runs
 idempotent initialization; builds one shared Python/React image; starts
 PostgreSQL when absent; runs the one-shot migration and waits for its container
-to exit; starts Serve and Workers only if it exited 0; and then runs the same
+to exit; starts Serve, Workers and Analysis only if it exited 0; and then runs the same
 fail-closed application status gate. The wait is `docker wait`, not Compose's
 `service_completed_successfully` edge alone: `up --wait` bounds that edge by
 `--wait-timeout` as well, and when the budget ran out during `20260922_0387`
@@ -628,8 +628,11 @@ unknown non-empty cluster.
 
 `make status` is `make status-app` followed by `make runtime-status`.
 `status-app` prints Compose state and returns non-zero unless PostgreSQL,
-RabbitMQ, migration, Serve, Workers, the Serve and Workers readiness endpoints,
-and the HTML console all pass. `runtime-status` is read-only and returns
+RabbitMQ, migration, Serve, Workers, Analysis, the Serve and Workers readiness endpoints,
+and the HTML console all pass. The Analysis container healthcheck reads its
+five-second database heartbeat and configured-model state through the Trading
+status projection; a running container with a stalled Analysis loop fails the
+gate. `runtime-status` is read-only and returns
 non-zero when the execution mode is `paper`/`live` and no container is running,
 when the container is unhealthy, or when the mode is `disabled` and a container
 is still running; it prints the running image and the whole readiness payload.
