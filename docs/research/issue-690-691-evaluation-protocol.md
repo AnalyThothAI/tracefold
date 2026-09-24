@@ -130,6 +130,11 @@ Known model cost and unknown calls remain separate. An arm with missing
 contemporary receipts has an unknown net result; gross close-to-close price
 paths are opportunity labels only. Closed-trade drawdown cannot establish
 account drawdown while positions are open.
+If any root may have traded but its action or receipt is unknown, the report
+still counts validated receipts and names the missing reasons, but it does not
+publish a portfolio ending equity, capital-reject total or drawdown as though
+that unknown position had occupied no funds. A complete no-trade arm has zero
+trading cashflow and retains its initial equity.
 
 ## Validation still needed
 

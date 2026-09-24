@@ -123,6 +123,7 @@ def _rule_shadow_receipt(
         or tape.get("native_symbol") != native
         or tape.get("environment") != environment
         or tape.get("mapping_semantics_digest") != mapping
+        or tape.get("root_accepted_at_ms") != int(row["created_at_ms"])
     ):
         return _unevaluable_rule("root_market_tape_identity_mismatch")
     quotes = tape.get("quotes")
@@ -399,9 +400,15 @@ def export_cases(
             tape = _read_ref(files, case["tape_ref"], missing, case_id, "root_market_tape")
             row["root_market_tape_ref"] = case["tape_ref"]
             if isinstance(tape, dict) and isinstance(evidence, dict):
+                selected = case["target_selection"] or {}
+                instrument = selected.get("instrument") if isinstance(selected, dict) else None
                 if (
-                    tape.get("case_id") == case_id
+                    isinstance(instrument, dict)
+                    and tape.get("case_id") == case_id
                     and tape.get("mapping_semantics_digest") == case["mapping_semantics_digest"]
+                    and tape.get("root_accepted_at_ms") == int(case["created_at_ms"])
+                    and tape.get("native_symbol") == instrument.get("native_symbol")
+                    and tape.get("environment") == instrument.get("environment")
                 ):
                     path, status = _rule_watch_path(evidence, tape, int(case["root_expires_at_ms"]))
                 else:

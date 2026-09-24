@@ -19,6 +19,7 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
         "tape_ref": None,
         "next_sample_at_ms": now,
         "first_visible_at_ms": 100_000,
+        "created_at_ms": 110_000,
         "root_expires_at_ms": 700_000,
         "target_selection": {
             "instrument": {
@@ -58,6 +59,7 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
             assert request.dataset in ("perp_bars", "mark_bars", "funding_history")
             assert request.native_symbol == "SOLUSDT" and request.environment == "live"
             if request.dataset == "funding_history":
+                assert request.start_ms == row["created_at_ms"]
                 return MarketDataResult(
                     status="ok",
                     payload=(),
@@ -103,6 +105,7 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
     assert asyncio.run(trading_analysis.AnalysisRunner.sample_root_research_once(runner)) == 1
     tape = files.read(row["tape_ref"])
     assert tape["source_first_visible_at_ms"] == 100_000
+    assert tape["root_accepted_at_ms"] == 110_000
     assert tape["quotes"][0]["bid_quantity"] == "2"
     assert tape["quotes"][0]["units_per_contract"] == "1"
     assert tape["closed_bars"][0]["received_at_ms"] == now

@@ -1366,6 +1366,7 @@ class AnalysisRunner:
                         "environment": environment,
                         "mapping_semantics_digest": str(instrument["mapping_semantics_digest"]),
                         "source_first_visible_at_ms": int(row["first_visible_at_ms"]),
+                        "root_accepted_at_ms": int(row["created_at_ms"]),
                         "root_expires_at_ms": int(row["root_expires_at_ms"]),
                         "quotes": [],
                         "closed_bars": [],
@@ -1382,6 +1383,7 @@ class AnalysisRunner:
                     or tape.get("native_symbol") != native
                     or tape.get("environment") != environment
                     or tape.get("mapping_semantics_digest") != instrument["mapping_semantics_digest"]
+                    or tape.get("root_accepted_at_ms") != int(row["created_at_ms"])
                 ):
                     raise ValueError("root_research_tape_identity_mismatch")
                 quotes, bars, mark_bars, coverage = (
@@ -1510,7 +1512,7 @@ class AnalysisRunner:
                         product="perpetual",
                         source_identity="binance_public_v1",
                         unit_definition="funding_rate_fraction_v1",
-                        start_ms=int(row["first_visible_at_ms"]),
+                        start_ms=int(row["created_at_ms"]),
                         end_ms=research_end_ms + 90_000,
                         interval_ms=None,
                         max_age_ms=None,

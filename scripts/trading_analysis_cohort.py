@@ -220,6 +220,7 @@ def _arm_summary(
     decisions = Counter()
     entries: list[tuple[int, int, str, dict[str, Any]]] = []
     unknown_net = 0
+    unknown_reasons: Counter[str] = Counter()
     known_model_cost = unknown_model_calls = 0
     for root_cases in roots:
         initial = next(row for row in root_cases if row["run_kind"] == "initial")
@@ -229,6 +230,10 @@ def _arm_summary(
             known, unknown = _model_cost(root_cases)
             known_model_cost += known
             unknown_model_calls += unknown
+        if arm == "rule" and action is None:
+            unknown_net += 1
+            unknown_reasons["rule_decision_unavailable"] += 1
+            continue
         if action != "TRADE":
             continue
         trade_case = (
@@ -242,6 +247,11 @@ def _arm_summary(
         receipt = (trade_case.get("arm_evaluations") or {}).get(arm)
         if not isinstance(receipt, dict) or receipt.get("status") != "simulated":
             unknown_net += 1
+            unknown_reasons[
+                str(receipt.get("reason") or receipt.get("status") or "receipt_missing")
+                if isinstance(receipt, dict)
+                else "receipt_missing"
+            ] += 1
             continue
         try:
             if receipt.get("strategy_version") != STRATEGY_VERSION:
@@ -296,6 +306,7 @@ def _arm_summary(
                 raise ValueError("receipt_invalid")
         except (KeyError, TypeError, InvalidOperation, ValueError):
             unknown_net += 1
+            unknown_reasons["receipt_invalid"] += 1
             continue
         entries.append(
             (
@@ -349,16 +360,19 @@ def _arm_summary(
         equity += realized
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, peak - equity)
-    account_drawdown = _account_drawdown(initial_equity, accepted_trades)
+    portfolio_complete = unknown_net == 0
+    account_drawdown = _account_drawdown(initial_equity, accepted_trades) if accepted_trades else Decimal(0)
     return {
         "decisions": dict(sorted(decisions.items())),
         "net_evaluable": accepted,
         "net_unknown": unknown_net,
-        "capital_rejected": capital_rejected,
-        "ending_equity_usdt": str(equity) if accepted else None,
-        "closed_equity_drawdown_usdt": str(max_drawdown) if accepted else None,
-        "account_drawdown_usdt": str(account_drawdown) if account_drawdown is not None else None,
-        "unrealized_marks_complete": account_drawdown is not None,
+        "net_unknown_reasons": dict(sorted(unknown_reasons.items())),
+        "portfolio_complete": portfolio_complete,
+        "capital_rejected": capital_rejected if portfolio_complete else None,
+        "ending_equity_usdt": str(equity) if portfolio_complete else None,
+        "closed_equity_drawdown_usdt": str(max_drawdown) if portfolio_complete else None,
+        "account_drawdown_usdt": str(account_drawdown) if portfolio_complete and account_drawdown is not None else None,
+        "unrealized_marks_complete": portfolio_complete and account_drawdown is not None,
         "model_cost_known_microusd": known_model_cost,
         "model_cost_unknown_calls": unknown_model_calls,
     }

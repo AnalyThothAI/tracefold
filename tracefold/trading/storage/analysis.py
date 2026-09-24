@@ -310,7 +310,7 @@ class AnalysisStorage:
         rows = self.conn.execute(
             """
             SELECT tape.case_id,tape.tape_ref,tape.next_sample_at_ms,tape.expires_at_ms,
-                   c.target_selection,c.root_expires_at_ms,t.first_visible_at_ms
+                   c.target_selection,c.root_expires_at_ms,c.created_at_ms,t.first_visible_at_ms
               FROM trading_root_market_tapes tape
               JOIN trading_cases c USING (case_id)
               JOIN trading_triggers t USING (trigger_id)

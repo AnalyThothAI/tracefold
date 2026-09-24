@@ -92,24 +92,42 @@ def test_net_requires_contemporary_strategy_receipt_and_applies_capital() -> Non
     summary = report["arms"]["holdout"]["dspy"]
     assert summary["net_evaluable"] == 1
     assert summary["net_unknown"] == 1
-    assert summary["ending_equity_usdt"] == "1001"
+    assert summary["net_unknown_reasons"] == {"receipt_missing": 1}
+    assert summary["portfolio_complete"] is False
+    assert summary["ending_equity_usdt"] is None
     assert summary["account_drawdown_usdt"] is None
     first["arm_evaluations"]["dspy"]["equity_marks"] = [
         {"at_ms": cutoff + 1000, "liquidation_net_bps": "-100"},
         {"at_ms": cutoff + 1500, "liquidation_net_bps": "-300"},
     ]
     marked = evaluate(
-        [first, second],
-        expected_roots=2,
+        [first],
+        expected_roots=1,
         cutoff_ms=cutoff,
         invalid_outputs=[],
         expected_invalid=0,
         initial_equity_usdt=Decimal("1000"),
     )
     assert marked["arms"]["holdout"]["dspy"]["account_drawdown_usdt"] == "3"
+    assert marked["arms"]["holdout"]["dspy"]["ending_equity_usdt"] == "1001"
     first["arm_evaluations"]["dspy"]["instrument_rules_ref"] = None
     unknown = evaluate([first, second], expected_roots=2, cutoff_ms=cutoff, invalid_outputs=[], expected_invalid=0)
     assert unknown["arms"]["holdout"]["dspy"]["net_unknown"] == 2
+    assert unknown["arms"]["holdout"]["dspy"]["net_unknown_reasons"] == {
+        "receipt_invalid": 1,
+        "receipt_missing": 1,
+    }
+
+
+def test_no_trade_is_zero_cashflow_but_missing_rule_path_is_unknown() -> None:
+    at_ms = 100_000_000
+    root = _case("initial", "root", at_ms)
+    report = evaluate([root], expected_roots=1, cutoff_ms=at_ms, invalid_outputs=[], expected_invalid=0)
+    assert report["arms"]["holdout"]["dspy"]["ending_equity_usdt"] == "1000"
+    rule = report["arms"]["holdout"]["rule"]
+    assert rule["portfolio_complete"] is False
+    assert rule["net_unknown_reasons"] == {"rule_decision_unavailable": 1}
+    assert rule["ending_equity_usdt"] is None
 
 
 def test_capital_limit_does_not_resize_a_validated_execution_receipt() -> None:
@@ -323,6 +341,7 @@ def test_rule_arm_replays_frozen_quote_mark_funding_and_contract_rules(tmp_path)
         "native_symbol": "SOLUSDT",
         "environment": "live",
         "mapping_semantics_digest": "a" * 64,
+        "root_accepted_at_ms": at_ms,
         "quotes": [entry, exit_quote],
         "mark_bars": [mark],
         "funding_history": {
