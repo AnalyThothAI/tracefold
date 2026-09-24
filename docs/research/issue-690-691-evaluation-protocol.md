@@ -29,6 +29,17 @@ two were not parseable JSON. Applying the pinned legacy contract offline to the
 on non-WATCH actions, candidate identity on non-TRADE actions, invalid weight
 totals, overlong WATCH delays and an extra field. Error counts overlap within
 responses. These results do not predict how the new v3 model would answer.
+One separately archived offline v3 call used the earliest legacy catalyst Case
+whose 16 closed bars supported a WATCH, mapping its old `headline` and `why`
+fields to the new names without inventing a new fact. The restricted
+`v3-offline-model-sample.json` (SHA-256
+`fad86113d1e2e084edfac80542a2f8cb838b94736036dae5ac047fbd487f29b3`)
+contains its frozen projected brief, one actual physical model request and
+response, and the compiled Decision. The model returned a valid v3 `NO_TRADE`;
+the compiler accepted two cited evidence IDs. The provider reported 2,375
+input and 292 output tokens but no exact price, so this call's cost remains
+unknown. This verifies the model/adapter/contract path on an explicitly
+projected historical input, not a contemporaneous v3 Case or shadow trade.
 The same preserved window has 708 settled `price_path_v1` `ok` outcomes: 705
 archived endpoint records align with the v2 grid and arithmetic, while three
 have mismatched endpoints. None includes the raw closed bars or a provable
