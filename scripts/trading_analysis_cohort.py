@@ -428,6 +428,7 @@ def _arm_summary(
 
 def _legacy_output_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     parsed = 0
+    wrapped = 0
     missing = Counter()
     for row in rows:
         raw = row.get("raw_output")
@@ -439,6 +440,12 @@ def _legacy_output_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(value, dict):
             missing["object_missing"] += 1
             continue
+        if "assessment" in value:
+            wrapped += 1
+            value = value["assessment"]
+            if not isinstance(value, dict):
+                missing["assessment_object_missing"] += 1
+                continue
         parsed += 1
         for field in ("action", "public_rationale", "candidate_assessments"):
             if field not in value:
@@ -446,7 +453,9 @@ def _legacy_output_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "inputs": len(rows),
         "legacy_json_objects": parsed,
+        "wrapped_assessment_outputs": wrapped,
         "missing_legacy_fields": dict(sorted(missing.items())),
+        "legacy_field_presence_only": True,
         "new_program_replayed": False,
     }
 

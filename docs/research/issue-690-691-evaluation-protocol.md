@@ -4,9 +4,27 @@
 
 The fixed historical window is `[1790154395682,1790240795682)`. The Issues
 report 531 initial roots, 419 exclusions, 90 initial Decisions, 22 initial
-failures and 39 child Cases. Those are Issue audit figures, not a replay run
-by this change. The complete 531-root export and 22 raw invalid model outputs
-are absent from this repository. The older two-case
+failures and 39 child Cases. A read-only audit of the existing runtime on
+2026-09-24 recovered a restricted local inventory of all 531 initial Cases and
+39 child Cases (`historical-cases.jsonl`, SHA-256
+`45e042b634769baf45bcc82231b40171659a5bd1f87ac8dc29fa5480c12ea2a0`),
+plus all 22 invalid model response texts (`invalid-model-outputs.jsonl`, SHA-256
+`794b17e76188b943cee20c92eccb850b602d51d091add7879f57fc7c396516b7`).
+They are held outside Git at `~/.tracefold/research/issue-690-691/` on the audit
+host in a mode-700 directory; the exports are mode 600. The 22 responses were
+recovered from content-addressed assessment
+files that the old failure path did not link from the database. Each file's
+Case, claim attempt and token matched the database; all content digests and
+request, response and brief refs verified. The 124 adopted assessment refs
+and 147 evidence refs in the fixed root chain also verified. This inventory is
+a legacy metadata and raw-output audit, not a v3 Case export or a new model run.
+Of the 22 raw responses, 20 were JSON objects with an `assessment` wrapper and
+two were not parseable JSON. Applying the pinned legacy contract offline to the
+20 wrapped objects accepted none; validation errors included watch conditions
+on non-WATCH actions, candidate identity on non-TRADE actions, invalid weight
+totals, overlong WATCH delays and an extra field. Error counts overlap within
+responses. These results do not predict how the new v3 model would answer.
+The older two-case
 [shadow diagnostic](issue-683-real-model-shadow-2026-09-23.md) says its raw
 archive was lost. No historical net result, model improvement or PAPER venue
 result can be inferred from these counts.
@@ -115,7 +133,8 @@ the example values above are placeholders, not measured costs. When the root
 tape has a timely executable quote, complete mark path and final funding scan,
 the exporter computes the rule arm's research-only shadow receipt with the
 same simulator. It leaves missing or invalid inputs unevaluable. The 22
-historical raw outputs still require a separate original archive export.
+historical raw outputs remain a separate restricted export; the new-schema
+cohort exporter must not treat them as v3 responses.
 
 `scripts/trading_analysis_cohort.py` requires explicit root and invalid-output
 denominators and exactly one initial Case per root. It excludes legacy rows
@@ -173,13 +192,15 @@ schema errors, WATCH crossings and missed windows, quote/mark/funding coverage,
 known and unknown cost, net receipt coverage and capital rejects. Compare the
 code rule and the new DSPy program with same-time executable prices and the
 same portfolio constraints. Do not optimize on holdout. The 22 historical
-invalid outputs can be audited for missing legacy fields, but replay of the
+invalid outputs can be audited for legacy structure, but replay of the
 new program needs the original frozen briefs and candidate menus.
 
 An authorized PAPER run must add reconciled venue fills, partial fills,
 commissions, funding cashflows, protection orders, latency and account marks.
-The current shadow simulator and local tests are not a PAPER receipt. No real
-contemporaneous quote tape, complete historical export or controlled PAPER
-entry/protection/exit receipt was available in this workspace. Keep
+The current shadow simulator and local tests are not a PAPER receipt. The
+restricted legacy inventory and raw outputs above still lack v3 decisions and
+contemporaneous executable quote, mark, funding and account evidence. No real
+contemporaneous quote tape or controlled PAPER entry/protection/exit receipt was
+available for this branch. Keep
 publication disabled until complete receipts support a net and drawdown
 comparison; these Issues do not authorize deployment, LIVE orders or merging.

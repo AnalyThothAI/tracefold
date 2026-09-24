@@ -12,6 +12,7 @@ from scripts.export_trading_analysis_cohort import (
 from scripts.trading_analysis_cohort import (
     PURGE_MS,
     _holdout_comparison,
+    _legacy_output_summary,
     _model_cost,
     _rule_action,
     _rule_decision,
@@ -293,6 +294,27 @@ def test_wrong_historical_denominator_fails_before_metrics() -> None:
     row = _case("a", "r", 1)
     with pytest.raises(ValueError, match="root_denominator_mismatch"):
         evaluate([row], expected_roots=531, cutoff_ms=10, invalid_outputs=[], expected_invalid=22)
+
+
+def test_legacy_raw_output_summary_unwraps_the_recorded_assessment() -> None:
+    summary = _legacy_output_summary(
+        [
+            {
+                "case_id": "wrapped",
+                "raw_output": '{"assessment":{"action":"WATCH","public_rationale":"Wait","candidate_assessments":[]}}',
+            },
+            {"case_id": "broken", "raw_output": "{"},
+        ]
+    )
+
+    assert summary == {
+        "inputs": 2,
+        "legacy_json_objects": 1,
+        "wrapped_assessment_outputs": 1,
+        "missing_legacy_fields": {"json_unparseable": 1},
+        "legacy_field_presence_only": True,
+        "new_program_replayed": False,
+    }
 
 
 def _watch_root(at_ms: int) -> dict[str, object]:
