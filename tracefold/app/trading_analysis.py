@@ -34,6 +34,7 @@ from tracefold.trading.engine.outcomes import price_path_label
 from tracefold.trading.engine.policy import InvalidAssessment, compile_assessment, decision_identity
 from tracefold.trading.engine.strategy import (
     ENTRY_WINDOW_MS,
+    STRATEGY_VERSION,
     build_event_price_candidates,
     range_cross_side,
     triggered_candidate,
@@ -491,6 +492,7 @@ class AnalysisRunner:
         self._active: set[asyncio.Task[bool]] = set()
         self._label_task: asyncio.Task[int] | None = None
         self._watch_task: asyncio.Task[int] | None = None
+        self._quote_task: asyncio.Task[int] | None = None
         self._evaluation_task: asyncio.Task[int] | None = None
         self._db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-db")
 
@@ -880,6 +882,11 @@ class AnalysisRunner:
 
     async def _read_executable_quote(self, case: dict[str, Any]) -> dict[str, Any]:
         instrument = case["target_selection"]["instrument"]
+        identity = {
+            "native_symbol": str(instrument["native_symbol"]),
+            "mapping_semantics_digest": str(instrument["mapping_semantics_digest"]),
+            "units_per_contract": str(instrument["units_per_contract"]),
+        }
         request = MarketDataRequest(
             dataset="book_ticker",
             native_symbol=str(instrument["native_symbol"]),
@@ -897,6 +904,7 @@ class AnalysisRunner:
         try:
             result = await self.reader.market_data.fetch(request)
             return {
+                **identity,
                 "status": result.status,
                 "payload": result.payload,
                 "environment": str(instrument["environment"]),
@@ -906,7 +914,7 @@ class AnalysisRunner:
                 "missing_reasons": result.missing_reasons,
             }
         except (TimeoutError, ValueError, OSError) as exc:
-            return {"status": "error", "payload": (), "missing_reasons": (type(exc).__name__,)}
+            return {**identity, "status": "error", "payload": (), "missing_reasons": (type(exc).__name__,)}
 
     async def _start_shadow_evaluation(
         self,
@@ -940,7 +948,7 @@ class AnalysisRunner:
             }
         )
         plan = ExitPlan.model_validate(decision["exit_plan"])
-        due_at_ms = scheduled_at_ms + plan.max_holding_seconds * 1_000 + 60_000
+        due_at_ms = scheduled_at_ms + plan.max_holding_seconds * 1_000 + 120_000
         await self._db_async(
             lambda repos: repos.trading.record_shadow_evaluation(
                 case_id=case["case_id"],
@@ -1279,6 +1287,61 @@ class AnalysisRunner:
         except Exception:
             _LOG.exception("analysis_watch_observation_failed")
 
+    async def sample_shadow_quotes_once(self, *, limit: int = 8) -> int:
+        """Archive one level-one executable quote per minute for pending shadow paths."""
+        now_ms = _clock_ms()
+        rows = await self._db_async(lambda repos: repos.trading.due_shadow_quote_samples(now_ms=now_ms, limit=limit))
+        for row in rows:
+            try:
+                prior_ref = row["quote_tape_ref"]
+                tape = (
+                    {"version": "shadow_quote_tape_v1", "samples": []}
+                    if prior_ref is None
+                    else await _file_io(self.files.read, str(prior_ref))
+                )
+                samples = tape.get("samples")
+                if tape.get("version") != "shadow_quote_tape_v1" or not isinstance(samples, list):
+                    raise ValueError("shadow_quote_tape_invalid")
+                snapshot = await self._read_executable_quote(row)
+                quote_ref = await _file_io(self.files.write, snapshot)
+                quote = snapshot["payload"][0] if snapshot.get("status") == "ok" and snapshot.get("payload") else None
+                sample = {
+                    "sampled_at_ms": _clock_ms(),
+                    "quote_ref": quote_ref,
+                    "status": snapshot["status"],
+                    "environment": snapshot.get("environment"),
+                    "native_symbol": snapshot.get("native_symbol"),
+                    "mapping_semantics_digest": snapshot.get("mapping_semantics_digest"),
+                    "units_per_contract": snapshot.get("units_per_contract"),
+                    "missing_reasons": snapshot.get("missing_reasons", ()),
+                }
+                if isinstance(quote, dict):
+                    sample.update(quote)
+                samples.append(sample)
+                tape_ref = await _file_io(self.files.write, tape)
+                await self._db_async(
+                    lambda repos, row=row, prior_ref=prior_ref, tape_ref=tape_ref, sample=sample: (
+                        repos.trading.record_shadow_quote_sample(
+                            case_id=row["case_id"],
+                            prior_ref=prior_ref,
+                            tape_ref=tape_ref,
+                            sampled_at_ms=int(sample["sampled_at_ms"]),
+                        )
+                    ),
+                    transaction=True,
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                _LOG.exception("analysis_shadow_quote_sample_failed", extra={"case_id": row["case_id"]})
+        return len(rows)
+
+    def _quote_completed(self, task: asyncio.Task[int]) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            _LOG.exception("analysis_shadow_quote_sampling_failed")
+
     async def evaluate_once(self, *, limit: int = 4) -> int:
         """Label due shadow paths with executable quotes and explicit costs."""
         rows = await self._db_async(lambda repos: repos.trading.due_shadow_evaluations(now_ms=_clock_ms(), limit=limit))
@@ -1290,6 +1353,7 @@ class AnalysisRunner:
             instrument = selection.get("instrument") if isinstance(selection, dict) else None
             mark_ref: str | None = None
             funding_ref: str | None = None
+            result: dict[str, Any]
             if not isinstance(instrument, dict):
                 result = {
                     "status": "unevaluable",
@@ -1301,14 +1365,41 @@ class AnalysisRunner:
                 try:
                     decision_quote_snapshot = await _file_io(self.files.read, str(row["decision_quote_ref"]))
                     planned_quote_snapshot = await _file_io(self.files.read, str(row["planned_quote_ref"]))
+                    for snapshot in (decision_quote_snapshot, planned_quote_snapshot):
+                        if (
+                            snapshot.get("native_symbol") != instrument["native_symbol"]
+                            or snapshot.get("mapping_semantics_digest") != instrument["mapping_semantics_digest"]
+                            or snapshot.get("units_per_contract") != str(instrument["units_per_contract"])
+                        ):
+                            raise ValueError("shadow_quote_instrument_mismatch")
                     decision_quote = decision_quote_snapshot["payload"][0]
                     planned_quote = planned_quote_snapshot["payload"][0]
                     quote_environment = str(decision_quote_snapshot["environment"])
                     if quote_environment != str(planned_quote_snapshot["environment"]):
                         quote_environment = "mixed"
+                    tape = (
+                        await _file_io(self.files.read, str(row["quote_tape_ref"]))
+                        if row.get("quote_tape_ref")
+                        else None
+                    )
+                    exit_quotes = (
+                        tuple(
+                            sample
+                            for sample in tape["samples"]
+                            if isinstance(sample, dict)
+                            and sample.get("native_symbol") == instrument["native_symbol"]
+                            and sample.get("mapping_semantics_digest") == instrument["mapping_semantics_digest"]
+                            and sample.get("units_per_contract") == str(instrument["units_per_contract"])
+                        )
+                        if isinstance(tape, dict)
+                        and tape.get("version") == "shadow_quote_tape_v1"
+                        and isinstance(tape.get("samples"), list)
+                        else ()
+                    )
                 except (OSError, ValueError, KeyError, IndexError, TypeError):
                     decision_quote = planned_quote = None
                     quote_environment = "unknown"
+                    exit_quotes = ()
                 start_at = int(row["scheduled_at_ms"])
                 end_at = start_at + plan.max_holding_seconds * 1_000
                 mark_request = MarketDataRequest(
@@ -1334,7 +1425,7 @@ class AnalysisRunner:
                     source_identity="binance_public_v1",
                     unit_definition="funding_rate_fraction_v1",
                     start_ms=start_at,
-                    end_ms=end_at,
+                    end_ms=end_at + 120_000,
                     interval_ms=None,
                     max_age_ms=None,
                     deadline_at_monotonic=time.monotonic() + 10.0,
@@ -1376,16 +1467,44 @@ class AnalysisRunner:
                     scheduled_at_ms=start_at,
                     decision_quote=decision_quote,
                     planned_quote=planned_quote,
+                    exit_quotes=exit_quotes,
+                    requested_notional_usdt=(
+                        self.settings.trading.execution.max_risk_per_trade_usd
+                        * Decimal(10_000)
+                        / Decimal(plan.stop_distance_bps)
+                    ),
                     mark_rows=() if mark is None else mark.payload,
                     mark_status="error" if mark is None else mark.status,
                     funding_events=() if funding is None else funding.payload,
                     funding_coverage_complete=funding is not None and funding.status == "ok",
                     exit_plan=plan,
                     fee_bps_per_side=self.settings.trading.analysis.shadow_fee_bps_per_side,
-                    exit_spread_bps=self.settings.trading.analysis.shadow_exit_spread_bps,
                     quote_environment=quote_environment,
                     target_environment=str(instrument["environment"]),
                 )
+            fee_ref = await _file_io(
+                self.files.write,
+                {
+                    "kind": "shadow_fee_assumption_v1",
+                    "fee_bps_per_side": (
+                        None
+                        if self.settings.trading.analysis.shadow_fee_bps_per_side is None
+                        else str(self.settings.trading.analysis.shadow_fee_bps_per_side)
+                    ),
+                    "config_digest": self._config_digest,
+                },
+            )
+            result.update(
+                {
+                    "strategy_version": STRATEGY_VERSION,
+                    "entry_quote_ref": row.get("planned_quote_ref"),
+                    "decision_quote_ref": row.get("decision_quote_ref"),
+                    "quote_tape_ref": row.get("quote_tape_ref"),
+                    "mark_path_ref": mark_ref,
+                    "funding_ref": funding_ref,
+                    "fee_ref": fee_ref,
+                }
+            )
             retryable = result.get("reason") in (
                 "mark_path_incomplete",
                 "mark_path_gap",
@@ -1459,6 +1578,9 @@ class AnalysisRunner:
                     if self._watch_task is None or self._watch_task.done():
                         self._watch_task = asyncio.create_task(self.watch_once())
                         self._watch_task.add_done_callback(self._watch_completed)
+                    if self._quote_task is None or self._quote_task.done():
+                        self._quote_task = asyncio.create_task(self.sample_shadow_quotes_once())
+                        self._quote_task.add_done_callback(self._quote_completed)
                     if self._evaluation_task is None or self._evaluation_task.done():
                         self._evaluation_task = asyncio.create_task(self.evaluate_once())
                         self._evaluation_task.add_done_callback(self._evaluation_completed)
@@ -1473,6 +1595,8 @@ class AnalysisRunner:
                 await asyncio.gather(self._label_task, return_exceptions=True)
             if self._watch_task is not None:
                 await asyncio.gather(self._watch_task, return_exceptions=True)
+            if self._quote_task is not None:
+                await asyncio.gather(self._quote_task, return_exceptions=True)
             if self._evaluation_task is not None:
                 await asyncio.gather(self._evaluation_task, return_exceptions=True)
             self._db_executor.shutdown(wait=True)

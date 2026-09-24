@@ -34,6 +34,18 @@ requested notional, stop distance, signed funding cashflow and gross/cost bps
 whose arithmetic exactly reconciles to net bps. It also names archived entry
 and exit quote, mark path, funding and fee references plus observed latency.
 Values without those references remain `net_unknown`.
+The runtime captures a level-one bid/ask and displayed base size each minute
+while a shadow evaluation is pending, preserving the per-sample archive ref and
+an append-only logical tape manifest. The research quantity is the configured
+fixed USD risk budget divided by the frozen stop fraction; it is not an actual
+venue order or account-equity clamp. Both entry and the first archived exit
+quote within 90 seconds after the mark-bar close must cover that full quantity
+at the displayed top level. A missing/late quote, insufficient displayed size,
+mixed environment or incomplete funding/mark path is `unevaluable`. Mark bars
+select a possible protection trigger; the following executable quote supplies
+the modeled exit price. A stop uses the worse of its threshold and the quote.
+The quote interval and OHLC order still limit timing certainty: a simulated
+result is a diagnostic, never a venue fill or proof of protection placement.
 Export the 22 invalid raw model outputs
 separately as `{case_id,raw_output}` in an access-controlled file. Do not infer
 a v3 model answer from a historical v2 output.
@@ -76,6 +88,8 @@ new program needs the original frozen briefs and candidate menus.
 
 An authorized PAPER run must add reconciled venue fills, partial fills,
 commissions, funding cashflows, protection orders, latency and account marks.
-The current shadow simulator and local tests are not a PAPER receipt. Keep
+The current shadow simulator and local tests are not a PAPER receipt. No real
+contemporaneous quote tape, complete historical export or controlled PAPER
+entry/protection/exit receipt was available in this workspace. Keep
 publication disabled until complete receipts support a net and drawdown
 comparison; these Issues do not authorize deployment, LIVE orders or merging.

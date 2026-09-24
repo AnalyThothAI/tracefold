@@ -9,17 +9,35 @@ def _shadow(**overrides: object) -> dict[str, object]:
         "side": "long",
         "decision_at_ms": 0,
         "scheduled_at_ms": 1_000,
-        "decision_quote": {"bid": "99", "ask": "101", "received_at_ms": 0},
-        "planned_quote": {"bid": "99", "ask": "101", "received_at_ms": 1_000},
+        "decision_quote": {"bid": "99", "ask": "101", "bid_quantity": "20", "ask_quantity": "20", "received_at_ms": 0},
+        "planned_quote": {
+            "bid": "99",
+            "ask": "101",
+            "bid_quantity": "20",
+            "ask_quantity": "20",
+            "received_at_ms": 1_000,
+        },
+        "exit_quotes": (
+            {
+                "status": "ok",
+                "bid": "98",
+                "ask": "99",
+                "bid_quantity": "20",
+                "ask_quantity": "20",
+                "received_at_ms": 60_000,
+                "environment": "live",
+                "quote_ref": "exit-ref",
+            },
+        ),
+        "requested_notional_usdt": Decimal("100"),
         "mark_rows": ({"event_at_ms": 60_000, "high": "106", "low": "98", "close": "100"},),
         "mark_status": "ok",
         "funding_events": (),
         "funding_coverage_complete": True,
         "exit_plan": ExitPlan(stop_distance_bps=200, take_profit_bps=400, max_holding_seconds=14_400),
         "fee_bps_per_side": Decimal(5),
-        "exit_spread_bps": Decimal(10),
-        "quote_environment": "live_public",
-        "target_environment": "demo",
+        "quote_environment": "live",
+        "target_environment": "live",
     }
     values.update(overrides)
     return evaluate_shadow(**values)  # type: ignore[arg-type]
@@ -32,13 +50,56 @@ def test_shadow_uses_planned_ask_and_stop_first_if_both_touched() -> None:
     assert result["exit_reason"] == "stop"
     assert result["paper_comparable"] is False
     assert Decimal(str(result["net_bps"])) < -200
-    assert result["assumptions"]["partial_fill"] == "not_simulated"
+    assert result["assumptions"]["partial_fill"] == "top_book_size_covers_full_research_quantity"
+    assert result["exit_quote_ref"] == "exit-ref"
+    assert result["exit_at_ms"] == result["exit_quote_at_ms"]
+    assert Decimal(str(result["net_bps"])) == (
+        Decimal(str(result["net_components_bps"]["gross"]))
+        - Decimal(str(result["net_components_bps"]["fees"]))
+        + Decimal(str(result["net_components_bps"]["funding_cashflow"]))
+    )
 
 
 def test_shadow_missing_cost_or_quote_is_not_zero_pnl() -> None:
+    assert _shadow(target_environment="demo")["reason"] == "environment_mismatch"
     assert _shadow(fee_bps_per_side=None)["reason"] == "cost_assumption_missing"
     assert _shadow(planned_quote=None)["reason"] == "executable_quote_missing"
     assert _shadow(mark_status="partial")["reason"] == "mark_path_incomplete"
+    assert _shadow(exit_quotes=())["reason"] == "exit_quote_missing"
+
+
+def test_shadow_requires_top_book_capacity_at_entry_and_exit() -> None:
+    planned = {"bid": "99", "ask": "101", "bid_quantity": "20", "ask_quantity": "0.5", "received_at_ms": 1_000}
+    assert _shadow(planned_quote=planned)["reason"] == "entry_top_size_insufficient"
+    exit_quote = {
+        "status": "ok",
+        "bid": "98",
+        "ask": "99",
+        "bid_quantity": "0.5",
+        "ask_quantity": "20",
+        "received_at_ms": 60_000,
+        "environment": "live",
+        "quote_ref": "exit-ref",
+    }
+    assert _shadow(exit_quotes=(exit_quote,))["reason"] == "exit_top_size_insufficient_or_invalid"
+
+
+def test_shadow_does_not_use_a_future_or_wrong_environment_exit_quote() -> None:
+    late = {
+        "status": "ok",
+        "bid": "98",
+        "ask": "99",
+        "bid_quantity": "20",
+        "ask_quantity": "20",
+        "received_at_ms": 160_001,
+        "environment": "live",
+        "quote_ref": "exit-ref",
+    }
+    assert _shadow(exit_quotes=(late,))["reason"] == "exit_quote_missing"
+    assert (
+        _shadow(exit_quotes=({**late, "received_at_ms": 60_000, "environment": "demo"},))["reason"]
+        == "exit_quote_provenance_invalid"
+    )
 
 
 def test_entry_minute_favorable_extreme_cannot_claim_a_take_profit() -> None:

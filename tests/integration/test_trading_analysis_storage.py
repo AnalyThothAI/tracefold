@@ -43,6 +43,52 @@ def _selection(symbol: str = "SOL"):
     )
 
 
+def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "shadow-quote-db", read_only=False)
+    try:
+        migrate(conn)
+        trading = TradingRepository(conn)
+        with conn.transaction():
+            _, case_id, _ = trading.accept_trigger(
+                kind="oi",
+                source_fact_key="shadow-quote",
+                source_revision="v1",
+                payload_sha256="f" * 64,
+                payload={
+                    "kind": "oi",
+                    "source_recorded_at_ms": 1_000,
+                    "provider_event_at_ms": 900,
+                    "assets": [{"symbol": "SOL", "market_type": "crypto", "role": "primary"}],
+                },
+                selection=_selection(),
+                now_ms=1_100,
+                root_ttl_ms=10_000,
+            )
+            trading.record_shadow_evaluation(
+                case_id=case_id,
+                decision_at_ms=1_500,
+                scheduled_at_ms=2_000,
+                due_at_ms=182_000,
+                decision_quote_ref="decision-ref",
+                planned_quote_ref="planned-ref",
+                initial_result=None,
+            )
+        assert trading.due_shadow_quote_samples(now_ms=61_999) == []
+        due = trading.due_shadow_quote_samples(now_ms=62_000)
+        assert len(due) == 1 and due[0]["case_id"] == case_id
+        with conn.transaction():
+            assert trading.record_shadow_quote_sample(
+                case_id=case_id, prior_ref=None, tape_ref="tape-1", sampled_at_ms=62_000
+            )
+            assert not trading.record_shadow_quote_sample(
+                case_id=case_id, prior_ref=None, tape_ref="stale", sampled_at_ms=62_000
+            )
+        assert trading.due_shadow_quote_samples(now_ms=121_999) == []
+        assert trading.due_shadow_quote_samples(now_ms=122_000)[0]["quote_tape_ref"] == "tape-1"
+    finally:
+        conn.close()
+
+
 def test_price_path_v2_correction_appends_without_overwriting_v1(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "path-correction-db", read_only=False)
     try:

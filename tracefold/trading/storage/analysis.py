@@ -1133,8 +1133,8 @@ class AnalysisStorage:
             INSERT INTO trading_case_evaluations
               (case_id,source,evaluation_version,status,reason,decision_at_ms,
                scheduled_at_ms,due_at_ms,next_attempt_at_ms,decision_quote_ref,
-               planned_quote_ref,result,evaluated_at_ms)
-            VALUES (%s,'shadow_simulation','shadow_net_v1',%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+               planned_quote_ref,result,evaluated_at_ms,next_quote_at_ms)
+            VALUES (%s,'shadow_simulation','shadow_net_v1',%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
             ON CONFLICT (case_id,source,evaluation_version) DO NOTHING
             """,
             (
@@ -1149,8 +1149,39 @@ class AnalysisStorage:
                 planned_quote_ref,
                 None if initial_result is None else json.dumps(initial_result),
                 None if initial_result is None else int(scheduled_at_ms),
+                int(scheduled_at_ms) + 60_000 if initial_result is None else None,
             ),
         )
+
+    def due_shadow_quote_samples(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT evaluation.case_id,evaluation.quote_tape_ref,evaluation.next_quote_at_ms,
+                   c.target_selection
+              FROM trading_case_evaluations evaluation
+              JOIN trading_cases c USING (case_id)
+             WHERE evaluation.source='shadow_simulation' AND evaluation.status='pending'
+               AND evaluation.next_quote_at_ms<=%s AND evaluation.due_at_ms>=%s
+             ORDER BY evaluation.next_quote_at_ms,evaluation.case_id LIMIT %s
+            """,
+            (int(now_ms), int(now_ms), max(1, min(64, limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_shadow_quote_sample(
+        self, *, case_id: str, prior_ref: str | None, tape_ref: str, sampled_at_ms: int
+    ) -> bool:
+        updated = self.conn.execute(
+            """
+            UPDATE trading_case_evaluations
+               SET quote_tape_ref=%s,next_quote_at_ms=%s
+             WHERE case_id=%s AND source='shadow_simulation' AND status='pending'
+               AND quote_tape_ref IS NOT DISTINCT FROM %s
+               AND next_quote_at_ms<=%s
+            """,
+            (tape_ref, int(sampled_at_ms) + 60_000, case_id, prior_ref, int(sampled_at_ms)),
+        )
+        return bool(updated.rowcount)
 
     def due_shadow_evaluations(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
         rows = self.conn.execute(

@@ -25,13 +25,14 @@ def evaluate_shadow(
     scheduled_at_ms: int,
     decision_quote: dict[str, Any] | None,
     planned_quote: dict[str, Any] | None,
+    exit_quotes: tuple[dict[str, Any], ...],
+    requested_notional_usdt: Decimal,
     mark_rows: tuple[dict[str, Any], ...],
     mark_status: str,
     funding_events: tuple[dict[str, Any], ...],
     funding_coverage_complete: bool,
     exit_plan: ExitPlan,
     fee_bps_per_side: Decimal | None,
-    exit_spread_bps: Decimal | None,
     quote_environment: str,
     target_environment: str,
 ) -> dict[str, Any]:
@@ -43,20 +44,19 @@ def evaluate_shadow(
         "order_latency_ms": scheduled_at_ms - decision_at_ms,
         "quote_environment": quote_environment,
         "target_environment": target_environment,
-        "paper_comparable": quote_environment == target_environment,
+        "paper_comparable": quote_environment == target_environment == "demo",
         "source": "shadow_simulation",
     }
+    if quote_environment != target_environment:
+        return _unevaluable("environment_mismatch", **context)
     if decision_quote is None or planned_quote is None:
         return _unevaluable("executable_quote_missing", **context)
-    if fee_bps_per_side is None or exit_spread_bps is None:
+    if fee_bps_per_side is None:
         return _unevaluable("cost_assumption_missing", **context)
-    if (
-        not fee_bps_per_side.is_finite()
-        or not exit_spread_bps.is_finite()
-        or fee_bps_per_side < 0
-        or exit_spread_bps < 0
-    ):
+    if not fee_bps_per_side.is_finite() or fee_bps_per_side < 0:
         raise ValueError("shadow_cost_assumption_invalid")
+    if not requested_notional_usdt.is_finite() or requested_notional_usdt <= 0:
+        raise ValueError("shadow_notional_invalid")
     if mark_status != "ok" or not mark_rows:
         return _unevaluable("mark_path_incomplete", **context)
     if not funding_coverage_complete:
@@ -67,11 +67,24 @@ def evaluate_shadow(
             return _unevaluable("quote_time_unaligned", **context)
         try:
             bid, ask = Decimal(str(quote.get("bid"))), Decimal(str(quote.get("ask")))
-        except InvalidOperation:
+            bid_size = Decimal(str(quote.get("bid_quantity")))
+            ask_size = Decimal(str(quote.get("ask_quantity")))
+        except (InvalidOperation, TypeError):
             return _unevaluable("quote_invalid", **context)
-        if not bid.is_finite() or not ask.is_finite() or bid <= 0 or ask <= 0 or bid > ask:
+        if (
+            not all(value.is_finite() for value in (bid, ask, bid_size, ask_size))
+            or bid <= 0
+            or ask <= 0
+            or bid > ask
+            or bid_size < 0
+            or ask_size < 0
+        ):
             return _unevaluable("quote_invalid", **context)
     entry = Decimal(str(planned_quote["ask"] if side == "long" else planned_quote["bid"]))
+    quantity = requested_notional_usdt / entry
+    available_entry = Decimal(str(planned_quote["ask_quantity"] if side == "long" else planned_quote["bid_quantity"]))
+    if quantity > available_entry:
+        return _unevaluable("entry_top_size_insufficient", **context)
     stop_fraction = Decimal(exit_plan.stop_distance_bps) / Decimal(10_000)
     take_fraction = Decimal(exit_plan.take_profit_bps) / Decimal(10_000)
     stop = entry * (1 - stop_fraction if side == "long" else 1 + stop_fraction)
@@ -120,14 +133,37 @@ def evaluate_shadow(
             break
     if exit_mark is None or exit_at is None or exit_reason is None:
         return _unevaluable("mark_endpoint_missing", **context)
-    spread_fraction = exit_spread_bps / Decimal(20_000)
-    exit_price = exit_mark * (1 - spread_fraction if side == "long" else 1 + spread_fraction)
+    eligible_quotes = sorted(
+        (
+            quote
+            for quote in exit_quotes
+            if isinstance(quote, dict) and quote.get("status") == "ok" and isinstance(quote.get("received_at_ms"), int)
+        ),
+        key=lambda quote: int(quote["received_at_ms"]),
+    )
+    exit_quote = next(
+        (quote for quote in eligible_quotes if exit_at <= int(quote["received_at_ms"]) <= exit_at + 90_000),
+        None,
+    )
+    if exit_quote is None:
+        return _unevaluable("exit_quote_missing", **context)
+    if exit_quote.get("environment") != quote_environment or not exit_quote.get("quote_ref"):
+        return _unevaluable("exit_quote_provenance_invalid", **context)
+    try:
+        exit_price = Decimal(str(exit_quote["bid"] if side == "long" else exit_quote["ask"]))
+        exit_size = Decimal(str(exit_quote["bid_quantity"] if side == "long" else exit_quote["ask_quantity"]))
+    except (InvalidOperation, KeyError, TypeError):
+        return _unevaluable("exit_quote_invalid", **context)
+    if not exit_price.is_finite() or not exit_size.is_finite() or exit_price <= 0 or exit_size < quantity:
+        return _unevaluable("exit_top_size_insufficient_or_invalid", **context)
+    if exit_reason == "stop":
+        exit_price = min(exit_price, stop) if side == "long" else max(exit_price, stop)
     gross_bps = ((exit_price / entry - 1) if side == "long" else (1 - exit_price / entry)) * 10_000
     try:
         rates = [
             Decimal(str(event["funding_rate"])) * 10_000
             for event in funding_events
-            if scheduled_at_ms < int(event["funding_at_ms"]) <= exit_at
+            if scheduled_at_ms < int(event["funding_at_ms"]) <= int(exit_quote["received_at_ms"])
         ]
     except (InvalidOperation, KeyError, TypeError, ValueError):
         return _unevaluable("funding_event_invalid", **context)
@@ -139,25 +175,40 @@ def evaluate_shadow(
     return {
         **context,
         "status": "simulated",
+        "side": side,
+        "entry_at_ms": scheduled_at_ms,
         "entry_price": str(entry),
+        "quantity_base": str(quantity),
+        "requested_notional_usdt": str(requested_notional_usdt),
+        "stop_bps": exit_plan.stop_distance_bps,
         "exit_mark": str(exit_mark),
         "exit_price_assumption": str(exit_price),
-        "exit_at_ms": exit_at,
+        "exit_quote_ref": exit_quote["quote_ref"],
+        "exit_quote_at_ms": exit_quote["received_at_ms"],
+        "exit_quote_delay_ms": int(exit_quote["received_at_ms"]) - exit_at,
+        "mark_trigger_at_ms": exit_at,
+        "exit_at_ms": int(exit_quote["received_at_ms"]),
         "exit_reason": exit_reason,
         "gross_bps": str(gross_bps),
         "fee_bps": str(fee_bps),
         "funding_bps_paid": str(funding_bps),
         "net_bps": str(net_bps),
+        "net_components_bps": {
+            "gross": str(gross_bps),
+            "entry_cost": "0",
+            "exit_cost": "0",
+            "fees": str(fee_bps),
+            "funding_cashflow": str(-funding_bps),
+        },
         "assumptions": {
             "entry": "planned_ask" if side == "long" else "planned_bid",
-            "exit": "mark_with_conservative_spread",
+            "exit": "first_archived_executable_quote_after_mark_close_stop_price_capped",
             "both_triggers_same_bar": "stop_first",
             "entry_partial_bar": "stop_possible_take_unproven",
             "rejection": "not_simulated",
-            "partial_fill": "not_simulated",
+            "partial_fill": "top_book_size_covers_full_research_quantity",
             "protection": "not_simulated",
             "fee_bps_per_side": str(fee_bps_per_side),
-            "exit_spread_bps": str(exit_spread_bps),
         },
         "evaluation_version": EVALUATION_VERSION,
     }

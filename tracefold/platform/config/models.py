@@ -694,7 +694,6 @@ class TradingAnalysisSettings(BaseModel):
     strategy_publication_enabled: bool = False
     shadow_order_latency_ms: int = Field(default=1_000, ge=0, le=5_000)
     shadow_fee_bps_per_side: Decimal | None = Field(default=None, ge=0)
-    shadow_exit_spread_bps: Decimal | None = Field(default=None, ge=0)
     verified_routes: list[TradingVerifiedRouteSettings] = Field(default_factory=list)
     excluded_asset_ids: list[str] = Field(
         default_factory=lambda: [
