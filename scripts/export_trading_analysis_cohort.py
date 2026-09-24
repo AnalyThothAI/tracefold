@@ -381,7 +381,10 @@ def export_cases(
             None,
         )
         evidence_ref = first_complete["evidence_ref"] if first_complete else case["evidence_ref"]
-        evidence = _read_ref(files, evidence_ref, missing, case_id, "evidence")
+        excluded_root = case["run_kind"] == "initial" and case["state"] == "EXCLUDED"
+        evidence = (
+            _read_ref(files, evidence_ref, missing, case_id, "evidence") if evidence_ref or not excluded_root else None
+        )
         row: dict[str, Any] = {
             "case_id": case_id,
             "root_trigger_id": str(case["trigger_id"]),
@@ -411,7 +414,11 @@ def export_cases(
                 row["watch_observation"] = _read_ref(
                     files, case["watch_observation_ref"], missing, case_id, "watch_observation"
                 )
-            tape = _read_ref(files, case["tape_ref"], missing, case_id, "root_market_tape")
+            tape = (
+                _read_ref(files, case["tape_ref"], missing, case_id, "root_market_tape")
+                if case["tape_ref"] or not excluded_root
+                else None
+            )
             row["root_market_tape_ref"] = case["tape_ref"]
             if isinstance(tape, dict) and isinstance(evidence, dict):
                 selected = case["target_selection"] or {}
@@ -431,7 +438,7 @@ def export_cases(
                 row["rule_watch_status"] = status
                 complete_paths += status == "complete"
             else:
-                row["rule_watch_status"] = "missing"
+                row["rule_watch_status"] = "not_applicable" if excluded_root else "missing"
             decision = _rule_decision([row])
             if decision.action == "TRADE":
                 rule_receipt = (

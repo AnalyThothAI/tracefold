@@ -13,7 +13,7 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.market_identity import DEFAULT_UNIVERSE, AssetId, AssetRegistry, InstrumentRef
-from tracefold.trading.engine.target import SourceAsset, select_target
+from tracefold.trading.engine.target import SourceAsset, TargetSelection, select_target
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
@@ -125,6 +125,28 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
         assert {item["kind"] for item in manifest["missing_archive_items"]} == {"evidence", "root_market_tape"}
         report = evaluate_cohort(export, expected_roots=1, cutoff_ms=1_100, invalid_outputs=[], expected_invalid=0)
         assert report["arms"]["holdout"]["dspy"]["net_unknown"] == 1
+        with conn.transaction():
+            _, excluded_case_id, _ = trading.accept_trigger(
+                kind="oi",
+                source_fact_key="ineligible",
+                source_revision="v1",
+                payload_sha256="a" * 64,
+                payload={"kind": "oi", "assets": []},
+                selection=TargetSelection("no_eligible_primary", None, None, (), "test-catalogue"),
+                now_ms=3_000,
+                root_ttl_ms=10_000,
+            )
+        excluded, excluded_manifest = export_cases(
+            conn, AnalysisFiles(tmp_path / "missing-archive"), start_ms=3_000, end_ms=3_001
+        )
+        assert excluded[0]["case_id"] == excluded_case_id
+        assert excluded[0]["rule_watch_status"] == "not_applicable"
+        assert excluded_manifest["missing_archive_items"] == []
+        excluded_report = evaluate_cohort(
+            excluded, expected_roots=1, cutoff_ms=3_000, invalid_outputs=[], expected_invalid=0
+        )
+        assert excluded_report["arms"]["holdout"]["rule"]["ending_equity_usdt"] == "1000"
+        assert excluded_report["arms"]["holdout"]["dspy"]["ending_equity_usdt"] == "1000"
     finally:
         conn.close()
 

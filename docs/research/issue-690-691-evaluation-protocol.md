@@ -80,6 +80,8 @@ uncomparable; it cannot be relabeled as a v3 run or treated as zero cashflow.
 A failed Case without a Decision and an unresolved WATCH without a conditional
 Decision likewise have unknown cashflow. A deterministic `EXCLUDED` root has
 zero trading cashflow in both arms under the shared eligibility gate.
+The exporter does not count an excluded-at-source root's absent analysis snapshot
+or research tape as a missing archive; neither artifact was required to exclude it.
 The export also retains the WATCH observation's terminal state, last status,
 child identity and archived observation ref. The funnel reports WATCH states;
 an absent child is not inferred to mean that a complete no-crossing path was
