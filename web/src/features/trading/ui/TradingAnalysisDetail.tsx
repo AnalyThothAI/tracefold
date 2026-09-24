@@ -137,7 +137,10 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
               状态：{watch.status} · 最近观测：{word(watch.last_observation_status)} ·{" "}
               {word(watch.last_observed_value)} · {caseClock(watch.last_observed_at_ms)}
             </p>
-            <p>触发方向：{word(watch.trigger_side)} · 起始关闭：{caseClock(Number(watchCondition?.frozen_at_ms) || null)}</p>
+            <p>
+              触发方向：{word(watch.trigger_side)} · 起始关闭：
+              {caseClock(Number(watchCondition?.frozen_at_ms) || null)}
+            </p>
             <p>观测归档：{word(watch.last_observation_ref)}</p>
             <p>根期限：{caseClock(watch.expires_at_ms)}</p>
             {watch.child_case_id ? (
@@ -155,7 +158,11 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
             {item.root_chain.map((member) => (
               <p key={member.case_id}>
                 <Link to={`/trading?case=${member.case_id}`}>
-                  {member.run_kind === "conditional" ? "条件触发" : member.run_kind === "recheck" ? `历史复核 ${member.recheck_seq}` : "初始"}
+                  {member.run_kind === "conditional"
+                    ? "条件触发"
+                    : member.run_kind === "recheck"
+                      ? `历史复核 ${member.recheck_seq}`
+                      : "初始"}
                 </Link>
                 {" · "}
                 {member.state}
@@ -193,8 +200,8 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
               ))}
               {(attempt.physical_calls ?? []).map((call) => (
                 <p key={call.call_index}>
-                  物理调用 {call.call_index + 1} · {call.status} · 预算 {word(call.timeout_ms)} ms · 请求 {word(call.request_ref)} · 响应{" "}
-                  {word(call.response_ref)} · 费用{" "}
+                  物理调用 {call.call_index + 1} · {call.status} · 预算 {word(call.timeout_ms)} ms ·
+                  请求 {word(call.request_ref)} · 响应 {word(call.response_ref)} · 费用{" "}
                   {call.cost_microusd == null ? "未知" : `${call.cost_microusd} 微美元`}
                 </p>
               ))}
@@ -278,7 +285,10 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
             {replay.data.status !== "ok" ? <p>回放状态：{replay.data.status}</p> : null}
             <p>来源：{word(source?.headline ?? source?.title ?? source?.kind)}</p>
             <p>证据截止：{caseClock(Number(evidence?.knowledge_cutoff_ms) || null)}</p>
-            <p>行情环境：{word(evidence?.data_environment)} · 执行环境：{word(evidence?.execution_environment)}</p>
+            <p>
+              行情环境：{word(evidence?.data_environment)} · 执行环境：
+              {word(evidence?.execution_environment)}
+            </p>
             <p>
               模型：{word(assessmentReceipt?.model)} · 调用状态：
               {word(assessmentReceipt?.provider_status)} · 校验：
@@ -306,9 +316,22 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
                   </p>
                 ))
               : null}
-            <p>模型建议：{word(assessment?.action)} · 方向假设：{word(assessment?.hypothesis_side)} · 候选：{word(assessment?.entry_candidate_id)}</p>
-            <p>支持证据：{Array.isArray(assessment?.supporting_evidence) ? assessment.supporting_evidence.join(", ") : "—"}</p>
-            <p>反对证据：{Array.isArray(assessment?.opposing_evidence) ? assessment.opposing_evidence.join(", ") : "—"}</p>
+            <p>
+              模型建议：{word(assessment?.action)} · 方向假设：{word(assessment?.hypothesis_side)} ·
+              候选：{word(assessment?.entry_candidate_id)}
+            </p>
+            <p>
+              支持证据：
+              {Array.isArray(assessment?.supporting_evidence)
+                ? assessment.supporting_evidence.join(", ")
+                : "—"}
+            </p>
+            <p>
+              反对证据：
+              {Array.isArray(assessment?.opposing_evidence)
+                ? assessment.opposing_evidence.join(", ")
+                : "—"}
+            </p>
             <p>理由：{word(assessment?.public_rationale)}</p>
             <p>研究备注：{word(assessment?.research_notes)}</p>
           </div>

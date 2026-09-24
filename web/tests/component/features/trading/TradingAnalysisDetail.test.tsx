@@ -58,7 +58,13 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
         error_code: "model_schema_invalid",
         validation_errors: [{ field: "assessment.action", type: "literal_error" }],
         physical_calls: [
-          { claim_attempt: 1, call_index: 0, status: "completed", request_ref: "request", response_ref: "response" },
+          {
+            claim_attempt: 1,
+            call_index: 0,
+            status: "completed",
+            request_ref: "request",
+            response_ref: "response",
+          },
         ],
       },
     ],

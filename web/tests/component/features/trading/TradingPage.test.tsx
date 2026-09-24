@@ -321,10 +321,11 @@ describe("TradingPage", () => {
         }),
       ),
     );
-    renderTrading("/trading?tab=executions");
+    renderTrading();
     const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest("section")!;
     expect(within(tally as HTMLElement).getByText("今日已知 PAPER 净收益")).toBeVisible();
-    const row = screen.getByText("crypto:perp:BTC:USDT").closest(".trading-ledger-row")!;
+    fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
+    const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(".trading-ledger-row")!;
     expect(within(row as HTMLElement).getByText("手续费后 −$14.92")).toBeVisible();
     expect(within(row as HTMLElement).getByText("资金费 $0.11")).toBeVisible();
     expect(within(row as HTMLElement).getByText("−$14.81")).toBeVisible();
