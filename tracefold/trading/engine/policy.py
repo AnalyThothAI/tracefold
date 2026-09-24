@@ -13,6 +13,25 @@ class InvalidAssessment(ValueError):
     """A malformed reference or candidate identity, not a rejected strategy proposal."""
 
 
+def is_citable_evidence(item: dict[str, Any]) -> bool:
+    """Use the same frozen availability rule for brief IDs and compilation."""
+    cutoff = item.get("knowledge_cutoff_ms")
+    event_at = item.get("event_at_ms")
+    received_at = item.get("received_at_ms")
+    values = item.get("values")
+    return (
+        item.get("status") == "ok"
+        and isinstance(values, dict)
+        and any(value is not None and value != "" for value in values.values())
+        and bool(item.get("unit_definition"))
+        and isinstance(cutoff, int)
+        and isinstance(event_at, int)
+        and isinstance(received_at, int)
+        and event_at <= cutoff
+        and received_at <= cutoff
+    )
+
+
 def decision_identity(case_id: str, decision: dict[str, object]) -> str:
     data = json.dumps(
         (case_id, decision), sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
@@ -32,22 +51,7 @@ def compile_assessment(
         raise InvalidAssessment("candidate_menu_invalid")
 
     def available(ref: str) -> bool:
-        item = evidence_catalog.get(ref) or {}
-        cutoff = item.get("knowledge_cutoff_ms")
-        event_at = item.get("event_at_ms")
-        received_at = item.get("received_at_ms")
-        values = item.get("values")
-        return (
-            item.get("status") == "ok"
-            and isinstance(values, dict)
-            and any(value is not None and value != "" for value in values.values())
-            and bool(item.get("unit_definition"))
-            and isinstance(cutoff, int)
-            and isinstance(event_at, int)
-            and isinstance(received_at, int)
-            and event_at <= cutoff
-            and received_at <= cutoff
-        )
+        return is_citable_evidence(evidence_catalog.get(ref) or {})
 
     cited = set(assessment.supporting_evidence + assessment.opposing_evidence)
     if cited - evidence_catalog.keys():

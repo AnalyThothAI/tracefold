@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .contracts import Candidate
+from .policy import is_citable_evidence
 
 
 def canonical_json(value: Any) -> str:
@@ -46,12 +47,13 @@ def build_brief(
     menu = [candidate.model_dump(mode="json") for candidate in candidates]
     menu_sha = sha256(canonical_json(menu))
     payload = {
-        "brief_version": "trade_brief_v2",
+        "brief_version": "trade_brief_v3",
         "target_asset_id": target_asset_id,
         "instrument_semantics_digest": instrument_semantics_digest,
         "source_fact": source_fact,
         "same_asset_source_history": source_history,
         "evidence": evidence,
+        "citable_evidence_ids": sorted(ref for ref, item in evidence.items() if is_citable_evidence(item)),
         "features": features,
         "candidate_menu": menu,
         "candidate_menu_sha": menu_sha,

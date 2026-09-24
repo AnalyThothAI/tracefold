@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from tracefold.platform.market_identity import (
     InstrumentRef,
     VerifiedAlias,
 )
+from tracefold.trading.engine.brief import build_brief
 from tracefold.trading.engine.contracts import (
     AgentAssessment,
     Candidate,
@@ -189,6 +191,29 @@ def _catalog() -> dict[str, dict[str, object]]:
         }
         for ref in ("source", "market:perp_bars")
     }
+
+
+def test_frozen_brief_lists_exactly_compiler_citable_evidence() -> None:
+    catalog = _catalog()
+    catalog["feature:source_oi_value_usd"] = {**catalog["source"], "status": "missing"}
+    catalog["feature:future"] = {**catalog["source"], "received_at_ms": 970_001}
+    brief = build_brief(
+        target_asset_id="crypto:SOL",
+        instrument_semantics_digest="c" * 64,
+        source_fact={"kind": "catalyst"},
+        source_history=(),
+        evidence=catalog,
+        features={},
+        candidates=_candidate(),
+    )
+    payload = json.loads(brief.text)
+    assert payload["brief_version"] == "trade_brief_v3"
+    assert payload["citable_evidence_ids"] == ["market:perp_bars", "source"]
+    for ref in payload["citable_evidence_ids"]:
+        compile_assessment(assessment=_assessment(evidence=ref), candidates=_candidate(), evidence_catalog=catalog)
+    for ref in ("feature:source_oi_value_usd", "feature:future"):
+        with pytest.raises(InvalidAssessment, match="assessment_evidence_unavailable"):
+            compile_assessment(assessment=_assessment(evidence=ref), candidates=_candidate(), evidence_catalog=catalog)
 
 
 def test_compiler_accepts_only_frozen_ready_candidate() -> None:

@@ -268,7 +268,11 @@ TradingNode. `paper` and `live` require secure non-empty files and select the
 same canonical Nautilus owner with Binance `DEMO` and `LIVE` environments,
 respectively.
 
-The `trade_assessment_v3` answer proposes TRADE, NO_TRADE or WATCH over the
+  The frozen `trade_brief_v3` includes `citable_evidence_ids`, the exact
+  evidence keys that pass the compiler's availability rule at the Case cutoff.
+  The model may cite only those IDs in its supporting/opposing arrays; missing
+  frames and other brief fields can appear in the rationale as limitations.
+  The `trade_assessment_v3` answer proposes TRADE, NO_TRADE or WATCH over the
 code-owned `event_price_confirmation_v1` candidate family. Catalyst and OI
 facts use the same 16 continuous closed one-minute bars. The first 15 define
 the high/low range and ATR14; the sixteenth crosses only when the previous
