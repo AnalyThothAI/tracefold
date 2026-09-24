@@ -233,7 +233,7 @@ def get_trading_case_replay(
             if attempts
             else None
         )
-        files = AnalysisFiles(Path(runtime.settings.app_home) / "cache" / "trading-analysis")
+        files = AnalysisFiles(Path(runtime.settings.app_home) / "archive" / "trading-analysis")
         evidence = None
         assessment = None
         status = "attempt_missing" if attempt is not None and latest_attempt is None else "ok"
@@ -296,6 +296,7 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         review_mode = "none"
     return {
         "case_id": str(row["case_id"]),
+        "latest_case_id": _string_or_none(row.get("latest_case_id")),
         "event_id": _oi_event_id(row.get("primary_source_key")),
         "source_item_id": _string_or_none(row.get("source_item_id") or oi.get("source_item_id")),
         "base_symbol": _base_symbol(row.get("underlying_key")),
@@ -350,6 +351,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
     fill_quantity = _string_or_none(row.get("fill_quantity"))
     stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
     realized = _string_or_none(row.get("realized_pnl_usd"))
+    paper_net = _string_or_none(row.get("paper_net_pnl_usd"))
     return {
         "source": str(row["source"]),
         "entry_id": str(row["entry_id"]),
@@ -368,6 +370,8 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "exit_price": _string_or_none(row.get("exit_price")),
         "realized_pnl_usd": realized,
         "fees_usd": _string_or_none(row.get("fees_usd")),
+        "funding_usd": _string_or_none(row.get("funding_usd")),
+        "paper_net_pnl_usd": paper_net,
         "exit_reason": _string_or_none(row.get("exit_reason")),
         "plan_status": _string_or_none(row.get("plan_status")),
         "account_slot": _string_or_none(row.get("account_slot")),
@@ -381,6 +385,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "take_profit_bps": _int_or_none(row.get("take_profit_bps")),
         "max_holding_ns": _int_or_none(row.get("max_holding_ns")),
         "pnl_known": realized is not None,
+        "paper_net_known": paper_net is not None,
         "duration_ns": _int_or_none(row.get("duration_ns")),
         # The venue's own `order_status` and `position_status` are inputs to this word, not a second
         # answer beside it (#537 PR-5). The Signal's own TTL is an input for the same reason (#604 T3).
@@ -402,6 +407,8 @@ def _totals(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "realized_known_today_usd": _string_or_none(row["realized_known_today_usd"]),
         "realized_known_total_usd": _string_or_none(row["realized_known_total_usd"]),
+        "paper_net_known_today_usd": _string_or_none(row["paper_net_known_today_usd"]),
+        "paper_net_known_total_usd": _string_or_none(row["paper_net_known_total_usd"]),
         **{
             key: int(row[key])
             for key in (
@@ -411,6 +418,12 @@ def _totals(row: dict[str, Any]) -> dict[str, Any]:
                 "pnl_known_total",
                 "pnl_missing_today",
                 "pnl_missing_total",
+                "paper_net_known_today",
+                "paper_net_known_total",
+                "paper_net_missing_today",
+                "paper_net_missing_total",
+                "paper_closed_today",
+                "paper_closed_total",
             )
         },
     }

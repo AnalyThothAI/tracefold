@@ -30,9 +30,12 @@ TRADING_CASE_DECISION_COUNTS_SQL = (
     "WHERE case_row.created_at_ms >= %s "
     "GROUP BY decision.action, decision.publish_status ORDER BY decision.action, decision.publish_status"
 )
-TRADING_CASE_LIST_DECISIONS_SQL = (
-    "SELECT case_id, action, publish_status, decision ->> 'side' AS side "
-    "FROM trading_case_decisions WHERE case_id = ANY(%s)"
+TRADING_CASE_LIST_LATEST_SQL = (
+    "SELECT DISTINCT ON (c.trigger_id) c.trigger_id,c.case_id,c.state,c.analysis_status,"
+    "c.policy_reason,c.decided_at_ms,d.action,d.publish_status,d.decision ->> 'side' AS side "
+    "FROM trading_cases c LEFT JOIN trading_case_decisions d USING (case_id) "
+    "WHERE c.trigger_id=ANY(%s) "
+    "ORDER BY c.trigger_id,c.recheck_seq DESC,c.created_at_ms DESC,c.case_id DESC"
 )
 
 # The admission funnel's own top, and the two counts above are its bottom: every frame the lane looked
@@ -92,16 +95,20 @@ TRADING_CASE_ATTEMPTS_SQL = (
     "SELECT case_id,claim_attempt,brief_ref,evidence_ref,assessment_ref,model_name,"
     "prompt_sha,started_at_ms,ended_at_ms,provider_status,analysis_status,error_code,"
     "validation_errors,physical_call_count,input_tokens,output_tokens,cost_microusd,"
+    "known_cost_microusd,unknown_cost_calls,cost_upper_estimate_microusd,"
     "cost_unknown_reason,settled FROM trading_case_attempts WHERE case_id=%s "
     "ORDER BY claim_attempt DESC LIMIT 128"
 )
 TRADING_CASE_MODEL_CALLS_SQL = (
-    "SELECT claim_attempt,call_index,request_ref,response_ref,input_tokens,"
+    "SELECT claim_attempt,call_index,status,started_at_ms,finished_at_ms,timeout_ms,"
+    "remaining_deadline_ms,reserved_cost_microusd,request_ref,response_ref,input_tokens,"
     "output_tokens,cost_microusd,cost_unknown_reason FROM trading_model_calls "
     "WHERE case_id=%s ORDER BY claim_attempt DESC,call_index LIMIT 256"
 )
 TRADING_CASE_WATCH_SQL = (
-    "SELECT parent_case_id,condition,status,last_observation_status,last_observed_at_ms,last_observation_ref,"
+    "SELECT parent_case_id,trigger_id,condition,status,last_observation_status,"
+    "last_observed_at_ms,last_observation_ref,"
+    "trigger_side,"
     "last_observed_value,next_check_at_ms,expires_at_ms,child_case_id,created_at_ms,"
     "updated_at_ms FROM trading_watch_observations WHERE parent_case_id=%s"
 )
@@ -132,7 +139,11 @@ def console_cases_statement(
     cursor_id: str = "",
     count_only: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    predicates = ["created_at_ms >= %(since)s", "created_at_ms < %(to_ms)s"]
+    predicates = [
+        "created_at_ms >= %(since)s",
+        "created_at_ms < %(to_ms)s",
+        "(trigger_id IS NULL OR run_kind='initial')",
+    ]
     params: dict[str, Any] = {"since": since_ms, "to_ms": to_ms, "limit": limit}
     for expression, key, value in (
         ("state = ANY(%(states)s)", "states", list(states) if states else None),
@@ -197,6 +208,7 @@ _FILL_FOLD = """
                  sum((fill.summary ->> 'last_quantity')::numeric * (fill.summary ->> 'last_price')::numeric)
                     FILTER (WHERE fill.summary ->> 'leg' = 'entry') AS entry_notional,
                  min(fill.occurred_at_ns) FILTER (WHERE fill.summary ->> 'leg' = 'entry') AS entry_filled_at_ns,
+                 max(fill.occurred_at_ns) FILTER (WHERE fill.summary ->> 'leg' <> 'entry') AS exit_filled_at_ns,
                  sum((fill.summary ->> 'last_quantity')::numeric)
                     FILTER (WHERE fill.summary ->> 'leg' <> 'entry') AS exit_quantity,
                  sum((fill.summary ->> 'last_quantity')::numeric * (fill.summary ->> 'last_price')::numeric)
@@ -208,7 +220,7 @@ _FILL_FOLD = """
 
 
 def _realized_pnl(direction: str, fills: str) -> str:
-    """Net realized PnL of one entry: exit minus entry notional, signed by direction, less every fee.
+    """Fee-adjusted realized PnL; PAPER funding is folded separately below.
 
     Known only for a fully closed entry whose every fill carries a quote-currency commission.
     """
@@ -219,6 +231,60 @@ def _realized_pnl(direction: str, fills: str) -> str:
                 THEN (CASE WHEN {direction} = 'short' THEN -1 ELSE 1 END)
                      * ({fills}.exit_notional - {fills}.entry_notional) - {fills}.fees
            END"""
+
+
+# Signed account income has no entry identity. It can be attributed only to a sole
+# PAPER plan for that symbol and account during the actual fill-to-fill interval.
+# A successful complete signed-income read proves zero funding as well as nonzero
+# cashflows. range_agg joins overlapping scan windows; a gap leaves net unknown.
+_PAPER_FUNDING_FOLD = """
+    LEFT JOIN LATERAL (
+      SELECT CASE WHEN plan.runtime_mode_at_creation = 'paper'
+                       AND fills.entry_filled_at_ns IS NOT NULL
+                       AND fills.exit_filled_at_ns IS NOT NULL
+                       AND fills.exit_filled_at_ns >= fills.entry_filled_at_ns
+                       AND coverage.covered @> int8range(
+                         fills.entry_filled_at_ns, fills.exit_filled_at_ns, '[]')
+                       AND NOT EXISTS (
+                         SELECT 1 FROM trading_trade_plans other_plan
+                          WHERE other_plan.account_slot = plan.account_slot
+                            AND other_plan.entry_id <> plan.entry_id
+                            AND other_plan.instrument_id = plan.instrument_id
+                            AND other_plan.opened_at_ns <= fills.exit_filled_at_ns
+                            AND (other_plan.terminal_at_ns IS NULL
+                                 OR other_plan.terminal_at_ns >= fills.entry_filled_at_ns))
+                       AND coalesce(income.invalid_count, 0) = 0
+                  THEN coalesce(income.amount_usd, 0::numeric) END AS funding_usd
+        FROM (
+          SELECT range_agg(int8range(
+                   (observation.summary ->> 'start_at_ns')::bigint,
+                   (observation.summary ->> 'end_at_ns')::bigint, '[]')) AS covered
+            FROM trading_execution_observations observation
+           WHERE observation.account_slot = plan.account_slot
+             AND observation.normalized_kind = 'funding_coverage'
+             AND observation.summary ->> 'source' = 'signed_income_v1'
+             AND observation.summary ->> 'status' = 'complete'
+             AND observation.summary ->> 'start_at_ns' ~ '^[0-9]+$'
+             AND observation.summary ->> 'end_at_ns' ~ '^[0-9]+$'
+             AND observation.occurred_at_ns >= fills.entry_filled_at_ns
+        ) coverage
+        CROSS JOIN LATERAL (
+          SELECT sum(CASE WHEN observation.summary ->> 'asset' = 'USDT'
+                           AND observation.summary ->> 'amount_decimal' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                          THEN (observation.summary ->> 'amount_decimal')::numeric END) AS amount_usd,
+                 count(*) FILTER (WHERE observation.summary ->> 'asset' IS DISTINCT FROM 'USDT'
+                                     OR coalesce(observation.summary ->> 'amount_decimal', '')
+                                        !~ '^-?[0-9]+(\\.[0-9]+)?$')
+                   AS invalid_count
+            FROM trading_execution_observations observation
+           WHERE observation.account_slot = plan.account_slot
+             AND observation.normalized_kind = 'funding'
+             AND observation.summary ->> 'source' = 'signed_income_v1'
+             AND observation.summary ->> 'symbol' = split_part(plan.instrument_id, '-', 1)
+             AND observation.occurred_at_ns BETWEEN fills.entry_filled_at_ns AND fills.exit_filled_at_ns
+        ) income
+    ) paper_funding ON true
+"""
 
 
 def console_executions_statement(
@@ -337,6 +403,10 @@ def console_executions_statement(
                trim_scale(fills.exit_notional / NULLIF(fills.exit_quantity, 0))::text AS exit_price,
                trim_scale({_realized_pnl("folded.direction", "fills")})::text AS realized_pnl_usd,
                CASE WHEN fills.fees_known THEN trim_scale(fills.fees)::text END AS fees_usd,
+               trim_scale(paper_funding.funding_usd)::text AS funding_usd,
+               CASE WHEN paper_funding.funding_usd IS NOT NULL
+                    THEN trim_scale({_realized_pnl("folded.direction", "fills")}
+                                    + paper_funding.funding_usd)::text END AS paper_net_pnl_usd,
                plan.exit_reason,
                plan.status AS plan_status, plan.stop_distance_bps, plan.exit_policy_id,
                plan.take_profit_bps, plan.max_holding_ns,
@@ -355,6 +425,7 @@ def console_executions_statement(
              WHERE (fill.signal_id = folded.entry_id OR fill.command_id = folded.entry_id)
                AND fill.normalized_kind = 'fill'
           ) fills
+          {_PAPER_FUNDING_FOLD}
          ORDER BY folded.observed_at_ns DESC, folded.entry_id DESC
          LIMIT %(limit)s
     """  # noqa: S608 -- module-owned fragments; every value stays bound
@@ -369,7 +440,11 @@ def console_realized_totals_statement(
     sql = f"""
         WITH closed AS (
           SELECT plan.terminal_at_ns AS closed_at_ns,
-                 {_realized_pnl("plan.direction", "fills")} AS pnl
+                 plan.runtime_mode_at_creation AS runtime_mode,
+                 {_realized_pnl("plan.direction", "fills")} AS pnl,
+                 CASE WHEN paper_funding.funding_usd IS NOT NULL
+                      THEN {_realized_pnl("plan.direction", "fills")}
+                           + paper_funding.funding_usd END AS paper_net_pnl
             FROM trading_trade_plans plan
             CROSS JOIN LATERAL (
               SELECT {_FILL_FOLD}
@@ -378,6 +453,7 @@ def console_realized_totals_statement(
                  AND (fill.signal_id = plan.entry_id OR fill.command_id = plan.entry_id)
                  AND fill.normalized_kind = 'fill'
             ) fills
+            {_PAPER_FUNDING_FOLD}
            WHERE plan.account_slot = %(slot)s AND plan.terminal_at_ns IS NOT NULL AND plan.opened_at_ns IS NOT NULL
         )
         SELECT trim_scale(sum(pnl) FILTER (WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s))::text
@@ -390,7 +466,23 @@ def console_realized_totals_statement(
                count(pnl) AS pnl_known_total,
                count(*) FILTER (WHERE pnl IS NULL AND closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
                  AS pnl_missing_today,
-               count(*) FILTER (WHERE pnl IS NULL) AS pnl_missing_total
+               count(*) FILTER (WHERE pnl IS NULL) AS pnl_missing_total,
+               trim_scale(sum(paper_net_pnl) FILTER (
+                 WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s))::text
+                 AS paper_net_known_today_usd,
+               trim_scale(sum(paper_net_pnl))::text AS paper_net_known_total_usd,
+               count(paper_net_pnl) FILTER (WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
+                 AS paper_net_known_today,
+               count(paper_net_pnl) AS paper_net_known_total,
+               count(*) FILTER (WHERE paper_net_pnl IS NULL
+                                 AND runtime_mode = 'paper'
+                                 AND closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
+                 AS paper_net_missing_today,
+               count(*) FILTER (WHERE paper_net_pnl IS NULL AND runtime_mode = 'paper') AS paper_net_missing_total,
+               count(*) FILTER (WHERE runtime_mode = 'paper'
+                                 AND closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
+                 AS paper_closed_today,
+               count(*) FILTER (WHERE runtime_mode = 'paper') AS paper_closed_total
           FROM closed
     """  # noqa: S608 -- module-owned fragments; every value stays bound
     return sql, {"slot": str(account_slot), "day_start": int(day_start_ns), "day_end": int(day_end_ns)}
@@ -462,16 +554,21 @@ class QueryStorage:
     ) -> list[dict[str, Any]]:
         sql, params = console_cases_statement(since_ms=since_ms, states=states, limit=limit, **filters)
         rows = [dict(row) for row in self.conn.execute(sql, params).fetchall()]
-        ids = [str(row["case_id"]) for row in rows if row.get("trigger_id")]
-        if ids:
-            decisions = self.conn.execute(TRADING_CASE_LIST_DECISIONS_SQL, (ids,)).fetchall()
-            by_case = {str(row["case_id"]): row for row in decisions}
+        triggers = [str(row["trigger_id"]) for row in rows if row.get("trigger_id")]
+        if triggers:
+            latest = self.conn.execute(TRADING_CASE_LIST_LATEST_SQL, (triggers,)).fetchall()
+            by_trigger = {str(row["trigger_id"]): row for row in latest}
             for row in rows:
-                decision = by_case.get(str(row["case_id"]))
-                if decision is not None:
-                    row["analysis_action"] = decision["action"]
-                    row["analysis_publish_status"] = decision["publish_status"]
-                    row["analysis_side"] = decision["side"]
+                member = by_trigger.get(str(row.get("trigger_id")))
+                if member is not None:
+                    row["latest_case_id"] = member["case_id"]
+                    row["state"] = member["state"]
+                    row["analysis_status"] = member["analysis_status"]
+                    row["policy_reason"] = member["policy_reason"]
+                    row["decided_at_ms"] = member["decided_at_ms"]
+                    row["analysis_action"] = member["action"]
+                    row["analysis_publish_status"] = member["publish_status"]
+                    row["analysis_side"] = member["side"]
         return rows
 
     def console_case_total(self, *, since_ms: int, **filters: Any) -> int:
@@ -547,7 +644,7 @@ __all__ = [
     "CONSOLE_CASE_BY_ID_SQL",
     "TRADING_CASE_COUNTS_SQL",
     "TRADING_CASE_DECISION_COUNTS_SQL",
-    "TRADING_CASE_LIST_DECISIONS_SQL",
+    "TRADING_CASE_LIST_LATEST_SQL",
     "TRADING_GATE_COUNTS_SQL",
     "QueryStorage",
     "console_cases_statement",

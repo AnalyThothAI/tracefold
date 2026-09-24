@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
+from types import SimpleNamespace
 
+import dspy
 import pytest
 
 from tests.integration.test_trading_analysis_storage import _selection
@@ -15,11 +16,12 @@ from tests.postgres_test_utils import (
     reset_postgres_schema,
 )
 from tracefold.app.analysis_files import AnalysisFiles
+from tracefold.app.llm import ConfiguredLMEndpoint
 from tracefold.app.trading_analysis import AnalysisRunner, FrameReader
-from tracefold.app.trading_analyst import AnalystCallReceipt
+from tracefold.app.trading_analyst import AnalystCallReceipt, TradeAnalyst, _WireAssessment
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.config.models import PostgresConfig, Settings
-from tracefold.trading.engine.contracts import AgentAssessment, CandidateAssessment, FactorAssessment
+from tracefold.trading.engine.contracts import AgentAssessment
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
 from tracefold.trading.storage.root import TradingRepository
 
@@ -73,32 +75,8 @@ class _Market:
 
 class _Analyst:
     async def assess(self, brief):
-        menu = json.loads(brief.text)["candidate_menu"]
-        factors = tuple(
-            FactorAssessment(
-                factor_id=factor,
-                support_score=-20,
-                status="known",
-                evidence_refs=("market:perp_bars",),
-            )
-            for index, factor in enumerate(
-                (
-                    "catalyst",
-                    "price_structure",
-                    "volume_and_oi",
-                    "crowding",
-                    "entry_timing",
-                    "trading_cost",
-                )
-            )
-        )
         answer = AgentAssessment(
-            brief_sha=brief.sha,
-            candidate_menu_sha=brief.candidate_menu_sha,
             action="NO_TRADE",
-            candidate_assessments=tuple(
-                CandidateAssessment(candidate_id=item["candidate_id"], factors=factors) for item in menu
-            ),
             public_rationale="The frozen evidence is insufficient to trade.",
             supporting_evidence=("market:perp_bars",),
         )
@@ -120,7 +98,7 @@ class _Analyst:
         )
 
 
-def test_oi_case_requires_current_oi_evidence_before_model(tmp_path) -> None:
+def test_oi_case_does_not_require_optional_current_market_oi(tmp_path) -> None:
     class MissingOi(_Market):
         async def fetch(self, request: MarketDataRequest) -> MarketDataResult:
             if request.dataset == "open_interest":
@@ -148,9 +126,11 @@ def test_oi_case_requires_current_oi_evidence_before_model(tmp_path) -> None:
             "instrument": {"native_symbol": "SOLUSDT", "environment": "demo", "mapping_semantics_digest": "a" * 64},
         },
     }
-    source = {"kind": "oi", "oi_value_usd": 1_000_000}
-    with pytest.raises(ValueError, match="required_market_oi_unavailable"):
-        asyncio.run(reader.prepare(case=case, source_fact=source))
+    source = {"kind": "oi", "oi_change_bps": 100, "measurement_definition": "exchange-oi-v1"}
+    prepared = asyncio.run(
+        reader.prepare(case=case, source_fact=source, source_first_visible_at_ms=int(time.time() * 1000) - 30_000)
+    )
+    assert len(prepared.candidates) == 2
 
 
 def test_poison_outbox_event_does_not_block_later_fact(tmp_path) -> None:
@@ -260,6 +240,11 @@ def test_runner_finishes_frozen_shadow_case(tmp_path) -> None:
             "WHERE c.case_id=%s",
             (case_id,),
         ).fetchone()
+        assert row is not None, conn.execute(
+            "SELECT c.state,c.analysis_status,a.error_code FROM trading_cases c "
+            "LEFT JOIN trading_case_attempts a USING(case_id) WHERE c.case_id=%s",
+            (case_id,),
+        ).fetchone()
         assert row["state"] == "DONE" and row["analysis_status"] == "analyzed"
         assert row["action"] == "NO_TRADE" and row["publish_status"] == "not_applicable"
         files = AnalysisFiles(files_root)
@@ -271,5 +256,92 @@ def test_runner_finishes_frozen_shadow_case(tmp_path) -> None:
             conn.execute("SELECT count(*) AS n FROM trading_case_outcomes WHERE case_id=%s", (case_id,)).fetchone()["n"]
             == 8
         )
+    finally:
+        conn.close()
+
+
+def test_runner_persists_physical_request_before_dispatch(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = connect_postgres_test(tmp_path / "physical-call-db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        trading = TradingRepository(conn)
+        now_ms = int(time.time() * 1000)
+        with conn.transaction():
+            _, case_id, _ = trading.accept_trigger(
+                kind="oi",
+                source_fact_key="physical-call",
+                source_revision="v1",
+                payload_sha256="f" * 64,
+                payload={
+                    "kind": "oi",
+                    "source_recorded_at_ms": now_ms - 1_000,
+                    "provider_event_at_ms": now_ms - 2_000,
+                    "assets": [{"symbol": "SOL", "market_type": "crypto", "role": "primary"}],
+                },
+                selection=_selection(),
+                now_ms=now_ms,
+                root_ttl_ms=600_000,
+            )
+
+        class Predictor:
+            async def acall(self, **kwargs: object) -> SimpleNamespace:
+                await kwargs["lm"].aforward(messages=[{"role": "user", "content": "frozen"}])
+                return SimpleNamespace(
+                    assessment=_WireAssessment.model_validate(
+                        AgentAssessment(
+                            action="NO_TRADE",
+                            public_rationale="No eligible entry.",
+                            supporting_evidence=("market:perp_bars",),
+                        ).model_dump()
+                    )
+                )
+
+        class Response:
+            def __init__(self) -> None:
+                self.usage = {"prompt_tokens": 10, "completion_tokens": 5}
+                self._hidden_params = {"response_cost": 0.00001}
+
+            def model_dump(self, *, mode: str) -> dict[str, bool]:
+                assert mode == "json"
+                return {"ok": True}
+
+        async def provider(*_args: object, **_kwargs: object) -> Response:
+            pre_dispatch = conn.execute(
+                "SELECT status,response_ref FROM trading_model_calls WHERE case_id=%s", (case_id,)
+            ).fetchone()
+            assert pre_dispatch == {"status": "requested", "response_ref": None}
+            return Response()
+
+        monkeypatch.setattr(dspy.LM, "aforward", provider)
+        analyst = TradeAnalyst(
+            ConfiguredLMEndpoint(
+                model_name="openai/test-model", api_key="fixture", api_base="http://localhost:1/v1", model_kwargs={}
+            ),
+            predictor=Predictor(),
+        )
+        settings = Settings()
+        settings.storage.postgres = PostgresConfig(dsn=postgres_migration_test_dsn(), password_file=None)
+        runner = AnalysisRunner(
+            settings=settings,
+            market_data=_Market(),
+            analyst=analyst,
+            files_root=tmp_path / "physical-call-archive",
+        )
+
+        async def process() -> None:
+            try:
+                assert await runner.analyze_one()
+            finally:
+                runner._db_executor.shutdown(wait=True)
+
+        asyncio.run(process())
+        call = conn.execute(
+            "SELECT status,response_ref,input_tokens,output_tokens,cost_microusd "
+            "FROM trading_model_calls WHERE case_id=%s",
+            (case_id,),
+        ).fetchone()
+        assert call["status"] == "completed"
+        assert call["response_ref"] is not None
+        assert (call["input_tokens"], call["output_tokens"], call["cost_microusd"]) == (10, 5, 10)
     finally:
         conn.close()

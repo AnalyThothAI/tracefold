@@ -23,36 +23,32 @@ def price_path_label(
         raise ValueError("outcome_horizon_invalid")
     if interval_ms <= 0:
         raise ValueError("outcome_interval_invalid")
-    if market_status != "ok":
+    if market_status not in ("ok", "partial"):
         return {
             "status": "missing",
             "reason": "price_window_incomplete",
             "anchor_ms": anchor_ms,
             "target_ms": anchor_ms + horizon_seconds * 1_000,
         }
-    ordered = sorted(rows, key=lambda row: int(row["event_at_ms"]))
-    start = next((row for row in ordered if int(row["event_at_ms"]) >= anchor_ms), None)
     target_ms = anchor_ms + horizon_seconds * 1_000
-    end = next((row for row in ordered if int(row["event_at_ms"]) >= target_ms), None)
-    if (
-        start is None
-        or end is None
-        or int(start["event_at_ms"]) >= int(end["event_at_ms"])
-        or int(start["event_at_ms"]) - anchor_ms >= interval_ms
-        or int(end["event_at_ms"]) - target_ms >= interval_ms
-    ):
+    start_at = ((anchor_ms + interval_ms - 1) // interval_ms) * interval_ms
+    end_at = ((target_ms + interval_ms - 1) // interval_ms) * interval_ms
+    endpoints = {int(row["event_at_ms"]): row for row in rows if row.get("closed") is not False}
+    start = endpoints.get(start_at)
+    end = endpoints.get(end_at)
+    if start is None or end is None or start_at >= end_at:
         return {"status": "missing", "reason": "price_endpoint_missing", "anchor_ms": anchor_ms, "target_ms": target_ms}
     first = Decimal(str(start["close"]))
     last = Decimal(str(end["close"]))
-    if first <= 0 or last <= 0:
+    if not first.is_finite() or not last.is_finite() or first <= 0 or last <= 0:
         return {"status": "missing", "reason": "price_nonpositive", "anchor_ms": anchor_ms, "target_ms": target_ms}
     return {
         "status": "ok",
-        "version": "price_path_v1",
+        "version": "price_path_v2",
         "axis_anchor_ms": anchor_ms,
         "target_ms": target_ms,
-        "start_close_at_ms": int(start["event_at_ms"]),
-        "end_close_at_ms": int(end["event_at_ms"]),
+        "start_close_at_ms": start_at,
+        "end_close_at_ms": end_at,
         "start_price": str(first),
         "end_price": str(last),
         "return_bps": str((last / first - 1) * 10_000),

@@ -868,7 +868,7 @@
 | `model_name` | `TEXT` | True | `None` |
 | `prompt_sha` | `TEXT` | True | `None` |
 | `started_at_ms` | `BIGINT` | True | `None` |
-| `ended_at_ms` | `BIGINT` | False | `None` |
+| `ended_at_ms` | `BIGINT` | True | `None` |
 | `provider_status` | `TEXT` | True | `None` |
 | `analysis_status` | `TEXT` | False | `None` |
 | `error_code` | `TEXT` | True | `None` |
@@ -877,6 +877,9 @@
 | `input_tokens` | `BIGINT` | True | `None` |
 | `output_tokens` | `BIGINT` | True | `None` |
 | `cost_microusd` | `BIGINT` | True | `None` |
+| `known_cost_microusd` | `BIGINT` | False | `0` |
+| `unknown_cost_calls` | `INTEGER` | False | `0` |
+| `cost_upper_estimate_microusd` | `BIGINT` | True | `None` |
 | `cost_unknown_reason` | `TEXT` | True | `None` |
 | `settled` | `BOOLEAN` | False | `false` |
 
@@ -1036,6 +1039,12 @@
 | `case_id` | `TEXT` | False | `None` |
 | `claim_attempt` | `INTEGER` | False | `None` |
 | `call_index` | `INTEGER` | False | `None` |
+| `status` | `TEXT` | False | `'requested'::text` |
+| `started_at_ms` | `BIGINT` | True | `None` |
+| `finished_at_ms` | `BIGINT` | True | `None` |
+| `timeout_ms` | `INTEGER` | True | `None` |
+| `remaining_deadline_ms` | `INTEGER` | True | `None` |
+| `reserved_cost_microusd` | `BIGINT` | True | `None` |
 | `request_ref` | `TEXT` | True | `None` |
 | `response_ref` | `TEXT` | True | `None` |
 | `input_tokens` | `BIGINT` | True | `None` |
@@ -1153,8 +1162,10 @@
 | `condition` | `JSONB` | False | `None` |
 | `status` | `TEXT` | False | `None` |
 | `last_observation_status` | `TEXT` | True | `None` |
+| `trigger_id` | `TEXT` | False | `None` |
 | `last_observed_at_ms` | `BIGINT` | True | `None` |
 | `last_observed_value` | `NUMERIC` | True | `None` |
+| `trigger_side` | `TEXT` | True | `None` |
 | `last_observation_ref` | `TEXT` | True | `None` |
 | `next_check_at_ms` | `BIGINT` | False | `None` |
 | `expires_at_ms` | `BIGINT` | False | `None` |

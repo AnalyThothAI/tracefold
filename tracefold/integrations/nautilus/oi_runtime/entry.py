@@ -11,7 +11,7 @@ from nautilus_trader.model.identifiers import ClientOrderId
 
 from tracefold.trading.execution_contracts import (
     OperatorIntentV1,
-    SignalEntryEnvelopeV1,
+    SignalEntryEnvelopeV2,
     SignalExitPlanV1,
     TradeSignalV1,
     TradeSignalV2,
@@ -44,7 +44,7 @@ class RuntimeEntryRequest:
     case_id: str | None = None
     entry_scope_id: str = ""
     exit_plan: SignalExitPlanV1 | None = None
-    entry_envelope: SignalEntryEnvelopeV1 | None = None
+    entry_envelope: SignalEntryEnvelopeV2 | None = None
     native_symbol: str | None = None
     asset_id: str | None = None
     mapping_semantics_digest: str | None = None

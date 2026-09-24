@@ -96,6 +96,14 @@ class _Trading:
             "pnl_known_total": 11,
             "pnl_missing_today": 0,
             "pnl_missing_total": 1,
+            "paper_net_known_today_usd": None,
+            "paper_net_known_total_usd": None,
+            "paper_net_known_today": 0,
+            "paper_net_known_total": 0,
+            "paper_net_missing_today": 0,
+            "paper_net_missing_total": 0,
+            "paper_closed_today": 0,
+            "paper_closed_total": 0,
         }
 
     def console_executions(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -259,7 +267,7 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     assert data["decision"] == {
         "last_case_at_ms": NOW,
         "state": "disabled",
-        "active_policy": "oi_price_confirmation_v1",
+        "active_policy": "event_price_confirmation_v1",
         "model_name": None,
         "publish_signals": False,
         "config_digest": None,
@@ -356,7 +364,7 @@ def test_failed_attempt_replay_selects_its_own_frozen_archive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     api, trading = client
-    files = AnalysisFiles(Path(api.app.state.service.settings.app_home) / "cache" / "trading-analysis")
+    files = AnalysisFiles(Path(api.app.state.service.settings.app_home) / "archive" / "trading-analysis")
     first_evidence = files.write({"knowledge_cutoff_ms": 1, "attempt": 1})
     second_evidence = files.write({"knowledge_cutoff_ms": 2, "attempt": 2})
     first_assessment = files.write({"validation_status": "model_schema_invalid", "attempt": 1})
@@ -588,6 +596,14 @@ def test_executions_publishes_the_realized_totals_the_window_cannot_add_up(
         "pnl_known_total": 11,
         "pnl_missing_today": 0,
         "pnl_missing_total": 1,
+        "paper_net_known_today_usd": None,
+        "paper_net_known_total_usd": None,
+        "paper_net_known_today": 0,
+        "paper_net_known_total": 0,
+        "paper_net_missing_today": 0,
+        "paper_net_missing_total": 0,
+        "paper_closed_today": 0,
+        "paper_closed_total": 0,
     }
     totals_call = next(kwargs for name, kwargs in trading.calls if name == "console_realized_totals")
     assert totals_call["account_slot"] == "binance_usdm_primary"

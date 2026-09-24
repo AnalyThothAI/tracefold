@@ -401,9 +401,10 @@ the route components into the eager shell chunk.
   Its conditions and values come from the frozen manifest and policy checks.
   New Analysis Cases also show every claim attempt and physical model receipt,
   including failed or fenced attempts; a reader can replay a selected attempt's
-  frozen archive. WATCH displays its frozen closed-bar threshold, last observed
-  value, market-response archive reference, expiry and child Case, while a textual observation note has no automatic
-  recheck. The root chain shows initial and recheck conclusions together.
+  frozen archive. WATCH displays both frozen range boundaries, the last
+  observed close, market-response archive reference, expiry and conditional
+  child Case. The root list projects the latest action, and the detail keeps
+  initial and conditional conclusions together.
   Shadow simulation and venue PAPER evaluation have distinct source labels;
   missing costs or market coverage remain unavailable rather than zero.
 
@@ -746,6 +747,9 @@ active plans stay visible beyond the 24-hour history window. The totals are
 explicitly known realized amounts with closed/known/missing counts. All-missing
 PnL renders a dash in totals and an unknown label on a closed row, never zero.
 A history gap has a named explanation and prevents a complete-net-profit claim.
-The fee/funding basis is visible next to the totals. No recovery control center
+PAPER rows show venue net only when signed funding is fully covered and uniquely
+attributed; they show the fee-adjusted fill result separately while net is
+unknown. The totals switch to explicitly labeled PAPER known-net sums when
+PAPER closed plans exist and show missing counts. The fee/funding basis is visible next to the totals. No recovery control center
 or browser command authority is added. Freshness still uses only the server's
 `facts_expire_at_ms`, including its independent heartbeat limit.

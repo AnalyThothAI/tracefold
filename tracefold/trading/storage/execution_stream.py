@@ -93,6 +93,7 @@ UNRESOLVED_TRADE_SIGNALS_V2_SQL: Final = """
       LEFT JOIN trading_trade_plans plan ON plan.entry_id = signal.signal_id
      WHERE signal.account_slot = %s AND signal.runtime_mode = %s
        AND signal.payload ->> 'signal_version' = 'trade_signal_v2'
+       AND signal.payload -> 'entry_envelope' ->> 'version' = 'entry_envelope_v2'
        AND signal.expires_at_ns > %s
        AND disposition.event_id IS NULL AND plan.entry_id IS NULL
      ORDER BY signal.seq LIMIT %s

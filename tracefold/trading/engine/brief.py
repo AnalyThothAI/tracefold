@@ -35,6 +35,8 @@ def build_brief(
     evidence: dict[str, dict[str, Any]],
     features: dict[str, Any],
     candidates: tuple[Candidate, ...],
+    trigger_context: dict[str, Any] | None = None,
+    typed_evidence: dict[str, Any] | None = None,
 ) -> AnalystBrief:
     if any(
         candidate.asset_id != target_asset_id or candidate.instrument_semantics_digest != instrument_semantics_digest
@@ -53,6 +55,8 @@ def build_brief(
         "features": features,
         "candidate_menu": menu,
         "candidate_menu_sha": menu_sha,
+        "trigger_context": trigger_context,
+        "typed_evidence": typed_evidence,
     }
     text = canonical_json(payload)
     return AnalystBrief(text, sha256(text), menu_sha, evidence)

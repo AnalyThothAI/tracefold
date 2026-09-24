@@ -200,7 +200,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "trading_case_outcomes_by_id",
         "trading_console_cases",
         "trading_console_cases_filtered",
-        "trading_case_list_decisions",
+        "trading_case_list_latest",
         "trading_console_scope_cases",
         "trading_console_scope_totals",
         "trading_case_counts",

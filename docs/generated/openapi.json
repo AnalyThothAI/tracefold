@@ -7739,9 +7739,27 @@
             ],
             "title": "Cost Unknown Reason"
           },
+          "cost_upper_estimate_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Upper Estimate Microusd"
+          },
           "ended_at_ms": {
-            "title": "Ended At Ms",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At Ms"
           },
           "error_code": {
             "anyOf": [
@@ -7775,6 +7793,11 @@
               }
             ],
             "title": "Input Tokens"
+          },
+          "known_cost_microusd": {
+            "default": 0,
+            "title": "Known Cost Microusd",
+            "type": "integer"
           },
           "model_name": {
             "anyOf": [
@@ -7846,6 +7869,11 @@
             ],
             "title": "Started At Ms"
           },
+          "unknown_cost_calls": {
+            "default": 0,
+            "title": "Unknown Cost Calls",
+            "type": "integer"
+          },
           "validation_errors": {
             "items": {
               "additionalProperties": {
@@ -7860,7 +7888,6 @@
         "required": [
           "case_id",
           "claim_attempt",
-          "ended_at_ms",
           "analysis_status",
           "physical_call_count",
           "settled"
@@ -8224,6 +8251,17 @@
               }
             ],
             "title": "Evidence Ref"
+          },
+          "latest_case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Case Id"
           },
           "manifest_version": {
             "anyOf": [
@@ -9093,7 +9131,7 @@
       },
       "TradingExecutionRowData": {
         "additionalProperties": false,
-        "description": "One entry identity's whole execution, folded from its plan and its own observations.\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.\n\n`realized_pnl_usd` and `fees_usd` are folded from the fill journal (#680): exit minus entry\nnotional, signed by direction, less every commission the venue charged. Both are absent until the\nentry is fully closed and every fill carries a quote-currency commission.",
+        "description": "One entry identity's whole execution, folded from its plan and its own observations.\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.\n\n`realized_pnl_usd` retains the historical fee-adjusted fill fold. PAPER net\nadditionally requires complete signed funding-income coverage and unambiguous\naccount-slot attribution over the fill-to-fill holding interval.",
         "properties": {
           "account_slot": {
             "anyOf": [
@@ -9239,6 +9277,17 @@
             ],
             "title": "Fill Quantity"
           },
+          "funding_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funding Usd"
+          },
           "instrument_id": {
             "anyOf": [
               {
@@ -9290,6 +9339,21 @@
               }
             ],
             "title": "Order Reject Reason"
+          },
+          "paper_net_known": {
+            "title": "Paper Net Known",
+            "type": "boolean"
+          },
+          "paper_net_pnl_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paper Net Pnl Usd"
           },
           "plan_status": {
             "anyOf": [
@@ -9427,6 +9491,7 @@
           "direction",
           "observed_at_ns",
           "pnl_known",
+          "paper_net_known",
           "stage"
         ],
         "title": "TradingExecutionRowData",
@@ -9490,6 +9555,17 @@
             ],
             "title": "Cost Unknown Reason"
           },
+          "finished_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At Ms"
+          },
           "input_tokens": {
             "anyOf": [
               {
@@ -9512,6 +9588,17 @@
             ],
             "title": "Output Tokens"
           },
+          "remaining_deadline_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remaining Deadline Ms"
+          },
           "request_ref": {
             "anyOf": [
               {
@@ -9523,6 +9610,17 @@
             ],
             "title": "Request Ref"
           },
+          "reserved_cost_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved Cost Microusd"
+          },
           "response_ref": {
             "anyOf": [
               {
@@ -9533,11 +9631,38 @@
               }
             ],
             "title": "Response Ref"
+          },
+          "started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At Ms"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Ms"
           }
         },
         "required": [
           "claim_attempt",
-          "call_index"
+          "call_index",
+          "status"
         ],
         "title": "TradingPhysicalModelCallData",
         "type": "object"
@@ -9596,6 +9721,58 @@
             "title": "Closed Total",
             "type": "integer"
           },
+          "paper_closed_today": {
+            "minimum": 0.0,
+            "title": "Paper Closed Today",
+            "type": "integer"
+          },
+          "paper_closed_total": {
+            "minimum": 0.0,
+            "title": "Paper Closed Total",
+            "type": "integer"
+          },
+          "paper_net_known_today": {
+            "minimum": 0.0,
+            "title": "Paper Net Known Today",
+            "type": "integer"
+          },
+          "paper_net_known_today_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paper Net Known Today Usd"
+          },
+          "paper_net_known_total": {
+            "minimum": 0.0,
+            "title": "Paper Net Known Total",
+            "type": "integer"
+          },
+          "paper_net_known_total_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paper Net Known Total Usd"
+          },
+          "paper_net_missing_today": {
+            "minimum": 0.0,
+            "title": "Paper Net Missing Today",
+            "type": "integer"
+          },
+          "paper_net_missing_total": {
+            "minimum": 0.0,
+            "title": "Paper Net Missing Total",
+            "type": "integer"
+          },
           "pnl_known_today": {
             "minimum": 0.0,
             "title": "Pnl Known Today",
@@ -9642,6 +9819,14 @@
         "required": [
           "realized_known_today_usd",
           "realized_known_total_usd",
+          "paper_net_known_today_usd",
+          "paper_net_known_total_usd",
+          "paper_net_known_today",
+          "paper_net_known_total",
+          "paper_net_missing_today",
+          "paper_net_missing_total",
+          "paper_closed_today",
+          "paper_closed_total",
           "pnl_known_today",
           "pnl_known_total",
           "pnl_missing_today",
@@ -9854,6 +10039,21 @@
             "title": "Status",
             "type": "string"
           },
+          "trigger_id": {
+            "title": "Trigger Id",
+            "type": "string"
+          },
+          "trigger_side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Side"
+          },
           "updated_at_ms": {
             "title": "Updated At Ms",
             "type": "integer"
@@ -9861,6 +10061,7 @@
         },
         "required": [
           "parent_case_id",
+          "trigger_id",
           "condition",
           "status",
           "next_check_at_ms",

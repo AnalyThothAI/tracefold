@@ -1,163 +1,310 @@
-"""Recompute the #690/#691 Case funnel and leak-free research coverage from an export.
+"""Root-level rule/DSPy comparison from frozen, contemporary analysis exports.
 
-The input is one JSON object per Case, exported from frozen Trading records. This
-script never fetches today's market data or reruns a model. Missing counterfactual
-quotes and costs remain unavailable; they cannot become zero-return observations.
+This command never fetches current market data or invents execution prices.
+Missing quote, mark, funding or cost receipts remain unknown in the report.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from collections import Counter, defaultdict
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
+from tracefold.trading.engine.strategy import STRATEGY_VERSION, build_event_price_candidates, triggered_candidate
 
-from tracefold.app.trading_analyst import _WireAssessment
-from tracefold.trading.engine.contracts import AgentAssessment
-from tracefold.trading.engine.strategy import build_oi_price_candidates
-
-ARMS = ("simple_rule", "recorded_predict", "simplified_predict")
+ARMS = ("rule", "dspy")
+PURGE_MS = 4 * 3_600_000
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        if not isinstance(row, dict):
-            raise ValueError(f"case_row_invalid:{number}")
-        rows.append(row)
+        if line.strip():
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError(f"case_row_invalid:{number}")
+            rows.append(row)
     return rows
 
 
-def _simple_rule(snapshot: Any, asset_id: str) -> str | None:
+def _split(created_at_ms: int, cutoff_ms: int) -> str:
+    if created_at_ms + PURGE_MS <= cutoff_ms:
+        return "development"
+    if created_at_ms >= cutoff_ms:
+        return "holdout"
+    return "purged"
+
+
+def _rule_action(root_cases: list[dict[str, Any]]) -> str | None:
+    initial = next(row for row in root_cases if row["run_kind"] == "initial")
+    snapshot = initial.get("evidence")
     if not isinstance(snapshot, dict):
         return None
-    source = snapshot.get("source_fact")
-    market = snapshot.get("market")
-    if not isinstance(source, dict) or not isinstance(market, dict):
-        return None
-    perp, oi = market.get("perp_bars"), market.get("open_interest")
-    if not isinstance(perp, dict) or not isinstance(oi, dict):
-        return None
+    market = snapshot.get("market") or {}
+    perp = market.get("perp_bars") or {}
     if perp.get("status") != "ok":
         return None
     try:
-        candidates = build_oi_price_candidates(
-            asset_id=asset_id,
-            instrument_semantics_digest="0" * 64,
-            source_fact=source,
+        candidates = build_event_price_candidates(
+            asset_id=str(initial["asset_id"]),
+            instrument_semantics_digest=str(initial["mapping_semantics_digest"]),
+            source_fact=snapshot["source_fact"],
+            source_first_visible_at_ms=int(snapshot["source_first_visible_at_ms"]),
             perp_rows=tuple(perp["payload"]),
-            market_oi_available=oi.get("status") == "ok",
         )
+        if any(candidate.entry_ready for candidate in candidates):
+            return "TRADE"
+        if not all(candidate.watch_eligible for candidate in candidates):
+            return "NO_TRADE"
+        child = next((row for row in root_cases if row["run_kind"] == "conditional"), None)
+        if child is None:
+            return "WATCH"
+        child_snapshot = child.get("evidence") or {}
+        context = child_snapshot.get("trigger_context") or {}
+        candidate = triggered_candidate(
+            asset_id=str(initial["asset_id"]),
+            instrument_semantics_digest=str(initial["mapping_semantics_digest"]),
+            condition=context["watch_condition"],
+            trigger_side=context["watch_trigger_side"],
+            trigger_at_ms=int(context["watch_observed_at_ms"]),
+            trigger_close=Decimal(str(context["watch_observed_value"])),
+            previous_close=Decimal(str(context["watch_previous_close"])),
+            latest_closed_rows=tuple((child_snapshot.get("market") or {})["perp_bars"]["payload"]),
+        )
+        return "TRADE" if candidate.entry_ready else "NO_TRADE"
     except (KeyError, TypeError, ValueError, InvalidOperation):
         return None
-    if any(candidate.entry_ready for candidate in candidates):
-        return "TRADE"
-    if any(candidate.watch_eligible for candidate in candidates):
-        return "WATCH"
-    return "NO_TRADE"
 
 
-def _split(asset_id: str | None, created_at_ms: int, cutoff_ms: int) -> str:
-    if not asset_id:
-        return "unassigned"
-    # Asset groups cannot occur in both partitions. Time additionally fences
-    # every development Case before every held-out Case.
-    held_asset = int(hashlib.sha256(asset_id.encode()).hexdigest()[:8], 16) % 10 >= 7
-    if held_asset and created_at_ms >= cutoff_ms:
-        return "holdout"
-    if not held_asset and created_at_ms < cutoff_ms:
-        return "development"
-    return "outside_split"
+def _dspy_action(root_cases: list[dict[str, Any]]) -> str | None:
+    latest = max(root_cases, key=lambda row: (int(row.get("recheck_seq") or 0), int(row["created_at_ms"])))
+    return latest.get("decision_action")
 
 
-def _arm_summary(rows: list[dict[str, Any]], arm: str) -> dict[str, Any]:
-    decisions = Counter()
-    evaluated: list[tuple[int, str, Decimal]] = []
-    unknown_cost = 0
-    known_cost = 0
-    total_cost = 0
-    for row in rows:
-        action = (
-            _simple_rule(row.get("evidence"), str(row.get("asset_id") or ""))
-            if arm == "simple_rule"
-            else row.get("decision_action")
-            if arm == "recorded_predict"
-            else row.get("simplified_action")
-        )
-        decisions[str(action or "unavailable")] += 1
-        if arm == "recorded_predict" and row.get("model_attempted") is True:
-            cost = row.get("model_cost_microusd")
+def _model_cost(root_cases: list[dict[str, Any]]) -> tuple[int, int]:
+    known = unknown = 0
+    for row in root_cases:
+        attempts = row.get("attempts")
+        if not isinstance(attempts, list):
+            attempts = [row] if row.get("model_attempted") else []
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            cost = attempt.get("cost_microusd", attempt.get("model_cost_microusd"))
             if cost is None:
-                unknown_cost += 1
+                unknown += 1
             else:
-                known_cost += 1
-                total_cost += int(cost)
-        evaluation = (row.get("arm_evaluations") or {}).get(arm)
-        if action != "TRADE" or not isinstance(evaluation, dict):
+                known += int(cost)
+    return known, unknown
+
+
+def _account_drawdown(initial_equity: Decimal, trades: list[dict[str, Any]]) -> Decimal | None:
+    """Use simultaneous liquidation marks for every open position at every sample."""
+    if not trades:
+        return None
+    timestamps: set[int] = set()
+    marks_by_trade: list[dict[int, Decimal]] = []
+    for trade in trades:
+        entry_at, exit_at = trade["entry_at_ms"], trade["exit_at_ms"]
+        timestamps.update((entry_at, exit_at))
+        raw = trade["equity_marks"]
+        if not isinstance(raw, list):
+            return None
+        marks: dict[int, Decimal] = {}
+        try:
+            for item in raw:
+                at_ms = int(item["at_ms"])
+                net_bps = Decimal(str(item["liquidation_net_bps"]))
+                if not entry_at <= at_ms < exit_at or at_ms in marks or not net_bps.is_finite():
+                    return None
+                marks[at_ms] = net_bps
+                timestamps.add(at_ms)
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            return None
+        if entry_at not in marks:
+            return None
+        marks_by_trade.append(marks)
+    peak = initial_equity
+    maximum = Decimal(0)
+    for at_ms in sorted(timestamps):
+        equity = initial_equity
+        for trade, marks in zip(trades, marks_by_trade, strict=True):
+            if trade["exit_at_ms"] <= at_ms:
+                equity += trade["realized_usdt"]
+            elif trade["entry_at_ms"] <= at_ms:
+                if at_ms not in marks:
+                    return None
+                equity += trade["notional_usdt"] * marks[at_ms] / 10_000
+        peak = max(peak, equity)
+        maximum = max(maximum, peak - equity)
+    return maximum
+
+
+def _arm_summary(
+    roots: list[list[dict[str, Any]]],
+    arm: str,
+    *,
+    initial_equity: Decimal,
+    max_positions: int,
+    max_notional_fraction: Decimal,
+    risk_fraction: Decimal,
+) -> dict[str, Any]:
+    decisions = Counter()
+    entries: list[tuple[int, int, str, dict[str, Any]]] = []
+    unknown_net = 0
+    known_model_cost = unknown_model_calls = 0
+    for root_cases in roots:
+        initial = next(row for row in root_cases if row["run_kind"] == "initial")
+        action = _rule_action(root_cases) if arm == "rule" else _dspy_action(root_cases)
+        decisions[str(action or "unavailable")] += 1
+        if arm == "dspy":
+            known, unknown = _model_cost(root_cases)
+            known_model_cost += known
+            unknown_model_calls += unknown
+        if action != "TRADE":
             continue
-        if evaluation.get("status") != "simulated" or evaluation.get("net_bps") is None:
+        trade_case = max(
+            (row for row in root_cases if row["run_kind"] in ("initial", "conditional")),
+            key=lambda row: (int(row.get("recheck_seq") or 0), int(row["created_at_ms"])),
+        )
+        receipt = (trade_case.get("arm_evaluations") or {}).get(arm)
+        if not isinstance(receipt, dict) or receipt.get("status") != "simulated":
+            unknown_net += 1
             continue
         try:
-            net = Decimal(str(evaluation["net_bps"]))
-        except (InvalidOperation, TypeError):
+            if receipt.get("strategy_version") != STRATEGY_VERSION:
+                raise ValueError("strategy_version_mismatch")
+            entry_at = int(receipt["entry_at_ms"])
+            exit_at = int(receipt["exit_at_ms"])
+            net_bps = Decimal(str(receipt["net_bps"]))
+            components = receipt["net_components_bps"]
+            gross = Decimal(str(components["gross"]))
+            entry_cost = Decimal(str(components["entry_cost"]))
+            exit_cost = Decimal(str(components["exit_cost"]))
+            fees = Decimal(str(components["fees"]))
+            funding = Decimal(str(components["funding_cashflow"]))
+            if not all(value.is_finite() for value in (gross, entry_cost, exit_cost, fees, funding)):
+                raise ValueError("receipt_component_nonfinite")
+            if min(entry_cost, exit_cost, fees) < 0 or net_bps != gross - entry_cost - exit_cost - fees + funding:
+                raise ValueError("receipt_net_mismatch")
+            if (
+                any(
+                    not receipt.get(ref)
+                    for ref in ("entry_quote_ref", "exit_quote_ref", "mark_path_ref", "funding_ref", "fee_ref")
+                )
+                or int(receipt["latency_ms"]) < 0
+            ):
+                raise ValueError("receipt_provenance_incomplete")
+            requested_notional = Decimal(str(receipt["requested_notional_usdt"]))
+            stop_bps = Decimal(str(receipt["stop_bps"]))
+            if (
+                exit_at <= entry_at
+                or not net_bps.is_finite()
+                or not requested_notional.is_finite()
+                or requested_notional <= 0
+                or not stop_bps.is_finite()
+                or stop_bps <= 0
+            ):
+                raise ValueError("receipt_invalid")
+        except (KeyError, TypeError, InvalidOperation, ValueError):
+            unknown_net += 1
             continue
-        if net.is_finite():
-            evaluated.append((int(row["created_at_ms"]), str(row["case_id"]), net))
-    evaluated.sort()
-    running = peak = max_drawdown = Decimal(0)
-    for _, _, net in evaluated:
-        running += net
-        peak = max(peak, running)
-        max_drawdown = max(max_drawdown, peak - running)
+        entries.append(
+            (
+                entry_at,
+                exit_at,
+                str(initial["root_trigger_id"]),
+                {
+                    "net_bps": net_bps,
+                    "requested_notional": requested_notional,
+                    "stop_bps": stop_bps,
+                    "equity_marks": receipt.get("equity_marks"),
+                },
+            )
+        )
+    entries.sort(key=lambda item: (item[0], item[2]))
+    equity = initial_equity
+    peak = equity
+    max_drawdown = Decimal(0)
+    active: list[tuple[int, Decimal, Decimal, Decimal]] = []
+    accepted = capital_rejected = 0
+    accepted_trades: list[dict[str, Any]] = []
+    for entry_at, exit_at, _, receipt in entries:
+        active.sort(key=lambda item: item[0])
+        while active and active[0][0] <= entry_at:
+            _, _, _, realized = active.pop(0)
+            equity += realized
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, peak - equity)
+        if len(active) >= max_positions:
+            capital_rejected += 1
+            continue
+        capital_available = equity * max_notional_fraction - sum(item[1] for item in active)
+        risk_available = equity * risk_fraction - sum(item[1] * item[2] / 10_000 for item in active)
+        notional = min(
+            receipt["requested_notional"],
+            capital_available,
+            risk_available * 10_000 / receipt["stop_bps"],
+        )
+        if notional <= 0:
+            capital_rejected += 1
+            continue
+        realized = notional * receipt["net_bps"] / 10_000
+        active.append((exit_at, notional, receipt["stop_bps"], realized))
+        accepted += 1
+        accepted_trades.append(
+            {
+                "entry_at_ms": entry_at,
+                "exit_at_ms": exit_at,
+                "notional_usdt": notional,
+                "realized_usdt": realized,
+                "equity_marks": receipt["equity_marks"],
+            }
+        )
+    for _, _, _, realized in sorted(active):
+        equity += realized
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, peak - equity)
+    account_drawdown = _account_drawdown(initial_equity, accepted_trades)
     return {
         "decisions": dict(sorted(decisions.items())),
-        "net_evaluable": len(evaluated),
-        "net_unknown": decisions["TRADE"] - len(evaluated),
-        "mean_net_bps": str(sum((item[2] for item in evaluated), Decimal(0)) / len(evaluated)) if evaluated else None,
-        "trade_sequence_max_drawdown_bps": str(max_drawdown) if evaluated else None,
-        "account_drawdown": None,
-        "model_cost_known_cases": known_cost,
-        "model_cost_unknown_cases": unknown_cost,
-        "model_cost_known_microusd": total_cost if known_cost else None,
+        "net_evaluable": accepted,
+        "net_unknown": unknown_net,
+        "capital_rejected": capital_rejected,
+        "ending_equity_usdt": str(equity) if accepted else None,
+        "closed_equity_drawdown_usdt": str(max_drawdown) if accepted else None,
+        "account_drawdown_usdt": str(account_drawdown) if account_drawdown is not None else None,
+        "unrealized_marks_complete": account_drawdown is not None,
+        "model_cost_known_microusd": known_model_cost,
+        "model_cost_unknown_calls": unknown_model_calls,
     }
 
 
-def _invalid_output_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    first = Counter()
-    all_errors = Counter()
-    valid_wire = 0
+def _legacy_output_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    parsed = 0
+    missing = Counter()
     for row in rows:
         raw = row.get("raw_output")
         try:
-            if isinstance(raw, str):
-                raw = json.loads(raw)
-            wire = _WireAssessment.model_validate(raw)
-            AgentAssessment.model_validate_json(wire.model_dump_json())
-        except (ValidationError, ValueError, TypeError) as exc:
-            if isinstance(exc, ValidationError):
-                errors = [
-                    f"{'.'.join(map(str, item['loc']))}:{item['type']}" for item in exc.errors(include_input=False)
-                ]
-            else:
-                errors = [type(exc).__name__]
-            first[errors[0]] += 1
-            all_errors.update(errors)
-        else:
-            valid_wire += 1
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except (ValueError, TypeError):
+            missing["json_unparseable"] += 1
+            continue
+        if not isinstance(value, dict):
+            missing["object_missing"] += 1
+            continue
+        parsed += 1
+        for field in ("action", "public_rationale", "candidate_assessments"):
+            if field not in value:
+                missing[field] += 1
     return {
         "inputs": len(rows),
-        "wire_valid_v2": valid_wire,
-        "first_errors": dict(sorted(first.items())),
-        "all_errors": dict(sorted(all_errors.items())),
-        "contextual_decision_validity": None,
+        "legacy_json_objects": parsed,
+        "missing_legacy_fields": dict(sorted(missing.items())),
+        "new_program_replayed": False,
     }
 
 
@@ -168,65 +315,86 @@ def evaluate(
     cutoff_ms: int,
     invalid_outputs: list[dict[str, Any]],
     expected_invalid: int,
+    initial_equity_usdt: Decimal = Decimal("1000"),
+    max_positions: int = 1,
+    max_notional_fraction: Decimal = Decimal("0.1"),
+    risk_fraction: Decimal = Decimal("0.01"),
 ) -> dict[str, Any]:
     ids = [str(row["case_id"]) for row in cases]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate_case_id")
-    roots = defaultdict(list)
+    roots: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in cases:
-        if row.get("run_kind") not in ("initial", "recheck"):
+        if row.get("run_kind") not in ("initial", "conditional", "recheck"):
             raise ValueError("historical_run_kind_excluded")
         roots[str(row["root_trigger_id"])].append(row)
     if len(roots) != expected_roots:
         raise ValueError(f"root_denominator_mismatch:{len(roots)}:{expected_roots}")
     if len(invalid_outputs) != expected_invalid:
         raise ValueError(f"invalid_output_denominator_mismatch:{len(invalid_outputs)}:{expected_invalid}")
-    initial = []
-    for root_cases in roots.values():
+    if (
+        initial_equity_usdt <= 0
+        or max_positions <= 0
+        or not 0 < max_notional_fraction <= 1
+        or not 0 < risk_fraction <= 1
+    ):
+        raise ValueError("capital_config_invalid")
+    initial: dict[str, dict[str, Any]] = {}
+    group_splits: dict[str, set[str]] = defaultdict(set)
+    for root_id, root_cases in roots.items():
         first = [row for row in root_cases if row["run_kind"] == "initial"]
-        if len(first) != 1:
-            raise ValueError("root_initial_case_count_invalid")
-        initial.append(first[0])
-        assets = {row.get("asset_id") for row in root_cases}
-        if len(assets) != 1:
-            raise ValueError("root_asset_changed")
-    split = {
-        root_id: _split(
-            next(iter({row.get("asset_id") for row in root_cases})),
-            int(min(row["created_at_ms"] for row in root_cases)),
-            cutoff_ms,
-        )
-        for root_id, root_cases in roots.items()
-    }
+        if len(first) != 1 or len({row.get("asset_id") for row in root_cases}) != 1:
+            raise ValueError("root_identity_invalid")
+        initial[root_id] = first[0]
+        group = str(first[0].get("source_group_id") or root_id)
+        group_splits[group].add(_split(int(first[0]["created_at_ms"]), cutoff_ms))
+    partitions = {}
+    for root_id, row in initial.items():
+        group = str(row.get("source_group_id") or root_id)
+        possibilities = group_splits[group]
+        partitions[root_id] = next(iter(possibilities)) if len(possibilities) == 1 else "cross_split_excluded"
     return {
-        "protocol_version": "trading_cohort_v1",
+        "protocol_version": "trading_cohort_v2",
+        "strategy_version": STRATEGY_VERSION,
         "denominator": {"root_triggers": len(roots), "cases": len(cases)},
         "funnel": {
-            "initial_excluded": sum(row.get("state") == "EXCLUDED" for row in initial),
-            "initial_decisions": sum(bool(row.get("decision_action")) for row in initial),
+            "initial_excluded": sum(row.get("state") == "EXCLUDED" for row in initial.values()),
+            "initial_decisions": sum(bool(row.get("decision_action")) for row in initial.values()),
             "initial_failures": sum(
-                row.get("state") != "EXCLUDED" and not row.get("decision_action") for row in initial
+                row.get("state") != "EXCLUDED" and not row.get("decision_action") for row in initial.values()
             ),
-            "recheck_cases": sum(row["run_kind"] == "recheck" for row in cases),
-            "recheck_decisions": sum(
-                row["run_kind"] == "recheck" and bool(row.get("decision_action")) for row in cases
-            ),
-            "recheck_failures": sum(row["run_kind"] == "recheck" and not row.get("decision_action") for row in cases),
-            "watch_satisfied": sum(row.get("watch_status") == "satisfied" for row in cases),
+            "conditional_cases": sum(row["run_kind"] == "conditional" for row in cases),
+            "historical_rechecks": sum(row["run_kind"] == "recheck" for row in cases),
         },
-        "split_roots": dict(sorted(Counter(split.values()).items())),
+        "split_roots": dict(sorted(Counter(partitions.values()).items())),
+        "strata": {
+            partition: dict(
+                sorted(
+                    Counter(
+                        f"{row.get('source_kind', 'unknown')}:{row.get('asset_id', 'unknown')}"
+                        for root_id, row in initial.items()
+                        if partitions[root_id] == partition
+                    ).items()
+                )
+            )
+            for partition in ("development", "holdout")
+        },
         "arms": {
             partition: {
                 arm: _arm_summary(
-                    [row for row in cases if split[str(row["root_trigger_id"])] == partition],
+                    [root_cases for root_id, root_cases in roots.items() if partitions[root_id] == partition],
                     arm,
+                    initial_equity=initial_equity_usdt,
+                    max_positions=max_positions,
+                    max_notional_fraction=max_notional_fraction,
+                    risk_fraction=risk_fraction,
                 )
                 for arm in ARMS
             }
             for partition in ("development", "holdout")
         },
-        "historical_invalid_outputs": _invalid_output_summary(invalid_outputs),
-        "release_conclusion": "remain_shadow_until_complete_holdout_and_paper_receipts",
+        "historical_invalid_outputs": _legacy_output_summary(invalid_outputs),
+        "research_conclusion": "evidence_insufficient_without_complete_contemporary_receipts",
     }
 
 
@@ -237,6 +405,10 @@ def main() -> int:
     parser.add_argument("--cutoff-ms", type=int, required=True)
     parser.add_argument("--expected-roots", type=int, default=531)
     parser.add_argument("--expected-invalid", type=int, default=22)
+    parser.add_argument("--initial-equity-usdt", type=Decimal, default=Decimal("1000"))
+    parser.add_argument("--max-positions", type=int, default=1)
+    parser.add_argument("--max-notional-fraction", type=Decimal, default=Decimal("0.1"))
+    parser.add_argument("--risk-fraction", type=Decimal, default=Decimal("0.01"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report = evaluate(
@@ -245,6 +417,10 @@ def main() -> int:
         cutoff_ms=args.cutoff_ms,
         invalid_outputs=_rows(args.invalid_outputs),
         expected_invalid=args.expected_invalid,
+        initial_equity_usdt=args.initial_equity_usdt,
+        max_positions=args.max_positions,
+        max_notional_fraction=args.max_notional_fraction,
+        risk_fraction=args.risk_fraction,
     )
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0

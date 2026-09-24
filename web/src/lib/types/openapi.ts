@@ -3168,14 +3168,21 @@ export interface components {
             cost_microusd?: number | null;
             /** Cost Unknown Reason */
             cost_unknown_reason?: string | null;
+            /** Cost Upper Estimate Microusd */
+            cost_upper_estimate_microusd?: number | null;
             /** Ended At Ms */
-            ended_at_ms: number;
+            ended_at_ms?: number | null;
             /** Error Code */
             error_code?: string | null;
             /** Evidence Ref */
             evidence_ref?: string | null;
             /** Input Tokens */
             input_tokens?: number | null;
+            /**
+             * Known Cost Microusd
+             * @default 0
+             */
+            known_cost_microusd: number;
             /** Model Name */
             model_name?: string | null;
             /** Output Tokens */
@@ -3192,6 +3199,11 @@ export interface components {
             settled: boolean;
             /** Started At Ms */
             started_at_ms?: number | null;
+            /**
+             * Unknown Cost Calls
+             * @default 0
+             */
+            unknown_cost_calls: number;
             /** Validation Errors */
             validation_errors?: {
                 [key: string]: string;
@@ -3308,6 +3320,8 @@ export interface components {
             event_id?: string | null;
             /** Evidence Ref */
             evidence_ref?: string | null;
+            /** Latest Case Id */
+            latest_case_id?: string | null;
             /** Manifest Version */
             manifest_version?: string | null;
             /** Mapping Semantics Digest */
@@ -3610,9 +3624,9 @@ export interface components {
          *     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
          *     `case_id` is absent on those rows rather than invented.
          *
-         *     `realized_pnl_usd` and `fees_usd` are folded from the fill journal (#680): exit minus entry
-         *     notional, signed by direction, less every commission the venue charged. Both are absent until the
-         *     entry is fully closed and every fill carries a quote-currency commission.
+         *     `realized_pnl_usd` retains the historical fee-adjusted fill fold. PAPER net
+         *     additionally requires complete signed funding-income coverage and unambiguous
+         *     account-slot attribution over the fill-to-fill holding interval.
          */
         TradingExecutionRowData: {
             /** Account Slot */
@@ -3646,6 +3660,8 @@ export interface components {
             fill_avg_price?: string | null;
             /** Fill Quantity */
             fill_quantity?: string | null;
+            /** Funding Usd */
+            funding_usd?: string | null;
             /** Instrument Id */
             instrument_id?: string | null;
             /** Market Key */
@@ -3658,6 +3674,10 @@ export interface components {
             observed_at_ns: number;
             /** Order Reject Reason */
             order_reject_reason?: string | null;
+            /** Paper Net Known */
+            paper_net_known: boolean;
+            /** Paper Net Pnl Usd */
+            paper_net_pnl_usd?: string | null;
             /** Plan Status */
             plan_status?: string | null;
             /** Pnl Known */
@@ -3707,14 +3727,26 @@ export interface components {
             cost_microusd?: number | null;
             /** Cost Unknown Reason */
             cost_unknown_reason?: string | null;
+            /** Finished At Ms */
+            finished_at_ms?: number | null;
             /** Input Tokens */
             input_tokens?: number | null;
             /** Output Tokens */
             output_tokens?: number | null;
+            /** Remaining Deadline Ms */
+            remaining_deadline_ms?: number | null;
             /** Request Ref */
             request_ref?: string | null;
+            /** Reserved Cost Microusd */
+            reserved_cost_microusd?: number | null;
             /** Response Ref */
             response_ref?: string | null;
+            /** Started At Ms */
+            started_at_ms?: number | null;
+            /** Status */
+            status: string;
+            /** Timeout Ms */
+            timeout_ms?: number | null;
         };
         /** TradingPolicyCheckData */
         TradingPolicyCheckData: {
@@ -3742,6 +3774,22 @@ export interface components {
             closed_today: number;
             /** Closed Total */
             closed_total: number;
+            /** Paper Closed Today */
+            paper_closed_today: number;
+            /** Paper Closed Total */
+            paper_closed_total: number;
+            /** Paper Net Known Today */
+            paper_net_known_today: number;
+            /** Paper Net Known Today Usd */
+            paper_net_known_today_usd: string | null;
+            /** Paper Net Known Total */
+            paper_net_known_total: number;
+            /** Paper Net Known Total Usd */
+            paper_net_known_total_usd: string | null;
+            /** Paper Net Missing Today */
+            paper_net_missing_today: number;
+            /** Paper Net Missing Total */
+            paper_net_missing_total: number;
             /** Pnl Known Today */
             pnl_known_today: number;
             /** Pnl Known Total */
@@ -3817,6 +3865,10 @@ export interface components {
             parent_case_id: string;
             /** Status */
             status: string;
+            /** Trigger Id */
+            trigger_id: string;
+            /** Trigger Side */
+            trigger_side?: string | null;
             /** Updated At Ms */
             updated_at_ms: number;
         };

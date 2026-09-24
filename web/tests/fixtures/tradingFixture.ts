@@ -229,6 +229,7 @@ export function tradingExecutionRowFixture(
     // (9699.0 − 10000) × 0.049 = −14.749 gross, less 0.17374518 of commissions on both legs.
     fees_usd: "0.17374518",
     pnl_known: overrides.realized_pnl_usd !== null,
+    paper_net_known: overrides.paper_net_pnl_usd != null,
     stop_distance_bps: 200,
     risk_budget_usd: "10",
     max_leverage_at_creation: 2,
@@ -336,6 +337,14 @@ export function tradingExecutionsFixture(
       pnl_missing_total: 0,
       realized_known_today_usd: "-13.80",
       realized_known_total_usd: "56.40",
+      paper_closed_today: 0,
+      paper_closed_total: 0,
+      paper_net_known_today: 0,
+      paper_net_known_total: 0,
+      paper_net_missing_today: 0,
+      paper_net_missing_total: 0,
+      paper_net_known_today_usd: null,
+      paper_net_known_total_usd: null,
     },
     ...overrides,
   };

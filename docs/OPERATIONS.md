@@ -28,10 +28,19 @@ mode, credential namespace, and Binance environment.
 Analysis runs `tracefold analysis` beside Serve and Workers. It
 drains News' durable catalyst/OI outbox independently of delivery, claims
 per-asset Cases with fenced leases, freezes market and model records under
-`~/.tracefold/cache/trading-analysis`, and labels due opportunity paths.
+`~/.tracefold/archive/trading-analysis`, and labels due opportunity paths.
+For an existing installation, stop Analysis and run
+`uv run python scripts/migrate_trading_analysis_archive.py` before switching
+the image. It copies every legacy content-addressed ref from cache to archive,
+verifies the digest and leaves the source intact. Include `archive/` in the
+durable backup and restore set. After the historical v1 path inventory is
+preserved, `uv run python scripts/relabel_trading_price_paths.py` can append
+v2 labels using historical public bars; the old rows and archived paths remain
+unchanged. A missing historical endpoint becomes an explicitly unverifiable
+v2 label, never a zero return.
 `trading.analysis.publish_signals` is false by default. An unavailable model
 is recorded as unavailable; it never silently activates the retired OI v5
-policy. `oi_price_confirmation_v1` also requires
+policy. `event_price_confirmation_v1` also requires
 `trading.analysis.strategy_publication_enabled=true` before it can publish a
 Signal, and that setting accepts PAPER mode only. It defaults false pending
 recorded replay, development/holdout comparison and PAPER receipts. Turning on
@@ -42,14 +51,20 @@ For a Case with no Decision, inspect `analysis_attempts` in the Case detail:
 each claim attempt has a structured validation error, frozen evidence ref and
 one indexed row per physical model response. A late attempt can remain visible
 while `settled=false`; it did not replace the fenced Decision. A WATCH with a
-machine condition shows its frozen threshold, latest closed-bar observation,
-expiry and child Case. A textual `observation_note` is research context and
-does not schedule a child. Shadow evaluations show `simulated`, `pending` or
+machine condition shows both frozen range boundaries, latest closed-bar
+observation, expiry and conditional child Case. The first crossing consumes
+the opportunity even when found after its 120-second entry window. Shadow
+evaluations show `simulated`, `pending` or
 `unevaluable` with archived quote, mark and funding refs. Fee or spread
 assumptions left unset intentionally make net results `unevaluable`. These
 records cannot be treated as exchange fills. Venue PAPER net values require
 reconciled fills, fees, funding and protection receipts from the PAPER account;
-the current execution summary does not provide complete funding evidence.
+the execution read model exposes signed funding income and scan coverage. A
+missing coverage interval or competing same-symbol plan leaves PAPER net
+unknown. PAPER reconciliation scans Binance USD-M `FUNDING_FEE` income every
+30 minutes, overlapping recent windows and reading seven days on startup.
+After a longer outage, recover signed income while Binance still retains it;
+historical periods outside venue retention remain unknown.
 
 Run `uv run tracefold init` before the first current startup; canonical
 `make up` and `make deploy-image` already do so. It creates and permissions the
@@ -441,8 +456,11 @@ exit fills sum to the entry quantity and every commission was charged in the
 settlement currency (USDT); otherwise it is absent, never synthesized as zero or
 reconstructed from unrelated account balance changes. Binance
 [account updates](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/adapters/binance/futures/schemas/user.py)
-update balances; they do not allocate funding to a position. Thus the display is
-known execution PnL excluding funding, not complete account net profit.
+update balances; they do not allocate funding to a position. The historical
+`realized_pnl_usd` stays fee-adjusted and excludes funding. PAPER
+`paper_net_pnl_usd` adds signed income cashflows only with complete coverage
+and a sole plan for that symbol and account interval. Missing funding remains
+unknown, never zero. This per-plan result is not an account-equity statement.
 
 Runtime control restart reads the single
 `trading_execution_runtime_control_state` row for the active profile. Accepted

@@ -508,6 +508,7 @@ class DecisionStorage:
                     "whale_long_profit_bps": int(whale_long_profit_bps),
                     "whale_oi_ratio_bps": int(whale_oi_ratio_bps),
                     "measurement_window_ms": measurement_window_ms,
+                    "measurement_definition": measurement_definition,
                     "source_venue": source_venue,
                     "provider_event_at_ms": int(observed_at_ms),
                     "source_received_at_ms": int(received_at_ms),

@@ -29,13 +29,14 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
     review_mode: "event_wait",
     watch_observation: {
       parent_case_id: "case-hype",
+      trigger_id: "trigger-hype",
       condition: {
-        kind: "closed_1m_price_crosses",
-        operator: "gte",
-        level: "101",
+        kind: "closed_1m_range_cross",
+        upper_level: "101",
+        lower_level: "99",
         unit: "USDT/base_asset",
       },
-      status: "pending",
+      status: "waiting",
       last_observation_status: "not_met",
       last_observed_value: "100",
       last_observed_at_ms: 1000,
@@ -51,11 +52,13 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
         ended_at_ms: 1000,
         analysis_status: "model_schema_invalid",
         physical_call_count: 1,
+        known_cost_microusd: 0,
+        unknown_cost_calls: 1,
         settled: false,
         error_code: "model_schema_invalid",
         validation_errors: [{ field: "assessment.action", type: "literal_error" }],
         physical_calls: [
-          { claim_attempt: 1, call_index: 0, request_ref: "request", response_ref: "response" },
+          { claim_attempt: 1, call_index: 0, status: "completed", request_ref: "request", response_ref: "response" },
         ],
       },
     ],
@@ -68,7 +71,7 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
       </MemoryRouter>
     </QueryClientProvider>,
   );
-  expect(screen.getByText(/收盘 1 分钟价格越过冻结价位/)).toHaveTextContent("101");
+  expect(screen.getByText(/相邻 1 分钟收盘首次越过冻结区间/)).toHaveTextContent("101");
   expect(screen.getByText(/未取得结案权/)).toBeVisible();
   screen.getByRole("button", { name: "回放尝试 1" }).click();
   await waitFor(() => expect(requested).toEqual(["1"]));

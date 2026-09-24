@@ -231,7 +231,7 @@ delivery consumer settles `terminal/delivery_unavailable`.
 `trading.*` is `enabled: false` by default. When enabled, a separate Analysis
 process consumes the News trade-event outbox and runs a real model in shadow by
 default. `trading.analysis` accepts `model_name` (or the configured News triage
-model), `active_policy=oi_price_confirmation_v1`, `publish_signals=false`,
+model), `active_policy=event_price_confirmation_v1`, `publish_signals=false`,
 `root_ttl_seconds`, `model_timeout_seconds`, `max_active_cases`,
 `max_model_input_bytes`, `max_model_output_tokens`, `max_model_concurrent_calls`,
 `model_cost_budget_microusd` (default 5,000,000) with both route price ceilings
@@ -239,8 +239,8 @@ in USD per million tokens (defaults 100 input / 500 output; all three are set or
 disabled together). These are conservative admission assumptions supplied by
 the operator, not the provider's reported charge; a returned actual cost over
 the cap blocks publication. The market budgets are `market_max_connections`,
-`market_max_cached_rows`, `market_weight_soft_limit_1m`,
-`max_watch_rechecks`, excluded economic asset IDs and reviewed native routes.
+`market_max_cached_rows`, `market_weight_soft_limit_1m`, excluded economic
+asset IDs and reviewed native routes.
 A reviewed route states source symbol, canonical `asset_id`, exact native
 symbol, units per contract and an evidence reference. Unknown multipliers do
 not silently become one-unit routes. Model credentials use the existing `llm`
@@ -268,26 +268,26 @@ TradingNode. `paper` and `live` require secure non-empty files and select the
 same canonical Nautilus owner with Binance `DEMO` and `LIVE` environments,
 respectively.
 
-The `trade_assessment_v2` answer compiles TRADE, NO_TRADE or WATCH over the
-versioned `oi_price_confirmation_v1` candidate family. The long and short
-candidates use a source OI expansion, the latest closed one-minute close versus
-the preceding 15 closed one-minute highs/lows, and a code-owned 200 bps stop,
-400 bps take profit and four-hour maximum hold. These numbers identify a
-research candidate; they are not a measured edge. Catalyst cases receive no
-OI candidate. Six factors have explicit known/unknown coverage and cite a
-concrete frozen evidence value with unit and event/receipt time. The model
-supplies neither weights nor review delays. `hypothesis_side` and
-`observation_note` cannot choose an entry; only a ready `entry_candidate_id`
-can. A partial equal-factor support score is neither a probability nor expected
-return. Invalid output cannot fall back to the retired v5 policy.
+The `trade_assessment_v3` answer proposes TRADE, NO_TRADE or WATCH over the
+code-owned `event_price_confirmation_v1` candidate family. Catalyst and OI
+facts use the same 16 continuous closed one-minute bars. The first 15 define
+the high/low range and ATR14; the sixteenth crosses only when the previous
+close was inside the range. The source must be visible before that bar closed.
+OI direction and a positive OI change are not entry gates. Code freezes a stop
+between 100 and 1000 bps from twice ATR14, take profit at twice the stop and
+a four-hour maximum hold. The model supplies action, hypothesis side, candidate
+ID, cited supporting/opposing evidence, public rationale and research notes.
+It does not return factor scores, weights, summaries or a digest echo. A TRADE
+proposal for an ineligible candidate is recorded with a final NO_TRADE reason.
+These parameters are research candidates and do not establish an edge.
 
-A machine WATCH freezes one candidate's closed-price threshold and expiry.
-Its assessed candidate must cite the same available source, price and OI facts
-required by that candidate.
-The Analysis process observes later closed one-minute bars and creates at most
-one child Case on a matching bar, under the root expiry and recheck cap. Textual
-observation notes create no child. The WATCH row links its latest market-response
-archive; a matched child carries that observation reference in its frozen manifest.
+A machine WATCH freezes both range boundaries, previous close, ATR-derived
+exit plan and expiry in one root-owned row. Later continuous closed bars are
+scanned in order from the initial bar. The first crossing in either direction
+consumes the opportunity, including a crossing found after its 120-second
+entry window. An on-time crossing creates at most one conditional child Case
+with the triggering bar and parent Decision. Gaps remain explicit; duplicate
+polls do not create another child. Textual notes do not schedule work.
 Each DSPy transport invocation and returned response is indexed by claim
 attempt even when validation fails or a late attempt loses the settlement
 fence. A provider error or cancellation retains its request and error type;
@@ -1462,6 +1462,14 @@ Runtime facts, and status carries readiness plus bounded totals.
   notional minus entry notional, signed by direction, minus every commission. They
   and `pnl_known=true` are present only when the exit fills sum to the entry
   quantity and every commission was charged in USDT; funding is not included.
+  For PAPER, `funding_usd` and `paper_net_pnl_usd` add signed venue
+  `FUNDING_FEE` income to that fill fold. `paper_net_known=true` requires
+  complete signed income-scan coverage from first entry fill through last exit
+  fill, USDT cashflows, and no overlapping plan for the same symbol/account.
+  A complete zero-cashflow interval yields `funding_usd="0"`; absent or
+  ambiguous evidence yields null. The account income transaction ID is the
+  deduplication identity. A successful scan is recorded as a separate durable
+  `funding_coverage` observation, never inferred from a funding-rate forecast.
   Exit reasons are `stop_filled`, `take_profit`, `time_exit`, `operator_flatten`,
   `external` (a close this Runtime did not originate), `venue_unknown` or
   `not_submitted`; historical stored reason strings remain readable.
@@ -1475,6 +1483,9 @@ Runtime facts, and status carries readiness plus bounded totals.
   the plan's terminal clock; totals have no 24-hour limit. Plans that were never
   opened are not counted as closed positions. `history_complete`, `gap_reason`
   and `pnl_complete_today/total` were removed in #680 without aliases.
+  `paper_net_known_today_usd/total_usd`, `paper_net_known_today/total`,
+  `paper_net_missing_today/total`, and `paper_closed_today/total` count PAPER
+  plans separately. These are known subsets, not an account-equity statement.
 
 - The HTTP console is read-only (#624). Operator commands are available through
   the local CLI only. The former browser command route, command request/receipt

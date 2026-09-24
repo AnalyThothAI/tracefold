@@ -140,6 +140,12 @@ class TradingAnalysisOutcomeData(ExactApiSchema):
 class TradingPhysicalModelCallData(ExactApiSchema):
     claim_attempt: int
     call_index: int
+    status: str
+    started_at_ms: int | None = None
+    finished_at_ms: int | None = None
+    timeout_ms: int | None = None
+    remaining_deadline_ms: int | None = None
+    reserved_cost_microusd: int | None = None
     request_ref: str | None = None
     response_ref: str | None = None
     input_tokens: int | None = None
@@ -157,7 +163,7 @@ class TradingAnalysisAttemptData(ExactApiSchema):
     model_name: str | None = None
     prompt_sha: str | None = None
     started_at_ms: int | None = None
-    ended_at_ms: int
+    ended_at_ms: int | None = None
     provider_status: str | None = None
     analysis_status: str
     error_code: str | None = None
@@ -166,6 +172,9 @@ class TradingAnalysisAttemptData(ExactApiSchema):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_microusd: int | None = None
+    known_cost_microusd: int = 0
+    unknown_cost_calls: int = 0
+    cost_upper_estimate_microusd: int | None = None
     cost_unknown_reason: str | None = None
     settled: bool
     physical_calls: list[TradingPhysicalModelCallData] = Field(default_factory=list)
@@ -173,8 +182,10 @@ class TradingAnalysisAttemptData(ExactApiSchema):
 
 class TradingWatchObservationData(ExactApiSchema):
     parent_case_id: str
+    trigger_id: str
     condition: dict[str, Any]
     status: str
+    trigger_side: str | None = None
     last_observation_status: str | None = None
     last_observed_at_ms: int | None = None
     last_observation_ref: str | None = None
@@ -230,6 +241,7 @@ class TradingCaseData(ExactApiSchema):
     """
 
     case_id: str
+    latest_case_id: str | None = None
     source_item_id: str | None = None
     event_id: str | None = None
     base_symbol: str
@@ -334,9 +346,9 @@ class TradingExecutionRowData(ExactApiSchema):
     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
     `case_id` is absent on those rows rather than invented.
 
-    `realized_pnl_usd` and `fees_usd` are folded from the fill journal (#680): exit minus entry
-    notional, signed by direction, less every commission the venue charged. Both are absent until the
-    entry is fully closed and every fill carries a quote-currency commission.
+    `realized_pnl_usd` retains the historical fee-adjusted fill fold. PAPER net
+    additionally requires complete signed funding-income coverage and unambiguous
+    account-slot attribution over the fill-to-fill holding interval.
     """
 
     source: Literal["signal", "manual"]
@@ -359,6 +371,8 @@ class TradingExecutionRowData(ExactApiSchema):
     exit_price: str | None = None
     realized_pnl_usd: str | None = None
     fees_usd: str | None = None
+    funding_usd: str | None = None
+    paper_net_pnl_usd: str | None = None
     exit_reason: str | None = None
     plan_status: str | None = None
     account_slot: str | None = None
@@ -372,6 +386,7 @@ class TradingExecutionRowData(ExactApiSchema):
     take_profit_bps: int | None = None
     max_holding_ns: int | None = None
     pnl_known: bool
+    paper_net_known: bool
     duration_ns: int | None = None
     stage: ExecutionStage
 
@@ -386,6 +401,14 @@ class TradingRealizedTotalsData(ExactApiSchema):
 
     realized_known_today_usd: str | None
     realized_known_total_usd: str | None
+    paper_net_known_today_usd: str | None
+    paper_net_known_total_usd: str | None
+    paper_net_known_today: int = Field(ge=0)
+    paper_net_known_total: int = Field(ge=0)
+    paper_net_missing_today: int = Field(ge=0)
+    paper_net_missing_total: int = Field(ge=0)
+    paper_closed_today: int = Field(ge=0)
+    paper_closed_total: int = Field(ge=0)
     pnl_known_today: int = Field(ge=0)
     pnl_known_total: int = Field(ge=0)
     pnl_missing_today: int = Field(ge=0)

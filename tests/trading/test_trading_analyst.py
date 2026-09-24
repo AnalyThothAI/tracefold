@@ -1,4 +1,4 @@
-"""Provider JSON arrays enter the strict frozen assessment without coercing scores."""
+"""Provider JSON enters the strict proposal without asking for caller-owned digests."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ def test_agent_wire_arrays_become_strict_assessment() -> None:
 
     class Predictor:
         async def acall(self, **kwargs: object) -> SimpleNamespace:
-            assert kwargs["brief_sha"] == original.brief_sha
-            assert kwargs["candidate_menu_sha"] == original.candidate_menu_sha
+            assert "brief_sha" not in kwargs
+            assert "candidate_menu_sha" not in kwargs
             return SimpleNamespace(
                 assessment=_WireAssessment.model_validate(
                     json.loads(original.model_dump_json()),
@@ -43,8 +43,8 @@ def test_agent_wire_arrays_become_strict_assessment() -> None:
         analyst.assess(
             AnalystBrief(
                 text="{}",
-                sha=original.brief_sha,
-                candidate_menu_sha=original.candidate_menu_sha,
+                sha="a" * 64,
+                candidate_menu_sha="b" * 64,
                 evidence_catalog={},
             )
         )
@@ -52,7 +52,7 @@ def test_agent_wire_arrays_become_strict_assessment() -> None:
     assert receipt.status == "provider_success"
     assert receipt.assessment == original
     assert receipt.request_payload is not None
-    assert receipt.request_payload["brief_sha"] == original.brief_sha
+    assert receipt.request_payload["brief_sha"] == "a" * 64
 
 
 def test_zero_reported_tokens_remain_known() -> None:
@@ -107,8 +107,8 @@ def test_invalid_answer_retains_all_physical_calls_and_unknown_total_cost() -> N
         analyst.assess(
             AnalystBrief(
                 text="{}",
-                sha=original.brief_sha,
-                candidate_menu_sha=original.candidate_menu_sha,
+                sha="a" * 64,
+                candidate_menu_sha="b" * 64,
                 evidence_catalog={},
             )
         )
@@ -119,6 +119,9 @@ def test_invalid_answer_retains_all_physical_calls_and_unknown_total_cost() -> N
     assert receipt.physical_calls[1].cost_microusd is None
     assert receipt.input_tokens == 22 and receipt.output_tokens == 42
     assert receipt.cost_microusd is None
+    assert receipt.known_cost_microusd == 1000
+    assert receipt.unknown_cost_calls == 1
+    assert receipt.cost_upper_estimate_microusd is None
     assert receipt.validation_errors
 
 
@@ -264,7 +267,6 @@ def test_model_slot_bounds_concurrency_and_queue_deadline() -> None:
             )
 
     async def exercise() -> tuple[str, str]:
-        original = _assessment(evidence="market:perp_bars")
         analyst = TradeAnalyst(
             ConfiguredLMEndpoint(
                 model_name="openai/test-model",
@@ -278,8 +280,8 @@ def test_model_slot_bounds_concurrency_and_queue_deadline() -> None:
         )
         brief = AnalystBrief(
             text="{}",
-            sha=original.brief_sha,
-            candidate_menu_sha=original.candidate_menu_sha,
+            sha="a" * 64,
+            candidate_menu_sha="b" * 64,
             evidence_catalog={},
         )
         first = asyncio.create_task(analyst.assess(brief))
@@ -331,3 +333,51 @@ def test_configured_cost_bound_refuses_a_paid_call_before_dispatch() -> None:
     )
     assert receipt.request_payload is not None
     assert receipt.request_payload["model_cost_admission_bound_microusd"] > 1
+
+
+def test_adapter_copy_shares_physical_call_ledger_and_dispatch_callbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[str, int]] = []
+
+    class Predictor:
+        async def acall(self, **kwargs: object) -> SimpleNamespace:
+            lm = kwargs["lm"]
+            await lm.aforward(messages=[{"role": "user", "content": "first"}])
+            fallback = lm.copy()
+            await fallback.aforward(messages=[{"role": "user", "content": "fallback"}])
+            return SimpleNamespace(assessment=_WireAssessment.model_validate(_assessment().model_dump()))
+
+    class Response:
+        def __init__(self) -> None:
+            self.usage = {"prompt_tokens": 2, "completion_tokens": 3}
+            self._hidden_params = {"response_cost": Decimal("0.000001")}
+
+        def model_dump(self, *, mode: str) -> dict[str, bool]:
+            assert mode == "json"
+            return {"ok": True}
+
+    async def provider(*_args: object, **_kwargs: object) -> Response:
+        return Response()
+
+    async def before_call(index: int, *_args: object) -> None:
+        events.append(("before", index))
+
+    async def after_call(index: int, _call: object) -> None:
+        events.append(("after", index))
+
+    monkeypatch.setattr(dspy.LM, "aforward", provider)
+    analyst = TradeAnalyst(
+        ConfiguredLMEndpoint(
+            model_name="openai/test-model", api_key="fixture", api_base="http://localhost:1/v1", model_kwargs={}
+        ),
+        predictor=Predictor(),
+    )
+    receipt = asyncio.run(
+        analyst.assess(
+            AnalystBrief(text="{}", sha="a" * 64, candidate_menu_sha="b" * 64, evidence_catalog={}),
+            before_call=before_call,
+            after_call=after_call,
+        )
+    )
+    assert events == [("before", 0), ("after", 0), ("before", 1), ("after", 1)]
+    assert len(receipt.physical_calls) == 2
+    assert receipt.cost_microusd == 2

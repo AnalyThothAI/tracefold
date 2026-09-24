@@ -279,6 +279,101 @@ def _fill(identity: str, *, leg: str, price: str, at_ns: int, commission: str | 
     )
 
 
+def _venue_funding(kind: str, *, at_ns: int, start_ns: int, end_ns: int) -> ExecutionObservationV1:
+    summary: dict[str, str | int] = (
+        {
+            "venue": "binance.usdm",
+            "source": "signed_income_v1",
+            "venue_transaction_id": "123456789",
+            "symbol": "BTCUSDT",
+            "asset": "USDT",
+            "amount_decimal": "0.11",
+        }
+        if kind == "funding"
+        else {
+            "venue": "binance.usdm",
+            "source": "signed_income_v1",
+            "start_at_ns": start_ns,
+            "end_at_ns": end_ns,
+            "status": "complete",
+        }
+    )
+    return ExecutionObservationV1.model_validate(
+        {
+            "event_id": sha256(f"{kind}:{at_ns}:{start_ns}:{end_ns}".encode()).hexdigest(),
+            "account_slot": _ACCOUNT_SLOT,
+            "execution_strategy": "oi_nautilus_v1",
+            "normalized_kind": kind,
+            "occurred_at_ns": at_ns,
+            "observed_at_ns": at_ns,
+            "native_identity_references": ("123456789",) if kind == "funding" else (),
+            "summary": summary,
+        }
+    )
+
+
+def test_paper_net_requires_complete_signed_funding_coverage(tmp_path: Path) -> None:
+    _seed_signal()
+    _run(
+        tape=[
+            *quotes(9_999, 10_000, start_ns=NOW_NS, count=10),
+            *quotes(10_300, 10_301, start_ns=NOW_NS + 2 * SECOND_NS, count=10),
+        ]
+    )
+    initial = _row(tmp_path)
+    assert initial["realized_pnl_usd"] is not None
+    assert initial["paper_net_pnl_usd"] is None
+    assert initial["paper_net_known"] is False
+    start = int(initial["entry_filled_at_ns"])
+    end = int(initial["position_closed_at_ns"])
+    middle = (start + end) // 2
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            repo.append_execution_observations(
+                prepare_execution_observations(
+                    (
+                        _venue_funding("funding", at_ns=middle, start_ns=start, end_ns=end),
+                        _venue_funding("funding_coverage", at_ns=middle, start_ns=start, end_ns=middle),
+                    )
+                )
+            )
+    finally:
+        conn.close()
+    assert _row(tmp_path)["paper_net_pnl_usd"] is None
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            TradingRepository(conn).append_execution_observations(
+                prepare_execution_observations(
+                    (_venue_funding("funding_coverage", at_ns=end + 1, start_ns=middle, end_ns=end + 1),)
+                )
+            )
+    finally:
+        conn.close()
+    final = _row(tmp_path)
+    assert Decimal(final["funding_usd"]) == Decimal("0.11")
+    assert Decimal(final["paper_net_pnl_usd"]) == Decimal(final["realized_pnl_usd"]) + Decimal("0.11")
+    assert final["paper_net_known"] is True
+    totals = _executions(tmp_path)["totals"]
+    assert totals["paper_net_known_total"] == 1
+    assert Decimal(totals["paper_net_known_total_usd"]) == Decimal(final["paper_net_pnl_usd"])
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            TradingRepository(conn).insert_trade_plan(
+                prepare_trade_plan(open_plan(entry_id="7" * 64, opened_at_ns=start, created_at_ns=start - 1))
+            )
+    finally:
+        conn.close()
+    ambiguous = _row(tmp_path)
+    assert ambiguous["funding_usd"] is None
+    assert ambiguous["paper_net_pnl_usd"] is None
+
+
 def test_realized_totals_count_a_plan_whose_fills_cannot_yield_a_result_as_missing_never_as_zero(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

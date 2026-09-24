@@ -111,7 +111,7 @@ key fails `extra="forbid"` rather than silently overriding the artifact.
 ### Initialization semantics
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
-`0700`, `logs/` and `cache/`, one config with a locally generated API bearer
+`0700`, `logs/`, `cache/` and the durable `archive/`, one config with a locally generated API bearer
 token (`ws_token`) but no external credentials, two PostgreSQL password files,
 and empty Telegram and Binance execution placeholders:
 

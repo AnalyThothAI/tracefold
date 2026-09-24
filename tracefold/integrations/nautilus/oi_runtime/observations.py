@@ -7,6 +7,7 @@ recorded without one.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, Final, Literal
@@ -14,6 +15,7 @@ from typing import Any, Final, Literal
 from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1
 
 from .account_projection import OrderLeg
+from .funding import FundingCashflow
 from .journal import ExecutionJournal
 from .risk import decimal_value
 from .signal_client import ExecutionSignalClient
@@ -59,6 +61,48 @@ class RuntimeObservations:
 
     def _offer(self, value: ExecutionObservationV1) -> bool:
         return self._journal.offer(value)
+
+    def funding(self, flow: FundingCashflow) -> bool:
+        """One actual venue cashflow, keyed by the venue's transaction identity."""
+        identity = f"{self._factory.account_slot}:FUNDING_FEE:{flow.transaction_id}"
+        event_id = hashlib.sha256(identity.encode()).hexdigest()
+        return self._offer(
+            self._factory.create(
+                normalized_kind="funding",
+                occurred_at_ns=flow.occurred_at_ms * 1_000_000,
+                observed_at_ns=self._timestamp_ns(),
+                native_identity_references=(flow.transaction_id,),
+                summary={
+                    "venue": "binance.usdm",
+                    "source": "signed_income_v1",
+                    "venue_transaction_id": flow.transaction_id,
+                    "symbol": flow.symbol,
+                    "asset": flow.asset,
+                    "amount_decimal": format(flow.amount, "f"),
+                },
+                fixed_event_id=event_id,
+            )
+        )
+
+    def funding_coverage(self, start_ms: int, end_ms: int) -> bool:
+        """A fully paginated signed read proves cashflows absent within its window."""
+        identity = f"{self._factory.account_slot}:FUNDING_FEE:coverage:{start_ms}:{end_ms}"
+        event_id = hashlib.sha256(identity.encode()).hexdigest()
+        return self._offer(
+            self._factory.create(
+                normalized_kind="funding_coverage",
+                occurred_at_ns=end_ms * 1_000_000,
+                observed_at_ns=self._timestamp_ns(),
+                summary={
+                    "venue": "binance.usdm",
+                    "source": "signed_income_v1",
+                    "start_at_ns": start_ms * 1_000_000,
+                    "end_at_ns": end_ms * 1_000_000,
+                    "status": "complete",
+                },
+                fixed_event_id=event_id,
+            )
+        )
 
     # -- verdicts on the two inputs ----------------------------------------------------------------
 

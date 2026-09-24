@@ -29,7 +29,7 @@ def write_default_config(*, force: bool = False) -> Path:
     path = config_path(home)
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     home.chmod(0o700)
-    for directory_name in ("logs", "cache"):
+    for directory_name in ("logs", "cache", "archive"):
         directory = home / directory_name
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         directory.chmod(0o700)

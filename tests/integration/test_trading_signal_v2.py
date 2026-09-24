@@ -13,7 +13,7 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.platform.market_identity import DEFAULT_UNIVERSE
 from tracefold.trading.engine.policy import decision_identity
 from tracefold.trading.execution_contracts import (
-    SignalEntryEnvelopeV1,
+    SignalEntryEnvelopeV2,
     SignalExitPlanV1,
     TradeSignalV2,
     market_key,
@@ -72,9 +72,10 @@ def test_signal_v2_scope_and_pre_submit_check(tmp_path) -> None:
             observed_at_ns=2_000_000_000,
             expires_at_ns=6_000_000_000,
             exit_plan=SignalExitPlanV1(stop_distance_bps=150, take_profit_bps=300, max_holding_ns=3_600_000_000_000),
-            entry_envelope=SignalEntryEnvelopeV1(
+            entry_envelope=SignalEntryEnvelopeV2(
                 root_expires_at_ns=11_000_000_000,
                 reference_price=Decimal("100"),
+                structure_level=Decimal("101"),
                 max_price_drift_bps=200,
                 universe_version=DEFAULT_UNIVERSE.digest,
             ),

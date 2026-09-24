@@ -34,10 +34,8 @@ import {
  * `order_reject_reason` is printed verbatim under the disposition: it is the venue talking, and
  * translating it would put words in the exchange's mouth.
  *
- * The realized number is net: the server folds it from the entry's fill journal, exit minus entry notional
- * less every commission (#680), and publishes those commissions as `fees_usd`, which the cell prints under
- * it. Until the entry is fully closed and every fill carries a quote-currency commission there is no
- * number, and a closed row says 盈亏未知 rather than a zero.
+ * PAPER net includes signed venue funding only after complete income coverage and unique attribution.
+ * The historical fill fold remains visible below when funding coverage is missing.
  */
 export function TradingLoopLedger({
   caseFiltered = false,
@@ -75,7 +73,7 @@ export function TradingLoopLedger({
             <span>入场均价</span>
             <span>止损价</span>
             <span>退出</span>
-            <span>已实现</span>
+            <span>已实现 / PAPER 净值</span>
           </div>
           {rows.map((row) => (
             <article className="trading-ledger-row" key={row.entry_id}>
@@ -136,18 +134,36 @@ export function TradingLoopLedger({
                   <small>{EXIT_REASON_ZH[row.exit_reason] ?? row.exit_reason}</small>
                 ) : null}
               </span>
-              <span data-label="已实现">
-                <b data-tone={moneyTone(row.pnl_known ? row.realized_pnl_usd : null)}>
-                  {row.pnl_known
-                    ? moneyLabel(row.realized_pnl_usd)
-                    : row.stage === "closed"
-                      ? "盈亏未知"
-                      : "—"}
+              <span data-label="已实现 / PAPER 净值">
+                <b
+                  data-tone={moneyTone(
+                    row.runtime_mode_at_creation === "paper"
+                      ? row.paper_net_pnl_usd
+                      : row.realized_pnl_usd,
+                  )}
+                >
+                  {row.runtime_mode_at_creation === "paper"
+                    ? row.paper_net_known
+                      ? moneyLabel(row.paper_net_pnl_usd)
+                      : row.stage === "closed"
+                        ? "净收益未知"
+                        : "—"
+                    : row.pnl_known
+                      ? moneyLabel(row.realized_pnl_usd)
+                      : row.stage === "closed"
+                        ? "盈亏未知"
+                        : "—"}
                 </b>
+                {row.runtime_mode_at_creation === "paper" && row.realized_pnl_usd != null ? (
+                  <small>手续费后 {moneyLabel(row.realized_pnl_usd)}</small>
+                ) : null}
                 <small>
                   持仓 {holdingLabel(row.entry_filled_at_ns, row.position_closed_at_ns)}
                 </small>
                 {row.fees_usd != null ? <small>手续费 {moneyLabel(row.fees_usd)}</small> : null}
+                {row.funding_usd != null ? (
+                  <small>资金费 {moneyLabel(row.funding_usd)}</small>
+                ) : null}
               </span>
             </article>
           ))}

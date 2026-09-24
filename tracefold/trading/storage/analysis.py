@@ -8,6 +8,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
+from tracefold.platform.postgres.client import require_transaction
 from tracefold.trading.engine.policy import decision_identity
 from tracefold.trading.engine.target import TargetSelection
 from tracefold.trading.execution_contracts import TradeSignalV2
@@ -21,7 +22,7 @@ def _sha(value: object) -> str:
 
 
 _OUTCOME_HORIZONS = (900, 3_600, 14_400, 86_400)
-_OUTCOME_VERSION = "price_path_v1"
+_OUTCOME_VERSION = "price_path_v2"
 TRADING_TRIGGER_BY_ID_SQL = (
     "SELECT trigger_id,kind,source_fact_key,source_revision,payload_sha256,payload,"
     "asset_id,target_selection,first_visible_at_ms,source_observed_at_ms,"
@@ -99,7 +100,7 @@ class AnalysisStorage:
             raise ValueError("analysis_source_context_limit_invalid")
         rows = self.conn.execute(
             "SELECT trigger_id,kind,source_fact_key,source_revision,payload_sha256,"
-            "source_observed_at_ms,first_visible_at_ms "
+            "source_observed_at_ms,first_visible_at_ms,payload "
             "FROM trading_triggers WHERE asset_id=%s AND trigger_id<>%s "
             "AND first_visible_at_ms<=%s "
             "ORDER BY first_visible_at_ms DESC,trigger_id DESC LIMIT %s",
@@ -326,6 +327,21 @@ class AnalysisStorage:
             """,
             (int(now_ms), int(now_ms)),
         )
+        self.conn.execute(
+            "UPDATE trading_case_attempts SET analysis_status='interrupted', "
+            "provider_status=COALESCE(provider_status,'result_unknown'), "
+            "error_code=COALESCE(error_code,'lease_expired'), ended_at_ms=%s "
+            "WHERE analysis_status='running' AND case_id IN "
+            "(SELECT case_id FROM trading_cases WHERE trigger_id IS NOT NULL "
+            "AND state='PENDING' AND claim_attempt>0)",
+            (int(now_ms),),
+        )
+        self.conn.execute(
+            "UPDATE trading_model_calls call SET status='result_unknown' "
+            "WHERE status='requested' AND EXISTS "
+            "(SELECT 1 FROM trading_case_attempts attempt WHERE attempt.case_id=call.case_id "
+            "AND attempt.claim_attempt=call.claim_attempt AND attempt.analysis_status='interrupted')"
+        )
         row = self.conn.execute(
             """
             SELECT c.* FROM trading_cases c
@@ -387,6 +403,14 @@ class AnalysisStorage:
                 (int(now_ms), case_id),
             )
             return None
+        self.conn.execute(
+            """
+            INSERT INTO trading_case_attempts
+              (case_id,claim_attempt,claim_token,started_at_ms,analysis_status,cost_unknown_reason)
+            VALUES (%s,%s,%s,%s,'running','not_called')
+            """,
+            (case_id, int(updated["claim_attempt"]), token, int(now_ms)),
+        )
         return dict(updated)
 
     def finish_analysis_case(
@@ -401,7 +425,6 @@ class AnalysisStorage:
         assessment_ref: str | None = None,
         prepared_signal: PreparedTradeSignal | None = None,
         publish_block_reason: str | None = None,
-        max_watch_rechecks: int = 2,
     ) -> bool:
         """A late or replaced model answer has no authority to settle or publish."""
 
@@ -476,7 +499,7 @@ class AnalysisStorage:
                   (case_id, decision_id, policy_id, policy_version, input_ref,
                    assessment_ref, action, decision, publish_status, publish_reason,
                    decided_at_ms, valid_until_ms)
-                VALUES (%s,%s,'trade_assessment','v2',%s,%s,%s,%s::jsonb,
+                VALUES (%s,%s,'trade_assessment','v3',%s,%s,%s,%s::jsonb,
                         %s,%s,%s,%s)
                 """,
                 (
@@ -527,7 +550,7 @@ class AnalysisStorage:
             (
                 state,
                 policy_decision,
-                decision.get("reason", "") if decision else analysis_status,
+                decision.get("reason_code", "analysis_complete") if decision else analysis_status,
                 analysis_status,
                 evidence_ref,
                 int(now_ms),
@@ -539,12 +562,12 @@ class AnalysisStorage:
             "UPDATE trading_case_attempts SET settled=true WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s",
             (case_id, int(row["claim_attempt"]), claim_token),
         )
-        if action == "WATCH" and decision is not None:
+        if action == "WATCH" and decision is not None and not superseded:
             self._create_watch_observation(
                 parent=row,
                 decision=decision,
+                evidence_ref=evidence_ref,
                 now_ms=now_ms,
-                max_rechecks=max_watch_rechecks,
             )
         return True
 
@@ -569,6 +592,9 @@ class AnalysisStorage:
         output_tokens: int | None,
         cost_microusd: int | None,
         calls: tuple[dict[str, Any], ...],
+        known_cost_microusd: int = 0,
+        unknown_cost_calls: int = 0,
+        cost_upper_estimate_microusd: int | None = None,
     ) -> None:
         """A late claim may leave diagnostics, but gains no settlement authority."""
         cost_unknown_reason = (
@@ -576,24 +602,21 @@ class AnalysisStorage:
         )
         self.conn.execute(
             """
-            INSERT INTO trading_case_attempts
-              (case_id,claim_attempt,claim_token,brief_ref,evidence_ref,assessment_ref,
-               model_name,prompt_sha,started_at_ms,ended_at_ms,provider_status,
-               analysis_status,error_code,validation_errors,physical_call_count,
-               input_tokens,output_tokens,cost_microusd,cost_unknown_reason)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)
-            ON CONFLICT (case_id,claim_attempt) DO NOTHING
+            UPDATE trading_case_attempts SET
+              brief_ref=%s,evidence_ref=%s,assessment_ref=%s,
+              model_name=%s,prompt_sha=%s,ended_at_ms=%s,provider_status=%s,
+              analysis_status=%s,error_code=%s,validation_errors=%s::jsonb,
+              physical_call_count=%s,input_tokens=%s,output_tokens=%s,
+              cost_microusd=%s,cost_unknown_reason=%s,
+              known_cost_microusd=%s,unknown_cost_calls=%s,cost_upper_estimate_microusd=%s
+            WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s
             """,
             (
-                case_id,
-                int(claim_attempt),
-                claim_token,
                 brief_ref,
                 evidence_ref,
                 assessment_ref,
                 model_name,
                 prompt_sha,
-                started_at_ms,
                 int(ended_at_ms),
                 provider_status,
                 analysis_status,
@@ -604,6 +627,12 @@ class AnalysisStorage:
                 output_tokens,
                 cost_microusd,
                 cost_unknown_reason,
+                known_cost_microusd,
+                unknown_cost_calls,
+                cost_upper_estimate_microusd,
+                case_id,
+                int(claim_attempt),
+                claim_token,
             ),
         )
         for index, call in enumerate(calls):
@@ -611,9 +640,15 @@ class AnalysisStorage:
                 """
                 INSERT INTO trading_model_calls
                   (case_id,claim_attempt,call_index,request_ref,response_ref,
-                   input_tokens,output_tokens,cost_microusd,cost_unknown_reason)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (case_id,claim_attempt,call_index) DO NOTHING
+                   input_tokens,output_tokens,cost_microusd,cost_unknown_reason,status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'completed')
+                ON CONFLICT (case_id,claim_attempt,call_index) DO UPDATE SET
+                  response_ref=EXCLUDED.response_ref,
+                  input_tokens=EXCLUDED.input_tokens,
+                  output_tokens=EXCLUDED.output_tokens,
+                  cost_microusd=EXCLUDED.cost_microusd,
+                  cost_unknown_reason=EXCLUDED.cost_unknown_reason,
+                  status='completed'
                 """,
                 (
                     case_id,
@@ -628,21 +663,126 @@ class AnalysisStorage:
                 ),
             )
 
+    def record_analysis_snapshot(
+        self,
+        *,
+        case_id: str,
+        claim_attempt: int,
+        claim_token: str,
+        evidence_ref: str | None,
+        brief_ref: str | None,
+    ) -> None:
+        self.conn.execute(
+            "UPDATE trading_case_attempts SET evidence_ref=%s,brief_ref=%s "
+            "WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s",
+            (evidence_ref, brief_ref, case_id, claim_attempt, claim_token),
+        )
+
+    def record_model_call_start(
+        self,
+        *,
+        case_id: str,
+        claim_attempt: int,
+        claim_token: str,
+        call_index: int,
+        request_ref: str,
+        now_ms: int,
+        timeout_ms: int,
+        reserved_cost_microusd: int | None,
+    ) -> bool:
+        row = self.conn.execute(
+            "SELECT LEAST(c.lease_until_ms,c.work_deadline_at_ms,c.root_expires_at_ms) AS deadline "
+            "FROM trading_cases c JOIN trading_case_attempts a ON a.case_id=c.case_id "
+            "AND a.claim_attempt=c.claim_attempt AND a.claim_token=c.claim_token "
+            "WHERE c.case_id=%s AND c.claim_attempt=%s AND c.claim_token=%s "
+            "AND c.state='RUNNING' AND c.lease_until_ms>%s AND c.work_deadline_at_ms>%s "
+            "AND c.root_expires_at_ms>%s",
+            (case_id, claim_attempt, claim_token, now_ms, now_ms, now_ms),
+        ).fetchone()
+        if row is None:
+            return False
+        remaining_ms = int(row["deadline"]) - now_ms
+        actual_timeout_ms = min(timeout_ms, remaining_ms)
+        self.conn.execute(
+            "INSERT INTO trading_model_calls "
+            "(case_id,claim_attempt,call_index,request_ref,started_at_ms,timeout_ms,remaining_deadline_ms,"
+            "reserved_cost_microusd,cost_unknown_reason,status) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'provider_cost_unavailable','requested')",
+            (
+                case_id,
+                claim_attempt,
+                call_index,
+                request_ref,
+                now_ms,
+                actual_timeout_ms,
+                remaining_ms,
+                reserved_cost_microusd,
+            ),
+        )
+        return True
+
+    def record_model_call_finish(
+        self,
+        *,
+        case_id: str,
+        claim_attempt: int,
+        claim_token: str,
+        call_index: int,
+        response_ref: str | None,
+        finished_at_ms: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cost_microusd: int | None,
+    ) -> None:
+        self.conn.execute(
+            "UPDATE trading_model_calls call SET status='completed',response_ref=%s,finished_at_ms=%s,"
+            "input_tokens=%s,output_tokens=%s,cost_microusd=%s,cost_unknown_reason=%s "
+            "WHERE case_id=%s AND claim_attempt=%s AND call_index=%s "
+            "AND EXISTS (SELECT 1 FROM trading_case_attempts attempt "
+            "WHERE attempt.case_id=call.case_id AND attempt.claim_attempt=call.claim_attempt "
+            "AND attempt.claim_token=%s)",
+            (
+                response_ref,
+                finished_at_ms,
+                input_tokens,
+                output_tokens,
+                cost_microusd,
+                "provider_cost_unavailable" if cost_microusd is None else None,
+                case_id,
+                claim_attempt,
+                call_index,
+                claim_token,
+            ),
+        )
+
+    def mark_analysis_attempt_unsettled(
+        self,
+        *,
+        case_id: str,
+        claim_attempt: int,
+        claim_token: str,
+    ) -> None:
+        self.conn.execute(
+            "UPDATE trading_case_attempts SET settled=false,error_code='fenced_out' "
+            "WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s",
+            (case_id, claim_attempt, claim_token),
+        )
+
     def _create_watch_observation(
         self,
         *,
         parent: dict[str, Any],
         decision: dict[str, Any],
+        evidence_ref: str | None,
         now_ms: int,
-        max_rechecks: int,
     ) -> None:
-        sequence = int(parent["recheck_seq"] or 0) + 1
-        if sequence > max_rechecks:
+        if parent["run_kind"] != "initial":
             return
         watch = decision.get("watch_condition")
         if not isinstance(watch, dict):
             return
-        if watch.get("kind") != "closed_1m_price_crosses":
+        watch = {**watch, "parent_evidence_ref": evidence_ref}
+        if watch.get("kind") != "closed_1m_range_cross":
             return
         root_expires = int(parent["root_expires_at_ms"])
         if int(watch.get("expires_at_ms") or 0) != root_expires or now_ms >= root_expires:
@@ -658,11 +798,19 @@ class AnalysisStorage:
         self.conn.execute(
             """
             INSERT INTO trading_watch_observations
-              (parent_case_id,condition,status,next_check_at_ms,expires_at_ms,created_at_ms,updated_at_ms)
-            VALUES (%s,%s::jsonb,'pending',%s,%s,%s,%s)
-            ON CONFLICT (parent_case_id) DO NOTHING
+              (parent_case_id,trigger_id,condition,status,next_check_at_ms,expires_at_ms,created_at_ms,updated_at_ms)
+            VALUES (%s,%s,%s::jsonb,'waiting',%s,%s,%s,%s)
+            ON CONFLICT (trigger_id) DO NOTHING
             """,
-            (parent["case_id"], json.dumps(watch), int(now_ms), root_expires, int(now_ms), int(now_ms)),
+            (
+                parent["case_id"],
+                parent["trigger_id"],
+                json.dumps(watch),
+                int(now_ms),
+                root_expires,
+                int(now_ms),
+                int(now_ms),
+            ),
         )
 
     def due_watch_observations(self, *, now_ms: int, limit: int = 16) -> list[dict[str, Any]]:
@@ -672,7 +820,7 @@ class AnalysisStorage:
                    c.entry_scope_id,c.root_expires_at_ms
               FROM trading_watch_observations w
               JOIN trading_cases c ON c.case_id=w.parent_case_id
-             WHERE w.status='pending' AND w.next_check_at_ms<=%s
+             WHERE w.status='waiting' AND w.next_check_at_ms<=%s
              ORDER BY w.next_check_at_ms,w.parent_case_id LIMIT %s
             """,
             (int(now_ms), max(1, min(128, limit))),
@@ -687,10 +835,12 @@ class AnalysisStorage:
         observation_status: str,
         observed_at_ms: int | None,
         observed_value: str | None,
+        previous_close: str | None = None,
+        trigger_side: str | None = None,
+        observed_path: tuple[tuple[int, str], ...] = (),
         observation_ref: str | None = None,
-        max_rechecks: int,
     ) -> bool:
-        if observation_status not in ("satisfied", "not_met", "data_missing", "expired"):
+        if observation_status not in ("satisfied", "not_met", "data_missing", "expired", "missed"):
             raise ValueError("watch_observation_status_invalid")
         asset = self.conn.execute(
             "SELECT target_asset_id FROM trading_cases WHERE case_id=%s",
@@ -705,7 +855,7 @@ class AnalysisStorage:
             """
             SELECT w.*,c.* FROM trading_watch_observations w
             JOIN trading_cases c ON c.case_id=w.parent_case_id
-            WHERE w.parent_case_id=%s AND w.status='pending' FOR UPDATE OF w
+            WHERE w.parent_case_id=%s AND w.status='waiting' FOR UPDATE OF w
             """,
             (parent_case_id,),
         ).fetchone()
@@ -713,59 +863,105 @@ class AnalysisStorage:
             return False
         parent = dict(row)
         condition = dict(parent["condition"])
-        if observation_status == "satisfied":
+        if observation_status in ("satisfied", "missed", "not_met", "data_missing") and observed_path:
             if not observation_ref:
                 raise ValueError("watch_observation_evidence_missing")
             try:
-                value = Decimal(str(observed_value))
-                level = Decimal(str(condition["level"]))
+                upper = Decimal(str(condition["upper_level"]))
+                lower = Decimal(str(condition["lower_level"]))
+                previous = Decimal(
+                    str(
+                        parent["last_observed_value"]
+                        if parent["last_observed_value"] is not None
+                        else condition["previous_close"]
+                    )
+                )
             except (InvalidOperation, KeyError, TypeError) as exc:
                 raise ValueError("watch_observation_invalid") from exc
-            observed_valid = (
-                condition.get("kind") == "closed_1m_price_crosses"
-                and condition.get("feature_id") == "perp_close_1m"
-                and value.is_finite()
-                and level.is_finite()
-                and level > 0
-                and isinstance(observed_at_ms, int)
-                and int(condition["frozen_at_ms"]) < observed_at_ms <= now_ms
-                and observed_at_ms <= int(condition["expires_at_ms"])
-                and (
-                    value >= level
-                    if condition.get("operator") == "gte"
-                    else value <= level
-                    if condition.get("operator") == "lte"
-                    else False
+            expected_at = int(parent["last_observed_at_ms"] or condition["frozen_at_ms"]) + 60_000
+            found_side = None
+            for stamp, raw_close in observed_path:
+                value = Decimal(str(raw_close))
+                if (
+                    stamp != expected_at
+                    or stamp > now_ms
+                    or stamp > int(condition["expires_at_ms"])
+                    or not value.is_finite()
+                    or value <= 0
+                    or not previous.is_finite()
+                    or not 0 < lower < upper
+                ):
+                    raise ValueError("watch_observation_path_invalid")
+                side = (
+                    "long"
+                    if previous <= upper and value > upper
+                    else "short"
+                    if previous >= lower and value < lower
+                    else None
                 )
-            )
-            if not observed_valid:
+                if side is not None:
+                    found_side = side
+                    if stamp != observed_path[-1][0]:
+                        raise ValueError("watch_observation_not_first_cross")
+                previous, expected_at = value, stamp + 60_000
+            if observed_at_ms != observed_path[-1][0] or observed_value != observed_path[-1][1]:
+                raise ValueError("watch_observation_tail_mismatch")
+            if (observation_status in ("satisfied", "missed")) != (
+                found_side is not None
+            ) or trigger_side != found_side:
                 raise ValueError("watch_observation_condition_unmet")
+        elif observation_status in ("satisfied", "missed"):
+            raise ValueError("watch_observation_path_missing")
         root_expires = int(parent["root_expires_at_ms"])
-        sequence = int(parent["recheck_seq"] or 0) + 1
+        sequence = 1
         used = self.conn.execute(
             "SELECT 1 FROM trading_trade_plans WHERE entry_scope_id=%s LIMIT 1",
             (parent["entry_scope_id"],),
         ).fetchone()
-        if used is not None or sequence > max_rechecks:
+        superseded = self.conn.execute(
+            "SELECT 1 FROM trading_triggers newer JOIN trading_triggers original "
+            "ON original.trigger_id=%s WHERE newer.trigger_id<>original.trigger_id "
+            "AND (newer.supersedes_ref IN (original.trigger_id,original.source_fact_key) "
+            "OR (newer.kind=original.kind AND newer.source_fact_key=original.source_fact_key "
+            "AND newer.source_revision<>original.source_revision "
+            "AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,newer.first_visible_at_ms) "
+            "> COALESCE((original.payload->>'source_recorded_at_ms')::bigint,original.first_visible_at_ms))) "
+            "AND newer.created_at_ms<=%s LIMIT 1",
+            (parent["trigger_id"], now_ms),
+        ).fetchone()
+        if used is not None or superseded is not None:
             final_status = "cancelled"
-        elif now_ms >= root_expires:
-            final_status = "data_missing" if observation_status == "data_missing" else "expired"
+        elif now_ms >= root_expires or observation_status == "missed":
+            final_status = "expired"
         elif observation_status == "satisfied":
-            final_status = "satisfied"
+            final_status = (
+                "triggered"
+                if observed_at_ms is not None and now_ms < min(root_expires, observed_at_ms + 120_000)
+                else "expired"
+            )
         else:
-            final_status = "pending"
+            final_status = "waiting"
         child_case_id = None
-        if final_status == "satisfied":
-            child_case_id = _sha((parent["trigger_id"], "event_recheck", sequence))
+        if final_status == "triggered":
+            child_case_id = _sha((parent["trigger_id"], "conditional_cross", sequence))
             watch = dict(parent["condition"])
+            parent_decision = self.conn.execute(
+                "SELECT decision_id,decision FROM trading_case_decisions WHERE case_id=%s",
+                (parent_case_id,),
+            ).fetchone()
             manifest = dict(parent["manifest"])
             manifest.update(
                 {
                     "parent_case_id": parent_case_id,
+                    "parent_decision_id": None if parent_decision is None else parent_decision["decision_id"],
+                    "parent_decision": None if parent_decision is None else parent_decision["decision"],
                     "recheck_seq": sequence,
                     "watch_condition": watch,
+                    "parent_evidence_ref": watch.get("parent_evidence_ref"),
                     "watch_observed_at_ms": observed_at_ms,
                     "watch_observed_value": observed_value,
+                    "watch_previous_close": previous_close,
+                    "watch_trigger_side": trigger_side,
                     "watch_observation_ref": observation_ref,
                     "triggered_at_ms": int(now_ms),
                 }
@@ -780,7 +976,7 @@ class AnalysisStorage:
                    entry_scope_id,mapping_semantics_digest,root_expires_at_ms,
                    work_deadline_at_ms,next_attempt_at_ms,analysis_status)
                 VALUES (%s,%s,%s,%s,%s::jsonb,%s,'PENDING','not_run',
-                        'watch_condition_satisfied',%s,%s,%s,%s,%s,%s,'recheck',%s,%s,
+                        'watch_condition_satisfied',%s,%s,%s,%s,%s,%s,'conditional',%s,%s,
                         %s::jsonb,%s,%s,%s,%s,%s,'pending')
                 ON CONFLICT DO NOTHING
                 """,
@@ -803,7 +999,7 @@ class AnalysisStorage:
                     parent["entry_scope_id"],
                     parent["mapping_semantics_digest"],
                     root_expires,
-                    min(int(now_ms) + 120_000, root_expires),
+                    min(int(observed_at_ms) + 120_000, root_expires),
                     int(now_ms),
                 ),
             )
@@ -818,24 +1014,27 @@ class AnalysisStorage:
             UPDATE trading_watch_observations
                SET status=%s,last_observation_status=%s,last_observed_at_ms=%s,
                    last_observed_value=%s,last_observation_ref=%s,next_check_at_ms=%s,
-                   child_case_id=%s,updated_at_ms=%s
+                   child_case_id=%s,trigger_side=%s,updated_at_ms=%s
              WHERE parent_case_id=%s
             """,
             (
                 final_status,
                 observation_status if observation_status != "expired" else None,
                 observed_at_ms,
-                observed_value or parent["last_observed_value"],
+                observed_value if observed_value is not None else parent["last_observed_value"],
                 observation_ref or parent["last_observation_ref"],
                 int(now_ms) + 30_000,
                 child_case_id,
+                trigger_side,
                 int(now_ms),
                 parent_case_id,
             ),
         )
         return True
 
-    def due_analysis_outcomes(self, *, now_ms: int, limit: int = 16) -> list[dict[str, Any]]:
+    def due_analysis_outcomes(
+        self, *, now_ms: int, limit: int = 16, label_version: str | None = None
+    ) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
             SELECT o.case_id,o.axis,o.horizon_seconds,o.label_version,o.available_at_ms,
@@ -843,11 +1042,37 @@ class AnalysisStorage:
               FROM trading_case_outcomes o JOIN trading_cases c USING (case_id)
              WHERE o.status='pending' AND o.available_at_ms<=%s
                AND o.next_attempt_at_ms<=%s
+               AND o.label_version=COALESCE(%s::text,o.label_version)
              ORDER BY o.available_at_ms,o.case_id,o.axis,o.horizon_seconds LIMIT %s
             """,
-            (int(now_ms), int(now_ms), max(1, min(128, limit))),
+            (int(now_ms), int(now_ms), label_version, max(1, min(128, limit))),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def queue_price_path_v2_corrections(self, *, limit: int = 256) -> int:
+        """Append v2 work beside settled v1 labels; never rewrite the old audit."""
+        require_transaction(self.conn, operation="queue_price_path_v2_corrections")
+        result = self.conn.execute(
+            """
+            INSERT INTO trading_case_outcomes
+              (case_id,axis,horizon_seconds,label_version,status,available_at_ms,next_attempt_at_ms)
+            SELECT old.case_id,old.axis,old.horizon_seconds,'price_path_v2','pending',
+                   old.available_at_ms,0
+              FROM trading_case_outcomes old
+             WHERE old.label_version='price_path_v1' AND old.status IN ('ok','missing')
+               AND NOT EXISTS (
+                   SELECT 1 FROM trading_case_outcomes newer
+                    WHERE newer.case_id=old.case_id AND newer.axis=old.axis
+                      AND newer.horizon_seconds=old.horizon_seconds
+                      AND newer.label_version='price_path_v2'
+               )
+             ORDER BY old.case_id,old.axis,old.horizon_seconds
+             LIMIT %s
+            ON CONFLICT DO NOTHING
+            """,
+            (max(1, min(10_000, limit)),),
+        )
+        return int(result.rowcount)
 
     def settle_analysis_outcome(
         self,
