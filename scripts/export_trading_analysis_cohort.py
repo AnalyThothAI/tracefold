@@ -21,7 +21,7 @@ from psycopg.rows import dict_row
 
 from scripts.trading_analysis_cohort import RuleDecision, _rule_decision
 from tracefold.app.analysis_files import AnalysisFiles
-from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
+from tracefold.trading.engine.evaluation import EVALUATION_VERSION, SHADOW_MARK_RECEIPT_MAX_DELAY_MS, evaluate_shadow
 from tracefold.trading.engine.strategy import ENTRY_WINDOW_MS, MAX_HOLDING_SECONDS, STRATEGY_VERSION
 from tracefold.trading.execution_contracts import entry_structure_allows
 
@@ -203,7 +203,9 @@ def _rule_shadow_receipt(
             isinstance(mark, dict)
             and mark.get("snapshot_ref")
             and isinstance(mark.get("received_at_ms"), int)
-            and int(mark["received_at_ms"]) >= int(mark["event_at_ms"])
+            and int(mark["event_at_ms"])
+            <= int(mark["received_at_ms"])
+            <= int(mark["event_at_ms"]) + SHADOW_MARK_RECEIPT_MAX_DELAY_MS
             for mark in marks
         )
     except (KeyError, TypeError, ValueError):

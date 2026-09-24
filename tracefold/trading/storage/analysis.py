@@ -1250,10 +1250,17 @@ class AnalysisStorage:
     def due_shadow_evaluations(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT evaluation.*,c.target_selection,d.decision,frozen.evidence_ref
+            SELECT evaluation.*,c.target_selection,d.decision,frozen.evidence_ref,
+                   tape.tape_ref AS root_market_tape_ref,
+                   root_case.case_id AS root_case_id,
+                   root_case.created_at_ms AS root_accepted_at_ms,
+                   root_case.root_expires_at_ms AS root_expires_at_ms
               FROM trading_case_evaluations evaluation
               JOIN trading_cases c USING (case_id)
               JOIN trading_case_decisions d USING (case_id)
+              LEFT JOIN trading_root_market_tapes tape
+                ON tape.case_id=COALESCE(c.manifest->>'parent_case_id',c.case_id)
+              LEFT JOIN trading_cases root_case ON root_case.case_id=tape.case_id
               LEFT JOIN LATERAL (
                 SELECT a.evidence_ref FROM trading_case_attempts a
                  WHERE a.case_id=evaluation.case_id AND a.evidence_ref IS NOT NULL

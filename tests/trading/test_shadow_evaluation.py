@@ -135,6 +135,25 @@ def test_shadow_does_not_use_a_future_or_wrong_environment_exit_quote() -> None:
     )
 
 
+def test_shadow_exit_quote_must_follow_mark_bar_visibility() -> None:
+    mark = {"event_at_ms": 60_000, "received_at_ms": 60_100, "high": "106", "low": "98", "close": "100"}
+    assert _shadow(mark_rows=(mark,))["reason"] == "exit_quote_missing"
+    later_quote = {
+        "status": "ok",
+        "bid": "98",
+        "ask": "99",
+        "bid_quantity": "20",
+        "ask_quantity": "20",
+        "received_at_ms": 60_100,
+        "environment": "live",
+        "quote_ref": "later-exit-ref",
+    }
+    result = _shadow(mark_rows=(mark,), exit_quotes=(later_quote,))
+    assert result["status"] == "simulated"
+    assert result["mark_trigger_visible_at_ms"] == 60_100
+    assert result["exit_quote_ref"] == "later-exit-ref"
+
+
 def test_entry_minute_favorable_extreme_cannot_claim_a_take_profit() -> None:
     result = _shadow(mark_rows=({"event_at_ms": 60_000, "high": "110", "low": "100", "close": "102"},))
     assert result["status"] == "unevaluable"

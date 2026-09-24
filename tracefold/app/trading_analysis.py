@@ -27,7 +27,7 @@ from tracefold.platform.market_identity import (
 )
 from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
 from tracefold.trading.engine.contracts import Candidate, ExitPlan
-from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
+from tracefold.trading.engine.evaluation import EVALUATION_VERSION, SHADOW_MARK_RECEIPT_MAX_DELAY_MS, evaluate_shadow
 from tracefold.trading.engine.features import PROFILE_VERSION, extract_features, freeze_features
 from tracefold.trading.engine.marketdata import Dataset, MarketDataPort, MarketDataRequest, MarketDataResult
 from tracefold.trading.engine.outcomes import price_path_label
@@ -1715,66 +1715,59 @@ class AnalysisRunner:
                 except (OSError, ValueError, KeyError, IndexError, TypeError):
                     pass
                 start_at = int(row["scheduled_at_ms"])
-                end_at = start_at + plan.max_holding_seconds * 1_000
-                mark_request = MarketDataRequest(
-                    dataset="mark_bars",
-                    native_symbol=str(instrument["native_symbol"]),
-                    venue="binance.usdm",
-                    environment=str(instrument["environment"]),
-                    product="perpetual",
-                    source_identity="binance_public_v1",
-                    unit_definition="mark_quote_per_base_v1",
-                    start_ms=start_at // _BAR_MS * _BAR_MS,
-                    end_ms=(end_at // _BAR_MS + 2) * _BAR_MS,
-                    interval_ms=_BAR_MS,
-                    max_age_ms=None,
-                    deadline_at_monotonic=time.monotonic() + 10.0,
-                )
-                funding_request = MarketDataRequest(
-                    dataset="funding_history",
-                    native_symbol=str(instrument["native_symbol"]),
-                    venue="binance.usdm",
-                    environment=str(instrument["environment"]),
-                    product="perpetual",
-                    source_identity="binance_public_v1",
-                    unit_definition="funding_rate_fraction_v1",
-                    start_ms=start_at,
-                    end_ms=end_at + 120_000,
-                    interval_ms=None,
-                    max_age_ms=None,
-                    deadline_at_monotonic=time.monotonic() + 10.0,
-                )
-                answers = await asyncio.gather(
-                    self.reader.market_data.fetch(mark_request),
-                    self.reader.market_data.fetch(funding_request),
-                    return_exceptions=True,
-                )
-                mark = answers[0] if isinstance(answers[0], MarketDataResult) else None
-                funding = answers[1] if isinstance(answers[1], MarketDataResult) else None
-                if mark is not None:
-                    mark_ref = await _file_io(
-                        self.files.write,
-                        {
-                            "status": mark.status,
-                            "payload": mark.payload,
-                            "source_identity": mark.source_identity,
-                            "unit_definition": mark.unit_definition,
-                            "request_receipts": mark.request_receipts,
-                            "missing_reasons": mark.missing_reasons,
-                        },
-                    )
-                if funding is not None:
-                    funding_ref = await _file_io(
-                        self.files.write,
-                        {
-                            "status": funding.status,
-                            "payload": funding.payload,
-                            "source_identity": funding.source_identity,
-                            "unit_definition": funding.unit_definition,
-                            "request_receipts": funding.request_receipts,
-                            "missing_reasons": funding.missing_reasons,
-                        },
-                    )
+                mark_rows: tuple[dict[str, Any], ...] = ()
+                mark_status = "partial"
+                funding_events: tuple[dict[str, Any], ...] = ()
+                funding_complete = False
+                tape_ref = row.get("root_market_tape_ref")
+                if tape_ref:
+                    try:
+                        tape = await _file_io(self.files.read, str(tape_ref))
+                        research_end = int(row["root_expires_at_ms"]) + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS
+                        if (
+                            tape.get("version") != "root_research_tape_v2"
+                            or tape.get("case_id") != row["root_case_id"]
+                            or tape.get("native_symbol") != instrument["native_symbol"]
+                            or tape.get("environment") != instrument["environment"]
+                            or tape.get("mapping_semantics_digest") != instrument["mapping_semantics_digest"]
+                            or tape.get("root_accepted_at_ms") != int(row["root_accepted_at_ms"])
+                            or tape.get("root_expires_at_ms") != int(row["root_expires_at_ms"])
+                        ):
+                            raise ValueError("root_market_tape_identity_mismatch")
+                        marks = tape["mark_bars"]
+                        if not isinstance(marks, list):
+                            raise ValueError("root_market_tape_mark_invalid")
+                        mark_rows = tuple(mark for mark in marks if isinstance(mark, dict))
+                        if len(mark_rows) == len(marks) and all(
+                            mark.get("snapshot_ref")
+                            and isinstance(mark.get("received_at_ms"), int)
+                            and int(mark["event_at_ms"])
+                            <= mark["received_at_ms"]
+                            <= int(mark["event_at_ms"]) + SHADOW_MARK_RECEIPT_MAX_DELAY_MS
+                            for mark in mark_rows
+                        ):
+                            mark_status = "ok"
+                        mark_ref = str(tape_ref)
+                        funding = tape.get("funding_history")
+                        if (
+                            isinstance(funding, dict)
+                            and funding.get("status") == "ok"
+                            and funding.get("snapshot_ref")
+                            and isinstance(funding.get("scan_received_at_ms"), int)
+                            and funding["scan_received_at_ms"] >= research_end + 120_000
+                            and isinstance(funding.get("payload"), list)
+                            and all(isinstance(event, dict) for event in funding["payload"])
+                        ):
+                            funding_events = tuple(funding["payload"])
+                            funding_ref = str(funding["snapshot_ref"])
+                            funding_complete = True
+                    except (OSError, ValueError, KeyError, TypeError):
+                        mark_rows = ()
+                        mark_status = "partial"
+                        mark_ref = None
+                        funding_events = ()
+                        funding_ref = None
+                        funding_complete = False
                 result = evaluate_shadow(
                     side=str(decision["side"]),
                     decision_at_ms=int(row["decision_at_ms"]),
@@ -1787,10 +1780,10 @@ class AnalysisRunner:
                         * Decimal(10_000)
                         / Decimal(plan.stop_distance_bps)
                     ),
-                    mark_rows=() if mark is None else mark.payload,
-                    mark_status="error" if mark is None else mark.status,
-                    funding_events=() if funding is None else funding.payload,
-                    funding_coverage_complete=funding is not None and funding.status == "ok",
+                    mark_rows=mark_rows,
+                    mark_status=mark_status,
+                    funding_events=funding_events,
+                    funding_coverage_complete=funding_complete,
                     exit_plan=plan,
                     fee_bps_per_side=self.settings.trading.analysis.shadow_fee_bps_per_side,
                     quote_environment=quote_environment,

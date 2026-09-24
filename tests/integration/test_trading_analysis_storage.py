@@ -116,6 +116,11 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
             assert not trading.record_root_research_sample(
                 case_id=case_id, prior_ref=None, tape_ref="stale-root", sampled_at_ms=1_100
             )
+        due_evaluation = trading.due_shadow_evaluations(now_ms=182_000)
+        assert due_evaluation[0]["root_market_tape_ref"] == "root-tape-1"
+        assert due_evaluation[0]["root_case_id"] == case_id
+        assert due_evaluation[0]["root_accepted_at_ms"] == 1_100
+        assert due_evaluation[0]["root_expires_at_ms"] == root_due[0]["root_expires_at_ms"]
         assert trading.due_root_research_tapes(now_ms=61_099) == []
         assert trading.due_root_research_tapes(now_ms=61_100)[0]["tape_ref"] == "root-tape-1"
         assert trading.due_shadow_quote_samples(now_ms=61_999) == []
@@ -715,5 +720,30 @@ def test_watch_condition_creates_one_child_only_after_adjacent_closed_cross(tmp_
         assert row["run_kind"] == "conditional" and row["recheck_seq"] == 1
         assert row["work_deadline_at_ms"] == 1_260_000
         assert conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"] == 2
+        with conn.transaction():
+            assert trading.record_root_research_sample(
+                case_id=case_id, prior_ref=None, tape_ref="root-watch-tape", sampled_at_ms=1_141_000
+            )
+            conn.execute(
+                "INSERT INTO trading_case_decisions "
+                "(case_id,decision_id,policy_id,policy_version,input_ref,action,decision,"
+                "publish_status,decided_at_ms,valid_until_ms) "
+                "VALUES (%s,'child-shadow-decision','fixture','v3','fixture','TRADE','{}'::jsonb,"
+                "'shadow',1141000,1260000)",
+                (row["child_case_id"],),
+            )
+            trading.record_shadow_evaluation(
+                case_id=row["child_case_id"],
+                decision_at_ms=1_141_000,
+                scheduled_at_ms=1_142_000,
+                due_at_ms=1_143_000,
+                decision_quote_ref="decision-ref",
+                planned_quote_ref="planned-ref",
+                initial_result=None,
+            )
+        due = trading.due_shadow_evaluations(now_ms=1_143_000)
+        assert len(due) == 1 and due[0]["case_id"] == row["child_case_id"]
+        assert due[0]["root_case_id"] == case_id
+        assert due[0]["root_market_tape_ref"] == "root-watch-tape"
     finally:
         conn.close()

@@ -96,7 +96,8 @@ quote within 90 seconds after the mark-bar close must cover the quantity after
 venue-step rounding at the displayed top level. A missing/late quote,
 insufficient displayed size,
 mixed environment or incomplete funding/mark path is `unevaluable`. Mark bars
-select a possible protection trigger; the following executable quote supplies
+select a possible protection trigger; the first executable quote after the
+mark bar was actually received supplies
 the modeled exit price. A stop uses the worse of its threshold and the quote.
 The initial evidence snapshot also freezes the target USDⓈ-M `exchangeInfo`
 status, contract type, `PRICE_FILTER`, `MARKET_LOT_SIZE` and `MIN_NOTIONAL`
@@ -118,6 +119,11 @@ even when DSPy chooses NO_TRADE. A gap or late first crossing stays visible;
 the offline comparison must reject paths whose actual contemporaneous receipt
 times miss the fixed entry window. These tapes do not themselves claim a
 complete simulated fill or measured advantage.
+The DSPy arm also consumes the root tape's concurrently archived mark bars and
+final funding scan. Both arms require each used mark bar to have been received
+within 120 seconds of its close. They do not retrospectively fetch a replacement
+mark path after the holding window. An incomplete tape leaves the shadow result
+unknown.
 Export the 22 invalid raw model outputs
 separately as `{case_id,raw_output}` in an access-controlled file. Do not infer
 a v3 model answer from a historical v2 output.

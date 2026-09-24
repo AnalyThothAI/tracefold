@@ -12,6 +12,7 @@ from typing import Any
 from .contracts import ExitPlan
 
 EVALUATION_VERSION = "shadow_net_v1"
+SHADOW_MARK_RECEIPT_MAX_DELAY_MS = 120_000
 
 
 def _unevaluable(reason: str, **details: Any) -> dict[str, Any]:
@@ -121,6 +122,7 @@ def evaluate_shadow(
     prior_at = scheduled_at_ms // 60_000 * 60_000
     exit_mark: Decimal | None = None
     exit_at: int | None = None
+    exit_visible_at: int | None = None
     exit_reason: str | None = None
     for row in ordered:
         at_ms = int(row["event_at_ms"])
@@ -133,13 +135,15 @@ def evaluate_shadow(
             high = Decimal(str(row["high"]))
             low = Decimal(str(row["low"]))
             close = Decimal(str(row["close"]))
-        except (InvalidOperation, KeyError, TypeError):
+            visible_at = int(row.get("received_at_ms", at_ms))
+        except (InvalidOperation, KeyError, TypeError, ValueError):
             return _unevaluable("mark_bar_invalid", **context)
         if (
             not all(value.is_finite() for value in (high, low, close))
             or low <= 0
             or high < low
             or not low <= close <= high
+            or visible_at < at_ms
         ):
             return _unevaluable("mark_bar_invalid", **context)
         # A 1m OHLC bar cannot order two touches; stop-first is conservative.
@@ -157,8 +161,9 @@ def evaluate_shadow(
             exit_mark, exit_reason = close, "max_holding"
         if exit_mark is not None:
             exit_at = at_ms
+            exit_visible_at = visible_at
             break
-    if exit_mark is None or exit_at is None or exit_reason is None:
+    if exit_mark is None or exit_at is None or exit_visible_at is None or exit_reason is None:
         return _unevaluable("mark_endpoint_missing", **context)
     eligible_quotes = sorted(
         (
@@ -169,7 +174,7 @@ def evaluate_shadow(
         key=lambda quote: int(quote["received_at_ms"]),
     )
     exit_quote = next(
-        (quote for quote in eligible_quotes if exit_at <= int(quote["received_at_ms"]) <= exit_at + 90_000),
+        (quote for quote in eligible_quotes if exit_visible_at <= int(quote["received_at_ms"]) <= exit_at + 90_000),
         None,
     )
     if exit_quote is None:
@@ -219,6 +224,7 @@ def evaluate_shadow(
         "exit_quote_at_ms": exit_quote["received_at_ms"],
         "exit_quote_delay_ms": int(exit_quote["received_at_ms"]) - exit_at,
         "mark_trigger_at_ms": exit_at,
+        "mark_trigger_visible_at_ms": exit_visible_at,
         "exit_at_ms": int(exit_quote["received_at_ms"]),
         "exit_reason": exit_reason,
         "gross_bps": str(gross_bps),
