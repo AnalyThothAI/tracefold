@@ -7,6 +7,7 @@ Missing quote, mark, funding or cost receipts remain unknown in the report.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter, defaultdict
 from decimal import Decimal, InvalidOperation
@@ -79,13 +80,9 @@ def _rule_action(root_cases: list[dict[str, Any]]) -> str | None:
             at_ms = int(bar["event_at_ms"])
             received_at_ms = int(bar["received_at_ms"])
             close = Decimal(str(bar["close"]))
-            if (
-                at_ms != expected_at
-                or at_ms > expires_at
-                or received_at_ms < at_ms
-                or not close.is_finite()
-                or close <= 0
-            ):
+            if at_ms > expires_at:
+                break
+            if at_ms != expected_at or received_at_ms < at_ms or not close.is_finite() or close <= 0:
                 return None
             side = range_cross_side(previous_close=previous, close=close, upper=upper, lower=lower)
             if side is not None:
@@ -443,6 +440,7 @@ def evaluate(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, required=True)
+    parser.add_argument("--cases-manifest", type=Path)
     parser.add_argument("--invalid-outputs", type=Path, required=True)
     parser.add_argument("--cutoff-ms", type=int, required=True)
     parser.add_argument("--expected-roots", type=int, default=531)
@@ -453,6 +451,15 @@ def main() -> int:
     parser.add_argument("--risk-fraction", type=Decimal, default=Decimal("0.01"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    cases_digest = hashlib.sha256(args.cases.read_bytes()).hexdigest()
+    invalid_digest = hashlib.sha256(args.invalid_outputs.read_bytes()).hexdigest()
+    manifest_digest = None
+    if args.cases_manifest is not None:
+        raw_manifest = args.cases_manifest.read_bytes()
+        manifest_digest = hashlib.sha256(raw_manifest).hexdigest()
+        manifest = json.loads(raw_manifest)
+        if not isinstance(manifest, dict) or manifest.get("cases_sha256") != cases_digest:
+            raise ValueError("case_export_manifest_mismatch")
     report = evaluate(
         _rows(args.cases),
         expected_roots=args.expected_roots,
@@ -464,6 +471,16 @@ def main() -> int:
         max_notional_fraction=args.max_notional_fraction,
         risk_fraction=args.risk_fraction,
     )
+    report["research_manifest"] = {
+        "cases_sha256": cases_digest,
+        "invalid_outputs_sha256": invalid_digest,
+        "cases_manifest_sha256": manifest_digest,
+        "cutoff_ms": args.cutoff_ms,
+        "initial_equity_usdt": str(args.initial_equity_usdt),
+        "max_positions": args.max_positions,
+        "max_notional_fraction": str(args.max_notional_fraction),
+        "risk_fraction": str(args.risk_fraction),
+    }
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 

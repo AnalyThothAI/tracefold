@@ -74,6 +74,26 @@ Export the 22 invalid raw model outputs
 separately as `{case_id,raw_output}` in an access-controlled file. Do not infer
 a v3 model answer from a historical v2 output.
 
+For Cases written by the new schema, the read-only exporter joins root/child
+identities, attempt costs, shadow receipts and archived evidence, then derives
+the independent rule watch path from the root market tape. It writes a SHA-256
+manifest with missing archive refs and coverage counts; missing data is not
+recovered from today's market. Use a restricted local output directory:
+
+```bash
+uv run python scripts/export_trading_analysis_cohort.py \
+  --archive-root /secure/analysis/archive \
+  --start-ms 1790154395682 --end-ms 1790240795682 \
+  --output /secure/export/cases.jsonl \
+  --manifest /secure/export/cases-manifest.json
+```
+
+Set `TRADING_RESEARCH_DSN` in the local environment rather than storing the
+credential in a command line or repository file.
+
+The exporter does not create rule-arm net receipts or the 22 historical raw
+outputs. Their absence remains explicit in the aggregate report.
+
 `scripts/trading_analysis_cohort.py` requires explicit root and invalid-output
 denominators and exactly one initial Case per root. It excludes legacy rows
 without a current root identity. Example:
@@ -81,6 +101,7 @@ without a current root identity. Example:
 ```bash
 uv run python scripts/trading_analysis_cohort.py \
   --cases /secure/export/cases.jsonl \
+  --cases-manifest /secure/export/cases-manifest.json \
   --invalid-outputs /secure/export/invalid-model-outputs.jsonl \
   --cutoff-ms 1790197595682 \
   --output /secure/export/aggregate-report.json

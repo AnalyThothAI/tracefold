@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 
+from scripts.export_trading_analysis_cohort import _rule_watch_path
 from scripts.trading_analysis_cohort import PURGE_MS, _model_cost, _rule_action, _split, evaluate
 from tracefold.trading.engine.strategy import STRATEGY_VERSION
 
@@ -201,6 +202,33 @@ def test_rule_arm_does_not_trade_a_late_first_cross_or_guess_across_a_gap() -> N
     assert _rule_action([root]) == "NO_TRADE"
     root["rule_watch_bars"] = [{"event_at_ms": at_ms + 120_000, "received_at_ms": at_ms + 121_000, "close": "102"}]
     assert _rule_action([root]) is None
+
+
+def test_rule_arm_complete_path_ends_at_non_aligned_root_expiry() -> None:
+    at_ms = 100_000_000
+    root = _watch_root(at_ms)
+    root["root_expires_at_ms"] = at_ms + 90_000
+    root["rule_watch_bars"] = [
+        {"event_at_ms": at_ms + 60_000, "received_at_ms": at_ms + 61_000, "close": "100"},
+        {"event_at_ms": at_ms + 120_000, "received_at_ms": at_ms + 121_000, "close": "100"},
+    ]
+    root["rule_watch_status"] = "complete"
+    assert _rule_action([root]) == "NO_TRADE"
+
+
+def test_exported_rule_path_requires_contiguous_archived_bars() -> None:
+    evidence = {"entry_reference": {"closed_at_ms": 60_000}}
+    tape = {
+        "version": "root_research_tape_v1",
+        "closed_bars": [
+            {"event_at_ms": 120_000, "received_at_ms": 120_100, "close": "100", "snapshot_ref": "a"},
+            {"event_at_ms": 180_000, "received_at_ms": 180_100, "close": "101", "snapshot_ref": "b"},
+        ],
+    }
+    path, status = _rule_watch_path(evidence, tape, 150_000)
+    assert status == "complete" and [row["event_at_ms"] for row in path] == [120_000]
+    tape["closed_bars"] = tape["closed_bars"][1:]
+    assert _rule_watch_path(evidence, tape, 150_000)[1] == "partial"
 
 
 def test_model_cost_includes_known_subtotal_with_unknown_physical_calls() -> None:

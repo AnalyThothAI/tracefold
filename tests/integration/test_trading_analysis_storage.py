@@ -6,8 +6,10 @@ from decimal import Decimal
 
 import pytest
 
+from scripts.export_trading_analysis_cohort import export_cases
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
+from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.market_identity import DEFAULT_UNIVERSE, AssetId, AssetRegistry, InstrumentRef
 from tracefold.trading.engine.target import SourceAsset, select_target
@@ -114,6 +116,11 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
             )
         assert trading.due_shadow_quote_samples(now_ms=121_999) == []
         assert trading.due_shadow_quote_samples(now_ms=122_000)[0]["quote_tape_ref"] == "tape-1"
+        export, manifest = export_cases(conn, AnalysisFiles(tmp_path / "missing-archive"), start_ms=1_100, end_ms=1_101)
+        assert len(export) == 1 and export[0]["root_trigger_id"]
+        assert export[0]["attempts"][0]["evidence_ref"] == "first-evidence"
+        assert export[0]["rule_watch_status"] == "missing"
+        assert {item["kind"] for item in manifest["missing_archive_items"]} == {"evidence", "root_market_tape"}
     finally:
         conn.close()
 
