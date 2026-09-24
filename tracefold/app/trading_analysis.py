@@ -1036,6 +1036,10 @@ class AnalysisRunner:
         native = str(instrument["native_symbol"])
         if not native.endswith("USDT") or len(native) <= 4:
             raise ValueError("analysis_native_market_unsupported")
+        mode = self.settings.trading.execution.mode
+        expected_environment = "demo" if mode == "paper" else "live" if mode == "live" else None
+        if instrument.get("environment") != expected_environment:
+            raise ValueError("analysis_execution_environment_mismatch")
         now_ns = _clock_ms() * 1_000_000
         expiry_ns = min(
             int(case["root_expires_at_ms"]) * 1_000_000,
@@ -1047,7 +1051,6 @@ class AnalysisRunner:
         signal_id = hashlib.sha256(
             f"{case['case_id']}:{decision_id}:signal_v2".encode(),
         ).hexdigest()
-        mode = self.settings.trading.execution.mode
         signal = TradeSignalV2(
             seq=1,
             signal_id=signal_id,

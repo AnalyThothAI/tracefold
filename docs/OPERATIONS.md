@@ -56,6 +56,14 @@ Signal, and that setting accepts PAPER mode only. It defaults false pending
 recorded replay, development/holdout comparison and PAPER receipts. Turning on
 publication requires a separately running Nautilus deployment; changing either
 flag does not start Nautilus or grant order authority.
+With strategy publication disabled, newly selected Cases use the mainnet/live
+market identity for the contemporaneous shadow cohort even if the configured
+execution mode is PAPER. When PAPER strategy publication is enabled, new Cases
+use Demo market identity. Preserve the frozen identity of already accepted
+Cases across this change: an old live Case is refused at PAPER Signal creation
+with `analysis_execution_environment_mismatch`. Capture and export the mainnet
+shadow cohort before switching to the separately authorized PAPER venue check;
+do not count a Demo shadow receipt as mainnet strategy evidence.
 
 For a Case with no Decision, inspect `analysis_attempts` in the Case detail:
 each claim attempt has a structured validation error, frozen evidence ref and

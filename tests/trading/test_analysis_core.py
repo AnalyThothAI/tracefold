@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
-from tracefold.app.trading_analysis import _registry_from_rows
+from tracefold.app.trading_analysis import AnalysisRunner, _registry_from_rows
 from tracefold.platform.config.models import TradingVerifiedRouteSettings
 from tracefold.platform.market_identity import (
     DEFAULT_UNIVERSE,
@@ -21,6 +22,15 @@ from tracefold.trading.engine.contracts import (
 )
 from tracefold.trading.engine.policy import InvalidAssessment, compile_assessment
 from tracefold.trading.engine.target import SourceAsset, select_target
+
+
+def test_paper_signal_rejects_a_frozen_mainnet_case() -> None:
+    runner = SimpleNamespace(settings=SimpleNamespace(trading=SimpleNamespace(execution=SimpleNamespace(mode="paper"))))
+    case = {"target_selection": {"instrument": {"native_symbol": "SOLUSDT", "environment": "live"}}}
+    decision = {"side": "long", "exit_plan": {"stop_distance_bps": 200}}
+
+    with pytest.raises(ValueError, match="analysis_execution_environment_mismatch"):
+        AnalysisRunner._prepare_signal(runner, case, None, decision)
 
 
 def _route(symbol: str, asset: str, *, environment: str = "live") -> InstrumentRef:
