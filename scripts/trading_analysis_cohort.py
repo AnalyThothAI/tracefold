@@ -159,11 +159,21 @@ def _model_cost(root_cases: list[dict[str, Any]]) -> tuple[int, int]:
         for attempt in attempts:
             if not isinstance(attempt, dict):
                 continue
+            calls = attempt.get("calls")
+            if isinstance(calls, list) and calls:
+                recorded = [call for call in calls if isinstance(call, dict)]
+                for call in recorded:
+                    if call.get("cost_microusd") is None:
+                        unknown += 1
+                    else:
+                        known += int(call["cost_microusd"])
+                unknown += max(0, int(attempt.get("physical_call_count") or 0) - len(recorded))
+                continue
             cost = attempt.get("cost_microusd", attempt.get("model_cost_microusd"))
             if cost is None:
                 known += int(attempt.get("known_cost_microusd") or 0)
                 unknown += (
-                    int(attempt.get("unknown_cost_calls") or 0)
+                    int(attempt.get("unknown_cost_calls") or 0) or int(attempt.get("physical_call_count") or 0)
                     if "unknown_cost_calls" in attempt
                     else int(bool(attempt.get("physical_call_count", 1)))
                 )

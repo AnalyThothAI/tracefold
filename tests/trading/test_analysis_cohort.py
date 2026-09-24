@@ -486,3 +486,20 @@ def test_model_cost_includes_known_subtotal_with_unknown_physical_calls() -> Non
         {"cost_microusd": 150, "known_cost_microusd": 150, "unknown_cost_calls": 0},
     ]
     assert _model_cost([root]) == (350, 1)
+    root["attempts"] = [
+        {
+            "physical_call_count": 0,
+            "cost_microusd": None,
+            "known_cost_microusd": 0,
+            "unknown_cost_calls": 0,
+            "calls": [{"status": "requested", "cost_microusd": None}],
+        },
+        {
+            "physical_call_count": 3,
+            "cost_microusd": None,
+            "known_cost_microusd": 0,
+            "unknown_cost_calls": 0,
+            "calls": [{"status": "completed", "cost_microusd": 200}],
+        },
+    ]
+    assert _model_cost([root]) == (200, 3)

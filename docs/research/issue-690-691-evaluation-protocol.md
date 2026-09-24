@@ -147,6 +147,9 @@ Known model cost and unknown calls remain separate. An arm with missing
 contemporary receipts has an unknown net result; gross close-to-close price
 paths are opportunity labels only. Closed-trade drawdown cannot establish
 account drawdown while positions are open.
+The physical-call ledger takes precedence over an attempt summary for research
+costs: a request persisted before a worker crash still counts as an unknown
+paid call even if the attempt aggregate was never finalized.
 The USD-to-USDT conversion above is an explicit research assumption, not an
 observed FX rate. The holdout conclusion is descriptive only: it requires
 complete net, account marks and model cost, plus at least one evaluable entry.

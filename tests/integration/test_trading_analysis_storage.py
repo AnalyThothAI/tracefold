@@ -98,8 +98,7 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
                 (case_id,),
             )
             conn.execute(
-                "UPDATE trading_case_attempts SET physical_call_count=1,unknown_cost_calls=1,"
-                "model_name='fixture-model',prompt_sha='fixture-prompt' "
+                "UPDATE trading_case_attempts SET model_name='fixture-model',prompt_sha='fixture-prompt' "
                 "WHERE case_id=%s AND claim_attempt=1",
                 (case_id,),
             )
@@ -134,6 +133,7 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
         assert export[0]["decision_policy_version"] == "v1"
         assert export[0]["attempts"][0]["evidence_ref"] == "first-evidence"
         assert export[0]["attempts"][0]["calls"][0]["request_ref"] == "request-ref"
+        assert export[0]["attempts"][0]["physical_call_count"] == 0
         assert export[0]["rule_watch_status"] == "missing"
         assert {item["kind"] for item in manifest["missing_archive_items"]} == {
             "evidence",
