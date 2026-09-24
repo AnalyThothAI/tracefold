@@ -20,6 +20,11 @@ take profit twice the stop, with a four-hour maximum hold and a 120-second
 entry window after the crossing close. These numbers are unvalidated.
 The [earlier OI exit study](oi-exit-rules-replay-2026-09-07.md) used another
 entry and five-minute bars; its results do not validate this rule.
+The first complete Case snapshot archives its exact candidate menu and brief.
+If a model attempt loses its claim, the next attempt reads those same artifacts
+under the new claim; it does not roll the 15-bar range or ATR forward. A stale
+claim cannot replace the frozen refs. Missing or corrupt frozen files remain a
+technical failure rather than silently creating a different setup.
 
 ## Frozen export and denominators
 

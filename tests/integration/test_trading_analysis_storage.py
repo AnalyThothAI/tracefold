@@ -276,6 +276,15 @@ def test_relay_retries_reuse_case_and_old_claim_cannot_finish(tmp_path) -> None:
         with conn.transaction():
             first = trading.claim_analysis_case(now_ms=1_500, lease_ms=2_000)
         assert first is not None and first["case_id"] == case_id
+        with conn.transaction():
+            assert trading.record_analysis_snapshot(
+                case_id=case_id,
+                claim_attempt=1,
+                claim_token=first["claim_token"],
+                evidence_ref="frozen-evidence",
+                brief_ref="frozen-brief",
+                now_ms=1_550,
+            )
         started = conn.execute(
             "SELECT analysis_status,started_at_ms FROM trading_case_attempts WHERE case_id=%s AND claim_attempt=1",
             (case_id,),
@@ -307,6 +316,19 @@ def test_relay_retries_reuse_case_and_old_claim_cannot_finish(tmp_path) -> None:
         with conn.transaction():
             reclaimed = trading.claim_analysis_case(now_ms=3_600, lease_ms=2_000)
         assert reclaimed is not None and reclaimed["claim_token"] != first["claim_token"]
+        assert trading.prior_analysis_snapshot(case_id=case_id, before_claim_attempt=2) == {
+            "evidence_ref": "frozen-evidence",
+            "brief_ref": "frozen-brief",
+        }
+        with conn.transaction():
+            assert not trading.record_analysis_snapshot(
+                case_id=case_id,
+                claim_attempt=1,
+                claim_token=first["claim_token"],
+                evidence_ref="late-evidence",
+                brief_ref="late-brief",
+                now_ms=3_600,
+            )
         assert (
             conn.execute(
                 "SELECT status FROM trading_model_calls WHERE case_id=%s AND claim_attempt=1",
@@ -375,6 +397,10 @@ def test_relay_retries_reuse_case_and_old_claim_cannot_finish(tmp_path) -> None:
             (case_id,),
         ).fetchall()
         assert len(attempts) == 2
+        assert trading.prior_analysis_snapshot(case_id=case_id, before_claim_attempt=2) == {
+            "evidence_ref": "frozen-evidence",
+            "brief_ref": "frozen-brief",
+        }
         assert [item["settled"] for item in attempts] == [False, True]
         assert all(item["cost_microusd"] is None for item in attempts)
         assert all(item["cost_unknown_reason"] == "one_or_more_physical_costs_unavailable" for item in attempts)

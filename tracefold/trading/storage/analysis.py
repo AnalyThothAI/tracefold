@@ -603,7 +603,7 @@ class AnalysisStorage:
         self.conn.execute(
             """
             UPDATE trading_case_attempts SET
-              brief_ref=%s,evidence_ref=%s,assessment_ref=%s,
+              brief_ref=COALESCE(brief_ref,%s),evidence_ref=COALESCE(evidence_ref,%s),assessment_ref=%s,
               model_name=%s,prompt_sha=%s,ended_at_ms=%s,provider_status=%s,
               analysis_status=%s,error_code=%s,validation_errors=%s::jsonb,
               physical_call_count=%s,input_tokens=%s,output_tokens=%s,
@@ -663,6 +663,16 @@ class AnalysisStorage:
                 ),
             )
 
+    def prior_analysis_snapshot(self, *, case_id: str, before_claim_attempt: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT evidence_ref,brief_ref FROM trading_case_attempts "
+            "WHERE case_id=%s AND claim_attempt<%s "
+            "AND evidence_ref IS NOT NULL AND brief_ref IS NOT NULL "
+            "ORDER BY claim_attempt LIMIT 1",
+            (case_id, int(before_claim_attempt)),
+        ).fetchone()
+        return None if row is None else dict(row)
+
     def record_analysis_snapshot(
         self,
         *,
@@ -671,12 +681,32 @@ class AnalysisStorage:
         claim_token: str,
         evidence_ref: str | None,
         brief_ref: str | None,
-    ) -> None:
-        self.conn.execute(
-            "UPDATE trading_case_attempts SET evidence_ref=%s,brief_ref=%s "
-            "WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s",
-            (evidence_ref, brief_ref, case_id, claim_attempt, claim_token),
+        now_ms: int,
+    ) -> bool:
+        updated = self.conn.execute(
+            "UPDATE trading_case_attempts a SET evidence_ref=COALESCE(a.evidence_ref,%s),"
+            "brief_ref=COALESCE(a.brief_ref,%s) "
+            "FROM trading_cases c WHERE a.case_id=c.case_id AND a.case_id=%s "
+            "AND a.claim_attempt=%s AND a.claim_token=%s "
+            "AND c.state='RUNNING' AND c.claim_attempt=a.claim_attempt "
+            "AND c.claim_token=a.claim_token AND c.lease_until_ms>%s "
+            "AND c.work_deadline_at_ms>%s AND c.root_expires_at_ms>%s "
+            "AND (a.evidence_ref IS NULL OR a.evidence_ref=%s) "
+            "AND (a.brief_ref IS NULL OR a.brief_ref=%s)",
+            (
+                evidence_ref,
+                brief_ref,
+                case_id,
+                claim_attempt,
+                claim_token,
+                int(now_ms),
+                int(now_ms),
+                int(now_ms),
+                evidence_ref,
+                brief_ref,
+            ),
         )
+        return bool(updated.rowcount)
 
     def record_model_call_start(
         self,

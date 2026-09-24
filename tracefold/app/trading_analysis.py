@@ -25,7 +25,7 @@ from tracefold.platform.market_identity import (
     UniversePolicy,
     VerifiedAlias,
 )
-from tracefold.trading.engine.brief import AnalystBrief, build_brief
+from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
 from tracefold.trading.engine.contracts import Candidate, ExitPlan
 from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
 from tracefold.trading.engine.features import PROFILE_VERSION, extract_features, freeze_features
@@ -243,6 +243,7 @@ class FrameReader:
             raise FrozenEvidenceError(str(exc), failure_evidence_ref) from exc
         snapshot["features"] = features
         snapshot["entry_reference"] = {"price": str(reference_price), "closed_at_ms": reference_at_ms}
+        snapshot["candidate_menu"] = [candidate.model_dump(mode="json") for candidate in candidates]
         if trigger_context is not None:
             snapshot["trigger_context"] = trigger_context
         evidence_ref = await _file_io(self.files.write, snapshot)
@@ -512,6 +513,40 @@ class AnalysisRunner:
             partial(self._db, fn, transaction=transaction),
         )
 
+    async def _restore_prepared(self, case: dict[str, Any], prior: dict[str, Any]) -> PreparedAnalysis:
+        """Reuse the first complete frozen input after a claim is interrupted."""
+        evidence_ref = str(prior["evidence_ref"])
+        brief_ref = str(prior["brief_ref"])
+        snapshot = await _file_io(self.files.read, evidence_ref)
+        brief_artifact = await _file_io(self.files.read, brief_ref)
+        brief_text = brief_artifact["brief_json"]
+        brief_payload = json.loads(brief_text)
+        menu = snapshot["candidate_menu"]
+        if (
+            snapshot["case_id"] != case["case_id"]
+            or not isinstance(menu, list)
+            or brief_payload["candidate_menu"] != menu
+            or brief_payload["target_asset_id"] != case["target_asset_id"]
+            or brief_payload["instrument_semantics_digest"] != case["mapping_semantics_digest"]
+            or brief_payload["candidate_menu_sha"] != hashlib.sha256(canonical_json(menu).encode()).hexdigest()
+        ):
+            raise ValueError("frozen_analysis_snapshot_mismatch")
+        candidates = tuple(Candidate.model_validate_json(canonical_json(item)) for item in menu)
+        reference = snapshot["entry_reference"]
+        return PreparedAnalysis(
+            evidence_ref=evidence_ref,
+            brief_ref=brief_ref,
+            brief=AnalystBrief(
+                text=brief_text,
+                sha=hashlib.sha256(brief_text.encode()).hexdigest(),
+                candidate_menu_sha=brief_payload["candidate_menu_sha"],
+                evidence_catalog=brief_payload["evidence"],
+            ),
+            candidates=candidates,
+            reference_price=Decimal(str(reference["price"])),
+            reference_at_ms=int(reference["closed_at_ms"]),
+        )
+
     async def relay_once(self, *, batch_size: int = 64) -> int:
         events = await self._db_async(lambda repos: repos.news.unacknowledged_trade_events(limit=batch_size))
         environment = (
@@ -613,25 +648,37 @@ class AnalysisRunner:
                     )
                 )
 
-            prepared = await self.reader.prepare(
-                case=case,
-                source_fact=source["payload"],
-                source_first_visible_at_ms=int(source["first_visible_at_ms"]),
-                execution_environment=self.settings.trading.execution.mode,
-                source_history_at=source_history_at,
+            prior = await self._db_async(
+                lambda repos: repos.trading.prior_analysis_snapshot(
+                    case_id=case["case_id"], before_claim_attempt=int(case["claim_attempt"])
+                )
+            )
+            prepared = (
+                await self._restore_prepared(case, prior)
+                if prior is not None
+                else await self.reader.prepare(
+                    case=case,
+                    source_fact=source["payload"],
+                    source_first_visible_at_ms=int(source["first_visible_at_ms"]),
+                    execution_environment=self.settings.trading.execution.mode,
+                    source_history_at=source_history_at,
+                )
             )
             evidence_ref = prepared.evidence_ref
             brief_ref = prepared.brief_ref
-            await self._db_async(
+            snapshot_recorded = await self._db_async(
                 lambda repos: repos.trading.record_analysis_snapshot(
                     case_id=case["case_id"],
                     claim_attempt=int(case["claim_attempt"]),
                     claim_token=case["claim_token"],
                     evidence_ref=evidence_ref,
                     brief_ref=brief_ref,
+                    now_ms=_clock_ms(),
                 ),
                 transaction=True,
             )
+            if not snapshot_recorded:
+                raise TimeoutError("analysis_snapshot_fence_expired")
             if self.analyst is None:
                 status = "policy_unconfigured"
             else:
