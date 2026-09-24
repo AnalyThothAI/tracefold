@@ -7,10 +7,12 @@ from decimal import Decimal
 import pytest
 
 from scripts.export_trading_analysis_cohort import export_cases
+from scripts.relabel_trading_price_paths import _audit_v1_path, _pending_corrections
 from scripts.trading_analysis_cohort import evaluate as evaluate_cohort
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.analysis_files import AnalysisFiles
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.market_identity import DEFAULT_UNIVERSE, AssetId, AssetRegistry, InstrumentRef
 from tracefold.trading.engine.target import SourceAsset, TargetSelection, select_target
@@ -213,6 +215,32 @@ def test_price_path_v2_correction_appends_without_overwriting_v1(tmp_path) -> No
         assert rows[0]["path_ref"] == "legacy-ref"
         assert rows[1]["status"] == "pending" and rows[1]["return_bps"] is None
         assert rows[1]["path_ref"] is None
+        pending = _pending_corrections(repositories_for_connection(conn), limit=10)
+        assert len(pending) == 1 and pending[0]["case_id"] == case_id
+        reason = _audit_v1_path(pending[0], None)
+        assert reason == "historical_v1_archive_missing"
+        correction_ref = AnalysisFiles(tmp_path / "archive").write(
+            {"status": "missing", "historical_quality": "unverifiable", "reason": reason}
+        )
+        with conn.transaction():
+            assert trading.settle_analysis_outcome(
+                case_id=case_id,
+                axis="source",
+                horizon_seconds=900,
+                label_version="price_path_v2",
+                status="missing",
+                return_bps=None,
+                path_ref=correction_ref,
+                now_ms=901_001,
+            )
+        settled = conn.execute(
+            "SELECT label_version,status,return_bps,path_ref FROM trading_case_outcomes "
+            "WHERE case_id=%s AND axis='source' AND horizon_seconds=900 ORDER BY label_version",
+            (case_id,),
+        ).fetchall()
+        assert settled[0]["status"] == "ok" and settled[0]["path_ref"] == "legacy-ref"
+        assert settled[1]["status"] == "missing" and settled[1]["return_bps"] is None
+        assert AnalysisFiles(tmp_path / "archive").read(settled[1]["path_ref"])["reason"] == reason
     finally:
         conn.close()
 

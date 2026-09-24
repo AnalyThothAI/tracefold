@@ -33,11 +33,15 @@ For an existing installation, stop Analysis and run
 `uv run python scripts/migrate_trading_analysis_archive.py` before switching
 the image. It copies every legacy content-addressed ref from cache to archive,
 verifies the digest and leaves the source intact. Include `archive/` in the
-durable backup and restore set. After the historical v1 path inventory is
-preserved, `uv run python scripts/relabel_trading_price_paths.py` can append
-v2 labels using historical public bars; the old rows and archived paths remain
-unchanged. A missing historical endpoint becomes an explicitly unverifiable
-v2 label, never a zero return.
+durable backup and restore set. Preserve the historical v1 path inventory and
+run `uv run python scripts/relabel_trading_price_paths.py` while Analysis is
+stopped. The command audits only the archived v1 endpoint record and appends a
+v2 `missing` result with a specific `historical_quality=unverifiable` reason;
+the old rows and archived paths remain unchanged. It does not fetch today's
+historical public bars to assert an observation from the original time. The
+fixed #690 window has 705 arithmetically consistent endpoint records and three
+endpoint mismatches among 708 settled v1 `ok` labels, but the old archive lacks
+the raw bars and actual data environment needed to certify any of them as v2.
 `trading.analysis.publish_signals` is false by default. An unavailable model
 is recorded as unavailable; it never silently activates the retired OI v5
 policy. `event_price_confirmation_v1` also requires

@@ -10,6 +10,11 @@ failures and 39 child Cases. A read-only audit of the existing runtime on
 `45e042b634769baf45bcc82231b40171659a5bd1f87ac8dc29fa5480c12ea2a0`),
 plus all 22 invalid model response texts (`invalid-model-outputs.jsonl`, SHA-256
 `794b17e76188b943cee20c92eccb850b602d51d091add7879f57fc7c396516b7`).
+The companion `legacy-window-originals.tar.gz` (SHA-256
+`c2012332076a705fd3f6ce01331345639b322ba358110863215b0c3181c29987`)
+preserves the 531 Trigger rows, 570 Case rows, 124 Decision rows, 944 outcome
+rows, the 22 orphaned failure-assessment references, and 1,439 referenced
+content-addressed files. Its database and archive member digests verified.
 They are held outside Git at `~/.tracefold/research/issue-690-691/` on the audit
 host in a mode-700 directory; the exports are mode 600. The 22 responses were
 recovered from content-addressed assessment
@@ -24,6 +29,13 @@ two were not parseable JSON. Applying the pinned legacy contract offline to the
 on non-WATCH actions, candidate identity on non-TRADE actions, invalid weight
 totals, overlong WATCH delays and an extra field. Error counts overlap within
 responses. These results do not predict how the new v3 model would answer.
+The same preserved window has 708 settled `price_path_v1` `ok` outcomes: 705
+archived endpoint records align with the v2 grid and arithmetic, while three
+have mismatched endpoints. None includes the raw closed bars or a provable
+response environment. The offline correction therefore records all 708 as
+`historical_quality=unverifiable` in append-only v2 quality records, with a
+specific reason for the three mismatches; it does not fetch current history to
+manufacture a historical v2 observation.
 The older two-case
 [shadow diagnostic](issue-683-real-model-shadow-2026-09-23.md) says its raw
 archive was lost. No historical net result, model improvement or PAPER venue
