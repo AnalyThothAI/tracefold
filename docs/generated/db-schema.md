@@ -920,6 +920,8 @@
 | `venue_receipt_ref` | `TEXT` | True | `None` |
 | `result` | `JSONB` | True | `None` |
 | `evaluated_at_ms` | `BIGINT` | True | `None` |
+| `quote_tape_ref` | `TEXT` | True | `None` |
+| `next_quote_at_ms` | `BIGINT` | True | `None` |
 
 ## `trading_case_outcomes`
 
@@ -1069,6 +1071,15 @@
 | `market_key` | `TEXT` | True | `None` |
 | `direction` | `TEXT` | True | `None` |
 | `payload` | `JSONB` | False | `None` |
+
+## `trading_research_tapes`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `case_id` | `TEXT` | False | `None` |
+| `tape_ref` | `TEXT` | True | `None` |
+| `next_sample_at_ms` | `BIGINT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_signal_retirements`
 
