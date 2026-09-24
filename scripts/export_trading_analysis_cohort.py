@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -53,12 +54,19 @@ def _rule_watch_path(
             if at_ms > expires_at_ms:
                 break
             received = int(bar["received_at_ms"])
-            if at_ms != expected or received < at_ms or not bar.get("snapshot_ref"):
+            close = Decimal(str(bar["close"]))
+            if (
+                at_ms != expected
+                or received < at_ms
+                or not bar.get("snapshot_ref")
+                or not close.is_finite()
+                or close <= 0
+            ):
                 complete = False
             path.append({"event_at_ms": at_ms, "received_at_ms": received, "close": bar["close"]})
             expected = at_ms + _BAR_MS
         return path, "complete" if complete and expected > expires_at_ms else "partial"
-    except (KeyError, TypeError, ValueError):
+    except (InvalidOperation, KeyError, TypeError, ValueError):
         return [], "invalid"
 
 

@@ -1418,6 +1418,7 @@ class AnalysisRunner:
                     "environment": quote_snapshot.get("environment"),
                     "native_symbol": quote_snapshot.get("native_symbol"),
                     "mapping_semantics_digest": quote_snapshot.get("mapping_semantics_digest"),
+                    "units_per_contract": quote_snapshot.get("units_per_contract"),
                     "missing_reasons": quote_snapshot.get("missing_reasons", ()),
                 }
                 if quote_snapshot.get("status") == "ok" and quote_snapshot.get("payload"):

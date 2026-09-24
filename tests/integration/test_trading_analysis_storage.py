@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from scripts.export_trading_analysis_cohort import export_cases
+from scripts.trading_analysis_cohort import evaluate as evaluate_cohort
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.analysis_files import AnalysisFiles
@@ -121,6 +122,8 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
         assert export[0]["attempts"][0]["evidence_ref"] == "first-evidence"
         assert export[0]["rule_watch_status"] == "missing"
         assert {item["kind"] for item in manifest["missing_archive_items"]} == {"evidence", "root_market_tape"}
+        report = evaluate_cohort(export, expected_roots=1, cutoff_ms=1_100, invalid_outputs=[], expected_invalid=0)
+        assert report["arms"]["holdout"]["dspy"]["net_unknown"] == 1
     finally:
         conn.close()
 

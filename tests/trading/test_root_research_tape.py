@@ -49,6 +49,7 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
             "environment": "live",
             "native_symbol": "SOLUSDT",
             "mapping_semantics_digest": "mapping-1",
+            "units_per_contract": "1",
             "payload": ({"received_at_ms": now, "bid": "99", "ask": "101", "bid_quantity": "2", "ask_quantity": "3"},),
         }
 
@@ -81,6 +82,7 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
     tape = files.read(row["tape_ref"])
     assert tape["source_first_visible_at_ms"] == 100_000
     assert tape["quotes"][0]["bid_quantity"] == "2"
+    assert tape["quotes"][0]["units_per_contract"] == "1"
     assert tape["closed_bars"][0]["received_at_ms"] == now
     assert tape["coverage"][0]["bar_status"] == "partial"
     assert files.read(tape["quotes"][0]["quote_ref"])["status"] == "ok"
