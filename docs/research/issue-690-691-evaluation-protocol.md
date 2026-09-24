@@ -136,6 +136,10 @@ all later roots are holdout. Every child follows its root. Roots sharing a
 source group across splits are excluded from both splits and counted. Asset
 identity is a reporting stratum, not a randomized split key. Rule and DSPy
 arms use the same roots, timestamps, capital limits and strategy version.
+Each source/asset stratum reports both arms' decisions, receipt coverage,
+costs, isolated net equity and drawdown under the same starting capital. These
+isolated stratum portfolios are diagnostic and cannot be summed into the full
+portfolio, where trades from different strata compete for capital.
 The portfolio evaluator admits only the exact quantity validated by a
 contemporary execution receipt; insufficient capital rejects the entry rather
 than resizing it without a new venue-filter and quote-capacity check.

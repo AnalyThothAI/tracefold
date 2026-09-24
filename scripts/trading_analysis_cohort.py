@@ -557,18 +557,33 @@ def evaluate(
         for attempt in row.get("attempts", [])
         if isinstance(attempt, dict) and (attempt.get("model_name") or attempt.get("prompt_sha"))
     }
+    partition_roots = {
+        partition: [root_cases for root_id, root_cases in roots.items() if partitions[root_id] == partition]
+        for partition in ("development", "holdout")
+    }
+    stratum_roots: dict[str, dict[str, list[list[dict[str, Any]]]]] = {
+        "development": defaultdict(list),
+        "holdout": defaultdict(list),
+    }
+    for root_id, root_cases in roots.items():
+        partition = partitions[root_id]
+        if partition in stratum_roots:
+            first = initial[root_id]
+            label = f"{first.get('source_kind', 'unknown')}:{first.get('asset_id', 'unknown')}"
+            stratum_roots[partition][label].append(root_cases)
+
+    def summarize(group: list[list[dict[str, Any]]], arm: str) -> dict[str, Any]:
+        return _arm_summary(
+            group,
+            arm,
+            initial_equity=initial_equity_usdt,
+            max_positions=max_positions,
+            max_notional_fraction=max_notional_fraction,
+            risk_fraction=risk_fraction,
+        )
+
     arms = {
-        partition: {
-            arm: _arm_summary(
-                [root_cases for root_id, root_cases in roots.items() if partitions[root_id] == partition],
-                arm,
-                initial_equity=initial_equity_usdt,
-                max_positions=max_positions,
-                max_notional_fraction=max_notional_fraction,
-                risk_fraction=risk_fraction,
-            )
-            for arm in ARMS
-        }
+        partition: {arm: summarize(partition_roots[partition], arm) for arm in ARMS}
         for partition in ("development", "holdout")
     }
     holdout = _holdout_comparison(
@@ -609,17 +624,13 @@ def evaluate(
         },
         "split_roots": dict(sorted(Counter(partitions.values()).items())),
         "strata": {
-            partition: dict(
-                sorted(
-                    Counter(
-                        f"{row.get('source_kind', 'unknown')}:{row.get('asset_id', 'unknown')}"
-                        for root_id, row in initial.items()
-                        if partitions[root_id] == partition
-                    ).items()
-                )
-            )
+            partition: {
+                label: {"roots": len(group), "arms": {arm: summarize(group, arm) for arm in ARMS}}
+                for label, group in sorted(stratum_roots[partition].items())
+            }
             for partition in ("development", "holdout")
         },
+        "stratum_portfolio_scope": "independent_initial_capital_per_stratum; not additive to the whole cohort",
         "arms": arms,
         "holdout_comparison": holdout,
         "historical_invalid_outputs": _legacy_output_summary(invalid_outputs),

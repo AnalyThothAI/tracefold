@@ -58,6 +58,21 @@ def test_time_purge_and_source_group_keep_complete_roots_together() -> None:
     assert report["arms"]["holdout"]["dspy"]["net_unknown"] == 0
 
 
+def test_source_asset_strata_report_each_arms_coverage_and_isolated_portfolio() -> None:
+    cutoff = 100_000_000
+    oi = _case("oi", "root-oi", cutoff)
+    oi["source_kind"] = "oi"
+    catalyst = _case("catalyst", "root-catalyst", cutoff + 1)
+    catalyst.update(source_kind="catalyst", asset_id="crypto:BTC")
+    report = evaluate([oi, catalyst], expected_roots=2, cutoff_ms=cutoff, invalid_outputs=[], expected_invalid=0)
+    strata = report["strata"]["holdout"]
+    assert sorted(strata) == ["catalyst:crypto:BTC", "oi:crypto:SOL"]
+    assert strata["oi:crypto:SOL"]["roots"] == 1
+    assert strata["oi:crypto:SOL"]["arms"]["dspy"]["ending_equity_usdt"] == "1000"
+    assert strata["catalyst:crypto:BTC"]["arms"]["rule"]["net_unknown_reasons"] == {"rule_decision_unavailable": 1}
+    assert "not additive" in report["stratum_portfolio_scope"]
+
+
 def test_net_requires_contemporary_strategy_receipt_and_applies_capital() -> None:
     cutoff = 100_000_000
     first = _case("a", "root-a", cutoff)
