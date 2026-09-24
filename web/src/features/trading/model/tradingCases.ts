@@ -41,9 +41,9 @@ function caseStateLabel(item: TradingCase): string {
 /** The one sentence a Case's terminal answer deserves, in the vocabulary that decided it. */
 export function caseVerdict(item: TradingCase): string {
   if (item.trigger_id) {
-    const action = item.analysis_decision?.action;
+    const action = item.analysis_action ?? item.analysis_decision?.action;
     if (action === "TRADE") {
-      const publication = item.analysis_decision?.publish_status;
+      const publication = item.analysis_publish_status ?? item.analysis_decision?.publish_status;
       const label =
         publication === "shadow"
           ? "影子判断"
@@ -51,12 +51,15 @@ export function caseVerdict(item: TradingCase): string {
             ? "发布被阻断"
             : publication === "superseded"
               ? "原判断已失效"
-              : "交易判断";
-      return `${label} · ${item.analysis_decision?.decision?.side === "short" ? "做空" : "做多"}`;
+              : publication === "published"
+                ? "Signal 已发布"
+                : "交易判断";
+      const side = item.analysis_side ?? item.analysis_decision?.decision?.side;
+      return `${label}${side === "short" ? " · 做空" : side === "long" ? " · 做多" : ""}`;
     }
     if (action === "NO_TRADE") return "主动不交易";
     if (action === "WATCH") return "等待条件复核";
-    return `${caseStateLabel(item)} · ${item.analysis_status ?? item.policy_reason ?? "—"}`;
+    return caseStateLabel(item);
   }
   if (item.state === "SIGNAL_EMITTED") return "做多 · 已发出入场信号";
   if (item.state === "NO_TRADE") return `不交易 · ${policyReasonLabel(item.policy_reason)}`;

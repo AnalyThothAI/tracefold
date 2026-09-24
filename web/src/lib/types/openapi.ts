@@ -3230,9 +3230,15 @@ export interface components {
          *     are the terminal answer; `base_symbol` is the identity the drawer titles itself with.
          */
         TradingCaseData: {
+            /** Analysis Action */
+            analysis_action?: string | null;
             analysis_decision?: components["schemas"]["TradingAnalysisDecisionData"] | null;
             /** Analysis Outcomes */
             analysis_outcomes?: components["schemas"]["TradingAnalysisOutcomeData"][];
+            /** Analysis Publish Status */
+            analysis_publish_status?: string | null;
+            /** Analysis Side */
+            analysis_side?: string | null;
             /** Analysis Status */
             analysis_status?: string | null;
             /** Base Symbol */
@@ -3281,6 +3287,8 @@ export interface components {
             } | null;
             /** Trigger Id */
             trigger_id?: string | null;
+            /** Trigger Kind */
+            trigger_kind?: string | null;
         };
         /**
          * TradingCasesData
@@ -3300,12 +3308,10 @@ export interface components {
             cases?: components["schemas"]["TradingCaseData"][];
             /** Complete */
             complete: boolean;
+            /** Decision Counts 24H */
+            decision_counts_24h?: components["schemas"]["TradingDecisionCountData"][];
             /** Next Cursor */
             next_cursor?: string | null;
-            /** Reason Counts 24H */
-            reason_counts_24h?: {
-                [key: string]: number;
-            };
             /** State Counts 24H */
             state_counts_24h?: {
                 [key: string]: number;
@@ -3327,6 +3333,18 @@ export interface components {
              * @default 0
              */
             window_to_ms: number;
+        };
+        /**
+         * TradingDecisionCountData
+         * @description Agent outcome and publication status for Cases created in the 24 h window.
+         */
+        TradingDecisionCountData: {
+            /** Action */
+            action: string;
+            /** Count */
+            count: number;
+            /** Publish Status */
+            publish_status: string;
         };
         /**
          * TradingDecisionRuntimeData

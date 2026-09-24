@@ -21,9 +21,10 @@ from tracefold.trading.storage.history import LATEST_CASE_CREATED_AT_SQL
 from tracefold.trading.storage.queries import (
     CONSOLE_CASE_BY_ID_SQL,
     TRADING_CASE_COUNTS_SQL,
+    TRADING_CASE_DECISION_COUNTS_SQL,
     TRADING_CASE_DECISION_SQL,
+    TRADING_CASE_LIST_DECISIONS_SQL,
     TRADING_CASE_OUTCOMES_SQL,
-    TRADING_CASE_REASON_COUNTS_SQL,
     TRADING_GATE_COUNTS_SQL,
     console_cases_statement,
     console_executions_statement,
@@ -119,10 +120,11 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "trading_case_outcomes_by_id",
         "trading_console_cases",
         "trading_console_cases_filtered",
+        "trading_case_list_decisions",
         "trading_console_scope_cases",
         "trading_console_scope_totals",
         "trading_case_counts",
-        "trading_case_reason_counts",
+        "trading_case_decision_counts",
         "trading_gate_counts",
     ),
     "/api/trading/cases/{case_id}/replay": (
@@ -271,6 +273,13 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
+            name="trading_case_list_decisions",
+            sql=TRADING_CASE_LIST_DECISIONS_SQL,
+            params=(["0" * 64],),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
             name="trading_case_outcomes_by_id",
             sql=TRADING_CASE_OUTCOMES_SQL,
             params=("0" * 64,),
@@ -343,10 +352,10 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
-            name="trading_case_reason_counts",
-            sql=TRADING_CASE_REASON_COUNTS_SQL,
+            name="trading_case_decision_counts",
+            sql=TRADING_CASE_DECISION_COUNTS_SQL,
             params=(since_ms,),
-            max_read_return_amplification=20.0,
+            max_read_return_amplification=200.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(

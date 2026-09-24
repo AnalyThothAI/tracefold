@@ -200,10 +200,11 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "trading_case_outcomes_by_id",
         "trading_console_cases",
         "trading_console_cases_filtered",
+        "trading_case_list_decisions",
         "trading_console_scope_cases",
         "trading_console_scope_totals",
         "trading_case_counts",
-        "trading_case_reason_counts",
+        "trading_case_decision_counts",
         "trading_gate_counts",
     )
     # #604 T3: the desk table's third statement is the only read on the page with no window at all.

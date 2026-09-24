@@ -23,9 +23,16 @@ from typing import Any
 # and one over `trading_trade_signals`, on every 15 s poll of every route -- and the only surface that
 # ever printed them was the chrome figure strip #537 PR-5 deleted.
 TRADING_CASE_COUNTS_SQL = "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state"
-TRADING_CASE_REASON_COUNTS_SQL = (
-    "SELECT coalesce(policy_reason, 'undecided') AS reason, count(*) AS n "
-    "FROM trading_cases WHERE created_at_ms >= %s GROUP BY reason"
+TRADING_CASE_DECISION_COUNTS_SQL = (
+    "SELECT decision.action, decision.publish_status, count(*) AS n "
+    "FROM trading_case_decisions decision "
+    "JOIN trading_cases case_row ON case_row.case_id = decision.case_id "
+    "WHERE case_row.created_at_ms >= %s "
+    "GROUP BY decision.action, decision.publish_status ORDER BY decision.action, decision.publish_status"
+)
+TRADING_CASE_LIST_DECISIONS_SQL = (
+    "SELECT case_id, action, publish_status, decision ->> 'side' AS side "
+    "FROM trading_case_decisions WHERE case_id = ANY(%s)"
 )
 
 # The admission funnel's own top, and the two counts above are its bottom: every frame the lane looked
@@ -51,7 +58,9 @@ _CASE_COLUMNS = """
     manifest_sha256, state, policy_decision, policy_reason, policy_checks,
     observed_at_ms, created_at_ms AS case_created_at_ms, decided_at_ms,
     trigger_id, target_asset_id, target_selection, entry_scope_id,
-    mapping_semantics_digest, analysis_status, evidence_ref
+    mapping_semantics_digest, analysis_status, evidence_ref,
+    (SELECT source.payload ->> 'evidence_ref' FROM trading_triggers source
+      WHERE source.trigger_id = trading_cases.trigger_id AND source.kind = 'oi') AS source_item_id
 """
 
 # `GET /api/trading/cases?case_id=<id>`: the drawer's whole Case read, by primary key.
@@ -99,7 +108,14 @@ def console_cases_statement(
         ("state = ANY(%(states)s)", "states", list(states) if states else None),
         ("underlying_key = %(asset)s", "asset", f"crypto:{asset}" if asset else None),
         ("policy_reason = %(reason)s", "reason", reason),
-        ("manifest #>> '{contexts,oi,source_item_id}' = %(source_item_id)s", "source_item_id", source_item_id),
+        (
+            "(manifest #>> '{contexts,oi,source_item_id}' = %(source_item_id)s "
+            "OR EXISTS (SELECT 1 FROM trading_triggers source "
+            "WHERE source.trigger_id = trading_cases.trigger_id AND source.kind = 'oi' "
+            "AND source.payload ->> 'evidence_ref' = %(source_item_id)s))",
+            "source_item_id",
+            source_item_id,
+        ),
     ):
         if value is not None:
             predicates.append(expression)
@@ -393,9 +409,12 @@ class QueryStorage:
         rows = self.conn.execute(TRADING_CASE_COUNTS_SQL, (int(since_ms),)).fetchall()
         return {str(row["state"]): int(row["n"]) for row in rows}
 
-    def case_reason_counts(self, *, since_ms: int) -> dict[str, int]:
-        rows = self.conn.execute(TRADING_CASE_REASON_COUNTS_SQL, (int(since_ms),)).fetchall()
-        return {str(row["reason"]): int(row["n"]) for row in rows}
+    def case_decision_counts(self, *, since_ms: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(TRADING_CASE_DECISION_COUNTS_SQL, (int(since_ms),)).fetchall()
+        return [
+            {"action": str(row["action"]), "publish_status": str(row["publish_status"]), "count": int(row["n"])}
+            for row in rows
+        ]
 
     def gate_counts(self, *, since_ms: int) -> list[dict[str, Any]]:
         """One count per admission answer in the window, biggest first."""
@@ -412,7 +431,18 @@ class QueryStorage:
         **filters: Any,
     ) -> list[dict[str, Any]]:
         sql, params = console_cases_statement(since_ms=since_ms, states=states, limit=limit, **filters)
-        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+        rows = [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+        ids = [str(row["case_id"]) for row in rows if row.get("trigger_id")]
+        if ids:
+            decisions = self.conn.execute(TRADING_CASE_LIST_DECISIONS_SQL, (ids,)).fetchall()
+            by_case = {str(row["case_id"]): row for row in decisions}
+            for row in rows:
+                decision = by_case.get(str(row["case_id"]))
+                if decision is not None:
+                    row["analysis_action"] = decision["action"]
+                    row["analysis_publish_status"] = decision["publish_status"]
+                    row["analysis_side"] = decision["side"]
+        return rows
 
     def console_case_total(self, *, since_ms: int, **filters: Any) -> int:
         sql, params = console_cases_statement(since_ms=since_ms, count_only=True, limit=1, **filters)
@@ -470,7 +500,8 @@ class QueryStorage:
 __all__ = [
     "CONSOLE_CASE_BY_ID_SQL",
     "TRADING_CASE_COUNTS_SQL",
-    "TRADING_CASE_REASON_COUNTS_SQL",
+    "TRADING_CASE_DECISION_COUNTS_SQL",
+    "TRADING_CASE_LIST_DECISIONS_SQL",
     "TRADING_GATE_COUNTS_SQL",
     "QueryStorage",
     "console_cases_statement",

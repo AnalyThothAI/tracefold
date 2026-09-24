@@ -7888,6 +7888,17 @@
         "additionalProperties": false,
         "description": "One frozen Case, as the drawer behind `?case=<id>` renders it.\n\nThe four measured OI numbers here were a second copy of what `policy_checks` already carries with\nthe threshold each was measured against, `policy_version` a second copy of `policy_id`, and\n`policy_decision` a required Literal over a nullable column -- exactly the shape that turned a\nstored `NULL` into a 500 on a read route (#532, #537 PR-5). `policy_config` was the same duplicate\none level up: the frozen dictionary it published is where `policy_checks[].threshold` comes from,\nso every number that was actually tested is already on the row beside what it was measured against,\nand `policy_config_digest` still identifies the whole set (#604 T3). `state` and `policy_reason`\nare the terminal answer; `base_symbol` is the identity the drawer titles itself with.",
         "properties": {
+          "analysis_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Action"
+          },
           "analysis_decision": {
             "anyOf": [
               {
@@ -7904,6 +7915,28 @@
             },
             "title": "Analysis Outcomes",
             "type": "array"
+          },
+          "analysis_publish_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Publish Status"
+          },
+          "analysis_side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Side"
           },
           "analysis_status": {
             "anyOf": [
@@ -8119,6 +8152,17 @@
               }
             ],
             "title": "Trigger Id"
+          },
+          "trigger_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Kind"
           }
         },
         "required": [
@@ -8154,6 +8198,13 @@
             "title": "Complete",
             "type": "boolean"
           },
+          "decision_counts_24h": {
+            "items": {
+              "$ref": "#/components/schemas/TradingDecisionCountData"
+            },
+            "title": "Decision Counts 24H",
+            "type": "array"
+          },
           "next_cursor": {
             "anyOf": [
               {
@@ -8164,13 +8215,6 @@
               }
             ],
             "title": "Next Cursor"
-          },
-          "reason_counts_24h": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Reason Counts 24H",
-            "type": "object"
           },
           "state_counts_24h": {
             "additionalProperties": {
@@ -8204,6 +8248,32 @@
           "window_hours"
         ],
         "title": "TradingCasesData",
+        "type": "object"
+      },
+      "TradingDecisionCountData": {
+        "additionalProperties": false,
+        "description": "Agent outcome and publication status for Cases created in the 24 h window.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "count": {
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "publish_status": {
+            "title": "Publish Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "publish_status",
+          "count"
+        ],
+        "title": "TradingDecisionCountData",
         "type": "object"
       },
       "TradingDecisionRuntimeData": {
