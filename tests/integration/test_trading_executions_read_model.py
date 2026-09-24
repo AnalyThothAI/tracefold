@@ -14,6 +14,7 @@ import time
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,6 +32,7 @@ from tests.nautilus_oi_runtime_fixtures import (
 )
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
+from tracefold.app.http.routes import trading as trading_routes
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.config.models import Settings
 from tracefold.trading.execution_contracts import ExecutionObservationV1
@@ -279,16 +281,22 @@ def _fill(identity: str, *, leg: str, price: str, at_ns: int, commission: str | 
 
 def test_realized_totals_count_a_plan_whose_fills_cannot_yield_a_result_as_missing_never_as_zero(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Three closed plans: whole fills with fees, a fill with no commission (history), no exit fill."""
 
+    # Freeze the read at UTC noon: a CI run crossing midnight must still test
+    # three same-day closes rather than the wall clock's previous day.
+    day_ns = 86_400 * SECOND_NS
+    now_ns = (time.time_ns() // day_ns) * day_ns + 12 * 3_600 * SECOND_NS
+    monkeypatch.setattr(trading_routes, "time", SimpleNamespace(time=lambda: now_ns / SECOND_NS))
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
         observations = []
         for index, (entry_fee, exit_leg) in enumerate((("0.1", "stop"), (None, "take_profit"), ("0.1", None))):
             identity = str(index + 1) * 64
-            start = time.time_ns() - (index + 1) * 60 * SECOND_NS
+            start = now_ns - (index + 1) * 60 * SECOND_NS
             _seed_signal(
                 signal_id=identity, case_id=f"case-pnl-{index}", observed_at_ns=start, expires_at_ns=start + 10
             )
