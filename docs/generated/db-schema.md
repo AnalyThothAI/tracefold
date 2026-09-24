@@ -1072,7 +1072,7 @@
 | `direction` | `TEXT` | True | `None` |
 | `payload` | `JSONB` | False | `None` |
 
-## `trading_research_tapes`
+## `trading_root_market_tapes`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|

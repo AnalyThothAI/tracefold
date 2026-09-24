@@ -301,7 +301,7 @@ class AnalysisStorage:
                 )
         if state == "PENDING":
             self.conn.execute(
-                "INSERT INTO trading_research_tapes (case_id,next_sample_at_ms,expires_at_ms) VALUES (%s,%s,%s)",
+                "INSERT INTO trading_root_market_tapes (case_id,next_sample_at_ms,expires_at_ms) VALUES (%s,%s,%s)",
                 (case_id, int(now_ms), root_expires + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS),
             )
         return trigger_id, case_id, "accepted"
@@ -311,7 +311,7 @@ class AnalysisStorage:
             """
             SELECT tape.case_id,tape.tape_ref,tape.next_sample_at_ms,tape.expires_at_ms,
                    c.target_selection,c.root_expires_at_ms,t.first_visible_at_ms
-              FROM trading_research_tapes tape
+              FROM trading_root_market_tapes tape
               JOIN trading_cases c USING (case_id)
               JOIN trading_triggers t USING (trigger_id)
              WHERE tape.next_sample_at_ms<=%s AND tape.expires_at_ms>=%s
@@ -326,7 +326,7 @@ class AnalysisStorage:
     ) -> bool:
         updated = self.conn.execute(
             """
-            UPDATE trading_research_tapes SET tape_ref=%s,next_sample_at_ms=%s
+            UPDATE trading_root_market_tapes SET tape_ref=%s,next_sample_at_ms=%s
              WHERE case_id=%s AND tape_ref IS NOT DISTINCT FROM %s
                AND next_sample_at_ms<=%s AND expires_at_ms>=%s
             """,

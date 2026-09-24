@@ -19,7 +19,7 @@ def upgrade() -> None:
     op.execute("SET LOCAL statement_timeout = '60s'")
     op.execute(
         """
-        CREATE TABLE public.trading_research_tapes (
+        CREATE TABLE public.trading_root_market_tapes (
             case_id text PRIMARY KEY REFERENCES public.trading_cases(case_id) ON DELETE RESTRICT,
             tape_ref text,
             next_sample_at_ms bigint NOT NULL,
@@ -27,7 +27,7 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX ix_trading_research_tapes_due ON public.trading_research_tapes(next_sample_at_ms,case_id)")
+    op.execute("CREATE INDEX ix_trading_root_market_tapes_due ON public.trading_root_market_tapes(next_sample_at_ms,case_id)")
 
 
 def downgrade() -> None:

@@ -141,7 +141,7 @@ TRADING_TABLES = (
     "trading_model_calls",
     "trading_watch_observations",
     "trading_case_evaluations",
-    "trading_research_tapes",
+    "trading_root_market_tapes",
     "trading_signal_retirements",
     "trading_entry_validity_checks",
     "trading_trade_signals",
