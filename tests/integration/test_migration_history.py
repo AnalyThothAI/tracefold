@@ -48,7 +48,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260923_0392"
+HEAD = "20260924_0393"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -255,6 +255,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260923_0392",
         "20260923_0391",
         "20260923_0390",
         "20260922_0389",
@@ -348,11 +349,16 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
+    # The attempt ledger is additive but still forward-only.
+    with pytest.raises(RuntimeError, match="trading_analysis_attempts_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == HEAD
+    command.stamp(config, "20260923_0392")
     # The scoped V2 cut preserves existing plans but cannot reconstruct the
     # unexecuted V1 signal stream it retired.
     with pytest.raises(RuntimeError, match="trading_signal_v2_scope_forward_only"):
         command.downgrade(config, "base")
-    assert _stamped_revision() == HEAD
+    assert _stamped_revision() == "20260923_0392"
     command.stamp(config, "20260923_0391")
     with pytest.raises(RuntimeError, match="trading_analysis_foundation_forward_only"):
         command.downgrade(config, "base")
