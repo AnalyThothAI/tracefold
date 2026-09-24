@@ -23,13 +23,16 @@ from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.trading.engine.strategy import STRATEGY_VERSION
 
 
-def _case(case_id: str, root: str, at_ms: int, *, group: str | None = None) -> dict[str, object]:
+def _case(
+    case_id: str, root: str, at_ms: int, *, group: str | None = None, expires_at_ms: int | None = None
+) -> dict[str, object]:
     return {
         "case_id": case_id,
         "root_trigger_id": root,
         "source_group_id": group or root,
         "asset_id": "crypto:SOL",
         "created_at_ms": at_ms,
+        "root_expires_at_ms": at_ms + 600_000 if expires_at_ms is None else expires_at_ms,
         "run_kind": "initial",
         "state": "DONE",
         "decision_action": "NO_TRADE",
@@ -39,11 +42,12 @@ def _case(case_id: str, root: str, at_ms: int, *, group: str | None = None) -> d
 
 def test_time_purge_and_source_group_keep_complete_roots_together() -> None:
     cutoff = 100_000_000
-    assert _split(cutoff - PURGE_MS, cutoff) == "development"
-    assert _split(cutoff - PURGE_MS + 1, cutoff) == "purged"
-    assert _split(cutoff, cutoff) == "holdout"
+    development_at = cutoff - PURGE_MS - 600_000
+    assert _split(development_at, development_at + 600_000, cutoff) == "development"
+    assert _split(development_at + 1, development_at + 600_001, cutoff) == "purged"
+    assert _split(cutoff, cutoff + 600_000, cutoff) == "holdout"
     cases = [
-        _case("a", "root-a", cutoff - PURGE_MS, group="shared"),
+        _case("a", "root-a", development_at, group="shared"),
         _case("b", "root-b", cutoff, group="shared"),
         _case("c", "root-c", cutoff + 1),
     ]
@@ -57,6 +61,26 @@ def test_time_purge_and_source_group_keep_complete_roots_together() -> None:
     assert report["funnel"]["conditional_cases"] == 1
     assert report["arms"]["holdout"]["dspy"]["net_evaluable"] == 0
     assert report["arms"]["holdout"]["dspy"]["net_unknown"] == 0
+
+
+def test_split_purges_a_late_watch_entry_whose_outcome_crosses_cutoff() -> None:
+    cutoff = 100_000_000
+    created = cutoff - PURGE_MS - 60_000
+    root_expires = created + 600_000
+    assert created + PURGE_MS < cutoff
+    assert _split(created, root_expires, cutoff) == "purged"
+    root = _case("late-watch", "root-late-watch", created, expires_at_ms=root_expires)
+    report = evaluate([root], expected_roots=1, cutoff_ms=cutoff, invalid_outputs=[], expected_invalid=0)
+    assert report["protocol_version"] == "trading_cohort_v3"
+    assert report["outcome_purge_ms"] == PURGE_MS
+    assert report["split_roots"] == {"purged": 1}
+
+
+def test_split_requires_original_root_expiry() -> None:
+    root = _case("missing-expiry", "root-missing-expiry", 100_000_000)
+    del root["root_expires_at_ms"]
+    with pytest.raises(ValueError, match="root_expiry_missing_or_invalid"):
+        evaluate([root], expected_roots=1, cutoff_ms=200_000_000, invalid_outputs=[], expected_invalid=0)
 
 
 def test_source_asset_strata_report_each_arms_coverage_and_isolated_portfolio() -> None:

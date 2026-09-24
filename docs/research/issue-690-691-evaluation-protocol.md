@@ -185,9 +185,13 @@ uv run python scripts/trading_analysis_cohort.py \
   --output /secure/export/aggregate-report.json
 ```
 
-The cutoff is fixed before examining outcomes. A four-hour purge precedes it;
-all later roots are holdout. Every child follows its root. Roots sharing a
-source group across splits are excluded from both splits and counted. Asset
+The cutoff is fixed before examining outcomes. A development root must have
+expired at least four hours and four minutes before the cutoff. This covers
+the last WATCH entry, four-hour hold, entry-window margin and final funding
+scan. A root created at or after the cutoff is holdout; intervening roots are
+purged. The report and research manifest record this split rule and purge
+duration. Every child follows its root. Roots sharing a source group across
+splits are excluded from both splits and counted. Asset
 identity is a reporting stratum, not a randomized split key. Rule and DSPy
 arms use the same roots, timestamps, capital limits and strategy version.
 Each source/asset stratum reports both arms' decisions, receipt coverage,

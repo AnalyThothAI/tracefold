@@ -19,13 +19,17 @@ from tracefold.trading.engine.contracts import ExitPlan
 from tracefold.trading.engine.strategy import (
     BAR_MS,
     ENTRY_WINDOW_MS,
+    MAX_HOLDING_SECONDS,
     STRATEGY_VERSION,
     build_event_price_candidates,
     range_cross_side,
 )
 
 ARMS = ("rule", "dspy")
-PURGE_MS = 4 * 3_600_000
+# The last entry can occur just before the root expires. The root tape's
+# four-hour holding horizon, entry-window margin and final funding scan must
+# all precede the holdout cutoff.
+PURGE_MS = MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS + 120_000
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:
@@ -39,11 +43,11 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _split(created_at_ms: int, cutoff_ms: int) -> str:
-    if created_at_ms + PURGE_MS <= cutoff_ms:
-        return "development"
+def _split(created_at_ms: int, root_expires_at_ms: int, cutoff_ms: int) -> str:
     if created_at_ms >= cutoff_ms:
         return "holdout"
+    if max(created_at_ms, root_expires_at_ms) + PURGE_MS <= cutoff_ms:
+        return "development"
     return "purged"
 
 
@@ -554,7 +558,11 @@ def evaluate(
             raise ValueError("root_identity_invalid")
         initial[root_id] = first[0]
         group = str(first[0].get("source_group_id") or root_id)
-        group_splits[group].add(_split(int(first[0]["created_at_ms"]), cutoff_ms))
+        try:
+            root_expires_at_ms = int(first[0]["root_expires_at_ms"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("root_expiry_missing_or_invalid") from exc
+        group_splits[group].add(_split(int(first[0]["created_at_ms"]), root_expires_at_ms, cutoff_ms))
     partitions = {}
     for root_id, row in initial.items():
         group = str(row.get("source_group_id") or root_id)
@@ -602,8 +610,10 @@ def evaluate(
         model_usd_to_usdt_rate=model_usd_to_usdt_rate,
     )
     return {
-        "protocol_version": "trading_cohort_v2",
+        "protocol_version": "trading_cohort_v3",
         "strategy_version": STRATEGY_VERSION,
+        "time_split_rule": "development_after_root_expiry_plus_holding_and_funding_scan; holdout_from_cutoff",
+        "outcome_purge_ms": PURGE_MS,
         "decision_policy_versions": sorted(
             {str(row["decision_policy_version"]) for row in cases if row.get("decision_policy_version")}
         ),
@@ -693,6 +703,8 @@ def main() -> int:
         "max_notional_fraction": str(args.max_notional_fraction),
         "risk_fraction": str(args.risk_fraction),
         "model_usd_to_usdt_rate": (None if args.model_usd_to_usdt_rate is None else str(args.model_usd_to_usdt_rate)),
+        "time_split_rule": report["time_split_rule"],
+        "outcome_purge_ms": report["outcome_purge_ms"],
     }
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
