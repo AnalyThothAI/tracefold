@@ -77,9 +77,12 @@ a v3 model answer from a historical v2 output.
 The cohort export retains each Decision's policy version. A legacy model
 Decision or retired timed recheck makes that root's new DSPy-arm result
 uncomparable; it cannot be relabeled as a v3 run or treated as zero cashflow.
-A failed Case without a Decision and an unresolved WATCH without a conditional
-Decision likewise have unknown cashflow. A deterministic `EXCLUDED` root has
-zero trading cashflow in both arms under the shared eligibility gate.
+A terminal `FAILED` Case without a Decision has zero trading cashflow because
+it published no order; the report separately counts this technical failure
+and any unknown model cost. A pending Case without a Decision remains unknown.
+An expired WATCH without a child is a recorded no-entry outcome; a still
+waiting or otherwise unresolved WATCH is unknown. A deterministic `EXCLUDED`
+root has zero trading cashflow in both arms under the shared eligibility gate.
 The exporter does not count an excluded-at-source root's absent analysis snapshot
 or research tape as a missing archive; neither artifact was required to exclude it.
 The export also retains the WATCH observation's terminal state, last status,
@@ -124,6 +127,7 @@ uv run python scripts/trading_analysis_cohort.py \
   --cases-manifest /secure/export/cases-manifest.json \
   --invalid-outputs /secure/export/invalid-model-outputs.jsonl \
   --cutoff-ms 1790197595682 \
+  --model-usd-to-usdt-rate 1 \
   --output /secure/export/aggregate-report.json
 ```
 
@@ -143,6 +147,12 @@ Known model cost and unknown calls remain separate. An arm with missing
 contemporary receipts has an unknown net result; gross close-to-close price
 paths are opportunity labels only. Closed-trade drawdown cannot establish
 account drawdown while positions are open.
+The USD-to-USDT conversion above is an explicit research assumption, not an
+observed FX rate. The holdout conclusion is descriptive only: it requires
+complete net, account marks and model cost, plus at least one evaluable entry.
+Positive after-model difference supports further research; zero or negative
+shows no observed advantage. Missing inputs yield evidence insufficient, and
+none of these labels is a confidence interval or a venue-fill claim.
 If any root may have traded but its action or receipt is unknown, the report
 still counts validated receipts and names the missing reasons, but it does not
 publish a portfolio ending equity, capital-reject total or drawdown as though

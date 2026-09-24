@@ -228,6 +228,7 @@ def _arm_summary(
     unknown_net = 0
     unknown_reasons: Counter[str] = Counter()
     known_model_cost = unknown_model_calls = 0
+    technical_no_trade = expired_watch_no_trade = 0
     for root_cases in roots:
         initial = next(row for row in root_cases if row["run_kind"] == "initial")
         action = _rule_action(root_cases) if arm == "rule" else _dspy_action(root_cases)
@@ -251,10 +252,21 @@ def _arm_summary(
         if arm == "dspy" and action is None:
             if initial.get("state") == "EXCLUDED" and len(root_cases) == 1:
                 continue
+            latest = max(root_cases, key=lambda row: (int(row.get("recheck_seq") or 0), int(row["created_at_ms"])))
+            if latest.get("state") == "FAILED" and not latest.get("decision_action"):
+                technical_no_trade += 1
+                continue
             unknown_net += 1
             unknown_reasons["model_decision_unavailable"] += 1
             continue
         if arm == "dspy" and action == "WATCH":
+            if (
+                initial.get("watch_status") == "expired"
+                and not initial.get("watch_child_case_id")
+                and len(root_cases) == 1
+            ):
+                expired_watch_no_trade += 1
+                continue
             unknown_net += 1
             unknown_reasons["watch_outcome_unverified"] += 1
             continue
@@ -399,6 +411,8 @@ def _arm_summary(
         "unrealized_marks_complete": portfolio_complete and account_drawdown is not None,
         "model_cost_known_microusd": known_model_cost,
         "model_cost_unknown_calls": unknown_model_calls,
+        "technical_no_trade": technical_no_trade,
+        "expired_watch_no_trade": expired_watch_no_trade,
     }
 
 
@@ -427,6 +441,56 @@ def _legacy_output_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _holdout_comparison(
+    *,
+    root_count: int,
+    rule: dict[str, Any],
+    dspy: dict[str, Any],
+    model_usd_to_usdt_rate: Decimal | None,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if root_count == 0:
+        reasons.append("holdout_empty")
+    if not rule["portfolio_complete"] or not dspy["portfolio_complete"]:
+        reasons.append("net_or_capital_unknown")
+    if rule["account_drawdown_usdt"] is None or dspy["account_drawdown_usdt"] is None:
+        reasons.append("account_marks_incomplete")
+    if not rule["net_evaluable"] and not dspy["net_evaluable"]:
+        reasons.append("no_evaluable_entries")
+    if dspy["model_cost_unknown_calls"]:
+        reasons.append("model_cost_unknown")
+    if dspy["model_cost_known_microusd"] and model_usd_to_usdt_rate is None:
+        reasons.append("model_currency_conversion_missing")
+    result: dict[str, Any] = {
+        "holdout_roots": root_count,
+        "model_usd_to_usdt_rate": None if model_usd_to_usdt_rate is None else str(model_usd_to_usdt_rate),
+        "trading_delta_usdt": None,
+        "model_cost_usdt": None,
+        "after_model_delta_usdt": None,
+        "incomplete_reasons": reasons,
+        "uncertainty": "descriptive_shadow_result_only; no confidence interval or venue-fill claim",
+        "research_conclusion": "evidence_insufficient",
+    }
+    if reasons:
+        return result
+    trading_delta = Decimal(str(dspy["ending_equity_usdt"])) - Decimal(str(rule["ending_equity_usdt"]))
+    model_cost = (
+        Decimal(dspy["model_cost_known_microusd"])
+        / 1_000_000
+        * (model_usd_to_usdt_rate if model_usd_to_usdt_rate is not None else Decimal(1))
+    )
+    after_model_delta = trading_delta - model_cost
+    result.update(
+        trading_delta_usdt=str(trading_delta),
+        model_cost_usdt=str(model_cost),
+        after_model_delta_usdt=str(after_model_delta),
+        research_conclusion=(
+            "supports_continued_research" if after_model_delta > 0 else "no_observed_advantage_or_worse"
+        ),
+    )
+    return result
+
+
 def evaluate(
     cases: list[dict[str, Any]],
     *,
@@ -438,6 +502,7 @@ def evaluate(
     max_positions: int = 1,
     max_notional_fraction: Decimal = Decimal("0.1"),
     risk_fraction: Decimal = Decimal("0.01"),
+    model_usd_to_usdt_rate: Decimal | None = None,
 ) -> dict[str, Any]:
     ids = [str(row["case_id"]) for row in cases]
     if len(ids) != len(set(ids)):
@@ -456,6 +521,10 @@ def evaluate(
         or max_positions <= 0
         or not 0 < max_notional_fraction <= 1
         or not 0 < risk_fraction <= 1
+        or (
+            model_usd_to_usdt_rate is not None
+            and (not model_usd_to_usdt_rate.is_finite() or model_usd_to_usdt_rate <= 0)
+        )
     ):
         raise ValueError("capital_config_invalid")
     initial: dict[str, dict[str, Any]] = {}
@@ -478,6 +547,26 @@ def evaluate(
         for attempt in row.get("attempts", [])
         if isinstance(attempt, dict) and (attempt.get("model_name") or attempt.get("prompt_sha"))
     }
+    arms = {
+        partition: {
+            arm: _arm_summary(
+                [root_cases for root_id, root_cases in roots.items() if partitions[root_id] == partition],
+                arm,
+                initial_equity=initial_equity_usdt,
+                max_positions=max_positions,
+                max_notional_fraction=max_notional_fraction,
+                risk_fraction=risk_fraction,
+            )
+            for arm in ARMS
+        }
+        for partition in ("development", "holdout")
+    }
+    holdout = _holdout_comparison(
+        root_count=sum(partition == "holdout" for partition in partitions.values()),
+        rule=arms["holdout"]["rule"],
+        dspy=arms["holdout"]["dspy"],
+        model_usd_to_usdt_rate=model_usd_to_usdt_rate,
+    )
     return {
         "protocol_version": "trading_cohort_v2",
         "strategy_version": STRATEGY_VERSION,
@@ -491,8 +580,10 @@ def evaluate(
         "funnel": {
             "initial_excluded": sum(row.get("state") == "EXCLUDED" for row in initial.values()),
             "initial_decisions": sum(bool(row.get("decision_action")) for row in initial.values()),
-            "initial_failures": sum(
-                row.get("state") != "EXCLUDED" and not row.get("decision_action") for row in initial.values()
+            "initial_failures": sum(row.get("state") == "FAILED" for row in initial.values()),
+            "initial_unsettled": sum(
+                row.get("state") in ("PENDING", "RUNNING") and not row.get("decision_action")
+                for row in initial.values()
             ),
             "conditional_cases": sum(row["run_kind"] == "conditional" for row in cases),
             "historical_rechecks": sum(row["run_kind"] == "recheck" for row in cases),
@@ -519,22 +610,10 @@ def evaluate(
             )
             for partition in ("development", "holdout")
         },
-        "arms": {
-            partition: {
-                arm: _arm_summary(
-                    [root_cases for root_id, root_cases in roots.items() if partitions[root_id] == partition],
-                    arm,
-                    initial_equity=initial_equity_usdt,
-                    max_positions=max_positions,
-                    max_notional_fraction=max_notional_fraction,
-                    risk_fraction=risk_fraction,
-                )
-                for arm in ARMS
-            }
-            for partition in ("development", "holdout")
-        },
+        "arms": arms,
+        "holdout_comparison": holdout,
         "historical_invalid_outputs": _legacy_output_summary(invalid_outputs),
-        "research_conclusion": "evidence_insufficient_without_complete_contemporary_receipts",
+        "research_conclusion": holdout["research_conclusion"],
     }
 
 
@@ -550,6 +629,7 @@ def main() -> int:
     parser.add_argument("--max-positions", type=int, default=1)
     parser.add_argument("--max-notional-fraction", type=Decimal, default=Decimal("0.1"))
     parser.add_argument("--risk-fraction", type=Decimal, default=Decimal("0.01"))
+    parser.add_argument("--model-usd-to-usdt-rate", type=Decimal)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     cases_digest = hashlib.sha256(args.cases.read_bytes()).hexdigest()
@@ -571,6 +651,7 @@ def main() -> int:
         max_positions=args.max_positions,
         max_notional_fraction=args.max_notional_fraction,
         risk_fraction=args.risk_fraction,
+        model_usd_to_usdt_rate=args.model_usd_to_usdt_rate,
     )
     report["research_manifest"] = {
         "cases_sha256": cases_digest,
@@ -581,6 +662,7 @@ def main() -> int:
         "max_positions": args.max_positions,
         "max_notional_fraction": str(args.max_notional_fraction),
         "risk_fraction": str(args.risk_fraction),
+        "model_usd_to_usdt_rate": (None if args.model_usd_to_usdt_rate is None else str(args.model_usd_to_usdt_rate)),
     }
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0

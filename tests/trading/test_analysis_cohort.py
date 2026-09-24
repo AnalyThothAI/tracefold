@@ -9,7 +9,15 @@ from scripts.export_trading_analysis_cohort import (
     _rule_shadow_receipt,
     _rule_watch_path,
 )
-from scripts.trading_analysis_cohort import PURGE_MS, _model_cost, _rule_action, _rule_decision, _split, evaluate
+from scripts.trading_analysis_cohort import (
+    PURGE_MS,
+    _holdout_comparison,
+    _model_cost,
+    _rule_action,
+    _rule_decision,
+    _split,
+    evaluate,
+)
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.trading.engine.strategy import STRATEGY_VERSION
 
@@ -150,7 +158,7 @@ def test_legacy_model_and_timer_are_not_new_dspy_arm_evidence() -> None:
     assert dspy["ending_equity_usdt"] is None
 
 
-def test_failed_decision_and_unresolved_watch_are_not_zero_cashflow() -> None:
+def test_terminal_failure_and_expired_watch_have_zero_cashflow_but_open_states_are_unknown() -> None:
     at_ms = 100_000_000
     failed = _case("failed", "root-failed", at_ms)
     failed.update(state="FAILED", decision_action=None, decision_policy_version=None)
@@ -158,18 +166,66 @@ def test_failed_decision_and_unresolved_watch_are_not_zero_cashflow() -> None:
     watch["decision_action"] = "WATCH"
     excluded = _case("excluded", "root-excluded", at_ms + 2)
     excluded.update(state="EXCLUDED", decision_action=None, decision_policy_version=None)
+    expired = _case("expired", "root-expired", at_ms + 3)
+    expired.update(decision_action="WATCH", watch_status="expired")
+    pending = _case("pending", "root-pending", at_ms + 4)
+    pending.update(state="PENDING", decision_action=None, decision_policy_version=None)
     report = evaluate(
-        [failed, watch, excluded], expected_roots=3, cutoff_ms=at_ms, invalid_outputs=[], expected_invalid=0
+        [failed, watch, excluded, expired, pending],
+        expected_roots=5,
+        cutoff_ms=at_ms,
+        invalid_outputs=[],
+        expected_invalid=0,
     )
     dspy = report["arms"]["holdout"]["dspy"]
     assert dspy["net_unknown_reasons"] == {
         "model_decision_unavailable": 1,
         "watch_outcome_unverified": 1,
     }
+    assert dspy["technical_no_trade"] == 1
+    assert dspy["expired_watch_no_trade"] == 1
     assert dspy["portfolio_complete"] is False
     assert dspy["ending_equity_usdt"] is None
-    assert report["funnel"]["watch_statuses"] == {"missing": 1}
+    assert report["funnel"]["watch_statuses"] == {"expired": 1, "missing": 1}
+    assert report["funnel"]["initial_failures"] == 1
+    assert report["funnel"]["initial_unsettled"] == 1
     assert report["arms"]["holdout"]["rule"]["decisions"]["NO_TRADE"] == 1
+    settled = evaluate(
+        [failed, expired, excluded], expected_roots=3, cutoff_ms=at_ms, invalid_outputs=[], expected_invalid=0
+    )
+    assert settled["arms"]["holdout"]["dspy"]["ending_equity_usdt"] == "1000"
+
+
+def test_holdout_conclusion_requires_complete_net_drawdown_and_currency_assumption() -> None:
+    rule = {
+        "portfolio_complete": True,
+        "account_drawdown_usdt": "2",
+        "net_evaluable": 1,
+        "ending_equity_usdt": "1001",
+    }
+    dspy = {
+        **rule,
+        "ending_equity_usdt": "1002",
+        "model_cost_known_microusd": 2_000_000,
+        "model_cost_unknown_calls": 0,
+    }
+    missing_fx = _holdout_comparison(root_count=3, rule=rule, dspy=dspy, model_usd_to_usdt_rate=None)
+    assert missing_fx["research_conclusion"] == "evidence_insufficient"
+    assert missing_fx["incomplete_reasons"] == ["model_currency_conversion_missing"]
+    priced = _holdout_comparison(root_count=3, rule=rule, dspy=dspy, model_usd_to_usdt_rate=Decimal("1"))
+    assert priced["after_model_delta_usdt"] == "-1"
+    assert priced["research_conclusion"] == "no_observed_advantage_or_worse"
+    dspy["model_cost_known_microusd"] = 100_000
+    positive = _holdout_comparison(root_count=3, rule=rule, dspy=dspy, model_usd_to_usdt_rate=Decimal("1"))
+    assert positive["after_model_delta_usdt"] == "0.9"
+    assert positive["research_conclusion"] == "supports_continued_research"
+    dspy["model_cost_unknown_calls"] = 1
+    assert (
+        _holdout_comparison(root_count=3, rule=rule, dspy=dspy, model_usd_to_usdt_rate=Decimal("1"))[
+            "research_conclusion"
+        ]
+        == "evidence_insufficient"
+    )
 
 
 def test_capital_limit_does_not_resize_a_validated_execution_receipt() -> None:
