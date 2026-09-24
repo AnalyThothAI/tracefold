@@ -73,6 +73,17 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
                 planned_quote_ref="planned-ref",
                 initial_result=None,
             )
+        root_due = trading.due_root_research_tapes(now_ms=1_100)
+        assert len(root_due) == 1 and root_due[0]["case_id"] == case_id
+        with conn.transaction():
+            assert trading.record_root_research_sample(
+                case_id=case_id, prior_ref=None, tape_ref="root-tape-1", sampled_at_ms=1_100
+            )
+            assert not trading.record_root_research_sample(
+                case_id=case_id, prior_ref=None, tape_ref="stale-root", sampled_at_ms=1_100
+            )
+        assert trading.due_root_research_tapes(now_ms=61_099) == []
+        assert trading.due_root_research_tapes(now_ms=61_100)[0]["tape_ref"] == "root-tape-1"
         assert trading.due_shadow_quote_samples(now_ms=61_999) == []
         due = trading.due_shadow_quote_samples(now_ms=62_000)
         assert len(due) == 1 and due[0]["case_id"] == case_id

@@ -48,7 +48,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260924_0395"
+HEAD = "20260924_0396"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -255,6 +255,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260924_0395",
         "20260924_0394",
         "20260924_0393",
         "20260923_0392",
@@ -351,9 +352,13 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="shadow_quote_tape_forward_only"):
+    with pytest.raises(RuntimeError, match="rule_research_tape_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260924_0395")
+    with pytest.raises(RuntimeError, match="shadow_quote_tape_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260924_0395"
     command.stamp(config, "20260924_0394")
     # PAPER funding observations are additive but still forward-only.
     with pytest.raises(RuntimeError, match="paper_funding_observations_forward_only"):

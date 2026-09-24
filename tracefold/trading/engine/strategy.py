@@ -16,6 +16,7 @@ STRATEGY_VERSION = "event_price_confirmation_v1"
 LOOKBACK_CLOSED_BARS = 15
 BAR_MS = 60_000
 ENTRY_WINDOW_MS = 120_000
+MAX_HOLDING_SECONDS = 14_400
 
 
 def range_cross_side(
@@ -63,7 +64,9 @@ def build_event_price_candidates(
     stop_bps = min(
         1_000, max(100, int((Decimal(2) * atr14 / close * 10_000).to_integral_value(rounding=ROUND_CEILING)))
     )
-    exit_plan = ExitPlan(stop_distance_bps=stop_bps, take_profit_bps=2 * stop_bps, max_holding_seconds=14_400)
+    exit_plan = ExitPlan(
+        stop_distance_bps=stop_bps, take_profit_bps=2 * stop_bps, max_holding_seconds=MAX_HOLDING_SECONDS
+    )
     if source_fact["kind"] == "oi":
         source_ready = all(source_fact.get(key) is not None for key in ("oi_change_bps", "measurement_definition"))
     else:

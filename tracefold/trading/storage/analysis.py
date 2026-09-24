@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from tracefold.platform.postgres.client import require_transaction
 from tracefold.trading.engine.policy import decision_identity
+from tracefold.trading.engine.strategy import ENTRY_WINDOW_MS, MAX_HOLDING_SECONDS
 from tracefold.trading.engine.target import TargetSelection
 from tracefold.trading.execution_contracts import TradeSignalV2
 from tracefold.trading.storage.execution_stream import ExecutionStreamStorage, PreparedTradeSignal
@@ -298,7 +299,40 @@ class AnalysisStorage:
                     "VALUES (%s,'source',%s,%s,'pending',%s)",
                     (case_id, horizon, _OUTCOME_VERSION, source_observed + horizon * 1_000),
                 )
+        if state == "PENDING":
+            self.conn.execute(
+                "INSERT INTO trading_research_tapes (case_id,next_sample_at_ms,expires_at_ms) VALUES (%s,%s,%s)",
+                (case_id, int(now_ms), root_expires + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS),
+            )
         return trigger_id, case_id, "accepted"
+
+    def due_root_research_tapes(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT tape.case_id,tape.tape_ref,tape.next_sample_at_ms,tape.expires_at_ms,
+                   c.target_selection,c.root_expires_at_ms,t.first_visible_at_ms
+              FROM trading_research_tapes tape
+              JOIN trading_cases c USING (case_id)
+              JOIN trading_triggers t USING (trigger_id)
+             WHERE tape.next_sample_at_ms<=%s AND tape.expires_at_ms>=%s
+             ORDER BY tape.next_sample_at_ms,tape.case_id LIMIT %s
+            """,
+            (int(now_ms), int(now_ms), max(1, min(64, limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_root_research_sample(
+        self, *, case_id: str, prior_ref: str | None, tape_ref: str, sampled_at_ms: int
+    ) -> bool:
+        updated = self.conn.execute(
+            """
+            UPDATE trading_research_tapes SET tape_ref=%s,next_sample_at_ms=%s
+             WHERE case_id=%s AND tape_ref IS NOT DISTINCT FROM %s
+               AND next_sample_at_ms<=%s AND expires_at_ms>=%s
+            """,
+            (tape_ref, int(sampled_at_ms) + 60_000, case_id, prior_ref, int(sampled_at_ms), int(sampled_at_ms)),
+        )
+        return bool(updated.rowcount)
 
     def claim_analysis_case(self, *, now_ms: int, lease_ms: int) -> dict[str, Any] | None:
         if lease_ms <= 0:

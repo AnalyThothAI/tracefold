@@ -493,6 +493,7 @@ class AnalysisRunner:
         self._active: set[asyncio.Task[bool]] = set()
         self._label_task: asyncio.Task[int] | None = None
         self._watch_task: asyncio.Task[int] | None = None
+        self._root_tape_task: asyncio.Task[int] | None = None
         self._quote_task: asyncio.Task[int] | None = None
         self._evaluation_task: asyncio.Task[int] | None = None
         self._db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-db")
@@ -1334,6 +1335,136 @@ class AnalysisRunner:
         except Exception:
             _LOG.exception("analysis_watch_observation_failed")
 
+    async def sample_root_research_once(self, *, limit: int = 8) -> int:
+        """Capture candidate-root quotes and closed bars regardless of model action."""
+        now_ms = _clock_ms()
+        rows = await self._db_async(lambda repos: repos.trading.due_root_research_tapes(now_ms=now_ms, limit=limit))
+        for row in rows:
+            try:
+                instrument = row["target_selection"]["instrument"]
+                native = str(instrument["native_symbol"])
+                environment = str(instrument["environment"])
+                prior_ref = row["tape_ref"]
+                tape = (
+                    {
+                        "version": "root_research_tape_v1",
+                        "case_id": row["case_id"],
+                        "native_symbol": native,
+                        "environment": environment,
+                        "mapping_semantics_digest": str(instrument["mapping_semantics_digest"]),
+                        "source_first_visible_at_ms": int(row["first_visible_at_ms"]),
+                        "root_expires_at_ms": int(row["root_expires_at_ms"]),
+                        "quotes": [],
+                        "closed_bars": [],
+                        "coverage": [],
+                    }
+                    if prior_ref is None
+                    else await _file_io(self.files.read, str(prior_ref))
+                )
+                if (
+                    tape.get("version") != "root_research_tape_v1"
+                    or tape.get("case_id") != row["case_id"]
+                    or tape.get("native_symbol") != native
+                    or tape.get("environment") != environment
+                    or tape.get("mapping_semantics_digest") != instrument["mapping_semantics_digest"]
+                ):
+                    raise ValueError("root_research_tape_identity_mismatch")
+                quotes, bars, coverage = tape.get("quotes"), tape.get("closed_bars"), tape.get("coverage")
+                if not isinstance(quotes, list) or not isinstance(bars, list) or not isinstance(coverage, list):
+                    raise ValueError("root_research_tape_invalid")
+                end_ms = now_ms // _BAR_MS * _BAR_MS
+                request = MarketDataRequest(
+                    dataset="perp_bars",
+                    native_symbol=native,
+                    venue="binance.usdm",
+                    environment=environment,
+                    product="perpetual",
+                    source_identity="binance_public_v1",
+                    unit_definition="quote_per_base_and_volume_v1",
+                    start_ms=end_ms - 2 * _BAR_MS,
+                    end_ms=end_ms,
+                    interval_ms=_BAR_MS,
+                    max_age_ms=None,
+                    deadline_at_monotonic=time.monotonic() + 5.0,
+                )
+                quote_snapshot, bar_answer = await asyncio.gather(
+                    self._read_executable_quote(row),
+                    self.reader.market_data.fetch(request),
+                    return_exceptions=True,
+                )
+                if isinstance(quote_snapshot, BaseException):
+                    if isinstance(quote_snapshot, asyncio.CancelledError):
+                        raise quote_snapshot
+                    quote_snapshot = {"status": "error", "missing_reasons": (type(quote_snapshot).__name__,)}
+                if isinstance(bar_answer, asyncio.CancelledError):
+                    raise bar_answer
+                quote_ref = await _file_io(self.files.write, quote_snapshot)
+                sample = {
+                    "sampled_at_ms": _clock_ms(),
+                    "quote_ref": quote_ref,
+                    "status": quote_snapshot["status"],
+                    "environment": quote_snapshot.get("environment"),
+                    "native_symbol": quote_snapshot.get("native_symbol"),
+                    "mapping_semantics_digest": quote_snapshot.get("mapping_semantics_digest"),
+                    "missing_reasons": quote_snapshot.get("missing_reasons", ()),
+                }
+                if quote_snapshot.get("status") == "ok" and quote_snapshot.get("payload"):
+                    sample.update(quote_snapshot["payload"][0])
+                quotes.append(sample)
+                if isinstance(bar_answer, MarketDataResult):
+                    bar_ref = await _file_io(
+                        self.files.write,
+                        {
+                            "status": bar_answer.status,
+                            "payload": bar_answer.payload,
+                            "request_receipts": bar_answer.request_receipts,
+                            "missing_reasons": bar_answer.missing_reasons,
+                        },
+                    )
+                    existing = {int(bar["event_at_ms"]) for bar in bars}
+                    for bar in bar_answer.payload:
+                        if int(bar["event_at_ms"]) not in existing:
+                            bars.append({**bar, "snapshot_ref": bar_ref})
+                            existing.add(int(bar["event_at_ms"]))
+                    bars.sort(key=lambda bar: int(bar["event_at_ms"]))
+                    bar_status = bar_answer.status
+                    missing_reasons = bar_answer.missing_reasons
+                else:
+                    bar_ref = None
+                    bar_status = "error"
+                    missing_reasons = (type(bar_answer).__name__,)
+                coverage.append(
+                    {
+                        "sampled_at_ms": sample["sampled_at_ms"],
+                        "bar_snapshot_ref": bar_ref,
+                        "bar_status": bar_status,
+                        "missing_reasons": missing_reasons,
+                    }
+                )
+                tape_ref = await _file_io(self.files.write, tape)
+                await self._db_async(
+                    lambda repos, row=row, prior_ref=prior_ref, tape_ref=tape_ref, sample=sample: (
+                        repos.trading.record_root_research_sample(
+                            case_id=row["case_id"],
+                            prior_ref=prior_ref,
+                            tape_ref=tape_ref,
+                            sampled_at_ms=int(sample["sampled_at_ms"]),
+                        )
+                    ),
+                    transaction=True,
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                _LOG.exception("analysis_root_research_sample_failed", extra={"case_id": row["case_id"]})
+        return len(rows)
+
+    def _root_tape_completed(self, task: asyncio.Task[int]) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            _LOG.exception("analysis_root_research_sampling_failed")
+
     async def sample_shadow_quotes_once(self, *, limit: int = 8) -> int:
         """Archive one level-one executable quote per minute for pending shadow paths."""
         now_ms = _clock_ms()
@@ -1625,6 +1756,9 @@ class AnalysisRunner:
                     if self._watch_task is None or self._watch_task.done():
                         self._watch_task = asyncio.create_task(self.watch_once())
                         self._watch_task.add_done_callback(self._watch_completed)
+                    if self._root_tape_task is None or self._root_tape_task.done():
+                        self._root_tape_task = asyncio.create_task(self.sample_root_research_once())
+                        self._root_tape_task.add_done_callback(self._root_tape_completed)
                     if self._quote_task is None or self._quote_task.done():
                         self._quote_task = asyncio.create_task(self.sample_shadow_quotes_once())
                         self._quote_task.add_done_callback(self._quote_completed)
@@ -1642,6 +1776,8 @@ class AnalysisRunner:
                 await asyncio.gather(self._label_task, return_exceptions=True)
             if self._watch_task is not None:
                 await asyncio.gather(self._watch_task, return_exceptions=True)
+            if self._root_tape_task is not None:
+                await asyncio.gather(self._root_tape_task, return_exceptions=True)
             if self._quote_task is not None:
                 await asyncio.gather(self._quote_task, return_exceptions=True)
             if self._evaluation_task is not None:

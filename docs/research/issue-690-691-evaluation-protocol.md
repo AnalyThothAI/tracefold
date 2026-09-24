@@ -51,6 +51,15 @@ select a possible protection trigger; the following executable quote supplies
 the modeled exit price. A stop uses the worse of its threshold and the quote.
 The quote interval and OHLC order still limit timing certainty: a simulated
 result is a diagnostic, never a venue fill or proof of protection placement.
+Every selected initial root also has a bounded research tape independent of
+its DSPy disposition. Until the root expiry plus the declared maximum holding
+window, the Analysis runner archives a level-one quote and the latest two
+closed 1m bars once per minute, including failed fetches and receipt clocks.
+The tape can supply the rule arm's own post-setup bar path and quote evidence
+even when DSPy chooses NO_TRADE. A gap or late first crossing stays visible;
+the offline comparison must reject paths whose actual contemporaneous receipt
+times miss the fixed entry window. These tapes do not themselves claim a
+complete simulated fill or measured advantage.
 Export the 22 invalid raw model outputs
 separately as `{case_id,raw_output}` in an access-controlled file. Do not infer
 a v3 model answer from a historical v2 output.
