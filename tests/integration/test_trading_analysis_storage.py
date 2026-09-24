@@ -119,6 +119,7 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
         assert trading.due_shadow_quote_samples(now_ms=122_000)[0]["quote_tape_ref"] == "tape-1"
         export, manifest = export_cases(conn, AnalysisFiles(tmp_path / "missing-archive"), start_ms=1_100, end_ms=1_101)
         assert len(export) == 1 and export[0]["root_trigger_id"]
+        assert export[0]["decision_policy_version"] == "v1"
         assert export[0]["attempts"][0]["evidence_ref"] == "first-evidence"
         assert export[0]["rule_watch_status"] == "missing"
         assert {item["kind"] for item in manifest["missing_archive_items"]} == {"evidence", "root_market_tape"}

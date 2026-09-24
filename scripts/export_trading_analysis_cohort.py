@@ -336,13 +336,18 @@ def export_cases(
         SELECT c.case_id,c.trigger_id,c.target_asset_id,c.created_at_ms,c.run_kind,
                c.recheck_seq,c.state,c.target_selection,c.mapping_semantics_digest,
                c.root_expires_at_ms,c.evidence_ref,d.action AS decision_action,
+               d.policy_version AS decision_policy_version,
                t.kind AS source_kind,t.source_fact_key,t.first_visible_at_ms,
-               tape.tape_ref
+               tape.tape_ref,w.status AS watch_status,
+               w.last_observation_status AS watch_last_observation_status,
+               w.last_observation_ref AS watch_observation_ref,
+               w.child_case_id AS watch_child_case_id
           FROM trading_cases c
           JOIN roots r USING (trigger_id)
           JOIN trading_triggers t USING (trigger_id)
           LEFT JOIN trading_case_decisions d USING (case_id)
           LEFT JOIN trading_root_market_tapes tape ON tape.case_id=c.case_id
+          LEFT JOIN trading_watch_observations w ON w.parent_case_id=c.case_id
          ORDER BY c.trigger_id,c.recheck_seq,c.created_at_ms,c.case_id
         """,
         (start_ms, end_ms),
@@ -388,6 +393,11 @@ def export_cases(
             "recheck_seq": case["recheck_seq"],
             "state": case["state"],
             "decision_action": case["decision_action"],
+            "decision_policy_version": case["decision_policy_version"],
+            "watch_status": case["watch_status"],
+            "watch_last_observation_status": case["watch_last_observation_status"],
+            "watch_observation_ref": case["watch_observation_ref"],
+            "watch_child_case_id": case["watch_child_case_id"],
             "mapping_semantics_digest": case["mapping_semantics_digest"],
             "root_expires_at_ms": case["root_expires_at_ms"],
             "target_selection": case["target_selection"],
@@ -397,6 +407,10 @@ def export_cases(
             "arm_evaluations": evaluations[case_id],
         }
         if case["run_kind"] == "initial":
+            if case["decision_action"] == "WATCH":
+                row["watch_observation"] = _read_ref(
+                    files, case["watch_observation_ref"], missing, case_id, "watch_observation"
+                )
             tape = _read_ref(files, case["tape_ref"], missing, case_id, "root_market_tape")
             row["root_market_tape_ref"] = case["tape_ref"]
             if isinstance(tape, dict) and isinstance(evidence, dict):

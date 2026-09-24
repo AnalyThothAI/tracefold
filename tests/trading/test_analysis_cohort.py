@@ -24,6 +24,7 @@ def _case(case_id: str, root: str, at_ms: int, *, group: str | None = None) -> d
         "run_kind": "initial",
         "state": "DONE",
         "decision_action": "NO_TRADE",
+        "decision_policy_version": "v3",
     }
 
 
@@ -128,6 +129,44 @@ def test_no_trade_is_zero_cashflow_but_missing_rule_path_is_unknown() -> None:
     assert rule["portfolio_complete"] is False
     assert rule["net_unknown_reasons"] == {"rule_decision_unavailable": 1}
     assert rule["ending_equity_usdt"] is None
+
+
+def test_legacy_model_and_timer_are_not_new_dspy_arm_evidence() -> None:
+    at_ms = 100_000_000
+    old = _case("old", "root-old", at_ms)
+    old["decision_policy_version"] = "v2"
+    timed = _case("timer-root", "root-timer", at_ms + 1)
+    child = {**_case("timer-child", "root-timer", at_ms + 2), "run_kind": "recheck", "recheck_seq": 1}
+    report = evaluate([old, timed, child], expected_roots=2, cutoff_ms=at_ms, invalid_outputs=[], expected_invalid=0)
+    dspy = report["arms"]["holdout"]["dspy"]
+    assert dspy["portfolio_complete"] is False
+    assert dspy["net_unknown_reasons"] == {
+        "legacy_model_contract_uncomparable": 1,
+        "legacy_timer_recheck_uncomparable": 1,
+    }
+    assert dspy["ending_equity_usdt"] is None
+
+
+def test_failed_decision_and_unresolved_watch_are_not_zero_cashflow() -> None:
+    at_ms = 100_000_000
+    failed = _case("failed", "root-failed", at_ms)
+    failed.update(state="FAILED", decision_action=None, decision_policy_version=None)
+    watch = _case("watch", "root-watch", at_ms + 1)
+    watch["decision_action"] = "WATCH"
+    excluded = _case("excluded", "root-excluded", at_ms + 2)
+    excluded.update(state="EXCLUDED", decision_action=None, decision_policy_version=None)
+    report = evaluate(
+        [failed, watch, excluded], expected_roots=3, cutoff_ms=at_ms, invalid_outputs=[], expected_invalid=0
+    )
+    dspy = report["arms"]["holdout"]["dspy"]
+    assert dspy["net_unknown_reasons"] == {
+        "model_decision_unavailable": 1,
+        "watch_outcome_unverified": 1,
+    }
+    assert dspy["portfolio_complete"] is False
+    assert dspy["ending_equity_usdt"] is None
+    assert report["funnel"]["watch_statuses"] == {"missing": 1}
+    assert report["arms"]["holdout"]["rule"]["decisions"]["NO_TRADE"] == 1
 
 
 def test_capital_limit_does_not_resize_a_validated_execution_receipt() -> None:

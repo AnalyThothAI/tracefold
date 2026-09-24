@@ -60,6 +60,8 @@ class RuleDecision:
 
 def _rule_decision(root_cases: list[dict[str, Any]]) -> RuleDecision:
     initial = next(row for row in root_cases if row["run_kind"] == "initial")
+    if initial.get("state") == "EXCLUDED" and len(root_cases) == 1:
+        return RuleDecision("NO_TRADE")
     snapshot = initial.get("evidence")
     if not isinstance(snapshot, dict):
         return RuleDecision(None)
@@ -140,6 +142,10 @@ def _rule_action(root_cases: list[dict[str, Any]]) -> str | None:
 
 
 def _dspy_action(root_cases: list[dict[str, Any]]) -> str | None:
+    if any(row["run_kind"] == "recheck" for row in root_cases) or any(
+        row.get("decision_action") and row.get("decision_policy_version") != "v3" for row in root_cases
+    ):
+        return None
     latest = max(root_cases, key=lambda row: (int(row.get("recheck_seq") or 0), int(row["created_at_ms"])))
     return latest.get("decision_action")
 
@@ -230,9 +236,27 @@ def _arm_summary(
             known, unknown = _model_cost(root_cases)
             known_model_cost += known
             unknown_model_calls += unknown
+            if any(row["run_kind"] == "recheck" for row in root_cases):
+                unknown_net += 1
+                unknown_reasons["legacy_timer_recheck_uncomparable"] += 1
+                continue
+            if any(row.get("decision_action") and row.get("decision_policy_version") != "v3" for row in root_cases):
+                unknown_net += 1
+                unknown_reasons["legacy_model_contract_uncomparable"] += 1
+                continue
         if arm == "rule" and action is None:
             unknown_net += 1
             unknown_reasons["rule_decision_unavailable"] += 1
+            continue
+        if arm == "dspy" and action is None:
+            if initial.get("state") == "EXCLUDED" and len(root_cases) == 1:
+                continue
+            unknown_net += 1
+            unknown_reasons["model_decision_unavailable"] += 1
+            continue
+        if arm == "dspy" and action == "WATCH":
+            unknown_net += 1
+            unknown_reasons["watch_outcome_unverified"] += 1
             continue
         if action != "TRADE":
             continue
@@ -460,6 +484,15 @@ def evaluate(
             ),
             "conditional_cases": sum(row["run_kind"] == "conditional" for row in cases),
             "historical_rechecks": sum(row["run_kind"] == "recheck" for row in cases),
+            "watch_statuses": dict(
+                sorted(
+                    Counter(
+                        str(row.get("watch_status") or "missing")
+                        for row in initial.values()
+                        if row.get("decision_action") == "WATCH"
+                    ).items()
+                )
+            ),
         },
         "split_roots": dict(sorted(Counter(partitions.values()).items())),
         "strata": {

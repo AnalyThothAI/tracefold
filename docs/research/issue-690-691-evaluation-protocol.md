@@ -74,6 +74,16 @@ complete simulated fill or measured advantage.
 Export the 22 invalid raw model outputs
 separately as `{case_id,raw_output}` in an access-controlled file. Do not infer
 a v3 model answer from a historical v2 output.
+The cohort export retains each Decision's policy version. A legacy model
+Decision or retired timed recheck makes that root's new DSPy-arm result
+uncomparable; it cannot be relabeled as a v3 run or treated as zero cashflow.
+A failed Case without a Decision and an unresolved WATCH without a conditional
+Decision likewise have unknown cashflow. A deterministic `EXCLUDED` root has
+zero trading cashflow in both arms under the shared eligibility gate.
+The export also retains the WATCH observation's terminal state, last status,
+child identity and archived observation ref. The funnel reports WATCH states;
+an absent child is not inferred to mean that a complete no-crossing path was
+observed.
 
 For Cases written by the new schema, the read-only exporter joins root/child
 identities, attempt costs, shadow receipts and archived evidence, then derives
