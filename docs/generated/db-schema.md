@@ -855,6 +855,31 @@
 | `last_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `attempt_count` | `INTEGER` | False | `1` |
 
+## `trading_case_attempts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `case_id` | `TEXT` | False | `None` |
+| `claim_attempt` | `INTEGER` | False | `None` |
+| `claim_token` | `TEXT` | False | `None` |
+| `brief_ref` | `TEXT` | True | `None` |
+| `evidence_ref` | `TEXT` | True | `None` |
+| `assessment_ref` | `TEXT` | True | `None` |
+| `model_name` | `TEXT` | True | `None` |
+| `prompt_sha` | `TEXT` | True | `None` |
+| `started_at_ms` | `BIGINT` | True | `None` |
+| `ended_at_ms` | `BIGINT` | False | `None` |
+| `provider_status` | `TEXT` | True | `None` |
+| `analysis_status` | `TEXT` | False | `None` |
+| `error_code` | `TEXT` | True | `None` |
+| `validation_errors` | `JSONB` | False | `'[]'::jsonb` |
+| `physical_call_count` | `INTEGER` | False | `0` |
+| `input_tokens` | `BIGINT` | True | `None` |
+| `output_tokens` | `BIGINT` | True | `None` |
+| `cost_microusd` | `BIGINT` | True | `None` |
+| `cost_unknown_reason` | `TEXT` | True | `None` |
+| `settled` | `BOOLEAN` | False | `false` |
+
 ## `trading_case_decisions`
 
 | Column | Type | Nullable | Default |
@@ -871,6 +896,27 @@
 | `publish_reason` | `TEXT` | True | `None` |
 | `decided_at_ms` | `BIGINT` | False | `None` |
 | `valid_until_ms` | `BIGINT` | False | `None` |
+
+## `trading_case_evaluations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `case_id` | `TEXT` | False | `None` |
+| `source` | `TEXT` | False | `None` |
+| `evaluation_version` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `reason` | `TEXT` | True | `None` |
+| `decision_at_ms` | `BIGINT` | False | `None` |
+| `scheduled_at_ms` | `BIGINT` | False | `None` |
+| `due_at_ms` | `BIGINT` | False | `None` |
+| `next_attempt_at_ms` | `BIGINT` | False | `None` |
+| `decision_quote_ref` | `TEXT` | True | `None` |
+| `planned_quote_ref` | `TEXT` | True | `None` |
+| `mark_path_ref` | `TEXT` | True | `None` |
+| `funding_ref` | `TEXT` | True | `None` |
+| `venue_receipt_ref` | `TEXT` | True | `None` |
+| `result` | `JSONB` | True | `None` |
+| `evaluated_at_ms` | `BIGINT` | True | `None` |
 
 ## `trading_case_outcomes`
 
@@ -983,6 +1029,20 @@
 | `account_snapshot` | `JSONB` | True | `None` |
 | `routes_count` | `INTEGER` | False | `0` |
 
+## `trading_model_calls`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `case_id` | `TEXT` | False | `None` |
+| `claim_attempt` | `INTEGER` | False | `None` |
+| `call_index` | `INTEGER` | False | `None` |
+| `request_ref` | `TEXT` | True | `None` |
+| `response_ref` | `TEXT` | True | `None` |
+| `input_tokens` | `BIGINT` | True | `None` |
+| `output_tokens` | `BIGINT` | True | `None` |
+| `cost_microusd` | `BIGINT` | True | `None` |
+| `cost_unknown_reason` | `TEXT` | True | `None` |
+
 ## `trading_operator_intents`
 
 | Column | Type | Nullable | Default |
@@ -1084,6 +1144,23 @@
 | `root_expires_at_ms` | `BIGINT` | False | `None` |
 | `supersedes_ref` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_watch_observations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `parent_case_id` | `TEXT` | False | `None` |
+| `condition` | `JSONB` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `last_observation_status` | `TEXT` | True | `None` |
+| `last_observed_at_ms` | `BIGINT` | True | `None` |
+| `last_observed_value` | `NUMERIC` | True | `None` |
+| `last_observation_ref` | `TEXT` | True | `None` |
+| `next_check_at_ms` | `BIGINT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
+| `child_case_id` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `workers_runtime`
 

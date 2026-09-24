@@ -231,7 +231,7 @@ delivery consumer settles `terminal/delivery_unavailable`.
 `trading.*` is `enabled: false` by default. When enabled, a separate Analysis
 process consumes the News trade-event outbox and runs a real model in shadow by
 default. `trading.analysis` accepts `model_name` (or the configured News triage
-model), `active_policy=trade_assessment_v1`, `publish_signals=false`,
+model), `active_policy=oi_price_confirmation_v1`, `publish_signals=false`,
 `root_ttl_seconds`, `model_timeout_seconds`, `max_active_cases`,
 `max_model_input_bytes`, `max_model_output_tokens`, `max_model_concurrent_calls`,
 `model_cost_budget_microusd` (default 5,000,000) with both route price ceilings
@@ -268,16 +268,50 @@ TradingNode. `paper` and `live` require secure non-empty files and select the
 same canonical Nautilus owner with Binance `DEMO` and `LIVE` environments,
 respectively.
 
-The `trade_assessment_v1` policy compiles a frozen structured Agent answer:
-TRADE, NO_TRADE or bounded WATCH, six weighted factors per candidate, explicit
-known/unknown coverage, and evidence-key references. A TRADE can select only
-one offered long or short candidate and its code-generated exit plan. A partial
-score is not a calibrated probability or expected return. Invalid model output
-is named `invalid_assessment`; it never falls back to the retired v5 policy.
+The `trade_assessment_v2` answer compiles TRADE, NO_TRADE or WATCH over the
+versioned `oi_price_confirmation_v1` candidate family. The long and short
+candidates use a source OI expansion, the latest closed one-minute close versus
+the preceding 15 closed one-minute highs/lows, and a code-owned 200 bps stop,
+400 bps take profit and four-hour maximum hold. These numbers identify a
+research candidate; they are not a measured edge. Catalyst cases receive no
+OI candidate. Six factors have explicit known/unknown coverage and cite a
+concrete frozen evidence value with unit and event/receipt time. The model
+supplies neither weights nor review delays. `hypothesis_side` and
+`observation_note` cannot choose an entry; only a ready `entry_candidate_id`
+can. A partial equal-factor support score is neither a probability nor expected
+return. Invalid output cannot fall back to the retired v5 policy.
+
+A machine WATCH freezes one candidate's closed-price threshold and expiry.
+Its assessed candidate must cite the same available source, price and OI facts
+required by that candidate.
+The Analysis process observes later closed one-minute bars and creates at most
+one child Case on a matching bar, under the root expiry and recheck cap. Textual
+observation notes create no child. The WATCH row links its latest market-response
+archive; a matched child carries that observation reference in its frozen manifest.
+Each DSPy transport invocation and returned response is indexed by claim
+attempt even when validation fails or a late attempt loses the settlement
+fence. A provider error or cancellation retains its request and error type;
+the provider response is marked unconfirmed, and unavailable tokens and cost
+remain null.
+The Case API exposes attempts, validation errors, WATCH state and the root
+chain. Replay reads their archived refs without a model or market call.
+
+TRADE decisions also start a `shadow_net_v1` evaluation. Decision and planned
+bid/ask quotes, mark-price bars, funding history, latency and explicit fee and
+exit-spread assumptions determine a conservative simulated result. Missing
+quotes, costs or complete price/funding coverage produce `unevaluable`, not a
+zero-cost win. A shadow result is never a venue fill or an actual PAPER return.
+The PAPER evaluator requires reconciled venue fills, commissions, funding and
+protection receipts; the existing execution summary alone does not satisfy
+those inputs. Publication of this strategy requires both `publish_signals` and
+`strategy_publication_enabled` in PAPER mode. The latter defaults false while
+historical replay and held-out net evaluation are pending.
 
 `GET /api/trading/status` reports current decision and Runtime projections.
 `GET /api/trading/cases/{case_id}/replay` reads frozen source, evidence and
-assessment references without calling market data or the model. A published
+assessment references without calling market data or the model. Its optional
+`attempt=<claim_attempt>` selects one failed or late attempt's archive; omitted
+means the latest attempt, while old Cases fall back to their Decision archive. A published
 TRADE commits one `TradeSignalV2` with the Case decision and state in one
 transaction; shadow TRADE and NO_TRADE create no online Signal. SignalV2
 contains account/mode isolation, `entry_scope_id`, native mapping digest,

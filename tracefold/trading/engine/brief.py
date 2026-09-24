@@ -23,7 +23,7 @@ class AnalystBrief:
     text: str
     sha: str
     candidate_menu_sha: str
-    evidence_refs: frozenset[str]
+    evidence_catalog: dict[str, dict[str, Any]]
 
 
 def build_brief(
@@ -36,7 +36,7 @@ def build_brief(
     features: dict[str, Any],
     candidates: tuple[Candidate, ...],
 ) -> AnalystBrief:
-    if not candidates or any(
+    if any(
         candidate.asset_id != target_asset_id or candidate.instrument_semantics_digest != instrument_semantics_digest
         for candidate in candidates
     ):
@@ -44,7 +44,7 @@ def build_brief(
     menu = [candidate.model_dump(mode="json") for candidate in candidates]
     menu_sha = sha256(canonical_json(menu))
     payload = {
-        "brief_version": "trade_brief_v1",
+        "brief_version": "trade_brief_v2",
         "target_asset_id": target_asset_id,
         "instrument_semantics_digest": instrument_semantics_digest,
         "source_fact": source_fact,
@@ -55,4 +55,4 @@ def build_brief(
         "candidate_menu_sha": menu_sha,
     }
     text = canonical_json(payload)
-    return AnalystBrief(text, sha256(text), menu_sha, frozenset(evidence))
+    return AnalystBrief(text, sha256(text), menu_sha, evidence)

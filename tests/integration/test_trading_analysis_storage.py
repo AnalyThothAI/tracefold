@@ -187,7 +187,42 @@ def test_relay_retries_reuse_case_and_old_claim_cannot_finish(tmp_path) -> None:
             reclaimed = trading.claim_analysis_case(now_ms=3_600, lease_ms=2_000)
         assert reclaimed is not None and reclaimed["claim_token"] != first["claim_token"]
         decision = {"action": "NO_TRADE", "side": None, "reason": "No durable directional edge."}
+
+        def record_attempt(claim: dict[str, object]) -> None:
+            trading.record_analysis_attempt(
+                case_id=case_id,
+                claim_attempt=int(claim["claim_attempt"]),
+                claim_token=str(claim["claim_token"]),
+                brief_ref="brief-ref",
+                evidence_ref="evidence-ref",
+                assessment_ref="assessment-ref",
+                model_name="fixture",
+                prompt_sha="a" * 64,
+                started_at_ms=1_600,
+                ended_at_ms=3_700,
+                provider_status="invalid_output",
+                analysis_status="model_schema_invalid",
+                error_code="model_schema_invalid",
+                validation_errors=({"field": "assessment.action", "type": "literal_error"},),
+                input_tokens=100,
+                output_tokens=50,
+                cost_microusd=None,
+                calls=(
+                    {
+                        "request_ref": "request-ref",
+                        "response_ref": "response-ref",
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "cost_microusd": None,
+                        "cost_unknown_reason": "provider_cost_unavailable",
+                    },
+                ),
+            )
+
         with conn.transaction():
+            record_attempt(first)
+            record_attempt(first)  # Same physical claim is indexed once.
+            record_attempt(reclaimed)
             assert not trading.finish_analysis_case(
                 case_id=case_id,
                 claim_token=first["claim_token"],
@@ -206,6 +241,20 @@ def test_relay_retries_reuse_case_and_old_claim_cannot_finish(tmp_path) -> None:
             )
         row = conn.execute("SELECT state, analysis_status FROM trading_cases WHERE case_id=%s", (case_id,)).fetchone()
         assert row == {"state": "DONE", "analysis_status": "analyzed"}
+        attempts = conn.execute(
+            "SELECT claim_attempt,settled,cost_microusd,cost_unknown_reason "
+            "FROM trading_case_attempts WHERE case_id=%s ORDER BY claim_attempt",
+            (case_id,),
+        ).fetchall()
+        assert len(attempts) == 2
+        assert [item["settled"] for item in attempts] == [False, True]
+        assert all(item["cost_microusd"] is None for item in attempts)
+        assert all(item["cost_unknown_reason"] == "one_or_more_physical_costs_unavailable" for item in attempts)
+        call_count = conn.execute(
+            "SELECT count(*) AS n FROM trading_model_calls WHERE case_id=%s",
+            (case_id,),
+        ).fetchone()["n"]
+        assert call_count == 2
     finally:
         conn.close()
 
@@ -257,5 +306,103 @@ def test_valid_trade_analysis_records_publication_refusal(tmp_path) -> None:
             "publish_reason": "analysis_signal_expired",
         }
         assert conn.execute("SELECT count(*) AS n FROM trading_trade_signals").fetchone()["n"] == 0
+    finally:
+        conn.close()
+
+
+def test_watch_condition_creates_one_child_only_after_observed_close(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "watch-db", read_only=False)
+    try:
+        migrate(conn)
+        trading = TradingRepository(conn)
+        with conn.transaction():
+            _, case_id, _ = trading.accept_trigger(
+                kind="oi",
+                source_fact_key="watch-source",
+                source_revision="v1",
+                payload_sha256="e" * 64,
+                payload={
+                    "kind": "oi",
+                    "source_recorded_at_ms": 1_000,
+                    "provider_event_at_ms": 900,
+                    "assets": [{"symbol": "SOL", "market_type": "crypto", "role": "primary"}],
+                },
+                selection=_selection(),
+                now_ms=1_100,
+                root_ttl_ms=10_000,
+            )
+        with conn.transaction():
+            claim = trading.claim_analysis_case(now_ms=1_500, lease_ms=2_000)
+            assert claim is not None
+            watch = {
+                "kind": "closed_1m_price_crosses",
+                "candidate_id": "sol-long",
+                "feature_id": "perp_close_1m",
+                "operator": "gte",
+                "level": "101",
+                "unit": "USDT/base_asset",
+                "frozen_at_ms": 900,
+                "expires_at_ms": 11_000,
+            }
+            assert trading.finish_analysis_case(
+                case_id=case_id,
+                claim_token=claim["claim_token"],
+                now_ms=1_600,
+                analysis_status="analyzed",
+                evidence_ref="evidence-ref",
+                decision={"action": "WATCH", "side": None, "reason": "wait", "watch_condition": watch},
+                max_watch_rechecks=2,
+            )
+        assert conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"] == 1
+        with pytest.raises(ValueError, match="watch_observation_condition_unmet"), conn.transaction():
+            trading.advance_watch_observation(
+                parent_case_id=case_id,
+                now_ms=1_800,
+                observation_status="satisfied",
+                observed_at_ms=1_700,
+                observed_value="100",
+                observation_ref="archive:invalid",
+                max_rechecks=2,
+            )
+        with conn.transaction():
+            assert trading.advance_watch_observation(
+                parent_case_id=case_id,
+                now_ms=2_000,
+                observation_status="not_met",
+                observed_at_ms=1_900,
+                observed_value="100",
+                max_rechecks=2,
+            )
+        assert conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"] == 1
+        with conn.transaction():
+            assert trading.advance_watch_observation(
+                parent_case_id=case_id,
+                now_ms=3_000,
+                observation_status="satisfied",
+                observed_at_ms=2_900,
+                observed_value="102",
+                observation_ref="archive:watch-hit",
+                max_rechecks=2,
+            )
+            assert not trading.advance_watch_observation(
+                parent_case_id=case_id,
+                now_ms=3_001,
+                observation_status="satisfied",
+                observed_at_ms=2_900,
+                observed_value="102",
+                observation_ref="archive:watch-hit",
+                max_rechecks=2,
+            )
+        row = conn.execute(
+            "SELECT w.status,w.child_case_id,w.last_observation_ref,c.manifest,c.run_kind,c.recheck_seq "
+            "FROM trading_watch_observations w "
+            "JOIN trading_cases c ON c.case_id=w.child_case_id WHERE w.parent_case_id=%s",
+            (case_id,),
+        ).fetchone()
+        assert row["status"] == "satisfied"
+        assert row["last_observation_ref"] == "archive:watch-hit"
+        assert row["manifest"]["watch_observation_ref"] == "archive:watch-hit"
+        assert row["run_kind"] == "recheck" and row["recheck_seq"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"] == 2
     finally:
         conn.close()

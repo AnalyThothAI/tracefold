@@ -399,6 +399,13 @@ the route components into the eager shell chunk.
   stay in the Case drawer instead of filling the overview.
   A Case opens in the shared Drawer, supports Escape and restores opener focus.
   Its conditions and values come from the frozen manifest and policy checks.
+  New Analysis Cases also show every claim attempt and physical model receipt,
+  including failed or fenced attempts; a reader can replay a selected attempt's
+  frozen archive. WATCH displays its frozen closed-bar threshold, last observed
+  value, market-response archive reference, expiry and child Case, while a textual observation note has no automatic
+  recheck. The root chain shows initial and recheck conclusions together.
+  Shadow simulation and venue PAPER evaluation have distinct source labels;
+  missing costs or market coverage remain unavailable rather than zero.
 
   An OI observation links by persisted source Item ID to retained Cases,
   including those older than 24 hours. Missing links are explicit; the UI

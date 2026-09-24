@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from tracefold.trading.engine.policy import decision_identity
@@ -475,7 +476,7 @@ class AnalysisStorage:
                   (case_id, decision_id, policy_id, policy_version, input_ref,
                    assessment_ref, action, decision, publish_status, publish_reason,
                    decided_at_ms, valid_until_ms)
-                VALUES (%s,%s,'trade_assessment','v1',%s,%s,%s,%s::jsonb,
+                VALUES (%s,%s,'trade_assessment','v2',%s,%s,%s,%s::jsonb,
                         %s,%s,%s,%s)
                 """,
                 (
@@ -534,8 +535,12 @@ class AnalysisStorage:
                 case_id,
             ),
         )
+        self.conn.execute(
+            "UPDATE trading_case_attempts SET settled=true WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s",
+            (case_id, int(row["claim_attempt"]), claim_token),
+        )
         if action == "WATCH" and decision is not None:
-            self._schedule_watch_recheck(
+            self._create_watch_observation(
                 parent=row,
                 decision=decision,
                 now_ms=now_ms,
@@ -543,7 +548,87 @@ class AnalysisStorage:
             )
         return True
 
-    def _schedule_watch_recheck(
+    def record_analysis_attempt(
+        self,
+        *,
+        case_id: str,
+        claim_attempt: int,
+        claim_token: str,
+        brief_ref: str | None,
+        evidence_ref: str | None,
+        assessment_ref: str | None,
+        model_name: str | None,
+        prompt_sha: str | None,
+        started_at_ms: int | None,
+        ended_at_ms: int,
+        provider_status: str | None,
+        analysis_status: str,
+        error_code: str | None,
+        validation_errors: tuple[dict[str, str], ...],
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cost_microusd: int | None,
+        calls: tuple[dict[str, Any], ...],
+    ) -> None:
+        """A late claim may leave diagnostics, but gains no settlement authority."""
+        cost_unknown_reason = (
+            ("not_called" if not calls else "one_or_more_physical_costs_unavailable") if cost_microusd is None else None
+        )
+        self.conn.execute(
+            """
+            INSERT INTO trading_case_attempts
+              (case_id,claim_attempt,claim_token,brief_ref,evidence_ref,assessment_ref,
+               model_name,prompt_sha,started_at_ms,ended_at_ms,provider_status,
+               analysis_status,error_code,validation_errors,physical_call_count,
+               input_tokens,output_tokens,cost_microusd,cost_unknown_reason)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)
+            ON CONFLICT (case_id,claim_attempt) DO NOTHING
+            """,
+            (
+                case_id,
+                int(claim_attempt),
+                claim_token,
+                brief_ref,
+                evidence_ref,
+                assessment_ref,
+                model_name,
+                prompt_sha,
+                started_at_ms,
+                int(ended_at_ms),
+                provider_status,
+                analysis_status,
+                error_code,
+                json.dumps(validation_errors),
+                len(calls),
+                input_tokens,
+                output_tokens,
+                cost_microusd,
+                cost_unknown_reason,
+            ),
+        )
+        for index, call in enumerate(calls):
+            self.conn.execute(
+                """
+                INSERT INTO trading_model_calls
+                  (case_id,claim_attempt,call_index,request_ref,response_ref,
+                   input_tokens,output_tokens,cost_microusd,cost_unknown_reason)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (case_id,claim_attempt,call_index) DO NOTHING
+                """,
+                (
+                    case_id,
+                    int(claim_attempt),
+                    index,
+                    call.get("request_ref"),
+                    call.get("response_ref"),
+                    call.get("input_tokens"),
+                    call.get("output_tokens"),
+                    call.get("cost_microusd"),
+                    call.get("cost_unknown_reason"),
+                ),
+            )
+
+    def _create_watch_observation(
         self,
         *,
         parent: dict[str, Any],
@@ -557,12 +642,10 @@ class AnalysisStorage:
         watch = decision.get("watch_condition")
         if not isinstance(watch, dict):
             return
-        delay = int(watch.get("due_after_seconds") or 0)
-        if not 30 <= delay <= 300:
+        if watch.get("kind") != "closed_1m_price_crosses":
             return
-        due_at = int(now_ms) + delay * 1_000
         root_expires = int(parent["root_expires_at_ms"])
-        if due_at >= root_expires:
+        if int(watch.get("expires_at_ms") or 0) != root_expires or now_ms >= root_expires:
             return
         if parent["entry_scope_id"] is None:
             return
@@ -572,53 +655,185 @@ class AnalysisStorage:
         ).fetchone()
         if used is not None:
             return
-        case_id = _sha((parent["trigger_id"], "recheck", sequence))
-        manifest = dict(parent["manifest"])
-        manifest.update(
-            {
-                "parent_case_id": parent["case_id"],
-                "recheck_seq": sequence,
-                "watch_condition": watch,
-                "scheduled_at_ms": int(now_ms),
-                "due_at_ms": due_at,
-            }
-        )
         self.conn.execute(
             """
-            INSERT INTO trading_cases
-              (case_id, underlying_key, trigger_kind, primary_source_key, manifest,
-               manifest_sha256, state, policy_decision, policy_reason, observed_at_ms,
-               source_observed_at_ms, trigger_persisted_at_ms, created_at_ms, updated_at_ms,
-               trigger_id, run_kind, recheck_seq, target_asset_id, target_selection,
-               entry_scope_id, mapping_semantics_digest, root_expires_at_ms,
-               work_deadline_at_ms, next_attempt_at_ms, analysis_status)
-            VALUES (%s,%s,%s,%s,%s::jsonb,%s,'PENDING','not_run','scheduled_watch',%s,
-                    %s,%s,%s,%s,%s,'recheck',%s,%s,%s::jsonb,%s,%s,%s,%s,%s,'pending')
-            ON CONFLICT DO NOTHING
+            INSERT INTO trading_watch_observations
+              (parent_case_id,condition,status,next_check_at_ms,expires_at_ms,created_at_ms,updated_at_ms)
+            VALUES (%s,%s::jsonb,'pending',%s,%s,%s,%s)
+            ON CONFLICT (parent_case_id) DO NOTHING
+            """,
+            (parent["case_id"], json.dumps(watch), int(now_ms), root_expires, int(now_ms), int(now_ms)),
+        )
+
+    def due_watch_observations(self, *, now_ms: int, limit: int = 16) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT w.*,c.trigger_id,c.recheck_seq,c.target_selection,c.target_asset_id,
+                   c.entry_scope_id,c.root_expires_at_ms
+              FROM trading_watch_observations w
+              JOIN trading_cases c ON c.case_id=w.parent_case_id
+             WHERE w.status='pending' AND w.next_check_at_ms<=%s
+             ORDER BY w.next_check_at_ms,w.parent_case_id LIMIT %s
+            """,
+            (int(now_ms), max(1, min(128, limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def advance_watch_observation(
+        self,
+        *,
+        parent_case_id: str,
+        now_ms: int,
+        observation_status: str,
+        observed_at_ms: int | None,
+        observed_value: str | None,
+        observation_ref: str | None = None,
+        max_rechecks: int,
+    ) -> bool:
+        if observation_status not in ("satisfied", "not_met", "data_missing", "expired"):
+            raise ValueError("watch_observation_status_invalid")
+        asset = self.conn.execute(
+            "SELECT target_asset_id FROM trading_cases WHERE case_id=%s",
+            (parent_case_id,),
+        ).fetchone()
+        if asset is not None and asset["target_asset_id"] is not None:
+            self.conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 683))",
+                (asset["target_asset_id"],),
+            )
+        row = self.conn.execute(
+            """
+            SELECT w.*,c.* FROM trading_watch_observations w
+            JOIN trading_cases c ON c.case_id=w.parent_case_id
+            WHERE w.parent_case_id=%s AND w.status='pending' FOR UPDATE OF w
+            """,
+            (parent_case_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        parent = dict(row)
+        condition = dict(parent["condition"])
+        if observation_status == "satisfied":
+            if not observation_ref:
+                raise ValueError("watch_observation_evidence_missing")
+            try:
+                value = Decimal(str(observed_value))
+                level = Decimal(str(condition["level"]))
+            except (InvalidOperation, KeyError, TypeError) as exc:
+                raise ValueError("watch_observation_invalid") from exc
+            observed_valid = (
+                condition.get("kind") == "closed_1m_price_crosses"
+                and condition.get("feature_id") == "perp_close_1m"
+                and value.is_finite()
+                and level.is_finite()
+                and level > 0
+                and isinstance(observed_at_ms, int)
+                and int(condition["frozen_at_ms"]) < observed_at_ms <= now_ms
+                and observed_at_ms <= int(condition["expires_at_ms"])
+                and (
+                    value >= level
+                    if condition.get("operator") == "gte"
+                    else value <= level
+                    if condition.get("operator") == "lte"
+                    else False
+                )
+            )
+            if not observed_valid:
+                raise ValueError("watch_observation_condition_unmet")
+        root_expires = int(parent["root_expires_at_ms"])
+        sequence = int(parent["recheck_seq"] or 0) + 1
+        used = self.conn.execute(
+            "SELECT 1 FROM trading_trade_plans WHERE entry_scope_id=%s LIMIT 1",
+            (parent["entry_scope_id"],),
+        ).fetchone()
+        if used is not None or sequence > max_rechecks:
+            final_status = "cancelled"
+        elif now_ms >= root_expires:
+            final_status = "data_missing" if observation_status == "data_missing" else "expired"
+        elif observation_status == "satisfied":
+            final_status = "satisfied"
+        else:
+            final_status = "pending"
+        child_case_id = None
+        if final_status == "satisfied":
+            child_case_id = _sha((parent["trigger_id"], "event_recheck", sequence))
+            watch = dict(parent["condition"])
+            manifest = dict(parent["manifest"])
+            manifest.update(
+                {
+                    "parent_case_id": parent_case_id,
+                    "recheck_seq": sequence,
+                    "watch_condition": watch,
+                    "watch_observed_at_ms": observed_at_ms,
+                    "watch_observed_value": observed_value,
+                    "watch_observation_ref": observation_ref,
+                    "triggered_at_ms": int(now_ms),
+                }
+            )
+            self.conn.execute(
+                """
+                INSERT INTO trading_cases
+                  (case_id,underlying_key,trigger_kind,primary_source_key,manifest,
+                   manifest_sha256,state,policy_decision,policy_reason,observed_at_ms,
+                   source_observed_at_ms,trigger_persisted_at_ms,created_at_ms,updated_at_ms,
+                   trigger_id,run_kind,recheck_seq,target_asset_id,target_selection,
+                   entry_scope_id,mapping_semantics_digest,root_expires_at_ms,
+                   work_deadline_at_ms,next_attempt_at_ms,analysis_status)
+                VALUES (%s,%s,%s,%s,%s::jsonb,%s,'PENDING','not_run',
+                        'watch_condition_satisfied',%s,%s,%s,%s,%s,%s,'recheck',%s,%s,
+                        %s::jsonb,%s,%s,%s,%s,%s,'pending')
+                ON CONFLICT DO NOTHING
+                """,
+                (
+                    child_case_id,
+                    parent["underlying_key"],
+                    parent["trigger_kind"],
+                    parent["primary_source_key"],
+                    json.dumps(manifest),
+                    _sha(manifest),
+                    parent["observed_at_ms"],
+                    parent["source_observed_at_ms"],
+                    parent["trigger_persisted_at_ms"],
+                    int(now_ms),
+                    int(now_ms),
+                    parent["trigger_id"],
+                    sequence,
+                    parent["target_asset_id"],
+                    json.dumps(parent["target_selection"]),
+                    parent["entry_scope_id"],
+                    parent["mapping_semantics_digest"],
+                    root_expires,
+                    min(int(now_ms) + 120_000, root_expires),
+                    int(now_ms),
+                ),
+            )
+            exists = self.conn.execute(
+                "SELECT 1 FROM trading_cases WHERE case_id=%s",
+                (child_case_id,),
+            ).fetchone()
+            if exists is None:
+                final_status, child_case_id = "cancelled", None
+        self.conn.execute(
+            """
+            UPDATE trading_watch_observations
+               SET status=%s,last_observation_status=%s,last_observed_at_ms=%s,
+                   last_observed_value=%s,last_observation_ref=%s,next_check_at_ms=%s,
+                   child_case_id=%s,updated_at_ms=%s
+             WHERE parent_case_id=%s
             """,
             (
-                case_id,
-                parent["underlying_key"],
-                parent["trigger_kind"],
-                parent["primary_source_key"],
-                json.dumps(manifest),
-                _sha(manifest),
-                parent["observed_at_ms"],
-                parent["source_observed_at_ms"],
-                parent["trigger_persisted_at_ms"],
+                final_status,
+                observation_status if observation_status != "expired" else None,
+                observed_at_ms,
+                observed_value or parent["last_observed_value"],
+                observation_ref or parent["last_observation_ref"],
+                int(now_ms) + 30_000,
+                child_case_id,
                 int(now_ms),
-                int(now_ms),
-                parent["trigger_id"],
-                sequence,
-                parent["target_asset_id"],
-                json.dumps(parent["target_selection"]),
-                parent["entry_scope_id"],
-                parent["mapping_semantics_digest"],
-                root_expires,
-                min(due_at + 120_000, root_expires),
-                due_at,
+                parent_case_id,
             ),
         )
+        return True
 
     def due_analysis_outcomes(self, *, now_ms: int, limit: int = 16) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -672,6 +887,88 @@ class AnalysisStorage:
             "WHERE case_id=%s AND axis=%s AND horizon_seconds=%s "
             "AND label_version=%s AND status='pending'",
             (int(next_attempt_at_ms), case_id, axis, horizon_seconds, label_version),
+        )
+
+    def record_shadow_evaluation(
+        self,
+        *,
+        case_id: str,
+        decision_at_ms: int,
+        scheduled_at_ms: int,
+        due_at_ms: int,
+        decision_quote_ref: str | None,
+        planned_quote_ref: str | None,
+        initial_result: dict[str, Any] | None,
+    ) -> None:
+        status = "pending" if initial_result is None else "unevaluable"
+        self.conn.execute(
+            """
+            INSERT INTO trading_case_evaluations
+              (case_id,source,evaluation_version,status,reason,decision_at_ms,
+               scheduled_at_ms,due_at_ms,next_attempt_at_ms,decision_quote_ref,
+               planned_quote_ref,result,evaluated_at_ms)
+            VALUES (%s,'shadow_simulation','shadow_net_v1',%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+            ON CONFLICT (case_id,source,evaluation_version) DO NOTHING
+            """,
+            (
+                case_id,
+                status,
+                None if initial_result is None else initial_result.get("reason"),
+                int(decision_at_ms),
+                int(scheduled_at_ms),
+                int(due_at_ms),
+                int(due_at_ms),
+                decision_quote_ref,
+                planned_quote_ref,
+                None if initial_result is None else json.dumps(initial_result),
+                None if initial_result is None else int(scheduled_at_ms),
+            ),
+        )
+
+    def due_shadow_evaluations(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT evaluation.*,c.target_selection,d.decision
+              FROM trading_case_evaluations evaluation
+              JOIN trading_cases c USING (case_id)
+              JOIN trading_case_decisions d USING (case_id)
+             WHERE evaluation.source='shadow_simulation' AND evaluation.status='pending'
+               AND evaluation.next_attempt_at_ms<=%s
+             ORDER BY evaluation.next_attempt_at_ms,evaluation.case_id LIMIT %s
+            """,
+            (int(now_ms), max(1, min(64, limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def settle_shadow_evaluation(
+        self,
+        *,
+        case_id: str,
+        result: dict[str, Any],
+        mark_path_ref: str | None,
+        funding_ref: str | None,
+        now_ms: int,
+    ) -> bool:
+        status = result.get("status")
+        if status not in ("simulated", "unevaluable"):
+            raise ValueError("shadow_evaluation_status_invalid")
+        updated = self.conn.execute(
+            """
+            UPDATE trading_case_evaluations
+               SET status=%s,reason=%s,mark_path_ref=%s,funding_ref=%s,
+                   result=%s::jsonb,evaluated_at_ms=%s
+             WHERE case_id=%s AND source='shadow_simulation'
+               AND evaluation_version='shadow_net_v1' AND status='pending'
+            """,
+            (status, result.get("reason"), mark_path_ref, funding_ref, json.dumps(result), int(now_ms), case_id),
+        )
+        return bool(updated.rowcount)
+
+    def retry_shadow_evaluation(self, *, case_id: str, next_attempt_at_ms: int) -> None:
+        self.conn.execute(
+            "UPDATE trading_case_evaluations SET next_attempt_at_ms=%s "
+            "WHERE case_id=%s AND source='shadow_simulation' AND status='pending'",
+            (int(next_attempt_at_ms), case_id),
         )
 
     def validate_signal_entry(self, *, entry_id: str, now_ns: int) -> tuple[bool, str]:

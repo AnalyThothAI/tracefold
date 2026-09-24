@@ -137,6 +137,85 @@ class TradingAnalysisOutcomeData(ExactApiSchema):
     path_ref: str | None = None
 
 
+class TradingPhysicalModelCallData(ExactApiSchema):
+    claim_attempt: int
+    call_index: int
+    request_ref: str | None = None
+    response_ref: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_microusd: int | None = None
+    cost_unknown_reason: str | None = None
+
+
+class TradingAnalysisAttemptData(ExactApiSchema):
+    case_id: str
+    claim_attempt: int
+    brief_ref: str | None = None
+    evidence_ref: str | None = None
+    assessment_ref: str | None = None
+    model_name: str | None = None
+    prompt_sha: str | None = None
+    started_at_ms: int | None = None
+    ended_at_ms: int
+    provider_status: str | None = None
+    analysis_status: str
+    error_code: str | None = None
+    validation_errors: list[dict[str, str]] = Field(default_factory=list)
+    physical_call_count: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_microusd: int | None = None
+    cost_unknown_reason: str | None = None
+    settled: bool
+    physical_calls: list[TradingPhysicalModelCallData] = Field(default_factory=list)
+
+
+class TradingWatchObservationData(ExactApiSchema):
+    parent_case_id: str
+    condition: dict[str, Any]
+    status: str
+    last_observation_status: str | None = None
+    last_observed_at_ms: int | None = None
+    last_observation_ref: str | None = None
+    last_observed_value: str | None = None
+    next_check_at_ms: int
+    expires_at_ms: int
+    child_case_id: str | None = None
+    created_at_ms: int
+    updated_at_ms: int
+
+
+class TradingRootChainCaseData(ExactApiSchema):
+    case_id: str
+    run_kind: str | None = None
+    recheck_seq: int | None = None
+    state: str
+    analysis_status: str | None = None
+    created_at_ms: int
+    decided_at_ms: int | None = None
+    action: str | None = None
+    publish_status: str | None = None
+    side: str | None = None
+
+
+class TradingCaseEvaluationData(ExactApiSchema):
+    source: Literal["shadow_simulation", "paper_venue"]
+    evaluation_version: str
+    status: str
+    reason: str | None = None
+    decision_at_ms: int
+    scheduled_at_ms: int
+    due_at_ms: int
+    decision_quote_ref: str | None = None
+    planned_quote_ref: str | None = None
+    mark_path_ref: str | None = None
+    funding_ref: str | None = None
+    venue_receipt_ref: str | None = None
+    result: dict[str, Any] | None = None
+    evaluated_at_ms: int | None = None
+
+
 class TradingCaseData(ExactApiSchema):
     """One frozen Case, as the drawer behind `?case=<id>` renders it.
 
@@ -181,6 +260,14 @@ class TradingCaseData(ExactApiSchema):
     evidence_ref: str | None = None
     analysis_decision: TradingAnalysisDecisionData | None = None
     analysis_outcomes: list[TradingAnalysisOutcomeData] = Field(default_factory=list)
+    analysis_attempts: list[TradingAnalysisAttemptData] = Field(default_factory=list)
+    watch_observation: TradingWatchObservationData | None = None
+    root_chain: list[TradingRootChainCaseData] = Field(default_factory=list)
+    analysis_evaluations: list[TradingCaseEvaluationData] = Field(default_factory=list)
+    review_mode: Literal["none", "historical_timed", "event_wait", "research_note"] = "none"
+    run_kind: str | None = None
+    recheck_seq: int | None = None
+    root_expires_at_ms: int | None = None
 
 
 class TradingAdmissionCountData(ExactApiSchema):
@@ -232,10 +319,12 @@ class TradingCasesData(ExactApiSchema):
 class TradingAnalysisReplayData(ExactApiSchema):
     case_id: str
     status: str
+    selected_attempt: int | None = None
     source_fact: dict[str, Any] | None = None
     evidence: dict[str, Any] | None = None
     assessment: dict[str, Any] | None = None
     decision: TradingAnalysisDecisionData | None = None
+    attempts: list[TradingAnalysisAttemptData] = Field(default_factory=list)
 
 
 class TradingExecutionRowData(ExactApiSchema):

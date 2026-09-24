@@ -61,8 +61,8 @@ export const useTradingCasesWithToken = (token: string) =>
 /**
  * One Case by primary key, read only while the drawer behind `?case=<id>` is open.
  *
- * It does not poll: a frozen Case cannot change. An unknown id answers with an empty `cases[]` rather than
- * an error, which is the drawer's "not in this window" sentence and not a failed read.
+ * Frozen inputs remain fixed while attempts, WATCH observations and child Cases
+ * can still arrive. An unknown id answers with an empty `cases[]`.
  */
 export const useTradingCaseWithToken = (token: string, caseId: string | null) =>
   useQuery({
@@ -77,16 +77,23 @@ export const useTradingCaseWithToken = (token: string, caseId: string | null) =>
         })
       ).data,
     staleTime: 5_000,
+    refetchInterval: TRADING_REFETCH_MS,
   });
 
-export const useTradingAnalysisReplay = (token: string, caseId: string, enabled: boolean) =>
+export const useTradingAnalysisReplay = (
+  token: string,
+  caseId: string,
+  enabled: boolean,
+  attempt?: number,
+) =>
   useQuery({
     enabled: Boolean(token && caseId && enabled),
-    queryKey: [...queryKeys.tradingCases(caseId), "replay"],
+    queryKey: [...queryKeys.tradingCases(caseId), "replay", attempt ?? "latest"],
     queryFn: async () =>
       (
         await getApi<TradingAnalysisReplay>(`/api/trading/cases/${caseId}/replay`, {
-          etagKey: `trading-case-replay:${caseId}`,
+          etagKey: `trading-case-replay:${caseId}:${attempt ?? "latest"}`,
+          params: { attempt },
           token,
         })
       ).data,

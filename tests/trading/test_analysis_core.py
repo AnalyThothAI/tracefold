@@ -21,7 +21,6 @@ from tracefold.trading.engine.contracts import (
     CandidateAssessment,
     ExitPlan,
     FactorAssessment,
-    WatchCondition,
 )
 from tracefold.trading.engine.policy import InvalidAssessment, compile_assessment
 from tracefold.trading.engine.target import SourceAsset, select_target
@@ -144,7 +143,6 @@ def _assessment(*, evidence: str = "e:price", unknown: bool = False) -> AgentAss
     factors = tuple(
         FactorAssessment(
             factor_id=factor,
-            weight_bps=5_000 if index < 2 else 0,
             support_score=None if unknown and index == 0 else 40,
             status="unknown" if unknown and index == 0 else "known",
             evidence_refs=() if unknown and index == 0 else (evidence,),
@@ -164,7 +162,7 @@ def _assessment(*, evidence: str = "e:price", unknown: bool = False) -> AgentAss
         brief_sha="a" * 64,
         candidate_menu_sha="b" * 64,
         action="TRADE",
-        selected_candidate_id="SOL-long",
+        entry_candidate_id="SOL-long",
         candidate_assessments=(CandidateAssessment(candidate_id="SOL-long", factors=factors),),
         supporting_evidence=(evidence,),
         public_rationale="Evidence supports this candidate.",
@@ -182,13 +180,26 @@ def _candidate() -> Candidate:
     )
 
 
+def _catalog() -> dict[str, dict[str, object]]:
+    return {
+        "e:price": {
+            "status": "ok",
+            "values": {"close": "100"},
+            "unit_definition": "quote_per_base_v1",
+            "event_at_ms": 1,
+            "received_at_ms": 1,
+            "knowledge_cutoff_ms": 2,
+        }
+    }
+
+
 def test_agent_score_is_recomputed_and_not_called_ev() -> None:
     decision = compile_assessment(
         assessment=_assessment(),
         brief_sha="a" * 64,
         candidate_menu_sha="b" * 64,
         candidates=(_candidate(),),
-        evidence_refs=frozenset({"e:price"}),
+        evidence_catalog=_catalog(),
     )
     assert decision.action == "TRADE" and decision.side == "long"
     assert decision.scores[0].value == Decimal(40)
@@ -199,7 +210,10 @@ def test_agent_score_is_recomputed_and_not_called_ev() -> None:
     "assessment,reason",
     [
         (_assessment(evidence="invented"), "assessment_evidence_ref_unknown"),
-        (_assessment(unknown=True), "trade_assessment_partial"),
+        (
+            _assessment(unknown=True).model_copy(update={"entry_candidate_id": "outside"}),
+            "trade_candidate_not_assessed",
+        ),
     ],
 )
 def test_invalid_or_partial_agent_output_cannot_trade(assessment: AgentAssessment, reason: str) -> None:
@@ -209,18 +223,88 @@ def test_invalid_or_partial_agent_output_cannot_trade(assessment: AgentAssessmen
             brief_sha="a" * 64,
             candidate_menu_sha="b" * 64,
             candidates=(_candidate(),),
-            evidence_refs=frozenset({"e:price"}),
+            evidence_catalog=_catalog(),
         )
 
 
-def test_watch_requires_a_bounded_recheck_time_and_keeps_its_condition() -> None:
+def test_watch_uses_a_frozen_candidate_level_not_a_model_delay() -> None:
     assessment = _assessment().model_copy(
         update={
             "action": "WATCH",
-            "selected_candidate_id": None,
-            "watch_condition": WatchCondition(
-                kind="price_retest", detail="wait for a fresh close", due_after_seconds=90
-            ),
+            "entry_candidate_id": None,
+            "hypothesis_side": "long",
+            "watch_intent": "closed_1m_price_crosses",
+            "observation_note": "wait for a fresh close",
+        }
+    )
+    decision = compile_assessment(
+        assessment=assessment,
+        brief_sha="a" * 64,
+        candidate_menu_sha="b" * 64,
+        candidates=(
+            _candidate().model_copy(update={"entry_ready": False, "entry_level": Decimal(101), "watch_eligible": True}),
+        ),
+        evidence_catalog=_catalog(),
+        watch_expires_at_ms=100_000,
+    )
+    assert decision.action == "WATCH"
+    assert decision.watch_condition is not None
+    assert decision.watch_condition.level == Decimal(101)
+    assert decision.watch_condition.kind == "closed_1m_price_crosses"
+
+
+def test_watch_requires_cited_available_entry_evidence() -> None:
+    assessment = _assessment().model_copy(
+        update={
+            "action": "WATCH",
+            "entry_candidate_id": None,
+            "hypothesis_side": "long",
+            "watch_intent": "closed_1m_price_crosses",
+        }
+    )
+    candidate = _candidate().model_copy(
+        update={"entry_ready": False, "watch_eligible": True, "required_evidence_refs": ("e:price", "e:oi")}
+    )
+    with pytest.raises(InvalidAssessment, match="watch_required_evidence_missing"):
+        compile_assessment(
+            assessment=assessment,
+            brief_sha="a" * 64,
+            candidate_menu_sha="b" * 64,
+            candidates=(candidate,),
+            evidence_catalog=_catalog(),
+            watch_expires_at_ms=100_000,
+        )
+
+
+def test_known_missing_optional_frame_cannot_authorize_entry() -> None:
+    assessment = _assessment(evidence="market:spot_bars")
+    catalog = _catalog() | {
+        "market:spot_bars": {
+            "status": "missing",
+            "values": {},
+            "unit_definition": "quote_per_base_v1",
+            "event_at_ms": None,
+            "received_at_ms": None,
+            "knowledge_cutoff_ms": 2,
+        }
+    }
+    with pytest.raises(InvalidAssessment, match="known_factor_evidence_unavailable"):
+        compile_assessment(
+            assessment=assessment,
+            brief_sha="a" * 64,
+            candidate_menu_sha="b" * 64,
+            candidates=(_candidate(),),
+            evidence_catalog=catalog,
+        )
+
+
+def test_nontrade_observation_and_direction_hypothesis_are_valid() -> None:
+    assessment = _assessment().model_copy(
+        update={
+            "action": "NO_TRADE",
+            "entry_candidate_id": None,
+            "hypothesis_side": "long",
+            "observation_note": "Watch resistance manually.",
         }
     )
     decision = compile_assessment(
@@ -228,8 +312,8 @@ def test_watch_requires_a_bounded_recheck_time_and_keeps_its_condition() -> None
         brief_sha="a" * 64,
         candidate_menu_sha="b" * 64,
         candidates=(_candidate(),),
-        evidence_refs=frozenset({"e:price"}),
+        evidence_catalog=_catalog(),
     )
-    assert decision.action == "WATCH"
-    assert decision.watch_condition is not None
-    assert decision.watch_condition.due_after_seconds == 90
+    assert decision.action == "NO_TRADE"
+    assert decision.hypothesis_side == "long"
+    assert decision.observation_note == "Watch resistance manually."

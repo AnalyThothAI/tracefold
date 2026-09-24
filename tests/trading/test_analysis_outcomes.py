@@ -19,3 +19,15 @@ def test_missing_endpoint_is_not_a_zero_return() -> None:
     label = price_path_label(({"event_at_ms": 60_000, "close": "100"},), anchor_ms=60_000, horizon_seconds=60)
     assert label["status"] == "missing"
     assert "return_bps" not in label
+
+
+def test_partial_or_single_terminal_bar_never_becomes_ok_zero() -> None:
+    terminal_only = ({"event_at_ms": 900_000, "close": "100"},)
+    assert price_path_label(terminal_only, anchor_ms=0, horizon_seconds=900)["status"] == "missing"
+    complete_bars = (
+        {"event_at_ms": 60_000, "close": "100"},
+        {"event_at_ms": 120_000, "close": "105"},
+    )
+    assert (
+        price_path_label(complete_bars, anchor_ms=0, horizon_seconds=60, market_status="partial")["status"] == "missing"
+    )

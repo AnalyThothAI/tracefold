@@ -3152,6 +3152,51 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** TradingAnalysisAttemptData */
+        TradingAnalysisAttemptData: {
+            /** Analysis Status */
+            analysis_status: string;
+            /** Assessment Ref */
+            assessment_ref?: string | null;
+            /** Brief Ref */
+            brief_ref?: string | null;
+            /** Case Id */
+            case_id: string;
+            /** Claim Attempt */
+            claim_attempt: number;
+            /** Cost Microusd */
+            cost_microusd?: number | null;
+            /** Cost Unknown Reason */
+            cost_unknown_reason?: string | null;
+            /** Ended At Ms */
+            ended_at_ms: number;
+            /** Error Code */
+            error_code?: string | null;
+            /** Evidence Ref */
+            evidence_ref?: string | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Model Name */
+            model_name?: string | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Physical Call Count */
+            physical_call_count: number;
+            /** Physical Calls */
+            physical_calls?: components["schemas"]["TradingPhysicalModelCallData"][];
+            /** Prompt Sha */
+            prompt_sha?: string | null;
+            /** Provider Status */
+            provider_status?: string | null;
+            /** Settled */
+            settled: boolean;
+            /** Started At Ms */
+            started_at_ms?: number | null;
+            /** Validation Errors */
+            validation_errors?: {
+                [key: string]: string;
+            }[];
+        };
         /** TradingAnalysisDecisionData */
         TradingAnalysisDecisionData: {
             /** Action */
@@ -3202,6 +3247,8 @@ export interface components {
             assessment?: {
                 [key: string]: unknown;
             } | null;
+            /** Attempts */
+            attempts?: components["schemas"]["TradingAnalysisAttemptData"][];
             /** Case Id */
             case_id: string;
             decision?: components["schemas"]["TradingAnalysisDecisionData"] | null;
@@ -3209,6 +3256,8 @@ export interface components {
             evidence?: {
                 [key: string]: unknown;
             } | null;
+            /** Selected Attempt */
+            selected_attempt?: number | null;
             /** Source Fact */
             source_fact?: {
                 [key: string]: unknown;
@@ -3232,7 +3281,11 @@ export interface components {
         TradingCaseData: {
             /** Analysis Action */
             analysis_action?: string | null;
+            /** Analysis Attempts */
+            analysis_attempts?: components["schemas"]["TradingAnalysisAttemptData"][];
             analysis_decision?: components["schemas"]["TradingAnalysisDecisionData"] | null;
+            /** Analysis Evaluations */
+            analysis_evaluations?: components["schemas"]["TradingCaseEvaluationData"][];
             /** Analysis Outcomes */
             analysis_outcomes?: components["schemas"]["TradingAnalysisOutcomeData"][];
             /** Analysis Publish Status */
@@ -3275,6 +3328,20 @@ export interface components {
             policy_reason?: string | null;
             /** Pre Move Bps */
             pre_move_bps?: number | null;
+            /** Recheck Seq */
+            recheck_seq?: number | null;
+            /**
+             * Review Mode
+             * @default none
+             * @enum {string}
+             */
+            review_mode: "none" | "historical_timed" | "event_wait" | "research_note";
+            /** Root Chain */
+            root_chain?: components["schemas"]["TradingRootChainCaseData"][];
+            /** Root Expires At Ms */
+            root_expires_at_ms?: number | null;
+            /** Run Kind */
+            run_kind?: string | null;
             /** Source Item Id */
             source_item_id?: string | null;
             /** State */
@@ -3289,6 +3356,43 @@ export interface components {
             trigger_id?: string | null;
             /** Trigger Kind */
             trigger_kind?: string | null;
+            watch_observation?: components["schemas"]["TradingWatchObservationData"] | null;
+        };
+        /** TradingCaseEvaluationData */
+        TradingCaseEvaluationData: {
+            /** Decision At Ms */
+            decision_at_ms: number;
+            /** Decision Quote Ref */
+            decision_quote_ref?: string | null;
+            /** Due At Ms */
+            due_at_ms: number;
+            /** Evaluated At Ms */
+            evaluated_at_ms?: number | null;
+            /** Evaluation Version */
+            evaluation_version: string;
+            /** Funding Ref */
+            funding_ref?: string | null;
+            /** Mark Path Ref */
+            mark_path_ref?: string | null;
+            /** Planned Quote Ref */
+            planned_quote_ref?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Result */
+            result?: {
+                [key: string]: unknown;
+            } | null;
+            /** Scheduled At Ms */
+            scheduled_at_ms: number;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "shadow_simulation" | "paper_venue";
+            /** Status */
+            status: string;
+            /** Venue Receipt Ref */
+            venue_receipt_ref?: string | null;
         };
         /**
          * TradingCasesData
@@ -3593,6 +3697,25 @@ export interface components {
             executions?: components["schemas"]["TradingExecutionRowData"][];
             totals: components["schemas"]["TradingRealizedTotalsData"];
         };
+        /** TradingPhysicalModelCallData */
+        TradingPhysicalModelCallData: {
+            /** Call Index */
+            call_index: number;
+            /** Claim Attempt */
+            claim_attempt: number;
+            /** Cost Microusd */
+            cost_microusd?: number | null;
+            /** Cost Unknown Reason */
+            cost_unknown_reason?: string | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Request Ref */
+            request_ref?: string | null;
+            /** Response Ref */
+            response_ref?: string | null;
+        };
         /** TradingPolicyCheckData */
         TradingPolicyCheckData: {
             /** Check */
@@ -3632,6 +3755,29 @@ export interface components {
             /** Realized Known Total Usd */
             realized_known_total_usd: string | null;
         };
+        /** TradingRootChainCaseData */
+        TradingRootChainCaseData: {
+            /** Action */
+            action?: string | null;
+            /** Analysis Status */
+            analysis_status?: string | null;
+            /** Case Id */
+            case_id: string;
+            /** Created At Ms */
+            created_at_ms: number;
+            /** Decided At Ms */
+            decided_at_ms?: number | null;
+            /** Publish Status */
+            publish_status?: string | null;
+            /** Recheck Seq */
+            recheck_seq?: number | null;
+            /** Run Kind */
+            run_kind?: string | null;
+            /** Side */
+            side?: string | null;
+            /** State */
+            state: string;
+        };
         /**
          * TradingStatusData
          * @description The desk's RISK block, and nothing beside it.
@@ -3644,6 +3790,35 @@ export interface components {
         TradingStatusData: {
             decision: components["schemas"]["TradingDecisionRuntimeData"];
             execution: components["schemas"]["TradingExecutionReadinessData"];
+        };
+        /** TradingWatchObservationData */
+        TradingWatchObservationData: {
+            /** Child Case Id */
+            child_case_id?: string | null;
+            /** Condition */
+            condition: {
+                [key: string]: unknown;
+            };
+            /** Created At Ms */
+            created_at_ms: number;
+            /** Expires At Ms */
+            expires_at_ms: number;
+            /** Last Observation Ref */
+            last_observation_ref?: string | null;
+            /** Last Observation Status */
+            last_observation_status?: string | null;
+            /** Last Observed At Ms */
+            last_observed_at_ms?: number | null;
+            /** Last Observed Value */
+            last_observed_value?: string | null;
+            /** Next Check At Ms */
+            next_check_at_ms: number;
+            /** Parent Case Id */
+            parent_case_id: string;
+            /** Status */
+            status: string;
+            /** Updated At Ms */
+            updated_at_ms: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -4128,7 +4303,9 @@ export interface operations {
     };
     get_trading_case_replay_api_trading_cases__case_id__replay_get: {
         parameters: {
-            query?: never;
+            query?: {
+                attempt?: number | null;
+            };
             header?: never;
             path: {
                 case_id: string;

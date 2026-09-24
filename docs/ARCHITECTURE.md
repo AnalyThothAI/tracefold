@@ -177,6 +177,7 @@ model names, refresh intervals, and historical tasks:
 | OI, liquidation, smart-money notifications | `tracefold/news/market_notifications.py` |
 | Wallet receipts, net-buy detection, price sampling | App chain-tape wiring and its three independently supervised task declarations |
 | News/OI Trigger → Case → assessment → Decision | `tracefold/app/trading_analysis.py` and `tracefold/trading/engine/` |
+| Claim attempt and physical LM receipts, event WATCH, shadow net evaluation | Trading ledgers in `tracefold/trading/storage/analysis.py`; App performs bounded market/model I/O outside transactions |
 | Account, orders, protection, reconciliation | Nautilus (the Cache, reconciled with the venue), driven by the Runtime Strategy composed in `tracefold/app/nautilus/` |
 
 The code-owned limits still apply. Inspect their definitions and consumer tests when

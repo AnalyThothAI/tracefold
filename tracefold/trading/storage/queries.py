@@ -57,7 +57,8 @@ _CASE_COLUMNS = """
     case_id, underlying_key, trigger_kind, primary_source_key, manifest,
     manifest_sha256, state, policy_decision, policy_reason, policy_checks,
     observed_at_ms, created_at_ms AS case_created_at_ms, decided_at_ms,
-    trigger_id, target_asset_id, target_selection, entry_scope_id,
+    trigger_id, run_kind, recheck_seq, root_expires_at_ms,
+    target_asset_id, target_selection, entry_scope_id,
     mapping_semantics_digest, analysis_status, evidence_ref,
     (SELECT source.payload ->> 'evidence_ref' FROM trading_triggers source
       WHERE source.trigger_id = trading_cases.trigger_id AND source.kind = 'oi') AS source_item_id
@@ -86,6 +87,35 @@ TRADING_CASE_OUTCOMES_SQL = (
     "SELECT axis,horizon_seconds,label_version,status,return_bps,available_at_ms,"
     "labeled_at_ms,path_ref FROM trading_case_outcomes WHERE case_id=%s "
     "ORDER BY axis,horizon_seconds"
+)
+TRADING_CASE_ATTEMPTS_SQL = (
+    "SELECT case_id,claim_attempt,brief_ref,evidence_ref,assessment_ref,model_name,"
+    "prompt_sha,started_at_ms,ended_at_ms,provider_status,analysis_status,error_code,"
+    "validation_errors,physical_call_count,input_tokens,output_tokens,cost_microusd,"
+    "cost_unknown_reason,settled FROM trading_case_attempts WHERE case_id=%s "
+    "ORDER BY claim_attempt DESC LIMIT 128"
+)
+TRADING_CASE_MODEL_CALLS_SQL = (
+    "SELECT claim_attempt,call_index,request_ref,response_ref,input_tokens,"
+    "output_tokens,cost_microusd,cost_unknown_reason FROM trading_model_calls "
+    "WHERE case_id=%s ORDER BY claim_attempt DESC,call_index LIMIT 256"
+)
+TRADING_CASE_WATCH_SQL = (
+    "SELECT parent_case_id,condition,status,last_observation_status,last_observed_at_ms,last_observation_ref,"
+    "last_observed_value,next_check_at_ms,expires_at_ms,child_case_id,created_at_ms,"
+    "updated_at_ms FROM trading_watch_observations WHERE parent_case_id=%s"
+)
+TRADING_CASE_CHAIN_SQL = (
+    "SELECT c.case_id,c.run_kind,c.recheck_seq,c.state,c.analysis_status,c.created_at_ms,"
+    "c.decided_at_ms,d.action,d.publish_status,d.decision ->> 'side' AS side "
+    "FROM trading_cases c LEFT JOIN trading_case_decisions d USING (case_id) "
+    "WHERE c.trigger_id=%s ORDER BY c.recheck_seq,c.created_at_ms,c.case_id LIMIT 8"
+)
+TRADING_CASE_EVALUATIONS_SQL = (
+    "SELECT source,evaluation_version,status,reason,decision_at_ms,scheduled_at_ms,"
+    "due_at_ms,decision_quote_ref,planned_quote_ref,mark_path_ref,funding_ref,"
+    "venue_receipt_ref,result,evaluated_at_ms FROM trading_case_evaluations "
+    "WHERE case_id=%s ORDER BY source,evaluation_version"
 )
 
 
@@ -464,6 +494,22 @@ class QueryStorage:
                     TRADING_CASE_OUTCOMES_SQL,
                     (case_id,),
                 ).fetchall()
+            ]
+            result["analysis_attempts"] = [
+                dict(item) for item in self.conn.execute(TRADING_CASE_ATTEMPTS_SQL, (case_id,)).fetchall()
+            ]
+            calls = [dict(item) for item in self.conn.execute(TRADING_CASE_MODEL_CALLS_SQL, (case_id,)).fetchall()]
+            for attempt in result["analysis_attempts"]:
+                attempt["physical_calls"] = [
+                    call for call in calls if call["claim_attempt"] == attempt["claim_attempt"]
+                ]
+            watch = self.conn.execute(TRADING_CASE_WATCH_SQL, (case_id,)).fetchone()
+            result["watch_observation"] = dict(watch) if watch is not None else None
+            result["root_chain"] = [
+                dict(item) for item in self.conn.execute(TRADING_CASE_CHAIN_SQL, (result["trigger_id"],)).fetchall()
+            ]
+            result["analysis_evaluations"] = [
+                dict(item) for item in self.conn.execute(TRADING_CASE_EVALUATIONS_SQL, (case_id,)).fetchall()
             ]
         return result
 

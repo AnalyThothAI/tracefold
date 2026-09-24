@@ -77,7 +77,6 @@ class _Analyst:
         factors = tuple(
             FactorAssessment(
                 factor_id=factor,
-                weight_bps=5_000 if index < 2 else 0,
                 support_score=-20,
                 status="known",
                 evidence_refs=("market:perp_bars",),

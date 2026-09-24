@@ -31,9 +31,25 @@ per-asset Cases with fenced leases, freezes market and model records under
 `~/.tracefold/cache/trading-analysis`, and labels due opportunity paths.
 `trading.analysis.publish_signals` is false by default. An unavailable model
 is recorded as unavailable; it never silently activates the retired OI v5
-policy. Turning on publication requires an operator-selected paper or live
-Runtime mode and a separately running Nautilus deployment. Changing that flag
-does not itself start Nautilus or grant execution authority.
+policy. `oi_price_confirmation_v1` also requires
+`trading.analysis.strategy_publication_enabled=true` before it can publish a
+Signal, and that setting accepts PAPER mode only. It defaults false pending
+recorded replay, development/holdout comparison and PAPER receipts. Turning on
+publication requires a separately running Nautilus deployment; changing either
+flag does not start Nautilus or grant order authority.
+
+For a Case with no Decision, inspect `analysis_attempts` in the Case detail:
+each claim attempt has a structured validation error, frozen evidence ref and
+one indexed row per physical model response. A late attempt can remain visible
+while `settled=false`; it did not replace the fenced Decision. A WATCH with a
+machine condition shows its frozen threshold, latest closed-bar observation,
+expiry and child Case. A textual `observation_note` is research context and
+does not schedule a child. Shadow evaluations show `simulated`, `pending` or
+`unevaluable` with archived quote, mark and funding refs. Fee or spread
+assumptions left unset intentionally make net results `unevaluable`. These
+records cannot be treated as exchange fills. Venue PAPER net values require
+reconciled fills, fees, funding and protection receipts from the PAPER account;
+the current execution summary does not provide complete funding evidence.
 
 Run `uv run tracefold init` before the first current startup; canonical
 `make up` and `make deploy-image` already do so. It creates and permissions the

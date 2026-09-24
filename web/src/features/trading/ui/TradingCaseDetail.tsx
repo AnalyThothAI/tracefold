@@ -26,7 +26,8 @@ import { TradingAnalysisDetail } from "./TradingAnalysisDetail";
  * hint: the identity of the configuration is release evidence, its restated values were not.
  */
 export function TradingCaseDetail({ item, token }: { item: TradingCase; token: string }) {
-  if (item.trigger_id) return <TradingAnalysisDetail item={item} token={token} />;
+  if (item.trigger_id)
+    return <TradingAnalysisDetail key={item.case_id} item={item} token={token} />;
   const checks = caseChecks(item);
   return (
     <section aria-label={`案例 ${item.base_symbol}`} className="trading-case-detail">

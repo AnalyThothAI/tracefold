@@ -27,7 +27,8 @@ function word(value: unknown): string {
 
 export function TradingAnalysisDetail({ item, token }: { item: TradingCase; token: string }) {
   const [openReplay, setOpenReplay] = useState(false);
-  const replay = useTradingAnalysisReplay(token, item.case_id, openReplay);
+  const [selectedAttempt, setSelectedAttempt] = useState<number | undefined>();
+  const replay = useTradingAnalysisReplay(token, item.case_id, openReplay, selectedAttempt);
   const decision = record(item.analysis_decision?.decision);
   const assessmentReceipt = record(replay.data?.assessment);
   const assessment = record(assessmentReceipt?.assessment);
@@ -37,6 +38,14 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
   const evidence = record(replay.data?.evidence);
   const market = record(evidence?.market);
   const source = record(replay.data?.source_fact);
+  const watch = item.watch_observation;
+  const watchCondition = record(watch?.condition);
+  const reviewMode = {
+    none: "无自动复核",
+    historical_timed: "历史定时复核",
+    event_wait: "条件等待",
+    research_note: "研究备注，无自动复核",
+  }[item.review_mode ?? "none"];
 
   return (
     <section aria-label={`分析案例 ${item.base_symbol}`} className="trading-case-detail">
@@ -108,13 +117,108 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
           </div>
           <div className="trading-case-fact">
             <dt>候选</dt>
-            <dd>{word(decision?.selected_candidate_id)}</dd>
+            <dd>{word(decision?.entry_candidate_id)}</dd>
+          </div>
+          <div className="trading-case-fact">
+            <dt>方向假设</dt>
+            <dd>{word(decision?.hypothesis_side)}</dd>
+          </div>
+          <div className="trading-case-fact">
+            <dt>观察备注</dt>
+            <dd>{word(decision?.observation_note)}</dd>
           </div>
           <div className="trading-case-fact">
             <dt>原始理由</dt>
             <dd>{word(decision?.reason)}</dd>
           </div>
         </dl>
+      </Card>
+
+      <Card flush title="复核状态" hint={reviewMode}>
+        {watch ? (
+          <div className="trading-case-checks">
+            <p>
+              事件：收盘 1 分钟价格越过冻结价位 · {word(watchCondition?.operator)}{" "}
+              {word(watchCondition?.level)} {word(watchCondition?.unit)}
+            </p>
+            <p>
+              状态：{watch.status} · 最近观测：{word(watch.last_observation_status)} ·{" "}
+              {word(watch.last_observed_value)} · {caseClock(watch.last_observed_at_ms)}
+            </p>
+            <p>观测归档：{word(watch.last_observation_ref)}</p>
+            <p>根期限：{caseClock(watch.expires_at_ms)}</p>
+            {watch.child_case_id ? (
+              <p>
+                <Link to={`/trading?case=${watch.child_case_id}`}>查看条件命中的子 Case</Link>
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="trading-inline-empty">{reviewMode}</p>
+        )}
+        {item.root_chain?.length ? (
+          <div className="trading-case-checks">
+            <h4>同根 Case</h4>
+            {item.root_chain.map((member) => (
+              <p key={member.case_id}>
+                <Link to={`/trading?case=${member.case_id}`}>
+                  {member.run_kind === "recheck" ? `复核 ${member.recheck_seq}` : "初始"}
+                </Link>
+                {" · "}
+                {member.state}
+                {" · "}
+                {member.action ?? member.analysis_status ?? "待分析"}
+                {member.side ? ` · ${member.side}` : ""}
+              </p>
+            ))}
+          </div>
+        ) : null}
+      </Card>
+
+      <Card flush title="分析尝试" hint="失败与迟到尝试保留诊断；未知费用不计为零">
+        {item.analysis_attempts?.length ? (
+          item.analysis_attempts.map((attempt) => (
+            <div className="trading-case-checks" key={attempt.claim_attempt}>
+              <p>
+                尝试 {attempt.claim_attempt} · {attempt.analysis_status} ·{" "}
+                {attempt.settled ? "已结案" : "未取得结案权"}
+              </p>
+              <p>
+                错误：{word(attempt.error_code)} · 物理调用 {attempt.physical_call_count} 次
+              </p>
+              <p>
+                用量：输入 {word(attempt.input_tokens)} / 输出 {word(attempt.output_tokens)} token ·
+                费用{" "}
+                {attempt.cost_microusd == null
+                  ? `未知（${word(attempt.cost_unknown_reason)}）`
+                  : `${attempt.cost_microusd} 微美元`}
+              </p>
+              {(attempt.validation_errors ?? []).map((error, index) => (
+                <p key={`${error.field}-${index}`}>
+                  校验：{error.field} · {error.type}
+                </p>
+              ))}
+              {(attempt.physical_calls ?? []).map((call) => (
+                <p key={call.call_index}>
+                  物理调用 {call.call_index + 1} · 请求 {word(call.request_ref)} · 响应{" "}
+                  {word(call.response_ref)} · 费用{" "}
+                  {call.cost_microusd == null ? "未知" : `${call.cost_microusd} 微美元`}
+                </p>
+              ))}
+              <ActionButton
+                size="sm"
+                onClick={() => {
+                  setSelectedAttempt(attempt.claim_attempt);
+                  setOpenReplay(true);
+                }}
+              >
+                回放尝试 {attempt.claim_attempt}
+              </ActionButton>
+            </div>
+          ))
+        ) : (
+          <p className="trading-inline-empty">旧 Case 或尚未开始分析。</p>
+        )}
       </Card>
 
       <Card flush title="后续机会路径" hint="标的价格路径；不代表订单成交或账户净收益">
@@ -134,9 +238,43 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
         )}
       </Card>
 
+      <Card flush title="净值评估" hint="模拟与场所 PAPER 回执分别标记；未知成本不按零计算">
+        {item.analysis_evaluations?.length ? (
+          <div className="trading-case-checks">
+            {item.analysis_evaluations.map((evaluation) => {
+              const result = record(evaluation.result);
+              return (
+                <div key={`${evaluation.source}-${evaluation.evaluation_version}`}>
+                  <p>
+                    {evaluation.source === "shadow_simulation" ? "影子模拟" : "场所 PAPER"} ·{" "}
+                    {evaluation.status} · {evaluation.evaluation_version}
+                  </p>
+                  <p>
+                    原因：{word(evaluation.reason)} · 净值：
+                    {evaluation.source === "shadow_simulation"
+                      ? `${word(result?.net_bps)} bps`
+                      : `${word(result?.net_usd)} USD`}
+                  </p>
+                  <p>
+                    证据：决策报价 {word(evaluation.decision_quote_ref)} · 计划报价{" "}
+                    {word(evaluation.planned_quote_ref)} · 标记价格 {word(evaluation.mark_path_ref)}{" "}
+                    · 资金费 {word(evaluation.funding_ref)} · 场所回执{" "}
+                    {word(evaluation.venue_receipt_ref)}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="trading-inline-empty">尚无可评估的交易决策。</p>
+        )}
+      </Card>
+
       <Card flush title="冻结回放" hint="从原始归档读取，不重新调用模型">
         <ActionButton size="sm" onClick={() => setOpenReplay((value) => !value)}>
-          {openReplay ? "收起回放" : "查看冻结回放"}
+          {openReplay
+            ? "收起回放"
+            : `查看冻结回放${selectedAttempt ? ` · 尝试 ${selectedAttempt}` : " · 最新尝试"}`}
         </ActionButton>
         {openReplay && replay.isPending ? <p>正在读取归档…</p> : null}
         {openReplay && replay.isError ? <p>归档读取失败。</p> : null}
@@ -182,9 +320,8 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
                     const factor = record(raw);
                     return (
                       <p key={`${word(factor?.factor_id)}-${factorIndex}`}>
-                        {factorName[word(factor?.factor_id)] ?? word(factor?.factor_id)} · 权重{" "}
-                        {word(factor?.weight_bps)} bps · 支持度 {word(factor?.support_score)} ·{" "}
-                        {word(factor?.status)} · 引用{" "}
+                        {factorName[word(factor?.factor_id)] ?? word(factor?.factor_id)} · 支持度{" "}
+                        {word(factor?.support_score)} · {word(factor?.status)} · 引用{" "}
                         {Array.isArray(factor?.evidence_refs)
                           ? factor.evidence_refs.join(", ")
                           : "—"}

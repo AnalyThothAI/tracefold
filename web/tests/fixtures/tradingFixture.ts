@@ -150,6 +150,7 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
     policy_id: ALPHA_POLICY_ID,
     policy_reason: "smart_money_ratio_below_or_equal_floor",
     pre_move_bps: 187,
+    review_mode: "none",
     state: "NO_TRADE",
     ...overrides,
   };
