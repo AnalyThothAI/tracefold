@@ -17,6 +17,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.enums import OrderSide, OrderType, TradingState, TriggerType
 from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.identifiers import ClientOrderId, StrategyId
+from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 from tests.nautilus_oi_runtime_fixtures import (
     ACCOUNT_ID,
@@ -98,6 +99,60 @@ def test_an_entry_fill_places_one_mark_price_stop_and_take_profit_and_only_then_
     assert runtime.dispositions() == [{"disposition": "accepted"}]
     [plan] = runtime.plans()
     assert plan.status == "open" and plan.opened_at_ns is not None
+
+
+def test_partial_entry_is_protected_before_the_remaining_fill_and_resized_afterwards() -> None:
+    tape = [
+        TestDataStubs.quote_tick(
+            instrument=INSTRUMENT,
+            bid_price=9_999,
+            ask_price=10_000,
+            bid_size=0.01,
+            ask_size=0.01,
+            ts_event=NOW_NS + index * 100_000_000,
+            ts_init=NOW_NS + index * 100_000_000,
+        )
+        for index in range(5)
+    ]
+    runtime = backtest_runtime(tape=tape, signals=(trade_signal(),))
+    runtime.run()
+
+    observations = runtime.observations()
+    first_fill = next(index for index, value in enumerate(observations) if value.normalized_kind == "fill")
+    second_fill = next(
+        index
+        for index, value in enumerate(observations[first_fill + 1 :], first_fill + 1)
+        if value.normalized_kind == "fill" and value.summary.get("leg") == "entry"
+    )
+    assert observations[first_fill].summary["last_quantity"] == "0.01"
+    assert observations[second_fill].summary["last_quantity"] == "0.039"
+    assert {
+        value.summary.get("leg")
+        for value in observations[first_fill + 1 : second_fill]
+        if value.normalized_kind == "protection" and value.summary.get("status") == "submitted"
+    } == {"stop", "take_profit"}
+    orders = _by_id(runtime.orders())
+    assert orders[_leg_id("stop").value].quantity.as_decimal() == Decimal("0.049")
+    assert orders[_leg_id("take_profit").value].quantity.as_decimal() == Decimal("0.049")
+
+
+def test_short_entry_uses_buy_side_mark_price_protection_in_real_engine() -> None:
+    runtime = backtest_runtime(
+        tape=quotes(9_999, 10_000, start_ns=NOW_NS, count=20),
+        signals=(trade_signal(direction="short"),),
+    )
+    runtime.run()
+
+    orders = _by_id(runtime.orders())
+    entry = orders[_leg_id("entry").value]
+    stop = orders[_leg_id("stop").value]
+    take_profit = orders[_leg_id("take_profit").value]
+    assert entry.side == OrderSide.SELL and entry.filled_qty == entry.quantity
+    assert stop.side == take_profit.side == OrderSide.BUY
+    assert stop.is_reduce_only and take_profit.is_reduce_only
+    assert stop.trigger_type == take_profit.trigger_type == TriggerType.MARK_PRICE
+    assert stop.trigger_price > entry.avg_px
+    assert take_profit.trigger_price < entry.avg_px
 
 
 def test_the_plan_is_committed_before_its_entry_order_exists_and_a_refused_commit_sends_nothing() -> None:

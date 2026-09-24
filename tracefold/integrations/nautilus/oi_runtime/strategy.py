@@ -746,6 +746,9 @@ class OiNautilusStrategy(Strategy):
     def on_position_opened(self, event: Any) -> None:
         self._guard("position_opened", lambda: self._position_opened(event))
 
+    def on_position_changed(self, event: Any) -> None:
+        self._guard("position_changed", lambda: self._position_changed(event))
+
     def on_position_closed(self, event: Any) -> None:
         self._guard("position_closed", lambda: self._position_closed(event))
 
@@ -830,6 +833,14 @@ class OiNautilusStrategy(Strategy):
             average_entry_price=event.avg_px_open,
         )
         self._dispose_owed(opened, "accepted")
+        # A partial entry already holds venue exposure. Protect its actual
+        # quantity now rather than waiting for the next quote or final fill.
+        self._converge(self._now_ns())
+
+    def _position_changed(self, event: Any) -> None:
+        self._touch(event.instrument_id)
+        self._converge_due_ns = 0
+        self._converge(self._now_ns())
 
     def _position_closed(self, event: Any) -> None:
         """The Cache closed a position: end its plan now if one of this Runtime's legs closed it.

@@ -129,7 +129,9 @@ the venue's own positions:
   reduce-only `MARKET_IF_TOUCHED` take-profit order, both triggered on the
   **mark price**, at the plan's stop and take-profit distance from the average
   fill. A missing one is placed again; an existing one is resized or repriced
-  as partial fills change the position quantity or average price. A stop or
+  as partial fills change the position quantity or average price. Position-opened
+  and position-changed events run this check immediately; the periodic pass
+  recovers missed or refused updates. A stop or
   take-profit the venue refuses with `-2021 would immediately trigger` means the
   condition is already met, so the position is closed at market under that leg's
   reason;
