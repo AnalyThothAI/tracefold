@@ -141,7 +141,7 @@ def get_trading_cases(
         else:
             rows, total = [], 0
         states = repos.trading.case_counts(since_ms=now_ms - _WINDOW_MS)
-        reasons = repos.trading.case_reason_counts(since_ms=now_ms - _WINDOW_MS)
+        decisions = repos.trading.case_decision_counts(since_ms=now_ms - _WINDOW_MS)
         admissions = repos.trading.gate_counts(since_ms=now_ms - _WINDOW_MS)
     next_cursor = None
     if len(rows) > limit:
@@ -157,7 +157,7 @@ def get_trading_cases(
             "window_from_ms": since_ms,
             "window_to_ms": window_to,
             "state_counts_24h": states,
-            "reason_counts_24h": reasons,
+            "decision_counts_24h": decisions,
             "admission_counts_24h": admissions,
             "complete": next_cursor is None,
             "window_hours": _WINDOW_MS // 3_600_000,
@@ -265,8 +265,9 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "case_id": str(row["case_id"]),
         "event_id": _oi_event_id(row.get("primary_source_key")),
-        "source_item_id": _string_or_none(oi.get("source_item_id")),
+        "source_item_id": _string_or_none(row.get("source_item_id") or oi.get("source_item_id")),
         "base_symbol": _base_symbol(row.get("underlying_key")),
+        "trigger_kind": _string_or_none(row.get("trigger_kind")),
         "market_key": manifest.get("market_key"),
         "manifest_version": manifest.get("manifest_version"),
         # From the manifest, which is what the lane compares a Case against before it decides one.
@@ -287,6 +288,13 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "entry_scope_id": _string_or_none(row.get("entry_scope_id")),
         "mapping_semantics_digest": _string_or_none(row.get("mapping_semantics_digest")),
         "analysis_status": _string_or_none(row.get("analysis_status")),
+        "analysis_action": _string_or_none(row.get("analysis_action") or (decision or {}).get("action")),
+        "analysis_publish_status": _string_or_none(
+            row.get("analysis_publish_status") or (decision or {}).get("publish_status")
+        ),
+        "analysis_side": _string_or_none(
+            row.get("analysis_side") or ((decision or {}).get("decision") or {}).get("side")
+        ),
         "evidence_ref": _string_or_none(row.get("evidence_ref")),
         "analysis_decision": decision,
         "analysis_outcomes": [{**item, "return_bps": _string_or_none(item.get("return_bps"))} for item in outcomes],

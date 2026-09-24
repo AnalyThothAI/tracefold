@@ -154,6 +154,7 @@ class TradingCaseData(ExactApiSchema):
     source_item_id: str | None = None
     event_id: str | None = None
     base_symbol: str
+    trigger_kind: str | None = None
     market_key: str | None = None
     manifest_version: str | None = None
     # The manifest's own policy identity. Nullable because the manifest is the only writer of it and a
@@ -174,6 +175,9 @@ class TradingCaseData(ExactApiSchema):
     entry_scope_id: str | None = None
     mapping_semantics_digest: str | None = None
     analysis_status: str | None = None
+    analysis_action: str | None = None
+    analysis_publish_status: str | None = None
+    analysis_side: str | None = None
     evidence_ref: str | None = None
     analysis_decision: TradingAnalysisDecisionData | None = None
     analysis_outcomes: list[TradingAnalysisOutcomeData] = Field(default_factory=list)
@@ -194,6 +198,14 @@ class TradingAdmissionCountData(ExactApiSchema):
     count: int = Field(ge=0)
 
 
+class TradingDecisionCountData(ExactApiSchema):
+    """Agent outcome and publication status for Cases created in the 24 h window."""
+
+    action: str
+    publish_status: str
+    count: int = Field(ge=0)
+
+
 class TradingCasesData(ExactApiSchema):
     """The Case behind `?case_id=<id>`, plus the three durable 24 h distributions.
 
@@ -211,7 +223,7 @@ class TradingCasesData(ExactApiSchema):
     window_from_ms: int = 0
     window_to_ms: int = 0
     state_counts_24h: dict[str, int] = Field(default_factory=dict)
-    reason_counts_24h: dict[str, int] = Field(default_factory=dict)
+    decision_counts_24h: list[TradingDecisionCountData] = Field(default_factory=list)
     admission_counts_24h: list[TradingAdmissionCountData] = Field(default_factory=list, max_length=64)
     complete: bool
     window_hours: int

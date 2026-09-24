@@ -175,7 +175,12 @@ export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): Trad
     window_from_ms: TRADING_NOW_MS - 86400000,
     window_to_ms: TRADING_NOW_MS,
     complete: true,
-    reason_counts_24h: { smart_money_ratio_below_or_equal_floor: 4 },
+    decision_counts_24h: [
+      { action: "TRADE", publish_status: "published", count: 1 },
+      { action: "TRADE", publish_status: "shadow", count: 2 },
+      { action: "WATCH", publish_status: "not_applicable", count: 1 },
+      { action: "NO_TRADE", publish_status: "not_applicable", count: 3 },
+    ],
     state_counts_24h: { BLOCKED: 1, NO_TRADE: 5, SIGNAL_EMITTED: 1 },
     window_hours: 24,
     ...overrides,

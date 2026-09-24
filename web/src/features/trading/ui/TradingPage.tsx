@@ -102,8 +102,9 @@ export function TradingPage({ token }: { token: string }) {
     <PageShell archetype="scan" className="trading-shell" label="交易执行监控">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
+          <span className="trading-eyebrow">TRADING / DECISION DESK</span>
           <h1>交易执行</h1>
-          <p>自动交易运行监控 · 当前仓位与保护、执行记录和策略判定。</p>
+          <p>从市场线索、Agent 判定到信号发布与真实执行，逐步追踪每一笔决策。</p>
         </div>
         {/*
          * `EXECUTION paper` is a constant and no longer wears the caution colour. Amber is what the desk
@@ -198,6 +199,18 @@ export function TradingPage({ token }: { token: string }) {
             </EmptyNote>
           )}
 
+          <TradingDecisionSummary
+            cases={casesQuery.data}
+            failed={casesQuery.isError}
+            pending={casesQuery.isPending}
+            onBrowse={() => {
+              const next = new URLSearchParams(searchParams);
+              next.set("tab", "decisions");
+              next.delete("cursor");
+              setSearchParams(next);
+            }}
+          />
+
           <div className="trading-research-tabs" role="group" aria-label="交易视图">
             {(
               [
@@ -267,17 +280,6 @@ export function TradingPage({ token }: { token: string }) {
             </>
           ) : (
             <>
-              <TradingDecisionSummary
-                cases={casesQuery.data}
-                failed={casesQuery.isError}
-                pending={casesQuery.isPending}
-                onReason={(reason) => {
-                  const next = new URLSearchParams(searchParams);
-                  next.set("reason", reason);
-                  next.delete("cursor");
-                  setSearchParams(next);
-                }}
-              />
               <TradingCaseList token={token} onOpen={selectCase} />
             </>
           )}

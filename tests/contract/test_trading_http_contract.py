@@ -73,8 +73,8 @@ class _Trading:
     def case_counts(self, **kwargs: Any) -> dict[str, int]:
         return {"SIGNAL_EMITTED": 1}
 
-    def case_reason_counts(self, **kwargs: Any) -> dict[str, int]:
-        return {"smart_money_long": 1}
+    def case_decision_counts(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return [{"action": "TRADE", "publish_status": "published", "count": 1}]
 
     def gate_counts(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("gate_counts", kwargs))
@@ -326,6 +326,7 @@ def test_case_reads_its_policy_identity_off_the_manifest(client: tuple[TestClien
     assert case["state"] == "SIGNAL_EMITTED"
     assert case["market_key"] == "crypto:perp:SOL:USDT"
     assert case["base_symbol"] == "SOL"
+    assert case["trigger_kind"] == "oi"
     # #537 PR-3: the desk's policy identity is read from the manifest the lane froze, which is the copy
     # `_decide_one` compares before it decides anything. The three columns beside it are gone.
     assert case["policy_id"] == "source_native_oi_smart_money_long_v5"
@@ -339,7 +340,6 @@ def test_case_reads_its_policy_identity_off_the_manifest(client: tuple[TestClien
     assert {
         "underlying_key",
         "source_venue",
-        "trigger_kind",
         "policy_version",
         "policy_decision",
         "policy_config",
@@ -365,7 +365,7 @@ def test_cases_summary_does_not_fetch_rows_and_identity_reads_one_case(client: t
     assert set(data) == {
         "cases",
         "state_counts_24h",
-        "reason_counts_24h",
+        "decision_counts_24h",
         "admission_counts_24h",
         "complete",
         "window_hours",
@@ -380,7 +380,7 @@ def test_cases_summary_does_not_fetch_rows_and_identity_reads_one_case(client: t
     assert [name for name, _ in trading.calls if name == "console_case"] == []
     # The distributions travel whether or not a drawer is open; they are the funnel, not the Case.
     assert data["state_counts_24h"] == {"SIGNAL_EMITTED": 1}
-    assert data["reason_counts_24h"] == {"smart_money_long": 1}
+    assert data["decision_counts_24h"] == [{"action": "TRADE", "publish_status": "published", "count": 1}]
 
     hit = api.get("/api/trading/cases", params={"token": TOKEN, "case_id": "case-sol"}).json()["data"]
     assert [row["case_id"] for row in hit["cases"]] == ["case-sol"]

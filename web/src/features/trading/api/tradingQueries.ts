@@ -37,10 +37,10 @@ export const useTradingStatusWithToken = (token: string) =>
   });
 
 /**
- * The 24 h funnel's three durable distributions, and nothing else (#604 T3).
+ * The 24 h admission, Case, and Agent-decision distributions, and nothing else.
  *
- * Without `case_id` the response's `cases[]` is empty by contract, so this poll now carries three count
- * dictionaries instead of up to 100 frozen Cases with their checks attached — of which the desk could
+ * Without `case_id` the response's `cases[]` is empty by contract, so this poll carries three compact
+ * count distributions instead of up to 100 frozen Cases with their checks attached — of which the desk could
  * render at most one, once a reader clicked. The one Case a reader does click is the query below.
  */
 export const useTradingCasesWithToken = (token: string) =>

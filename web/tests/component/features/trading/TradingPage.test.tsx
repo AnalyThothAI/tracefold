@@ -106,7 +106,9 @@ describe("TradingPage", () => {
       screen.getByRole("heading", { name: "执行记录 · 近 24 小时及未结束交易" }),
     ).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "策略判定" }));
-    expect(await screen.findByRole("heading", { name: "最近 24 小时 · 判定分布" })).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "一条市场线索，如何走到交易" }),
+    ).toBeVisible();
     expect(screen.getByText(/执行状态账本读取失败；保留其余已验证事实。/)).toBeVisible();
     // The blocks that read `/status` say so in the same vocabulary rather than rendering a false answer.
     expect(screen.getByText("执行状态账本读取失败，不能据此断言为空。")).toBeVisible();
@@ -290,26 +292,53 @@ describe("TradingPage", () => {
     expect(within(tally).getByText("受理 2 · 拒绝 2")).toBeVisible();
   });
 
-  it("renders the funnel's reasons in Chinese rather than the keys the writer stores", async () => {
-    /*
-     * The Case card printed `smart_money_ratio_below_or_equal_floor`, so the seven translations in
-     * `POLICY_RULE_ZH` could never reach a reader. The funnel's own top is `admission_counts_24h`, which is
-     * the only account the desk can give of a frame that never became a Case at all.
-     */
+  it("shows Agent outcomes and distinguishes shadow judgments from published Signals", async () => {
     renderTrading("/trading?tab=decisions");
 
     const funnel = (
-      await screen.findByRole("heading", { name: "最近 24 小时 · 判定分布" })
+      await screen.findByRole("heading", { name: "一条市场线索，如何走到交易" })
     ).closest("section") as HTMLElement;
-    const strip = within(funnel).getByLabelText("策略判定分布");
-    expect(within(strip).getByText("不交易").nextSibling).toHaveTextContent("5");
-    expect(within(strip).getByText("已发出信号").nextSibling).toHaveTextContent("1");
-    expect(within(strip).getByText("判定受阻").nextSibling).toHaveTextContent("1");
-    expect(within(funnel).getByText("鲸鱼占比未超过地板")).toBeVisible();
-    fireEvent.click(within(funnel).getByText("来源准入分布 · 未成案的来源记录"));
-    expect(within(funnel).getByText("准入拒绝 · 持仓价值低于地板")).toBeVisible();
-    expect(within(funnel).getByText("过期 · 触发已陈旧")).toBeVisible();
+    expect(within(funnel).getByText("交易 3 · 观察 1 · 不交易 3")).toBeVisible();
+    expect(within(funnel).getByText("影子 2 · 阻断或失效 0")).toBeVisible();
+    expect(within(funnel).getByText("TRADE 判断已发布").previousSibling).toHaveTextContent("1");
     expect(within(funnel).queryByText("smart_money_ratio_below_or_equal_floor")).toBeNull();
+  });
+
+  it("opens on completed Agent Cases and labels shadow decisions without claiming a Signal", async () => {
+    const listStates: string[] = [];
+    server.use(
+      http.get(/.*\/api\/trading\/cases$/, ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get("view") === "list") {
+          listStates.push(url.searchParams.get("state") ?? "ALL");
+          return HttpResponse.json({
+            ok: true,
+            data: tradingCasesFixture({
+              cases: [
+                tradingCaseFixture({
+                  analysis_action: "TRADE",
+                  analysis_publish_status: "shadow",
+                  analysis_side: "short",
+                  base_symbol: "SOL",
+                  case_id: "case-agent",
+                  state: "DONE",
+                  trigger_id: "a".repeat(64),
+                  trigger_kind: "oi",
+                }),
+              ],
+              total: 1,
+            }),
+          });
+        }
+        return HttpResponse.json({ ok: true, data: tradingCasesFixture() });
+      }),
+    );
+    renderTrading("/trading?tab=decisions");
+
+    expect(await screen.findByText("影子判断 · 做空")).toBeVisible();
+    expect(screen.getByText("OI 触发")).toBeVisible();
+    expect(screen.queryByText("Signal 已发布")).toBeNull();
+    expect(listStates).toContain("DONE");
   });
 
   it("opens the exposure block only when the account holds something", async () => {
@@ -485,7 +514,6 @@ describe("TradingPage", () => {
           ok: true,
           data: tradingCasesFixture({
             admission_counts_24h: [],
-            reason_counts_24h: {},
             state_counts_24h: {},
           }),
         }),

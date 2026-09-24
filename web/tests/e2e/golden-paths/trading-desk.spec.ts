@@ -42,7 +42,7 @@ test("positions lead the desk; execution opens a keyboard-dismissible Case and r
   await expect(signal).toBeFocused();
   expect(new URL(page.url()).searchParams.get("tab")).toBe("executions");
   await page.getByRole("button", { name: "策略判定", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "最近 24 小时 · 判定分布" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "一条市场线索，如何走到交易" })).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });

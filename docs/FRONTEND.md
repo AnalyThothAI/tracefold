@@ -382,16 +382,21 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is 交易执行 (#621). The safety strip always precedes three
-  URL-owned tabs: 持仓与订单 (default), 执行记录 and 策略判定. Positions
-  and protection precede daily totals in the default tab at every
-  width. Execution rows retain the venue-derived stages, exact decimals and
-  the existing nine-column panel with internal scrolling.
+  `/trading` is 交易执行 (#621). The top of every view shows execution readiness
+  and the #683 chain: source admission, frozen Case, DSPy Agent decision, Signal
+  publication, then a handoff to the independent execution ledger. The first
+  four tiles use their own 24-hour ledger counts; the fifth has no synthetic
+  count. The note states that their populations have different clocks and that
+  a published Signal does not prove an order or fill. TRADE judgments distinguish
+  published, shadow, and withheld publication.
 
-  The decision tab shows independent 24-hour distributions, then a 25-row
-  server-filtered list with state, asset, reason and a scope-bound keyset cursor.
-  Clicking a reason narrows the list. These distributions are not a conversion
-  funnel assembled from unrelated frame, Case and execution populations.
+  Three URL-owned tabs remain: 持仓与订单 (default), 执行记录 and 策略判定.
+  Positions and protection precede daily totals in the default tab at every
+  width. Execution rows retain venue-derived stages and exact decimals.
+  The decision tab holds the 25-row server-filtered Case list with state,
+  asset, reason and a scope-bound keyset cursor. Rows show the lightweight
+  Agent action, direction and publication state, while long policy reasons
+  stay in the Case drawer instead of filling the overview.
   A Case opens in the shared Drawer, supports Escape and restores opener focus.
   Its conditions and values come from the frozen manifest and policy checks.
 

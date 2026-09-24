@@ -16,9 +16,15 @@ export function TradingCaseList({
   onOpen: (id: string) => void;
 }) {
   const [params, setParams] = useSearchParams();
+  const requestedState = params.get("state");
+  const defaultAgentView =
+    !requestedState && !params.has("source_item_id") && !params.has("reason");
   const filters = {
     view: "list",
-    state: params.get("state") || undefined,
+    state:
+      requestedState === "ALL"
+        ? undefined
+        : requestedState || (defaultAgentView ? "DONE" : undefined),
     reason: params.get("reason") || undefined,
     asset: params.get("asset") || undefined,
     source_item_id: params.get("source_item_id") || undefined,
@@ -28,8 +34,8 @@ export function TradingCaseList({
   const data = query.data;
   return (
     <Card
-      title={filters.source_item_id ? "这条观察关联的策略判定" : "策略判定记录"}
-      hint="点击一条判定，核对当时冻结的条件和实测值。"
+      title={filters.source_item_id ? "这条观察关联的策略判定" : "Case 与 Agent 判定"}
+      hint="逐条核对冻结事实、Agent 判断与信号发布状态。"
       flush
     >
       <form
@@ -59,18 +65,17 @@ export function TradingCaseList({
         <label>
           判定状态
           <select
-            value={filters.state ?? ""}
+            value={requestedState ?? (defaultAgentView ? "DONE" : "ALL")}
             onChange={(event) => {
               const next = new URLSearchParams(params);
-              if (event.target.value) next.set("state", event.target.value);
-              else next.delete("state");
+              next.set("state", event.target.value);
               next.delete("cursor");
               setParams(next);
             }}
           >
-            <option value="">全部状态</option>
+            <option value="ALL">全部状态</option>
             <option value="NO_TRADE">不交易</option>
-            <option value="DONE">分析完成</option>
+            <option value="DONE">Agent 已判断</option>
             <option value="FAILED">分析不可用</option>
             <option value="EXCLUDED">目标排除</option>
             <option value="SIGNAL_EMITTED">已发出信号</option>
@@ -82,7 +87,7 @@ export function TradingCaseList({
         <ActionButton type="submit" size="sm">
           筛选
         </ActionButton>
-        {filters.reason || filters.source_item_id || filters.asset || filters.state ? (
+        {filters.reason || filters.source_item_id || filters.asset || requestedState ? (
           <ActionButton
             size="sm"
             onClick={() => {
@@ -111,7 +116,7 @@ export function TradingCaseList({
           <p className="trading-inline-empty">
             {filters.source_item_id
               ? "按保存的来源身份关联，覆盖保留期；未匹配不代表未评估。"
-              : "最近 24 小时 · 按创建时间排序"}{" "}
+              : `${filters.state === "DONE" ? "Agent 已判断" : "全部 Case"} · 最近 24 小时 · 按创建时间排序`}{" "}
             · 共 {data.total} 条
           </p>
           {(data.cases ?? []).length ? (
@@ -123,9 +128,26 @@ export function TradingCaseList({
                   key={item.case_id}
                   onClick={() => onOpen(item.case_id)}
                 >
-                  <b>{item.base_symbol}</b>
-                  <span>{caseVerdict(item)}</span>
-                  <small>{caseClock(item.created_at_ms)} · 查看依据</small>
+                  <span className="trading-case-identity">
+                    <b>{item.base_symbol.length > 24 ? "待映射标的" : item.base_symbol}</b>
+                    <small>
+                      {item.trigger_kind === "oi"
+                        ? "OI 触发"
+                        : item.trigger_kind
+                          ? `${item.trigger_kind.toUpperCase()} 触发`
+                          : "策略 Case"}
+                    </small>
+                  </span>
+                  <span
+                    className="trading-case-result"
+                    data-action={item.analysis_action ?? undefined}
+                  >
+                    {caseVerdict(item)}
+                  </span>
+                  <span className="trading-case-open">
+                    <small>{caseClock(item.created_at_ms)}</small>
+                    <span>查看依据 ↗</span>
+                  </span>
                 </button>
               ))}
             </div>
