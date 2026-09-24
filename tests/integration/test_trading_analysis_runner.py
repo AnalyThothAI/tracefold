@@ -260,6 +260,79 @@ def test_runner_finishes_frozen_shadow_case(tmp_path) -> None:
         conn.close()
 
 
+def test_required_market_failure_preserves_partial_frozen_evidence_on_attempt(tmp_path) -> None:
+    class MissingPerp(_Market):
+        async def fetch(self, request: MarketDataRequest) -> MarketDataResult:
+            if request.dataset != "perp_bars":
+                return await super().fetch(request)
+            return MarketDataResult(
+                status="missing",
+                payload=(),
+                schema_version="fixture_v1",
+                source_version="fixture_v1",
+                unit_definition=request.unit_definition,
+                source_identity=request.source_identity,
+                event_start_ms=None,
+                event_end_ms=None,
+                received_at_ms=None,
+                missing_reasons=("price_unavailable",),
+                request_receipts=(),
+            )
+
+    conn = connect_postgres_test(tmp_path / "evidence-failure-db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        now_ms = int(time.time() * 1000)
+        trading = TradingRepository(conn)
+        with conn.transaction():
+            _, case_id, _ = trading.accept_trigger(
+                kind="oi",
+                source_fact_key="missing-price",
+                source_revision="v1",
+                payload_sha256="e" * 64,
+                payload={
+                    "kind": "oi",
+                    "source_recorded_at_ms": now_ms,
+                    "provider_event_at_ms": now_ms - 1_000,
+                    "measurement_definition": "exchange-oi-v1",
+                    "assets": [{"symbol": "SOL", "market_type": "crypto", "role": "primary"}],
+                },
+                selection=_selection(),
+                now_ms=now_ms,
+                root_ttl_ms=600_000,
+            )
+        settings = Settings()
+        settings.storage.postgres = PostgresConfig(dsn=postgres_migration_test_dsn(), password_file=None)
+        files_root = tmp_path / "evidence-failure-archive"
+        runner = AnalysisRunner(settings=settings, market_data=MissingPerp(), analyst=_Analyst(), files_root=files_root)
+
+        async def process() -> None:
+            try:
+                assert await runner.analyze_one()
+            finally:
+                runner._db_executor.shutdown(wait=True)
+
+        asyncio.run(process())
+        row = conn.execute(
+            "SELECT c.state,c.analysis_status,c.evidence_ref,a.evidence_ref AS attempt_ref,"
+            "a.error_code,a.assessment_ref,a.settled "
+            "FROM trading_cases c JOIN trading_case_attempts a USING(case_id) WHERE c.case_id=%s",
+            (case_id,),
+        ).fetchone()
+        assert row["state"] == "FAILED" and row["analysis_status"] == "evidence_unavailable"
+        assert row["error_code"] == "required_perp_price_unavailable"
+        assert row["settled"] is True and row["assessment_ref"] is None
+        assert row["evidence_ref"] == row["attempt_ref"] and row["evidence_ref"]
+        snapshot = AnalysisFiles(files_root).read(row["attempt_ref"])
+        assert snapshot["market"]["perp_bars"]["status"] == "missing"
+        assert snapshot["market"]["instrument_rules"]["status"] == "ok"
+        assert (
+            conn.execute("SELECT count(*) FROM trading_case_decisions WHERE case_id=%s", (case_id,)).fetchone()[0] == 0
+        )
+    finally:
+        conn.close()
+
+
 def test_runner_persists_physical_request_before_dispatch(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     conn = connect_postgres_test(tmp_path / "physical-call-db", read_only=False)
     try:
@@ -343,5 +416,87 @@ def test_runner_persists_physical_request_before_dispatch(tmp_path, monkeypatch:
         assert call["status"] == "completed"
         assert call["response_ref"] is not None
         assert (call["input_tokens"], call["output_tokens"], call["cost_microusd"]) == (10, 5, 10)
+    finally:
+        conn.close()
+
+
+def test_provider_timeout_keeps_requested_call_and_unknown_cost_on_failed_case(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = connect_postgres_test(tmp_path / "model-timeout-db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        trading = TradingRepository(conn)
+        now_ms = int(time.time() * 1000)
+        with conn.transaction():
+            _, case_id, _ = trading.accept_trigger(
+                kind="oi",
+                source_fact_key="model-timeout",
+                source_revision="v1",
+                payload_sha256="f" * 64,
+                payload={
+                    "kind": "oi",
+                    "source_recorded_at_ms": now_ms - 1_000,
+                    "provider_event_at_ms": now_ms - 2_000,
+                    "measurement_definition": "exchange-oi-v1",
+                    "assets": [{"symbol": "SOL", "market_type": "crypto", "role": "primary"}],
+                },
+                selection=_selection(),
+                now_ms=now_ms,
+                root_ttl_ms=600_000,
+            )
+
+        class Predictor:
+            async def acall(self, **kwargs: object) -> None:
+                await kwargs["lm"].aforward(messages=[{"role": "user", "content": "frozen"}])
+
+        async def provider(*_args: object, **_kwargs: object) -> None:
+            assert (
+                conn.execute("SELECT status FROM trading_model_calls WHERE case_id=%s", (case_id,)).fetchone()["status"]
+                == "requested"
+            )
+            raise TimeoutError("fixture timeout")
+
+        monkeypatch.setattr(dspy.LM, "aforward", provider)
+        analyst = TradeAnalyst(
+            ConfiguredLMEndpoint(
+                model_name="openai/test-model", api_key="fixture", api_base="http://localhost:1/v1", model_kwargs={}
+            ),
+            predictor=Predictor(),
+        )
+        settings = Settings()
+        settings.storage.postgres = PostgresConfig(dsn=postgres_migration_test_dsn(), password_file=None)
+        files_root = tmp_path / "model-timeout-archive"
+        runner = AnalysisRunner(settings=settings, market_data=_Market(), analyst=analyst, files_root=files_root)
+
+        async def process() -> None:
+            try:
+                assert await runner.analyze_one()
+            finally:
+                runner._db_executor.shutdown(wait=True)
+
+        asyncio.run(process())
+        row = conn.execute(
+            "SELECT c.state,c.analysis_status,a.error_code,a.assessment_ref,a.physical_call_count,"
+            "a.cost_unknown_reason,a.settled,call.request_ref,call.response_ref,"
+            "call.cost_unknown_reason AS call_cost_reason "
+            "FROM trading_cases c JOIN trading_case_attempts a ON a.case_id=c.case_id "
+            "JOIN trading_model_calls call ON call.case_id=a.case_id AND call.claim_attempt=a.claim_attempt "
+            "WHERE c.case_id=%s",
+            (case_id,),
+        ).fetchone()
+        assert row["state"] == "FAILED" and row["analysis_status"] == "model_timeout"
+        assert row["error_code"] == "model_timeout" and row["settled"] is True
+        assert (
+            row["physical_call_count"] == 1 and row["cost_unknown_reason"] == "one_or_more_physical_costs_unavailable"
+        )
+        assert row["call_cost_reason"] == "provider_cost_unavailable"
+        files = AnalysisFiles(files_root)
+        assert files.read(row["request_ref"])["messages"][0]["content"] == "frozen"
+        assert files.read(row["response_ref"])["status"] == "outcome_unconfirmed"
+        assert files.read(row["assessment_ref"])["validation_status"] == "model_timeout"
+        assert (
+            conn.execute("SELECT count(*) FROM trading_case_decisions WHERE case_id=%s", (case_id,)).fetchone()[0] == 0
+        )
     finally:
         conn.close()
