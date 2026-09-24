@@ -291,7 +291,13 @@ class BinanceMarketData:
             )
         received = self._clock_ms()
         if request.dataset == "book_ticker":
-            if not isinstance(raw, dict) or raw.get("bidPrice") is None or raw.get("askPrice") is None:
+            if (
+                not isinstance(raw, dict)
+                or raw.get("bidPrice") is None
+                or raw.get("askPrice") is None
+                or raw.get("bidQty") is None
+                or raw.get("askQty") is None
+            ):
                 return self._result(
                     request,
                     status="error",
@@ -308,6 +314,8 @@ class BinanceMarketData:
                         "received_at_ms": received,
                         "bid": str(raw["bidPrice"]),
                         "ask": str(raw["askPrice"]),
+                        "bid_quantity": str(raw["bidQty"]),
+                        "ask_quantity": str(raw["askQty"]),
                         "source_time_kind": "local_response_receipt",
                     },
                 ),

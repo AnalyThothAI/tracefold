@@ -13,7 +13,13 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from tracefold.trading.engine.strategy import STRATEGY_VERSION, build_event_price_candidates, triggered_candidate
+from tracefold.trading.engine.strategy import (
+    BAR_MS,
+    ENTRY_WINDOW_MS,
+    STRATEGY_VERSION,
+    build_event_price_candidates,
+    range_cross_side,
+)
 
 ARMS = ("rule", "dspy")
 PURGE_MS = 4 * 3_600_000
@@ -59,22 +65,37 @@ def _rule_action(root_cases: list[dict[str, Any]]) -> str | None:
             return "TRADE"
         if not all(candidate.watch_eligible for candidate in candidates):
             return "NO_TRADE"
-        child = next((row for row in root_cases if row["run_kind"] == "conditional"), None)
-        if child is None:
-            return "WATCH"
-        child_snapshot = child.get("evidence") or {}
-        context = child_snapshot.get("trigger_context") or {}
-        candidate = triggered_candidate(
-            asset_id=str(initial["asset_id"]),
-            instrument_semantics_digest=str(initial["mapping_semantics_digest"]),
-            condition=context["watch_condition"],
-            trigger_side=context["watch_trigger_side"],
-            trigger_at_ms=int(context["watch_observed_at_ms"]),
-            trigger_close=Decimal(str(context["watch_observed_value"])),
-            previous_close=Decimal(str(context["watch_previous_close"])),
-            latest_closed_rows=tuple((child_snapshot.get("market") or {})["perp_bars"]["payload"]),
-        )
-        return "TRADE" if candidate.entry_ready else "NO_TRADE"
+        # The rule arm must not borrow a child Case that only exists because DSPy
+        # chose WATCH. Its own post-setup bar path is frozen in the root export.
+        path = initial.get("rule_watch_bars")
+        if not isinstance(path, list):
+            return None
+        upper = candidates[0].entry_level
+        lower = candidates[1].entry_level
+        previous = candidates[0].entry_observed
+        expected_at = candidates[0].entry_observed_at_ms + BAR_MS
+        expires_at = int(initial["root_expires_at_ms"])
+        for bar in path:
+            at_ms = int(bar["event_at_ms"])
+            received_at_ms = int(bar["received_at_ms"])
+            close = Decimal(str(bar["close"]))
+            if (
+                at_ms != expected_at
+                or at_ms > expires_at
+                or received_at_ms < at_ms
+                or not close.is_finite()
+                or close <= 0
+            ):
+                return None
+            side = range_cross_side(previous_close=previous, close=close, upper=upper, lower=lower)
+            if side is not None:
+                # First crossing consumes the root, including when the receipt
+                # arrives too late for the immutable entry window.
+                return "TRADE" if received_at_ms < min(expires_at, at_ms + ENTRY_WINDOW_MS) else "NO_TRADE"
+            previous, expected_at = close, at_ms + BAR_MS
+        if initial.get("rule_watch_status") == "complete" and expected_at > expires_at:
+            return "NO_TRADE"
+        return None
     except (KeyError, TypeError, ValueError, InvalidOperation):
         return None
 
@@ -95,7 +116,12 @@ def _model_cost(root_cases: list[dict[str, Any]]) -> tuple[int, int]:
                 continue
             cost = attempt.get("cost_microusd", attempt.get("model_cost_microusd"))
             if cost is None:
-                unknown += 1
+                known += int(attempt.get("known_cost_microusd") or 0)
+                unknown += (
+                    int(attempt.get("unknown_cost_calls") or 0)
+                    if "unknown_cost_calls" in attempt
+                    else int(bool(attempt.get("physical_call_count", 1)))
+                )
             else:
                 known += int(cost)
     return known, unknown
@@ -166,9 +192,13 @@ def _arm_summary(
             unknown_model_calls += unknown
         if action != "TRADE":
             continue
-        trade_case = max(
-            (row for row in root_cases if row["run_kind"] in ("initial", "conditional")),
-            key=lambda row: (int(row.get("recheck_seq") or 0), int(row["created_at_ms"])),
+        trade_case = (
+            initial
+            if arm == "rule"
+            else max(
+                (row for row in root_cases if row["run_kind"] in ("initial", "conditional")),
+                key=lambda row: (int(row.get("recheck_seq") or 0), int(row["created_at_ms"])),
+            )
         )
         receipt = (trade_case.get("arm_evaluations") or {}).get(arm)
         if not isinstance(receipt, dict) or receipt.get("status") != "simulated":

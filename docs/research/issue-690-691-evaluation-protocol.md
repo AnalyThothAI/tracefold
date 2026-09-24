@@ -55,6 +55,10 @@ all later roots are holdout. Every child follows its root. Roots sharing a
 source group across splits are excluded from both splits and counted. Asset
 identity is a reporting stratum, not a randomized split key. Rule and DSPy
 arms use the same roots, timestamps, capital limits and strategy version.
+Each root export supplies the rule arm's own continuous `rule_watch_bars`
+with close and received clocks through root expiry, or an explicit missing
+coverage status. The rule arm never borrows a conditional child produced by
+the DSPy arm; a gap or late first crossing cannot become a later entry.
 Known model cost and unknown calls remain separate. An arm with missing
 contemporary receipts has an unknown net result; gross close-to-close price
 paths are opportunity labels only. Closed-trade drawdown cannot establish

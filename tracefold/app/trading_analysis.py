@@ -50,6 +50,13 @@ from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prep
 _BAR_MS = 60_000
 _PROFILE_BARS = 16
 _LOG = logging.getLogger(__name__)
+_FILE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-files")
+
+
+async def _file_io(fn: Callable[..., Any], *args: Any) -> Any:
+    """Keep archive I/O off the event loop in one process-wide bounded pool."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_FILE_EXECUTOR, fn, *args)
 
 
 def _clock_ms() -> int:
@@ -183,7 +190,7 @@ class FrameReader:
                 for name, result in results.items()
             },
         }
-        failure_evidence_ref = await asyncio.to_thread(self.files.write, snapshot)
+        failure_evidence_ref = await _file_io(self.files.write, snapshot)
         try:
             if source_history_at is not None:
                 try:
@@ -191,7 +198,7 @@ class FrameReader:
                 except Exception as exc:
                     raise FrozenEvidenceError(f"source_history_{type(exc).__name__}", failure_evidence_ref) from exc
                 snapshot["same_asset_source_history"] = source_history
-                failure_evidence_ref = await asyncio.to_thread(self.files.write, snapshot)
+                failure_evidence_ref = await _file_io(self.files.write, snapshot)
             if any(
                 result.received_at_ms is not None and result.received_at_ms > knowledge_cutoff
                 for result in results.values()
@@ -237,7 +244,7 @@ class FrameReader:
         snapshot["entry_reference"] = {"price": str(reference_price), "closed_at_ms": reference_at_ms}
         if trigger_context is not None:
             snapshot["trigger_context"] = trigger_context
-        evidence_ref = await asyncio.to_thread(self.files.write, snapshot)
+        evidence_ref = await _file_io(self.files.write, snapshot)
         typed_evidence = freeze_features(
             snapshot_ref=evidence_ref,
             knowledge_cutoff_ms=knowledge_cutoff,
@@ -332,7 +339,7 @@ class FrameReader:
             trigger_context=trigger_context,
             typed_evidence=typed_evidence.model_dump(mode="json"),
         )
-        brief_ref = await asyncio.to_thread(self.files.write, {"brief_json": brief.text})
+        brief_ref = await _file_io(self.files.write, {"brief_json": brief.text})
         return PreparedAnalysis(evidence_ref, brief_ref, brief, candidates, reference_price, reference_at_ms)
 
 
@@ -634,7 +641,7 @@ class AnalysisRunner:
                     remaining_ms: int,
                     cost_bound: int | None,
                 ) -> None:
-                    request_ref = await asyncio.to_thread(self.files.write, request_payload)
+                    request_ref = await _file_io(self.files.write, request_payload)
                     allowed = await self._db_async(
                         lambda repos: repos.trading.record_model_call_start(
                             case_id=case["case_id"],
@@ -653,7 +660,7 @@ class AnalysisRunner:
 
                 async def after_call(call_index: int, call: PhysicalModelCall) -> None:
                     response_ref = (
-                        await asyncio.to_thread(self.files.write, call.response_payload)
+                        await _file_io(self.files.write, call.response_payload)
                         if call.response_payload is not None
                         else None
                     )
@@ -727,12 +734,12 @@ class AnalysisRunner:
         call_rows: list[dict[str, Any]] = []
         if receipt is not None:
             request_ref = (
-                await asyncio.to_thread(self.files.write, receipt.request_payload)
+                await _file_io(self.files.write, receipt.request_payload)
                 if receipt.request_payload is not None
                 else None
             )
             response_ref = (
-                await asyncio.to_thread(self.files.write, receipt.response_payload)
+                await _file_io(self.files.write, receipt.response_payload)
                 if receipt.response_payload is not None
                 else None
             )
@@ -753,12 +760,12 @@ class AnalysisRunner:
             call_rows = [
                 {
                     "request_ref": (
-                        await asyncio.to_thread(self.files.write, call.request_payload)
+                        await _file_io(self.files.write, call.request_payload)
                         if call.request_payload is not None
                         else None
                     ),
                     "response_ref": (
-                        await asyncio.to_thread(self.files.write, call.response_payload)
+                        await _file_io(self.files.write, call.response_payload)
                         if call.response_payload is not None
                         else None
                     ),
@@ -770,7 +777,7 @@ class AnalysisRunner:
                 for call in physical_calls
             ]
             validation_errors = receipt.validation_errors + validation_errors
-            assessment_ref = await asyncio.to_thread(
+            assessment_ref = await _file_io(
                 self.files.write,
                 {
                     "case_id": case["case_id"],
@@ -880,7 +887,7 @@ class AnalysisRunner:
             environment=str(instrument["environment"]),
             product="perpetual",
             source_identity="binance_public_v1",
-            unit_definition="bid_ask_quote_per_base_v1",
+            unit_definition="bid_ask_quote_and_base_size_v2",
             start_ms=None,
             end_ms=None,
             interval_ms=None,
@@ -914,8 +921,8 @@ class AnalysisRunner:
             await asyncio.sleep((target_at - _clock_ms()) / 1_000)
         scheduled_at_ms = _clock_ms()
         planned_quote = await self._read_executable_quote(case)
-        first_ref = await asyncio.to_thread(self.files.write, first_quote)
-        planned_ref = await asyncio.to_thread(self.files.write, planned_quote)
+        first_ref = await _file_io(self.files.write, first_quote)
+        planned_ref = await _file_io(self.files.write, planned_quote)
         valid_quotes = (
             first_quote["status"] == "ok"
             and bool(first_quote["payload"])
@@ -1097,7 +1104,7 @@ class AnalysisRunner:
                     "labeled_at_ms": now,
                 }
             )
-            ref = await asyncio.to_thread(self.files.write, path)
+            ref = await _file_io(self.files.write, path)
             await self._db_async(
                 lambda repos, row=row, path=path, ref=ref, now=now: repos.trading.settle_analysis_outcome(
                     case_id=row["case_id"],
@@ -1219,7 +1226,7 @@ class AnalysisRunner:
                 if now < int(row["expires_at_ms"]):
                     continue
                 observation_status = "expired"
-            observation_ref = await asyncio.to_thread(
+            observation_ref = await _file_io(
                 self.files.write,
                 {
                     "parent_case_id": row["parent_case_id"],
@@ -1292,8 +1299,8 @@ class AnalysisRunner:
                 }
             else:
                 try:
-                    decision_quote_snapshot = await asyncio.to_thread(self.files.read, str(row["decision_quote_ref"]))
-                    planned_quote_snapshot = await asyncio.to_thread(self.files.read, str(row["planned_quote_ref"]))
+                    decision_quote_snapshot = await _file_io(self.files.read, str(row["decision_quote_ref"]))
+                    planned_quote_snapshot = await _file_io(self.files.read, str(row["planned_quote_ref"]))
                     decision_quote = decision_quote_snapshot["payload"][0]
                     planned_quote = planned_quote_snapshot["payload"][0]
                     quote_environment = str(decision_quote_snapshot["environment"])
@@ -1340,7 +1347,7 @@ class AnalysisRunner:
                 mark = answers[0] if isinstance(answers[0], MarketDataResult) else None
                 funding = answers[1] if isinstance(answers[1], MarketDataResult) else None
                 if mark is not None:
-                    mark_ref = await asyncio.to_thread(
+                    mark_ref = await _file_io(
                         self.files.write,
                         {
                             "status": mark.status,
@@ -1352,7 +1359,7 @@ class AnalysisRunner:
                         },
                     )
                 if funding is not None:
-                    funding_ref = await asyncio.to_thread(
+                    funding_ref = await _file_io(
                         self.files.write,
                         {
                             "status": funding.status,

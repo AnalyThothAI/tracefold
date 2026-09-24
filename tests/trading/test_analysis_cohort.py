@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from scripts.trading_analysis_cohort import PURGE_MS, _split, evaluate
+from scripts.trading_analysis_cohort import PURGE_MS, _model_cost, _rule_action, _split, evaluate
 from tracefold.trading.engine.strategy import STRATEGY_VERSION
 
 
@@ -102,3 +102,57 @@ def test_wrong_historical_denominator_fails_before_metrics() -> None:
     row = _case("a", "r", 1)
     with pytest.raises(ValueError, match="root_denominator_mismatch"):
         evaluate([row], expected_roots=531, cutoff_ms=10, invalid_outputs=[], expected_invalid=22)
+
+
+def _watch_root(at_ms: int) -> dict[str, object]:
+    root = _case("initial", "root", at_ms)
+    root.update(
+        mapping_semantics_digest="a" * 64,
+        root_expires_at_ms=at_ms + 300_000,
+        evidence={
+            "source_fact": {"kind": "catalyst", "headline_zh": "Fixture event"},
+            "source_first_visible_at_ms": at_ms - 1_000,
+            "market": {
+                "perp_bars": {
+                    "status": "ok",
+                    "payload": [
+                        {"event_at_ms": at_ms - (15 - index) * 60_000, "high": "101", "low": "99", "close": "100"}
+                        for index in range(16)
+                    ],
+                }
+            },
+        },
+    )
+    return root
+
+
+def test_rule_arm_crosses_independently_of_dspy_child_case() -> None:
+    at_ms = 100_000_000
+    root = _watch_root(at_ms)
+    root["rule_watch_bars"] = [{"event_at_ms": at_ms + 60_000, "received_at_ms": at_ms + 61_000, "close": "102"}]
+    assert _rule_action([root]) == "TRADE"
+    report = evaluate([root], expected_roots=1, cutoff_ms=at_ms, invalid_outputs=[], expected_invalid=0)
+    assert report["arms"]["holdout"]["rule"]["decisions"] == {"TRADE": 1}
+    assert report["arms"]["holdout"]["rule"]["net_unknown"] == 1
+    assert report["arms"]["holdout"]["dspy"]["decisions"] == {"NO_TRADE": 1}
+
+
+def test_rule_arm_does_not_trade_a_late_first_cross_or_guess_across_a_gap() -> None:
+    at_ms = 100_000_000
+    root = _watch_root(at_ms)
+    root["rule_watch_bars"] = [
+        {"event_at_ms": at_ms + 60_000, "received_at_ms": at_ms + 181_000, "close": "102"},
+        {"event_at_ms": at_ms + 120_000, "received_at_ms": at_ms + 121_000, "close": "98"},
+    ]
+    assert _rule_action([root]) == "NO_TRADE"
+    root["rule_watch_bars"] = [{"event_at_ms": at_ms + 120_000, "received_at_ms": at_ms + 121_000, "close": "102"}]
+    assert _rule_action([root]) is None
+
+
+def test_model_cost_includes_known_subtotal_with_unknown_physical_calls() -> None:
+    root = _case("initial", "root", 1)
+    root["attempts"] = [
+        {"cost_microusd": None, "known_cost_microusd": 200, "unknown_cost_calls": 1},
+        {"cost_microusd": 150, "known_cost_microusd": 150, "unknown_cost_calls": 0},
+    ]
+    assert _model_cost([root]) == (350, 1)

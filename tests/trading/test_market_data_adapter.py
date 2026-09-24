@@ -243,7 +243,10 @@ async def _shadow_market_sources() -> None:
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 300_000})
         if request.url.path == "/fapi/v1/ticker/bookTicker":
-            return httpx.Response(200, json={"symbol": "SOLUSDT", "bidPrice": "99", "askPrice": "101"})
+            return httpx.Response(
+                200,
+                json={"symbol": "SOLUSDT", "bidPrice": "99", "askPrice": "101", "bidQty": "3", "askQty": "4"},
+            )
         if request.url.path == "/fapi/v1/markPriceKlines":
             return httpx.Response(200, json=[_bar(0), _bar(60_000)])
         if request.url.path == "/fapi/v1/fundingRate":
@@ -259,7 +262,7 @@ async def _shadow_market_sources() -> None:
             environment="demo",
             product="perpetual",
             source_identity="binance_public_v1",
-            unit_definition="bid_ask_quote_per_base_v1",
+            unit_definition="bid_ask_quote_and_base_size_v2",
             start_ms=None,
             end_ms=None,
             interval_ms=None,
@@ -285,6 +288,7 @@ async def _shadow_market_sources() -> None:
             adapter.fetch(quote), adapter.fetch(mark), adapter.fetch(funding)
         )
         assert quote_result.payload[0]["bid"] == "99"
+        assert quote_result.payload[0]["ask_quantity"] == "4"
         assert mark_result.status == "ok"
         assert funding_result.payload[0]["funding_rate"] == "0.0001"
     assert "/fapi/v1/ticker/bookTicker" in paths
