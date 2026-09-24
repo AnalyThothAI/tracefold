@@ -34,6 +34,7 @@ from tracefold.trading.engine.outcomes import price_path_label
 from tracefold.trading.engine.policy import InvalidAssessment, compile_assessment, decision_identity
 from tracefold.trading.engine.strategy import (
     ENTRY_WINDOW_MS,
+    MAX_HOLDING_SECONDS,
     STRATEGY_VERSION,
     build_event_price_candidates,
     range_cross_side,
@@ -1359,7 +1360,7 @@ class AnalysisRunner:
                 prior_ref = row["tape_ref"]
                 tape = (
                     {
-                        "version": "root_research_tape_v1",
+                        "version": "root_research_tape_v2",
                         "case_id": row["case_id"],
                         "native_symbol": native,
                         "environment": environment,
@@ -1368,21 +1369,33 @@ class AnalysisRunner:
                         "root_expires_at_ms": int(row["root_expires_at_ms"]),
                         "quotes": [],
                         "closed_bars": [],
+                        "mark_bars": [],
+                        "funding_history": None,
                         "coverage": [],
                     }
                     if prior_ref is None
                     else await _file_io(self.files.read, str(prior_ref))
                 )
                 if (
-                    tape.get("version") != "root_research_tape_v1"
+                    tape.get("version") != "root_research_tape_v2"
                     or tape.get("case_id") != row["case_id"]
                     or tape.get("native_symbol") != native
                     or tape.get("environment") != environment
                     or tape.get("mapping_semantics_digest") != instrument["mapping_semantics_digest"]
                 ):
                     raise ValueError("root_research_tape_identity_mismatch")
-                quotes, bars, coverage = tape.get("quotes"), tape.get("closed_bars"), tape.get("coverage")
-                if not isinstance(quotes, list) or not isinstance(bars, list) or not isinstance(coverage, list):
+                quotes, bars, mark_bars, coverage = (
+                    tape.get("quotes"),
+                    tape.get("closed_bars"),
+                    tape.get("mark_bars"),
+                    tape.get("coverage"),
+                )
+                if (
+                    not isinstance(quotes, list)
+                    or not isinstance(bars, list)
+                    or not isinstance(mark_bars, list)
+                    or not isinstance(coverage, list)
+                ):
                     raise ValueError("root_research_tape_invalid")
                 end_ms = now_ms // _BAR_MS * _BAR_MS
                 request = MarketDataRequest(
@@ -1399,9 +1412,24 @@ class AnalysisRunner:
                     max_age_ms=None,
                     deadline_at_monotonic=time.monotonic() + 5.0,
                 )
-                quote_snapshot, bar_answer = await asyncio.gather(
+                mark_request = MarketDataRequest(
+                    dataset="mark_bars",
+                    native_symbol=native,
+                    venue="binance.usdm",
+                    environment=environment,
+                    product="perpetual",
+                    source_identity="binance_public_v1",
+                    unit_definition="mark_quote_per_base_v1",
+                    start_ms=end_ms - 2 * _BAR_MS,
+                    end_ms=end_ms,
+                    interval_ms=_BAR_MS,
+                    max_age_ms=None,
+                    deadline_at_monotonic=request.deadline_at_monotonic,
+                )
+                quote_snapshot, bar_answer, mark_answer = await asyncio.gather(
                     self._read_executable_quote(row),
                     self.reader.market_data.fetch(request),
+                    self.reader.market_data.fetch(mark_request),
                     return_exceptions=True,
                 )
                 if isinstance(quote_snapshot, BaseException):
@@ -1410,6 +1438,8 @@ class AnalysisRunner:
                     quote_snapshot = {"status": "error", "missing_reasons": (type(quote_snapshot).__name__,)}
                 if isinstance(bar_answer, asyncio.CancelledError):
                     raise bar_answer
+                if isinstance(mark_answer, asyncio.CancelledError):
+                    raise mark_answer
                 quote_ref = await _file_io(self.files.write, quote_snapshot)
                 sample = {
                     "sampled_at_ms": _clock_ms(),
@@ -1446,12 +1476,83 @@ class AnalysisRunner:
                     bar_ref = None
                     bar_status = "error"
                     missing_reasons = (type(bar_answer).__name__,)
+                if isinstance(mark_answer, MarketDataResult):
+                    mark_ref = await _file_io(
+                        self.files.write,
+                        {
+                            "status": mark_answer.status,
+                            "payload": mark_answer.payload,
+                            "request_receipts": mark_answer.request_receipts,
+                            "missing_reasons": mark_answer.missing_reasons,
+                        },
+                    )
+                    existing_marks = {int(bar["event_at_ms"]) for bar in mark_bars}
+                    for bar in mark_answer.payload:
+                        if int(bar["event_at_ms"]) not in existing_marks:
+                            mark_bars.append({**bar, "snapshot_ref": mark_ref})
+                            existing_marks.add(int(bar["event_at_ms"]))
+                    mark_bars.sort(key=lambda bar: int(bar["event_at_ms"]))
+                    mark_status = mark_answer.status
+                    mark_missing = mark_answer.missing_reasons
+                else:
+                    mark_ref = None
+                    mark_status = "error"
+                    mark_missing = (type(mark_answer).__name__,)
+                research_end_ms = int(row["root_expires_at_ms"]) + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS
+                if now_ms >= research_end_ms + 120_000 and not (
+                    isinstance(tape.get("funding_history"), dict) and tape["funding_history"].get("status") == "ok"
+                ):
+                    funding_request = MarketDataRequest(
+                        dataset="funding_history",
+                        native_symbol=native,
+                        venue="binance.usdm",
+                        environment=environment,
+                        product="perpetual",
+                        source_identity="binance_public_v1",
+                        unit_definition="funding_rate_fraction_v1",
+                        start_ms=int(row["first_visible_at_ms"]),
+                        end_ms=research_end_ms + 90_000,
+                        interval_ms=None,
+                        max_age_ms=None,
+                        deadline_at_monotonic=time.monotonic() + 5.0,
+                    )
+                    try:
+                        funding = await self.reader.market_data.fetch(funding_request)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        tape["funding_history"] = {"status": "error", "missing_reasons": (type(exc).__name__,)}
+                    else:
+                        funding_ref = await _file_io(
+                            self.files.write,
+                            {
+                                "status": funding.status,
+                                "payload": funding.payload,
+                                "request_receipts": funding.request_receipts,
+                                "missing_reasons": funding.missing_reasons,
+                            },
+                        )
+                        tape["funding_history"] = {
+                            "status": funding.status,
+                            "payload": funding.payload,
+                            "snapshot_ref": funding_ref,
+                            "scan_received_at_ms": _clock_ms(),
+                            "missing_reasons": funding.missing_reasons,
+                        }
                 coverage.append(
                     {
                         "sampled_at_ms": sample["sampled_at_ms"],
                         "bar_snapshot_ref": bar_ref,
                         "bar_status": bar_status,
                         "missing_reasons": missing_reasons,
+                        "mark_snapshot_ref": mark_ref,
+                        "mark_status": mark_status,
+                        "mark_missing_reasons": mark_missing,
+                        "funding_status": (
+                            tape["funding_history"].get("status")
+                            if isinstance(tape.get("funding_history"), dict)
+                            else "pending"
+                        ),
                     }
                 )
                 tape_ref = await _file_io(self.files.write, tape)

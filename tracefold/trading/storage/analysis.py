@@ -302,7 +302,7 @@ class AnalysisStorage:
         if state == "PENDING":
             self.conn.execute(
                 "INSERT INTO trading_root_market_tapes (case_id,next_sample_at_ms,expires_at_ms) VALUES (%s,%s,%s)",
-                (case_id, int(now_ms), root_expires + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS),
+                (case_id, int(now_ms), root_expires + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS + 300_000),
             )
         return trigger_id, case_id, "accepted"
 

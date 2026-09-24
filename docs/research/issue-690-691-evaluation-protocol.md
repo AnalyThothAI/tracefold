@@ -64,7 +64,8 @@ result is a diagnostic, never a venue fill or proof of protection placement.
 Every selected initial root also has a bounded research tape independent of
 its DSPy disposition. Until the root expiry plus the declared maximum holding
 window, the Analysis runner archives a level-one quote and the latest two
-closed 1m bars once per minute, including failed fetches and receipt clocks.
+closed price and mark 1m bars once per minute, then scans final funding
+history with a short publication grace, including failed fetches and clocks.
 The tape can supply the rule arm's own post-setup bar path and quote evidence
 even when DSPy chooses NO_TRADE. A gap or late first crossing stays visible;
 the offline comparison must reject paths whose actual contemporaneous receipt
@@ -84,6 +85,8 @@ recovered from today's market. Use a restricted local output directory:
 uv run python scripts/export_trading_analysis_cohort.py \
   --archive-root /secure/analysis/archive \
   --start-ms 1790154395682 --end-ms 1790240795682 \
+  --rule-risk-usdt 10 --shadow-fee-bps-per-side 5 \
+  --max-spread-fraction-of-stop 0.25 \
   --output /secure/export/cases.jsonl \
   --manifest /secure/export/cases-manifest.json
 ```
@@ -91,8 +94,12 @@ uv run python scripts/export_trading_analysis_cohort.py \
 Set `TRADING_RESEARCH_DSN` in the local environment rather than storing the
 credential in a command line or repository file.
 
-The exporter does not create rule-arm net receipts or the 22 historical raw
-outputs. Their absence remains explicit in the aggregate report.
+Use the same declared risk, fee and spread assumptions as the DSPy arm;
+the example values above are placeholders, not measured costs. When the root
+tape has a timely executable quote, complete mark path and final funding scan,
+the exporter computes the rule arm's research-only shadow receipt with the
+same simulator. It leaves missing or invalid inputs unevaluable. The 22
+historical raw outputs still require a separate original archive export.
 
 `scripts/trading_analysis_cohort.py` requires explicit root and invalid-output
 denominators and exactly one initial Case per root. It excludes legacy rows

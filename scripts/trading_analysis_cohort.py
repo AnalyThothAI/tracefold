@@ -10,10 +10,12 @@ import argparse
 import hashlib
 import json
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from tracefold.trading.engine.contracts import ExitPlan
 from tracefold.trading.engine.strategy import (
     BAR_MS,
     ENTRY_WINDOW_MS,
@@ -45,15 +47,26 @@ def _split(created_at_ms: int, cutoff_ms: int) -> str:
     return "purged"
 
 
-def _rule_action(root_cases: list[dict[str, Any]]) -> str | None:
+@dataclass(frozen=True)
+class RuleDecision:
+    action: Literal["TRADE", "NO_TRADE"] | None
+    side: Literal["long", "short"] | None = None
+    trigger_at_ms: int | None = None
+    visible_at_ms: int | None = None
+    reference_price: Decimal | None = None
+    structure_level: Decimal | None = None
+    exit_plan: ExitPlan | None = None
+
+
+def _rule_decision(root_cases: list[dict[str, Any]]) -> RuleDecision:
     initial = next(row for row in root_cases if row["run_kind"] == "initial")
     snapshot = initial.get("evidence")
     if not isinstance(snapshot, dict):
-        return None
+        return RuleDecision(None)
     market = snapshot.get("market") or {}
     perp = market.get("perp_bars") or {}
     if perp.get("status") != "ok":
-        return None
+        return RuleDecision(None)
     try:
         candidates = build_event_price_candidates(
             asset_id=str(initial["asset_id"]),
@@ -62,20 +75,35 @@ def _rule_action(root_cases: list[dict[str, Any]]) -> str | None:
             source_first_visible_at_ms=int(snapshot["source_first_visible_at_ms"]),
             perp_rows=tuple(perp["payload"]),
         )
-        if any(candidate.entry_ready for candidate in candidates):
-            return "TRADE"
+        expires_at = int(initial["root_expires_at_ms"])
+        ready = next((candidate for candidate in candidates if candidate.entry_ready), None)
+        if ready is not None:
+            trigger_at_ms = ready.entry_observed_at_ms
+            visible_at_ms = int(perp["payload"][-1]["received_at_ms"])
+            if visible_at_ms < trigger_at_ms:
+                return RuleDecision(None)
+            if visible_at_ms >= min(expires_at, trigger_at_ms + ENTRY_WINDOW_MS):
+                return RuleDecision("NO_TRADE")
+            return RuleDecision(
+                "TRADE",
+                side=ready.side,
+                trigger_at_ms=trigger_at_ms,
+                visible_at_ms=visible_at_ms,
+                reference_price=ready.entry_observed,
+                structure_level=ready.entry_level,
+                exit_plan=ready.exit_plan,
+            )
         if not all(candidate.watch_eligible for candidate in candidates):
-            return "NO_TRADE"
+            return RuleDecision("NO_TRADE")
         # The rule arm must not borrow a child Case that only exists because DSPy
         # chose WATCH. Its own post-setup bar path is frozen in the root export.
         path = initial.get("rule_watch_bars")
         if not isinstance(path, list):
-            return None
+            return RuleDecision(None)
         upper = candidates[0].entry_level
         lower = candidates[1].entry_level
         previous = candidates[0].entry_observed
         expected_at = candidates[0].entry_observed_at_ms + BAR_MS
-        expires_at = int(initial["root_expires_at_ms"])
         for bar in path:
             at_ms = int(bar["event_at_ms"])
             received_at_ms = int(bar["received_at_ms"])
@@ -83,18 +111,32 @@ def _rule_action(root_cases: list[dict[str, Any]]) -> str | None:
             if at_ms > expires_at:
                 break
             if at_ms != expected_at or received_at_ms < at_ms or not close.is_finite() or close <= 0:
-                return None
+                return RuleDecision(None)
             side = range_cross_side(previous_close=previous, close=close, upper=upper, lower=lower)
             if side is not None:
                 # First crossing consumes the root, including when the receipt
                 # arrives too late for the immutable entry window.
-                return "TRADE" if received_at_ms < min(expires_at, at_ms + ENTRY_WINDOW_MS) else "NO_TRADE"
+                if received_at_ms >= min(expires_at, at_ms + ENTRY_WINDOW_MS):
+                    return RuleDecision("NO_TRADE")
+                return RuleDecision(
+                    "TRADE",
+                    side=side,
+                    trigger_at_ms=at_ms,
+                    visible_at_ms=received_at_ms,
+                    reference_price=close,
+                    structure_level=upper if side == "long" else lower,
+                    exit_plan=candidates[0].exit_plan,
+                )
             previous, expected_at = close, at_ms + BAR_MS
         if initial.get("rule_watch_status") == "complete" and expected_at > expires_at:
-            return "NO_TRADE"
-        return None
+            return RuleDecision("NO_TRADE")
+        return RuleDecision(None)
     except (KeyError, TypeError, ValueError, InvalidOperation):
-        return None
+        return RuleDecision(None)
+
+
+def _rule_action(root_cases: list[dict[str, Any]]) -> str | None:
+    return _rule_decision(root_cases).action
 
 
 def _dspy_action(root_cases: list[dict[str, Any]]) -> str | None:

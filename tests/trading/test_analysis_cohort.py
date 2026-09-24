@@ -4,8 +4,13 @@ from decimal import Decimal
 
 import pytest
 
-from scripts.export_trading_analysis_cohort import _rule_watch_path
-from scripts.trading_analysis_cohort import PURGE_MS, _model_cost, _rule_action, _split, evaluate
+from scripts.export_trading_analysis_cohort import (
+    _rule_receipt_archives_complete,
+    _rule_shadow_receipt,
+    _rule_watch_path,
+)
+from scripts.trading_analysis_cohort import PURGE_MS, _model_cost, _rule_action, _rule_decision, _split, evaluate
+from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.trading.engine.strategy import STRATEGY_VERSION
 
 
@@ -192,6 +197,17 @@ def test_rule_arm_crosses_independently_of_dspy_child_case() -> None:
     assert report["arms"]["holdout"]["dspy"]["decisions"] == {"NO_TRADE": 1}
 
 
+def test_initial_rule_breakout_needs_on_time_bar_receipt() -> None:
+    at_ms = 100_000_000
+    root = _watch_root(at_ms)
+    root["evidence"]["market"]["perp_bars"]["payload"][-1].update(
+        high="103", close="102", received_at_ms=at_ms + 121_000
+    )
+    assert _rule_action([root]) == "NO_TRADE"
+    root["evidence"]["market"]["perp_bars"]["payload"][-1]["received_at_ms"] = at_ms + 1_000
+    assert _rule_action([root]) == "TRADE"
+
+
 def test_rule_arm_does_not_trade_a_late_first_cross_or_guess_across_a_gap() -> None:
     at_ms = 100_000_000
     root = _watch_root(at_ms)
@@ -219,7 +235,7 @@ def test_rule_arm_complete_path_ends_at_non_aligned_root_expiry() -> None:
 def test_exported_rule_path_requires_contiguous_archived_bars() -> None:
     evidence = {"entry_reference": {"closed_at_ms": 60_000}}
     tape = {
-        "version": "root_research_tape_v1",
+        "version": "root_research_tape_v2",
         "closed_bars": [
             {"event_at_ms": 120_000, "received_at_ms": 120_100, "close": "100", "snapshot_ref": "a"},
             {"event_at_ms": 180_000, "received_at_ms": 180_100, "close": "101", "snapshot_ref": "b"},
@@ -229,6 +245,121 @@ def test_exported_rule_path_requires_contiguous_archived_bars() -> None:
     assert status == "complete" and [row["event_at_ms"] for row in path] == [120_000]
     tape["closed_bars"] = tape["closed_bars"][1:]
     assert _rule_watch_path(evidence, tape, 150_000)[1] == "partial"
+
+
+def test_rule_arm_replays_frozen_quote_mark_funding_and_contract_rules(tmp_path) -> None:
+    at_ms = 100_020_000
+    root = _watch_root(at_ms)
+    root["rule_watch_bars"] = [{"event_at_ms": at_ms + 60_000, "received_at_ms": at_ms + 61_000, "close": "102"}]
+    files = AnalysisFiles(tmp_path)
+    root["evidence_ref"] = "e" * 64
+    root["target_selection"] = {
+        "instrument": {
+            "native_symbol": "SOLUSDT",
+            "environment": "live",
+            "mapping_semantics_digest": "a" * 64,
+            "units_per_contract": "1",
+        }
+    }
+    root["evidence"]["data_environment"] = "live"
+    root["evidence"]["market"]["instrument_rules"] = {
+        "status": "ok",
+        "unit_definition": "binance_usdm_contract_rules_v1",
+        "received_at_ms": at_ms,
+        "payload": [
+            {
+                "native_symbol": "SOLUSDT",
+                "trading_status": "TRADING",
+                "contract_type": "PERPETUAL",
+                "quote_asset": "USDT",
+                "settlement_asset": "USDT",
+                "price_tick_size": "0.01",
+                "market_min_quantity": "0.01",
+                "market_max_quantity": "1000",
+                "market_step_size": "0.01",
+                "minimum_notional": "5",
+            }
+        ],
+    }
+    research_end = root["root_expires_at_ms"] + 14_400_000 + 120_000
+    entry = {
+        "status": "ok",
+        "environment": "live",
+        "native_symbol": "SOLUSDT",
+        "mapping_semantics_digest": "a" * 64,
+        "units_per_contract": "1",
+        "received_at_ms": at_ms + 62_000,
+        "bid": "101.9",
+        "ask": "102",
+        "bid_quantity": "10",
+        "ask_quantity": "10",
+    }
+    exit_quote = {**entry, "received_at_ms": at_ms + 121_000, "bid": "95", "ask": "95.1"}
+    for quote in (entry, exit_quote):
+        quote["quote_ref"] = files.write(
+            {
+                "status": "ok",
+                "environment": "live",
+                "native_symbol": "SOLUSDT",
+                "mapping_semantics_digest": "a" * 64,
+                "units_per_contract": "1",
+                "payload": [
+                    {key: quote[key] for key in ("received_at_ms", "bid", "ask", "bid_quantity", "ask_quantity")}
+                ],
+            }
+        )
+    mark = {
+        "event_at_ms": at_ms + 120_000,
+        "received_at_ms": at_ms + 120_100,
+        "high": "103",
+        "low": "90",
+        "close": "100",
+    }
+    mark["snapshot_ref"] = files.write({"status": "ok", "payload": [mark]})
+    funding_ref = files.write({"status": "ok", "payload": []})
+    tape = {
+        "version": "root_research_tape_v2",
+        "case_id": "initial",
+        "native_symbol": "SOLUSDT",
+        "environment": "live",
+        "mapping_semantics_digest": "a" * 64,
+        "quotes": [entry, exit_quote],
+        "mark_bars": [mark],
+        "funding_history": {
+            "status": "ok",
+            "payload": [],
+            "snapshot_ref": funding_ref,
+            "scan_received_at_ms": research_end + 120_000,
+        },
+    }
+    root["root_market_tape_ref"] = files.write(tape)
+    receipt = _rule_shadow_receipt(
+        root,
+        tape,
+        _rule_decision([root]),
+        risk_usdt=Decimal("10"),
+        fee_bps_per_side=Decimal("5"),
+        max_spread_fraction_of_stop=Decimal("0.25"),
+    )
+    assert receipt["status"] == "simulated"
+    assert receipt["entry_quote_ref"] == entry["quote_ref"]
+    assert receipt["exit_quote_ref"] == exit_quote["quote_ref"]
+    missing = []
+    assert _rule_receipt_archives_complete(files, root, tape, receipt, missing)
+    assert missing == []
+    assert Decimal(receipt["net_bps"]) < 0
+    root["arm_evaluations"] = {"rule": receipt}
+    report = evaluate(
+        [root],
+        expected_roots=1,
+        cutoff_ms=at_ms,
+        invalid_outputs=[],
+        expected_invalid=0,
+        initial_equity_usdt=Decimal("10000"),
+    )
+    assert report["arms"]["holdout"]["rule"]["net_evaluable"] == 1
+    tape["quotes"][1]["ask"] = "94"
+    assert not _rule_receipt_archives_complete(files, root, tape, receipt, missing)
 
 
 def test_model_cost_includes_known_subtotal_with_unknown_physical_calls() -> None:

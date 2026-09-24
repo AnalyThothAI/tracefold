@@ -55,9 +55,31 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
 
     class Market:
         async def fetch(self, request):
+            assert request.dataset in ("perp_bars", "mark_bars", "funding_history")
             assert request.native_symbol == "SOLUSDT" and request.environment == "live"
-            assert request.start_ms == 60_000 and request.end_ms == 180_000
-            bar = {"event_at_ms": 120_000, "received_at_ms": now, "close": "100", "high": "101", "low": "99"}
+            if request.dataset == "funding_history":
+                return MarketDataResult(
+                    status="ok",
+                    payload=(),
+                    schema_version="fixture",
+                    source_version="fixture",
+                    unit_definition=request.unit_definition,
+                    source_identity=request.source_identity,
+                    event_start_ms=None,
+                    event_end_ms=None,
+                    received_at_ms=None,
+                    missing_reasons=(),
+                    request_receipts=({"endpoint": "/fapi/v1/fundingRate", "http_status": 200},),
+                )
+            assert request.start_ms == now // 60_000 * 60_000 - 120_000
+            assert request.end_ms == now // 60_000 * 60_000
+            bar = {
+                "event_at_ms": request.end_ms - 60_000,
+                "received_at_ms": now,
+                "close": "100",
+                "high": "101",
+                "low": "99",
+            }
             return MarketDataResult(
                 status="partial",
                 payload=(bar,),
@@ -84,5 +106,15 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
     assert tape["quotes"][0]["bid_quantity"] == "2"
     assert tape["quotes"][0]["units_per_contract"] == "1"
     assert tape["closed_bars"][0]["received_at_ms"] == now
+    assert tape["mark_bars"][0]["received_at_ms"] == now
     assert tape["coverage"][0]["bar_status"] == "partial"
+    assert tape["coverage"][0]["mark_status"] == "partial"
     assert files.read(tape["quotes"][0]["quote_ref"])["status"] == "ok"
+    now = row["root_expires_at_ms"] + 14_400_000 + 120_000 + 120_000
+    monkeypatch.setattr(trading_analysis, "_clock_ms", lambda: now)
+    assert asyncio.run(trading_analysis.AnalysisRunner.sample_root_research_once(runner)) == 1
+    tape = files.read(row["tape_ref"])
+    assert tape["funding_history"]["status"] == "ok"
+    assert tape["funding_history"]["payload"] == []
+    assert tape["funding_history"]["scan_received_at_ms"] == now
+    assert files.read(tape["funding_history"]["snapshot_ref"])["request_receipts"][0]["http_status"] == 200
