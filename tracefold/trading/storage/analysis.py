@@ -943,6 +943,8 @@ class AnalysisStorage:
             final_status = "waiting"
         child_case_id = None
         if final_status == "triggered":
+            if observed_at_ms is None:
+                raise ValueError("watch_trigger_clock_missing")
             child_case_id = _sha((parent["trigger_id"], "conditional_cross", sequence))
             watch = dict(parent["condition"])
             parent_decision = self.conn.execute(

@@ -951,6 +951,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_execution_observations_pkey",
         "trading_execution_observations_seq_key",
         "ix_trading_execution_observations_slot",
+        "ix_trading_execution_funding_slot_time",
         "ix_trading_execution_observations_signal_recovery",
         "ix_trading_execution_observations_command_recovery",
         "ux_trading_execution_signal_disposition",
@@ -962,6 +963,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     assert indexes["ix_trading_trade_signals_unresolved"].endswith(
         "USING btree (seq) INCLUDE (signal_id, expires_at_ns, payload)"
     )
+    assert "USING btree (account_slot, occurred_at_ns)" in indexes["ix_trading_execution_funding_slot_time"]
     assert indexes["ix_trading_trade_signals_observed_at"].endswith("USING btree (observed_at_ns)")
     assert indexes["ix_trading_trade_signals_expires_at"].endswith("USING btree (expires_at_ns)")
     assert (

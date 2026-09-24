@@ -75,7 +75,11 @@ def build_event_price_candidates(
     preexisting = crossing is not None and not source_precedes_crossing
     reason = "source_fact_unavailable" if not source_ready else "breakout_precedes_source" if preexisting else None
     candidates = []
-    for side, operator, level in (("long", "gt", upper), ("short", "lt", lower)):
+    directions: tuple[tuple[Literal["long", "short"], Literal["gt", "lt"], Decimal], ...] = (
+        ("long", "gt", upper),
+        ("short", "lt", lower),
+    )
+    for side, operator, level in directions:
         candidates.append(
             Candidate(
                 candidate_id=f"{asset_id}:{side}:{STRATEGY_VERSION}",

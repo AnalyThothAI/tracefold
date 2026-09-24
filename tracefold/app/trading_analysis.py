@@ -206,6 +206,7 @@ class FrameReader:
                 raise ValueError("entry_reference_price_stale")
             features = extract_features(results, source_fact)
             trigger_context = dict(case.get("manifest") or {}) if case.get("run_kind") == "conditional" else None
+            candidates: tuple[Candidate, ...]
             if trigger_context is not None:
                 condition = trigger_context["watch_condition"]
                 reference_price = Decimal(str(trigger_context["watch_observed_value"]))

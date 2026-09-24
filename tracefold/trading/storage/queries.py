@@ -142,7 +142,7 @@ def console_cases_statement(
     predicates = [
         "created_at_ms >= %(since)s",
         "created_at_ms < %(to_ms)s",
-        "(trigger_id IS NULL OR run_kind='initial')",
+        "(trigger_id IS NULL OR run_kind IS NULL OR run_kind='initial')",
     ]
     params: dict[str, Any] = {"since": since_ms, "to_ms": to_ms, "limit": limit}
     for expression, key, value in (

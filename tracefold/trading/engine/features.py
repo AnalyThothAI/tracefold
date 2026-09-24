@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from itertools import pairwise
-from typing import Any
+from typing import Any, Literal, cast
 
 from .contracts import FeatureValue, FrozenEvidence
 from .marketdata import MarketDataResult
@@ -114,8 +114,11 @@ def freeze_features(
         if feature_id in ("profile_version", "source_kind", "source_venue", "data_status"):
             continue
         frame = frame_name(feature_id)
+        event_at: int | None
+        received_at: int | None
         if frame is None:
-            event_at = source_fact.get("source_recorded_at_ms")
+            source_event_at = source_fact.get("source_recorded_at_ms")
+            event_at = source_event_at if isinstance(source_event_at, int) else None
             received_at = source_first_visible_at_ms
             source_ok = isinstance(event_at, int) and isinstance(received_at, int)
         else:
@@ -152,10 +155,17 @@ def freeze_features(
                 feature_version=PROFILE_VERSION,
             )
         )
+    if data_environment not in ("live", "demo") or execution_environment not in (
+        None,
+        "disabled",
+        "paper",
+        "live",
+    ):
+        raise ValueError("evidence_environment_invalid")
     return FrozenEvidence(
         snapshot_ref=snapshot_ref,
         knowledge_cutoff_ms=knowledge_cutoff_ms,
-        data_environment=data_environment,
-        execution_environment=execution_environment,
+        data_environment=cast(Literal["live", "demo"], data_environment),
+        execution_environment=cast(Literal["disabled", "paper", "live"] | None, execution_environment),
         values=tuple(values),
     )
