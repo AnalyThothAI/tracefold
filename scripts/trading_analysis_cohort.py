@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from tracefold.trading.engine.contracts import ExitPlan
+from tracefold.trading.engine.evaluation import EVALUATION_VERSION
 from tracefold.trading.engine.strategy import (
     BAR_MS,
     ENTRY_WINDOW_MS,
@@ -243,6 +244,7 @@ def _arm_summary(
     unknown_reasons: Counter[str] = Counter()
     known_model_cost = unknown_model_calls = 0
     technical_no_trade = expired_watch_no_trade = 0
+    entry_refused = 0
     for root_cases in roots:
         initial = next(row for row in root_cases if row["run_kind"] == "initial")
         action = _rule_action(root_cases) if arm == "rule" else _dspy_action(root_cases)
@@ -295,6 +297,26 @@ def _arm_summary(
             )
         )
         receipt = (trade_case.get("arm_evaluations") or {}).get(arm)
+        if arm == "rule" and isinstance(receipt, dict) and receipt.get("status") == "refused":
+            if (
+                receipt.get("reason")
+                in ("rule_entry_structure_lost", "rule_entry_price_outside_envelope", "rule_entry_spread_limit")
+                and receipt.get("evaluation_version") == EVALUATION_VERSION
+                and receipt.get("strategy_version") == STRATEGY_VERSION
+                and receipt.get("source") == "shadow_simulation"
+                and receipt.get("trading_cashflow_usdt") == "0"
+                and isinstance(receipt.get("entry_quote_ref"), str)
+                and len(receipt["entry_quote_ref"]) == 64
+                and receipt.get("quote_tape_ref") == initial.get("root_market_tape_ref")
+                and isinstance(receipt.get("entry_quote_received_at_ms"), int)
+                and isinstance(receipt.get("rule_visible_at_ms"), int)
+                and receipt["entry_quote_received_at_ms"] >= receipt["rule_visible_at_ms"]
+            ):
+                entry_refused += 1
+                continue
+            unknown_net += 1
+            unknown_reasons["rule_refusal_receipt_invalid"] += 1
+            continue
         if not isinstance(receipt, dict) or receipt.get("status") != "simulated":
             unknown_net += 1
             unknown_reasons[
@@ -427,6 +449,7 @@ def _arm_summary(
         "model_cost_unknown_calls": unknown_model_calls,
         "technical_no_trade": technical_no_trade,
         "expired_watch_no_trade": expired_watch_no_trade,
+        "entry_refused": entry_refused,
     }
 
 

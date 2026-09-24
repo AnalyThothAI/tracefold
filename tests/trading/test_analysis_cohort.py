@@ -6,6 +6,7 @@ import pytest
 
 from scripts.export_trading_analysis_cohort import (
     _rule_receipt_archives_complete,
+    _rule_refusal_archive_complete,
     _rule_shadow_receipt,
     _rule_watch_path,
 )
@@ -538,6 +539,76 @@ def test_rule_arm_replays_frozen_quote_mark_funding_and_contract_rules(tmp_path)
     assert report["arms"]["holdout"]["rule"]["net_evaluable"] == 1
     tape["quotes"][1]["ask"] = "94"
     assert not _rule_receipt_archives_complete(files, root, tape, receipt, missing)
+
+
+def test_rule_entry_refusal_is_archived_known_zero_cashflow(tmp_path) -> None:
+    at_ms = 100_020_000
+    root = _watch_root(at_ms)
+    root["rule_watch_bars"] = [{"event_at_ms": at_ms + 60_000, "received_at_ms": at_ms + 61_000, "close": "102"}]
+    files = AnalysisFiles(tmp_path)
+    root["target_selection"] = {
+        "instrument": {
+            "native_symbol": "SOLUSDT",
+            "environment": "live",
+            "mapping_semantics_digest": "a" * 64,
+            "units_per_contract": "1",
+        }
+    }
+    quote = {
+        "status": "ok",
+        "environment": "live",
+        "native_symbol": "SOLUSDT",
+        "mapping_semantics_digest": "a" * 64,
+        "units_per_contract": "1",
+        "received_at_ms": at_ms + 62_000,
+        "bid": "98",
+        "ask": "98.1",
+        "bid_quantity": "10",
+        "ask_quantity": "10",
+    }
+    quote["quote_ref"] = files.write(
+        {
+            **{
+                key: quote[key]
+                for key in ("status", "environment", "native_symbol", "mapping_semantics_digest", "units_per_contract")
+            },
+            "payload": [{key: quote[key] for key in ("received_at_ms", "bid", "ask", "bid_quantity", "ask_quantity")}],
+        }
+    )
+    tape = {
+        "version": "root_research_tape_v2",
+        "case_id": root["case_id"],
+        "native_symbol": "SOLUSDT",
+        "environment": "live",
+        "mapping_semantics_digest": "a" * 64,
+        "root_accepted_at_ms": at_ms,
+        "quotes": [quote],
+        "mark_bars": [],
+        "funding_history": {},
+    }
+    root["root_market_tape_ref"] = files.write(tape)
+    receipt = _rule_shadow_receipt(
+        root,
+        tape,
+        _rule_decision([root]),
+        risk_usdt=Decimal("10"),
+        fee_bps_per_side=Decimal("5"),
+        max_spread_fraction_of_stop=Decimal("0.25"),
+    )
+    assert (receipt["status"], receipt["reason"], receipt["trading_cashflow_usdt"]) == (
+        "refused",
+        "rule_entry_structure_lost",
+        "0",
+    )
+    missing = []
+    assert _rule_refusal_archive_complete(files, root, tape, receipt, missing)
+    assert missing == []
+    root["arm_evaluations"] = {"rule": receipt}
+    report = evaluate([root], expected_roots=1, cutoff_ms=at_ms, invalid_outputs=[], expected_invalid=0)
+    rule = report["arms"]["holdout"]["rule"]
+    assert (rule["entry_refused"], rule["net_unknown"], rule["net_evaluable"]) == (1, 0, 0)
+    tape["quotes"][0]["bid"] = "97"
+    assert not _rule_refusal_archive_complete(files, root, tape, receipt, missing)
 
 
 def test_model_cost_includes_known_subtotal_with_unknown_physical_calls() -> None:

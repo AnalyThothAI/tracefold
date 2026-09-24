@@ -38,6 +38,23 @@ def _unevaluable_rule(reason: str) -> dict[str, Any]:
     }
 
 
+def _refused_rule(reason: str, row: dict[str, Any], quote: dict[str, Any], decision: RuleDecision) -> dict[str, Any]:
+    """A visible executable quote can prove a code-owned refusal and zero fill."""
+    return {
+        "status": "refused",
+        "reason": reason,
+        "source": "shadow_simulation",
+        "evaluation_version": EVALUATION_VERSION,
+        "strategy_version": STRATEGY_VERSION,
+        "rule_trigger_at_ms": decision.trigger_at_ms,
+        "rule_visible_at_ms": decision.visible_at_ms,
+        "entry_quote_received_at_ms": quote["received_at_ms"],
+        "entry_quote_ref": quote["quote_ref"],
+        "quote_tape_ref": row.get("root_market_tape_ref"),
+        "trading_cashflow_usdt": "0",
+    }
+
+
 def _read_ref(files: AnalysisFiles, ref: str | None, missing: list[dict[str, str]], case_id: str, kind: str) -> Any:
     if not ref:
         missing.append({"case_id": case_id, "kind": kind, "reason": "reference_missing"})
@@ -168,11 +185,11 @@ def _rule_shadow_receipt(
     if not all(value.is_finite() for value in (bid, ask, spread_bps, drift_bps)) or bid <= 0 or ask < bid:
         return _unevaluable_rule("rule_entry_quote_invalid")
     if not entry_structure_allows(direction=decision.side, executable=executable, level=decision.structure_level):
-        return _unevaluable_rule("rule_entry_structure_lost")
+        return _refused_rule("rule_entry_structure_lost", row, entry, decision)
     if drift_bps > 200:
-        return _unevaluable_rule("rule_entry_price_outside_envelope")
+        return _refused_rule("rule_entry_price_outside_envelope", row, entry, decision)
     if spread_bps > max_spread_fraction_of_stop * decision.exit_plan.stop_distance_bps:
-        return _unevaluable_rule("rule_entry_spread_limit")
+        return _refused_rule("rule_entry_spread_limit", row, entry, decision)
     market = evidence.get("market")
     rules_frame = market.get("instrument_rules") if isinstance(market, dict) else None
     rules_payload = rules_frame.get("payload") if isinstance(rules_frame, dict) else None
@@ -315,6 +332,40 @@ def _rule_receipt_archives_complete(
             missing.append({"case_id": case_id, "kind": "rule_mark", "reason": "snapshot_mismatch", "ref": ref})
             return False
     return True
+
+
+def _rule_refusal_archive_complete(
+    files: AnalysisFiles,
+    row: dict[str, Any],
+    tape: dict[str, Any],
+    receipt: dict[str, Any],
+    missing: list[dict[str, str]],
+) -> bool:
+    ref = receipt["entry_quote_ref"]
+    case_id = str(row["case_id"])
+    snapshot = _read_ref(files, ref, missing, case_id, "rule_refusal_quote")
+    sample = next((item for item in tape["quotes"] if isinstance(item, dict) and item.get("quote_ref") == ref), None)
+    payload = snapshot.get("payload") if isinstance(snapshot, dict) else None
+    valid = (
+        isinstance(sample, dict)
+        and isinstance(payload, list)
+        and len(payload) == 1
+        and isinstance(payload[0], dict)
+        and snapshot.get("status") == "ok"
+        and all(
+            payload[0].get(key) == sample.get(key)
+            for key in ("received_at_ms", "bid", "ask", "bid_quantity", "ask_quantity")
+        )
+        and all(
+            snapshot.get(key) == sample.get(key)
+            for key in ("native_symbol", "environment", "mapping_semantics_digest", "units_per_contract")
+        )
+        and sample.get("received_at_ms") == receipt.get("entry_quote_received_at_ms")
+        and row.get("root_market_tape_ref") == receipt.get("quote_tape_ref")
+    )
+    if not valid:
+        missing.append({"case_id": case_id, "kind": "rule_refusal_quote", "reason": "snapshot_mismatch", "ref": ref})
+    return bool(valid)
 
 
 def export_cases(
@@ -478,6 +529,10 @@ def export_cases(
                     else _unevaluable_rule("root_market_tape_missing")
                 )
                 if rule_receipt["status"] == "simulated" and not _rule_receipt_archives_complete(
+                    files, row, tape, rule_receipt, missing
+                ):
+                    rule_receipt = _unevaluable_rule("rule_receipt_archive_incomplete")
+                if rule_receipt["status"] == "refused" and not _rule_refusal_archive_complete(
                     files, row, tape, rule_receipt, missing
                 ):
                     rule_receipt = _unevaluable_rule("rule_receipt_archive_incomplete")

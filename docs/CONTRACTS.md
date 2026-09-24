@@ -306,6 +306,11 @@ filters, mark-price bars, funding history, latency and an explicit fee
 assumption determine a conservative simulated result. Missing filters, quotes,
 costs or complete price/funding coverage produce `unevaluable`, not a zero-cost
 win. A shadow result is never a venue fill or an actual PAPER return.
+In the offline rule arm, a verified arrival quote that fails the frozen entry
+structure, price envelope or spread bound produces an archived `refused`
+receipt with zero trading cashflow and an `entry_refused` count. A missing or
+unverified quote remains `unevaluable`; refusal does not count as a simulated
+trade or supply a net entry sample.
 The PAPER evaluator requires reconciled venue fills, commissions, funding and
 protection receipts; the existing execution summary alone does not satisfy
 those inputs. Publication of this strategy requires both `publish_signals` and
