@@ -35,13 +35,19 @@ the image. It copies every legacy content-addressed ref from cache to archive,
 verifies the digest and leaves the source intact. Include `archive/` in the
 durable backup and restore set. Preserve the historical v1 path inventory and
 run `uv run python scripts/relabel_trading_price_paths.py` while Analysis is
-stopped. The command audits only the archived v1 endpoint record and appends a
-v2 `missing` result with a specific `historical_quality=unverifiable` reason;
-the old rows and archived paths remain unchanged. It does not fetch today's
-historical public bars to assert an observation from the original time. The
-fixed #690 window has 705 arithmetically consistent endpoint records and three
-endpoint mismatches among 708 settled v1 `ok` labels, but the old archive lacks
-the raw bars and actual data environment needed to certify any of them as v2.
+stopped. The command audits archived v1 endpoint values, clocks, identity,
+receipts and arithmetic, then appends a v2 gross endpoint label with
+`historical_quality=verified_endpoint_only` when they agree. It marks a
+disagreement `missing` with a specific `historical_quality=unverifiable` reason.
+The old rows and archived paths remain unchanged. It does not fetch today's
+historical public bars to assert an observation from the original time. In the
+fixed #690 window, 705 of 708 settled v1 `ok` labels meet the endpoint check;
+three have mismatched endpoints. The pinned v1 `binance_public_v1` adapter
+(introduced at `f1ef42091`, unchanged through deployed `c69b6bc09`) used
+Binance USD-M mainnet klines and accepted only closed bars, so the correction
+records `data_environment=live` with that code provenance. The v1 archive does
+not retain the full bar path, execution prices or costs. These labels establish
+only endpoint gross returns, never a tradable or net result.
 `trading.analysis.publish_signals` is false by default. An unavailable model
 is recorded as unavailable; it never silently activates the retired OI v5
 policy. `event_price_confirmation_v1` also requires

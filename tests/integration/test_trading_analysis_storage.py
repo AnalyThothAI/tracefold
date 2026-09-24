@@ -193,6 +193,39 @@ def test_price_path_v2_correction_appends_without_overwriting_v1(tmp_path) -> No
                 now_ms=1_100,
                 root_ttl_ms=10_000,
             )
+        anchor = conn.execute(
+            "SELECT source_observed_at_ms FROM trading_cases WHERE case_id=%s", (case_id,)
+        ).fetchone()[0]
+        start_at = ((anchor + 59_999) // 60_000) * 60_000
+        end_at = ((anchor + 900_000 + 59_999) // 60_000) * 60_000
+        archive = AnalysisFiles(tmp_path / "archive")
+        legacy_ref = archive.write(
+            {
+                "case_id": case_id,
+                "axis": "source",
+                "horizon_seconds": 900,
+                "version": "price_path_v1",
+                "label_version": "price_path_v1",
+                "status": "ok",
+                "axis_anchor_ms": anchor,
+                "target_ms": anchor + 900_000,
+                "start_close_at_ms": start_at,
+                "end_close_at_ms": end_at,
+                "start_price": "100",
+                "end_price": "101",
+                "return_bps": "100",
+                "measure": "underlying_close_to_close_gross",
+                "execution_claim": False,
+                "costs_included": False,
+                "source_identity": "binance_public_v1",
+                "source_version": "binance_public_v1",
+                "unit_definition": "native_quote_v1",
+                "market_status": "ok",
+                "received_at_ms": end_at + 1_000,
+                "request_receipts": [{"endpoint": "/fapi/v1/klines", "native_symbol": "SOLUSDT"}],
+            }
+        )
+        with conn.transaction():
             conn.execute(
                 "DELETE FROM trading_case_outcomes WHERE case_id=%s AND axis='source' AND horizon_seconds=900",
                 (case_id,),
@@ -200,8 +233,8 @@ def test_price_path_v2_correction_appends_without_overwriting_v1(tmp_path) -> No
             conn.execute(
                 "INSERT INTO trading_case_outcomes "
                 "(case_id,axis,horizon_seconds,label_version,status,return_bps,available_at_ms,path_ref) "
-                "VALUES (%s,'source',900,'price_path_v1','ok',100,901000,'legacy-ref')",
-                (case_id,),
+                "VALUES (%s,'source',900,'price_path_v1','ok',100,901000,%s)",
+                (case_id, legacy_ref),
             )
             assert trading.queue_price_path_v2_corrections() == 1
             assert trading.queue_price_path_v2_corrections() == 0
@@ -212,24 +245,22 @@ def test_price_path_v2_correction_appends_without_overwriting_v1(tmp_path) -> No
         ).fetchall()
         assert [row["label_version"] for row in rows] == ["price_path_v1", "price_path_v2"]
         assert rows[0]["status"] == "ok" and rows[0]["return_bps"] == 100
-        assert rows[0]["path_ref"] == "legacy-ref"
+        assert rows[0]["path_ref"] == legacy_ref
         assert rows[1]["status"] == "pending" and rows[1]["return_bps"] is None
         assert rows[1]["path_ref"] is None
         pending = _pending_corrections(repositories_for_connection(conn), limit=10)
         assert len(pending) == 1 and pending[0]["case_id"] == case_id
-        reason = _audit_v1_path(pending[0], None)
-        assert reason == "historical_v1_archive_missing"
-        correction_ref = AnalysisFiles(tmp_path / "archive").write(
-            {"status": "missing", "historical_quality": "unverifiable", "reason": reason}
-        )
+        audit = _audit_v1_path(pending[0], archive.read(legacy_ref))
+        assert audit["status"] == "ok" and Decimal(audit["return_bps"]) == Decimal("100")
+        correction_ref = archive.write(audit)
         with conn.transaction():
             assert trading.settle_analysis_outcome(
                 case_id=case_id,
                 axis="source",
                 horizon_seconds=900,
                 label_version="price_path_v2",
-                status="missing",
-                return_bps=None,
+                status="ok",
+                return_bps=audit["return_bps"],
                 path_ref=correction_ref,
                 now_ms=901_001,
             )
@@ -238,9 +269,9 @@ def test_price_path_v2_correction_appends_without_overwriting_v1(tmp_path) -> No
             "WHERE case_id=%s AND axis='source' AND horizon_seconds=900 ORDER BY label_version",
             (case_id,),
         ).fetchall()
-        assert settled[0]["status"] == "ok" and settled[0]["path_ref"] == "legacy-ref"
-        assert settled[1]["status"] == "missing" and settled[1]["return_bps"] is None
-        assert AnalysisFiles(tmp_path / "archive").read(settled[1]["path_ref"])["reason"] == reason
+        assert settled[0]["status"] == "ok" and settled[0]["path_ref"] == legacy_ref
+        assert settled[1]["status"] == "ok" and settled[1]["return_bps"] == 100
+        assert archive.read(settled[1]["path_ref"])["historical_quality"] == "verified_endpoint_only"
     finally:
         conn.close()
 

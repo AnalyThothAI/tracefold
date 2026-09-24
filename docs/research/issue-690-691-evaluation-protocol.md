@@ -40,13 +40,19 @@ the compiler accepted two cited evidence IDs. The provider reported 2,375
 input and 292 output tokens but no exact price, so this call's cost remains
 unknown. This verifies the model/adapter/contract path on an explicitly
 projected historical input, not a contemporaneous v3 Case or shadow trade.
-The same preserved window has 708 settled `price_path_v1` `ok` outcomes: 705
-archived endpoint records align with the v2 grid and arithmetic, while three
-have mismatched endpoints. None includes the raw closed bars or a provable
-response environment. The offline correction therefore records all 708 as
-`historical_quality=unverifiable` in append-only v2 quality records, with a
-specific reason for the three mismatches; it does not fetch current history to
-manufacture a historical v2 observation.
+The same preserved window has 708 settled `price_path_v1` `ok` outcomes. A
+read-only replay of the correction audit verified 705 archived endpoint values,
+clocks, receipts, identities and arithmetic as v2 gross endpoint labels; three
+have mismatched endpoints and remain `historical_quality=unverifiable`. The 705
+carry `historical_quality=verified_endpoint_only` and
+`full_path_quality=unknown`. The deployed runtime was `c69b6bc09`; its pinned
+`binance_public_v1` adapter was introduced at `f1ef42091` and unchanged at
+that revision. Its source was Binance USD-M mainnet klines and it accepted only
+closed bars. Thus `data_environment=live` is inferred from pinned code, with
+that provenance recorded in each correction. The archive does not contain the
+full bar path, execution prices or costs. This audit did not write v2 rows to
+the running service or refetch current history, and no net result follows from
+an endpoint gross return.
 The older two-case
 [shadow diagnostic](issue-683-real-model-shadow-2026-09-23.md) says its raw
 archive was lost. No historical net result, model improvement or PAPER venue
