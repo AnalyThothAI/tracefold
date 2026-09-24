@@ -14,6 +14,7 @@ Dataset = Literal[
     "book_ticker",
     "mark_bars",
     "funding_history",
+    "instrument_rules",
 ]
 DataStatus = Literal["ok", "partial", "stale", "missing", "error", "not_applicable"]
 

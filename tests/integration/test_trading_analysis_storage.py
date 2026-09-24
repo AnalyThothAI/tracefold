@@ -73,6 +73,24 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
                 planned_quote_ref="planned-ref",
                 initial_result=None,
             )
+            conn.execute(
+                "INSERT INTO trading_case_decisions "
+                "(case_id,decision_id,policy_id,policy_version,input_ref,action,decision,"
+                "publish_status,decided_at_ms,valid_until_ms) "
+                "VALUES (%s,'shadow-quote-decision','fixture','v1','fixture','TRADE','{}'::jsonb,"
+                "'disabled',1500,300000)",
+                (case_id,),
+            )
+            conn.execute(
+                "INSERT INTO trading_case_attempts "
+                "(case_id,claim_attempt,claim_token,analysis_status,evidence_ref) "
+                "VALUES (%s,1,'first','analyzed','first-evidence'),"
+                "(%s,2,'second','analyzed','second-evidence')",
+                (case_id, case_id),
+            )
+        due_evaluation = trading.due_shadow_evaluations(now_ms=182_000)
+        assert len(due_evaluation) == 1
+        assert due_evaluation[0]["evidence_ref"] == "first-evidence"
         root_due = trading.due_root_research_tapes(now_ms=1_100)
         assert len(root_due) == 1 and root_due[0]["case_id"] == case_id
         with conn.transaction():

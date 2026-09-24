@@ -6,7 +6,7 @@ reconciled venue fills, commissions and funding; missing components stay unknown
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Any
 
 from .contracts import ExitPlan
@@ -35,6 +35,7 @@ def evaluate_shadow(
     fee_bps_per_side: Decimal | None,
     quote_environment: str,
     target_environment: str,
+    instrument_rules: dict[str, Any] | None,
 ) -> dict[str, Any]:
     if side not in ("long", "short") or scheduled_at_ms < decision_at_ms:
         raise ValueError("shadow_identity_or_clock_invalid")
@@ -51,6 +52,26 @@ def evaluate_shadow(
         return _unevaluable("environment_mismatch", **context)
     if decision_quote is None or planned_quote is None:
         return _unevaluable("executable_quote_missing", **context)
+    if instrument_rules is None:
+        return _unevaluable("instrument_rules_missing", **context)
+    try:
+        tick = Decimal(str(instrument_rules["price_tick_size"]))
+        minimum_quantity = Decimal(str(instrument_rules["market_min_quantity"]))
+        maximum_quantity = Decimal(str(instrument_rules["market_max_quantity"]))
+        step = Decimal(str(instrument_rules["market_step_size"]))
+        minimum_notional = Decimal(str(instrument_rules["minimum_notional"]))
+    except (InvalidOperation, KeyError, TypeError):
+        return _unevaluable("instrument_rules_invalid", **context)
+    if (
+        instrument_rules.get("trading_status") != "TRADING"
+        or instrument_rules.get("contract_type") != "PERPETUAL"
+        or instrument_rules.get("quote_asset") != "USDT"
+        or instrument_rules.get("settlement_asset") != "USDT"
+        or not all(value.is_finite() for value in (tick, minimum_quantity, maximum_quantity, step, minimum_notional))
+        or min(tick, minimum_quantity, step, minimum_notional) <= 0
+        or maximum_quantity < minimum_quantity
+    ):
+        return _unevaluable("instrument_rules_invalid", **context)
     if fee_bps_per_side is None:
         return _unevaluable("cost_assumption_missing", **context)
     if not fee_bps_per_side.is_finite() or fee_bps_per_side < 0:
@@ -81,7 +102,9 @@ def evaluate_shadow(
         ):
             return _unevaluable("quote_invalid", **context)
     entry = Decimal(str(planned_quote["ask"] if side == "long" else planned_quote["bid"]))
-    quantity = requested_notional_usdt / entry
+    quantity = (requested_notional_usdt / entry / step).to_integral_value(rounding=ROUND_FLOOR) * step
+    if quantity < minimum_quantity or quantity > maximum_quantity or quantity * entry < minimum_notional:
+        return _unevaluable("market_quantity_filter_rejects_research_size", **context)
     available_entry = Decimal(str(planned_quote["ask_quantity"] if side == "long" else planned_quote["bid_quantity"]))
     if quantity > available_entry:
         return _unevaluable("entry_top_size_insufficient", **context)
@@ -89,6 +112,10 @@ def evaluate_shadow(
     take_fraction = Decimal(exit_plan.take_profit_bps) / Decimal(10_000)
     stop = entry * (1 - stop_fraction if side == "long" else 1 + stop_fraction)
     take = entry * (1 + take_fraction if side == "long" else 1 - take_fraction)
+    stop = (stop / tick).to_integral_value(rounding=ROUND_CEILING if side == "long" else ROUND_FLOOR) * tick
+    take = (take / tick).to_integral_value(rounding=ROUND_FLOOR if side == "long" else ROUND_CEILING) * tick
+    if (side == "long" and not stop < entry < take) or (side == "short" and not take < entry < stop):
+        return _unevaluable("protection_price_filter_rejects_levels", **context)
     deadline = scheduled_at_ms + exit_plan.max_holding_seconds * 1_000
     ordered = sorted(mark_rows, key=lambda row: int(row["event_at_ms"]))
     prior_at = scheduled_at_ms // 60_000 * 60_000
@@ -179,7 +206,12 @@ def evaluate_shadow(
         "entry_at_ms": scheduled_at_ms,
         "entry_price": str(entry),
         "quantity_base": str(quantity),
+        "simulated_notional_usdt": str(quantity * entry),
         "requested_notional_usdt": str(requested_notional_usdt),
+        "price_tick_size": str(tick),
+        "market_step_size": str(step),
+        "stop_price": str(stop),
+        "take_price": str(take),
         "stop_bps": exit_plan.stop_distance_bps,
         "exit_mark": str(exit_mark),
         "exit_price_assumption": str(exit_price),

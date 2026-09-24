@@ -33,6 +33,63 @@ def _bar(open_at: int) -> list[object]:
     return [open_at, "100", "101", "99", "100", "3", open_at + 59_999, "300", 1, "1", "100", "0"]
 
 
+def test_instrument_rules_fetch_and_cache_are_symbol_scoped() -> None:
+    asyncio.run(_instrument_rules_fetch_and_cache())
+
+
+async def _instrument_rules_fetch_and_cache() -> None:
+    calls = 0
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/fapi/v1/exchangeInfo"
+        return httpx.Response(
+            200,
+            json={
+                "symbols": [
+                    {
+                        "symbol": "SOLUSDT",
+                        "contractType": "PERPETUAL",
+                        "status": "TRADING",
+                        "baseAsset": "SOL",
+                        "quoteAsset": "USDT",
+                        "marginAsset": "USDT",
+                        "filters": [
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.001"},
+                            {"filterType": "MARKET_LOT_SIZE", "minQty": "0.01", "maxQty": "100", "stepSize": "0.01"},
+                            {"filterType": "MIN_NOTIONAL", "notional": "5"},
+                        ],
+                    }
+                ]
+            },
+        )
+
+    request = replace(
+        _request(dataset="perp_bars"),
+        dataset="instrument_rules",
+        start_ms=None,
+        end_ms=None,
+        interval_ms=None,
+        max_age_ms=3_600_000,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = BinanceMarketData(client=client, clock_ms=lambda: 300_000)
+        first = await adapter.fetch(request)
+        assert first.status == "ok"
+        assert first.payload[0]["price_tick_size"] == "0.001"
+        assert first.payload[0]["minimum_notional"] == "5"
+        assert first.received_at_ms == 300_000
+        second = await adapter.fetch(request)
+        assert second.status == "ok"
+        assert second.request_receipts[0]["cache_hit"] is True
+        assert calls == 1
+        unlisted = await adapter.fetch(replace(request, native_symbol="MISSINGUSDT"))
+        assert unlisted.status == "missing"
+        assert unlisted.missing_reasons == ("instrument_unlisted",)
+        assert calls == 1
+
+
 def test_overlap_shares_request_tail_refills_and_cache_receipt() -> None:
     asyncio.run(_overlap_shares_request_tail_refills_and_cache_receipt())
 

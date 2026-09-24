@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -57,6 +58,8 @@ class BinanceMarketData:
         self._backoff_until = 0.0
         self._server_clocks: dict[str, tuple[int, int, int]] = {}  # offset, half RTT, sampled local ms
         self._clock_lock = asyncio.Lock()
+        self._rules_lock = asyncio.Lock()
+        self._rules_cache: dict[str, tuple[float, Any, int]] = {}
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -74,7 +77,142 @@ class BinanceMarketData:
             return await self._bars(request)
         if request.dataset == "funding_history":
             return await self._funding_history(request)
+        if request.dataset == "instrument_rules":
+            return await self._instrument_rules(request)
         return await self._latest(request)
+
+    async def _instrument_rules(self, request: MarketDataRequest) -> MarketDataResult:
+        """Cache the exchange-wide response while archiving only one symbol's rules."""
+        receipts: list[dict[str, Any]] = []
+        if request.max_age_ms is None:
+            raise ValueError("market_data_age_invalid")
+        async with self._rules_lock:
+            cached = self._rules_cache.get(request.environment)
+            if cached is not None and time.monotonic() - cached[0] <= min(request.max_age_ms, 3_600_000) / 1_000:
+                raw, received = cached[1], cached[2]
+                receipts.append(
+                    {
+                        "endpoint": "cache:/fapi/v1/exchangeInfo",
+                        "native_symbol": request.native_symbol,
+                        "http_status": None,
+                        "latency_ms": 0,
+                        "request_weight": 0,
+                        "cache_hit": True,
+                    }
+                )
+            else:
+                remaining = request.deadline_at_monotonic - time.monotonic()
+                if remaining <= 0:
+                    return self._result(request, status="missing", rows=(), missing=("deadline_exceeded",))
+                try:
+                    raw = await asyncio.wait_for(
+                        self._get(
+                            _futures_base(request.environment) + "/fapi/v1/exchangeInfo",
+                            params={},
+                            receipts=receipts,
+                        ),
+                        timeout=remaining,
+                    )
+                except (httpx.HTTPError, TimeoutError):
+                    return self._result(
+                        request, status="error", rows=(), missing=("provider_error",), receipts=tuple(receipts)
+                    )
+                received = self._clock_ms()
+                if not isinstance(raw, dict) or not isinstance(raw.get("symbols"), list):
+                    return self._result(
+                        request, status="error", rows=(), missing=("exchange_info_invalid",), receipts=tuple(receipts)
+                    )
+                self._rules_cache[request.environment] = (time.monotonic(), raw, received)
+        symbols = raw["symbols"]
+        symbol = next(
+            (item for item in symbols if isinstance(item, dict) and item.get("symbol") == request.native_symbol),
+            None,
+        )
+        if symbol is None:
+            return self._result(
+                request, status="missing", rows=(), missing=("instrument_unlisted",), receipts=tuple(receipts)
+            )
+        raw_filters = symbol.get("filters")
+        if not isinstance(raw_filters, list):
+            return self._result(
+                request, status="partial", rows=(), missing=("contract_filter_missing",), receipts=tuple(receipts)
+            )
+        filters = {
+            item.get("filterType"): item
+            for item in raw_filters
+            if isinstance(item, dict) and isinstance(item.get("filterType"), str)
+        }
+        price = filters.get("PRICE_FILTER")
+        market_lot = filters.get("MARKET_LOT_SIZE")
+        notional = filters.get("MIN_NOTIONAL")
+        if (
+            not isinstance(price, dict)
+            or not isinstance(market_lot, dict)
+            or not isinstance(notional, dict)
+            or any(
+                value is None
+                for value in (
+                    price.get("tickSize"),
+                    market_lot.get("minQty"),
+                    market_lot.get("maxQty"),
+                    market_lot.get("stepSize"),
+                    notional.get("notional"),
+                )
+            )
+        ):
+            return self._result(
+                request, status="partial", rows=(), missing=("contract_filter_missing",), receipts=tuple(receipts)
+            )
+        try:
+            tick, minimum, maximum, step, minimum_notional = (
+                Decimal(str(value))
+                for value in (
+                    price["tickSize"],
+                    market_lot["minQty"],
+                    market_lot["maxQty"],
+                    market_lot["stepSize"],
+                    notional["notional"],
+                )
+            )
+        except (InvalidOperation, TypeError):
+            return self._result(
+                request, status="partial", rows=(), missing=("contract_filter_invalid",), receipts=tuple(receipts)
+            )
+        if not all(value.is_finite() for value in (tick, minimum, maximum, step, minimum_notional)) or (
+            min(tick, minimum, step, minimum_notional) <= 0 or maximum < minimum
+        ):
+            return self._result(
+                request, status="partial", rows=(), missing=("contract_filter_invalid",), receipts=tuple(receipts)
+            )
+        row = {
+            "event_at_ms": received,
+            "received_at_ms": received,
+            "source_time_kind": "local_response_receipt",
+            "native_symbol": request.native_symbol,
+            "contract_type": symbol.get("contractType"),
+            "trading_status": symbol.get("status"),
+            "base_asset": symbol.get("baseAsset"),
+            "quote_asset": symbol.get("quoteAsset"),
+            "settlement_asset": symbol.get("marginAsset"),
+            "price_tick_size": str(price["tickSize"]),
+            "market_min_quantity": str(market_lot["minQty"]),
+            "market_max_quantity": str(market_lot["maxQty"]),
+            "market_step_size": str(market_lot["stepSize"]),
+            "minimum_notional": str(minimum_notional),
+        }
+        tradable = (
+            symbol.get("status") == "TRADING"
+            and symbol.get("contractType") == "PERPETUAL"
+            and symbol.get("quoteAsset") == "USDT"
+            and symbol.get("marginAsset") == "USDT"
+        )
+        return self._result(
+            request,
+            status="ok" if tradable else "not_applicable",
+            rows=(row,),
+            missing=() if tradable else ("instrument_not_tradable_as_usdt_perpetual",),
+            receipts=tuple(receipts),
+        )
 
     def _result(
         self,

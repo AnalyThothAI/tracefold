@@ -1250,10 +1250,15 @@ class AnalysisStorage:
     def due_shadow_evaluations(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT evaluation.*,c.target_selection,d.decision
+            SELECT evaluation.*,c.target_selection,d.decision,frozen.evidence_ref
               FROM trading_case_evaluations evaluation
               JOIN trading_cases c USING (case_id)
               JOIN trading_case_decisions d USING (case_id)
+              LEFT JOIN LATERAL (
+                SELECT a.evidence_ref FROM trading_case_attempts a
+                 WHERE a.case_id=evaluation.case_id AND a.evidence_ref IS NOT NULL
+                 ORDER BY a.claim_attempt LIMIT 1
+              ) frozen ON true
              WHERE evaluation.source='shadow_simulation' AND evaluation.status='pending'
                AND evaluation.next_attempt_at_ms<=%s
              ORDER BY evaluation.next_attempt_at_ms,evaluation.case_id LIMIT %s

@@ -296,11 +296,12 @@ remain null.
 The Case API exposes attempts, validation errors, WATCH state and the root
 chain. Replay reads their archived refs without a model or market call.
 
-TRADE decisions also start a `shadow_net_v1` evaluation. Decision and planned
-bid/ask quotes, mark-price bars, funding history, latency and explicit fee and
-exit-spread assumptions determine a conservative simulated result. Missing
-quotes, costs or complete price/funding coverage produce `unevaluable`, not a
-zero-cost win. A shadow result is never a venue fill or an actual PAPER return.
+TRADE decisions also start a `shadow_net_v1` evaluation. Archived decision,
+planned and exit bid/ask quotes with displayed size, frozen Binance contract
+filters, mark-price bars, funding history, latency and an explicit fee
+assumption determine a conservative simulated result. Missing filters, quotes,
+costs or complete price/funding coverage produce `unevaluable`, not a zero-cost
+win. A shadow result is never a venue fill or an actual PAPER return.
 The PAPER evaluator requires reconciled venue fills, commissions, funding and
 protection receipts; the existing execution summary alone does not satisfy
 those inputs. Publication of this strategy requires both `publish_signals` and

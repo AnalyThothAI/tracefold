@@ -30,6 +30,17 @@ def _shadow(**overrides: object) -> dict[str, object]:
             },
         ),
         "requested_notional_usdt": Decimal("100"),
+        "instrument_rules": {
+            "trading_status": "TRADING",
+            "contract_type": "PERPETUAL",
+            "quote_asset": "USDT",
+            "settlement_asset": "USDT",
+            "price_tick_size": "0.01",
+            "market_min_quantity": "0.01",
+            "market_max_quantity": "1000",
+            "market_step_size": "0.01",
+            "minimum_notional": "5",
+        },
         "mark_rows": ({"event_at_ms": 60_000, "high": "106", "low": "98", "close": "100"},),
         "mark_status": "ok",
         "funding_events": (),
@@ -47,6 +58,8 @@ def test_shadow_uses_planned_ask_and_stop_first_if_both_touched() -> None:
     result = _shadow()
     assert result["status"] == "simulated"
     assert result["entry_price"] == "101"
+    assert result["quantity_base"] == "0.99"
+    assert result["simulated_notional_usdt"] == "99.99"
     assert result["exit_reason"] == "stop"
     assert result["paper_comparable"] is False
     assert Decimal(str(result["net_bps"])) < -200
@@ -66,6 +79,26 @@ def test_shadow_missing_cost_or_quote_is_not_zero_pnl() -> None:
     assert _shadow(planned_quote=None)["reason"] == "executable_quote_missing"
     assert _shadow(mark_status="partial")["reason"] == "mark_path_incomplete"
     assert _shadow(exit_quotes=())["reason"] == "exit_quote_missing"
+    assert _shadow(instrument_rules=None)["reason"] == "instrument_rules_missing"
+
+
+def test_shadow_respects_market_quantity_and_price_filters() -> None:
+    rules = {
+        "trading_status": "TRADING",
+        "contract_type": "PERPETUAL",
+        "quote_asset": "USDT",
+        "settlement_asset": "USDT",
+        "price_tick_size": "0.01",
+        "market_min_quantity": "1",
+        "market_max_quantity": "1000",
+        "market_step_size": "1",
+        "minimum_notional": "5",
+    }
+    assert _shadow(instrument_rules=rules)["reason"] == "market_quantity_filter_rejects_research_size"
+    assert _shadow(instrument_rules={**rules, "trading_status": "BREAK"})["reason"] == "instrument_rules_invalid"
+    assert _shadow(
+        instrument_rules={**rules, "market_min_quantity": "0.01", "market_step_size": "0.01", "price_tick_size": "1000"}
+    )["reason"] == ("protection_price_filter_rejects_levels")
 
 
 def test_shadow_requires_top_book_capacity_at_entry_and_exit() -> None:

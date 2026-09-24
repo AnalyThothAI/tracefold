@@ -27,7 +27,9 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX ix_trading_root_market_tapes_due ON public.trading_root_market_tapes(next_sample_at_ms,case_id)")
+    op.execute(
+        "CREATE INDEX ix_trading_root_market_tapes_due ON public.trading_root_market_tapes(next_sample_at_ms,case_id)"
+    )
 
 
 def downgrade() -> None:

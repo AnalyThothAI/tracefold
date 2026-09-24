@@ -113,6 +113,8 @@ class FrameReader:
             unit_definition = (
                 "native_contract_quantity_v1"
                 if dataset == "open_interest"
+                else "binance_usdm_contract_rules_v1"
+                if dataset == "instrument_rules"
                 else "quote_price_and_rate_v1"
                 if dataset == "funding_basis"
                 else "quote_per_base_and_volume_v1"
@@ -128,7 +130,7 @@ class FrameReader:
                 start_ms=start if bars else None,
                 end_ms=end if bars else None,
                 interval_ms=_BAR_MS if bars else None,
-                max_age_ms=None if bars else 90_000,
+                max_age_ms=None if bars else 3_600_000 if dataset == "instrument_rules" else 90_000,
                 deadline_at_monotonic=deadline,
             )
 
@@ -137,6 +139,7 @@ class FrameReader:
             "spot_bars": request("spot_bars", native, spot=True),
             "open_interest": request("open_interest", native),
             "funding_basis": request("funding_basis", native),
+            "instrument_rules": request("instrument_rules", native),
             "market_bars": request("market_bars", "BTCUSDT"),
         }
         answers = await asyncio.gather(
@@ -294,6 +297,15 @@ class FrameReader:
             "market_bars": ("close", "high", "low", "quote_volume"),
             "open_interest": ("open_interest_quantity",),
             "funding_basis": ("mark_price", "index_price", "last_funding_rate"),
+            "instrument_rules": (
+                "trading_status",
+                "contract_type",
+                "price_tick_size",
+                "market_min_quantity",
+                "market_max_quantity",
+                "market_step_size",
+                "minimum_notional",
+            ),
         }
         brief_evidence.update(
             {
@@ -1540,6 +1552,7 @@ class AnalysisRunner:
                     "source": "shadow_simulation",
                 }
             else:
+                instrument_rules = None
                 try:
                     decision_quote_snapshot = await _file_io(self.files.read, str(row["decision_quote_ref"]))
                     planned_quote_snapshot = await _file_io(self.files.read, str(row["planned_quote_ref"]))
@@ -1578,6 +1591,25 @@ class AnalysisRunner:
                     decision_quote = planned_quote = None
                     quote_environment = "unknown"
                     exit_quotes = ()
+                try:
+                    if row.get("evidence_ref"):
+                        evidence_snapshot = await _file_io(self.files.read, str(row["evidence_ref"]))
+                        rules_frame = evidence_snapshot["market"]["instrument_rules"]
+                        rules_payload = rules_frame.get("payload")
+                        if (
+                            rules_frame.get("status") == "ok"
+                            and rules_frame.get("unit_definition") == "binance_usdm_contract_rules_v1"
+                            and isinstance(rules_payload, (list, tuple))
+                            and rules_payload
+                            and isinstance(rules_payload[0], dict)
+                            and rules_payload[0].get("native_symbol") == instrument["native_symbol"]
+                            and evidence_snapshot.get("data_environment") == instrument["environment"]
+                            and isinstance(rules_frame.get("received_at_ms"), int)
+                            and rules_frame["received_at_ms"] <= int(row["decision_at_ms"])
+                        ):
+                            instrument_rules = rules_payload[0]
+                except (OSError, ValueError, KeyError, IndexError, TypeError):
+                    pass
                 start_at = int(row["scheduled_at_ms"])
                 end_at = start_at + plan.max_holding_seconds * 1_000
                 mark_request = MarketDataRequest(
@@ -1659,6 +1691,7 @@ class AnalysisRunner:
                     fee_bps_per_side=self.settings.trading.analysis.shadow_fee_bps_per_side,
                     quote_environment=quote_environment,
                     target_environment=str(instrument["environment"]),
+                    instrument_rules=instrument_rules,
                 )
             fee_ref = await _file_io(
                 self.files.write,
@@ -1678,6 +1711,7 @@ class AnalysisRunner:
                     "entry_quote_ref": row.get("planned_quote_ref"),
                     "decision_quote_ref": row.get("decision_quote_ref"),
                     "quote_tape_ref": row.get("quote_tape_ref"),
+                    "instrument_rules_ref": row.get("evidence_ref"),
                     "mark_path_ref": mark_ref,
                     "funding_ref": funding_ref,
                     "fee_ref": fee_ref,

@@ -60,11 +60,16 @@ def test_net_requires_contemporary_strategy_receipt_and_applies_capital() -> Non
             },
             "entry_quote_ref": "entry",
             "exit_quote_ref": "exit",
+            "instrument_rules_ref": "rules",
             "mark_path_ref": "marks",
             "funding_ref": "funding",
             "fee_ref": "fees",
-            "latency_ms": 100,
+            "order_latency_ms": 100,
             "requested_notional_usdt": "100",
+            "simulated_notional_usdt": "100",
+            "quantity_base": "1",
+            "entry_price": "100",
+            "market_step_size": "0.01",
             "stop_bps": "100",
         }
     }
@@ -96,6 +101,55 @@ def test_net_requires_contemporary_strategy_receipt_and_applies_capital() -> Non
         initial_equity_usdt=Decimal("1000"),
     )
     assert marked["arms"]["holdout"]["dspy"]["account_drawdown_usdt"] == "3"
+    first["arm_evaluations"]["dspy"]["instrument_rules_ref"] = None
+    unknown = evaluate([first, second], expected_roots=2, cutoff_ms=cutoff, invalid_outputs=[], expected_invalid=0)
+    assert unknown["arms"]["holdout"]["dspy"]["net_unknown"] == 2
+
+
+def test_capital_limit_does_not_resize_a_validated_execution_receipt() -> None:
+    cutoff = 100_000_000
+    first = _case("a", "root-a", cutoff)
+    first["decision_action"] = "TRADE"
+    first["arm_evaluations"] = {
+        "dspy": {
+            "status": "simulated",
+            "strategy_version": STRATEGY_VERSION,
+            "entry_at_ms": cutoff + 1000,
+            "exit_at_ms": cutoff + 2000,
+            "net_bps": "100",
+            "net_components_bps": {
+                "gross": "100",
+                "entry_cost": "0",
+                "exit_cost": "0",
+                "fees": "0",
+                "funding_cashflow": "0",
+            },
+            "entry_quote_ref": "entry",
+            "exit_quote_ref": "exit",
+            "instrument_rules_ref": "rules",
+            "mark_path_ref": "marks",
+            "funding_ref": "funding",
+            "fee_ref": "fees",
+            "order_latency_ms": 100,
+            "requested_notional_usdt": "100",
+            "simulated_notional_usdt": "100",
+            "quantity_base": "1",
+            "entry_price": "100",
+            "market_step_size": "0.01",
+            "stop_bps": "100",
+        }
+    }
+    report = evaluate(
+        [first],
+        expected_roots=1,
+        cutoff_ms=cutoff,
+        invalid_outputs=[],
+        expected_invalid=0,
+        initial_equity_usdt=Decimal("500"),
+    )
+    summary = report["arms"]["holdout"]["dspy"]
+    assert summary["net_evaluable"] == 0
+    assert summary["capital_rejected"] == 1
 
 
 def test_wrong_historical_denominator_fails_before_metrics() -> None:

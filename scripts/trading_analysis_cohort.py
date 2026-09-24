@@ -223,18 +223,34 @@ def _arm_summary(
             if (
                 any(
                     not receipt.get(ref)
-                    for ref in ("entry_quote_ref", "exit_quote_ref", "mark_path_ref", "funding_ref", "fee_ref")
+                    for ref in (
+                        "entry_quote_ref",
+                        "exit_quote_ref",
+                        "instrument_rules_ref",
+                        "mark_path_ref",
+                        "funding_ref",
+                        "fee_ref",
+                    )
                 )
-                or int(receipt["latency_ms"]) < 0
+                or int(receipt["order_latency_ms"]) < 0
             ):
                 raise ValueError("receipt_provenance_incomplete")
             requested_notional = Decimal(str(receipt["requested_notional_usdt"]))
+            simulated_notional = Decimal(str(receipt["simulated_notional_usdt"]))
+            quantity = Decimal(str(receipt["quantity_base"]))
+            entry_price = Decimal(str(receipt["entry_price"]))
+            market_step = Decimal(str(receipt["market_step_size"]))
             stop_bps = Decimal(str(receipt["stop_bps"]))
             if (
                 exit_at <= entry_at
                 or not net_bps.is_finite()
                 or not requested_notional.is_finite()
                 or requested_notional <= 0
+                or not all(value.is_finite() for value in (simulated_notional, quantity, entry_price, market_step))
+                or min(simulated_notional, quantity, entry_price, market_step) <= 0
+                or simulated_notional > requested_notional
+                or simulated_notional != quantity * entry_price
+                or quantity % market_step != 0
                 or not stop_bps.is_finite()
                 or stop_bps <= 0
             ):
@@ -249,7 +265,7 @@ def _arm_summary(
                 str(initial["root_trigger_id"]),
                 {
                     "net_bps": net_bps,
-                    "requested_notional": requested_notional,
+                    "simulated_notional": simulated_notional,
                     "stop_bps": stop_bps,
                     "equity_marks": receipt.get("equity_marks"),
                 },
@@ -274,12 +290,8 @@ def _arm_summary(
             continue
         capital_available = equity * max_notional_fraction - sum(item[1] for item in active)
         risk_available = equity * risk_fraction - sum(item[1] * item[2] / 10_000 for item in active)
-        notional = min(
-            receipt["requested_notional"],
-            capital_available,
-            risk_available * 10_000 / receipt["stop_bps"],
-        )
-        if notional <= 0:
+        notional = receipt["simulated_notional"]
+        if notional > capital_available or notional * receipt["stop_bps"] / 10_000 > risk_available:
             capital_rejected += 1
             continue
         realized = notional * receipt["net_bps"] / 10_000

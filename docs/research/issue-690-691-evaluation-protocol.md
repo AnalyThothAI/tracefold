@@ -37,18 +37,28 @@ or capital evidence remains unknown.
 An evaluable simulated receipt carries the strategy version, entry/exit times,
 requested notional, stop distance, signed funding cashflow and gross/cost bps
 whose arithmetic exactly reconciles to net bps. It also names archived entry
-and exit quote, mark path, funding and fee references plus observed latency.
+and exit quote, contract rules, mark path, funding and fee references plus
+observed latency.
 Values without those references remain `net_unknown`.
 The runtime captures a level-one bid/ask and displayed base size each minute
 while a shadow evaluation is pending, preserving the per-sample archive ref and
 an append-only logical tape manifest. The research quantity is the configured
 fixed USD risk budget divided by the frozen stop fraction; it is not an actual
 venue order or account-equity clamp. Both entry and the first archived exit
-quote within 90 seconds after the mark-bar close must cover that full quantity
-at the displayed top level. A missing/late quote, insufficient displayed size,
+quote within 90 seconds after the mark-bar close must cover the quantity after
+venue-step rounding at the displayed top level. A missing/late quote,
+insufficient displayed size,
 mixed environment or incomplete funding/mark path is `unevaluable`. Mark bars
 select a possible protection trigger; the following executable quote supplies
 the modeled exit price. A stop uses the worse of its threshold and the quote.
+The initial evidence snapshot also freezes the target USDⓈ-M `exchangeInfo`
+status, contract type, `PRICE_FILTER`, `MARKET_LOT_SIZE` and `MIN_NOTIONAL`
+with a local receipt clock. Missing or invalid rules make the shadow result
+unevaluable. The simulated base quantity is rounded down to the market step
+and must pass the market quantity and notional filters; stop and take levels
+are rounded to the tick in the conservative direction. The resulting quantity,
+notional and levels are reported with the archived rule reference. Rule
+availability still does not establish that an order would have been accepted.
 The quote interval and OHLC order still limit timing certainty: a simulated
 result is a diagnostic, never a venue fill or proof of protection placement.
 Every selected initial root also has a bounded research tape independent of
@@ -81,6 +91,9 @@ all later roots are holdout. Every child follows its root. Roots sharing a
 source group across splits are excluded from both splits and counted. Asset
 identity is a reporting stratum, not a randomized split key. Rule and DSPy
 arms use the same roots, timestamps, capital limits and strategy version.
+The portfolio evaluator admits only the exact quantity validated by a
+contemporary execution receipt; insufficient capital rejects the entry rather
+than resizing it without a new venue-filter and quote-capacity check.
 Each root export supplies the rule arm's own continuous `rule_watch_bars`
 with close and received clocks through root expiry, or an explicit missing
 coverage status. The rule arm never borrows a conditional child produced by
