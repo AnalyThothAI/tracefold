@@ -674,15 +674,16 @@ class AnalysisStorage:
                 """
                 INSERT INTO trading_model_calls
                   (case_id,claim_attempt,call_index,request_ref,response_ref,
-                   input_tokens,output_tokens,cost_microusd,cost_unknown_reason,status)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'completed')
+                   input_tokens,output_tokens,cost_microusd,cost_unknown_reason,status,finished_at_ms)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (case_id,claim_attempt,call_index) DO UPDATE SET
-                  response_ref=EXCLUDED.response_ref,
+                  response_ref=COALESCE(EXCLUDED.response_ref,trading_model_calls.response_ref),
                   input_tokens=EXCLUDED.input_tokens,
                   output_tokens=EXCLUDED.output_tokens,
                   cost_microusd=EXCLUDED.cost_microusd,
                   cost_unknown_reason=EXCLUDED.cost_unknown_reason,
-                  status='completed'
+                  status=EXCLUDED.status,
+                  finished_at_ms=COALESCE(trading_model_calls.finished_at_ms,EXCLUDED.finished_at_ms)
                 """,
                 (
                     case_id,
@@ -694,6 +695,8 @@ class AnalysisStorage:
                     call.get("output_tokens"),
                     call.get("cost_microusd"),
                     call.get("cost_unknown_reason"),
+                    call.get("status", "completed" if call.get("response_ref") else "result_unknown"),
+                    call.get("finished_at_ms"),
                 ),
             )
 
@@ -794,18 +797,22 @@ class AnalysisStorage:
         call_index: int,
         response_ref: str | None,
         finished_at_ms: int,
+        status: str,
         input_tokens: int | None,
         output_tokens: int | None,
         cost_microusd: int | None,
     ) -> None:
+        if status not in ("completed", "result_unknown"):
+            raise ValueError("model_call_status_invalid")
         self.conn.execute(
-            "UPDATE trading_model_calls call SET status='completed',response_ref=%s,finished_at_ms=%s,"
+            "UPDATE trading_model_calls call SET status=%s,response_ref=%s,finished_at_ms=%s,"
             "input_tokens=%s,output_tokens=%s,cost_microusd=%s,cost_unknown_reason=%s "
             "WHERE case_id=%s AND claim_attempt=%s AND call_index=%s "
             "AND EXISTS (SELECT 1 FROM trading_case_attempts attempt "
             "WHERE attempt.case_id=call.case_id AND attempt.claim_attempt=call.claim_attempt "
             "AND attempt.claim_token=%s)",
             (
+                status,
                 response_ref,
                 finished_at_ms,
                 input_tokens,

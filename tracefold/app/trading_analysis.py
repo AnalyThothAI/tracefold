@@ -728,7 +728,8 @@ class AnalysisRunner:
                             claim_token=case["claim_token"],
                             call_index=call_index,
                             response_ref=response_ref,
-                            finished_at_ms=_clock_ms(),
+                            finished_at_ms=call.finished_at_ms or _clock_ms(),
+                            status=call.status,
                             input_tokens=call.input_tokens,
                             output_tokens=call.output_tokens,
                             cost_microusd=call.cost_microusd,
@@ -830,6 +831,9 @@ class AnalysisRunner:
                     "output_tokens": call.output_tokens,
                     "cost_microusd": call.cost_microusd,
                     "cost_unknown_reason": call.cost_unknown_reason,
+                    "status": call.status,
+                    "finished_at_ms": call.finished_at_ms,
+                    "error_type": call.error_type,
                 }
                 for call in physical_calls
             ]

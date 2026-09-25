@@ -149,10 +149,10 @@ def test_provider_failure_retains_transport_attempt_without_dspy_history(monkeyp
     assert receipt.status == "provider_error"
     assert len(receipt.physical_calls) == 1
     assert receipt.physical_calls[0].request_payload["messages"][0]["content"] == "frozen brief"
-    assert receipt.physical_calls[0].response_payload == {
-        "error_type": "RuntimeError",
-        "status": "outcome_unconfirmed",
-    }
+    assert receipt.physical_calls[0].response_payload is None
+    assert receipt.physical_calls[0].status == "result_unknown"
+    assert receipt.physical_calls[0].finished_at_ms is not None
+    assert receipt.physical_calls[0].error_type == "RuntimeError"
     assert receipt.physical_calls[0].cost_microusd is None
     assert "secret text" not in str(receipt.physical_calls)
 

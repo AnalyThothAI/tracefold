@@ -94,6 +94,9 @@ class PhysicalModelCall:
     output_tokens: int | None
     cost_microusd: int | None
     cost_unknown_reason: str | None
+    status: Literal["completed", "result_unknown"] = "completed"
+    finished_at_ms: int | None = None
+    error_type: str | None = None
 
 
 class _RecordingLM(dspy.LM):
@@ -148,11 +151,14 @@ class _RecordingLM(dspy.LM):
             # Preserve the invocation, but do not invent usage or a response.
             attempt["physical_call"] = PhysicalModelCall(
                 request_payload=attempt["request_payload"],
-                response_payload={"error_type": type(exc).__name__, "status": "outcome_unconfirmed"},
+                response_payload=None,
                 input_tokens=None,
                 output_tokens=None,
                 cost_microusd=None,
                 cost_unknown_reason="provider_cost_unavailable",
+                status="result_unknown",
+                finished_at_ms=int(time.time() * 1000),
+                error_type=type(exc).__name__,
             )
             after_call = getattr(self, "after_call", None)
             if after_call is not None:
@@ -176,6 +182,7 @@ class _RecordingLM(dspy.LM):
             output_tokens=call.output_tokens,
             cost_microusd=call.cost_microusd,
             cost_unknown_reason=call.cost_unknown_reason,
+            finished_at_ms=int(time.time() * 1000),
         )
         after_call = getattr(self, "after_call", None)
         if after_call is not None:
@@ -242,6 +249,7 @@ def _physical_call(record: Any) -> PhysicalModelCall:
         output_tokens=usage.get("completion_tokens") if "completion_tokens" in usage else usage.get("output_tokens"),
         cost_microusd=cost_microusd,
         cost_unknown_reason="provider_cost_unavailable" if cost_microusd is None else None,
+        status="completed" if response is not None else "result_unknown",
     )
 
 

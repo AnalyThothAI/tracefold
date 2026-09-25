@@ -510,6 +510,8 @@ def test_relay_retries_reuse_case_and_old_claim_cannot_finish(tmp_path) -> None:
                         "output_tokens": 50,
                         "cost_microusd": None,
                         "cost_unknown_reason": "provider_cost_unavailable",
+                        "status": "completed",
+                        "finished_at_ms": 3_650,
                     },
                 ),
             )

@@ -446,12 +446,13 @@ def test_runner_persists_physical_request_before_dispatch(tmp_path, monkeypatch:
 
         asyncio.run(process())
         call = conn.execute(
-            "SELECT status,response_ref,input_tokens,output_tokens,cost_microusd "
+            "SELECT status,response_ref,finished_at_ms,input_tokens,output_tokens,cost_microusd "
             "FROM trading_model_calls WHERE case_id=%s",
             (case_id,),
         ).fetchone()
         assert call["status"] == "completed"
         assert call["response_ref"] is not None
+        assert call["finished_at_ms"] is not None
         assert (call["input_tokens"], call["output_tokens"], call["cost_microusd"]) == (10, 5, 10)
     finally:
         conn.close()
@@ -516,6 +517,7 @@ def test_provider_timeout_keeps_requested_call_and_unknown_cost_on_failed_case(
         row = conn.execute(
             "SELECT c.state,c.analysis_status,a.error_code,a.assessment_ref,a.physical_call_count,"
             "a.cost_unknown_reason,a.settled,call.request_ref,call.response_ref,"
+            "call.status AS call_status,call.finished_at_ms,"
             "call.cost_unknown_reason AS call_cost_reason "
             "FROM trading_cases c JOIN trading_case_attempts a ON a.case_id=c.case_id "
             "JOIN trading_model_calls call ON call.case_id=a.case_id AND call.claim_attempt=a.claim_attempt "
@@ -528,10 +530,12 @@ def test_provider_timeout_keeps_requested_call_and_unknown_cost_on_failed_case(
             row["physical_call_count"] == 1 and row["cost_unknown_reason"] == "one_or_more_physical_costs_unavailable"
         )
         assert row["call_cost_reason"] == "provider_cost_unavailable"
+        assert row["call_status"] == "result_unknown" and row["finished_at_ms"] is not None
         files = AnalysisFiles(files_root)
         assert files.read(row["request_ref"])["messages"][0]["content"] == "frozen"
-        assert files.read(row["response_ref"])["status"] == "outcome_unconfirmed"
+        assert row["response_ref"] is None
         assert files.read(row["assessment_ref"])["validation_status"] == "model_timeout"
+        assert files.read(row["assessment_ref"])["physical_calls"][0]["error_type"] == "TimeoutError"
         assert (
             conn.execute("SELECT count(*) FROM trading_case_decisions WHERE case_id=%s", (case_id,)).fetchone()[0] == 0
         )
