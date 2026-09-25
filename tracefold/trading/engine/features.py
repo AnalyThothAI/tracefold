@@ -9,7 +9,8 @@ from typing import Any, Literal, cast
 from .contracts import FeatureValue, FrozenEvidence
 from .marketdata import MarketDataResult
 
-PROFILE_VERSION = "evidence_profile_v2"
+PROFILE_VERSION = "evidence_profile_v3"
+_BAR_MS = 60_000
 
 
 def catalyst_text_values(source_fact: dict[str, Any]) -> dict[str, str]:
@@ -32,16 +33,21 @@ def catalyst_text_values(source_fact: dict[str, Any]) -> dict[str, str]:
 def _change_bps(rows: tuple[dict[str, Any], ...], interval_count: int) -> str | None:
     if len(rows) <= interval_count:
         return None
-    before = Decimal(str(rows[-interval_count - 1]["close"]))
-    after = Decimal(str(rows[-1]["close"]))
-    if before <= 0:
+    window = rows[-interval_count - 1 :]
+    if not _continuous(window):
         return None
+    closes = [Decimal(str(row["close"])) for row in window]
+    if any(not value.is_finite() or value <= 0 for value in closes):
+        return None
+    before, after = closes[0], closes[-1]
     return str((after / before - 1) * 10_000)
 
 
 def _volatility_bps(rows: tuple[dict[str, Any], ...]) -> str | None:
+    if not _continuous(rows):
+        return None
     closes = [Decimal(str(row["close"])) for row in rows]
-    if len(closes) < 30 or any(value <= 0 for value in closes):
+    if len(closes) < 30 or any(not value.is_finite() or value <= 0 for value in closes):
         return None
     returns = [(b / a - 1) * 10_000 for a, b in pairwise(closes)]
     mean = sum(returns, Decimal(0)) / len(returns)
@@ -49,12 +55,28 @@ def _volatility_bps(rows: tuple[dict[str, Any], ...]) -> str | None:
     return str(variance.sqrt())
 
 
-def _taker_share_bps(rows: tuple[dict[str, Any], ...]) -> str | None:
+def _continuous(rows: tuple[dict[str, Any], ...]) -> bool:
     if not rows:
+        return False
+    stamps = [int(row["event_at_ms"]) for row in rows]
+    return all(right - left == _BAR_MS for left, right in pairwise(stamps))
+
+
+def _taker_share_bps(rows: tuple[dict[str, Any], ...], interval_count: int) -> str | None:
+    if len(rows) < interval_count:
         return None
-    total = sum(Decimal(str(row["quote_volume"])) for row in rows)
-    buy = sum(Decimal(str(row["taker_buy_quote_volume"])) for row in rows)
-    return str(buy * 10_000 / total) if total > 0 else None
+    window = rows[-interval_count:]
+    if not _continuous(window):
+        return None
+    totals = [Decimal(str(row["quote_volume"])) for row in window]
+    buys = [Decimal(str(row["taker_buy_quote_volume"])) for row in window]
+    if any(not value.is_finite() or value < 0 for value in (*totals, *buys)) or any(
+        buy > volume for buy, volume in zip(buys, totals, strict=True)
+    ):
+        return None
+    total = sum(totals)
+    buy = sum(buys)
+    return str(buy * 10_000 / total) if total > 0 and buy <= total else None
 
 
 def extract_features(results: dict[str, MarketDataResult], source_fact: dict[str, Any]) -> dict[str, Any]:
@@ -74,8 +96,9 @@ def extract_features(results: dict[str, MarketDataResult], source_fact: dict[str
         row = funding.payload[0]
         mark = Decimal(str(row["mark_price"]))
         index = Decimal(str(row["index_price"]))
-        premium_bps = str((mark / index - 1) * 10_000) if index > 0 else None
-        funding_bps = str(Decimal(str(row["last_funding_rate"])) * 10_000)
+        rate = Decimal(str(row["last_funding_rate"]))
+        premium_bps = str((mark / index - 1) * 10_000) if mark.is_finite() and index.is_finite() and index > 0 else None
+        funding_bps = str(rate * 10_000) if rate.is_finite() else None
     return {
         "profile_version": PROFILE_VERSION,
         "source_kind": source_fact.get("kind"),
@@ -87,9 +110,10 @@ def extract_features(results: dict[str, MarketDataResult], source_fact: dict[str
         "perp_return_60m_bps": _change_bps(perp_rows, 60),
         "perp_return_240m_bps": _change_bps(perp_rows, 240),
         "perp_volatility_1m_bps": _volatility_bps(perp_rows),
-        "perp_taker_buy_share_60m_bps": _taker_share_bps(perp_rows[-60:]),
+        "perp_taker_buy_share_15m_bps": _taker_share_bps(perp_rows, 15),
+        "perp_taker_buy_share_60m_bps": _taker_share_bps(perp_rows, 60),
         "spot_return_60m_bps": _change_bps(spot_rows, 60),
-        "spot_taker_buy_share_60m_bps": _taker_share_bps(spot_rows[-60:]),
+        "spot_taker_buy_share_60m_bps": _taker_share_bps(spot_rows, 60),
         "binance_open_interest_quantity": (
             oi.payload[0].get("open_interest_quantity") if oi.status == "ok" and oi.payload else None
         ),

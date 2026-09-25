@@ -96,7 +96,7 @@ def _recorded_program_slots(rows: Any, *, arm: Any) -> dict[tuple[str, str], dic
         if predictor not in {"event_semantics", "taxonomy", "reader_card"} or route not in {"primary", "fallback"}:
             continue
         terminal = dict(row.get("response") or {})
-        if terminal.get("schema") != "tracefold.news.recorded_lm.v1":
+        if terminal.get("schema") != "tracefold.news.recorded_lm.v2":
             raise ValueError("news_program_recording_schema_unsupported")
         request_sha = str(row.get("request_sha256") or "")
         request = dict(row.get("request") or {})

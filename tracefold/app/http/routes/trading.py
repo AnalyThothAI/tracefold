@@ -236,6 +236,8 @@ def get_trading_case_replay(
         files = AnalysisFiles(Path(runtime.settings.app_home) / "archive" / "trading-analysis")
         evidence = None
         assessment = None
+        final_manifest = None
+        tool_observations: list[dict[str, Any]] = []
         status = "attempt_missing" if attempt is not None and latest_attempt is None else "ok"
         for key, ref in (
             (
@@ -247,6 +249,7 @@ def get_trading_case_replay(
                 (latest_attempt or {}).get("assessment_ref")
                 or (decision.get("assessment_ref") if decision and attempt is None else None),
             ),
+            ("final_manifest", (latest_attempt or {}).get("final_manifest_ref")),
         ):
             if not ref:
                 continue
@@ -257,8 +260,16 @@ def get_trading_case_replay(
                 continue
             if key == "evidence":
                 evidence = value
-            else:
+            elif key == "assessment":
                 assessment = value
+            else:
+                final_manifest = value
+        if isinstance(final_manifest, dict):
+            for ref in final_manifest.get("tool_refs", ())[:32]:
+                try:
+                    tool_observations.append(files.read(str(ref)))
+                except (OSError, ValueError):
+                    status = "archive_missing"
         result = {
             "case_id": identity,
             "status": status,
@@ -266,6 +277,8 @@ def get_trading_case_replay(
             "source_fact": source["payload"] if source else None,
             "evidence": evidence,
             "assessment": assessment,
+            "final_manifest": final_manifest,
+            "tool_observations": tool_observations,
             "decision": decision,
             "attempts": attempts,
         }
@@ -286,10 +299,6 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
     watch = row.get("watch_observation")
     if watch is not None:
         review_mode = "event_wait"
-    elif manifest.get("due_at_ms") is not None or (
-        decision is not None and decision.get("action") == "WATCH" and decision.get("policy_version") == "v1"
-    ):
-        review_mode = "historical_timed"
     elif decision is not None and decision.get("action") == "WATCH":
         review_mode = "research_note"
     else:

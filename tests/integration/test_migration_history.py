@@ -16,6 +16,7 @@ import psycopg
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
+from pydantic import ValidationError
 
 from tests.postgres_test_utils import connect_postgres_test, prepare_test_migration_database
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
@@ -39,7 +40,6 @@ from tracefold.trading.storage.execution_stream import (
     materialize_trade_signals,
     prepare_execution_observations,
     prepare_operator_intent,
-    prepare_trade_signal,
 )
 from tracefold.trading.storage.root import TradingRepository
 
@@ -48,7 +48,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260925_0397"
+HEAD = "20260925_0398"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -255,6 +255,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260925_0397",
         "20260924_0396",
         "20260924_0395",
         "20260924_0394",
@@ -353,9 +354,13 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="rule_research_tape_forward_only"):
+    with pytest.raises(RuntimeError, match="trading_agent_records_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260924_0396")
+    with pytest.raises(RuntimeError, match="rule_research_tape_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260924_0396"
     command.stamp(config, "20260924_0395")
     with pytest.raises(RuntimeError, match="shadow_quote_tape_forward_only"):
         command.downgrade(config, "base")
@@ -1249,13 +1254,14 @@ def test_pydantic_only_cut_drops_the_shape_checks_the_digests_and_the_readiness_
         assert "confirmation_identity" not in stored["command"]
         assert stored["command"]["action"] == "flatten"
 
-        # And every one of them still materializes through the contract that is now the only validator.
+        # Historical rows remain in PostgreSQL, while the current Signal contract is a hard cut.
         assert materialize_execution_observation((1, dict(stored["observation"]))).event_id == event_id
-        assert materialize_trade_signals(((1, dict(stored["signal"])),))[0].signal_id == signal_id
+        with pytest.raises(ValidationError):
+            materialize_trade_signals(((1, dict(stored["signal"])),))
         assert materialize_operator_intents(((1, dict(stored["command"])),))[0].command_id == command_id
 
         assert (
-            conn.execute("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_trading_trade_signals_unresolved'")
+            conn.execute("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_trading_trade_signals_seq_payload'")
             .fetchone()["indexdef"]
             .endswith("USING btree (seq) INCLUDE (signal_id, expires_at_ns, payload)")
         )
@@ -2815,7 +2821,7 @@ def test_the_watchdog_alert_ledger_is_one_additive_table_and_reverses_cleanly() 
     assert _table_exists("platform_watchdog_alerts") is True
 
 
-def test_retired_watchdog_ledger_is_dropped_at_head_and_recreated_empty_on_downgrade() -> None:
+def test_retired_watchdog_ledger_is_dropped_at_0397_and_recreated_empty_on_downgrade() -> None:
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "20260924_0396")
@@ -2832,7 +2838,7 @@ def test_retired_watchdog_ledger_is_dropped_at_head_and_recreated_empty_on_downg
         conn.close()
 
     with pytest.raises(Exception, match="watchdog_alerts_present"):
-        command.upgrade(config, HEAD)
+        command.upgrade(config, "20260925_0397")
     assert _stamped_revision() == "20260924_0396"
     conn = connect_postgres_test(read_only=False)
     try:
@@ -2842,8 +2848,8 @@ def test_retired_watchdog_ledger_is_dropped_at_head_and_recreated_empty_on_downg
     finally:
         conn.close()
 
-    command.upgrade(config, HEAD)
-    assert _stamped_revision() == HEAD
+    command.upgrade(config, "20260925_0397")
+    assert _stamped_revision() == "20260925_0397"
     assert _table_exists("platform_watchdog_alerts") is False
     command.downgrade(config, "20260924_0396")
     assert _table_exists("platform_watchdog_alerts") is True
@@ -2897,26 +2903,27 @@ def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_eve
             # Seed the 0387 schema with its own V1 columns. The current
             # append method writes V2 scope fields introduced five revisions
             # later, so it cannot seed historical migration fixtures.
-            legacy = prepare_trade_signal(
-                signal_id="1" * 64,
-                case_id="case-0389",
-                market_key="crypto:perp:BTC:USDT",
-                direction="long",
-                observed_at_ns=1_000,
-                expires_at_ns=2_000,
-            )
+            legacy = {
+                "signal_version": "trade_signal_v1",
+                "signal_id": "1" * 64,
+                "case_id": "case-0389",
+                "market_key": "crypto:perp:BTC:USDT",
+                "direction": "long",
+                "observed_at_ns": 1_000,
+                "expires_at_ns": 2_000,
+            }
             conn.execute(
                 "INSERT INTO trading_trade_signals "
                 "(signal_id,case_id,market_key,direction,observed_at_ns,expires_at_ns,payload) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)",
                 (
-                    legacy.value.signal_id,
-                    legacy.value.case_id,
-                    legacy.value.market_key,
-                    legacy.value.direction,
-                    legacy.value.observed_at_ns,
-                    legacy.value.expires_at_ns,
-                    legacy.payload_json,
+                    legacy["signal_id"],
+                    legacy["case_id"],
+                    legacy["market_key"],
+                    legacy["direction"],
+                    legacy["observed_at_ns"],
+                    legacy["expires_at_ns"],
+                    json.dumps(legacy),
                 ),
             )
             for index, kind in enumerate(kinds):

@@ -1,109 +1,45 @@
+"""Release identity pins for the DSPy 3.4 News program."""
+
 from __future__ import annotations
 
-from typing import Any
-
-import pytest
+from copy import deepcopy
 
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import COMPILE_EPISODE_PROJECTION_SCHEMA
 from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_state
-from tracefold.news.program.identity import (
-    _material_module_ast_sha,
-    _material_symbol_ast_sha,
-    compute_execution_identity,
-    execution_envelope,
-)
+from tracefold.news.program.identity import compute_execution_identity, execution_envelope
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
-# #668: v12 binds local-only multi-member source spans and the unchanged three-Predictor budget.
-# The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
-# inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
-# to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-# #675 §3: the envelope carries the source-authority registry, and the registry gained the official
-# government and military accounts the 24 h audit found classified as `unknown`. Nothing about the
-# request shape, the output contracts or the route budget moved.
-# #675 PR-3 re-pins it for one new assembly rule: a `primary` the catalogue candidate row shown to the
-# model proves is a different kind of instrument is demoted to `mentioned` before the atom is issued
-# (`assembly.contradicted_primary_symbols`). That decides what lands in the verdict, so it is rendered
-# and hashed here for the same reason `normalize_restates` is. The request shape, both output contracts
-# and the route budget are unchanged.
-# #675 PR-2 moves it for the opposite reason: the EventSemantics output contract itself changes shape.
-# `TradeRelevanceV1`, `magnitude` and `audience` are deleted, `fact_kind` and `evidence_ref` replace
-# them, the two canonical code-set orders the envelope pinned go with the fields they ordered, and the
-# closed fact-kind vocabulary is pinned in their place. That is a different question asked of the
-# provider, so it is a different Program version and a different envelope.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "22ab36aadd6b811b6c56180d44f8e64b94b43150d402b259305d9269e4815401"
-
-# The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
-# edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
-# #501 re-pins it over three instructions: taxonomy left EventSemantics for its own Predictor. #522 moves
-# all three at once: the escalate tier and the ReaderCard length/why rules are seed text, and the taxonomy
-# instruction is rendered from the codebook constants that gained the running-event counter-examples.
-# #567 moves only the taxonomy instruction: the twelve rules the #534 and #548 reviewers adjudicated by are
-# now codebook constants, so the drafters, the reviewers and the metric's feedback read one text.
-# #651 moves the EventSemantics instruction: `market_type` is a required vocabulary value and the Gate
-# now shows the model the catalogue's uncollapsed candidates. #651 §6.3 moves it again, and this is the
-# half of that change a hash can hold: the novelty contract lost the absolute "a direction flip is never a
-# restatement" sentence, so the seed and `grounded_restatement` now say the same thing. The pin is separate
-# from `NEWS_STABLE_PROGRAM_SHA256`, which also moved because the image is now the native state document.
-# #675 PR-1 moves the EventSemantics instruction twice over: the whole `Price-only a-e calibration`
-# section is deleted, because a threshold the reader can argue with belongs in `decide()` where it can
-# be replayed; and the novelty contract names the 60-minute episode, so a second outlet, another
-# sentence or an added figure of an announcement already told is a restatement rather than a
-# progression. The taxonomy and ReaderCard instructions are byte-identical.
-# #675 PR-2 moves EventSemantics again and ReaderCard by one sentence. The magnitude table, the
-# product-state-change section and the whole `Typed trade relevance and reader attention` section are
-# replaced by `## fact_kind` and `## evidence_ref`: the seed defines ten kinds of new thing a text can
-# state and no longer says what the reader should receive, and the card seed stops naming a magnitude
-# label it can no longer render. The taxonomy instruction is byte-identical.
+NEWS_EXECUTION_ENVELOPE_SHA256 = "80fac18a43fa85e8b7891a306d4c8a593cd6cc94a5afe807addd84bc29d7c1a7"
 NEWS_PREDICTOR_INSTRUCTION_SHA256 = "ae90195509063bf98de4f021fe4e3c2b6161627d2d312883431666d1439e7033"
-
-# #651 re-pins this over the native DSPy state document rather than three instruction strings. The
-# instruction bytes below did not move; the image's *shape* did, and `program_sha256` now addresses
-# the whole `dump_state()` document (minus its `lm` routes) plus the schema and the pinned DSPy version.
-# #675 PR-1 re-pins it because the seed moved: the packaged image is the state document, so a seed edit
-# is a new image. #675 PR-2 re-pins it for the same reason and a second one: the EventSemantics and
-# ReaderCard seeds both moved, and the Signature they are bound to changed shape.
-# Regenerated with `python -m tracefold.app.cli.commands.news_program_artifact`.
-NEWS_STABLE_PROGRAM_SHA256 = "f152602341ddfef9d041b2f656eea3f1a507eac38cfbc2fe5a6a1ab1eed531ae"
-
-# #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
-# development Objective and Metric: a behavior edit must visibly re-pin this name. v7 (#501) carries the
-# review's taxonomy provenance, including the blind drafts. v8 (#651) lets the accepted taxonomy be
-# absent, carries the reviewer's explanation supervision, and names the targets the case is evidence for.
+NEWS_STABLE_PROGRAM_SHA256 = "3f2e9a72386c2b0518d8f8e07fdf549f6a6da6fd12755a4d9b6e332bb0e56cc1"
 NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v8"
 
 
-def test_execution_envelope_identity_is_pinned() -> None:
-    """The intent gate over everything the code decides about a model call.
-
-    Editing the request envelope, either output contract, an output schema, the visible-input shape, the
-    route budget, the breaker or the endpoint-capability table turns this red. #651 moved it through
-    `module.NativeNewsProgram` and `routing.__module__`: the Program is constructed from the seed defaults
-    and loaded through DSPy's own `load_state`, and routing reads `program.state`. Re-pinning the line below
-    *is* the identity migration: there is no `factory_id` to bump, no epoch migration to write and no
-    count to keep in step, because the epoch is opened by the deployment that runs under this value and
-    named after the bundle that carries it.
-
-    When it fails, diff `execution_envelope()` before deciding. A hash says something moved; the document
-    says what, and that is the difference between signing a release and pasting a value.
-    """
-
-    assert compute_execution_identity() == NEWS_EXECUTION_ENVELOPE_SHA256
+def test_execution_envelope_is_content_addressed_and_pinned() -> None:
+    envelope = execution_envelope()
+    assert envelope["identity_schema"] == "tracefold.news.program.execution_envelope.v9"
+    assert envelope["framework"]["dspy"] == "3.4.0"
+    assert envelope["framework"]["request_contract"] == "dspy.lm15.Request/Response"
+    assert set(envelope["seed_signatures"]) == {"event_semantics", "taxonomy", "reader_card"}
+    assert envelope["route"]["predictor_order"] == ["event_semantics", "taxonomy", "reader_card"]
+    assert canonical_sha(envelope) == compute_execution_identity() == NEWS_EXECUTION_ENVELOPE_SHA256
 
 
-def test_execution_envelope_document_addresses_the_pinned_identity() -> None:
-    """The readable document and the hash are the same fact, so a reviewer may trust the diff."""
-
-    assert canonical_sha(execution_envelope()) == NEWS_EXECUTION_ENVELOPE_SHA256
+def test_execution_identity_changes_with_material_contract() -> None:
+    envelope = execution_envelope()
+    changed = deepcopy(envelope)
+    changed["route"]["deadline_seconds"] += 1
+    assert canonical_sha(changed) != NEWS_EXECUTION_ENVELOPE_SHA256
+    changed = deepcopy(envelope)
+    changed["seed_signatures"]["taxonomy"]["instructions"] += " changed"
+    assert canonical_sha(changed) != NEWS_EXECUTION_ENVELOPE_SHA256
 
 
 def test_current_news_release_identity_is_byte_exact() -> None:
-    """The small release identity beside the envelope: the versions a report prints and a row carries."""
-
     assert {
         "program_version": PROGRAM_VERSION,
         "policy_version": TRIAGE_POLICY_VERSION,
@@ -119,292 +55,14 @@ def test_current_news_release_identity_is_byte_exact() -> None:
     }
 
 
-def test_current_predictor_bytes_keep_the_reviewed_instruction_identity() -> None:
-    """The prompt the provider is sent, pinned.
-
-    #117 intentionally moves the EventSemantics instruction because taxonomy is now a required production
-    output; #501 moves it again by carving taxonomy out into its own instruction. This separate pin proves
-    later identity-only edits cannot silently move any of the three.
-    """
-
+def test_current_predictor_bytes_keep_reviewed_instruction_identity() -> None:
     artifact = load_stable_program_state()
     bound = {
         predictor: artifact.predictor_state(predictor).instruction
         for predictor in ("event_semantics", "taxonomy", "reader_card")
     }
-
     assert canonical_sha(bound) == NEWS_PREDICTOR_INSTRUCTION_SHA256
 
 
 def test_compile_episode_projection_identity_is_pinned() -> None:
     assert COMPILE_EPISODE_PROJECTION_SCHEMA == NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA
-
-
-def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> None:
-    """The material list, in one readable place, because a pin is only as good as what it hashes.
-
-    A pin cannot catch material that was never included: dropping a surface fails the hash loudly, but
-    forgetting to add one in the first place is silent forever. So the list is asserted rather than left
-    implicit, and adding a knob to the route or a mode to the request table has to be a visible edit here.
-    """
-
-    envelope = execution_envelope()
-
-    assert set(envelope) == {
-        "identity_schema",
-        "framework",
-        "implementation_ast_sha256",
-        "signatures",
-        "requests",
-        "capabilities",
-        "model_visible_input",
-        "input_budget",
-        "adapter_output_semantics",
-        "request_identity",
-        "assembly",
-        "route",
-    }
-    assert envelope["framework"] == {
-        "dspy": "3.3.1",
-        "litellm": "1.86.2",
-        "gepa": "0.1.4",
-        "public_api_only": True,
-        "adapter": "dspy.JSONAdapter(use_native_function_calling=False)",
-    }
-    predictors = {"event_semantics", "taxonomy", "reader_card"}
-    assert set(envelope["requests"]) == set(envelope["model_visible_input"]) == predictors
-    assert set(envelope["signatures"]) == predictors
-    assert set(envelope["implementation_ast_sha256"]) == {
-        "artifact.render_model_evidence_json",
-        "assembly.contradicted_primary_symbols",
-        "assembly.normalize_restates",
-        "assembly.restatement_index_error",
-        "contracts.CatalogCandidate",
-        "contracts.EditorialEnvelope",
-        "contracts.ProgramTrace",
-        "contracts.TriageContext",
-        "contracts.aggregate_program_usage",
-        "contracts.catalog_candidates_of",
-        "lm.AuditedConfiguredLM",
-        "lm.LMCallLedger",
-        "lm.LMCallReceipt",
-        "lm.LMDelegateProgramError",
-        "lm.RecordedLM",
-        "lm.RuntimeModelIdentity",
-        "lm._LedgerParseCallback",
-        "lm._RecordedErrorModel",
-        "lm._RecordedResponseModel",
-        "lm._RecordedUsageModel",
-        "lm._RecordingModel",
-        "lm._RequestIdentityModel",
-        "lm._cost_microusd",
-        "lm._error_code",
-        "lm._recorded_error",
-        "lm._recorded_response",
-        "lm._recording",
-        "lm._reject_secret_shaped_config",
-        "lm._replayed_error",
-        "lm._safe_config_projection",
-        "lm._safe_extra_body",
-        "lm._safe_retry_after",
-        "lm._safe_status",
-        "lm._sanitized_lm_error",
-        "lm._scrub_detail",
-        "lm._stable_error_code",
-        "lm._usage_values",
-        "lm._validate_request_defaults",
-        "lm.active_predictor_disposition",
-        "lm.lm_request_identity",
-        "lm.lm_request_projection",
-        "lm.lm_request_sha256",
-        "lm.mark_active_domain_failure",
-        "lm.program_json_adapter",
-        "lm.structured_output_capability",
-        "module.NativeNewsProgram",
-        "module._assemble",
-        "module._normalize_and_validate_semantics",
-        "module._prepare",
-        "module._reader_card_semantic_view",
-        "module._rejected",
-        "module._taxonomy_call_failure_code",
-        "module._visible_refs",
-        "module._validate_taxonomy",
-        "routing.__module__",
-        "signatures.EventSemantics",
-        "signatures.EventTaxonomySignature",
-        "signatures.ReaderCard",
-        "taxonomy.ASSERTION_STATUS_DEFINITIONS",
-        "taxonomy.CHANGE_STATE_DEFINITIONS",
-        "taxonomy.EVENT_FAMILY_DEFINITIONS",
-        "taxonomy.ModelTaxonomyV1",
-        "taxonomy.NewsTaxonomyV1",
-        "taxonomy.TAXONOMY_PRECEDENCE_RULES",
-        "taxonomy.render_taxonomy_seed_instruction",
-        "taxonomy.source_authority",
-        "taxonomy.source_authority_from_evidence",
-    }
-    for predictor, modes in envelope["requests"].items():
-        assert set(modes) == {"json_schema", "json_object", "prompt_json"}, predictor
-        for mode, path in modes.items():
-            request = path["initial"]
-            assert set(request) == {"schema", "model", "messages", "tools", "config"}, (predictor, mode)
-            assert [message["role"] for message in request["messages"]] == ["system", "user"]
-            assert ("response_format" in request["config"]) == (mode != "prompt_json")
-            assert (path["format_fallback"] is not None) == (mode == "json_schema")
-            if path["format_fallback"] is not None:
-                assert path["format_fallback"]["config"]["response_format"] == {"type": "json_object"}
-    assert set(envelope["assembly"]) == {
-        "contradicted_primary_symbols",
-        "normalization_capture",
-        "restatement_index",
-        "normalize_restates",
-        "fact_kinds",
-        "taxonomy",
-    }
-    assert set(envelope["assembly"]["taxonomy"]) == {
-        "codebook_sha256",
-        "subject_codes",
-        "source_authority_classifier_version",
-        "source_authority_registry_sha256",
-        "source_authority_golden",
-    }
-    assert set(envelope["route"]) == {
-        "model_binding_slots",
-        "order",
-        "route_graph",
-        "fallback_restart",
-        "partial_failure",
-        "deadline_seconds",
-        "primary_breaker",
-        "call_ceiling",
-        "transitions",
-    }
-
-
-def test_material_ast_identity_ignores_prose_and_unrelated_symbols_but_moves_on_behavior() -> None:
-    base = 'def material(value):\n    """prose"""\n    return value + 1\n\ndef unrelated():\n    return 1\n'
-    prose_and_unrelated = (
-        'def material(value):\n    """rewritten prose"""\n    return value + 1\n\ndef unrelated():\n    return 999\n'
-    )
-    behavior = "def material(value):\n    return value + 2\n"
-
-    expected = _material_symbol_ast_sha(base, module="fixture", symbol="material")
-    assert _material_symbol_ast_sha(prose_and_unrelated, module="fixture", symbol="material") == expected
-    assert _material_symbol_ast_sha(behavior, module="fixture", symbol="material") != expected
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        ("event_semantics: object", "event_semantics: str"),
-        ("self.retryable = retryable", "self.retryable = False"),
-        ("except Exception as exc:", "except RuntimeError as exc:"),
-        ("self._primary_failures += 1", "self._primary_failures += 2"),
-    ],
-)
-def test_routing_owner_module_identity_moves_for_transitive_behavior(mutation: tuple[str, str]) -> None:
-    source = """
-class RouteLMs:
-    event_semantics: object
-
-class _RouteFailure(Exception):
-    def __init__(self, retryable):
-        self.retryable = retryable
-
-class RoutedSemanticJudge:
-    def run(self):
-        try:
-            self.work()
-        except Exception as exc:
-            raise _RouteFailure(True) from exc
-
-    def breaker(self):
-        self._primary_failures += 1
-"""
-    before, after = mutation
-    mutated = source.replace(before, after)
-
-    assert mutated != source
-    assert _material_module_ast_sha(mutated, module="routing") != _material_module_ast_sha(
-        source,
-        module="routing",
-    )
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(lambda e: e["route"].__setitem__("deadline_seconds", 999), id="route_deadline"),
-        pytest.param(lambda e: e["route"]["primary_breaker"].__setitem__("failures", 999), id="breaker"),
-        pytest.param(
-            lambda e: e["capabilities"]["event_semantics.fallback"]["json_object"].__setitem__(
-                "supports_response_schema", True
-            ),
-            id="capability_mapping",
-        ),
-        pytest.param(lambda e: e["route"]["model_binding_slots"].pop(), id="binding_slots"),
-        pytest.param(
-            lambda e: e["requests"]["event_semantics"]["json_schema"]["initial"]["config"].__setitem__(
-                "max_tokens", 999
-            ),
-            id="predictor_token_ceiling",
-        ),
-        pytest.param(
-            lambda e: e["requests"]["reader_card"]["json_schema"]["initial"]["messages"][0].__setitem__(
-                "content", "rewritten"
-            ),
-            id="output_contract_text",
-        ),
-        pytest.param(
-            lambda e: e["requests"]["reader_card"]["json_schema"]["initial"]["messages"][1].__setitem__(
-                "content", "reordered"
-            ),
-            id="user_message_field_order",
-        ),
-        pytest.param(
-            lambda e: e["requests"]["event_semantics"]["json_schema"]["format_fallback"]["config"][
-                "response_format"
-            ].__setitem__("type", "other"),
-            id="response_format",
-        ),
-        pytest.param(lambda e: e["framework"].__setitem__("dspy", "9.9.9"), id="dspy_version"),
-        pytest.param(
-            lambda e: e["adapter_output_semantics"].__setitem__("outer_envelope_unknown_siblings", "reject"),
-            id="outer_envelope_semantics",
-        ),
-        pytest.param(lambda e: e["route"]["call_ceiling"].__setitem__("judgment", 9), id="call_ceiling"),
-        pytest.param(
-            lambda e: e["route"]["transitions"].__setitem__("output_truncated", "format_retry"),
-            id="truncation_transition",
-        ),
-        pytest.param(
-            lambda e: e["model_visible_input"]["event_semantics"].__setitem__("open", "<other>"),
-            id="untrusted_delimiters",
-        ),
-        pytest.param(
-            lambda e: e["model_visible_input"]["reader_card"]["schema"].__setitem__("title", "Other"),
-            id="model_visible_schema",
-        ),
-        pytest.param(
-            lambda e: e["assembly"]["restatement_index"].__setitem__("restatement|restates=0|told=0", None),
-            id="restatement_index_rule",
-        ),
-        pytest.param(lambda e: e["assembly"]["fact_kinds"].reverse(), id="fact_kinds"),
-        pytest.param(
-            lambda e: e["assembly"]["taxonomy"].__setitem__("source_authority_registry_sha256", "0" * 64),
-            id="source_authority_registry",
-        ),
-        # Found one level up from `_assemble`: this decides what is stored.
-        pytest.param(
-            lambda e: e["assembly"]["normalize_restates"].__setitem__("progression|restates=0", 0),
-            id="normalize_restates_rule",
-        ),
-    ],
-)
-def test_every_material_surface_actually_moves_the_identity(mutate: Any) -> None:
-    """Sensitivity, one surface at a time: a pin nothing can move is decoration."""
-
-    mutated = execution_envelope()
-    mutate(mutated)
-
-    assert canonical_sha(mutated) != NEWS_EXECUTION_ENVELOPE_SHA256

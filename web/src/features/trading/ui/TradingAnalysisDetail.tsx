@@ -16,6 +16,10 @@ function word(value: unknown): string {
   return value == null ? "—" : String(value);
 }
 
+function words(value: unknown): string {
+  return Array.isArray(value) ? value.map(word).join(", ") : "—";
+}
+
 function attemptClock(value: number | null | undefined): string {
   if (value == null) return "—";
   const date = new Date(value);
@@ -36,7 +40,6 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
   const watchCondition = record(watch?.condition);
   const reviewMode = {
     none: "无自动复核",
-    historical_timed: "历史定时复核",
     event_wait: "条件等待",
     research_note: "研究备注，无自动复核",
   }[item.review_mode ?? "none"];
@@ -110,8 +113,8 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
             <dd>{word(decision?.side)}</dd>
           </div>
           <div className="trading-case-fact">
-            <dt>候选</dt>
-            <dd>{word(decision?.entry_candidate_id)}</dd>
+            <dt>选定计划</dt>
+            <dd>{word(decision?.selected_plan_id ?? decision?.entry_candidate_id)}</dd>
           </div>
           <div className="trading-case-fact">
             <dt>方向假设</dt>
@@ -136,8 +139,9 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
         {watch ? (
           <div className="trading-case-checks">
             <p>
-              事件：相邻 1 分钟收盘首次越过冻结区间 · U {word(watchCondition?.upper_level)}
-              {" / "}L {word(watchCondition?.lower_level)} {word(watchCondition?.unit)}
+              {watchCondition?.kind === "closed_1m_directed_cross"
+                ? `事件：相邻 1 分钟收盘越过 ${word(watchCondition.side)} ${word(watchCondition.level)} ${word(watchCondition.unit)} · 计划 ${word(watchCondition.plan_id)}`
+                : `事件：相邻 1 分钟收盘首次越过冻结区间 · U ${word(watchCondition?.upper_level)} / L ${word(watchCondition?.lower_level)} ${word(watchCondition?.unit)}`}
             </p>
             <p>
               状态：{watch.status} · 最近观测：{word(watch.last_observation_status)} ·{" "}
@@ -193,6 +197,10 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
                 错误：{word(attempt.error_code)} · 物理调用 {attempt.physical_call_count} 次
               </p>
               <p>
+                终止原因：{word(attempt.termination_reason)} · 最终输入：
+                {word(attempt.final_manifest_ref)}
+              </p>
+              <p>
                 尝试开始 {attemptClock(attempt.started_at_ms)} · 结束{" "}
                 {attemptClock(attempt.ended_at_ms)}
               </p>
@@ -210,10 +218,11 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
               ))}
               {(attempt.physical_calls ?? []).map((call) => (
                 <p key={call.call_index}>
-                  物理调用 {call.call_index + 1} · {call.status} · 预算 {word(call.timeout_ms)} ms ·
-                  本地开始 {attemptClock(call.started_at_ms)} · 结束{" "}
-                  {attemptClock(call.finished_at_ms)} · 请求 {word(call.request_ref)} · 响应{" "}
-                  {word(call.response_ref)} · 费用{" "}
+                  物理调用 {call.call_index + 1} · {word(call.phase)} · {call.status} · 预算{" "}
+                  {word(call.timeout_ms)} ms · 本地开始 {attemptClock(call.started_at_ms)} · 结束{" "}
+                  {attemptClock(call.finished_at_ms)} · 端点 {word(call.endpoint)} · 模型{" "}
+                  {word(call.requested_model)} → {word(call.served_model)} · 请求{" "}
+                  {word(call.request_ref)} · 响应 {word(call.response_ref)} · 费用{" "}
                   {call.cost_microusd == null ? "未知" : `${call.cost_microusd} 微美元`}
                 </p>
               ))}
@@ -330,8 +339,23 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
               : null}
             <p>
               模型建议：{word(assessment?.action)} · 方向假设：{word(assessment?.hypothesis_side)} ·
-              候选：{word(assessment?.entry_candidate_id)}
+              计划：{word(assessment?.selected_plan_id ?? assessment?.entry_candidate_id)}
             </p>
+            <p>终止原因：{word(assessmentReceipt?.termination_reason)}</p>
+            {replay.data.final_manifest ? (
+              <p>
+                最终输入：{word(replay.data.final_manifest.seed_evidence_ref)} · 计划{" "}
+                {words(replay.data.final_manifest.plan_ids)} · 判断{" "}
+                {words(replay.data.final_manifest.judgment_refs)}
+              </p>
+            ) : null}
+            {(replay.data.tool_observations ?? []).map((observation, index) => (
+              <p key={`${observation.tool}-${index}`}>
+                工具 {index + 1}：{word(observation.tool)} ·{" "}
+                {word(record(observation.result)?.status)} · {word(observation.available_at_ms)} ·
+                参数 {JSON.stringify(observation.arguments)}
+              </p>
+            ))}
             <p>
               支持证据：
               {Array.isArray(assessment?.supporting_evidence)

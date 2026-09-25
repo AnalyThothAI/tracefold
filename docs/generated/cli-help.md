@@ -818,7 +818,7 @@ positional arguments:
   {status,cases,signals,observations,gate,commands,issue}
     status              show Alpha producer and disabled execution readiness
     cases               list Trading cases newest first
-    signals             list engine-neutral TradeSignalV1 rows
+    signals             list engine-neutral TradeSignalV3 rows
     observations        list append-only Runtime observations
     gate                read the candidate admission ledger
     commands            list authenticated OperatorIntentV1 rows

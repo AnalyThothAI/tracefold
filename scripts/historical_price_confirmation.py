@@ -1,7 +1,6 @@
-"""Frozen event-following price confirmation for catalyst and OI facts.
+"""Frozen pre-v4 price-confirmation rule for offline historical cohort reports.
 
-These are research starting parameters. The same setup and crossing function
-are used by initial analysis and the conditional watcher.
+This module is never imported by the Trading service or Runtime.
 """
 
 from __future__ import annotations
@@ -10,8 +9,47 @@ from decimal import ROUND_CEILING, Decimal
 from itertools import pairwise
 from typing import Any, Literal
 
-from .contracts import Candidate, ExitPlan
-from .features import catalyst_text_values
+from pydantic import Field, model_validator
+
+from tracefold.trading.engine.contracts import ExitPlan, Frozen
+from tracefold.trading.engine.features import catalyst_text_values
+
+
+class Candidate(Frozen):
+    candidate_id: str = Field(min_length=1, max_length=80)
+    asset_id: str = Field(min_length=1, max_length=128)
+    instrument_semantics_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    side: Literal["long", "short"]
+    exit_plan: ExitPlan
+    required_evidence_refs: tuple[str, ...] = ()
+    strategy_family: Literal["event_price_confirmation"] = "event_price_confirmation"
+    strategy_version: Literal["event_price_confirmation_v1"] = "event_price_confirmation_v1"
+    entry_feature_id: Literal["perp_close_1m"] = "perp_close_1m"
+    entry_operator: Literal["gt", "lt"] = "gt"
+    entry_level: Decimal = Decimal(0)
+    entry_observed: Decimal = Decimal(0)
+    previous_close: Decimal = Decimal(0)
+    entry_observed_at_ms: int = 0
+    source_first_visible_at_ms: int = 0
+    entry_ready: bool = True
+    source_gate_ready: bool = True
+    watch_eligible: bool = False
+    strategy_gate_reason: str | None = None
+
+    @model_validator(mode="after")
+    def check_entry(self) -> Candidate:
+        crossed = (
+            self.previous_close <= self.entry_level and self.entry_observed > self.entry_level
+            if self.entry_operator == "gt"
+            else self.previous_close >= self.entry_level and self.entry_observed < self.entry_level
+        )
+        crossed = crossed and self.entry_observed_at_ms > self.source_first_visible_at_ms
+        if self.entry_ready != (self.source_gate_ready and crossed):
+            raise ValueError("candidate_entry_state_inconsistent")
+        if self.watch_eligible and (not self.source_gate_ready or self.entry_ready):
+            raise ValueError("candidate_watch_state_inconsistent")
+        return self
+
 
 STRATEGY_VERSION = "event_price_confirmation_v1"
 LOOKBACK_CLOSED_BARS = 15

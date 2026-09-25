@@ -181,6 +181,8 @@ def _taxonomy_call_failure_code(exc: Exception) -> str | None:
         return None
     if isinstance(exc, LMOutputTruncatedError):
         return "news_program_output_truncated"
+    if isinstance(exc, dspy.AdapterParseError):
+        return "news_program_adapter_parse_error"
     if isinstance(exc, dspy.LMError):
         raw = str(getattr(exc, "code", "") or "lm_error")
         return raw if raw.startswith("news_program_") else f"news_program_lm_{raw}"
@@ -353,14 +355,16 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
                 raise ValueError(f"news_program_state_lm_route_forbidden:{predictor}")
 
     def _candidate_rejection(self) -> str | None:
+        # Released state was validated at load. GEPA can mutate the candidate
+        # signatures after construction, so only that path needs a live check.
+        if self.candidate_guard is None:
+            return None
         instructions = tuple(str(getattr(self, name).signature.instructions) for name in PREDICTOR_NAMES)
         try:
             for instruction in instructions:
                 validate_program_instruction(instruction)
         except ValueError as exc:
             return str(exc)
-        if self.candidate_guard is None:
-            return None
         code = self.candidate_guard(*instructions)
         if code is not None and (not isinstance(code, str) or not code.strip()):
             raise ValueError("news_program_candidate_guard_result_invalid")

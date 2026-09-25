@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from decimal import Decimal
 from typing import Any
 
 import psycopg
@@ -13,12 +14,18 @@ from psycopg.rows import dict_row
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.restore_drill import run_restore_drill as run_platform_restore_drill
-from tracefold.trading.execution_contracts import EXECUTION_STRATEGY_ID, ExecutionObservationV1
+from tracefold.trading.execution_contracts import (
+    EXECUTION_STRATEGY_ID,
+    ExecutionObservationV1,
+    SignalEntryEnvelopeV3,
+    SignalExitPlanV1,
+    TradeSignalV3,
+)
 from tracefold.trading.storage.execution_stream import (
     materialize_operator_intents,
     prepare_execution_observations,
     prepare_operator_intent,
-    prepare_trade_signal,
+    prepare_trade_signal_v3,
 )
 
 _CURRENT_EVENT_ID = "restore-current-event"
@@ -43,13 +50,32 @@ def run_restore_drill(admin_dsn: str, migration_dsn: str) -> dict[str, Any]:
 
 
 def _seed_and_summarize(dsn: str) -> dict[str, Any]:
-    signal = prepare_trade_signal(
-        signal_id=_SIGNAL_ID,
-        case_id=_CASE_ID,
-        market_key="crypto:perp:RESTORE:USDT",
-        direction="long",
-        observed_at_ns=1_000,
-        expires_at_ns=10_000,
+    signal = prepare_trade_signal_v3(
+        TradeSignalV3(
+            seq=1,
+            signal_id=_SIGNAL_ID,
+            case_id=_CASE_ID,
+            decision_id="b" * 64,
+            account_slot=_ACCOUNT_SLOT,
+            runtime_mode="paper",
+            entry_scope_id="c" * 64,
+            asset_id="crypto:RESTORE",
+            market_key="crypto:perp:RESTORE:USDT",
+            native_symbol="RESTOREUSDT",
+            mapping_semantics_digest="d" * 64,
+            direction="long",
+            observed_at_ns=1_000,
+            expires_at_ns=10_000,
+            exit_plan=SignalExitPlanV1(stop_distance_bps=100, take_profit_bps=200, max_holding_ns=1_000_000_000),
+            entry_envelope=SignalEntryEnvelopeV3(
+                plan_id="e" * 64,
+                entry_kind="immediate_entry_v1",
+                root_expires_at_ns=10_000,
+                reference_price=Decimal("1"),
+                max_price_drift_bps=100,
+                universe_version="restore-v1",
+            ),
+        )
     )
     requested_at_ns = time.time_ns()
     command = prepare_operator_intent(

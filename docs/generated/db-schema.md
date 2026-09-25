@@ -870,6 +870,8 @@
 | `cost_upper_estimate_microusd` | `BIGINT` | True | `None` |
 | `cost_unknown_reason` | `TEXT` | True | `None` |
 | `settled` | `BOOLEAN` | False | `false` |
+| `final_manifest_ref` | `TEXT` | True | `None` |
+| `termination_reason` | `TEXT` | True | `None` |
 
 ## `trading_case_decisions`
 
@@ -1041,6 +1043,10 @@
 | `output_tokens` | `BIGINT` | True | `None` |
 | `cost_microusd` | `BIGINT` | True | `None` |
 | `cost_unknown_reason` | `TEXT` | True | `None` |
+| `phase` | `TEXT` | True | `None` |
+| `endpoint` | `TEXT` | True | `None` |
+| `requested_model` | `TEXT` | True | `None` |
+| `served_model` | `TEXT` | True | `None` |
 
 ## `trading_operator_intents`
 

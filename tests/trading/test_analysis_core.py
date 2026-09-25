@@ -18,11 +18,8 @@ from tracefold.platform.market_identity import (
     VerifiedAlias,
 )
 from tracefold.trading.engine.brief import build_brief
-from tracefold.trading.engine.contracts import (
-    AgentAssessment,
-    Candidate,
-)
-from tracefold.trading.engine.policy import InvalidAssessment, compile_assessment
+from tracefold.trading.engine.plans import AnalysisProposal, compile_proposal
+from tracefold.trading.engine.policy import InvalidAssessment
 from tracefold.trading.engine.target import SourceAsset, select_target
 
 
@@ -148,55 +145,20 @@ def test_multiplier_contract_requires_reviewed_asset_and_units() -> None:
     assert result.instrument.units_per_contract == Decimal(1000)
 
 
-def _assessment(*, evidence: str = "source", action: str = "TRADE", candidate_id: str | None = None) -> AgentAssessment:
-    return AgentAssessment(
-        action=action,
-        entry_candidate_id=candidate_id
-        if candidate_id is not None
-        else "crypto:SOL:long:event_price_confirmation_v1"
-        if action == "TRADE"
-        else None,
-        hypothesis_side="short",
-        supporting_evidence=(evidence,),
-        public_rationale="Frozen facts support the proposal.",
-        research_notes="Observe the next closed bar.",
-    )
-
-
-def _candidate(*, close: str = "102") -> tuple[Candidate, ...]:
-    from tracefold.trading.engine.strategy import build_event_price_candidates
-
-    bars = (
-        *({"event_at_ms": (index + 1) * 60_000, "close": "100", "high": "101", "low": "99"} for index in range(15)),
-        {"event_at_ms": 960_000, "close": close, "high": "103", "low": "98"},
-    )
-    return build_event_price_candidates(
-        asset_id="crypto:SOL",
-        instrument_semantics_digest="c" * 64,
-        source_fact={"kind": "catalyst", "headline": "A visible event"},
-        source_first_visible_at_ms=930_000,
-        perp_rows=bars,
-    )
-
-
-def _catalog() -> dict[str, dict[str, object]]:
-    return {
-        ref: {
-            "status": "ok",
-            "values": {"close": "102"},
-            "unit_definition": "USDT/base_asset",
-            "event_at_ms": 960_000,
-            "received_at_ms": 960_001,
-            "knowledge_cutoff_ms": 970_000,
-        }
-        for ref in ("source", "market:perp_bars")
-    }
-
-
 def test_frozen_brief_lists_exactly_compiler_citable_evidence() -> None:
-    catalog = _catalog()
-    catalog["feature:source_oi_value_usd"] = {**catalog["source"], "status": "missing"}
-    catalog["feature:future"] = {**catalog["source"], "received_at_ms": 970_001}
+    item = {
+        "status": "ok",
+        "values": {"close": "102"},
+        "unit_definition": "USDT/base_asset",
+        "event_at_ms": 960_000,
+        "received_at_ms": 960_001,
+        "knowledge_cutoff_ms": 970_000,
+    }
+    catalog = {
+        "source": item,
+        "feature:missing": {**item, "status": "missing"},
+        "feature:future": {**item, "received_at_ms": 970_001},
+    }
     brief = build_brief(
         target_asset_id="crypto:SOL",
         instrument_semantics_digest="c" * 64,
@@ -204,72 +166,24 @@ def test_frozen_brief_lists_exactly_compiler_citable_evidence() -> None:
         source_history=(),
         evidence=catalog,
         features={},
-        candidates=_candidate(),
+        plans=(),
     )
     payload = json.loads(brief.text)
-    assert payload["brief_version"] == "trade_brief_v3"
-    assert payload["citable_evidence_ids"] == ["market:perp_bars", "source"]
-    for ref in payload["citable_evidence_ids"]:
-        compile_assessment(assessment=_assessment(evidence=ref), candidates=_candidate(), evidence_catalog=catalog)
-    for ref in ("feature:source_oi_value_usd", "feature:future"):
-        with pytest.raises(InvalidAssessment, match="assessment_evidence_unavailable"):
-            compile_assessment(assessment=_assessment(evidence=ref), candidates=_candidate(), evidence_catalog=catalog)
-
-
-def test_compiler_accepts_only_frozen_ready_candidate() -> None:
-    decision = compile_assessment(assessment=_assessment(), candidates=_candidate(), evidence_catalog=_catalog())
-    assert decision.action == "TRADE" and decision.side == "long"
-    assert decision.reason_code == "confirmed_entry"
-
-
-@pytest.mark.parametrize("evidence", ["invented", "market:spot_bars"])
-def test_unknown_or_unavailable_evidence_reference_is_invalid(evidence: str) -> None:
-    with pytest.raises(InvalidAssessment, match="assessment_evidence"):
-        compile_assessment(
-            assessment=_assessment(evidence=evidence),
-            candidates=_candidate(),
-            evidence_catalog=_catalog(),
-        )
-
-
-def test_unready_candidate_is_a_recorded_proposal_with_code_refusal() -> None:
-    decision = compile_assessment(
-        assessment=_assessment(), candidates=_candidate(close="100"), evidence_catalog=_catalog()
+    assert payload["brief_version"] == "trade_brief_v4"
+    assert payload["citable_evidence_ids"] == ["source"]
+    compile_proposal(
+        proposal=AnalysisProposal(action="NO_TRADE", supporting_evidence=("source",), public_rationale="No plan."),
+        plans=(),
+        evidence_catalog=catalog,
+        judgment_refs=frozenset(),
+        now_ms=970_000,
     )
-    assert decision.action == "NO_TRADE"
-    assert decision.reason_code == "entry_condition_unmet"
-
-
-def test_candidate_outside_menu_is_invalid_identity() -> None:
-    with pytest.raises(InvalidAssessment, match="trade_candidate_outside_menu"):
-        compile_assessment(
-            assessment=_assessment(candidate_id="wrong"),
-            candidates=_candidate(),
-            evidence_catalog=_catalog(),
-        )
-
-
-def test_watch_tracks_both_directions_independent_of_model_hypothesis() -> None:
-    decision = compile_assessment(
-        assessment=_assessment(action="WATCH"),
-        candidates=_candidate(close="100"),
-        evidence_catalog=_catalog(),
-        watch_expires_at_ms=1_100_000,
-    )
-    assert decision.action == "WATCH"
-    assert decision.hypothesis_side == "short"
-    assert decision.watch_condition is not None
-    assert decision.watch_condition.upper_level == Decimal(101)
-    assert decision.watch_condition.lower_level == Decimal(99)
-    assert decision.watch_condition.kind == "closed_1m_range_cross"
-
-
-def test_nontrade_hypothesis_and_notes_are_preserved() -> None:
-    decision = compile_assessment(
-        assessment=_assessment(action="NO_TRADE"),
-        candidates=_candidate(),
-        evidence_catalog=_catalog(),
-    )
-    assert decision.action == "NO_TRADE"
-    assert decision.hypothesis_side == "short"
-    assert decision.research_notes == "Observe the next closed bar."
+    for ref in ("feature:missing", "feature:future"):
+        with pytest.raises(InvalidAssessment, match="proposal_evidence_unavailable"):
+            compile_proposal(
+                proposal=AnalysisProposal(action="NO_TRADE", supporting_evidence=(ref,), public_rationale="No plan."),
+                plans=(),
+                evidence_catalog=catalog,
+                judgment_refs=frozenset(),
+                now_ms=970_000,
+            )

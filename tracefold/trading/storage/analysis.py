@@ -9,10 +9,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from tracefold.platform.postgres.client import require_transaction
+from tracefold.trading.engine.plans import ENTRY_WINDOW_MS, MAX_HOLDING_SECONDS, directed_cross
 from tracefold.trading.engine.policy import decision_identity
-from tracefold.trading.engine.strategy import ENTRY_WINDOW_MS, MAX_HOLDING_SECONDS
 from tracefold.trading.engine.target import TargetSelection
-from tracefold.trading.execution_contracts import TradeSignalV2
+from tracefold.trading.execution_contracts import TradeSignalV3
 from tracefold.trading.storage.execution_stream import ExecutionStreamStorage, PreparedTradeSignal
 
 
@@ -482,6 +482,8 @@ class AnalysisStorage:
         action = None if decision is None else str(decision["action"])
         published = False
         if decision is not None:
+            if decision.get("decision_version") != "trade_decision_v4":
+                raise ValueError("analysis_decision_version_invalid")
             decision_id = decision_identity(case_id, decision)
             superseded = (
                 self.conn.execute(
@@ -514,13 +516,14 @@ class AnalysisStorage:
             if prepared_signal is not None and not superseded:
                 signal = prepared_signal.value
                 if (
-                    not isinstance(signal, TradeSignalV2)
+                    not isinstance(signal, TradeSignalV3)
                     or signal.case_id != case_id
                     or signal.decision_id != decision_id
                     or signal.entry_scope_id != row["entry_scope_id"]
                     or signal.asset_id != row["target_asset_id"]
                     or signal.mapping_semantics_digest != row["mapping_semantics_digest"]
                     or signal.direction != decision.get("side")
+                    or signal.entry_envelope.plan_id != decision.get("selected_plan_id")
                     or action != "TRADE"
                     or signal.expires_at_ns <= int(now_ms) * 1_000_000
                 ):
@@ -533,12 +536,13 @@ class AnalysisStorage:
                   (case_id, decision_id, policy_id, policy_version, input_ref,
                    assessment_ref, action, decision, publish_status, publish_reason,
                    decided_at_ms, valid_until_ms)
-                VALUES (%s,%s,'trade_assessment','v3',%s,%s,%s,%s::jsonb,
+                VALUES (%s,%s,'trade_assessment',%s,%s,%s,%s,%s::jsonb,
                         %s,%s,%s,%s)
                 """,
                 (
                     case_id,
                     decision_id,
+                    "v4",
                     evidence_ref,
                     assessment_ref,
                     action,
@@ -629,6 +633,8 @@ class AnalysisStorage:
         known_cost_microusd: int = 0,
         unknown_cost_calls: int = 0,
         cost_upper_estimate_microusd: int | None = None,
+        final_manifest_ref: str | None = None,
+        termination_reason: str | None = None,
     ) -> None:
         """A late claim may leave diagnostics, but gains no settlement authority."""
         cost_unknown_reason = (
@@ -642,7 +648,8 @@ class AnalysisStorage:
               analysis_status=%s,error_code=%s,validation_errors=%s::jsonb,
               physical_call_count=%s,input_tokens=%s,output_tokens=%s,
               cost_microusd=%s,cost_unknown_reason=%s,
-              known_cost_microusd=%s,unknown_cost_calls=%s,cost_upper_estimate_microusd=%s
+              known_cost_microusd=%s,unknown_cost_calls=%s,cost_upper_estimate_microusd=%s,
+              final_manifest_ref=%s,termination_reason=%s
             WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s
             """,
             (
@@ -664,6 +671,8 @@ class AnalysisStorage:
                 known_cost_microusd,
                 unknown_cost_calls,
                 cost_upper_estimate_microusd,
+                final_manifest_ref,
+                termination_reason,
                 case_id,
                 int(claim_attempt),
                 claim_token,
@@ -674,8 +683,9 @@ class AnalysisStorage:
                 """
                 INSERT INTO trading_model_calls
                   (case_id,claim_attempt,call_index,request_ref,response_ref,
-                   input_tokens,output_tokens,cost_microusd,cost_unknown_reason,status,finished_at_ms)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   input_tokens,output_tokens,cost_microusd,cost_unknown_reason,status,finished_at_ms,
+                   phase,endpoint,requested_model,served_model)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (case_id,claim_attempt,call_index) DO UPDATE SET
                   response_ref=COALESCE(EXCLUDED.response_ref,trading_model_calls.response_ref),
                   input_tokens=EXCLUDED.input_tokens,
@@ -683,7 +693,11 @@ class AnalysisStorage:
                   cost_microusd=EXCLUDED.cost_microusd,
                   cost_unknown_reason=EXCLUDED.cost_unknown_reason,
                   status=EXCLUDED.status,
-                  finished_at_ms=COALESCE(trading_model_calls.finished_at_ms,EXCLUDED.finished_at_ms)
+                  finished_at_ms=COALESCE(trading_model_calls.finished_at_ms,EXCLUDED.finished_at_ms),
+                  phase=COALESCE(EXCLUDED.phase,trading_model_calls.phase),
+                  endpoint=COALESCE(EXCLUDED.endpoint,trading_model_calls.endpoint),
+                  requested_model=COALESCE(EXCLUDED.requested_model,trading_model_calls.requested_model),
+                  served_model=COALESCE(EXCLUDED.served_model,trading_model_calls.served_model)
                 """,
                 (
                     case_id,
@@ -697,6 +711,10 @@ class AnalysisStorage:
                     call.get("cost_unknown_reason"),
                     call.get("status", "completed" if call.get("response_ref") else "result_unknown"),
                     call.get("finished_at_ms"),
+                    call.get("phase"),
+                    call.get("endpoint"),
+                    call.get("requested_model"),
+                    call.get("served_model"),
                 ),
             )
 
@@ -756,6 +774,9 @@ class AnalysisStorage:
         now_ms: int,
         timeout_ms: int,
         reserved_cost_microusd: int | None,
+        phase: str | None = None,
+        endpoint: str | None = None,
+        requested_model: str | None = None,
     ) -> bool:
         row = self.conn.execute(
             "SELECT LEAST(c.lease_until_ms,c.work_deadline_at_ms,c.root_expires_at_ms) AS deadline "
@@ -773,8 +794,8 @@ class AnalysisStorage:
         self.conn.execute(
             "INSERT INTO trading_model_calls "
             "(case_id,claim_attempt,call_index,request_ref,started_at_ms,timeout_ms,remaining_deadline_ms,"
-            "reserved_cost_microusd,cost_unknown_reason,status) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'provider_cost_unavailable','requested')",
+            "reserved_cost_microusd,cost_unknown_reason,status,phase,endpoint,requested_model) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'provider_cost_unavailable','requested',%s,%s,%s)",
             (
                 case_id,
                 claim_attempt,
@@ -784,9 +805,32 @@ class AnalysisStorage:
                 actual_timeout_ms,
                 remaining_ms,
                 reserved_cost_microusd,
+                phase,
+                endpoint,
+                requested_model,
             ),
         )
         return True
+
+    def analysis_tool_authorized(
+        self,
+        *,
+        case_id: str,
+        claim_attempt: int,
+        claim_token: str,
+        now_ms: int,
+    ) -> bool:
+        """Read-only fence check before a Case tool touches an external source."""
+        row = self.conn.execute(
+            "SELECT 1 FROM trading_cases c JOIN trading_case_attempts a "
+            "ON a.case_id=c.case_id AND a.claim_attempt=c.claim_attempt "
+            "AND a.claim_token=c.claim_token "
+            "WHERE c.case_id=%s AND c.claim_attempt=%s AND c.claim_token=%s "
+            "AND c.state='RUNNING' AND c.lease_until_ms>%s "
+            "AND c.work_deadline_at_ms>%s AND c.root_expires_at_ms>%s",
+            (case_id, claim_attempt, claim_token, now_ms, now_ms, now_ms),
+        ).fetchone()
+        return row is not None
 
     def record_model_call_finish(
         self,
@@ -801,12 +845,14 @@ class AnalysisStorage:
         input_tokens: int | None,
         output_tokens: int | None,
         cost_microusd: int | None,
-    ) -> None:
+        served_model: str | None = None,
+    ) -> bool:
         if status not in ("completed", "result_unknown"):
             raise ValueError("model_call_status_invalid")
-        self.conn.execute(
+        updated = self.conn.execute(
             "UPDATE trading_model_calls call SET status=%s,response_ref=%s,finished_at_ms=%s,"
-            "input_tokens=%s,output_tokens=%s,cost_microusd=%s,cost_unknown_reason=%s "
+            "input_tokens=%s,output_tokens=%s,cost_microusd=%s,cost_unknown_reason=%s,"
+            "served_model=COALESCE(%s,served_model) "
             "WHERE case_id=%s AND claim_attempt=%s AND call_index=%s "
             "AND EXISTS (SELECT 1 FROM trading_case_attempts attempt "
             "WHERE attempt.case_id=call.case_id AND attempt.claim_attempt=call.claim_attempt "
@@ -819,12 +865,14 @@ class AnalysisStorage:
                 output_tokens,
                 cost_microusd,
                 "provider_cost_unavailable" if cost_microusd is None else None,
+                served_model,
                 case_id,
                 claim_attempt,
                 call_index,
                 claim_token,
             ),
         )
+        return bool(updated.rowcount)
 
     def mark_analysis_attempt_unsettled(
         self,
@@ -853,7 +901,7 @@ class AnalysisStorage:
         if not isinstance(watch, dict):
             return
         watch = {**watch, "parent_evidence_ref": evidence_ref}
-        if watch.get("kind") != "closed_1m_range_cross":
+        if watch.get("kind") != "closed_1m_directed_cross":
             return
         root_expires = int(parent["root_expires_at_ms"])
         if int(watch.get("expires_at_ms") or 0) != root_expires or now_ms >= root_expires:
@@ -891,7 +939,8 @@ class AnalysisStorage:
                    c.entry_scope_id,c.root_expires_at_ms
               FROM trading_watch_observations w
               JOIN trading_cases c ON c.case_id=w.parent_case_id
-             WHERE w.status='waiting' AND w.next_check_at_ms<=%s
+             WHERE w.status='waiting' AND w.condition ->> 'kind' = 'closed_1m_directed_cross'
+               AND w.next_check_at_ms<=%s
              ORDER BY w.next_check_at_ms,w.parent_case_id LIMIT %s
             """,
             (int(now_ms), max(1, min(128, limit))),
@@ -938,8 +987,10 @@ class AnalysisStorage:
             if not observation_ref:
                 raise ValueError("watch_observation_evidence_missing")
             try:
-                upper = Decimal(str(condition["upper_level"]))
-                lower = Decimal(str(condition["lower_level"]))
+                if condition.get("kind") != "closed_1m_directed_cross":
+                    raise ValueError("watch_observation_kind_invalid")
+                level = Decimal(str(condition["level"]))
+                side_expected = condition["side"]
                 previous = Decimal(
                     str(
                         parent["last_observed_value"]
@@ -960,14 +1011,13 @@ class AnalysisStorage:
                     or not value.is_finite()
                     or value <= 0
                     or not previous.is_finite()
-                    or not 0 < lower < upper
+                    or not level.is_finite()
+                    or level <= 0
                 ):
                     raise ValueError("watch_observation_path_invalid")
                 side = (
-                    "long"
-                    if previous <= upper and value > upper
-                    else "short"
-                    if previous >= lower and value < lower
+                    side_expected
+                    if directed_cross(side=side_expected, previous=previous, current=value, level=level)
                     else None
                 )
                 if side is not None:
@@ -1313,7 +1363,7 @@ class AnalysisStorage:
         )
 
     def validate_signal_entry(self, *, entry_id: str, now_ns: int) -> tuple[bool, str]:
-        """Persist the last Trading fact check before Nautilus submits a V2 entry."""
+        """Persist the last Trading fact check before Nautilus submits a V3 entry."""
         asset = self.conn.execute(
             "SELECT c.target_asset_id FROM trading_trade_signals s "
             "JOIN trading_cases c ON c.case_id=s.case_id WHERE s.signal_id=%s",
@@ -1328,7 +1378,7 @@ class AnalysisStorage:
                    plan.terminal_at_ns,signal.payload,signal.seq,
                    case_row.state,case_row.target_asset_id,
                    case_row.mapping_semantics_digest,case_row.root_expires_at_ms,
-                   decision.publish_status,
+                   decision.publish_status,decision.decision_id,decision.decision,
                    EXISTS (
                      SELECT 1 FROM trading_triggers newer
                       JOIN trading_triggers original ON original.trigger_id=case_row.trigger_id
@@ -1353,13 +1403,19 @@ class AnalysisStorage:
         if row is None:
             reason = "entry_fact_missing"
         else:
-            signal = TradeSignalV2.model_validate_json(json.dumps(dict(row["payload"]) | {"seq": int(row["seq"])}))
+            signal = TradeSignalV3.model_validate_json(json.dumps(dict(row["payload"]) | {"seq": int(row["seq"])}))
             if row["terminal_at_ns"] is not None:
                 reason = "plan_terminal"
             elif signal.expires_at_ns <= now_ns or signal.entry_envelope.root_expires_at_ns <= now_ns:
                 reason = "expired"
             elif row["state"] != "SIGNAL_EMITTED" or row["publish_status"] != "published":
                 reason = "decision_not_published"
+            elif (
+                row["decision_id"] != signal.decision_id
+                or row["decision"].get("selected_plan_id") != signal.entry_envelope.plan_id
+                or row["decision"].get("side") != signal.direction
+            ):
+                reason = "decision_plan_changed"
             elif row["superseded"]:
                 reason = "source_superseded"
             elif (

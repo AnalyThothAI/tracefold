@@ -1,4 +1,4 @@
-"""A published V2 fact for real PostgreSQL and Nautilus integration fixtures."""
+"""A published V3 fact for real PostgreSQL and Nautilus integration fixtures."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from decimal import Decimal
 from tests.nautilus_oi_runtime_fixtures import MARKET, SECOND_NS, oi_profile
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.trading.execution_contracts import (
-    SignalEntryEnvelopeV2,
+    SignalEntryEnvelopeV3,
     SignalExitPlanV1,
-    TradeSignalV2,
+    TradeSignalV3,
 )
-from tracefold.trading.storage.execution_stream import prepare_trade_signal_v2
+from tracefold.trading.storage.execution_stream import prepare_trade_signal_v3
 from tracefold.trading.storage.root import TradingRepository
 
 
@@ -24,7 +24,7 @@ def execution_fixture_profile() -> OiRuntimeProfile:
     return replace(oi_profile(), excluded_asset_ids=frozenset())
 
 
-def append_published_v2_signal(
+def append_published_v3_signal(
     repo: TradingRepository,
     *,
     signal_id: str,
@@ -45,7 +45,7 @@ def append_published_v2_signal(
         max_holding_ns=max_holding_ns,
     )
     root_expires_at_ns = expires_at_ns + 60 * SECOND_NS
-    signal = TradeSignalV2(
+    signal = TradeSignalV3(
         seq=1,
         signal_id=signal_id,
         case_id=case_id,
@@ -61,17 +61,20 @@ def append_published_v2_signal(
         observed_at_ns=observed_at_ns,
         expires_at_ns=expires_at_ns,
         exit_plan=exit_plan,
-        entry_envelope=SignalEntryEnvelopeV2(
+        entry_envelope=SignalEntryEnvelopeV3(
+            plan_id="f" * 64,
+            entry_kind="immediate_entry_v1",
             root_expires_at_ns=root_expires_at_ns,
             reference_price=Decimal("10000"),
-            structure_level=Decimal("9900"),
             max_price_drift_bps=200,
             universe_version=profile.universe_digest,
         ),
     )
     decision = {
+        "decision_version": "trade_decision_v4",
         "action": "TRADE",
         "side": "long",
+        "selected_plan_id": "f" * 64,
         "reason": "integration fixture",
         "exit_plan": {
             "stop_distance_bps": 200,
@@ -107,8 +110,8 @@ def append_published_v2_signal(
             "INSERT INTO trading_case_decisions "
             "(case_id,decision_id,policy_id,policy_version,input_ref,action,decision,"
             "publish_status,decided_at_ms,valid_until_ms) "
-            "VALUES (%s,%s,'trade_assessment','v1','fixture','TRADE',%s::jsonb,'published',%s,%s)",
+            "VALUES (%s,%s,'trade_assessment','v4','fixture','TRADE',%s::jsonb,'published',%s,%s)",
             (case_id, decision_id, json.dumps(decision), at_ms, root_expires_at_ns // 1_000_000),
         )
-        repo.append_trade_signal(prepare_trade_signal_v2(signal))
+        repo.append_trade_signal(prepare_trade_signal_v3(signal))
     return signal_id

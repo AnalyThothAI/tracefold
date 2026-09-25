@@ -125,7 +125,7 @@ def test_state_codec_round_trips_canonical_json() -> None:
     ("updates", "code"),
     [
         ({"schema_version": "news_program_state_v2"}, "news_program_state_version_unsupported"),
-        ({"dspy_version": "3.4.0"}, "news_program_state_dspy_version_unsupported"),
+        ({"dspy_version": "3.3.1"}, "news_program_state_dspy_version_unsupported"),
         ({"predictors": ["taxonomy", "event_semantics", "reader_card"]}, "news_program_state_schema_invalid"),
         ({"extra": "forbidden"}, "news_program_state_schema_invalid"),
     ],

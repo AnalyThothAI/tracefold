@@ -20,8 +20,7 @@ from ..execution_contracts import (
     SHA256_PATTERN,
     ExecutionObservationV1,
     OperatorIntentV1,
-    TradeSignalV1,
-    TradeSignalV2,
+    TradeSignalV3,
     postgres_text_valid,
 )
 
@@ -76,24 +75,9 @@ UNRESOLVED_TRADE_SIGNALS_SQL: Final = """
        AND disposition.signal_id = signal.signal_id
        AND disposition.normalized_kind = 'signal_disposition'
       LEFT JOIN trading_trade_plans plan ON plan.entry_id = signal.signal_id
-     WHERE signal.expires_at_ns > %s
-       AND disposition.event_id IS NULL AND plan.entry_id IS NULL
-     ORDER BY signal.seq
-     LIMIT %s
-"""
-
-UNRESOLVED_TRADE_SIGNALS_V2_SQL: Final = """
-    SELECT signal.seq, signal.payload
-      FROM trading_trade_signals signal
-      LEFT JOIN trading_execution_observations disposition
-        ON disposition.execution_strategy = %s
-       AND disposition.account_slot = %s
-       AND disposition.signal_id = signal.signal_id
-       AND disposition.normalized_kind = 'signal_disposition'
-      LEFT JOIN trading_trade_plans plan ON plan.entry_id = signal.signal_id
      WHERE signal.account_slot = %s AND signal.runtime_mode = %s
-       AND signal.payload ->> 'signal_version' = 'trade_signal_v2'
-       AND signal.payload -> 'entry_envelope' ->> 'version' = 'entry_envelope_v2'
+       AND signal.payload ->> 'signal_version' = 'trade_signal_v3'
+       AND signal.payload -> 'entry_envelope' ->> 'version' = 'entry_envelope_v3'
        AND signal.expires_at_ns > %s
        AND disposition.event_id IS NULL AND plan.entry_id IS NULL
      ORDER BY signal.seq LIMIT %s
@@ -120,23 +104,23 @@ def execution_stream_query_specs(
     *,
     account_slot: str = "query-audit-disabled",
     execution_strategy: str = EXECUTION_STRATEGY_ID,
+    runtime_mode: str = "paper",
     now_ns: int = 1,
 ) -> tuple[ReadQuerySpec, ...]:
     """The two bridge reads, bound, for the query-plan audit."""
 
-    params = (execution_strategy, account_slot, now_ns, 100)
     return (
         ReadQuerySpec(
             name="trading_unresolved_trade_signals",
             sql=UNRESOLVED_TRADE_SIGNALS_SQL,
-            params=params,
+            params=(execution_strategy, account_slot, account_slot, runtime_mode, now_ns, 100),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="trading_unresolved_operator_intents",
             sql=UNRESOLVED_OPERATOR_INTENTS_SQL,
-            params=params,
+            params=(execution_strategy, account_slot, now_ns, 100),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
@@ -147,7 +131,7 @@ def execution_stream_query_specs(
 class PreparedTradeSignal:
     """Validated Signal input and canonical JSON prepared before the DB callback."""
 
-    value: TradeSignalV1 | TradeSignalV2
+    value: TradeSignalV3
     payload_json: str
 
 
@@ -334,32 +318,8 @@ class ExecutionRuntimeControlState:
             raise ValueError("execution_runtime_control_state_invalid")
 
 
-def prepare_trade_signal(
-    *,
-    signal_id: str,
-    case_id: str,
-    market_key: str,
-    direction: Literal["long", "short"],
-    observed_at_ns: int,
-    expires_at_ns: int,
-) -> PreparedTradeSignal:
-    value = TradeSignalV1(
-        seq=1,
-        signal_id=signal_id,
-        case_id=case_id,
-        market_key=market_key,
-        direction=direction,
-        observed_at_ns=observed_at_ns,
-        expires_at_ns=expires_at_ns,
-    )
-    return PreparedTradeSignal(
-        value=value,
-        payload_json=_dumps(value.model_dump(mode="json", exclude={"seq"})),
-    )
-
-
-def prepare_trade_signal_v2(value: TradeSignalV2) -> PreparedTradeSignal:
-    validated = TradeSignalV2.model_validate(value.model_dump())
+def prepare_trade_signal_v3(value: TradeSignalV3) -> PreparedTradeSignal:
+    validated = TradeSignalV3.model_validate(value.model_dump())
     return PreparedTradeSignal(
         value=validated,
         payload_json=_dumps(validated.model_dump(mode="json", exclude={"seq"})),
@@ -418,13 +378,8 @@ def prepare_execution_observations(
 
 def materialize_trade_signals(
     rows: Sequence[StoredExecutionPayload],
-) -> tuple[TradeSignalV1 | TradeSignalV2, ...]:
-    return tuple(
-        TradeSignalV2.model_validate_json(_dumps(payload | {"seq": seq}))
-        if payload.get("signal_version") == "trade_signal_v2"
-        else TradeSignalV1.model_validate(payload | {"seq": seq})
-        for seq, payload in rows
-    )
+) -> tuple[TradeSignalV3, ...]:
+    return tuple(TradeSignalV3.model_validate_json(_dumps(payload | {"seq": seq})) for seq, payload in rows)
 
 
 def materialize_operator_intents(rows: Sequence[StoredExecutionPayload]) -> tuple[OperatorIntentV1, ...]:
@@ -468,11 +423,11 @@ class ExecutionStreamStorage:
                 candidate.observed_at_ns,
                 candidate.expires_at_ns,
                 prepared.payload_json,
-                candidate.account_slot if isinstance(candidate, TradeSignalV2) else None,
-                candidate.runtime_mode if isinstance(candidate, TradeSignalV2) else None,
-                candidate.entry_scope_id if isinstance(candidate, TradeSignalV2) else None,
-                candidate.asset_id if isinstance(candidate, TradeSignalV2) else None,
-                candidate.mapping_semantics_digest if isinstance(candidate, TradeSignalV2) else None,
+                candidate.account_slot,
+                candidate.runtime_mode,
+                candidate.entry_scope_id,
+                candidate.asset_id,
+                candidate.mapping_semantics_digest,
             ),
         ).fetchone()
         if inserted is not None:
@@ -640,22 +595,16 @@ class ExecutionStreamStorage:
         execution_strategy: str,
         now_ns: int,
         limit: int,
-        runtime_mode: str | None = None,
+        runtime_mode: str,
     ) -> tuple[StoredExecutionPayload, ...]:
         self._validate_read_limit(limit)
         self._validate_slot_clock(account_slot, now_ns)
-        if runtime_mode is None:
-            rows = self.conn.execute(
-                UNRESOLVED_TRADE_SIGNALS_SQL,
-                (execution_strategy, account_slot, now_ns, limit),
-            ).fetchall()
-        else:
-            if runtime_mode not in ("paper", "live"):
-                raise ValueError("execution_runtime_mode_invalid")
-            rows = self.conn.execute(
-                UNRESOLVED_TRADE_SIGNALS_V2_SQL,
-                (execution_strategy, account_slot, account_slot, runtime_mode, now_ns, limit),
-            ).fetchall()
+        if runtime_mode not in ("paper", "live"):
+            raise ValueError("execution_runtime_mode_invalid")
+        rows = self.conn.execute(
+            UNRESOLVED_TRADE_SIGNALS_SQL,
+            (execution_strategy, account_slot, account_slot, runtime_mode, now_ns, limit),
+        ).fetchall()
         return tuple((int(row["seq"]), dict(row["payload"])) for row in rows)
 
     def unresolved_operator_intents(
@@ -903,5 +852,4 @@ __all__ = [
     "materialize_trade_signals",
     "prepare_execution_observations",
     "prepare_operator_intent",
-    "prepare_trade_signal",
 ]

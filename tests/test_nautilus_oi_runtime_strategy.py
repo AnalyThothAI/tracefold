@@ -215,7 +215,7 @@ def test_a_position_held_past_its_maximum_is_closed_at_market_as_a_time_exit() -
     short_hold = replace(profile, exit_policy=replace(profile.exit_policy, max_holding_ns=1 * SECOND_NS))
     runtime = backtest_runtime(
         tape=quotes(9_999, 10_000, start_ns=NOW_NS, count=80),
-        signals=(trade_signal(),),
+        signals=(trade_signal(max_holding_ns=1 * SECOND_NS),),
         profile=short_hold,
     )
     runtime.run()

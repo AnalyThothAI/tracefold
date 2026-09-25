@@ -70,9 +70,9 @@ from .signatures import EventSemanticsSignature, EventTaxonomySignature, ReaderC
 
 # The exact DSPy whose `dump_state` shape this envelope is. Pinned rather than read at validation time: a
 # state written by another version is a different document, and discovering that at load is the point.
-DSPY_STATE_VERSION: Final[Literal["3.3.1"]] = "3.3.1"
+DSPY_STATE_VERSION: Final[Literal["3.4.0"]] = "3.4.0"
 
-# Exactly the keys `dspy.Predict.dump_state()` emits in 3.3.1.
+# Exactly the keys `dspy.Predict.dump_state()` emits in 3.4.0.
 _PREDICTOR_DOCUMENT_KEYS: Final[frozenset[str]] = frozenset({"traces", "train", "demos", "signature", "lm"})
 
 _SIGNATURE_DOCUMENT_KEYS: Final[frozenset[str]] = frozenset({"instructions", "fields"})
@@ -176,7 +176,7 @@ class NewsProgramStateV1(_ExactModel):
     schema_version: Literal["news_program_state_v1"] = "news_program_state_v1"
     evidence_input_version: Literal["news_evidence_input_v2"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    dspy_version: Literal["3.3.1"] = DSPY_STATE_VERSION
+    dspy_version: Literal["3.4.0"] = DSPY_STATE_VERSION
     predictors: tuple[PredictorName, ...]
     state: dict[str, Any]
 

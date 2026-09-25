@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from logging.config import fileConfig
-
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
@@ -10,9 +8,6 @@ from tracefold.platform.postgres.client import with_password_from_file
 from tracefold.platform.postgres.maintenance_gate import MAINTENANCE_GATE_LOCK_KEYS
 
 config = context.config
-
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
 
 target_metadata = None
 

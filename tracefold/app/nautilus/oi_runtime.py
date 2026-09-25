@@ -37,7 +37,11 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.strategy import OpenPlan, RuntimeControlSnapshot, RuntimeInputs
-from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1, TradeSignalV2
+from tracefold.trading.execution_contracts import (
+    ExecutionObservationV1,
+    OperatorIntentV1,
+    TradeSignalV3,
+)
 from tracefold.trading.storage.execution_stream import (
     ExecutionRuntimeState,
     materialize_execution_observation,
@@ -143,12 +147,12 @@ def load_runtime_inputs(
     materialized: list[OpenPlan] = []
     for row in rows:
         plan = TradePlan.model_validate({key: value for key, value in row.items() if key != "disposition_pending"})
-        signal: TradeSignalV2 | None = None
+        signal: TradeSignalV3 | None = None
         checked = False
         if plan.source == "signal" and plan.status == "prepared":
             stored = repos.trading.trade_signal(plan.entry_id)
-            if stored is not None and stored[1].get("signal_version") == "trade_signal_v2":
-                signal = TradeSignalV2.model_validate_json(json.dumps(stored[1] | {"seq": stored[0]}))
+            if stored is not None and stored[1].get("signal_version") == "trade_signal_v3":
+                signal = TradeSignalV3.model_validate_json(json.dumps(stored[1] | {"seq": stored[0]}))
             checked = repos.trading.latest_entry_validity_check(plan.entry_id) is not None
         materialized.append(
             OpenPlan(
@@ -455,8 +459,8 @@ def load_unresolved_trade_signals(
     account_slot: str,
     execution_strategy: str,
     limit: int,
-    runtime_mode: str | None = None,
-) -> tuple[TradeSignalV1 | TradeSignalV2, ...]:
+    runtime_mode: str,
+) -> tuple[TradeSignalV3, ...]:
     """Materialize Trading-owned rows at the App composition boundary."""
 
     rows = repos.trading.unresolved_trade_signals(

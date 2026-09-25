@@ -1,4 +1,4 @@
-"""V2 is frozen before a plan and gated again before an order."""
+"""A conditional V3 signal is gated before a plan and again before an order."""
 
 from __future__ import annotations
 
@@ -8,21 +8,21 @@ from decimal import Decimal
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, SECOND_NS, oi_profile, unit_runtime
 from tracefold.integrations.nautilus.oi_runtime.journal import EntryValidityReceipt
 from tracefold.trading.execution_contracts import (
-    SignalEntryEnvelopeV2,
+    SignalEntryEnvelopeV3,
     SignalExitPlanV1,
-    TradeSignalV2,
+    TradeSignalV3,
     entry_structure_allows,
 )
 
 
-def _signal() -> TradeSignalV2:
+def _signal() -> TradeSignalV3:
     profile = replace(oi_profile(), excluded_asset_ids=frozenset())
     semantics = profile.route_semantics(profile.routes[0])
     assert semantics is not None
-    return TradeSignalV2(
+    return TradeSignalV3(
         seq=1,
         signal_id="1" * 64,
-        case_id="case-v2",
+        case_id="case-v3",
         decision_id="2" * 64,
         account_slot=profile.account_slot,
         runtime_mode=profile.mode,
@@ -35,7 +35,10 @@ def _signal() -> TradeSignalV2:
         observed_at_ns=NOW_NS - SECOND_NS,
         expires_at_ns=NOW_NS + 30 * SECOND_NS,
         exit_plan=SignalExitPlanV1(stop_distance_bps=100, take_profit_bps=250, max_holding_ns=1_800 * SECOND_NS),
-        entry_envelope=SignalEntryEnvelopeV2(
+        entry_envelope=SignalEntryEnvelopeV3(
+            plan_id="5" * 64,
+            entry_kind="closed_bar_cross_v1",
+            parent_plan_id="6" * 64,
             root_expires_at_ns=NOW_NS + 60 * SECOND_NS,
             reference_price=Decimal("10000"),
             structure_level=Decimal("10100"),

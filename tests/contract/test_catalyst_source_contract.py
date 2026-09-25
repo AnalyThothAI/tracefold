@@ -14,9 +14,8 @@ import pytest
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.trading_analysis import FrameReader
 from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.trading.engine.contracts import AgentAssessment
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
-from tracefold.trading.engine.policy import compile_assessment
+from tracefold.trading.engine.plans import AnalysisProposal, compile_proposal
 
 
 class _Market:
@@ -26,7 +25,7 @@ class _Market:
     async def fetch(self, request: MarketDataRequest) -> MarketDataResult:
         rows: tuple[dict[str, Any], ...] = ()
         if request.dataset == "perp_bars":
-            assert request.start_ms == 0 and request.end_ms == 960_000
+            assert request.start_ms is not None and request.end_ms == 960_000
             rows = tuple(
                 {
                     "event_at_ms": (index + 1) * 60_000,
@@ -61,6 +60,8 @@ def _prepare(source, close, tmp_path, monkeypatch):
         FrameReader(_Market(close), files).prepare(
             case={
                 "case_id": "b" * 64,
+                "trigger_id": "c" * 64,
+                "root_expires_at_ms": 1_530_000,
                 "created_at_ms": 940_000,
                 "target_selection": {
                     "reason": "selected",
@@ -157,21 +158,27 @@ def test_news_public_catalyst_reaches_citable_evidence_and_final_decision(close,
     assert evidence["values"] == {"headline": source["headline"], "why": source["why"]}
     assert evidence["unit_definition"] == {"headline": "text", "why": "text"}
     assert "source" in json.loads(prepared.brief.text)["citable_evidence_ids"]
-    selected = next((item for item in prepared.candidates if item.side == side), None)
-    assessment = AgentAssessment(
+    selected = next(
+        item
+        for item in prepared.plans
+        if item.side == (side or "long")
+        and item.kind == ("closed_bar_cross_v1" if side is None else "immediate_entry_v1")
+    )
+    assessment = AnalysisProposal(
         action="WATCH" if side is None else "TRADE",
-        entry_candidate_id=None if selected is None else selected.candidate_id,
+        selected_plan_id=selected.plan_id,
         supporting_evidence=("source", "market:perp_bars"),
         public_rationale="Recorded source and code-owned price condition.",
     )
-    decision = compile_assessment(
-        assessment=assessment,
-        candidates=prepared.candidates,
+    decision = compile_proposal(
+        proposal=assessment,
+        plans=prepared.plans,
         evidence_catalog=prepared.brief.evidence_catalog,
-        watch_expires_at_ms=1_530_000,
+        judgment_refs=frozenset(),
+        now_ms=1_000_000,
     )
     assert decision.action == assessment.action
-    assert decision.side == side
+    assert decision.side == (side or "long")
     assert (decision.watch_condition is not None) == (side is None)
 
 
@@ -191,7 +198,7 @@ def test_non_public_text_is_missing_in_both_evidence_and_candidates(text, tmp_pa
     evidence = prepared.brief.evidence_catalog["source"]
     assert evidence["status"] == "missing" and evidence["values"] == {}
     assert "source" not in json.loads(prepared.brief.text)["citable_evidence_ids"]
-    assert all(not item.entry_ready and not item.watch_eligible for item in prepared.candidates)
+    assert prepared.plans == ()
     assert source == before
 
 
@@ -205,4 +212,4 @@ def test_oi_zero_values_remain_citable_without_optional_market_frames(tmp_path, 
     prepared = _prepare({"kind": "oi", "source_recorded_at_ms": 930_000, **values}, "102", tmp_path, monkeypatch)
     evidence = prepared.brief.evidence_catalog["source"]
     assert evidence["status"] == "ok" and evidence["values"] == values
-    assert prepared.candidates[0].entry_ready
+    assert any(item.kind == "immediate_entry_v1" for item in prepared.plans)

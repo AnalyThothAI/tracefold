@@ -20,7 +20,7 @@ def add_trading_commands(
     )
     cases.add_argument("--limit", type=_positive_int, default=20)
 
-    signals = commands.add_parser("signals", help="list engine-neutral TradeSignalV1 rows")
+    signals = commands.add_parser("signals", help="list engine-neutral TradeSignalV3 rows")
     signals.add_argument("--limit", type=_positive_int, default=20)
 
     observations = commands.add_parser("observations", help="list append-only Runtime observations")

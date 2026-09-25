@@ -11,6 +11,7 @@ from scripts.export_trading_analysis_cohort import (
     _rule_shadow_receipt,
     _rule_watch_path,
 )
+from scripts.historical_price_confirmation import STRATEGY_VERSION
 from scripts.trading_analysis_cohort import (
     PURGE_MS,
     _holdout_comparison,
@@ -22,7 +23,6 @@ from scripts.trading_analysis_cohort import (
     evaluate,
 )
 from tracefold.app.analysis_files import AnalysisFiles
-from tracefold.trading.engine.strategy import STRATEGY_VERSION
 
 
 def _case(

@@ -7,6 +7,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -18,6 +19,17 @@ _FUTURES = "https://fapi.binance.com"
 _DEMO_FUTURES = "https://demo-fapi.binance.com"
 _SPOT = "https://api.binance.com"
 _BAR_INTERVALS = {60_000: "1m", 300_000: "5m"}
+_OI_INTERVALS = {
+    300_000: "5m",
+    900_000: "15m",
+    1_800_000: "30m",
+    3_600_000: "1h",
+    7_200_000: "2h",
+    14_400_000: "4h",
+    21_600_000: "6h",
+    43_200_000: "12h",
+    86_400_000: "1d",
+}
 
 
 def _futures_base(environment: str) -> str:
@@ -77,6 +89,8 @@ class BinanceMarketData:
             return await self._bars(request)
         if request.dataset == "funding_history":
             return await self._funding_history(request)
+        if request.dataset == "open_interest_history":
+            return await self._open_interest_history(request)
         if request.dataset == "instrument_rules":
             return await self._instrument_rules(request)
         return await self._latest(request)
@@ -508,6 +522,99 @@ class BinanceMarketData:
                 },
             ),
             missing=(reason,) if reason is not None else (),
+            receipts=tuple(receipts),
+        )
+
+    async def _open_interest_history(self, request: MarketDataRequest) -> MarketDataResult:
+        """Read Binance USD-M OI statistics without conflating them with current OI."""
+        if request.start_ms is None or request.end_ms is None or request.interval_ms not in _OI_INTERVALS:
+            raise ValueError("open_interest_window_invalid")
+        count = (request.end_ms - request.start_ms) // request.interval_ms + 1
+        if count < 1 or count > 500:
+            raise ValueError("open_interest_window_out_of_range")
+        receipts: list[dict[str, Any]] = []
+        remaining = request.deadline_at_monotonic - time.monotonic()
+        if remaining <= 0:
+            return self._result(request, status="missing", rows=(), missing=("deadline_exceeded",))
+        try:
+            raw = await asyncio.wait_for(
+                self._get(
+                    _futures_base(request.environment) + "/futures/data/openInterestHist",
+                    params={
+                        "symbol": request.native_symbol,
+                        "period": _OI_INTERVALS[request.interval_ms],
+                        "startTime": request.start_ms,
+                        "endTime": request.end_ms,
+                        "limit": count,
+                    },
+                    receipts=receipts,
+                ),
+                timeout=remaining,
+            )
+        except (httpx.HTTPError, TimeoutError):
+            return self._result(
+                request,
+                status="error",
+                rows=(),
+                missing=("open_interest_history_unavailable",),
+                receipts=tuple(receipts),
+            )
+        if not isinstance(raw, list):
+            return self._result(
+                request,
+                status="error",
+                rows=(),
+                missing=("open_interest_history_invalid",),
+                receipts=tuple(receipts),
+            )
+        received = self._clock_ms()
+        rows: list[dict[str, Any]] = []
+        try:
+            for item in raw:
+                if not isinstance(item, dict) or item.get("symbol") != request.native_symbol:
+                    raise ValueError("open_interest_symbol_mismatch")
+                stamp = int(item["timestamp"])
+                quantity = Decimal(str(item["sumOpenInterest"]))
+                value = Decimal(str(item["sumOpenInterestValue"]))
+                if not all(number.is_finite() and number >= 0 for number in (quantity, value)):
+                    raise ValueError("open_interest_value_invalid")
+                if not request.start_ms <= stamp <= request.end_ms or stamp > received:
+                    raise ValueError("open_interest_time_invalid")
+                rows.append(
+                    {
+                        "event_at_ms": stamp,
+                        "received_at_ms": received,
+                        "native_symbol": request.native_symbol,
+                        "sum_open_interest_quantity": str(quantity),
+                        "sum_open_interest_value": str(value),
+                        "source_time_kind": "period_end",
+                    }
+                )
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            return self._result(
+                request,
+                status="error",
+                rows=(),
+                missing=("open_interest_history_invalid",),
+                receipts=tuple(receipts),
+            )
+        rows.sort(key=lambda row: int(row["event_at_ms"]))
+        continuous = (
+            len(rows) == count
+            and bool(rows)
+            and (int(rows[0]["event_at_ms"]) == request.start_ms and int(rows[-1]["event_at_ms"]) == request.end_ms)
+            and all(
+                int(right["event_at_ms"]) - int(left["event_at_ms"]) == request.interval_ms
+                for left, right in pairwise(rows)
+            )
+        )
+        if len({row["event_at_ms"] for row in rows}) != len(rows):
+            continuous = False
+        return self._result(
+            request,
+            status="ok" if rows and continuous else "partial" if rows else "missing",
+            rows=tuple(rows),
+            missing=() if rows and continuous else ("coverage_incomplete",),
             receipts=tuple(receipts),
         )
 

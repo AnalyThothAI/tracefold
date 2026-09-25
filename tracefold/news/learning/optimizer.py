@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Final, Literal, Protocol, cast
 
 import dspy  # type: ignore[import-untyped]
+from dspy.lm15 import Request, Response, response_to_events  # type: ignore[import-untyped]
 from dspy.teleprompt.gepa.gepa import AUTO_RUN_SETTINGS, DspyGEPAResult  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -56,6 +57,7 @@ from ..program.lm import (
     RuntimeModelIdentity,
     StructuredOutputMode,
     _usage_values,
+    physical_call_usage,
     program_json_adapter,
 )
 from ..program.module import NativeNewsProgram
@@ -282,27 +284,11 @@ class TargetMetric(Protocol):
 
 
 class _LearningStudent(dspy.Module):  # type: ignore[misc]
-    """One native Predict, plus the minimal accommodation of one reproduced DSPy 3.3.1 limit.
+    """Keep candidate-local output faults aligned with their GEPA examples.
 
-    Reproduced against the installed dspy 3.3.1 rather than assumed (#478, re-checked for #651). GEPA
-    evaluates a candidate through `bootstrap_trace.bootstrap_trace_data`, whose `patched_forward` handles
-    `AdapterParseError` and then re-raises everything else — `except LMError: raise`, and `except
-    Exception: if not capture_crashes: raise`, with `capture_crashes` left at its default. So both of this
-    Program's candidate-local task failures escape the wrapper:
-
-    * `LMOutputTruncatedError` (an `LMError`) when the task model stops mid-JSON, and
-    * a pydantic `ValidationError` when the typed output field does not validate.
-
-    `Evaluate` then records the example as an error, its `prediction` is not the `(prediction, trace)`
-    tuple the caller unpacks, and `bootstrap_trace_data` *drops* that row (`except ValueError: continue`).
-    GEPA receives a trajectory list shorter than the batch it submitted and indexes past the end. The
-    failure is therefore a crashed run, not a low score — which is the opposite of what a candidate-local
-    output failure should mean.
-
-    This wrapper is the narrowest fix: it preserves the one native Predict, converts only those two
-    candidate-local failures into ordinary Predictions, and leaves the metric to score them at
-    `failure_score`. Everything else still propagates, because a provider outage or a budget refusal is a
-    run answer rather than a candidate quality.
+    DSPy 3.4 wraps typed field failures in AdapterParseError.  A provider or
+    budget failure still ends the run; only a returned malformed answer can be
+    scored as a candidate failure.
     """
 
     def __init__(self, predictor: dspy.Predict, *, output_type: type[BaseModel]) -> None:
@@ -315,6 +301,11 @@ class _LearningStudent(dspy.Module):  # type: ignore[misc]
             return self.predictor(**inputs)
         except LMOutputTruncatedError:
             return dspy.Prediction(task_output_failure=_TASK_OUTPUT_FAILURE)
+        except dspy.AdapterParseError:
+            return dspy.Prediction(
+                task_output_failure=_TASK_OUTPUT_INVALID,
+                task_output_feedback=f"Typed {self.output_type.__name__} is invalid",
+            )
         except ValidationError as exc:
             if exc.title != self.output_type.__name__:
                 raise
@@ -774,7 +765,7 @@ def run_gepa(
         metric=metric,
         reflection_lm=reflection_lm,
         instruction_proposer=None,
-        # Off (#501 D7): dspy 3.3.1 renders format-failure feedback with a hard-coded ChatAdapter, which
+        # Off (#501 D7): GEPA renders format-failure feedback with a hard-coded ChatAdapter, which
         # describes a request shape this JSONAdapter program never sends.
         add_format_failure_as_feedback=False,
         log_dir=gepa_log_dir,
@@ -995,7 +986,7 @@ def _build_learning_lm(
     temperature: float,
     structured_output: StructuredOutputMode,
     ledger: LMCallLedger,
-    delegate: dspy.BaseLM | None = None,
+    delegate: dspy.LM | None = None,
 ) -> AuditedConfiguredLM:
     extras = dict(model_kwargs or {})
     owned = sorted(key for key in extras if key.casefold() in _OWNED_LM_KWARGS)
@@ -1003,6 +994,7 @@ def _build_learning_lm(
         raise ValueError("news_program_compile_model_kwargs_owned:" + ",".join(owned))
     inner = delegate or dspy.LM(
         str(model_name),
+        engine="litellm",
         api_key=api_key,
         api_base=api_base,
         cache=False,
@@ -1058,7 +1050,7 @@ def build_task_lm(
     temperature: float = _TASK_TEMPERATURE,
     structured_output: StructuredOutputMode = "json_schema",
     ledger: LMCallLedger,
-    delegate: dspy.BaseLM | None = None,
+    delegate: dspy.LM | None = None,
 ) -> AuditedConfiguredLM:
     return _build_learning_lm(
         role="task",
@@ -1083,7 +1075,7 @@ def build_reflection_lm(
     model_kwargs: Mapping[str, Any] | None = None,
     structured_output: StructuredOutputMode = "json_schema",
     ledger: LMCallLedger,
-    delegate: dspy.BaseLM | None = None,
+    delegate: dspy.LM | None = None,
 ) -> AuditedConfiguredLM:
     return _build_learning_lm(
         role="reflection",
@@ -1245,9 +1237,10 @@ class _BudgetMeter:
         self.first_terminal_error = self.first_terminal_error or refusal
         return refusal
 
-    def _cost(self, response: dspy.LMResponse | None) -> int:
-        if response is not None and response.cost is not None:
-            cost = max(0, round(float(response.cost) * 1_000_000))
+    def _cost(self, response: Response | None) -> int:
+        observed = None if response is None else physical_call_usage(response)["cost_microusd"]
+        if observed is not None:
+            cost = observed
             self.observed_cost_microusd += cost
             return cost
         self.unknown_cost_calls += 1
@@ -1256,7 +1249,7 @@ class _BudgetMeter:
             return self.imputed_call_cost_microusd
         raise self._refuse("news_program_compile_provider_cost_unavailable")
 
-    def after(self, role: Literal["task", "reflection", "metric_judge"], response: dspy.LMResponse) -> None:
+    def after(self, role: Literal["task", "reflection", "metric_judge"], response: Response) -> None:
         with self._lock:
             input_tokens, output_tokens, cached_tokens, total_tokens = _usage_values(response)
             self._record_usage(role, input_tokens, output_tokens, cached_tokens, total_tokens)
@@ -1279,16 +1272,16 @@ class _BudgetMeter:
     def _record_usage(
         self,
         role: Literal["task", "reflection", "metric_judge"],
-        input_tokens: int,
-        output_tokens: int,
-        cached_tokens: int,
-        total_tokens: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cached_tokens: int | None,
+        total_tokens: int | None,
     ) -> None:
         prefix = role
-        setattr(self, f"{prefix}_input_tokens", getattr(self, f"{prefix}_input_tokens") + input_tokens)
-        setattr(self, f"{prefix}_output_tokens", getattr(self, f"{prefix}_output_tokens") + output_tokens)
-        setattr(self, f"{prefix}_cached_tokens", getattr(self, f"{prefix}_cached_tokens") + cached_tokens)
-        setattr(self, f"{prefix}_total_tokens", getattr(self, f"{prefix}_total_tokens") + total_tokens)
+        setattr(self, f"{prefix}_input_tokens", getattr(self, f"{prefix}_input_tokens") + (input_tokens or 0))
+        setattr(self, f"{prefix}_output_tokens", getattr(self, f"{prefix}_output_tokens") + (output_tokens or 0))
+        setattr(self, f"{prefix}_cached_tokens", getattr(self, f"{prefix}_cached_tokens") + (cached_tokens or 0))
+        setattr(self, f"{prefix}_total_tokens", getattr(self, f"{prefix}_total_tokens") + (total_tokens or 0))
 
     def after_provider_failure(
         self, role: Literal["task", "reflection", "metric_judge"], *, provider_reached: bool
@@ -1348,27 +1341,55 @@ def _remembered_termination(meter: _BudgetMeter) -> str | None:
     raise error
 
 
-class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
+class _MeteredSyncEngine:
+    def __init__(self, owner: _MeteredLearningLM) -> None:
+        self.owner = owner
+
+    def complete(self, request: Request) -> Response:
+        return self.owner._complete(request)
+
+    def stream(self, request: Request) -> Any:
+        return response_to_events(self.complete(request))
+
+    def close(self) -> None:
+        self.owner._lm.close()
+
+
+class _MeteredAsyncEngine:
+    def __init__(self, owner: _MeteredLearningLM) -> None:
+        self.owner = owner
+
+    async def complete(self, request: Request) -> Response:
+        return await self.owner._acomplete(request)
+
+    async def stream(self, request: Request) -> Any:
+        for event in response_to_events(await self.complete(request)):
+            yield event
+
+    async def aclose(self) -> None:
+        await self.owner._lm.aclose()
+
+
+class _MeteredLearningLM(dspy.LM):  # type: ignore[misc]
     """Physical-call budget and learning-only retry around one audited DSPy LM."""
 
-    forward_contract = "typed_lm"
-
     def __init__(
-        self, lm: dspy.BaseLM, *, meter: _BudgetMeter, role: Literal["task", "reflection", "metric_judge"]
+        self, lm: dspy.LM, *, meter: _BudgetMeter, role: Literal["task", "reflection", "metric_judge"]
     ) -> None:
-        super().__init__(
-            model=lm.model,
-            model_type=getattr(lm, "model_type", "chat"),
-            cache=False,
-            num_retries=0,
-            **dict(getattr(lm, "kwargs", {}) or {}),
-        )
         self._lm = lm
         self._meter = meter
         self._role = role
         self.transport_failures = 0
         self.transport_retries = 0
         self.tracefold_compiler_endpoint_identity = getattr(lm, "tracefold_compiler_endpoint_identity", None)
+        super().__init__(
+            model=lm.model,
+            model_type=lm.model_type,
+            cache=False,
+            num_retries=0,
+            engine=_MeteredSyncEngine(self),
+            async_engine=_MeteredAsyncEngine(self),
+        )
 
     @property
     def supports_response_schema(self) -> bool:
@@ -1397,17 +1418,17 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
     def raise_if_terminal(self) -> None:
         self._meter.raise_if_terminal()
 
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-        return self._invoke(lambda: self._lm(request=request))
+    def _complete(self, request: Request) -> Response:
+        return self._invoke(lambda: self._lm(request))
 
-    async def aforward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+    async def _acomplete(self, request: Request) -> Response:
         last: BaseException | None = None
         for attempt in range(_NUM_RETRIES + 1):
             self._meter.before(self._role)
             receipt_index = len(self.ledger.receipts) if self.ledger is not None else None
             try:
-                response = await self._lm.acall(request=request)
-                if not isinstance(response, dspy.LMResponse):
+                response = await self._lm.acall(request)
+                if not isinstance(response, Response):
                     raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
                 receipt_verified = self._settle_error(exc, receipt_index=receipt_index)
@@ -1428,14 +1449,14 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
             return response
         raise last if last is not None else RuntimeError("news_program_compile_lm_retry_invariant")
 
-    def _invoke(self, invoke: Callable[[], Any]) -> dspy.LMResponse:
+    def _invoke(self, invoke: Callable[[], Any]) -> Response:
         last: BaseException | None = None
         for attempt in range(_NUM_RETRIES + 1):
             self._meter.before(self._role)
             receipt_index = len(self.ledger.receipts) if self.ledger is not None else None
             try:
                 response = invoke()
-                if not isinstance(response, dspy.LMResponse):
+                if not isinstance(response, Response):
                     raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
                 receipt_verified = self._settle_error(exc, receipt_index=receipt_index)

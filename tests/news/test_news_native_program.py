@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import asdict
 from typing import Any
 
 import dspy  # type: ignore[import-untyped]
@@ -100,33 +101,13 @@ def _context() -> TriageContext:
     )
 
 
-class _ScriptedLM(dspy.BaseLM):
+class _ScriptedLM(TypedScriptedLM):
     def __init__(self, *outputs: dict[str, Any]) -> None:
-        super().__init__(model="scripted/native-news", cache=False, num_retries=0)
-        self.outputs = list(outputs)
-        self.calls: list[dict[str, Any]] = []
+        super().__init__(list(outputs), model="scripted/native-news")
 
-    def _next(self, *, prompt: Any, messages: Any, kwargs: dict[str, Any]) -> list[str]:
-        self.calls.append({"prompt": prompt, "messages": messages, "kwargs": kwargs})
-        if not self.outputs:
-            raise AssertionError("unexpected LM call")
-        return [json.dumps(self.outputs.pop(0), ensure_ascii=False)]
-
-    def __call__(
-        self,
-        prompt: Any = None,
-        messages: Any = None,
-        **kwargs: Any,
-    ) -> list[str]:
-        return self._next(prompt=prompt, messages=messages, kwargs=kwargs)
-
-    async def acall(
-        self,
-        prompt: Any = None,
-        messages: Any = None,
-        **kwargs: Any,
-    ) -> list[str]:
-        return self._next(prompt=prompt, messages=messages, kwargs=kwargs)
+    @property
+    def calls(self) -> list[dict[str, Any]]:
+        return [asdict(request) for request in self.requests]
 
 
 def _lms() -> tuple[_ScriptedLM, _ScriptedLM, _ScriptedLM]:
@@ -235,7 +216,7 @@ def test_event_semantics_no_longer_accepts_a_taxonomy_field() -> None:
     _unused, taxonomy_lm, card_lm = _lms()
     program = NativeNewsProgram(build_code_owned_program_state())
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(dspy.AdapterParseError):
         program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
 
     assert card_lm.calls == []
@@ -384,7 +365,7 @@ def test_business_output_shape_failures_never_reach_reader_predictor(
     _unused, taxonomy_lm, card_lm = _lms()
     program = NativeNewsProgram(build_code_owned_program_state())
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(dspy.AdapterParseError):
         program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
 
     assert len(event_lm.calls) == 1
@@ -400,16 +381,17 @@ def test_business_output_shape_failures_never_reach_reader_predictor(
     ],
     ids=("unknown-family", "parent-child-subjects", "missing"),
 )
-def test_taxonomy_output_shape_failures_never_reach_reader_predictor(invalid_taxonomy: dict[str, Any]) -> None:
+def test_taxonomy_output_shape_failures_allow_reader_predictor(invalid_taxonomy: dict[str, Any]) -> None:
     event_lm, _unused, card_lm = _lms()
     taxonomy_lm = _ScriptedLM({"taxonomy": invalid_taxonomy}, {"taxonomy": invalid_taxonomy})
     program = NativeNewsProgram(build_code_owned_program_state())
 
-    with pytest.raises(ValidationError):
-        program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
+    result = program(context=_context(), event_lm=event_lm, taxonomy_lm=taxonomy_lm, card_lm=card_lm)
 
     assert len(taxonomy_lm.calls) == 1
-    assert card_lm.calls == []
+    assert len(card_lm.calls) == 1
+    assert result.taxonomy is None
+    assert result.editorial.taxonomy_error_code == "news_program_adapter_parse_error"
 
 
 def test_outer_dspy_envelope_sibling_is_filtered_but_business_model_remains_exact() -> None:

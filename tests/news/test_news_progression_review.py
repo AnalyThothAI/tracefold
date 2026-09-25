@@ -155,7 +155,7 @@ def test_identity_names_native_dspy_render_capability_and_two_call_ceiling() -> 
     object_mode = _program(ScriptedLM([], structured_output="json_object"))
 
     assert schema.identity["program_sha256"] == PROGRESSION_REVIEW_SHA256
-    assert schema.identity["program"]["dspy_version"] == "3.3.1"
+    assert schema.identity["program"]["dspy_version"] == "3.4.0"
     assert schema.identity["program"]["signature"]["instructions"].startswith("You verify whether")
     adapter_identity = schema.identity["program"]["json_adapter"]
     assert adapter_identity["type"] == "dspy.JSONAdapter"
@@ -221,7 +221,7 @@ def test_identity_moves_with_the_runtime_model_and_endpoint() -> None:
     assert len({first.verifier_id, changed_endpoint.verifier_id, changed_model.verifier_id}) == 3
 
 
-def test_strict_answer_validation_can_spend_only_the_json_adapter_fallback() -> None:
+def test_strict_answer_validation_spends_one_physical_call() -> None:
     invalid = {
         "review": {
             "related": False,
@@ -233,7 +233,7 @@ def test_strict_answer_validation_can_spend_only_the_json_adapter_fallback() -> 
     lm = ScriptedLM([invalid, invalid])
     verifier = _program(lm)
 
-    with pytest.raises(ValidationError) as raised:
+    with pytest.raises(dspy.AdapterParseError) as raised:
         asyncio.run(
             verifier.review(
                 event={"leader_title": "Current"},
@@ -244,9 +244,12 @@ def test_strict_answer_validation_can_spend_only_the_json_adapter_fallback() -> 
 
     # Pydantic owns the wording; the contract is which key was refused and why. Matching the
     # sentence would turn a dependency upgrade red and would still pass for the wrong field.
-    assert [(error["type"], error["loc"]) for error in raised.value.errors()] == [("extra_forbidden", ("unexpected",))]
+    assert isinstance(raised.value.__cause__, ValidationError)
+    assert [(error["type"], error["loc"]) for error in raised.value.__cause__.errors()] == [
+        ("extra_forbidden", ("unexpected",))
+    ]
 
-    assert len(lm.requests) == PROGRESSION_REVIEW_MAX_CALLS
+    assert len(lm.requests) == 1
 
 
 def test_answer_must_name_a_visible_candidate() -> None:

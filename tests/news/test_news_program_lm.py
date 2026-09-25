@@ -7,6 +7,7 @@ from typing import Any
 
 import dspy
 import pytest
+from dspy.lm15 import Config, Message, Reasoning, Request, Response, Usage
 from pydantic import BaseModel
 
 from tracefold.news.program.lm import (
@@ -26,6 +27,28 @@ from tracefold.news.program.lm import (
 from tracefold.news.program.runtime import PROGRAM_VERSION
 
 _SHA = "a" * 64
+
+
+def _response(
+    text: str,
+    *,
+    model: str = "scripted/test",
+    usage: Usage | None = None,
+    cost: float | None = None,
+    finish_reason: str = "stop",
+) -> Response:
+    return Response(
+        id=None,
+        model=model,
+        message=Message.assistant(text),
+        finish_reason=finish_reason,
+        usage=usage or Usage(),
+        provider_data={"cost": cost} if cost is not None else None,
+    )
+
+
+def _request(text: str, *, config: Config | None = None) -> Request:
+    return Request(model="scripted/test", messages=(Message.user(text),), config=config or Config())
 
 
 class _Answer(BaseModel):
@@ -97,7 +120,8 @@ def test_native_json_adapter_capability_modes_are_one_public_typed_seam(mode: st
     assert len(delegate.requests) == 1
     response_format = delegate.requests[0].config.response_format
     if expected == "schema":
-        assert isinstance(response_format, type) and issubclass(response_format, BaseModel)
+        assert response_format["type"] == "json_schema"
+        assert response_format["schema"]["properties"]["answer"]
     elif expected == "object":
         assert response_format == {"type": "json_object"}
     else:
@@ -105,24 +129,19 @@ def test_native_json_adapter_capability_modes_are_one_public_typed_seam(mode: st
     assert ledger.receipts[0].terminal_disposition == "provider_success"
 
 
-def test_schema_parse_fallback_records_two_physical_terminal_calls() -> None:
+def test_schema_parse_failure_records_one_physical_terminal_call() -> None:
     lm, delegate, ledger = _audited(["not-json", {"answer": {"value": 42}}])
 
-    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
-        prediction = _predict(lm)
+    with pytest.raises(dspy.AdapterParseError), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
+        _predict(lm)
 
-    assert prediction.answer.value == 42
-    assert len(delegate.requests) == 2
-    assert [receipt.attempt for receipt in ledger.receipts] == [1, 2]
-    assert [receipt.terminal_disposition for receipt in ledger.receipts] == [
-        "adapter_parse_error",
-        "provider_success",
-    ]
-    assert isinstance(delegate.requests[0].config.response_format, type)
-    assert delegate.requests[1].config.response_format == {"type": "json_object"}
+    assert len(delegate.requests) == 1
+    assert [receipt.attempt for receipt in ledger.receipts] == [1]
+    assert [receipt.terminal_disposition for receipt in ledger.receipts] == ["adapter_parse_error"]
+    assert delegate.requests[0].config.response_format["type"] == "json_schema"
 
 
-def test_external_admission_refuses_second_format_attempt_before_receipt_or_provider() -> None:
+def test_external_admission_runs_once_before_parse_failure() -> None:
     admitted = 0
 
     def before_call() -> None:
@@ -134,7 +153,7 @@ def test_external_admission_refuses_second_format_attempt_before_receipt_or_prov
     ledger = LMCallLedger(before_call=before_call)
     lm, delegate, _ = _audited(["not-json", {"answer": {"value": 42}}], ledger=ledger)
 
-    with pytest.raises(dspy.LMConfigurationError), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
+    with pytest.raises(dspy.AdapterParseError), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
     assert admitted == 1
@@ -234,16 +253,10 @@ def test_late_completion_reclassifies_latest_success_without_synthetic_call() ->
 
 
 def test_receipt_converts_to_program_call_trace_with_physical_usage() -> None:
-    response = dspy.LMResponse.from_text(
+    response = _response(
         '{"answer":{"value":42}}',
         model="scripted/test-actual",
-        usage={
-            "input_tokens": 11,
-            "output_tokens": 7,
-            "total_tokens": 18,
-            "cache_read_tokens": 3,
-            "prompt_tokens_details": {"cached_tokens": 5},
-        },
+        usage=Usage(input_tokens=11, output_tokens=7, total_tokens=18, cache_read_tokens=5),
         cost=0.0000125,
     )
     lm, _, ledger = _audited([response])
@@ -271,22 +284,16 @@ def test_recorded_lm_replays_exact_success_and_never_falls_through() -> None:
     replay = _recorded_lm({receipt.request_sha256: receipt.recording}, model=delegate.model)
 
     response = replay(request=delegate.requests[0])
-    assert isinstance(response, dspy.LMResponse)
+    assert isinstance(response, Response)
     assert response.text == '{"answer":{"value":42}}'
 
-    different = dspy.LMRequest.from_call(
-        model=delegate.model,
-        messages=[{"role": "user", "content": "different"}],
-    )
+    different = _request("different")
     with pytest.raises(RecordedLMMiss):
         replay(request=different)
 
 
 def test_request_and_invocation_addresses_bind_endpoint_and_predictor_slot() -> None:
-    request = dspy.LMRequest.from_call(
-        model="scripted/test",
-        messages=[{"role": "user", "content": "same"}],
-    )
+    request = _request("same")
     endpoint_a = "1" * 64
     endpoint_b = "2" * 64
 
@@ -389,29 +396,28 @@ def test_recorded_lm_replays_safe_provider_error(error: dspy.LMError) -> None:
     assert captured.value.retry_after == error.retry_after
 
 
-def test_recorded_lm_preserves_schema_invalid_fallback_sequence() -> None:
+def test_recorded_lm_preserves_schema_invalid_terminal() -> None:
     lm, delegate, ledger = _audited(["not-json", {"answer": {"value": 42}}])
-    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
+    with pytest.raises(dspy.AdapterParseError), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
     recordings = {
         receipt.request_sha256: receipt.recording for receipt in ledger.receipts if receipt.recording is not None
     }
     replay = _recorded_lm(recordings, model=delegate.model)
 
-    prediction = _predict(replay)
-
-    assert prediction.answer.value == 42
-    assert len(replay.requests) == 2
+    with pytest.raises(dspy.AdapterParseError):
+        _predict(replay)
+    assert len(replay.requests) == 1
 
 
 def test_truncation_is_one_provider_answer_and_replay_preserves_it() -> None:
-    response = dspy.LMResponse.from_text(
+    response = _response(
         '{"answer":',
         model="scripted/test",
-        usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+        usage=Usage(input_tokens=11, output_tokens=7, total_tokens=18),
         cost=0.000003,
+        finish_reason="length",
     )
-    response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
     lm, delegate, ledger = _audited([response])
 
     with pytest.raises(LMOutputTruncatedError), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
@@ -448,16 +454,17 @@ def test_truncation_is_one_provider_answer_and_replay_preserves_it() -> None:
 
 
 def test_request_projection_normalizes_dynamic_response_schema_without_credentials() -> None:
-    request = dspy.LMRequest.from_call(
-        model="scripted/test",
-        messages=[{"role": "user", "content": "hello"}],
-        response_format=_Answer,
-        extra_body={"thinking": {"type": "disabled"}},
+    request = _request(
+        "hello",
+        config=Config(
+            response_format={"type": "json_schema", "schema": _Answer.model_json_schema()},
+            extensions={"extra_body": {"thinking": {"type": "disabled"}}},
+        ),
     )
 
     projection = lm_request_projection(request)
 
-    assert projection["config"]["response_format"]["properties"]["value"]["type"] == "integer"
+    assert projection["config"]["response_format"]["schema"]["properties"]["value"]["type"] == "integer"
     assert projection["config"]["extensions"]["extra_body"] == {"thinking": {"type": "disabled"}}
     assert "api_key" not in repr(projection)
 
@@ -465,21 +472,17 @@ def test_request_projection_normalizes_dynamic_response_schema_without_credentia
 @pytest.mark.parametrize(
     "unsafe_config",
     [
-        {"reasoning": {"effort": "high"}},
-        {"prompt_cache": {"enabled": True, "key": "cache-key"}},
-        {"extra_body": {"access_token": "credential"}},
-        {"extra_body": {"proxy": "https://user:password@example.test/v1"}},
+        {"reasoning": Reasoning(effort="high")},
+        {"extensions": {"prompt_cache": {"enabled": True, "key": "cache-key"}}},
+        {"extensions": {"extra_body": {"access_token": "credential"}}},
+        {"extensions": {"extra_body": {"proxy": "https://user:password@example.test/v1"}}},
         {"stop": ["api_key=credential"]},
     ],
 )
 def test_request_projection_rejects_unreviewed_or_secret_shaped_config(
     unsafe_config: dict[str, Any],
 ) -> None:
-    request = dspy.LMRequest.from_call(
-        model="scripted/test",
-        messages=[{"role": "user", "content": "hello"}],
-        **unsafe_config,
-    )
+    request = _request("hello", config=Config(**unsafe_config))
 
     with pytest.raises(dspy.LMConfigurationError):
         lm_request_projection(request)

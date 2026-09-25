@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.helpers.nautilus_oi_runtime_process import PostgresRuntime, run_runtime_on_postgres
-from tests.helpers.published_signal_v2 import append_published_v2_signal, execution_fixture_profile
+from tests.helpers.published_signal_v3 import append_published_v3_signal, execution_fixture_profile
 from tests.nautilus_oi_runtime_fixtures import (
     MARKET,
     NOW_NS,
@@ -65,7 +65,7 @@ def _seed_signal(
         repo = TradingRepository(conn)
         with conn.transaction():
             repo.ensure_execution_runtime_control_state(_ACCOUNT_SLOT, now_ns=NOW_NS)
-        append_published_v2_signal(
+        append_published_v3_signal(
             repo,
             signal_id=signal_id,
             case_id=case_id,

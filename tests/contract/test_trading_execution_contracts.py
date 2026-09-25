@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -8,23 +9,41 @@ from pydantic import ValidationError
 from tracefold.trading.execution_contracts import (
     ExecutionObservationV1,
     OperatorIntentV1,
-    TradeSignalV1,
+    SignalEntryEnvelopeV3,
+    SignalExitPlanV1,
+    TradeSignalV3,
 )
 
 
-def _signal(**updates: object) -> TradeSignalV1:
+def _signal(**updates: object) -> TradeSignalV3:
     payload: dict[str, object] = {
-        "signal_version": "trade_signal_v1",
+        "signal_version": "trade_signal_v3",
         "seq": 1,
         "signal_id": "a" * 64,
         "case_id": "case-btc-long",
+        "decision_id": "b" * 64,
+        "account_slot": "binance-usdm-demo-v1",
+        "runtime_mode": "paper",
+        "entry_scope_id": "c" * 64,
+        "asset_id": "crypto:BTC",
         "market_key": "crypto:perp:BTC:USDT",
+        "native_symbol": "BTCUSDT",
+        "mapping_semantics_digest": "d" * 64,
         "direction": "long",
         "observed_at_ns": 1_000,
         "expires_at_ns": 2_000,
+        "exit_plan": SignalExitPlanV1(stop_distance_bps=100, take_profit_bps=200, max_holding_ns=1_000),
+        "entry_envelope": SignalEntryEnvelopeV3(
+            plan_id="e" * 64,
+            entry_kind="immediate_entry_v1",
+            root_expires_at_ns=2_000,
+            reference_price=Decimal("100"),
+            max_price_drift_bps=100,
+            universe_version="test-v1",
+        ),
     }
     payload.update(updates)
-    return TradeSignalV1.model_validate(payload)
+    return TradeSignalV3.model_validate(payload)
 
 
 def _intent(**updates: object) -> OperatorIntentV1:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..program.contracts import ProgramTrace, ProgramUsage, TriageContext
+from ..program.contracts import ProgramTrace, ProgramUsage, TriageContext, aggregate_program_usage
 from ..reader_history import ReaderHistorySnapshot
 
 
@@ -53,18 +53,12 @@ def _usage_from_partial_trace(program_trace: ProgramTrace | None, *, attempts: i
 
     calls = tuple(program_trace.calls) if program_trace is not None else ()
     physical_calls = tuple(call for call in calls if call.physical_provider_call)
-    costs = [call.provider_cost_microusd for call in physical_calls]
+    usage = aggregate_program_usage(calls)
     return {
         "wall_latency_ms": sum(call.latency_ms for call in physical_calls),
+        **usage,
         "call_count": len(calls) if calls else max(0, int(attempts)),
-        "physical_call_count": len(physical_calls),
-        "input_tokens": sum(call.input_tokens for call in physical_calls),
-        "output_tokens": sum(call.output_tokens for call in physical_calls),
-        "cached_tokens": sum(call.cached_tokens for call in physical_calls),
-        "total_tokens": sum(call.total_tokens for call in physical_calls),
-        "provider_cost_microusd": (
-            sum(int(cost) for cost in costs if cost is not None) if all(cost is not None for cost in costs) else None
-        ),
+        "provider_cost_microusd": 0 if not physical_calls else usage["provider_cost_microusd"],
     }
 
 
@@ -130,6 +124,7 @@ def _sync_program_audit(
             "output_tokens",
             "cached_tokens",
             "total_tokens",
+            "usage_coverage",
             "provider_cost_microusd",
             "program_execution_index",
             "program_trace",
@@ -161,6 +156,14 @@ def _sync_program_audit(
         for execution in executions
         if int(dict(execution.get("usage") or {}).get("physical_call_count") or 0) > 0
     ]
+    trace["usage_coverage"] = (
+        "unknown"
+        if not physical_call_bearing
+        or all(item.get("usage_coverage") in (None, "unknown") for item in physical_call_bearing)
+        else "complete"
+        if all(item.get("usage_coverage") == "complete" for item in physical_call_bearing)
+        else "partial"
+    )
     trace["provider_cost_microusd"] = (
         sum(int(usage["provider_cost_microusd"]) for usage in physical_call_bearing)
         if all(usage.get("provider_cost_microusd") is not None for usage in physical_call_bearing)

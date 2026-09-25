@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from types import SimpleNamespace
 
-import dspy
 import pytest
+from dspy.lm15 import Message, Response, Usage
 
 from tests.integration.test_trading_analysis_storage import _selection
 from tests.postgres_test_utils import (
@@ -19,11 +18,12 @@ from tests.postgres_test_utils import (
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.llm import ConfiguredLMEndpoint
 from tracefold.app.trading_analysis import AnalysisRunner, FrameReader
-from tracefold.app.trading_analyst import AnalystCallReceipt, TradeAnalyst, _WireAssessment
+from tracefold.app.trading_analyst import AnalystCallReceipt, TradeAnalyst
+from tracefold.news.program.lm import ScriptedLM
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.config.models import PostgresConfig, Settings
-from tracefold.trading.engine.contracts import AgentAssessment
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
+from tracefold.trading.engine.plans import AnalysisProposal
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
@@ -76,14 +76,14 @@ class _Market:
 
 class _Analyst:
     async def assess(self, brief):
-        answer = AgentAssessment(
+        answer = AnalysisProposal(
             action="NO_TRADE",
             public_rationale="The frozen evidence is insufficient to trade.",
             supporting_evidence=("market:perp_bars",),
         )
         return AnalystCallReceipt(
             brief_sha=brief.sha,
-            menu_sha=brief.candidate_menu_sha,
+            menu_sha=brief.plan_menu_sha,
             prompt_sha="a" * 64,
             model="fixture",
             started_at_ms=1,
@@ -121,6 +121,8 @@ def test_oi_case_does_not_require_optional_current_market_oi(tmp_path) -> None:
     reader = FrameReader(MissingOi(), AnalysisFiles(tmp_path / "oi-evidence"))
     case = {
         "case_id": "missing-oi",
+        "trigger_id": "missing-oi-trigger",
+        "root_expires_at_ms": int(time.time() * 1000) + 600_000,
         "target_selection": {
             "reason": "selected",
             "asset_id": "crypto:SOL",
@@ -131,7 +133,7 @@ def test_oi_case_does_not_require_optional_current_market_oi(tmp_path) -> None:
     prepared = asyncio.run(
         reader.prepare(case=case, source_fact=source, source_first_visible_at_ms=int(time.time() * 1000) - 30_000)
     )
-    assert len(prepared.candidates) == 2
+    assert len(prepared.plans) >= 2
 
 
 def test_catalyst_source_headline_is_citable_only_when_present(tmp_path) -> None:
@@ -139,6 +141,8 @@ def test_catalyst_source_headline_is_citable_only_when_present(tmp_path) -> None
     reader = FrameReader(_Market(), AnalysisFiles(tmp_path / "catalyst-evidence"))
     case = {
         "case_id": "catalyst-source",
+        "trigger_id": "catalyst-source-trigger",
+        "root_expires_at_ms": now_ms + 600_000,
         "created_at_ms": now_ms - 500,
         "target_selection": {
             "reason": "selected",
@@ -393,41 +397,48 @@ def test_runner_persists_physical_request_before_dispatch(tmp_path, monkeypatch:
                 root_ttl_ms=600_000,
             )
 
-        class Predictor:
-            async def acall(self, **kwargs: object) -> SimpleNamespace:
-                await kwargs["lm"].aforward(messages=[{"role": "user", "content": "frozen"}])
-                return SimpleNamespace(
-                    assessment=_WireAssessment.model_validate(
-                        AgentAssessment(
-                            action="NO_TRADE",
-                            public_rationale="No eligible entry.",
-                            supporting_evidence=("market:perp_bars",),
-                        ).model_dump()
-                    )
-                )
-
-        class Response:
-            def __init__(self) -> None:
-                self.usage = {"prompt_tokens": 10, "completion_tokens": 5}
-                self._hidden_params = {"response_cost": 0.00001}
-
-            def model_dump(self, *, mode: str) -> dict[str, bool]:
-                assert mode == "json"
-                return {"ok": True}
-
-        async def provider(*_args: object, **_kwargs: object) -> Response:
+        def provider(_request: object) -> Response:
             pre_dispatch = conn.execute(
                 "SELECT status,response_ref FROM trading_model_calls WHERE case_id=%s", (case_id,)
             ).fetchone()
             assert pre_dispatch == {"status": "requested", "response_ref": None}
-            return Response()
+            return Response(
+                id="fixture-call",
+                model="scripted/test",
+                message=Message.assistant(
+                    json.dumps(
+                        {
+                            "next_thought": "Enough information.",
+                            "next_tool_name": "finish",
+                            "next_tool_args": {},
+                        }
+                    )
+                ),
+                finish_reason="stop",
+                usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
+                provider_data={"cost": 0.00001},
+            )
 
-        monkeypatch.setattr(dspy.LM, "aforward", provider)
         analyst = TradeAnalyst(
             ConfiguredLMEndpoint(
-                model_name="openai/test-model", api_key="fixture", api_base="http://localhost:1/v1", model_kwargs={}
+                model_name="scripted/test", api_key="fixture", api_base="http://localhost:1/v1", model_kwargs={}
             ),
-            predictor=Predictor(),
+            delegate=ScriptedLM(
+                [
+                    provider,
+                    {
+                        "reasoning": "No plan selected.",
+                        "proposal": {
+                            "action": "NO_TRADE",
+                            "selected_plan_id": None,
+                            "public_rationale": "No eligible entry.",
+                            "supporting_evidence": [],
+                            "opposing_evidence": [],
+                            "judgment_refs": [],
+                        },
+                    },
+                ]
+            ),
         )
         settings = Settings()
         settings.storage.postgres = PostgresConfig(dsn=postgres_migration_test_dsn(), password_file=None)
@@ -485,18 +496,13 @@ def test_provider_timeout_keeps_requested_call_and_unknown_cost_on_failed_case(
                 root_ttl_ms=600_000,
             )
 
-        class Predictor:
-            async def acall(self, **kwargs: object) -> None:
-                await kwargs["lm"].aforward(messages=[{"role": "user", "content": "frozen"}])
-
-        async def provider(*_args: object, **_kwargs: object) -> None:
+        def provider(_request: object) -> None:
             assert (
                 conn.execute("SELECT status FROM trading_model_calls WHERE case_id=%s", (case_id,)).fetchone()["status"]
                 == "requested"
             )
             raise TimeoutError("fixture timeout")
 
-        monkeypatch.setattr(dspy.LM, "aforward", provider)
         if finish_callback_lost:
 
             def fail_finish(*_args: object, **_kwargs: object) -> None:
@@ -505,9 +511,9 @@ def test_provider_timeout_keeps_requested_call_and_unknown_cost_on_failed_case(
             monkeypatch.setattr(TradingRepository, "record_model_call_finish", fail_finish)
         analyst = TradeAnalyst(
             ConfiguredLMEndpoint(
-                model_name="openai/test-model", api_key="fixture", api_base="http://localhost:1/v1", model_kwargs={}
+                model_name="scripted/test", api_key="fixture", api_base="http://localhost:1/v1", model_kwargs={}
             ),
-            predictor=Predictor(),
+            delegate=ScriptedLM([provider]),
         )
         settings = Settings()
         settings.storage.postgres = PostgresConfig(dsn=postgres_migration_test_dsn(), password_file=None)
@@ -531,17 +537,18 @@ def test_provider_timeout_keeps_requested_call_and_unknown_cost_on_failed_case(
             "WHERE c.case_id=%s",
             (case_id,),
         ).fetchone()
-        assert row["state"] == "FAILED" and row["analysis_status"] == "model_timeout"
-        assert row["error_code"] == "model_timeout" and row["settled"] is True
+        expected_error = "model_call_record_failed" if finish_callback_lost else "model_timeout"
+        assert row["state"] == "FAILED" and row["analysis_status"] == expected_error
+        assert row["error_code"] == expected_error and row["settled"] is True
         assert (
             row["physical_call_count"] == 1 and row["cost_unknown_reason"] == "one_or_more_physical_costs_unavailable"
         )
         assert row["call_cost_reason"] == "provider_cost_unavailable"
         assert row["call_status"] == "result_unknown" and row["finished_at_ms"] is not None
         files = AnalysisFiles(files_root)
-        assert files.read(row["request_ref"])["messages"][0]["content"] == "frozen"
+        assert files.read(row["request_ref"])["request"]["messages"]
         assert row["response_ref"] is None
-        assert files.read(row["assessment_ref"])["validation_status"] == "model_timeout"
+        assert files.read(row["assessment_ref"])["validation_status"] == expected_error
         assert files.read(row["assessment_ref"])["physical_calls"][0]["error_type"] == "TimeoutError"
         assert (
             conn.execute("SELECT count(*) FROM trading_case_decisions WHERE case_id=%s", (case_id,)).fetchone()[0] == 0

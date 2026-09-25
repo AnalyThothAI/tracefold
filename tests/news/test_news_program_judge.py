@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import dspy  # type: ignore[import-untyped]
 import pytest
+from dspy.lm15 import Message, Request, Response, Usage, response_to_events
 
 from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.learning.contracts import (
@@ -50,10 +51,22 @@ _REWORDED = {
 _UNRELATED = {"headline_zh": "美联储维持利率不变", "why_zh": "政策利率不变，短端美债定价的加息预期落空"}
 
 
-class _JudgeDelegate(dspy.BaseLM):  # type: ignore[misc]
-    """Typed provider double below the real DSPy adapter and audited LM seam."""
+class _JudgeEngine:
+    def __init__(self, owner: _JudgeDelegate) -> None:
+        self.owner = owner
 
-    forward_contract = "typed_lm"
+    def complete(self, request: Request) -> Response:
+        return self.owner._complete(request)
+
+    def stream(self, request: Request) -> Any:
+        return response_to_events(self.complete(request))
+
+    def close(self) -> None:
+        pass
+
+
+class _JudgeDelegate(dspy.LM):
+    """Native engine double below the real DSPy adapter and audited LM seam."""
 
     def __init__(
         self,
@@ -63,16 +76,16 @@ class _JudgeDelegate(dspy.BaseLM):  # type: ignore[misc]
         fail: bool = False,
         steps: list[Any] | None = None,
     ) -> None:
-        super().__init__("scripted/judge", cache=False, num_retries=0)
+        super().__init__("scripted/judge", cache=False, num_retries=0, engine=_JudgeEngine(self))
         self._verdict = verdict or CardEquivalence(headline_equivalent=True, why_equivalent=True, facts_preserved=True)
         self._facts_supported = facts_supported
         self._fail = fail
         self._steps = list(steps or [])
         self.calls = 0
-        self.requests: list[dspy.LMRequest] = []
+        self.requests: list[Request] = []
         self._calls_lock = threading.Lock()
 
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+    def _complete(self, request: Request) -> Response:
         with self._calls_lock:
             self.calls += 1
             call_number = self.calls
@@ -87,21 +100,19 @@ class _JudgeDelegate(dspy.BaseLM):  # type: ignore[misc]
             text = step if isinstance(step, str) else canonical_json(step)
         else:
             response_schema = request.config.response_format
-            schema_text = (
-                canonical_json(cast(Any, response_schema).model_json_schema())
-                if isinstance(response_schema, type)
-                else ""
-            )
+            schema_text = canonical_json(cast(Any, response_schema)) if response_schema is not None else ""
             verdict: CardEquivalence | FactualEvidenceSupport
             if "supported_by_evidence" in schema_text:
                 verdict = FactualEvidenceSupport(supported_by_evidence=self._facts_supported)
             else:
                 verdict = self._verdict
             text = canonical_json({"verdict": verdict.model_dump(mode="json")})
-        return dspy.LMResponse.from_text(
-            text,
+        return Response(
+            id=None,
             model=self.model,
-            usage={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+            message=Message.assistant(text),
+            finish_reason="stop",
+            usage=Usage(input_tokens=12, output_tokens=8, total_tokens=20),
         )
 
     def _before_answer(self, call_number: int) -> None:
@@ -418,10 +429,10 @@ def test_json_format_fallback_spends_one_global_admission_per_physical_call() ->
 
     answered = allowed.equivalence(_ACCEPTED, _REWORDED)
 
-    assert answered.status == "answered"
-    assert allowed_lm.calls == 2
-    assert allowed.stats["model_calls"] == 2
-    assert allowed.stats["cache_entries"] == 1
+    assert answered.status == "unavailable"
+    assert allowed_lm.calls == 1
+    assert allowed.stats["model_calls"] == 1
+    assert allowed.stats["cache_entries"] == 0
 
 
 def test_judge_rejects_a_role_binding_that_does_not_match_its_own_ceiling() -> None:
@@ -468,7 +479,7 @@ def test_metric_receipt_pins_the_judge_identity() -> None:
     assert judged["semantic_judge"]["implementation_source_sha256"]
     adapter = judged["semantic_judge"]["adapter"]
     assert adapter["implementation"] == "dspy.JSONAdapter"
-    assert adapter["dspy_version"] == "3.3.1"
+    assert adapter["dspy_version"] == "3.4.0"
     assert adapter["program_sha256"] == JUDGE_PROGRAM_SHA256
     assert len(adapter["equivalence_render_sha256"]) == 64
     assert len(adapter["factual_evidence_render_sha256"]) == 64

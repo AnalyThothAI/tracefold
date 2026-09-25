@@ -96,6 +96,12 @@ llm:
       temperature: 0
       structured_output: "auto"
       extra_body: {{}}
+  trading_semantics:
+    # Optional System One route. OpenRouter: https://openrouter.ai/api, jev-latest.
+    # Future direct route uses https://api.typesafe.ai with its own key/model.
+    api_key:
+    base_url:
+    model:
 
 news:
   enabled: true

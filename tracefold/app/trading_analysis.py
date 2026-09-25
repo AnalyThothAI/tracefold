@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from tracefold.app.analysis_files import AnalysisFiles
+from tracefold.app.system_one import SystemOneConnection
 from tracefold.app.trading_analyst import PhysicalModelCall, TradeAnalyst
+from tracefold.app.trading_tools import CaseToolContext
 from tracefold.platform.market_identity import (
     AssetId,
     AssetRegistry,
@@ -26,7 +28,7 @@ from tracefold.platform.market_identity import (
     VerifiedAlias,
 )
 from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
-from tracefold.trading.engine.contracts import Candidate, ExitPlan
+from tracefold.trading.engine.contracts import ExitPlan
 from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
 from tracefold.trading.engine.features import (
     PROFILE_VERSION,
@@ -36,26 +38,27 @@ from tracefold.trading.engine.features import (
 )
 from tracefold.trading.engine.marketdata import Dataset, MarketDataPort, MarketDataRequest, MarketDataResult
 from tracefold.trading.engine.outcomes import price_path_label
-from tracefold.trading.engine.policy import InvalidAssessment, compile_assessment, decision_identity
-from tracefold.trading.engine.strategy import (
+from tracefold.trading.engine.plans import (
     ENTRY_WINDOW_MS,
     MAX_HOLDING_SECONDS,
     STRATEGY_VERSION,
-    build_event_price_candidates,
-    range_cross_side,
-    triggered_candidate,
+    EntryPlan,
+    build_entry_plans,
+    compile_proposal,
+    directed_cross,
 )
+from tracefold.trading.engine.policy import InvalidAssessment, decision_identity
 from tracefold.trading.engine.target import SourceAsset, TargetSelection, select_target
 from tracefold.trading.execution_contracts import (
-    SignalEntryEnvelopeV2,
+    SignalEntryEnvelopeV3,
     SignalExitPlanV1,
-    TradeSignalV2,
+    TradeSignalV3,
     market_key,
 )
-from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prepare_trade_signal_v2
+from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prepare_trade_signal_v3
 
 _BAR_MS = 60_000
-_PROFILE_BARS = 16
+_PROFILE_BARS = 241
 _LOG = logging.getLogger(__name__)
 _FILE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-files")
 
@@ -75,9 +78,9 @@ class PreparedAnalysis:
     evidence_ref: str
     brief_ref: str
     brief: AnalystBrief
-    candidates: tuple[Candidate, ...]
     reference_price: Decimal
     reference_at_ms: int
+    plans: tuple[EntryPlan, ...]
 
 
 class FrozenEvidenceError(ValueError):
@@ -102,6 +105,7 @@ class FrameReader:
         execution_environment: str | None = None,
         source_history: tuple[dict[str, Any], ...] = (),
         source_history_at: Callable[[int], Awaitable[tuple[dict[str, Any], ...]]] | None = None,
+        source_revision: str | None = None,
     ) -> PreparedAnalysis:
         selection = dict(case["target_selection"])
         instrument = selection.get("instrument")
@@ -214,7 +218,7 @@ class FrameReader:
                 for result in results.values()
             ):
                 raise ValueError("market_data_received_after_cutoff")
-            if results["perp_bars"].status != "ok":
+            if not results["perp_bars"].payload:
                 raise ValueError("required_perp_price_unavailable")
             last_bar = results["perp_bars"].payload[-1]
             reference_price = Decimal(str(last_bar["close"]))
@@ -223,36 +227,22 @@ class FrameReader:
                 raise ValueError("entry_reference_price_stale")
             features = extract_features(results, source_fact)
             trigger_context = dict(case.get("manifest") or {}) if case.get("run_kind") == "conditional" else None
-            candidates: tuple[Candidate, ...]
-            if trigger_context is not None:
-                condition = trigger_context["watch_condition"]
-                reference_price = Decimal(str(trigger_context["watch_observed_value"]))
-                reference_at_ms = int(trigger_context["watch_observed_at_ms"])
-                candidates = (
-                    triggered_candidate(
-                        asset_id=str(selection["asset_id"]),
-                        instrument_semantics_digest=str(instrument["mapping_semantics_digest"]),
-                        condition=condition,
-                        trigger_side=trigger_context["watch_trigger_side"],
-                        trigger_at_ms=reference_at_ms,
-                        trigger_close=reference_price,
-                        previous_close=Decimal(str(trigger_context["watch_previous_close"])),
-                        latest_closed_rows=results["perp_bars"].payload,
-                    ),
-                )
-            else:
-                candidates = build_event_price_candidates(
-                    asset_id=str(selection["asset_id"]),
-                    instrument_semantics_digest=str(instrument["mapping_semantics_digest"]),
-                    source_fact=source_fact,
-                    source_first_visible_at_ms=source_first_visible_at_ms,
-                    perp_rows=results["perp_bars"].payload,
-                )
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise FrozenEvidenceError(str(exc), failure_evidence_ref) from exc
         snapshot["features"] = features
+        plans = build_entry_plans(
+            asset_id=str(selection["asset_id"]),
+            instrument_semantics_digest=str(instrument["mapping_semantics_digest"]),
+            source_revision=source_revision
+            or str((case.get("manifest") or {}).get("source_payload_sha") or case["trigger_id"]),
+            source_fact=source_fact,
+            source_first_visible_at_ms=source_first_visible_at_ms,
+            root_expires_at_ms=int(case["root_expires_at_ms"]),
+            perp_rows=results["perp_bars"].payload,
+            parent_condition=None if trigger_context is None else trigger_context.get("watch_condition"),
+        )
+        snapshot["plan_menu"] = [plan.model_dump(mode="json") for plan in plans]
         snapshot["entry_reference"] = {"price": str(reference_price), "closed_at_ms": reference_at_ms}
-        snapshot["candidate_menu"] = [candidate.model_dump(mode="json") for candidate in candidates]
         if trigger_context is not None:
             snapshot["trigger_context"] = trigger_context
         evidence_ref = await _file_io(self.files.write, snapshot)
@@ -297,6 +287,7 @@ class FrameReader:
             "spot_bars": ("close", "high", "low", "quote_volume"),
             "market_bars": ("close", "high", "low", "quote_volume"),
             "open_interest": ("open_interest_quantity",),
+            "open_interest_history": ("sum_open_interest_quantity", "sum_open_interest_value"),
             "funding_basis": ("mark_price", "index_price", "last_funding_rate"),
             "instrument_rules": (
                 "trading_status",
@@ -350,12 +341,12 @@ class FrameReader:
             source_history=source_history,
             evidence=brief_evidence,
             features=features,
-            candidates=candidates,
+            plans=plans,
             trigger_context=trigger_context,
             typed_evidence=typed_evidence.model_dump(mode="json"),
         )
         brief_ref = await _file_io(self.files.write, {"brief_json": brief.text})
-        return PreparedAnalysis(evidence_ref, brief_ref, brief, candidates, reference_price, reference_at_ms)
+        return PreparedAnalysis(evidence_ref, brief_ref, brief, reference_price, reference_at_ms, plans)
 
 
 def _assets(payload: dict[str, Any]) -> tuple[SourceAsset, ...]:
@@ -477,11 +468,13 @@ class AnalysisRunner:
         analyst: TradeAnalyst | None,
         files_root: Path,
         max_active_cases: int = 8,
+        semantics: SystemOneConnection | None = None,
     ) -> None:
         self.settings = settings
         self.files = AnalysisFiles(files_root)
         self.reader = FrameReader(market_data, self.files)
         self.analyst = analyst
+        self.semantics = semantics
         self._max_active_cases = max_active_cases
         self._root_ttl_ms = settings.trading.analysis.root_ttl_seconds * 1000
         self._lease_ms = (settings.trading.analysis.model_timeout_seconds + 20) * 1000
@@ -535,17 +528,17 @@ class AnalysisRunner:
         brief_artifact = await _file_io(self.files.read, brief_ref)
         brief_text = brief_artifact["brief_json"]
         brief_payload = json.loads(brief_text)
-        menu = snapshot["candidate_menu"]
+        menu = snapshot.get("plan_menu")
         if (
             snapshot["case_id"] != case["case_id"]
             or not isinstance(menu, list)
-            or brief_payload["candidate_menu"] != menu
+            or brief_payload.get("plan_menu") != menu
             or brief_payload["target_asset_id"] != case["target_asset_id"]
             or brief_payload["instrument_semantics_digest"] != case["mapping_semantics_digest"]
-            or brief_payload["candidate_menu_sha"] != hashlib.sha256(canonical_json(menu).encode()).hexdigest()
+            or brief_payload.get("plan_menu_sha") != hashlib.sha256(canonical_json(menu).encode()).hexdigest()
         ):
             raise ValueError("frozen_analysis_snapshot_mismatch")
-        candidates = tuple(Candidate.model_validate_json(canonical_json(item)) for item in menu)
+        plans = tuple(EntryPlan.model_validate_json(canonical_json(item)) for item in menu)
         reference = snapshot["entry_reference"]
         return PreparedAnalysis(
             evidence_ref=evidence_ref,
@@ -553,22 +546,17 @@ class AnalysisRunner:
             brief=AnalystBrief(
                 text=brief_text,
                 sha=hashlib.sha256(brief_text.encode()).hexdigest(),
-                candidate_menu_sha=brief_payload["candidate_menu_sha"],
+                plan_menu_sha=brief_payload["plan_menu_sha"],
                 evidence_catalog=brief_payload["evidence"],
             ),
-            candidates=candidates,
             reference_price=Decimal(str(reference["price"])),
             reference_at_ms=int(reference["closed_at_ms"]),
+            plans=plans,
         )
 
     async def relay_once(self, *, batch_size: int = 64) -> int:
         events = await self._db_async(lambda repos: repos.news.unacknowledged_trade_events(limit=batch_size))
-        environment = (
-            "demo"
-            if self.settings.trading.analysis.strategy_publication_enabled
-            and self.settings.trading.execution.mode == "paper"
-            else "live"
-        )
+        environment = self.settings.trading.analysis.data_environment
         for event in events:
             try:
                 selection = await self._db_async(
@@ -641,6 +629,7 @@ class AnalysisRunner:
         assessment_ref = None
         brief_ref = None
         receipt = None
+        tool_context: CaseToolContext | None = None
         decision = None
         prepared_signal: PreparedTradeSignal | None = None
         publish_block_reason: str | None = None
@@ -674,6 +663,7 @@ class AnalysisRunner:
                     case=case,
                     source_fact=source["payload"],
                     source_first_visible_at_ms=int(source["first_visible_at_ms"]),
+                    source_revision=str(source["source_revision"]),
                     execution_environment=self.settings.trading.execution.mode,
                     source_history_at=source_history_at,
                 )
@@ -697,6 +687,31 @@ class AnalysisRunner:
                 status = "policy_unconfigured"
             else:
 
+                async def tool_authorized() -> bool:
+                    return bool(
+                        await self._db_async(
+                            lambda repos: repos.trading.analysis_tool_authorized(
+                                case_id=case["case_id"],
+                                claim_attempt=int(case["claim_attempt"]),
+                                claim_token=case["claim_token"],
+                                now_ms=_clock_ms(),
+                            )
+                        )
+                    )
+
+                tool_context = CaseToolContext(
+                    case=case,
+                    source=source,
+                    source_first_visible_at_ms=int(source["first_visible_at_ms"]),
+                    prepared=prepared,
+                    market_data=self.reader.market_data,
+                    files=self.files,
+                    file_io=_file_io,
+                    authorize=tool_authorized,
+                    source_history_at=source_history_at,
+                    semantics=self.semantics,
+                )
+
                 async def before_call(
                     call_index: int,
                     request_payload: dict[str, Any] | None,
@@ -715,6 +730,10 @@ class AnalysisRunner:
                             now_ms=_clock_ms(),
                             timeout_ms=timeout_ms,
                             reserved_cost_microusd=cost_bound,
+                            phase=str((request_payload or {}).get("phase") or "react"),
+                            endpoint=(request_payload or {}).get("endpoint"),
+                            requested_model=(request_payload or {}).get("requested_model")
+                            or (((request_payload or {}).get("request") or {}).get("model")),
                         ),
                         transaction=True,
                     )
@@ -727,7 +746,7 @@ class AnalysisRunner:
                         if call.response_payload is not None
                         else None
                     )
-                    await self._db_async(
+                    recorded = await self._db_async(
                         lambda repos: repos.trading.record_model_call_finish(
                             case_id=case["case_id"],
                             claim_attempt=int(case["claim_attempt"]),
@@ -739,9 +758,12 @@ class AnalysisRunner:
                             input_tokens=call.input_tokens,
                             output_tokens=call.output_tokens,
                             cost_microusd=call.cost_microusd,
+                            served_model=call.served_model,
                         ),
                         transaction=True,
                     )
+                    if not recorded:
+                        raise TimeoutError("model_call_finish_fence_expired")
 
                 if isinstance(self.analyst, TradeAnalyst):
                     receipt = await self.analyst.assess(
@@ -753,17 +775,20 @@ class AnalysisRunner:
                         ),
                         before_call=before_call,
                         after_call=after_call,
+                        tools_factory=tool_context.tools,
+                        fatal_error=tool_context.fatal_error,
                     )
                 else:
                     receipt = await self.analyst.assess(prepared.brief)
                 if receipt.assessment is None:
                     status = receipt.error_code or "model_unavailable"
                 else:
-                    compiled = compile_assessment(
-                        assessment=receipt.assessment,
-                        candidates=prepared.candidates,
-                        evidence_catalog=prepared.brief.evidence_catalog,
-                        watch_expires_at_ms=int(case["root_expires_at_ms"]),
+                    compiled = compile_proposal(
+                        proposal=receipt.assessment,
+                        plans=tuple(tool_context.plans.values()),
+                        evidence_catalog=tool_context.evidence_catalog,
+                        judgment_refs=frozenset(tool_context.judgment_refs),
+                        now_ms=_clock_ms(),
                     )
                     decision = compiled.model_dump(mode="json")
                     status = "analyzed"
@@ -772,7 +797,8 @@ class AnalysisRunner:
                             publish_block_reason = "strategy_not_validated"
                         else:
                             try:
-                                prepared_signal = self._prepare_signal(case, prepared, decision)
+                                selected = tool_context.plans[decision["selected_plan_id"]]
+                                prepared_signal = self._prepare_signal(case, selected, decision)
                             except ValueError as exc:
                                 # The analysis remains valid, but an invalid or expired
                                 # execution envelope must be visible as a publication refusal.
@@ -796,6 +822,7 @@ class AnalysisRunner:
             analysis_error_code = type(exc).__name__
         physical_calls: tuple[PhysicalModelCall, ...] = ()
         call_rows: list[dict[str, Any]] = []
+        final_manifest_ref: str | None = None
         if receipt is not None:
             request_ref = (
                 await _file_io(self.files.write, receipt.request_payload)
@@ -840,10 +867,33 @@ class AnalysisRunner:
                     "status": call.status,
                     "finished_at_ms": call.finished_at_ms,
                     "error_type": call.error_type,
+                    "phase": call.phase,
+                    "endpoint": call.endpoint,
+                    "requested_model": call.requested_model,
+                    "served_model": call.served_model,
                 }
                 for call in physical_calls
             ]
             validation_errors = receipt.validation_errors + validation_errors
+            if tool_context is not None:
+                final_manifest_ref = await _file_io(
+                    self.files.write,
+                    {
+                        "manifest_version": "trading_final_input_v1",
+                        "case_id": case["case_id"],
+                        "claim_attempt": case["claim_attempt"],
+                        "seed_evidence_ref": evidence_ref,
+                        "seed_brief_ref": brief_ref,
+                        "tool_refs": tuple(tool_context.tool_refs),
+                        "evidence_refs": tuple(sorted(tool_context.evidence_catalog)),
+                        "evidence_catalog": tool_context.evidence_catalog,
+                        "context_artifacts": tool_context.context_artifacts,
+                        "market_artifacts": tool_context.market_artifacts,
+                        "plan_ids": tuple(tool_context.plans),
+                        "plans": [plan.model_dump(mode="json") for plan in tool_context.plans.values()],
+                        "judgment_refs": tuple(sorted(tool_context.judgment_refs)),
+                    },
+                )
             assessment_ref = await _file_io(
                 self.files.write,
                 {
@@ -869,6 +919,9 @@ class AnalysisRunner:
                     "error_code": receipt.error_code,
                     "validation_errors": validation_errors,
                     "physical_calls": call_rows,
+                    "termination_reason": receipt.termination_reason,
+                    "tool_refs": () if tool_context is None else tuple(tool_context.tool_refs),
+                    "final_manifest_ref": final_manifest_ref,
                 },
             )
         await self._db_async(
@@ -894,6 +947,8 @@ class AnalysisRunner:
                 known_cost_microusd=0 if receipt is None else receipt.known_cost_microusd,
                 unknown_cost_calls=0 if receipt is None else receipt.unknown_cost_calls,
                 cost_upper_estimate_microusd=None if receipt is None else receipt.cost_upper_estimate_microusd,
+                final_manifest_ref=final_manifest_ref,
+                termination_reason=None if receipt is None else receipt.termination_reason,
             ),
             transaction=True,
         )
@@ -1030,7 +1085,7 @@ class AnalysisRunner:
     def _prepare_signal(
         self,
         case: dict[str, Any],
-        prepared: PreparedAnalysis,
+        selected: EntryPlan,
         decision: dict[str, Any],
     ) -> PreparedTradeSignal | None:
         plan = decision.get("exit_plan")
@@ -1047,15 +1102,25 @@ class AnalysisRunner:
         now_ns = _clock_ms() * 1_000_000
         expiry_ns = min(
             int(case["root_expires_at_ms"]) * 1_000_000,
-            (prepared.reference_at_ms + ENTRY_WINDOW_MS) * 1_000_000,
+            selected.expires_at_ms * 1_000_000,
+            int(case["work_deadline_at_ms"]) * 1_000_000,
         )
         if expiry_ns <= now_ns:
             raise ValueError("analysis_signal_expired")
         decision_id = decision_identity(str(case["case_id"]), decision)
         signal_id = hashlib.sha256(
-            f"{case['case_id']}:{decision_id}:signal_v2".encode(),
+            f"{case['case_id']}:{decision_id}:signal_v3".encode(),
         ).hexdigest()
-        signal = TradeSignalV2(
+        parent_condition = (
+            (case.get("manifest") or {}).get("watch_condition") if case.get("run_kind") == "conditional" else None
+        )
+        if parent_condition is not None and (
+            parent_condition.get("kind") != "closed_1m_directed_cross"
+            or parent_condition.get("side") != selected.side
+            or selected.parent_plan_id != parent_condition.get("plan_id")
+        ):
+            raise ValueError("analysis_parent_plan_mismatch")
+        signal = TradeSignalV3(
             seq=1,
             signal_id=signal_id,
             case_id=str(case["case_id"]),
@@ -1075,19 +1140,18 @@ class AnalysisRunner:
                 take_profit_bps=int(plan["take_profit_bps"]),
                 max_holding_ns=int(plan["max_holding_seconds"]) * 1_000_000_000,
             ),
-            entry_envelope=SignalEntryEnvelopeV2(
+            entry_envelope=SignalEntryEnvelopeV3(
+                plan_id=selected.plan_id,
+                entry_kind="closed_bar_cross_v1" if parent_condition is not None else "immediate_entry_v1",
                 root_expires_at_ns=int(case["root_expires_at_ms"]) * 1_000_000,
-                reference_price=prepared.reference_price,
-                structure_level=next(
-                    candidate.entry_level
-                    for candidate in prepared.candidates
-                    if candidate.candidate_id == decision["entry_candidate_id"]
-                ),
+                reference_price=selected.reference_price,
+                structure_level=None if parent_condition is None else Decimal(str(parent_condition["level"])),
+                parent_plan_id=None if parent_condition is None else str(parent_condition["plan_id"]),
                 max_price_drift_bps=200,
                 universe_version=self._universe.digest,
             ),
         )
-        return prepare_trade_signal_v2(signal)
+        return prepare_trade_signal_v3(signal)
 
     def _completed(self, task: asyncio.Task[bool]) -> None:
         self._active.discard(task)
@@ -1273,11 +1337,15 @@ class AnalysisRunner:
                                 observed_at, observed_value = stamp, str(value)
                                 observed_path.append((stamp, str(value)))
                                 previous_close = str(previous)
-                                side = range_cross_side(
-                                    previous_close=previous,
-                                    close=value,
-                                    upper=Decimal(str(condition["upper_level"])),
-                                    lower=Decimal(str(condition["lower_level"])),
+                                side = (
+                                    condition["side"]
+                                    if directed_cross(
+                                        side=condition["side"],
+                                        previous=previous,
+                                        current=value,
+                                        level=Decimal(str(condition["level"])),
+                                    )
+                                    else None
                                 )
                                 if side is not None:
                                     trigger_side = side

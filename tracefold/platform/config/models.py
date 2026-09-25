@@ -149,6 +149,35 @@ class LlmFallbackConfig(_LlmEndpointConfig):
         return "llm_fallback_configuration_incomplete"
 
 
+class TradingSemanticsConfig(BaseModel):
+    """An optional, complete System One route independent of News models."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    api_key: str | None = Field(default=None, repr=False)
+    base_url: str | None = None
+    model: str | None = None
+
+    @field_validator("api_key", "base_url", "model", mode="before")
+    @classmethod
+    def normalize(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized.rstrip("/") or None
+
+    @model_validator(mode="after")
+    def complete_group(self) -> TradingSemanticsConfig:
+        fields = (self.api_key, self.base_url, self.model)
+        if any(fields) and not all(fields):
+            raise ValueError("trading_semantics_configuration_incomplete")
+        if self.base_url is not None and not _is_http_base_url(self.base_url):
+            raise ValueError("trading_semantics_base_url_invalid")
+        return self
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key and self.base_url and self.model)
+
+
 class LlmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -170,6 +199,7 @@ class LlmConfig(BaseModel):
     # ceiling (it has to emit a whole new instruction) and its 20 s route deadline, and pointed a
     # multi-hour optimization run at the same single-slot GPU production Triage runs on.
     news_compiler_reflection: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
+    trading_semantics: TradingSemanticsConfig = Field(default_factory=TradingSemanticsConfig)
 
     @field_validator("api_key", "news_triage_model", mode="before")
     @classmethod
@@ -689,7 +719,8 @@ class TradingAnalysisSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     model_name: str | None = None
-    active_policy: Literal["event_price_confirmation_v1"] = "event_price_confirmation_v1"
+    data_environment: Literal["live", "demo"] = "live"
+    active_policy: Literal["entry_plan_v1"] = "entry_plan_v1"
     publish_signals: bool = False
     strategy_publication_enabled: bool = False
     shadow_order_latency_ms: int = Field(default=1_000, ge=0, le=5_000)

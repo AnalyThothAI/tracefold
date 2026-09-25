@@ -8,10 +8,10 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.helpers.prepared_signal_v3 import prepared_v3_signal
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
-from tracefold.trading.storage.execution_stream import prepare_trade_signal
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -49,7 +49,7 @@ def test_filtered_decisions_page_past_the_old_limit_and_link_by_saved_identity(t
                 "UPDATE trading_cases SET state='SIGNAL_EMITTED', policy_decision='long' WHERE case_id='research-125'"
             )
             TradingRepository(conn).append_trade_signal(
-                prepare_trade_signal(
+                prepared_v3_signal(
                     signal_id="d" * 64,
                     case_id="research-125",
                     market_key="crypto:perp:BTC:USDT",
@@ -129,8 +129,8 @@ def test_analysis_case_list_exposes_action_publication_and_source_identity(tmp_p
                 """INSERT INTO trading_case_decisions
                    (case_id,decision_id,policy_id,policy_version,input_ref,action,decision,
                     publish_status,decided_at_ms,valid_until_ms)
-                   VALUES (%s,%s,'trade_assessment','v1','research-evidence','TRADE',
-                           '{"side":"short"}'::jsonb,'shadow',%s,%s)""",
+                   VALUES (%s,%s,'trade_assessment','v4','research-evidence','TRADE',
+                           '{"side":"short","decision_version":"trade_decision_v4"}'::jsonb,'shadow',%s,%s)""",
                 (case_id, "d" * 64, now, now + 60_000),
             )
     finally:

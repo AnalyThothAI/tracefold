@@ -10,6 +10,7 @@ from typing import Any
 
 import dspy  # type: ignore[import-untyped]
 import pytest
+from dspy.lm15 import Message, Request, Response, Usage
 
 from tracefold.news.program.artifact import render_model_evidence_json
 from tracefold.news.program.contracts import TriageContext
@@ -108,15 +109,19 @@ class _ScriptedBlindLM(dspy.BaseLM):  # type: ignore[misc]
 
 
 class _RequestSpyDrafterLM(ConfiguredDrafterLM):
-    forward_contract = "typed_lm"
-
     def __init__(self, model: str, **kwargs: Any) -> None:
-        self.requests: list[dspy.LMRequest] = []
+        self.requests: list[Request] = []
         super().__init__(model, **kwargs)
 
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+    def _complete(self, request: Request) -> Response:
         self.requests.append(request)
-        return dspy.LMResponse.from_text(json.dumps({"draft": _RUBRIC}), model=self.model)
+        return Response(
+            id=None,
+            model=self.model,
+            message=Message.assistant(json.dumps({"draft": _RUBRIC})),
+            finish_reason="stop",
+            usage=Usage(),
+        )
 
 
 def _blind_pair(
@@ -479,7 +484,7 @@ def test_batch_names_the_drafter_and_disclaims_authority() -> None:
     assert batch.drafter["drafter_id"] == DRAFTER_ID == NEWS_REVIEW_DRAFTER_ID
     assert batch.schema_id == DRAFT_SCHEMA == NEWS_REVIEW_DRAFT_BATCH_SCHEMA
     assert batch.drafter["model"] == "scripted/drafter"
-    assert batch.drafter["dspy_version"] == "3.3.1"
+    assert batch.drafter["dspy_version"] == "3.4.0"
     assert len(batch.drafter["signature_sha256"]) == 64
     assert len(batch.drafter["adapter_render_sha256"]) == 64
     assert batch.drafter["structured_output_capability"]["source"] == "configured_endpoint.structured_output"
@@ -503,7 +508,7 @@ def test_prompt_json_drafter_uses_configured_capability_in_the_actual_request() 
     assert isinstance(result, RubricDraft)
     assert len(lm.requests) == 1
     assert lm.requests[0].config.response_format is None
-    assert "extra_body" not in lm.requests[0].config.extensions
+    assert not lm.requests[0].config.extensions
 
 
 def test_the_drafter_writes_nothing_to_the_review_plane() -> None:
@@ -649,12 +654,15 @@ def test_a_serial_batch_and_a_concurrent_batch_are_the_same_batch() -> None:
     assert serial.batch_sha256 == concurrent.batch_sha256
 
 
-class _CostedResponse:
-    """What a paid gateway hands back: token usage and, on this route, a stated cost."""
-
-    def __init__(self, cost: float | None) -> None:
-        self.usage = {"prompt_tokens": 1_000, "completion_tokens": 250, "total_tokens": 1_250}
-        self._hidden_params = {"response_cost": cost} if cost is not None else {}
+def _costed_response(cost: float | None) -> Response:
+    return Response(
+        id=None,
+        model="scripted/drafter",
+        message=Message.assistant("{}"),
+        finish_reason="stop",
+        usage=Usage(input_tokens=1_000, output_tokens=250, total_tokens=1_250),
+        provider_data={"cost": cost} if cost is not None else None,
+    )
 
 
 def test_a_drafting_call_is_accounted_with_tokens_and_an_unknown_cost_stays_unknown() -> None:
@@ -668,10 +676,8 @@ def test_a_drafting_call_is_accounted_with_tokens_and_an_unknown_cost_stays_unkn
         model_kwargs={},
         structured_output="response_schema",
     )
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(dspy.LM, "_process_lm_response", lambda self, response, *args, **kwargs: ["{}"])
-        lm._process_lm_response(_CostedResponse(0.0125), None, None)
-        lm._process_lm_response(_CostedResponse(None), None, None)
+    lm._record_usage(_costed_response(0.0125))
+    lm._record_usage(_costed_response(None))
 
     assert lm.spend == {
         "calls": 2,

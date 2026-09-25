@@ -40,7 +40,12 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
     OiRuntimeProfile,
 )
 from tracefold.integrations.nautilus.oi_runtime.entry import deterministic_client_order_id
-from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory, PlanReceipt
+from tracefold.integrations.nautilus.oi_runtime.journal import (
+    EntryValidityReceipt,
+    ExecutionJournal,
+    ObservationFactory,
+    PlanReceipt,
+)
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.strategy import (
@@ -50,7 +55,13 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import (
     RuntimeInputs,
 )
 from tracefold.integrations.nautilus.oi_runtime.venue import VENUE_SETTLE_NS, VenueReading
-from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
+from tracefold.trading.execution_contracts import (
+    ExecutionObservationV1,
+    OperatorIntentV1,
+    SignalEntryEnvelopeV3,
+    SignalExitPlanV1,
+    TradeSignalV3,
+)
 from tracefold.trading.trade_plan import TradePlan
 
 NOW_NS = 1_900_000_000_000_000_000
@@ -78,6 +89,7 @@ def oi_profile(mode: ActiveRuntimeMode = "paper", **risk: Any) -> OiRuntimeProfi
         account_id=ACCOUNT_ID,
         namespace=f"oi-{mode}-identity",
         routes=(OiInstrumentRoute(market_key=MARKET, instrument_id=INSTRUMENT.id, stop_distance_bps=200),),
+        excluded_asset_ids=frozenset(),
         exit_policy=OiExitPolicy(take_profit_bps=200, max_holding_ns=4 * 3_600 * SECOND_NS),
         risk=replace(limits, **risk),
     )
@@ -88,16 +100,37 @@ def trade_signal(
     signal_id: str = "1" * 64,
     expires_at_ns: int = NOW_NS + 60 * SECOND_NS,
     direction: str = "long",
-) -> TradeSignalV1:
-    return TradeSignalV1.model_validate(
+    max_holding_ns: int = 4 * 3_600 * SECOND_NS,
+) -> TradeSignalV3:
+    profile = oi_profile()
+    asset_id, mapping_digest = profile.route_semantics(profile.routes[0]) or (None, None)
+    if asset_id is None or mapping_digest is None:
+        raise AssertionError("fixture_route_unmapped")
+    return TradeSignalV3.model_validate(
         {
             "seq": 1,
             "signal_id": signal_id,
             "case_id": f"case-{signal_id[:8]}",
+            "decision_id": "a" * 64,
+            "account_slot": profile.account_slot,
+            "runtime_mode": profile.mode,
+            "entry_scope_id": "b" * 64,
+            "asset_id": asset_id,
             "market_key": MARKET,
+            "native_symbol": "BTCUSDT",
+            "mapping_semantics_digest": mapping_digest,
             "direction": direction,
             "observed_at_ns": NOW_NS - 1_000_000,
             "expires_at_ns": expires_at_ns,
+            "exit_plan": SignalExitPlanV1(stop_distance_bps=200, take_profit_bps=200, max_holding_ns=max_holding_ns),
+            "entry_envelope": SignalEntryEnvelopeV3(
+                plan_id="c" * 64,
+                entry_kind="immediate_entry_v1",
+                root_expires_at_ns=expires_at_ns + 60 * SECOND_NS,
+                reference_price=Decimal("10000"),
+                max_price_drift_bps=200,
+                universe_version=profile.universe_digest,
+            ),
         }
     )
 
@@ -221,7 +254,7 @@ class BacktestRuntime:
 def backtest_runtime(
     *,
     tape: Iterable[Any],
-    signals: Iterable[TradeSignalV1] = (),
+    signals: Iterable[TradeSignalV3] = (),
     commands: Iterable[OperatorIntentV1] = (),
     open_plans: Iterable[OpenPlan] = (),
     stop_exits: dict[str, int] | None = None,
@@ -256,6 +289,17 @@ def backtest_runtime(
         runtime.receipts.append(receipt)
         journal.settle_prepare(receipt)
         pump()
+        pending_validity = journal.pending_entry_validity()
+        if pending_validity is not None:
+            journal.settle_entry_validity(
+                EntryValidityReceipt(
+                    entry_id=pending_validity.entry_id,
+                    allowed=True,
+                    reason="fixture_pre_submit_valid",
+                    checked_at_ns=int(strategy.clock.timestamp_ns()),
+                )
+            )
+            pump()
 
     strategy = OiNautilusStrategy(
         profile=profile,
@@ -477,7 +521,7 @@ def _usdt_margin_account(balance: int) -> Any:
 
 def unit_runtime(
     *,
-    signals: Iterable[TradeSignalV1] = (),
+    signals: Iterable[TradeSignalV3] = (),
     commands: Iterable[OperatorIntentV1] = (),
     open_plans: Iterable[OpenPlan] = (),
     stop_exits: dict[str, int] | None = None,

@@ -6339,6 +6339,52 @@
               }
             ]
           },
+          "model_input_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Input Tokens"
+          },
+          "model_output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Output Tokens"
+          },
+          "model_provider_cost_microusd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Provider Cost Microusd"
+          },
+          "model_usage_coverage": {
+            "default": "unknown",
+            "enum": [
+              "complete",
+              "partial",
+              "unknown"
+            ],
+            "title": "Model Usage Coverage",
+            "type": "string"
+          },
           "override_rule": {
             "anyOf": [
               {
@@ -7783,6 +7829,17 @@
             ],
             "title": "Evidence Ref"
           },
+          "final_manifest_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Manifest Ref"
+          },
           "input_tokens": {
             "anyOf": [
               {
@@ -7868,6 +7925,17 @@
               }
             ],
             "title": "Started At Ms"
+          },
+          "termination_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Termination Reason"
           },
           "unknown_cost_calls": {
             "default": 0,
@@ -8082,6 +8150,18 @@
             ],
             "title": "Evidence"
           },
+          "final_manifest": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Manifest"
+          },
           "selected_attempt": {
             "anyOf": [
               {
@@ -8108,6 +8188,14 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "tool_observations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Tool Observations",
+            "type": "array"
           }
         },
         "required": [
@@ -8377,7 +8465,6 @@
             "default": "none",
             "enum": [
               "none",
-              "historical_timed",
               "event_wait",
               "research_note"
             ],
@@ -9555,6 +9642,17 @@
             ],
             "title": "Cost Unknown Reason"
           },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
           "finished_at_ms": {
             "anyOf": [
               {
@@ -9588,6 +9686,17 @@
             ],
             "title": "Output Tokens"
           },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
           "remaining_deadline_ms": {
             "anyOf": [
               {
@@ -9610,6 +9719,17 @@
             ],
             "title": "Request Ref"
           },
+          "requested_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested Model"
+          },
           "reserved_cost_microusd": {
             "anyOf": [
               {
@@ -9631,6 +9751,17 @@
               }
             ],
             "title": "Response Ref"
+          },
+          "served_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Served Model"
           },
           "started_at_ms": {
             "anyOf": [

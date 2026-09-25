@@ -271,45 +271,12 @@ _UNAVAILABLE = CardEquivalenceAssessment(
 )
 
 
-class _QuestionLM(dspy.BaseLM):  # type: ignore[misc]
-    """Do not let JSONAdapter's format fallback swallow a provider implementation defect."""
-
-    forward_contract = "typed_lm"
-
-    def __init__(self, lm: dspy.BaseLM) -> None:
-        super().__init__(lm.model, cache=False, num_retries=0, **dict(lm.kwargs or {}))
-        self.delegate = lm
-        self.defect: Exception | None = None
-
-    @property
-    def supported_params(self) -> frozenset[str]:
-        return frozenset(self.delegate.supported_params)
-
-    @property
-    def supports_response_schema(self) -> bool:
-        return bool(self.delegate.supports_response_schema)
-
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
-        if self.defect is not None:
-            raise self.defect
-        try:
-            return cast(dspy.LMResponse, self.delegate(request))
-        except LMDelegateProgramError as exc:
-            self.defect = exc.original
-            raise self.defect from None
-        except dspy.LMError:
-            raise
-        except Exception as exc:
-            self.defect = exc
-            raise
-
-
 class MetricJudgeEndpoint(dspy.Module):  # type: ignore[misc]
     """Two native structured judge Predictors over one explicitly configured LM."""
 
     def __init__(
         self,
-        lm: dspy.BaseLM,
+        lm: dspy.LM,
         *,
         max_tokens: int = METRIC_JUDGE_MAX_TOKENS,
         timeout: float = METRIC_JUDGE_TIMEOUT_SECONDS,
@@ -317,7 +284,7 @@ class MetricJudgeEndpoint(dspy.Module):  # type: ignore[misc]
         temperature: float = 0,
     ) -> None:
         super().__init__()
-        if not isinstance(lm, dspy.BaseLM):
+        if not isinstance(lm, dspy.LM):
             raise TypeError("news_program_compile_metric_judge_lm_invalid")
         if lm.cache is not False or lm.num_retries != 0:
             raise dspy.LMConfigurationError("news_program_compile_metric_judge_lm_must_disable_cache_and_retries")
@@ -331,7 +298,6 @@ class MetricJudgeEndpoint(dspy.Module):  # type: ignore[misc]
         predictor_config = {
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
-            "timeout": self.timeout,
         }
         self.equivalence = dspy.Predict(_EQUIVALENCE_SIGNATURE, **predictor_config)
         self.factual_evidence = dspy.Predict(_FACTUAL_EVIDENCE_SIGNATURE, **predictor_config)
@@ -422,13 +388,11 @@ class MetricJudgeEndpoint(dspy.Module):  # type: ignore[misc]
             program_sha256=self.identity_sha256,
             context_sha256=canonical_sha({"question": question, "values": values}),
         )
-        question_lm = _QuestionLM(self.lm)
         with ledger.scope(context), dspy.context(adapter=program_json_adapter()):
             try:
-                prediction = predictor(lm=question_lm, **dict(values))
-            finally:
-                if question_lm.defect is not None:
-                    raise question_lm.defect
+                prediction = predictor(lm=self.lm, **dict(values))
+            except LMDelegateProgramError as exc:
+                raise exc.original from None
             try:
                 raw = prediction.verdict
                 return raw if isinstance(raw, output_model) else output_model.model_validate(raw)
@@ -709,7 +673,7 @@ class CardEquivalenceJudge:
             if first_error is not None:
                 raise first_error
         return bool(receipts) and (
-            all(receipt.total_tokens > 0 for receipt in receipts) or not self._require_exact_accounting
+            all(receipt.total_tokens is not None for receipt in receipts) or not self._require_exact_accounting
         )
 
     def facts_supported(self, evidence_json: str, candidate: Mapping[str, Any]) -> FactualEvidenceAssessment:

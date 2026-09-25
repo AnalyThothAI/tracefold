@@ -15,6 +15,7 @@ from typing import Any
 
 import dspy  # type: ignore[import-untyped]
 import pytest
+from dspy.lm15 import Message, Response, Usage
 
 from tests.support.news_judgment import news_taxonomy, scored_judgment
 from tracefold.news.artifact_identity import canonical_sha
@@ -216,16 +217,14 @@ def _response(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cost_microusd: int | None = None,
-) -> dspy.LMResponse:
-    return dspy.LMResponse.from_text(
-        json.dumps(output, ensure_ascii=False),
+) -> Response:
+    return Response(
+        id=None,
         model="scripted/actual",
-        usage={
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        },
-        cost=None if cost_microusd is None else cost_microusd / 1_000_000,
+        message=Message.assistant(json.dumps(output, ensure_ascii=False)),
+        finish_reason="stop",
+        usage=Usage(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=input_tokens + output_tokens),
+        provider_data={"cost": cost_microusd / 1_000_000} if cost_microusd is not None else None,
     )
 
 
@@ -343,12 +342,8 @@ def test_a_normal_runtime_case_is_exactly_three_physical_calls() -> None:
     assert report.cases[0].physical_calls == 3
 
 
-def test_json_adapter_fallback_stays_inside_the_six_call_route_ceiling() -> None:
-    """A parse failure can spend one public JSONAdapter format fallback for that Predictor.
-
-    The ceiling is code owned by the factory now, not a number copied into the Artifact and hashed there, so
-    this asserts the executed budget directly instead of comparing it against a published field.
-    """
+def test_json_adapter_parse_failure_spends_one_card_call() -> None:
+    """DSPy 3.4 does not retry a malformed JSON answer inside JSONAdapter."""
 
     program, _event, card, *_ = _judge(
         semantics=[{"semantics": _SEMANTICS}],
@@ -356,15 +351,13 @@ def test_json_adapter_fallback_stays_inside_the_six_call_route_ceiling() -> None
     )
     report = _runtime([_case(1)], program)
 
-    assert report.route["answered_by"] == {"primary": 1}
-    assert report.route["physical_call_count"] == 4
-    assert len(card.requests) == 2
+    assert report.route["answered_by"] == {}
+    assert report.route["physical_call_count"] == 3
+    assert len(card.requests) == 1
 
 
 def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> None:
-    """Ten physical calls here: both routes spend the EventSemantics format fallback, one taxonomy call and
-    both ReaderCard attempts. A case that spends them answered nothing, and a baseline that scored it 0 would
-    be indistinguishable from a card the reader disliked."""
+    """A failed primary and fallback each cost one call and never become a low score."""
 
     program, primary_event, primary_card, fallback_event, fallback_card = _judge(
         semantics=["not-json", {"semantics": _SEMANTICS}],
@@ -380,10 +373,9 @@ def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> No
     assert report.scores["case_macro_failure_as_zero"] == 0.0
     delegates = (primary_event, primary_card, fallback_event, fallback_card)
     assert all(delegate is not None for delegate in delegates)
-    assert sum(len(delegate.requests) for delegate in delegates if delegate is not None) == 8
-    # Every one of those calls, plus one taxonomy call per route, is published, not silently dropped.
-    assert report.route["physical_call_count"] == 10
-    assert report.cases[0].physical_calls == 10
+    assert sum(len(delegate.requests) for delegate in delegates if delegate is not None) == 2
+    assert report.route["physical_call_count"] == 2
+    assert report.cases[0].physical_calls == 2
 
 
 def test_runtime_failures_keep_their_own_error_code_beside_a_real_score() -> None:
@@ -637,16 +629,16 @@ def test_a_policy_without_a_version_is_refused_like_any_other_unusable_policy() 
         _runtime([case], program)
 
 
-def test_the_route_publishes_its_retries_and_both_latency_populations() -> None:
-    """A retry is spend and a failure is the slowest case there is; the receipt has to say both."""
+def test_the_route_publishes_parse_failure_and_both_latency_populations() -> None:
+    """A parse failure is counted once; latency covers answered and failed cases."""
 
     retried, *_ = _judge(
         semantics=[{"semantics": _SEMANTICS}],
         cards=[{"nonsense": True}, {"card": _CARD}],
     )
     report = _runtime([_case(1)], retried)
-    assert report.route["retry_count"] == 1
-    assert report.route["physical_call_count"] == 4
+    assert report.route["retry_count"] == 0
+    assert report.route["physical_call_count"] == 3
 
     clean, *_ = _judge(semantics=[{"semantics": _SEMANTICS}], cards=[{"card": _CARD}])
     quiet = _runtime([_case(2)], clean)

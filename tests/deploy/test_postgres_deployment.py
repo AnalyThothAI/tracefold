@@ -78,8 +78,10 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     assert "tracefold_app" not in services["postgres"]["healthcheck"]["test"][1]
     assert services["postgres"]["volumes"] == [
         "tracefold-postgres:/var/lib/postgresql",
+        "./docker/postgres-entrypoint.sh:/usr/local/bin/tracefold-postgres-entrypoint.sh:ro",
         "./docker/postgres-init-single-login.sh:/docker-entrypoint-initdb.d/10-tracefold-single-login.sh:ro",
     ]
+    assert services["postgres"]["entrypoint"] == ["/bin/sh", "/usr/local/bin/tracefold-postgres-entrypoint.sh"]
     credential = "${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro"
     shared_app_image = "${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}"
     shared_app_build = {

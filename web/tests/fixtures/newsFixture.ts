@@ -221,6 +221,7 @@ export function newsVerdictFixture(overrides: Partial<NewsVerdict> = {}): NewsVe
     judgment_origin: "model",
     judgment_sha256: "3".repeat(64),
     model: "triage-model-v1",
+    model_usage_coverage: "unknown",
     model_editorial: {
       source_authority: triage.source_authority!,
       source_authority_zh: triage.source_authority_zh,

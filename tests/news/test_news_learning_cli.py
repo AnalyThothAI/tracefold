@@ -391,20 +391,21 @@ def test_recorded_slots_group_schema_fallback_and_reject_old_schema() -> None:
 
     def row(response_format: Any) -> dict[str, Any]:
         request = {
-            "schema": "tracefold.news.lm_request.v1",
+            "schema": "tracefold.news.lm_request.v2",
             "model": identity.model,
+            "system": None,
             "messages": [],
             "tools": [],
             "config": {"response_format": response_format, "extensions": {}},
         }
         request_identity = {
-            "schema": "tracefold.news.audited_lm_request.v2",
+            "schema": "tracefold.news.audited_lm_request.v3",
             "endpoint_fingerprint": identity.model_sha256,
             "model_binding": "event_semantics.primary",
         }
         request_sha = canonical_sha({**request_identity, "request": request})
         terminal = {
-            "schema": "tracefold.news.recorded_lm.v1",
+            "schema": "tracefold.news.recorded_lm.v2",
             "request_sha256": request_sha,
             "request_identity": request_identity,
             "request": request,
@@ -435,7 +436,7 @@ def test_recorded_slots_group_schema_fallback_and_reject_old_schema() -> None:
             "response": terminal,
         }
 
-    rows = [row({"type": "object", "properties": {}}), row({"type": "json_object"})]
+    rows = [row({"type": "json_schema", "schema": {"type": "object", "properties": {}}}), row({"type": "json_object"})]
     slots = _recorded_program_slots(rows, arm=arm)
 
     assert slots[("event_semantics", "primary")]["identity"] == identity

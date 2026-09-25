@@ -141,6 +141,10 @@ class TradingPhysicalModelCallData(ExactApiSchema):
     claim_attempt: int
     call_index: int
     status: str
+    phase: str | None = None
+    endpoint: str | None = None
+    requested_model: str | None = None
+    served_model: str | None = None
     started_at_ms: int | None = None
     finished_at_ms: int | None = None
     timeout_ms: int | None = None
@@ -160,6 +164,8 @@ class TradingAnalysisAttemptData(ExactApiSchema):
     brief_ref: str | None = None
     evidence_ref: str | None = None
     assessment_ref: str | None = None
+    final_manifest_ref: str | None = None
+    termination_reason: str | None = None
     model_name: str | None = None
     prompt_sha: str | None = None
     started_at_ms: int | None = None
@@ -276,7 +282,7 @@ class TradingCaseData(ExactApiSchema):
     watch_observation: TradingWatchObservationData | None = None
     root_chain: list[TradingRootChainCaseData] = Field(default_factory=list)
     analysis_evaluations: list[TradingCaseEvaluationData] = Field(default_factory=list)
-    review_mode: Literal["none", "historical_timed", "event_wait", "research_note"] = "none"
+    review_mode: Literal["none", "event_wait", "research_note"] = "none"
     run_kind: str | None = None
     recheck_seq: int | None = None
     root_expires_at_ms: int | None = None
@@ -335,6 +341,8 @@ class TradingAnalysisReplayData(ExactApiSchema):
     source_fact: dict[str, Any] | None = None
     evidence: dict[str, Any] | None = None
     assessment: dict[str, Any] | None = None
+    final_manifest: dict[str, Any] | None = None
+    tool_observations: list[dict[str, Any]] = Field(default_factory=list)
     decision: TradingAnalysisDecisionData | None = None
     attempts: list[TradingAnalysisAttemptData] = Field(default_factory=list)
 

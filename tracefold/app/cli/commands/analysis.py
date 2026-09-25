@@ -6,6 +6,7 @@ import asyncio
 import signal
 
 from tracefold.app.llm import configured_lm_endpoint, llm_is_configured
+from tracefold.app.system_one import SystemOneConnection
 from tracefold.app.trading_analysis import AnalysisRunner
 from tracefold.app.trading_analyst import TradeAnalyst
 from tracefold.integrations.marketdata.binance import BinanceMarketData
@@ -41,6 +42,17 @@ async def _run(settings: Settings) -> None:
         max_cached_rows=settings.trading.analysis.market_max_cached_rows,
         weight_soft_limit_1m=settings.trading.analysis.market_weight_soft_limit_1m,
     )
+    semantic_route = settings.llm.trading_semantics
+    semantics = None
+    if semantic_route.configured:
+        if semantic_route.base_url is None or semantic_route.api_key is None or semantic_route.model is None:
+            raise ValueError("trading_semantic_route_incomplete")
+        semantics = SystemOneConnection(
+            base_url=semantic_route.base_url,
+            api_key=semantic_route.api_key,
+            model=semantic_route.model,
+            timeout_seconds=settings.trading.analysis.model_timeout_seconds,
+        )
     try:
         runner = AnalysisRunner(
             settings=settings,
@@ -48,10 +60,15 @@ async def _run(settings: Settings) -> None:
             analyst=analyst,
             files_root=settings.app_home / "archive" / "trading-analysis",
             max_active_cases=settings.trading.analysis.max_active_cases,
+            semantics=semantics,
         )
         await runner.run(stop)
     finally:
         await market.aclose()
+        if analyst is not None:
+            await analyst.aclose()
+        if semantics is not None:
+            await semantics.aclose()
 
 
 def handle_analysis(_args: object) -> int:

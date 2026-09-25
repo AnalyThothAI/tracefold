@@ -1,4 +1,4 @@
-"""V2 publication, scoped plan ownership and last Trading validity check."""
+"""V3 publication, scoped plan ownership and last Trading validity check."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.platform.market_identity import DEFAULT_UNIVERSE
 from tracefold.trading.engine.policy import decision_identity
 from tracefold.trading.execution_contracts import (
-    SignalEntryEnvelopeV2,
+    SignalEntryEnvelopeV3,
     SignalExitPlanV1,
-    TradeSignalV2,
+    TradeSignalV3,
     market_key,
 )
-from tracefold.trading.storage.execution_stream import prepare_trade_signal_v2
+from tracefold.trading.storage.execution_stream import prepare_trade_signal_v3
 from tracefold.trading.storage.root import TradingRepository
 from tracefold.trading.storage.trade_plans import prepare_trade_plan
 from tracefold.trading.trade_plan import TradePlan
@@ -26,8 +26,8 @@ from tracefold.trading.trade_plan import TradePlan
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 
-def test_signal_v2_scope_and_pre_submit_check(tmp_path) -> None:
-    conn = connect_postgres_test(tmp_path / "signal-v2-db", read_only=False)
+def test_signal_v3_scope_and_pre_submit_check(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "signal-v3-db", read_only=False)
     try:
         migrate(conn)
         trading = TradingRepository(conn)
@@ -50,13 +50,15 @@ def test_signal_v2_scope_and_pre_submit_check(tmp_path) -> None:
             case = trading.claim_analysis_case(now_ms=1_500, lease_ms=5_000)
         assert case is not None
         decision = {
+            "decision_version": "trade_decision_v4",
             "action": "TRADE",
+            "selected_plan_id": "e" * 64,
             "side": "short",
             "reason": "frozen fixture",
             "exit_plan": {"stop_distance_bps": 150, "take_profit_bps": 300, "max_holding_seconds": 3_600},
         }
         decision_id = decision_identity(case_id, decision)
-        signal = TradeSignalV2(
+        signal = TradeSignalV3(
             seq=1,
             signal_id="b" * 64,
             case_id=case_id,
@@ -72,10 +74,11 @@ def test_signal_v2_scope_and_pre_submit_check(tmp_path) -> None:
             observed_at_ns=2_000_000_000,
             expires_at_ns=6_000_000_000,
             exit_plan=SignalExitPlanV1(stop_distance_bps=150, take_profit_bps=300, max_holding_ns=3_600_000_000_000),
-            entry_envelope=SignalEntryEnvelopeV2(
+            entry_envelope=SignalEntryEnvelopeV3(
+                plan_id="e" * 64,
+                entry_kind="immediate_entry_v1",
                 root_expires_at_ns=11_000_000_000,
                 reference_price=Decimal("100"),
-                structure_level=Decimal("101"),
                 max_price_drift_bps=200,
                 universe_version=DEFAULT_UNIVERSE.digest,
             ),
@@ -89,7 +92,7 @@ def test_signal_v2_scope_and_pre_submit_check(tmp_path) -> None:
                 evidence_ref="evidence",
                 decision=decision,
                 assessment_ref="assessment",
-                prepared_signal=prepare_trade_signal_v2(signal),
+                prepared_signal=prepare_trade_signal_v3(signal),
             )
         assert trading.unresolved_trade_signals(
             account_slot="binance_usdm_primary",

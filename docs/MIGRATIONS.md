@@ -5,12 +5,29 @@ processes never execute DDL.
 
 ## Current baseline
 
-`20260831_0340` is both the single Alembic root and head. It is a reviewed
-current-schema baseline with `down_revision = None`; a fresh PostgreSQL 18
-database reaches the complete current schema in one step. The baseline creates
+`20260831_0340` is the single Alembic root. The current head is
+`20260925_0398`; a fresh PostgreSQL 18 database applies the baseline and the
+linear forward-only revisions. The baseline creates
 application tables, sequences, views, indexes, functions, triggers,
 constraints, and only the structural singleton rows required on an empty
 cluster. Extensions remain the empty-PGDATA bootstrap's responsibility.
+
+## Trading Agent V3 cut (`20260925_0398`)
+
+This revision adds the final Attempt manifest and termination receipt, plus the
+requested and served model route on each model call. It renames the Signal
+indexes to current names and enforces V3 Signal, directed WATCH and V4 Decision
+contracts on new writes. The checks are `NOT VALID`: existing V1/V2 Signal and
+old WATCH/Decision rows remain in PostgreSQL for historical inspection. Current
+workers and Nautilus consume only the new contracts; old waiting WATCH rows are
+inert and are not converted into a new plan.
+
+Before switching images, stop new Analysis admission and reconcile active
+Signal plans with the venue. The current Nautilus process must not be replaced
+while a pre-V3 Signal plan is nonterminal; confirm the account and plan ledger
+under the existing Runtime's authority. Do not infer a fill, flatten an account
+or delete a historical row as part of this schema migration. Keep the verified
+pre-cut backup and use the normal forward recovery path if the cut fails.
 
 This squash is the operator-authorized exception recorded by issue #449. This
 source may merge or deploy only after every supported pre-cut database is

@@ -37,6 +37,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Final, Literal, TypedDict, cast
 
 import dspy  # type: ignore[import-untyped]
+from dspy.lm15 import Request, Response, response_to_events  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_sha
@@ -81,6 +82,35 @@ def merge_spend(*maps: Mapping[str, Mapping[str, Any]] | None) -> dict[str, dict
     return merged
 
 
+class _DrafterSyncEngine:
+    def __init__(self, owner: ConfiguredDrafterLM) -> None:
+        self.owner = owner
+
+    def complete(self, request: Request) -> Response:
+        return self.owner._complete(request)
+
+    def stream(self, request: Request) -> Any:
+        return response_to_events(self.complete(request))
+
+    def close(self) -> None:
+        self.owner._delegate.close()
+
+
+class _DrafterAsyncEngine:
+    def __init__(self, owner: ConfiguredDrafterLM) -> None:
+        self.owner = owner
+
+    async def complete(self, request: Request) -> Response:
+        return await self.owner._acomplete(request)
+
+    async def stream(self, request: Request) -> Any:
+        for event in response_to_events(await self.complete(request)):
+            yield event
+
+    async def aclose(self) -> None:
+        await self.owner._delegate.aclose()
+
+
 class ConfiguredDrafterLM(dspy.LM):  # type: ignore[misc]
     """Stock DSPy LM with the endpoint's explicit structured-output capability, and a spend counter.
 
@@ -95,11 +125,16 @@ class ConfiguredDrafterLM(dspy.LM):  # type: ignore[misc]
         self._structured_output = structured_output
         self._spend_lock = threading.Lock()
         self.spend: dict[str, int] = dict(_EMPTY_SPEND)
-        super().__init__(model, **kwargs)
+        self._delegate = dspy.LM(model, engine="litellm", **kwargs)
+        public_kwargs = {key: value for key, value in kwargs.items() if key not in {"api_key", "api_base", "timeout"}}
+        super().__init__(
+            model,
+            engine=_DrafterSyncEngine(self),
+            async_engine=_DrafterAsyncEngine(self),
+            **public_kwargs,
+        )
 
-    def _process_lm_response(self, response: Any, prompt: Any, messages: Any, **kwargs: Any) -> Any:
-        """The one funnel every sync and async delegate answer passes through."""
-
+    def _record_usage(self, response: Response) -> None:
         usage = physical_call_usage(response)
         cost = usage["cost_microusd"]
         with self._spend_lock:
@@ -110,7 +145,16 @@ class ConfiguredDrafterLM(dspy.LM):  # type: ignore[misc]
                 self.spend["cost_unknown_calls"] += 1
             else:
                 self.spend["observed_cost_microusd"] += int(cost)
-        return super()._process_lm_response(response, prompt, messages, **kwargs)
+
+    def _complete(self, request: Request) -> Response:
+        response = self._delegate(request)
+        self._record_usage(response)
+        return response
+
+    async def _acomplete(self, request: Request) -> Response:
+        response = await self._delegate.acall(request)
+        self._record_usage(response)
+        return response
 
     @property
     def supported_params(self) -> set[str]:

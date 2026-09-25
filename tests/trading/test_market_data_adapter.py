@@ -290,6 +290,50 @@ def test_shadow_quote_mark_and_funding_sources_are_distinct() -> None:
     asyncio.run(_shadow_market_sources())
 
 
+def test_open_interest_history_preserves_quantity_value_and_period() -> None:
+    asyncio.run(_open_interest_history())
+
+
+async def _open_interest_history() -> None:
+    seen: list[httpx.Request] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {"symbol": "SOLUSDT", "sumOpenInterest": "100", "sumOpenInterestValue": "10000", "timestamp": 300_000},
+                {"symbol": "SOLUSDT", "sumOpenInterest": "102", "sumOpenInterestValue": "10200", "timestamp": 600_000},
+            ],
+        )
+
+    request = MarketDataRequest(
+        dataset="open_interest_history",
+        native_symbol="SOLUSDT",
+        venue="binance.usdm",
+        environment="live",
+        product="perpetual",
+        source_identity="binance_public_v1",
+        unit_definition="base_quantity_and_quote_value_v1",
+        start_ms=300_000,
+        end_ms=600_000,
+        interval_ms=300_000,
+        max_age_ms=None,
+        deadline_at_monotonic=time.monotonic() + 2,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = BinanceMarketData(client=client, clock_ms=lambda: 700_000)
+        result = await adapter.fetch(request)
+        assert result.status == "ok"
+        assert result.payload[0]["sum_open_interest_quantity"] == "100"
+        assert result.payload[-1]["sum_open_interest_value"] == "10200"
+        assert result.event_start_ms == 300_000 and result.event_end_ms == 600_000
+    assert seen[0].url.host == "fapi.binance.com"
+    assert seen[0].url.path == "/futures/data/openInterestHist"
+    assert seen[0].url.params["period"] == "5m"
+    assert seen[0].url.params["symbol"] == "SOLUSDT"
+
+
 async def _shadow_market_sources() -> None:
     paths: list[str] = []
     hosts: set[str | None] = set()
