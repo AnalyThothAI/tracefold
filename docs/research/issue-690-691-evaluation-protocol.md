@@ -77,10 +77,11 @@ technical failure rather than silently creating a different setup.
 
 Export one JSONL row per Case with `case_id`, `root_trigger_id`, `asset_id`,
 `created_at_ms`, `run_kind`, `state`, `decision_action`, frozen `evidence`,
-attempts and `source_group_id`. Preserve the actual root-to-child chain. Include
-`arm_evaluations` only when each arm has a contemporary, independently recorded
-execution receipt; missing bid/ask, depth, latency, mark, funding, commission
-or capital evidence remains unknown.
+attempts and `source_group_id`. Preserve the actual root-to-child chain.
+`arm_evaluations` records pending, refused, unevaluable and simulated states.
+Count an arm's traded net value only with its own contemporary, archived execution
+evidence; missing bid/ask, depth, latency, mark, funding, commission or capital
+evidence remains unknown.
 An evaluable simulated receipt carries the strategy version, entry/exit times,
 requested notional, stop distance, signed funding cashflow and gross/cost bps
 whose arithmetic exactly reconciles to net bps. It also names archived entry
@@ -243,8 +244,11 @@ An authorized PAPER run must add reconciled venue fills, partial fills,
 commissions, funding cashflows, protection orders, latency and account marks.
 The current shadow simulator and local tests are not a PAPER receipt. The
 restricted legacy inventory and raw outputs above still lack v3 decisions and
-contemporaneous executable quote, mark, funding and account evidence. No real
-contemporaneous quote tape or controlled PAPER entry/protection/exit receipt was
-available for this branch. Keep
+contemporaneous executable quote, mark, funding and account evidence. Separate
+isolated mainnet samplers now retain contemporary quote and mark tapes, including
+a WATCH-to-TRADE path whose shadow receipt is still pending its four-hour
+holding and funding-scan window. Earlier collectors have recorded observation
+gaps and cannot prove a continuous executable path. No authorized, reconciled
+PAPER entry/protection/exit receipt is available. Keep
 publication disabled until complete receipts support a net and drawdown
 comparison; these Issues do not authorize deployment, LIVE orders or merging.
