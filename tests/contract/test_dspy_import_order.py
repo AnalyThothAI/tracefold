@@ -1,4 +1,4 @@
-"""The public app and News imports work in the same process, in either order."""
+"""The public app and News imports support DSPy's first LiteLLM call."""
 
 from __future__ import annotations
 
@@ -18,5 +18,15 @@ pytestmark = pytest.mark.contract
     ],
 )
 def test_dspy_and_fastapi_import_order_is_safe(imports: str) -> None:
-    result = subprocess.run([sys.executable, "-c", imports], capture_output=True, text=True, timeout=20, check=False)
+    first_model_call = (
+        "; from dspy.clients._litellm import get_litellm"
+        "; assert callable(get_litellm(feature='import test').acompletion)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", imports + first_model_call],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
     assert result.returncode == 0, result.stderr
