@@ -272,6 +272,9 @@ respectively.
   evidence keys that pass the compiler's availability rule at the Case cutoff.
   The model may cite only those IDs in its supporting/opposing arrays; missing
   frames and other brief fields can appear in the rationale as limitations.
+  Catalyst source evidence carries the public `headline`/`why` text when present;
+  an empty source value set is marked missing instead of presenting a false
+  `ok` citation. Source text remains untrusted input to the model.
   The `trade_assessment_v3` answer proposes TRADE, NO_TRADE or WATCH over the
 code-owned `event_price_confirmation_v1` candidate family. Catalyst and OI
 facts use the same 16 continuous closed one-minute bars. The first 15 define

@@ -261,32 +261,26 @@ class FrameReader:
             results=results,
             features=features,
         )
+        source_units = {
+            "oi_change_bps": "bps",
+            "oi_value_usd": "USD",
+            "measurement_definition": "text",
+            "measurement_window_ms": "ms",
+            "headline": "text",
+            "headline_zh": "text",
+            "title": "text",
+            "why": "text",
+            "why_zh": "text",
+        }
+        source_values = {
+            key: source_fact[key] for key in source_units if source_fact.get(key) is not None and source_fact[key] != ""
+        }
         brief_evidence: dict[str, dict[str, Any]] = {
             "source": {
-                "status": "ok",
+                "status": "ok" if source_values else "missing",
                 "source_ref": evidence_ref,
-                "values": {
-                    key: source_fact[key]
-                    for key in (
-                        "oi_change_bps",
-                        "oi_value_usd",
-                        "measurement_definition",
-                        "measurement_window_ms",
-                        "headline_zh",
-                        "title",
-                        "why_zh",
-                    )
-                    if source_fact.get(key) is not None
-                },
-                "unit_definition": {
-                    "oi_change_bps": "bps",
-                    "oi_value_usd": "USD",
-                    "measurement_definition": "text",
-                    "measurement_window_ms": "ms",
-                    "headline_zh": "text",
-                    "title": "text",
-                    "why_zh": "text",
-                },
+                "values": source_values,
+                "unit_definition": {key: source_units[key] for key in source_values},
                 "event_at_ms": source_fact.get("source_recorded_at_ms"),
                 "received_at_ms": int(case.get("created_at_ms", knowledge_cutoff)),
                 "knowledge_cutoff_ms": knowledge_cutoff,

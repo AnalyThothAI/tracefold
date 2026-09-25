@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -131,6 +132,42 @@ def test_oi_case_does_not_require_optional_current_market_oi(tmp_path) -> None:
         reader.prepare(case=case, source_fact=source, source_first_visible_at_ms=int(time.time() * 1000) - 30_000)
     )
     assert len(prepared.candidates) == 2
+
+
+def test_catalyst_source_headline_is_citable_only_when_present(tmp_path) -> None:
+    now_ms = int(time.time() * 1000)
+    reader = FrameReader(_Market(), AnalysisFiles(tmp_path / "catalyst-evidence"))
+    case = {
+        "case_id": "catalyst-source",
+        "created_at_ms": now_ms - 500,
+        "target_selection": {
+            "reason": "selected",
+            "asset_id": "crypto:SOL",
+            "instrument": {"native_symbol": "SOLUSDT", "environment": "live", "mapping_semantics_digest": "a" * 64},
+        },
+    }
+    source = {
+        "kind": "catalyst",
+        "headline": "A visible source headline",
+        "why": "A source explanation",
+        "source_recorded_at_ms": now_ms - 20_000,
+    }
+    prepared = asyncio.run(reader.prepare(case=case, source_fact=source, source_first_visible_at_ms=now_ms - 10_000))
+    item = prepared.brief.evidence_catalog["source"]
+    assert item["status"] == "ok"
+    assert item["values"] == {"headline": source["headline"], "why": source["why"]}
+    assert item["unit_definition"] == {"headline": "text", "why": "text"}
+    assert "source" in json.loads(prepared.brief.text)["citable_evidence_ids"]
+
+    empty = asyncio.run(
+        reader.prepare(
+            case={**case, "case_id": "catalyst-source-empty"},
+            source_fact={"kind": "catalyst", "source_recorded_at_ms": now_ms - 20_000},
+            source_first_visible_at_ms=now_ms - 10_000,
+        )
+    )
+    assert empty.brief.evidence_catalog["source"]["status"] == "missing"
+    assert "source" not in json.loads(empty.brief.text)["citable_evidence_ids"]
 
 
 def test_poison_outbox_event_does_not_block_later_fact(tmp_path) -> None:
