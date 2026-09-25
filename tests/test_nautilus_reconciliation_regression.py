@@ -105,16 +105,29 @@ PROTECTION = (
     (STOP_ID, 1_000_000_215_275_001, OrderType.STOP_MARKET, "0.8310"),
     (TAKE_PROFIT_ID, 1_000_000_215_275_002, OrderType.MARKET_IF_TOUCHED, "0.8562"),
 )
+TAKE_PROFIT_CHILD_ORDER_ID = 308_654_865
+TAKE_PROFIT_CHILD_TRADE_ID = 63_772_472
 
 
 class _Venue:
     """Binance's side of every signed request the adapter makes, as the APT account stood."""
 
-    def __init__(self, *, position_risk_error: bool = False, prior_round_trip: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        position_risk_error: bool = False,
+        prior_round_trip: bool = False,
+        triggered_take_profit: bool = False,
+        wrong_algo_child: bool = False,
+        missing_child_trade: bool = False,
+    ) -> None:
         self.position_risk_error = position_risk_error
         self.prior_round_trip = prior_round_trip
+        self.triggered_take_profit = triggered_take_profit
+        self.wrong_algo_child = wrong_algo_child
+        self.missing_child_trade = missing_child_trade
         self.user_trade_symbols: list[str] = []
-        self.position_amount = "1188.3"
+        self.position_amount = "0" if triggered_take_profit else "1188.3"
 
     async def send_request(
         self, _client: Any, _method: Any, url_path: str, payload: dict[str, str] | None = None, **_: Any
@@ -136,7 +149,56 @@ class _Venue:
                     _trade(trade_id, order_id, side, "500.0", at_ms, price="0.9000")
                     for order_id, trade_id, side, at_ms in PRIOR_ROUND_TRIP
                 ] + trades
+            if self.triggered_take_profit and not self.missing_child_trade:
+                trades.append(
+                    _trade(
+                        TAKE_PROFIT_CHILD_TRADE_ID,
+                        TAKE_PROFIT_CHILD_ORDER_ID,
+                        "SELL",
+                        "1188.3",
+                        FILL_MS + 2_000,
+                        price="0.8562",
+                    )
+                )
             return msgspec.json.encode(trades)
+        if self.triggered_take_profit:
+            if url_path.endswith("/openOrders") or url_path.endswith("/openAlgoOrders"):
+                return msgspec.json.encode([])
+            if url_path.endswith("/allOrders"):
+                return msgspec.json.encode(
+                    [
+                        _binance_order(ENTRY_ORDER_ID, ENTRY_ID.value, "BUY", "0.8394", FILL_MS),
+                        _binance_order(
+                            TAKE_PROFIT_CHILD_ORDER_ID,
+                            TAKE_PROFIT_ID.value,
+                            "SELL",
+                            "0.8562",
+                            FILL_MS + 2_000,
+                        ),
+                    ]
+                )
+            if url_path.endswith("/allAlgoOrders"):
+                return msgspec.json.encode([])
+            if url_path.endswith("/algoOrder"):
+                assert params["algoId"] == PROTECTION[1][1]
+                return msgspec.json.encode(
+                    {
+                        "algoId": PROTECTION[1][1],
+                        "clientAlgoId": TAKE_PROFIT_ID.value,
+                        "algoType": "CONDITIONAL",
+                        "orderType": "TAKE_PROFIT_MARKET",
+                        "symbol": "APTUSDT",
+                        "side": "SELL",
+                        "positionSide": "BOTH",
+                        "reduceOnly": True,
+                        "workingType": "MARK_PRICE",
+                        "quantity": "1188.3",
+                        "triggerPrice": "0.8562",
+                        "algoStatus": "FINISHED",
+                        "actualOrderId": str(TAKE_PROFIT_CHILD_ORDER_ID + int(self.wrong_algo_child)),
+                        "triggerTime": FILL_MS + 2_000,
+                    }
+                )
         raise AssertionError(f"unexpected Binance request {url_path}")
 
 
@@ -173,6 +235,27 @@ def _trade(trade_id: int, order_id: int, side: str, qty: str, at_ms: int, *, pri
     }
 
 
+def _binance_order(order_id: int, client_order_id: str, side: str, price: str, at_ms: int) -> dict[str, Any]:
+    return {
+        "symbol": "APTUSDT",
+        "orderId": order_id,
+        "clientOrderId": client_order_id,
+        "price": "0",
+        "origQty": "1188.3",
+        "executedQty": "1188.3",
+        "status": "FILLED",
+        "timeInForce": "GTC",
+        "type": "MARKET",
+        "side": side,
+        "stopPrice": "0",
+        "time": at_ms,
+        "updateTime": at_ms,
+        "avgPrice": price,
+        "reduceOnly": side == "SELL",
+        "positionSide": "BOTH",
+    }
+
+
 class _Recorder(Strategy):
     """The Runtime's claim on APT, with nothing but a record of what Nautilus told it."""
 
@@ -183,6 +266,10 @@ class _Recorder(Strategy):
             )
         )
         self.closed: list[str] = []
+        self.filled: list[str] = []
+
+    def on_order_filled(self, event: Any) -> None:
+        self.filled.append(str(event.client_order_id))
 
     def on_position_closed(self, event: Any) -> None:
         self.closed.append(str(event.closing_order_id))
@@ -205,6 +292,9 @@ class _Account:
         self.engine = LiveExecutionEngine(
             loop=self.loop, msgbus=self.msgbus, cache=self.cache, clock=self.clock, config=engine_config
         )
+        if venue.triggered_take_profit:
+            # Historical fixture timestamps must remain in the full report as time passes.
+            self.engine.reconciliation_lookback_mins = 0
         self.client = factory.create(
             loop=self.loop,
             name=BINANCE,
@@ -533,6 +623,52 @@ def test_failed_position_reads_do_not_consume_a_flat_verdict_and_recover_on_new_
     runtime.position_checks(count=2)
     assert runtime.open_positions() == _HELD
     assert runtime.open_protection() == _PROTECTION
+
+
+def test_native_reconciliation_connects_a_triggered_algo_child_fill_to_the_cached_take_profit(account: Any) -> None:
+    """The INJ failure shape: venue flat, Cache long, and the trigger created a real MARKET child."""
+
+    runtime = account(triggered_take_profit=True)
+    runtime.position_checks(count=4)
+    assert runtime.open_positions() == _HELD
+
+    recovered = runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime))
+
+    assert recovered is True
+    assert runtime.open_positions() == []
+    assert runtime.strategy.closed == [TAKE_PROFIT_ID.value]
+    assert runtime.strategy.filled == [TAKE_PROFIT_ID.value]
+    child = runtime.cache.order(TAKE_PROFIT_ID)
+    assert child is not None and child.is_closed
+    assert child.venue_order_id == VenueOrderId(str(TAKE_PROFIT_CHILD_ORDER_ID))
+
+
+def test_triggered_algo_child_requires_signed_parent_child_receipt(account: Any) -> None:
+    runtime = account(triggered_take_profit=True, wrong_algo_child=True)
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is False
+    assert runtime.open_positions() == _HELD
+    assert runtime.strategy.closed == []
+    assert runtime.cache.order(TAKE_PROFIT_ID).venue_order_id == VenueOrderId(str(PROTECTION[1][1]))
+
+
+def test_triggered_algo_child_without_venue_trade_cannot_infer_a_close(account: Any) -> None:
+    runtime = account(triggered_take_profit=True, missing_child_trade=True)
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is False
+    assert runtime.open_positions() == _HELD
+    assert runtime.strategy.filled == []
+
+
+async def _reconcile_with_event_queue(runtime: _Account) -> bool:
+    """Run Nautilus' real live order-event consumer while the public reconciliation runs."""
+
+    consumer = asyncio.create_task(runtime.engine._run_evt_queue())
+    try:
+        return await runtime.engine.reconcile_execution_state()
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
 
 
 def test_path_b_is_the_generated_flat_order_the_production_config_turns_off(account: Any) -> None:

@@ -154,6 +154,16 @@ closed the position as flat. The cost of the flag: at startup, a venue position
 with no fill inside the reconciliation lookback is no longer adopted into the
 Cache. The venue-truth invariant below names it instead.
 
+For a triggered stop or take-profit, Binance reports the fill under the regular
+child order ID, while Nautilus may still cache the original Algo order ID (#699).
+During full native reconciliation the Runtime's Binance client verifies the
+parent's signed `GET /fapi/v1/algoOrder` receipt, including `actualOrderId`, against
+the child order and its complete venue trades. It then sends Nautilus an
+`OrderUpdated` to move the cached order to the child ID before the engine replays
+those real fills. Missing or contradictory evidence fails reconciliation; a
+matching client order ID by itself never authorizes a close. The original
+strategy order and its Plan retain the stop or take-profit attribution.
+
 On top of the Cache the Strategy runs one invariant every five seconds, and on
 every fill and position event, over the Cache, the plans and the latest read of
 the venue's own positions:
@@ -211,9 +221,9 @@ the venue's own positions:
 
 Nautilus 1.231 behaviours this design routes around rather than patches: orders it
 reconciles carry no account id, so the Runtime only asks the Cache by instrument and
-strategy; a failed Algo-order report during reconciliation is only logged, which
-the invariant, the next 5 s open-order check and the entry precondition (no order
-and no position on the instrument) cover; a lost user-data listen key is
+strategy; a failed Algo-order report during reconciliation is only logged, so a
+triggered child's signed parent receipt is checked separately before replaying its
+fills; a lost user-data listen key is
 recovered once, after which the 5 s checks keep the Cache honest; the Binance
 adapter's duplicated fill reports are de-duplicated by the Runtime's execution
 client. The position-report override preserves Binance read failures; a

@@ -38,9 +38,9 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock, MessageBus
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports
-from nautilus_trader.execution.reports import FillReport, PositionStatusReport
+from nautilus_trader.execution.reports import ExecutionMassStatus, FillReport, PositionStatusReport
 from nautilus_trader.live.factories import LiveExecClientFactory
-from nautilus_trader.model.enums import PositionSide
+from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide
 from nautilus_trader.model.objects import Quantity
 
 from .config import ActiveRuntimeMode, BinanceRuntimeCredentials, binance_environment
@@ -71,6 +71,97 @@ def unique_fill_reports(reports: Iterable[FillReport]) -> list[FillReport]:
 
 class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
     """Nautilus' Binance USD-M execution client, whose fill reports name each venue trade once."""
+
+    async def generate_mass_status(self, lookback_mins: int | None = None) -> ExecutionMassStatus | None:
+        """Join a triggered conditional order to its venue child before replaying real fills.
+
+        Binance reports a triggered Algo order's fills under a new regular order ID.
+        Nautilus 1.231.0 skips the triggered Algo report, then cannot apply the child
+        fills to the cached parent. A matching client ID alone is insufficient proof:
+        query the original Algo order and require its signed actualOrderId to match.
+        """
+
+        status = await super().generate_mass_status(lookback_mins)
+        if status is None:
+            return None
+        for report in status.order_reports.values():
+            if report.client_order_id is None or report.venue_order_id is None:
+                continue
+            order = self._cache.order(report.client_order_id)
+            if order is None or order.venue_order_id == report.venue_order_id:
+                continue
+            if order.order_type not in (OrderType.STOP_MARKET, OrderType.MARKET_IF_TOUCHED):
+                continue
+            fills = status.fill_reports.get(report.venue_order_id, [])
+            expected_type = "STOP_MARKET" if order.order_type == OrderType.STOP_MARKET else "TAKE_PROFIT_MARKET"
+            if (
+                order.is_closed
+                or not order.is_reduce_only
+                or order.account_id != report.account_id
+                or order.instrument_id != report.instrument_id
+                or order.side != report.order_side
+                or report.order_side not in (OrderSide.BUY, OrderSide.SELL)
+                or report.order_type != OrderType.MARKET
+                or report.order_status != OrderStatus.FILLED
+                or not report.reduce_only
+                or order.quantity != report.quantity
+                or report.filled_qty != order.quantity
+                or not fills
+                or sum((fill.last_qty.as_decimal() for fill in fills), Decimal()) != report.filled_qty.as_decimal()
+                or any(
+                    fill.account_id != report.account_id
+                    or fill.instrument_id != report.instrument_id
+                    or fill.venue_order_id != report.venue_order_id
+                    or fill.order_side != report.order_side
+                    for fill in fills
+                )
+                or order.venue_order_id is None
+                or not order.venue_order_id.value.isdecimal()
+            ):
+                self._log.error(f"Cannot verify triggered Algo child for {report.client_order_id}")
+                return None
+            algo = await self._futures_http_account.query_algo_order(
+                algo_id=int(order.venue_order_id.value),
+            )
+            instrument = self._cache.instrument(order.instrument_id)
+            if (
+                instrument is None
+                or algo.algoId != int(order.venue_order_id.value)
+                or algo.clientAlgoId != order.client_order_id.value
+                or algo.algoType != "CONDITIONAL"
+                or algo.actualOrderId != report.venue_order_id.value
+                or algo.symbol != instrument.raw_symbol.value
+                or algo.side != order.side.name
+                or algo.orderType != expected_type
+                or algo.algoStatus not in ("TRIGGERED", "FINISHED")
+                or algo.positionSide != "BOTH"
+                or algo.reduceOnly is not True
+                or algo.workingType != "MARK_PRICE"
+                or algo.quantity is None
+                or Decimal(algo.quantity) != order.quantity.as_decimal()
+                or algo.triggerPrice is None
+                or Decimal(algo.triggerPrice) != order.trigger_price.as_decimal()
+            ):
+                self._log.error(f"Signed Algo receipt does not match child for {report.client_order_id}")
+                return None
+            self.generate_order_updated(
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                venue_order_id=report.venue_order_id,
+                quantity=order.quantity,
+                price=None,
+                trigger_price=order.trigger_price,
+                ts_event=(algo.triggerTime or algo.updateTime or report.ts_last // 1_000_000) * 1_000_000,
+                venue_order_id_modified=True,
+            )
+            deadline = self._loop.time() + 2.0
+            while self._cache.order(order.client_order_id).venue_order_id != report.venue_order_id:
+                if self._loop.time() >= deadline:
+                    self._log.error(f"Timed out applying triggered Algo child mapping for {report.client_order_id}")
+                    return None
+                await asyncio.sleep(0.01)
+        return status
 
     async def generate_fill_reports(self, command: GenerateFillReports) -> list[FillReport]:
         return unique_fill_reports(await super().generate_fill_reports(command))

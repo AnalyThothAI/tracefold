@@ -393,6 +393,11 @@ Cache (`venue_unverified` otherwise). `/flatten account` closes, with reduce-onl
 orders, what the Cache holds and what only the venue holds. Inspect the Runtime's
 risk observations and Nautilus' rotated WARN/ERROR logs for exposure incidents.
 
+When Binance triggers a protective Algo order, its regular child order gets a new
+venue ID. The execution client checks the signed parent Algo receipt for that exact
+child ID, then updates Nautilus' cached order ID before replaying the child's real
+trades. An unmatched or incomplete receipt leaves the discrepancy unresolved (#699).
+
 The pure Trading engine imports no adapter, database or Nautilus engine and has
 no order authority. The historical OI v5 Signal lane is not scheduled by Workers.
 
