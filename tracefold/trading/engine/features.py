@@ -21,11 +21,12 @@ def catalyst_text_values(source_fact: dict[str, Any]) -> dict[str, str]:
     """
     if source_fact.get("kind") != "catalyst":
         return {}
-    return {
-        key: value
-        for key in ("headline", "why")
-        if isinstance(value := source_fact.get(key), str) and value.strip()
-    }
+    values: dict[str, str] = {}
+    for key in ("headline", "why"):
+        value = source_fact.get(key)
+        if isinstance(value, str) and value.strip():
+            values[key] = value
+    return values
 
 
 def _change_bps(rows: tuple[dict[str, Any], ...], interval_count: int) -> str | None:
