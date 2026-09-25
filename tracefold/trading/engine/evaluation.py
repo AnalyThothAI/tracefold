@@ -195,28 +195,36 @@ def evaluate_shadow(
         return _unevaluable("exit_top_size_insufficient_or_invalid", **context)
     if exit_reason == "stop":
         exit_price = min(exit_price, stop) if side == "long" else max(exit_price, stop)
-    gross_bps = ((exit_price / entry - 1) if side == "long" else (1 - exit_price / entry)) * 10_000
+    entry_notional_usdt = quantity * entry
+    exit_notional_usdt = quantity * exit_price
+    gross_usdt = (exit_notional_usdt - entry_notional_usdt) * (1 if side == "long" else -1)
+    funding_usdt = Decimal(0)
     try:
-        rates = [
-            Decimal(str(event["funding_rate"])) * 10_000
-            for event in funding_events
-            if scheduled_at_ms < int(event["funding_at_ms"]) <= int(exit_quote["received_at_ms"])
-        ]
+        for event in funding_events:
+            if not scheduled_at_ms < int(event["funding_at_ms"]) <= int(exit_quote["received_at_ms"]):
+                continue
+            rate = Decimal(str(event["funding_rate"]))
+            funding_mark = Decimal(str(event["mark_price"]))
+            if not rate.is_finite() or not funding_mark.is_finite() or funding_mark <= 0:
+                return _unevaluable("funding_event_invalid", **context)
+            funding_usdt -= (1 if side == "long" else -1) * quantity * funding_mark * rate
     except (InvalidOperation, KeyError, TypeError, ValueError):
         return _unevaluable("funding_event_invalid", **context)
-    if any(not rate.is_finite() for rate in rates):
-        return _unevaluable("funding_event_invalid", **context)
-    funding_bps = sum(rates) * (1 if side == "long" else -1)
-    fee_bps = fee_bps_per_side * 2
-    net_bps = gross_bps - fee_bps - funding_bps
+    fee_usdt = (entry_notional_usdt + exit_notional_usdt) * fee_bps_per_side / Decimal(10_000)
+    net_usdt = gross_usdt - fee_usdt + funding_usdt
+    gross_bps = gross_usdt / entry_notional_usdt * Decimal(10_000)
+    fee_bps = fee_usdt / entry_notional_usdt * Decimal(10_000)
+    funding_cashflow_bps = funding_usdt / entry_notional_usdt * Decimal(10_000)
+    net_bps = gross_bps - fee_bps + funding_cashflow_bps
     return {
         **context,
         "status": "simulated",
+        "cashflow_version": "fill_notional_and_settlement_mark_v1",
         "side": side,
         "entry_at_ms": scheduled_at_ms,
         "entry_price": str(entry),
         "quantity_base": str(quantity),
-        "simulated_notional_usdt": str(quantity * entry),
+        "simulated_notional_usdt": str(entry_notional_usdt),
         "requested_notional_usdt": str(requested_notional_usdt),
         "price_tick_size": str(tick),
         "market_step_size": str(step),
@@ -233,15 +241,19 @@ def evaluate_shadow(
         "exit_at_ms": int(exit_quote["received_at_ms"]),
         "exit_reason": exit_reason,
         "gross_bps": str(gross_bps),
+        "gross_usdt": str(gross_usdt),
         "fee_bps": str(fee_bps),
-        "funding_bps_paid": str(funding_bps),
+        "fees_usdt": str(fee_usdt),
+        "funding_bps_paid": str(-funding_cashflow_bps),
+        "funding_usdt": str(funding_usdt),
         "net_bps": str(net_bps),
+        "net_usdt": str(net_usdt),
         "net_components_bps": {
             "gross": str(gross_bps),
             "entry_cost": "0",
             "exit_cost": "0",
             "fees": str(fee_bps),
-            "funding_cashflow": str(-funding_bps),
+            "funding_cashflow": str(funding_cashflow_bps),
         },
         "assumptions": {
             "entry": "planned_ask" if side == "long" else "planned_bid",
@@ -252,6 +264,8 @@ def evaluate_shadow(
             "partial_fill": "top_book_size_covers_full_research_quantity",
             "protection": "not_simulated",
             "fee_bps_per_side": str(fee_bps_per_side),
+            "fee_basis": "entry_and_exit_fill_notional",
+            "funding_basis": "settlement_mark_price_times_base_quantity",
         },
         "evaluation_version": EVALUATION_VERSION,
     }

@@ -1519,7 +1519,7 @@ class AnalysisRunner:
                         environment=environment,
                         product="perpetual",
                         source_identity="binance_public_v1",
-                        unit_definition="funding_rate_fraction_v1",
+                        unit_definition="funding_rate_and_mark_price_v2",
                         start_ms=int(row["created_at_ms"]),
                         end_ms=research_end_ms + 90_000,
                         interval_ms=None,

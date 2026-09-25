@@ -82,6 +82,28 @@ def test_shadow_uses_planned_ask_and_stop_first_if_both_touched() -> None:
     )
 
 
+def test_shadow_fees_use_both_fill_notionals_and_funding_uses_event_mark() -> None:
+    result = _shadow(funding_events=({"funding_at_ms": 30_000, "funding_rate": "0.001", "mark_price": "120"},))
+    assert result["status"] == "simulated"
+    assert Decimal(str(result["gross_usdt"])) == Decimal("-2.97")
+    assert Decimal(str(result["fees_usdt"])) == Decimal("0.098505")
+    assert Decimal(str(result["funding_usdt"])) == Decimal("-0.1188")
+    assert Decimal(str(result["net_usdt"])) == Decimal("-3.187305")
+    assert Decimal(str(result["net_bps"])) == (
+        Decimal(str(result["net_components_bps"]["gross"]))
+        - Decimal(str(result["net_components_bps"]["fees"]))
+        + Decimal(str(result["net_components_bps"]["funding_cashflow"]))
+    )
+    assert _shadow(funding_events=({"funding_at_ms": 30_000, "funding_rate": "0.001"},))["reason"] == (
+        "funding_event_invalid"
+    )
+    short = _shadow(
+        side="short", funding_events=({"funding_at_ms": 30_000, "funding_rate": "0.001", "mark_price": "120"},)
+    )
+    assert short["status"] == "simulated"
+    assert Decimal(str(short["funding_usdt"])) == Decimal("0.1212")
+
+
 def test_shadow_missing_cost_or_quote_is_not_zero_pnl() -> None:
     assert _shadow(target_environment="demo")["reason"] == "environment_mismatch"
     assert _shadow(fee_bps_per_side=None)["reason"] == "cost_assumption_missing"

@@ -541,15 +541,22 @@ class BinanceMarketData:
                 request, status="error", rows=(), missing=("funding_history_invalid",), receipts=tuple(receipts)
             )
         received = self._clock_ms()
-        rows = tuple(
-            {
-                "event_at_ms": int(item["fundingTime"]),
-                "funding_at_ms": int(item["fundingTime"]),
-                "funding_rate": str(item["fundingRate"]),
-                "received_at_ms": received,
-            }
-            for item in raw
-        )
+        try:
+            rows = tuple(
+                {
+                    "event_at_ms": int(item["fundingTime"]),
+                    "funding_at_ms": int(item["fundingTime"]),
+                    "funding_rate": str(item["fundingRate"]),
+                    "mark_price": str(item["markPrice"]),
+                    "rate_type": item.get("rateType"),
+                    "received_at_ms": received,
+                }
+                for item in raw
+            )
+        except (KeyError, TypeError, ValueError):
+            return self._result(
+                request, status="error", rows=(), missing=("funding_history_invalid",), receipts=tuple(receipts)
+            )
         status = "partial" if len(rows) >= 1000 else "ok"
         return self._result(
             request,

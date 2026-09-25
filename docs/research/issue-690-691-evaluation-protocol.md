@@ -87,6 +87,10 @@ requested notional, stop distance, signed funding cashflow and gross/cost bps
 whose arithmetic exactly reconciles to net bps. It also names archived entry
 and exit quote, contract rules, mark path, funding and fee references plus
 observed latency.
+Funding cashflow uses each settlement event's archived mark price, rate and
+simulated base quantity. The declared fee rate applies separately to the
+simulated entry and exit fill notionals. Missing settlement mark price leaves
+the net receipt unevaluable rather than assuming the entry price.
 Values without those references remain `net_unknown`.
 The runtime captures a level-one bid/ask and displayed base size each minute
 while a shadow evaluation is pending, preserving the per-sample archive ref and

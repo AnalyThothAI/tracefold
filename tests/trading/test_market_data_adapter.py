@@ -307,7 +307,9 @@ async def _shadow_market_sources() -> None:
         if request.url.path == "/fapi/v1/markPriceKlines":
             return httpx.Response(200, json=[_bar(0), _bar(60_000)])
         if request.url.path == "/fapi/v1/fundingRate":
-            return httpx.Response(200, json=[{"fundingTime": 60_000, "fundingRate": "0.0001"}])
+            return httpx.Response(
+                200, json=[{"fundingTime": 60_000, "fundingRate": "0.0001", "markPrice": "100", "rateType": "Regular"}]
+            )
         raise AssertionError(request.url.path)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
@@ -334,7 +336,7 @@ async def _shadow_market_sources() -> None:
             environment="demo",
             product="perpetual",
             source_identity="binance_public_v1",
-            unit_definition="funding_rate_fraction_v1",
+            unit_definition="funding_rate_and_mark_price_v2",
             start_ms=0,
             end_ms=120_000,
             interval_ms=None,
@@ -348,6 +350,17 @@ async def _shadow_market_sources() -> None:
         assert quote_result.payload[0]["ask_quantity"] == "4"
         assert mark_result.status == "ok"
         assert funding_result.payload[0]["funding_rate"] == "0.0001"
+        assert funding_result.payload[0]["mark_price"] == "100"
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=[{"fundingTime": 60_000, "fundingRate": "0.0001"}])
+        )
+    ) as client:
+        missing_mark = await BinanceMarketData(client=client, clock_ms=lambda: 300_000).fetch(
+            replace(funding, deadline_at_monotonic=time.monotonic() + 2)
+        )
+        assert missing_mark.status == "error"
+        assert "funding_history_invalid" in missing_mark.missing_reasons
     assert "/fapi/v1/ticker/bookTicker" in paths
     assert "/fapi/v1/markPriceKlines" in paths
     assert "/fapi/v1/fundingRate" in paths
