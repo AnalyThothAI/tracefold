@@ -295,7 +295,7 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
         {openReplay && replay.data ? (
           <div>
             {replay.data.status !== "ok" ? <p>回放状态：{replay.data.status}</p> : null}
-            <p>来源：{word(source?.headline ?? source?.title ?? source?.kind)}</p>
+            <p>来源：{word(source?.headline ?? source?.why ?? source?.kind)}</p>
             <p>证据截止：{caseClock(Number(evidence?.knowledge_cutoff_ms) || null)}</p>
             <p>
               行情环境：{word(evidence?.data_environment)} · 执行环境：

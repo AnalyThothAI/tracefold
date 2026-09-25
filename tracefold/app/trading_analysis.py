@@ -28,7 +28,12 @@ from tracefold.platform.market_identity import (
 from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
 from tracefold.trading.engine.contracts import Candidate, ExitPlan
 from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
-from tracefold.trading.engine.features import PROFILE_VERSION, extract_features, freeze_features
+from tracefold.trading.engine.features import (
+    PROFILE_VERSION,
+    catalyst_text_values,
+    extract_features,
+    freeze_features,
+)
 from tracefold.trading.engine.marketdata import Dataset, MarketDataPort, MarketDataRequest, MarketDataResult
 from tracefold.trading.engine.outcomes import price_path_label
 from tracefold.trading.engine.policy import InvalidAssessment, compile_assessment, decision_identity
@@ -261,20 +266,21 @@ class FrameReader:
             results=results,
             features=features,
         )
-        source_units = {
-            "oi_change_bps": "bps",
-            "oi_value_usd": "USD",
-            "measurement_definition": "text",
-            "measurement_window_ms": "ms",
-            "headline": "text",
-            "headline_zh": "text",
-            "title": "text",
-            "why": "text",
-            "why_zh": "text",
-        }
-        source_values = {
-            key: source_fact[key] for key in source_units if source_fact.get(key) is not None and source_fact[key] != ""
-        }
+        if source_fact.get("kind") == "catalyst":
+            source_values: dict[str, Any] = catalyst_text_values(source_fact)
+            source_units = {key: "text" for key in source_values}
+        else:
+            source_units = {
+                "oi_change_bps": "bps",
+                "oi_value_usd": "USD",
+                "measurement_definition": "text",
+                "measurement_window_ms": "ms",
+            }
+            source_values = {
+                key: source_fact[key]
+                for key in source_units
+                if source_fact.get(key) is not None and source_fact[key] != ""
+            }
         brief_evidence: dict[str, dict[str, Any]] = {
             "source": {
                 "status": "ok" if source_values else "missing",

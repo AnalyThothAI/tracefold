@@ -91,3 +91,45 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
     .closest("section") as HTMLElement;
   expect(await within(replayCard).findByText(/model_schema_invalid/)).toBeVisible();
 });
+
+it.each([
+  {
+    source: { kind: "catalyst", headline: "公开标题", title: "不应使用的别名" },
+    expected: "公开标题",
+  },
+  {
+    source: { kind: "catalyst", why: "公开说明", title: "不应使用的别名" },
+    expected: "公开说明",
+  },
+  {
+    source: { kind: "catalyst", title: "不应使用的别名" },
+    expected: "catalyst",
+  },
+])("renders public source text without a title alias ($expected)", async ({ source, expected }) => {
+  server.use(
+    http.get(/.*\/api\/trading\/cases\/case-hype\/replay$/, () =>
+      HttpResponse.json({
+        ok: true,
+        data: {
+          case_id: "case-hype",
+          status: "ok",
+          source_fact: source,
+          evidence: {},
+          assessment: {},
+          attempts: [],
+        },
+      }),
+    ),
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <TradingAnalysisDetail item={tradingCaseFixture()} token="test-token" />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  screen.getByRole("button", { name: /查看冻结回放/ }).click();
+  expect(await screen.findByText(`来源：${expected}`)).toBeVisible();
+  expect(screen.queryByText(/不应使用的别名/)).not.toBeInTheDocument();
+});
