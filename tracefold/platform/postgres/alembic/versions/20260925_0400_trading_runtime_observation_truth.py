@@ -64,7 +64,7 @@ def upgrade() -> None:
           IF EXISTS (
             SELECT 1 FROM public.trading_execution_runtime_state
              WHERE account_snapshot IS NOT NULL
-               AND account_snapshot ->> 'version' <> 'execution_account_snapshot_v2'
+               AND account_snapshot ->> 'version' IS DISTINCT FROM 'execution_account_snapshot_v2'
           ) THEN
             RAISE EXCEPTION 'unexpected execution account snapshot version';
           END IF;

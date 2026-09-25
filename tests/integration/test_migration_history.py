@@ -410,6 +410,17 @@ def test_runtime_observation_cut_keeps_old_account_facts_without_old_authority()
             (json.dumps(snapshot),),
         )
 
+    with closing(connect_postgres_test(read_only=False)) as conn, conn.transaction():
+        conn.execute("UPDATE trading_execution_runtime_state SET account_snapshot = account_snapshot - 'version'")
+    with pytest.raises(Exception, match="unexpected execution account snapshot version"):
+        command.upgrade(config, HEAD)
+    assert _stamped_revision() == "20260925_0399"
+    with closing(connect_postgres_test(read_only=False)) as conn, conn.transaction():
+        conn.execute(
+            "UPDATE trading_execution_runtime_state SET account_snapshot = %s::jsonb",
+            (json.dumps(snapshot),),
+        )
+
     command.upgrade(config, HEAD)
 
     with closing(connect_postgres_test(read_only=True)) as conn:
