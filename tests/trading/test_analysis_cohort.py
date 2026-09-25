@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from scripts.export_trading_analysis_cohort import (
+    _read_object_ref,
     _rule_receipt_archives_complete,
     _rule_refusal_archive_complete,
     _rule_shadow_receipt,
@@ -170,6 +171,27 @@ def test_net_requires_contemporary_strategy_receipt_and_applies_capital() -> Non
         "receipt_invalid": 1,
         "receipt_missing": 1,
     }
+
+
+def test_open_shadow_holding_window_is_unknown_with_pending_receipt_reason() -> None:
+    root = _case("pending-trade", "root-pending-trade", 100_000_000)
+    root["decision_action"] = "TRADE"
+    root["arm_evaluations"] = {
+        "dspy": {"status": "pending", "source": "shadow_simulation", "reason": "receipt_pending"}
+    }
+    report = evaluate([root], expected_roots=1, cutoff_ms=100_000_000, invalid_outputs=[], expected_invalid=0)
+    dspy = report["arms"]["holdout"]["dspy"]
+    assert dspy["net_evaluable"] == 0
+    assert dspy["net_unknown_reasons"] == {"receipt_pending": 1}
+    assert dspy["ending_equity_usdt"] is None
+
+
+def test_shadow_receipt_archive_ref_rejects_non_object_payload(tmp_path) -> None:
+    files = AnalysisFiles(tmp_path)
+    missing: list[dict[str, str]] = []
+    ref = files.write(None)
+    assert _read_object_ref(files, ref, missing, "case-1", "dspy_fee_ref") is None
+    assert missing == [{"case_id": "case-1", "kind": "dspy_fee_ref", "reason": "payload_invalid", "ref": ref}]
 
 
 def test_no_trade_is_zero_cashflow_but_missing_rule_path_is_unknown() -> None:

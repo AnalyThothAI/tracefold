@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 import pytest
@@ -142,15 +143,51 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
         assert export[0]["attempts"][0]["calls"][0]["request_ref"] == "request-ref"
         assert export[0]["attempts"][0]["physical_call_count"] == 0
         assert export[0]["rule_watch_status"] == "missing"
+        assert export[0]["arm_evaluations"]["dspy"] == {
+            "status": "pending",
+            "source": "shadow_simulation",
+            "reason": "receipt_pending",
+            "due_at_ms": 182_000,
+        }
         assert {item["kind"] for item in manifest["missing_archive_items"]} == {
             "evidence",
             "model_request",
             "root_market_tape",
+            "dspy_decision_quote_ref",
+            "dspy_planned_quote_ref",
+            "dspy_quote_tape_ref",
         }
         report = evaluate_cohort(export, expected_roots=1, cutoff_ms=1_100, invalid_outputs=[], expected_invalid=0)
         assert report["arms"]["holdout"]["dspy"]["net_unknown"] == 1
         assert report["arms"]["holdout"]["dspy"]["model_cost_unknown_calls"] == 1
         assert report["model_identities"] == [{"model_name": "fixture-model", "prompt_sha": "fixture-prompt"}]
+        with conn.transaction():
+            conn.execute(
+                "UPDATE trading_case_evaluations SET status='simulated',result=%s::jsonb WHERE case_id=%s",
+                (
+                    json.dumps(
+                        {
+                            "status": "simulated",
+                            "source": "shadow_simulation",
+                            "decision_quote_ref": "decision-ref",
+                            "entry_quote_ref": "planned-ref",
+                            "exit_quote_ref": "exit-ref",
+                            "quote_tape_ref": "tape-1",
+                            "instrument_rules_ref": "first-evidence",
+                            "mark_path_ref": "root-tape-1",
+                            "funding_ref": "funding-ref",
+                            "fee_ref": "fee-ref",
+                        }
+                    ),
+                    case_id,
+                ),
+            )
+        settled, settled_manifest = export_cases(
+            conn, AnalysisFiles(tmp_path / "missing-archive"), start_ms=1_100, end_ms=1_101
+        )
+        assert settled[0]["arm_evaluations"]["dspy"]["status"] == "unevaluable"
+        assert settled[0]["arm_evaluations"]["dspy"]["reason"] == "receipt_archive_incomplete"
+        assert "dspy_fee_ref" in {item["kind"] for item in settled_manifest["missing_archive_items"]}
         with conn.transaction():
             _, excluded_case_id, _ = trading.accept_trigger(
                 kind="oi",

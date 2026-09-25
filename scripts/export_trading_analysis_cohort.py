@@ -66,6 +66,17 @@ def _read_ref(files: AnalysisFiles, ref: str | None, missing: list[dict[str, str
         return None
 
 
+def _read_object_ref(
+    files: AnalysisFiles, ref: str | None, missing: list[dict[str, str]], case_id: str, kind: str
+) -> dict[str, Any] | None:
+    before = len(missing)
+    value = _read_ref(files, ref, missing, case_id, kind)
+    if len(missing) == before and not isinstance(value, dict):
+        missing.append({"case_id": case_id, "kind": kind, "reason": "payload_invalid", "ref": str(ref)})
+        return None
+    return value
+
+
 def _rule_watch_path(
     evidence: dict[str, Any], tape: dict[str, Any], expires_at_ms: int
 ) -> tuple[list[dict[str, Any]], str]:
@@ -430,15 +441,67 @@ def export_cases(
     for case_id, case_attempts in attempts.items():
         for attempt in case_attempts:
             attempt["calls"] = calls[(case_id, int(attempt["claim_attempt"]))]
+    missing: list[dict[str, str]] = []
     evaluations: dict[str, dict[str, Any]] = defaultdict(dict)
     for evaluation in conn.execute(
-        "SELECT case_id,source,status,result FROM trading_case_evaluations "
+        "SELECT case_id,source,status,result,due_at_ms,decision_quote_ref,planned_quote_ref,quote_tape_ref "
+        "FROM trading_case_evaluations "
         "WHERE case_id=ANY(%s) AND source='shadow_simulation'",
         (case_ids,),
     ).fetchall():
-        if isinstance(evaluation["result"], dict):
-            evaluations[str(evaluation["case_id"])]["dspy"] = evaluation["result"]
-    missing: list[dict[str, str]] = []
+        case_id = str(evaluation["case_id"])
+        status = str(evaluation["status"])
+        result = evaluation["result"]
+        if status == "pending":
+            for field in ("decision_quote_ref", "planned_quote_ref"):
+                _read_object_ref(files, evaluation[field], missing, case_id, f"dspy_{field}")
+            if evaluation["quote_tape_ref"]:
+                _read_object_ref(files, evaluation["quote_tape_ref"], missing, case_id, "dspy_quote_tape_ref")
+            evaluations[case_id]["dspy"] = {
+                "status": "pending",
+                "source": "shadow_simulation",
+                "reason": "receipt_pending",
+                "due_at_ms": int(evaluation["due_at_ms"]),
+            }
+        elif isinstance(result, dict):
+            result = dict(result)
+            if result.get("status") != status or result.get("source") != "shadow_simulation":
+                missing.append({"case_id": case_id, "kind": "dspy_result", "reason": "index_mismatch"})
+                result.update(status="unevaluable", reason="evaluation_index_mismatch")
+            elif status == "simulated":
+                before = len(missing)
+                for field in (
+                    "decision_quote_ref",
+                    "entry_quote_ref",
+                    "exit_quote_ref",
+                    "quote_tape_ref",
+                    "instrument_rules_ref",
+                    "mark_path_ref",
+                    "funding_ref",
+                    "fee_ref",
+                ):
+                    _read_object_ref(files, result.get(field), missing, case_id, f"dspy_{field}")
+                for result_field, index_field in (
+                    ("decision_quote_ref", "decision_quote_ref"),
+                    ("entry_quote_ref", "planned_quote_ref"),
+                    ("quote_tape_ref", "quote_tape_ref"),
+                ):
+                    if result.get(result_field) != evaluation[index_field]:
+                        missing.append({"case_id": case_id, "kind": f"dspy_{result_field}", "reason": "index_mismatch"})
+                if len(missing) > before:
+                    result.update(status="unevaluable", reason="receipt_archive_incomplete")
+            else:
+                for field in ("decision_quote_ref", "planned_quote_ref", "quote_tape_ref"):
+                    if evaluation[field]:
+                        _read_object_ref(files, evaluation[field], missing, case_id, f"dspy_{field}")
+            evaluations[case_id]["dspy"] = result
+        else:
+            missing.append({"case_id": case_id, "kind": "dspy_result", "reason": "result_missing"})
+            evaluations[case_id]["dspy"] = {
+                "status": "unevaluable",
+                "source": "shadow_simulation",
+                "reason": "evaluation_result_missing",
+            }
     exported: list[dict[str, Any]] = []
     complete_paths = simulated_rule_receipts = 0
     for case in cases:
