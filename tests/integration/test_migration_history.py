@@ -48,7 +48,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260924_0396"
+HEAD = "20260925_0397"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -255,6 +255,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260924_0396",
         "20260924_0395",
         "20260924_0394",
         "20260924_0393",
@@ -2812,6 +2813,45 @@ def test_the_watchdog_alert_ledger_is_one_additive_table_and_reverses_cleanly() 
     assert _table_exists("platform_watchdog_alerts") is False
     command.upgrade(config, "20260922_0388")
     assert _table_exists("platform_watchdog_alerts") is True
+
+
+def test_retired_watchdog_ledger_is_dropped_at_head_and_recreated_empty_on_downgrade() -> None:
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260924_0396")
+    assert _table_exists("platform_watchdog_alerts") is True
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute("""
+            INSERT INTO platform_watchdog_alerts
+              (condition_key, active, opened_at_ms, detail, updated_at_ms)
+            VALUES ('plan_overdue', true, 1, 'retired episode', 1)
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(Exception, match="watchdog_alerts_present"):
+        command.upgrade(config, HEAD)
+    assert _stamped_revision() == "20260924_0396"
+    conn = connect_postgres_test(read_only=False)
+    try:
+        assert conn.execute("SELECT count(*) AS n FROM platform_watchdog_alerts").fetchone()["n"] == 1
+        conn.execute("DELETE FROM platform_watchdog_alerts")
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.upgrade(config, HEAD)
+    assert _stamped_revision() == HEAD
+    assert _table_exists("platform_watchdog_alerts") is False
+    command.downgrade(config, "20260924_0396")
+    assert _table_exists("platform_watchdog_alerts") is True
+    conn = connect_postgres_test(read_only=True)
+    try:
+        assert conn.execute("SELECT count(*) AS n FROM platform_watchdog_alerts").fetchone()["n"] == 0
+    finally:
+        conn.close()
 
 
 def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_every_trade_fact() -> None:

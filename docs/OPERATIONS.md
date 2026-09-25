@@ -411,8 +411,7 @@ distance, TP and maximum holding duration.
 an instrument no open plan of this account slot and mode claims; or the venue and
 the Cache disagree about a position; or a close none of the Runtime's legs sent is
 waiting for the venue to confirm it. The latest `risk` observation
-(`tracefold trading observations`) names each one; the watchdog alerts on it
-(`runtime_unexpected_exposure`). Read `current_account` in `trading status` or the
+(`tracefold trading observations`) names each one. Read `current_account` in `trading status` or the
 Trading page for what the Cache holds, and `nautilus.log` /
 `nautilus-engine_*.log` for what Nautilus decided. `/flatten account TTL_SECONDS`
 pauses entries, closes every open position the Cache holds with a reduce-only
@@ -511,51 +510,15 @@ only to an image compatible with the live schema. A non-flat incident rolls
 forward: the Runtime remains the sole authority until exposure is protected or
 closed, and `/flatten account` is the operator's convergence command.
 
-### Trading watchdog
+### Trading runtime inspection
 
-The `trading-watchdog` Workers task (capability `trading_watchdog`)
-reads durable execution facts every 60 seconds and tells the operator through the push
-provider `news.push.*` already configures — the Feishu webhook in this
-deployment, or Telegram. It is alert-only: it never pauses, blocks, flattens,
-retries or repairs anything.
-
-| Condition | Fires when | Read from |
-| --- | --- | --- |
-| `runtime_heartbeat_stale` | `execution.mode` is `paper`/`live` and the Runtime row's heartbeat is over 60 s old, or there is no row | `trading_execution_runtime_state` |
-| `runtime_restart_loop` | more than 3 Runtime generations (distinct `started_at_ns`) seen starting within the last hour | the same row, sampled every pass |
-| `signal_refusal_streak` | the newest 5 or more `signal_disposition` observations are all something other than `accepted`; the message carries the reason histogram | `trading_execution_observations` |
-| `plan_overdue` | a plan still not terminal was opened more than `max_holding` + 15 minutes ago | `trading_trade_plans` |
-| `runtime_unexpected_exposure` | the Runtime row says `unexpected_exposure`: exposure no plan claims, a venue that disagrees with the Cache, or a close the venue has not confirmed | `trading_execution_runtime_state` |
-
-Each condition is one episode: a message when it starts, a repeat at most every
-4 hours while it lasts, and one recovery message once it has stayed clear for 10
-minutes. A condition that comes back inside those 10 minutes is the same episode,
-so a Runtime restarting every few minutes is one alert, not one per restart. The
-episode state is `platform_watchdog_alerts` (`20260922_0388`), one row per
-condition, so a Workers restart neither re-pages an active condition nor loses the
-recovery message for one that cleared meanwhile. A message the provider did not
-accept is not recorded as sent and is retried on the next pass. Messages leave
-through the News Deliverer's one send entry, paced by the same
-`news.push.min_interval_seconds`; there is no second channel, sender or
-credential. Thresholds are code constants in
-`tracefold/app/workers/wiring/watchdog.py`.
-
-The watchdog runs when `trading.enabled` is true, `trading.watchdog_enabled`
-(default `true`) is not switched off, and News push can deliver. Otherwise its
-capability reads `disabled` (`trading_disabled`, `trading_watchdog_disabled`) or
-`unavailable` (`trading_watchdog_push_unavailable`). To mute it, set
-`trading.watchdog_enabled: false` and restart Workers. The current state of every
-condition is one query:
-
-```sql
-SELECT condition_key, active, opened_at_ms, notified_at_ms, clear_since_ms, detail
-  FROM platform_watchdog_alerts
- ORDER BY condition_key;
-```
-
-It runs inside Workers, so a Workers outage is not its to report — the container
-state and `/readyz` are. The restart count is sampled once a pass and starts over
-with each Workers process, so it can under-count and never over-counts.
+Workers no longer polls Trading execution facts or sends Trading alerts through
+News push. Check `tracefold trading status` for the Runtime and current account,
+`tracefold trading observations` for execution decisions and risk events, and the
+open plans in the Trading console when investigating a stalled position. Container
+state and `/readyz` still report process health. These read paths do not send
+automatic messages for a stale Runtime, repeated refusals, overdue plans or
+unexpected exposure.
 
 ## Operator lifecycle
 
@@ -1097,8 +1060,6 @@ tracefold workers
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
      news-triage, news-deliverer, news-janitor); the bounded polling loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
-     when Trading is enabled, trading-watchdog when
-     News push can deliver;
      workers-control
 ```
 
@@ -1263,8 +1224,7 @@ The separate loopback Workers probe answers two questions, not one. `ok` is
 basic readiness: this process still owns PostgreSQL, its schema and its
 singleton session. `capabilities` is a separate object keyed by capability name
 -- `news_ingestion`, `news_editorial`, `news_delivery`, `news_instruments`,
-`news_quotes`, `news_reactions`, `market_notifications`,
-`trading_watchdog` -- each with a `state` of
+`news_quotes`, `news_reactions`, `market_notifications` -- each with a `state` of
 `running`, `faulted`, `unavailable` or `disabled` and the reason that put it
 there. The same object is persisted on `workers_runtime.capabilities` and
 republished on `/api/status` under `runtime.workers_runtime.capabilities`, and

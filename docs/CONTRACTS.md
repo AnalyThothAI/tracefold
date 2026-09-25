@@ -249,12 +249,9 @@ endpoint and never enter the brief.
 `trading.execution.mode` independently selects `disabled|paper|live`, default
 `disabled`. `execution.account_slot` identifies the one Binance USD-M account
 and deterministic client-order namespace. Operator-owned credential file paths
-belong only to the Runtime. `watchdog_enabled` controls the Workers alert task;
-its old OI v5 lane condition is retired at the Analysis cutover. The watchdog
-still alerts on Runtime heartbeat and restart faults, repeated Signal refusals,
-overdue plans, and unexpected exposure, including venue/Cache disagreement
-(#680 PR-3). Its per-condition episode state is written only by Workers to
-`platform_watchdog_alerts` (`20260922_0388`).
+belong only to the Runtime. Trading has no Workers alert task or
+`watchdog_enabled` setting; Runtime state and execution observations remain
+available through the Trading status and observation read paths.
 
 `trading` has no `control` or `notifications` block: #528 deleted the Telegram
 command ingress and both never-run notification senders, and a config that still

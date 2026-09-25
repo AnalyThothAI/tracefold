@@ -247,7 +247,6 @@ async def run_workers(settings: Settings) -> None:
                     news_pipeline=components.news_pipeline,
                     market_notifications=components.market_notifications,
                     chain_tape=components.chain_tape,
-                    trading_watchdog=components.trading_watchdog,
                 )
             ]
             await _guard_child(

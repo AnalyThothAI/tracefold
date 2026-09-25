@@ -200,11 +200,8 @@ cancellation, and supervision; business runners own their action and durable sta
 
 Reception, recovery, admission, and retention are foundational News tasks. Optional
 capabilities include editorial judgment, delivery, instrument/quote/reaction review,
-market notifications, the wallet tasks, and the Trading watchdog when News push
-can deliver. Analysis has its own process and its own market/Agent budgets.
-The watchdog is App's: it reads Trading facts and Runtime state,
-keeps its episode state in the platform table `platform_watchdog_alerts`, and alerts
-through the Deliverer's one send entry; it never blocks or repairs anything.
+market notifications and the wallet tasks. Analysis has its own process and its
+own market/Agent budgets.
 The root also owns the probe and singleton/control work.
 
 The wallet composition currently declares `news-chain-tape`, `news-wallet-net-buy`,
@@ -393,9 +390,8 @@ confirms the instrument flat, and until then the instrument is unexpected exposu
 Reduce-only protection on an instrument with no Cache position is canceled only on a
 flat venue read. Entries need a venue read younger than two minutes that agrees with the
 Cache (`venue_unverified` otherwise). `/flatten account` closes, with reduce-only market
-orders, what the Cache holds and what only the venue holds. The Workers watchdog alerts
-on unexpected exposure; Nautilus' WARN/ERROR lines are kept in a rotated file under the
-logs directory.
+orders, what the Cache holds and what only the venue holds. Inspect the Runtime's
+risk observations and Nautilus' rotated WARN/ERROR logs for exposure incidents.
 
 The pure Trading engine imports no adapter, database or Nautilus engine and has
 no order authority. The historical OI v5 Signal lane is not scheduled by Workers.

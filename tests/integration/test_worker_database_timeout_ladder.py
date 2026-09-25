@@ -65,7 +65,7 @@ def test_quote_and_the_signal_lane_progress_while_reaction_holds_the_heavy_gate(
         return read_one(repos)
 
     def lane_turn(repos) -> int:
-        repos.trading.recent_signal_dispositions(limit=1)
+        repos.trading.execution_runtime_state("default")
         return 1
 
     async def scenario() -> None:
