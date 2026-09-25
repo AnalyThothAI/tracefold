@@ -352,7 +352,6 @@ def _runtime_bridge(
     signals: ExecutionSignalClient,
     *,
     journal: ExecutionJournal | None = None,
-    projector: RuntimeStateProjector | None = None,
     update_day_start: Callable[[DayStartBaseline], None] = lambda _baseline: None,
 ) -> OiRuntimeDatabaseBridge:
     profile = oi_profile()
@@ -363,7 +362,6 @@ def _runtime_bridge(
         journal=journal or ExecutionJournal(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1")),
         update_day_start=update_day_start,
         singleton=_bridge_singleton(),
-        projector=projector or RuntimeStateProjector(initial=_runtime_state()),
     )
 
 
@@ -544,7 +542,7 @@ def test_a_failing_day_start_write_never_stops_commands_or_the_projection() -> N
         projector = RuntimeStateProjector(initial=_runtime_state())
         projector.start(repos)
         baselines: list[DayStartBaseline] = []
-        bridge = _runtime_bridge(signals, projector=projector, update_day_start=baselines.append)
+        bridge = _runtime_bridge(signals, update_day_start=baselines.append)
         bridge.set_equity(Decimal("1000"), NOW_NS)
         conn.execute(
             """
@@ -558,6 +556,7 @@ def test_a_failing_day_start_write_never_stops_commands_or_the_projection() -> N
         projector.offer(projected)
 
         bridge._cycle(repos)
+        projector.write_once(repos)
 
         received = signals.next_command_nowait()
         assert received is not None and received.command_id == command.value.command_id

@@ -34,7 +34,7 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock, MessageBus
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.execution.messages import GenerateFillReports
+from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports
 from nautilus_trader.execution.reports import ExecutionMassStatus, OrderStatusReport, PositionStatusReport
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.currencies import USDT
@@ -112,6 +112,7 @@ class _Venue:
         self.position_risk_error = position_risk_error
         self.prior_round_trip = prior_round_trip
         self.user_trade_symbols: list[str] = []
+        self.position_amount = "1188.3"
 
     async def send_request(
         self, _client: Any, _method: Any, url_path: str, payload: dict[str, str] | None = None, **_: Any
@@ -124,7 +125,7 @@ class _Venue:
                     message={"code": -1021, "msg": "Timestamp for this request is outside of the recvWindow."},
                     headers={},
                 )
-            return msgspec.json.encode([_position_risk("APTUSDT", "1188.3")])
+            return msgspec.json.encode([_position_risk("APTUSDT", self.position_amount)])
         if url_path.endswith("/userTrades"):
             self.user_trade_symbols.append(params["symbol"])
             trades = [_trade(trade_id, ENTRY_ORDER_ID, "BUY", qty, FILL_MS) for trade_id, qty in ENTRY_TRADES]
@@ -521,15 +522,55 @@ def test_path_b_a_position_risk_error_while_holding_never_closes_the_position(ac
     assert runtime.strategy.closed == []
 
 
+def test_failed_position_reads_do_not_consume_a_flat_verdict_and_recover_on_new_evidence(account: Any) -> None:
+    runtime = account(position_risk_error=True)
+    runtime.position_checks(count=10)
+    assert runtime.open_positions() == _HELD
+    assert runtime.strategy.closed == []
+    runtime.venue.position_risk_error = False
+    runtime.position_checks(count=2)
+    assert runtime.open_positions() == _HELD
+    assert runtime.open_protection() == _PROTECTION
+
+
 def test_path_b_is_the_generated_flat_order_the_production_config_turns_off(account: Any) -> None:
     """With Nautilus' default the same `-1021` closes the position with a synthetic fill."""
 
-    default = account(position_risk_error=True, generate_missing_orders=True)
+    default = account(factory=BinanceLiveExecClientFactory, position_risk_error=True, generate_missing_orders=True)
 
     default.position_checks(count=1)
 
     assert default.open_positions() == []
     assert len(default.strategy.closed) == 1
+
+
+def test_pinned_adapter_preserves_position_read_failure_and_true_empty_report(account: Any) -> None:
+    runtime = account(position_risk_error=True)
+    command = GeneratePositionStatusReports(
+        instrument_id=None,
+        start=None,
+        end=None,
+        command_id=UUID4(),
+        ts_init=runtime.clock.timestamp_ns(),
+    )
+    with pytest.raises(BinanceClientError):
+        runtime.loop.run_until_complete(runtime.client.generate_position_status_reports(command))
+    assert runtime.open_positions() == _HELD
+
+    runtime.venue.position_risk_error = False
+    reports = runtime.loop.run_until_complete(runtime.client.generate_position_status_reports(command))
+    assert len(reports) == 1 and reports[0].signed_decimal_qty == Decimal("1188.3")
+
+    specific = GeneratePositionStatusReports(
+        instrument_id=APT,
+        start=None,
+        end=None,
+        command_id=UUID4(),
+        ts_init=runtime.clock.timestamp_ns(),
+    )
+    runtime.venue.position_amount = "0"
+    [flat] = runtime.loop.run_until_complete(runtime.client.generate_position_status_reports(specific))
+    assert flat.position_side == PositionSide.FLAT and flat.quantity == Quantity.zero()
 
 
 def test_a_reduce_only_fill_on_a_flat_cache_never_opens_a_mirror_position(account: Any) -> None:

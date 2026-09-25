@@ -550,11 +550,17 @@ def test_a_failing_step_never_escapes_the_pump_and_the_next_input_still_runs() -
         calls.append(1)
         raise ConnectionError("tls close_notify EOF")
 
+    converge = runtime.strategy._converge
     runtime.strategy._converge = broken  # type: ignore[method-assign]
     runtime.pump()
     runtime.advance(6 * SECOND_NS)
     runtime.pump()
     assert calls == [1, 1]
+    assert runtime.strategy.runtime_view(NOW_NS).convergence_failure == "ConnectionError"
+    assert runtime.settle() is None
+    runtime.strategy._converge = converge  # type: ignore[method-assign]
+    runtime.strategy._converge_due_ns = 0
+    runtime.pump()
     assert runtime.settle() is not None
 
 

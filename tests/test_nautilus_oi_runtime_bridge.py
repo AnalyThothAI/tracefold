@@ -13,7 +13,7 @@ import pytest
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile, open_plan, operator_intent, trade_signal
 from tracefold.app.nautilus import oi_runtime
-from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, RuntimeStateProjector
+from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge
 from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
@@ -119,7 +119,6 @@ def _bridge() -> tuple[OiRuntimeDatabaseBridge, ExecutionJournal, ExecutionSigna
         journal=journal,
         update_day_start=lambda _baseline: None,
         singleton=_singleton(),
-        projector=RuntimeStateProjector(initial=_runtime_state()),
     )
     return bridge, journal, signals
 
@@ -211,6 +210,26 @@ def test_plan_transitions_are_written_as_updates_one_per_transaction() -> None:
 
     [values] = trading.plan_updates
     assert values[0] == "open" and values[1] == NOW_NS and values[5] == plan.entry_id
+
+
+def test_plan_false_update_needs_a_storage_verdict_and_is_never_dropped() -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
+    prepared = open_plan(opened_at_ns=None)
+    opened = prepared.opened(opened_at_ns=NOW_NS, now_ns=NOW_NS)
+    trading.update_trade_plan = lambda _values: False  # type: ignore[method-assign]
+    trading.stored_plan = prepared.model_dump()
+    journal.offer_plan(opened)
+
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    assert journal.backlog() == 1
+    [waiting] = journal.due(float("inf"))
+    assert waiting.attempts == 1
+
+    trading.stored_plan = opened.model_dump()
+    waiting.not_before = 0.0
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    assert journal.backlog() == 0
 
 
 def test_only_the_exact_prepared_plan_authorizes_its_entry_order() -> None:

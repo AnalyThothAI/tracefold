@@ -195,9 +195,11 @@ the venue's own positions:
   first read and unexpected exposure (`venue:<SYMBOL>:venue=<q>:cache=<q>`) on the
   second; one agreeing read clears it. An instrument with a fill or position event
   less than 5 s before a read began is judged by the next read, not that one. The
-  invariant is detect-only: it submits and cancels nothing. A position only the
-  Cache holds gets no new stop, take-profit or time exit, since the venue would
-  refuse them;
+  invariant itself submits and cancels nothing. After a stable mismatch, the
+  Runtime may ask Nautilus for one bounded native reconciliation, only when a
+  unique open Plan claims the instrument and direction; it makes at most three
+  attempts for the same unchanged discrepancy. A position only the Cache holds
+  gets no new stop, take-profit or time exit, since the venue would refuse them;
 - a position, or a non-reduce-only order, that no plan claims is *unexpected
   exposure* too: new entries are refused with `unexpected_exposure` and a `risk`
   observation names every entry. **Nothing is ever flattened because the picture
@@ -210,12 +212,12 @@ the invariant, the next 5 s open-order check and the entry precondition (no orde
 and no position on the instrument) cover; a lost user-data listen key is
 recovered once, after which the 5 s checks keep the Cache honest; the Binance
 adapter's duplicated fill reports are de-duplicated by the Runtime's execution
-client (`OiBinanceFuturesExecutionClient`, which overrides only the public
-`generate_fill_reports`); and a positionRisk error reported as "no position" can
-no longer close anything because nothing is generated from a position report.
-No Runtime module reads a private (`_`-prefixed) member of a Nautilus object
-(`tests/architecture/test_nautilus_runtime_ownership.py`); both 2026-09-23 paths
-are replayed offline in `tests/test_nautilus_reconciliation_regression.py`.
+client. The position-report override preserves Binance read failures; a
+successful instrument-specific empty read reports genuine flatness.
+The Binance position-report adapter uses one pinned private Nautilus helper to preserve
+venue read errors; the installed-version regression test fixes that seam. Other Runtime
+code does not read private Nautilus members. The offline regression tests cover the
+2026-09-23 paths.
 
 Nautilus' own WARN and ERROR lines — every reconciliation decision among them —
 also go to `~/.tracefold/logs/nautilus-engine_*.log`, rotated at 10 MiB with five
@@ -253,24 +255,24 @@ the next generation, which writes it from the plan and the Cache.
 
 #### Failure semantics
 
-No transient failure stops the process. A Strategy callback or pump step that
-raises is logged and runs again on the next pump; the database bridge replaces a
-lost session after a bounded backoff; a Nautilus node that fails to start, or stops,
-is disposed and a new generation is built after 5-60 s. The process exits only for
-a configuration or credential file it cannot use, a database schema older than its
-image, or the loss of the account-slot lock. The journal writes one row per
-transaction: a row the database refuses on integrity grounds is dropped and logged,
-and any other failure retries that row after a backoff while the rows behind it
-keep flowing.
+A Strategy callback or pump step that raises is logged and runs again on the
+next pump; the database bridge and current-state writer replace lost sessions after
+bounded backoff. A Nautilus node that fails to start or stops is disposed and a new
+generation is built after 5-60 s. The process exits for unusable configuration or
+credentials, an older database schema, loss of the account-slot lock, or failure to
+stop an old writer before rebuilding a generation. A database-refused observation
+is dropped and logged; a Plan transition is retained for another durable verdict.
+Other journal failures retry rows after backoff while later rows keep flowing.
 
-The Runtime process holds two PostgreSQL connections. The singleton session holds
-the account-slot advisory lock; from the moment the bridge starts, its thread is the
-only PostgreSQL caller the process has, and it never holds a transaction across
-Binance I/O. Its session carries a five-second `statement_timeout`, because reading
-operator Commands on it is how a flatten reaches the Runtime. Semantic changes are
-written on the next bridge cycle and the unchanged generation heartbeats every
-500 ms, before the public five-second stale threshold; those two cadences are
-code-owned safety budgets, not operator tuning.
+The Runtime process holds three fixed PostgreSQL connections. The singleton session
+holds the account-slot advisory lock. The bridge reads Commands and flushes the
+journal with a five-second `statement_timeout`; the independent current-state writer
+has a one-second `statement_timeout`. Neither holds a transaction across Binance I/O.
+The event loop publishes the newest candidate to the writer without waiting for
+journal work. Semantic changes are written promptly and an unchanged generation
+heartbeats every 500 ms, before the public five-second stale threshold. A failed
+write does not advance the projector's durable state, and repeated failures make
+the public status stale.
 
 Quote streams are opened per waiting entry and per held position rather than for the
 whole route catalogue, so an operator reading Nautilus logs should expect one
@@ -311,9 +313,10 @@ or perform a live canary without separate explicit operator authority.
 
 #### Reading the Demo receipt out of the durable facts
 
-`trading status` carries the current account as the Runtime's Nautilus Cache holds
-it: positions with the stop and take-profit resting against each, and every working
-order. The trade itself is in the plan and the journal. Run these against the
+`trading status` carries the last successful account projection: Cache positions,
+last observed venue-only positions, protection evidence, and working orders.
+The venue read time and failure identify when a venue-only row is historical.
+The trade itself is in the plan and the journal. Run these against the
 Tracefold database, substituting the entry's `signal_id` or manual `command_id`:
 
 ```sql
@@ -391,32 +394,22 @@ the Workers container.
 
 Preserve both request fields exactly on retries.
 
-The execution Runtime publishes two states. `alive` proves only the
-process/TradingNode/event loop; `entries_armed` alone permits new exposure.
-Existing exposure is always protected, exited and flattenable while the Runtime is
-alive, whatever blocks entries. Nautilus `/readyz` reports `ok` from `alive` and
-deliberately stays `true` when entries are blocked. It answers 200 either way and
-the payload is the diagnosis; the container healthcheck asks `/healthz`, because a
-runtime that is alive but blocked is exactly the process an operator must be able
-to reach, and restarting the owner of an open position is not a repair. The
-Runtime's own `entry_block_reason` is one of `emergency_halted`,
-`entries_paused`, `singleton_lost`, `unexpected_exposure` and `venue_unverified`
-(no successful venue read in the last two minutes, or the latest one does not yet
-agree with the Cache), and the read
-projection adds only its own `disabled` / `runtime_*` reasons
-(`runtime_starting`, `runtime_rebuilding`, `runtime_stopped`,
-`runtime_heartbeat_stale`, `runtime_state_missing`, `runtime_identity_mismatch`)
-for a row that is missing, stale or from another identity. Use
-`entry_block_reason`, `positions_count`, `open_orders_count`, `protection_status`
-(`not_applicable`, `protected`, or `unprotected` while a position lacks its stop or
-take-profit) and `unexpected_exposure` to locate the blocked layer; none is an
-order, fill, or account-flat receipt. `positions_count` and `protection_status`
-count, beside the Cache's positions, every position the latest fresh venue read
-holds where the Cache holds none; `current_account` is the Cache alone.
+The Runtime publishes separate process, account and check evidence. `alive` means
+the loop is running; only `entries_armed` permits a new entry. `readyz` returns
+HTTP 200 with a diagnostic payload even when entries are blocked. `healthz` is the
+container liveness check. A failed account projection does not stop heartbeats:
+the last successful `current_account.observed_at_ms` remains visible with
+`account_projection_failure`. Convergence and venue reads have separate success
+times and failures. `protection_status` is `not_applicable`, `protected`,
+`pending`, `unprotected` or `unknown`. The bounded account list includes Cache
+and venue-only positions, source, strict Plan association, typed findings and
+totals. A venue-only position has unknown protection. A stale PG heartbeat
+means the status channel cannot confirm the process; compare probe, writer,
+database and HTTP samples before attributing the gap.
 
 A restart while in a position is Nautilus reconciliation: the position and its
 resting stop and take-profit are rebuilt into the Cache from the venue and the
-open plan claims them again by instrument. Recovery has no age cutoff beyond the
+open plan claims them by instrument, Strategy and direction. Recovery has no age cutoff beyond the
 reconciliation lookback, which is always longer than the maximum holding time.
 Config edits affect new plans: existing positions retain the admitted stop
 distance, TP and maximum holding duration.
@@ -424,10 +417,11 @@ distance, TP and maximum holding duration.
 `unexpected_exposure=true` means a position, or a non-reduce-only order, exists on
 an instrument no open plan of this account slot and mode claims; or the venue and
 the Cache disagree about a position; or a close none of the Runtime's legs sent is
-waiting for the venue to confirm it. The latest `risk` observation
-(`tracefold trading observations`) names each one. Read `current_account` in `trading status` or the
-Trading page for what the Cache holds, and `nautilus.log` /
-`nautilus-engine_*.log` for what Nautilus decided. `/flatten account TTL_SECONDS`
+waiting for the venue to confirm it. The structured `current_account.findings` name each actual object, instrument,
+quantities, Plan association and check time. A `risk` observation is a bounded
+transition summary, not the current full object list. The Trading page and
+`trading status` show Cache and venue-only observations; Nautilus logs explain
+native reconciliation. `/flatten account TTL_SECONDS`
 pauses entries, closes every open position the Cache holds with a reduce-only
 market order, closes every position the latest fresh venue read reports on an
 instrument where the Cache holds none with a reduce-only market order for the
@@ -525,6 +519,48 @@ forward: the Runtime remains the sole authority until exposure is protected or
 closed, and `/flatten account` is the operator's convergence command.
 
 ### Trading runtime inspection
+
+For a bounded, read-only sample inside Workers:
+
+```text
+docker compose exec -T workers tracefold trading diagnose \
+  --probe-url http://nautilus:8767/readyz \
+  --status-url http://serve:8765/api/trading/status
+```
+
+For deployment identity, also inspect the two containers without dumping their
+environment or secrets:
+
+~~~text
+docker compose ps --all
+docker inspect --format '{{.Image}} {{.State.StartedAt}} {{.RestartCount}}' <serve-container-id> <nautilus-container-id>
+~~~
+
+The probe records the Runtime image/revision, installed Nautilus version and
+process start time. Workers and serve share the application image.
+
+The JSON carries separate request start and end times for the database, probe
+and HTTP. These sequential reads are not an atomic snapshot. The database
+transaction uses a local three-second statement timeout, reads at most 1,001
+open Plans and 20 risk transitions, and flags Plan truncation. The Runtime
+probe exposes the event loop's immutable account snapshot, writer last durable
+heartbeat/failure, Bridge step durations/failures, and journal backlog/oldest
+wait. Probe GET never traverses Cache or calls Binance. The CLI sends the
+configured token only to a local or Compose serve endpoint and never prints it.
+Keep the JSON with the incident record; attach only a redacted excerpt.
+
+`heartbeat_at_ms`, `current_account.observed_at_ms`,
+`convergence_checked_at_ms` and venue read times describe different evidence.
+A new heartbeat does not renew an older account or venue observation. The
+browser spends the server's remaining budget using a monotonic clock; it
+does not compare wall clocks from different machines.
+
+Migration 0400 is a forward contract cut for Runtime, serve and web. Preserve
+the incident sample and a verified database backup, stop the Runtime and serve,
+apply the migration, then start matching images together. Existing current
+rows convert once to the v3 account shape with ownership and protection
+unverified; active Plans, controls and observations remain. Roll back the
+complete image/database combination from the verified pre-cut backup.
 
 Workers no longer polls Trading execution facts or sends Trading alerts through
 News push. Check `tracefold trading status` for the Runtime and current account,

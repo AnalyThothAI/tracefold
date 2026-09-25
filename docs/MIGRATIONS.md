@@ -6,11 +6,26 @@ processes never execute DDL.
 ## Current baseline
 
 `20260831_0340` is the single Alembic root. The current head is
-`20260925_0398`; a fresh PostgreSQL 18 database applies the baseline and the
+`20260925_0400`; a fresh PostgreSQL 18 database applies the baseline and the
 linear forward-only revisions. The baseline creates
 application tables, sequences, views, indexes, functions, triggers,
 constraints, and only the structural singleton rows required on an empty
 cluster. Extensions remain the empty-PGDATA bootstrap's responsibility.
+
+## Runtime observation truth cut (`20260925_0400`)
+
+This forward revision adds separate failure and last-success clocks for account
+projection, convergence and venue reads, plus native recovery diagnostics. It
+widens protection to include `pending` and `unknown`. The one-time SQL
+conversion preserves current v2 account rows as v3 snapshots, marks their Plan
+association and protection unknown, and leaves Plans, controls and observations
+untouched. Application readers accept only v3 after the cut.
+
+Record a bounded `tracefold trading diagnose` sample and a verified backup;
+stop the Runtime and serve, apply the migration, then start the matching
+Runtime, serve and web images together. A pre-cut image cannot read the new
+account contract. Roll back only by restoring the verified pre-cut database and
+matching images while the venue account is authoritatively flat.
 
 ## Trading Agent V3 cut (`20260925_0398`)
 

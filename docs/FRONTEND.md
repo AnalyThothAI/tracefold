@@ -748,5 +748,7 @@ PAPER rows show venue net only when signed funding is fully covered and uniquely
 attributed; they show the fee-adjusted fill result separately while net is
 unknown. The totals switch to explicitly labeled PAPER known-net sums when
 PAPER closed plans exist and show missing counts. The fee/funding basis is visible next to the totals. No recovery control center
-or browser command authority is added. Freshness still uses only the server's
-`facts_expire_at_ms`, including its independent heartbeat limit.
+or browser command authority is added. Freshness uses the server's remaining heartbeat budget and the browser's
+monotonic clock; repeated old responses cannot renew it. The Trading account
+shows typed findings, source and Plan association, venue-only positions,
+truncation and protection status separately from field completeness.

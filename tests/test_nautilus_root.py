@@ -302,6 +302,29 @@ def test_the_projector_writes_a_change_immediately_and_an_unchanged_row_only_on_
     assert trading.updates == [changed, heartbeat]
 
 
+def test_projector_keeps_a_refused_or_failed_candidate_until_it_is_durable() -> None:
+    trading = _ProjectionTrading()
+    repos = SimpleNamespace(trading=trading, transaction=nullcontext)
+    starting = _runtime_state()
+    projector = RuntimeStateProjector(initial=starting)
+    projector.start(repos)  # type: ignore[arg-type]
+    candidate = replace(
+        starting,
+        heartbeat_at_ns=starting.heartbeat_at_ns + 1,
+        updated_at_ns=starting.updated_at_ns + 1,
+        entry_block_reason="entries_paused",
+    )
+    projector.offer(candidate)
+    original = trading.update_execution_runtime_state
+    trading.update_execution_runtime_state = lambda _state: False  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="generation_fenced"):
+        projector.write_once(repos)  # type: ignore[arg-type]
+    assert projector.current == starting
+    trading.update_execution_runtime_state = original  # type: ignore[method-assign]
+    projector.write_once(repos)  # type: ignore[arg-type]
+    assert projector.current == candidate
+
+
 def test_the_probe_states_what_an_operator_acts_on_and_always_answers_200() -> None:
     paused = replace(_runtime_state(), entry_block_reason="entries_paused")
     payload = _probe_payload(paused)
@@ -319,13 +342,55 @@ def test_the_probe_states_what_an_operator_acts_on_and_always_answers_200() -> N
         "open_orders_count",
         "protection_status",
         "heartbeat_at_ns",
+        "runtime_id",
+        "started_at_ns",
+        "account_snapshot",
+        "account_projection_failure",
+        "convergence_checked_at_ns",
+        "convergence_failure",
+        "venue_read_started_at_ns",
+        "venue_read_completed_at_ns",
+        "venue_read_failure",
+        "recovery_attempted_at_ns",
+        "recovery_result",
     }
     starting = nautilus_root._ProbeState.starting(mode="paper", account_slot="binance_usdm_primary").readiness()
-    assert set(starting) == set(payload)
+    assert set(starting) == set(payload) | {"process_started_at_ns"}
+    assert starting["process_started_at_ns"] > 0
     client = TestClient(nautilus_root._probe_server(lambda: starting).config.app)
     response = client.get("/readyz")
     assert response.status_code == 200 and response.json() == starting
     assert client.get("/healthz").text == "ok\n"
+
+
+def test_generation_cannot_rebuild_while_the_old_writer_is_still_alive() -> None:
+    class _Node:
+        def is_running(self) -> bool:
+            return False
+
+        def dispose(self) -> None:
+            pass
+
+    class _Writer:
+        def stop(self) -> None:
+            pass
+
+        def join(self, _timeout: float) -> None:
+            raise RuntimeError("oi_runtime_state_writer_shutdown_timeout")
+
+    async def run() -> None:
+        node_task = asyncio.create_task(asyncio.sleep(0))
+        with pytest.raises(RuntimeFatal, match="state_writer_shutdown_timeout"):
+            await nautilus_root._shutdown_generation(
+                node=_Node(),  # type: ignore[arg-type]
+                node_task=node_task,
+                bridge=None,
+                projector=None,
+                writer=_Writer(),  # type: ignore[arg-type]
+                singleton=SimpleNamespace(acquired=True),  # type: ignore[arg-type]
+            )
+
+    asyncio.run(run())
 
 
 def _supervise(monkeypatch: pytest.MonkeyPatch, outcomes: list[BaseException | None]) -> list[int]:

@@ -9,6 +9,7 @@ from tracefold.trading.storage.execution_stream import (
     ExecutionAccountOrder,
     ExecutionAccountPosition,
     ExecutionAccountSnapshot,
+    ExecutionExposureFinding,
     ExecutionRuntimeControlState,
     ExecutionRuntimeState,
 )
@@ -25,7 +26,11 @@ def _account_snapshot(*, positions: tuple[ExecutionAccountPosition, ...] = ()) -
         daily_drawdown_usd="0",
         daily_drawdown_bps=0,
         positions=positions,
+        positions_total=len(positions),
         orders=(),
+        orders_total=0,
+        findings=(),
+        findings_total=0,
         open_orders_count=0,
         inflight_orders_count=0,
         complete=True,
@@ -81,27 +86,45 @@ def test_a_live_runtime_projects_exactly_its_own_answers_and_the_private_proof_f
         "alive",
         "entries_armed",
         "entry_block_reason",
+        "reported_entry_block_reason",
         "entries_paused",
         "emergency_halted",
         "unexpected_exposure",
         "protection_status",
         "routes_count",
+        "heartbeat_at_ms",
         "facts_expire_at_ms",
+        "facts_remaining_ms",
+        "account_projection_failure",
+        "convergence_checked_at_ms",
+        "convergence_failure",
+        "venue_read_started_at_ms",
+        "venue_read_completed_at_ms",
+        "venue_read_failure",
+        "recovery_attempted_at_ms",
+        "recovery_result",
         "current_account",
     }
     assert (projection["alive"], projection["entries_armed"], projection["entry_block_reason"]) == (True, True, None)
     assert projection["routes_count"] == 487
     assert projection["facts_expire_at_ms"] == 15_000
+    assert projection["facts_remaining_ms"] == 5_000
     assert set(projection["current_account"]) == {
+        "observed_at_ms",
         "equity_usd",
         "daily_drawdown_usd",
         "daily_drawdown_bps",
         "positions",
+        "positions_total",
         "orders",
+        "orders_total",
+        "findings",
+        "findings_total",
         "open_orders_count",
         "inflight_orders_count",
         "complete",
     }
+    assert projection["current_account"]["observed_at_ms"] == 9_000
 
 
 def test_a_stale_heartbeat_disarms_the_projection_whatever_the_row_says() -> None:
@@ -112,6 +135,8 @@ def test_a_stale_heartbeat_disarms_the_projection_whatever_the_row_says() -> Non
     assert (projection["alive"], projection["entries_armed"]) == (False, False)
     assert projection["entry_block_reason"] == "runtime_heartbeat_stale"
     assert projection["facts_expire_at_ms"] == 6_000
+    assert projection["facts_remaining_ms"] == 0
+    assert projection["current_account"]["observed_at_ms"] == 9_000
 
 
 def test_the_runtimes_own_block_reason_and_the_operator_switches_pass_straight_through() -> None:
@@ -135,12 +160,15 @@ def test_the_account_snapshot_round_trips_positions_with_their_protection_and_or
     position = ExecutionAccountPosition(
         position_id="BTCUSDT-PERP.BINANCE-OI-RUNTIME-F46",
         instrument_id="BTCUSDT-PERP.BINANCE",
+        source="cache",
         side="long",
         quantity="0.049",
         entry_price="10000",
         mark_price="10010",
         unrealized_pnl_usd="0.49",
         owned=True,
+        plan_entry_id="entry-btc",
+        protection_status="unprotected",
         stop_trigger_price="9900",
         take_profit_trigger_price=None,
     )
@@ -153,9 +181,31 @@ def test_the_account_snapshot_round_trips_positions_with_their_protection_and_or
         reduce_only=True,
         trigger_price="9900",
         owned=True,
+        plan_entry_id="entry-btc",
     )
-    snapshot = replace(_account_snapshot(positions=(position,)), orders=(order,), open_orders_count=1)
+    finding = ExecutionExposureFinding(
+        kind="venue_cache_mismatch",
+        object_id="BTCUSDT",
+        instrument_id="BTCUSDT-PERP.BINANCE",
+        plan_entry_id="entry-btc",
+        cache_quantity="0.049",
+        venue_quantity="0.050",
+        observed_at_ns=8_000_000_000,
+    )
+    snapshot = replace(
+        _account_snapshot(positions=(position,)),
+        orders=(order,),
+        orders_total=1,
+        findings=(finding,),
+        findings_total=1,
+        open_orders_count=1,
+    )
 
     assert ExecutionAccountSnapshot.from_payload(snapshot.payload()) == snapshot
     assert not position.protected
-    assert replace(position, take_profit_trigger_price="10200").protected
+    assert not replace(position, take_profit_trigger_price="10200").protected
+    assert replace(position, protection_status="protected").protected
+    projection = execution_readiness_projection(
+        _execution(), replace(_state(), account_snapshot=snapshot), _control(), now_ns=10_000_000_000
+    )
+    assert projection["current_account"]["findings"][0]["observed_at_ms"] == 8_000

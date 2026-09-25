@@ -305,6 +305,21 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     assert "capital" not in data and "bindings" not in data and "budget" not in data
 
 
+def test_status_never_renews_old_facts_through_an_etag() -> None:
+    settings = Settings(ws_token=TOKEN)
+    trading = _Trading()
+    app = create_app(settings=settings)
+    app.state.service = _Runtime(settings, trading)
+    response = TestClient(app).get(
+        "/api/trading/status",
+        params={"token": TOKEN},
+        headers={"If-None-Match": '"old-status"'},
+    )
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "etag" not in response.headers
+
+
 def test_status_publishes_one_field_per_operator_question(client: tuple[TestClient, _Trading]) -> None:
     """#537 PR-5. Every raw fact whose derived answer is published beside it is gone.
 

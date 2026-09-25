@@ -38,7 +38,7 @@ from tracefold.trading.stages import execution_stage
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
 from ..read_cursor import decode_read_cursor, encode_read_cursor
-from ..responses import _etagged
+from ..responses import _etagged, _validated_json
 from ..schemas import common as api_schemas
 from ..schemas import trading as trading_schemas
 
@@ -69,25 +69,28 @@ def get_trading_status(request: Request) -> Response:
         analysis_runtime = repos.trading.analysis_runtime(
             f"{execution.account_slot}:{execution.mode}",
         )
-        execution_status = execution_readiness_projection(
-            execution,
-            repos.trading.execution_runtime_state(execution.account_slot),
-            repos.trading.execution_runtime_control_state(execution.account_slot),
-            now_ns=now_ms * 1_000_000,
-        )
-    return _etagged(
-        {
-            "decision": analysis_status_projection(
-                runtime.settings,
-                analysis_runtime,
-                now_ms=now_ms,
-                last_case_at_ms=last_case_at_ms,
-            ),
-            "execution": execution_status,
-        },
-        request,
-        envelope=_StatusEnvelope,
+        execution_state = repos.trading.execution_runtime_state(execution.account_slot)
+        execution_control = repos.trading.execution_runtime_control_state(execution.account_slot)
+    execution_status = execution_readiness_projection(
+        execution, execution_state, execution_control, now_ns=time.time_ns()
     )
+    response = _validated_json(
+        _StatusEnvelope,
+        {
+            "ok": True,
+            "data": {
+                "decision": analysis_status_projection(
+                    runtime.settings,
+                    analysis_runtime,
+                    now_ms=now_ms,
+                    last_case_at_ms=last_case_at_ms,
+                ),
+                "execution": execution_status,
+            },
+        },
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/trading/cases", response_model=_CasesEnvelope)

@@ -36,9 +36,12 @@ from nautilus_trader.adapters.binance.futures.execution import BinanceFuturesExe
 from nautilus_trader.adapters.binance.futures.http.account import BinanceFuturesAccountHttpAPI
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock, MessageBus
-from nautilus_trader.execution.messages import GenerateFillReports
-from nautilus_trader.execution.reports import FillReport
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports
+from nautilus_trader.execution.reports import FillReport, PositionStatusReport
 from nautilus_trader.live.factories import LiveExecClientFactory
+from nautilus_trader.model.enums import PositionSide
+from nautilus_trader.model.objects import Quantity
 
 from .config import ActiveRuntimeMode, BinanceRuntimeCredentials, binance_environment
 
@@ -71,6 +74,43 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
 
     async def generate_fill_reports(self, command: GenerateFillReports) -> list[FillReport]:
         return unique_fill_reports(await super().generate_fill_reports(command))
+
+    async def generate_position_status_reports(
+        self, command: GeneratePositionStatusReports
+    ) -> list[PositionStatusReport]:
+        """Preserve read errors; Nautilus 1.231.0's base method turns BinanceError into [].
+
+        A successful instrument-specific empty read is a genuine flat report. The engine
+        receives exceptions through its existing failed-venue path and will not spend a
+        discrepancy retry on a failed read. This private adapter seam is pinned by the
+        installed-version regression test.
+        """
+
+        if command.instrument_id is not None:
+            instrument = self._cache.instrument(command.instrument_id)
+            symbol = (
+                str(instrument.raw_symbol.value)
+                if instrument is not None
+                else command.instrument_id.symbol.value.removesuffix("-PERP")
+            )
+            reports = await self._get_binance_position_status_reports(symbol)
+            if not reports:
+                now_ns = self._clock.timestamp_ns()
+                reports = [
+                    PositionStatusReport(
+                        account_id=self.account_id,
+                        instrument_id=command.instrument_id,
+                        position_side=PositionSide.FLAT,
+                        quantity=Quantity.zero(),
+                        report_id=UUID4(),
+                        ts_last=now_ns,
+                        ts_init=now_ns,
+                    )
+                ]
+        else:
+            reports = await self._get_binance_position_status_reports()
+        self._log_report_receipt(len(reports), "PositionStatusReport", command.log_receipt_level)
+        return reports
 
 
 class OiBinanceExecClientFactory(LiveExecClientFactory):

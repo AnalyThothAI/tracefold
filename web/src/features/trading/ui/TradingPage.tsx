@@ -51,7 +51,10 @@ export function TradingPage({ token }: { token: string }) {
   const status = statusQuery.data;
   const executions = executionsQuery.data?.executions ?? [];
 
-  const stale = useTradingFactExpiry(status?.execution.facts_expire_at_ms);
+  const stale = useTradingFactExpiry(
+    status?.execution.facts_expire_at_ms,
+    status?.execution.facts_remaining_ms,
+  );
   const opener = useRef<HTMLElement | null>(null);
 
   const coldStatus = statusQuery.isPending && !status;
@@ -70,13 +73,6 @@ export function TradingPage({ token }: { token: string }) {
       />
     );
   }
-
-  /*
-   * The whole freshness rule. `facts_expire_at_ms` is an absolute instant, so this one comparison also
-   * covers a body kept from a failed refresh. A `null` expiry is not staleness: it means there is no live
-   * projection at all (mode disabled, or no Runtime state), and every safety word below is already `false`
-   * for that reason and says so.
-   */
 
   const selectedCase = selectedCaseId
     ? caseQuery.data?.cases?.find((item) => item.case_id === selectedCaseId)

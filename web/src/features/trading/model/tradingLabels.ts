@@ -80,7 +80,9 @@ export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   emergency_halted: "已紧急停止",
   entries_paused: "开仓已暂停",
   singleton_lost: "账户槽位已被他人持有",
-  unexpected_exposure: "出现无计划认领的敞口",
+  unexpected_exposure: "账户检查发现异常",
+  account_projection_unavailable: "账户投影待确认",
+  convergence_unverified: "认领检查待确认",
   venue_unverified: "交易所持仓尚未核实",
 };
 

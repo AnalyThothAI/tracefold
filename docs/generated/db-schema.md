@@ -1023,6 +1023,14 @@
 | `protection_status` | `TEXT` | False | `None` |
 | `account_snapshot` | `JSONB` | True | `None` |
 | `routes_count` | `INTEGER` | False | `0` |
+| `account_projection_failure` | `TEXT` | True | `None` |
+| `convergence_checked_at_ns` | `BIGINT` | True | `None` |
+| `convergence_failure` | `TEXT` | True | `None` |
+| `venue_read_started_at_ns` | `BIGINT` | True | `None` |
+| `venue_read_completed_at_ns` | `BIGINT` | True | `None` |
+| `venue_read_failure` | `TEXT` | True | `None` |
+| `recovery_attempted_at_ns` | `BIGINT` | True | `None` |
+| `recovery_result` | `TEXT` | True | `None` |
 
 ## `trading_model_calls`
 

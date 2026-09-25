@@ -3491,14 +3491,44 @@ export interface components {
             daily_drawdown_usd?: string | null;
             /** Equity Usd */
             equity_usd?: string | null;
+            /** Findings */
+            findings?: components["schemas"]["TradingExecutionFindingData"][];
+            /** Findings Total */
+            findings_total: number;
             /** Inflight Orders Count */
             inflight_orders_count: number;
+            /** Observed At Ms */
+            observed_at_ms: number;
             /** Open Orders Count */
             open_orders_count: number;
             /** Orders */
             orders?: components["schemas"]["TradingExecutionOrderData"][];
+            /** Orders Total */
+            orders_total: number;
             /** Positions */
             positions?: components["schemas"]["TradingExecutionPositionData"][];
+            /** Positions Total */
+            positions_total: number;
+        };
+        /** TradingExecutionFindingData */
+        TradingExecutionFindingData: {
+            /** Cache Quantity */
+            cache_quantity?: string | null;
+            /** Instrument Id */
+            instrument_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "unclaimed_position" | "unexpected_order" | "ownership_mismatch" | "venue_cache_mismatch" | "close_unconfirmed" | "ambiguous";
+            /** Object Id */
+            object_id: string;
+            /** Observed At Ms */
+            observed_at_ms: number;
+            /** Plan Entry Id */
+            plan_entry_id?: string | null;
+            /** Venue Quantity */
+            venue_quantity?: string | null;
         };
         /** TradingExecutionOrderData */
         TradingExecutionOrderData: {
@@ -3513,6 +3543,8 @@ export interface components {
             leg: "entry" | "stop" | "take_profit" | "exit" | "unknown";
             /** Owned */
             owned: boolean;
+            /** Plan Entry Id */
+            plan_entry_id?: string | null;
             /** Quantity */
             quantity: string;
             /** Reduce Only */
@@ -3528,15 +3560,22 @@ export interface components {
         /** TradingExecutionPositionData */
         TradingExecutionPositionData: {
             /** Entry Price */
-            entry_price: string;
+            entry_price?: string | null;
             /** Instrument Id */
             instrument_id: string;
             /** Mark Price */
             mark_price?: string | null;
             /** Owned */
             owned: boolean;
+            /** Plan Entry Id */
+            plan_entry_id?: string | null;
             /** Position Id */
             position_id: string;
+            /**
+             * Protection Status
+             * @enum {string}
+             */
+            protection_status: "protected" | "pending" | "unprotected" | "unknown";
             /** Quantity */
             quantity: string;
             /**
@@ -3544,6 +3583,11 @@ export interface components {
              * @enum {string}
              */
             side: "long" | "short";
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "cache" | "venue";
             /** Stop Trigger Price */
             stop_trigger_price?: string | null;
             /** Take Profit Trigger Price */
@@ -3560,10 +3604,16 @@ export interface components {
          *     the venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.
          */
         TradingExecutionReadinessData: {
+            /** Account Projection Failure */
+            account_projection_failure?: string | null;
             /** Account Slot */
             account_slot: string;
             /** Alive */
             alive: boolean;
+            /** Convergence Checked At Ms */
+            convergence_checked_at_ms?: number | null;
+            /** Convergence Failure */
+            convergence_failure?: string | null;
             current_account?: components["schemas"]["TradingExecutionAccountData"] | null;
             /**
              * Emergency Halted
@@ -3581,6 +3631,10 @@ export interface components {
             entry_block_reason?: string | null;
             /** Facts Expire At Ms */
             facts_expire_at_ms?: number | null;
+            /** Facts Remaining Ms */
+            facts_remaining_ms?: number | null;
+            /** Heartbeat At Ms */
+            heartbeat_at_ms?: number | null;
             /**
              * Mode
              * @enum {string}
@@ -3591,7 +3645,13 @@ export interface components {
              * @default not_applicable
              * @enum {string}
              */
-            protection_status: "not_applicable" | "protected" | "unprotected";
+            protection_status: "not_applicable" | "protected" | "pending" | "unprotected" | "unknown";
+            /** Recovery Attempted At Ms */
+            recovery_attempted_at_ms?: number | null;
+            /** Recovery Result */
+            recovery_result?: string | null;
+            /** Reported Entry Block Reason */
+            reported_entry_block_reason?: string | null;
             /**
              * Routes Count
              * @default 0
@@ -3602,6 +3662,12 @@ export interface components {
              * @default false
              */
             unexpected_exposure: boolean;
+            /** Venue Read Completed At Ms */
+            venue_read_completed_at_ms?: number | null;
+            /** Venue Read Failure */
+            venue_read_failure?: string | null;
+            /** Venue Read Started At Ms */
+            venue_read_started_at_ms?: number | null;
         };
         /**
          * TradingExecutionRowData

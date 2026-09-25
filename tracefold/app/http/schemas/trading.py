@@ -26,13 +26,16 @@ class TradingDecisionRuntimeData(ExactApiSchema):
 class TradingExecutionPositionData(ExactApiSchema):
     position_id: str
     instrument_id: str
+    source: Literal["cache", "venue"]
     side: Literal["long", "short"]
     quantity: str
-    entry_price: str
+    entry_price: str | None = None
     mark_price: str | None = None
     unrealized_pnl_usd: str | None = None
     # Whether a non-terminal plan claims this instrument; exposure no plan claims blocks new entries.
     owned: bool
+    plan_entry_id: str | None = None
+    protection_status: Literal["protected", "pending", "unprotected", "unknown"]
     # The reduce-only stop and take-profit resting against this position, as the Nautilus Cache
     # holds them; `None` where there is none.
     stop_trigger_price: str | None = None
@@ -48,6 +51,24 @@ class TradingExecutionOrderData(ExactApiSchema):
     reduce_only: bool
     trigger_price: str | None = None
     owned: bool
+    plan_entry_id: str | None = None
+
+
+class TradingExecutionFindingData(ExactApiSchema):
+    kind: Literal[
+        "unclaimed_position",
+        "unexpected_order",
+        "ownership_mismatch",
+        "venue_cache_mismatch",
+        "close_unconfirmed",
+        "ambiguous",
+    ]
+    object_id: str
+    instrument_id: str
+    plan_entry_id: str | None = None
+    cache_quantity: str | None = None
+    venue_quantity: str | None = None
+    observed_at_ms: int
 
 
 class TradingExecutionAccountData(ExactApiSchema):
@@ -58,11 +79,16 @@ class TradingExecutionAccountData(ExactApiSchema):
     balance was known, so equity and the drawdown are whole numbers.
     """
 
+    observed_at_ms: int
     equity_usd: str | None = None
     daily_drawdown_usd: str | None = None
     daily_drawdown_bps: int | None = None
     positions: list[TradingExecutionPositionData] = Field(default_factory=list, max_length=100)
+    positions_total: int = Field(ge=0)
     orders: list[TradingExecutionOrderData] = Field(default_factory=list, max_length=200)
+    orders_total: int = Field(ge=0)
+    findings: list[TradingExecutionFindingData] = Field(default_factory=list, max_length=100)
+    findings_total: int = Field(ge=0)
     open_orders_count: int = Field(ge=0)
     inflight_orders_count: int = Field(ge=0)
     complete: bool
@@ -81,14 +107,25 @@ class TradingExecutionReadinessData(ExactApiSchema):
     alive: bool
     entries_armed: bool
     entry_block_reason: str | None = None
+    reported_entry_block_reason: str | None = None
     entries_paused: bool = True
     emergency_halted: bool = False
     unexpected_exposure: bool = False
-    protection_status: Literal["not_applicable", "protected", "unprotected"] = "not_applicable"
+    protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"] = "not_applicable"
     routes_count: int = Field(default=0, ge=0)
     # The instant this projection stops being current: the Runtime heartbeat's freshness budget.
     # `None` when there is no Runtime row to age.
+    heartbeat_at_ms: int | None = None
     facts_expire_at_ms: int | None = None
+    facts_remaining_ms: int | None = None
+    account_projection_failure: str | None = None
+    convergence_checked_at_ms: int | None = None
+    convergence_failure: str | None = None
+    venue_read_started_at_ms: int | None = None
+    venue_read_completed_at_ms: int | None = None
+    venue_read_failure: str | None = None
+    recovery_attempted_at_ms: int | None = None
+    recovery_result: str | None = None
     current_account: TradingExecutionAccountData | None = None
 
 

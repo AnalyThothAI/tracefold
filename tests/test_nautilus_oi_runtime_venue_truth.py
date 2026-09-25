@@ -112,7 +112,7 @@ def test_a_close_no_leg_sent_keeps_protection_and_the_plan_until_the_venue_reads
     assert runtime.strategy.canceled_all == [] and runtime.strategy.closed == []
     view = runtime.strategy.runtime_view(runtime.clock.timestamp_ns())
     # `/readyz` counts the position only the venue holds, and it is protected.
-    assert (view.positions_count, view.protection_status, view.unexpected_exposure) == (1, "protected", True)
+    assert (view.positions_count, view.protection_status, view.unexpected_exposure) == (1, "unknown", True)
 
     # Only a venue read that says flat ends the plan and takes the protection off.
     runtime.venue(FLAT)
@@ -256,7 +256,7 @@ def test_a_position_only_the_venue_holds_is_unexpected_exposure_on_the_second_re
     assert _unexpected(runtime) == ["venue:BTCUSDT:venue=0.5:cache=0"]
     assert runtime.dispositions() == [{"disposition": "unexpected_exposure"}]
     view = runtime.strategy.runtime_view(runtime.clock.timestamp_ns())
-    assert (view.unexpected_exposure, view.positions_count, view.protection_status) == (True, 1, "unprotected")
+    assert (view.unexpected_exposure, view.positions_count, view.protection_status) == (True, 1, "unknown")
     # Detect-only: nothing was sent to the venue.
     assert runtime.strategy.submitted == [] and runtime.strategy.canceled_all == [] and runtime.strategy.closed == []
 
@@ -264,6 +264,26 @@ def test_a_position_only_the_venue_holds_is_unexpected_exposure_on_the_second_re
     runtime.venue(FLAT)
     assert _unexpected(runtime) == []
     assert not runtime.strategy.runtime_view(runtime.clock.timestamp_ns()).unexpected_exposure
+
+
+def test_last_venue_only_position_remains_visible_after_failed_and_expired_reads() -> None:
+    runtime = unit_runtime(venue_reads=True)
+    runtime.venue({SYMBOL: "0.5"})
+    runtime.venue({SYMBOL: "0.5"})
+    last_read_ns = runtime.strategy.runtime_view(runtime.clock.timestamp_ns()).venue_read_completed_at_ns
+
+    runtime.venue(None)
+    runtime.advance(VENUE_STALE_AFTER_NS)
+    view = runtime.strategy.runtime_view(runtime.clock.timestamp_ns())
+
+    assert view.venue_read_completed_at_ns == last_read_ns
+    assert view.venue_read_failure == "BinanceClientError:-1021"
+    assert view.entry_block_reason == "unexpected_exposure"
+    assert not view.entries_armed
+    assert view.positions_count == 1
+    [position] = view.account_snapshot.positions
+    assert (position.source, position.quantity, position.protection_status) == ("venue", "0.5", "unknown")
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
 
 
 def test_a_cache_position_the_venue_does_not_hold_is_named_and_never_protected_or_exited_again() -> None:
@@ -374,3 +394,27 @@ def test_flatten_without_a_fresh_venue_read_closes_the_cache_and_says_the_venue_
         OrderType.MARKET_IF_TOUCHED,
     }
     assert runtime.dispositions()[-1]["venue_positions"] == "unknown"
+
+
+def test_native_recovery_is_single_flight_per_read_and_bounded_per_discrepancy() -> None:
+    runtime, _position, _stop, _take_profit = _protected_plan()
+    strategy = runtime.strategy
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.venue({SYMBOL: "0.05"})
+    requested: list[int] = []
+    for _ in range(4):
+        at_ns = strategy.take_recovery_request(runtime.clock.timestamp_ns())
+        if at_ns is not None:
+            requested.append(at_ns)
+        assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+        runtime.venue({SYMBOL: "0.05"})
+    assert len(requested) == 3
+    runtime.venue({SYMBOL: "0.06"})
+    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is not None
+
+
+def test_unclaimed_venue_position_never_requests_automatic_recovery() -> None:
+    runtime = unit_runtime(venue_reads=True)
+    runtime.venue({SYMBOL: "0.5"})
+    runtime.venue({SYMBOL: "0.5"})
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None

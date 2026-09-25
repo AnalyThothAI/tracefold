@@ -75,6 +75,7 @@ describe("TradingPage", () => {
               entries_paused: false,
               entry_block_reason: null,
               facts_expire_at_ms: TRADING_NOW_MS - 1,
+              facts_remaining_ms: 0,
             }),
           }),
         }),
@@ -85,7 +86,7 @@ describe("TradingPage", () => {
     const safety = await screen.findByLabelText("执行安全状态");
     expect(within(safety).getAllByText("待确认")).toHaveLength(2);
     expect(within(safety).queryByText("是")).toBeNull();
-    expect(screen.getByText(/状态待确认：未取得有效期内的新状态/)).toBeVisible();
+    expect(screen.getByText(/状态通道失联：未取得有效期内的新状态/)).toBeVisible();
   });
 
   it("keeps the ledger readable when the readiness projection is the read that failed", async () => {
@@ -388,7 +389,7 @@ describe("TradingPage", () => {
     ) as HTMLElement;
     expect(closed.querySelector("details")).not.toHaveAttribute("open");
     // The summary is the whole block until a reader opens it; the facts are present and not rendered.
-    expect(within(closed).getByText(/仓位 0 · 挂单 — · 保护 无需保护/)).toBeVisible();
+    expect(within(closed).getByText(/仓位 — · 挂单 — · 保护 无需保护/)).toBeVisible();
     expect(within(closed).getByText("未取得 Runtime 账户快照")).toBeVisible();
     expect(
       within(closed).getByText("未取得 Runtime 账户快照，不能据此断言没有仓位。"),
@@ -457,9 +458,21 @@ describe("TradingPage", () => {
                     trigger_price: "9800",
                   },
                 ],
+                findings: [
+                  {
+                    kind: "unclaimed_position",
+                    object_id: "position-2",
+                    instrument_id: "SOLUSDT-PERP.BINANCE",
+                    plan_entry_id: null,
+                    cache_quantity: "-1",
+                    venue_quantity: null,
+                    observed_at_ms: TRADING_NOW_MS,
+                  },
+                ],
                 positions: [
                   {
                     ...tradingCurrentAccountFixture().positions![0]!,
+                    protection_status: "unprotected",
                     take_profit_trigger_price: null,
                   },
                   {
@@ -467,6 +480,9 @@ describe("TradingPage", () => {
                     instrument_id: "SOLUSDT-PERP.BINANCE",
                     mark_price: "151",
                     owned: false,
+                    plan_entry_id: null,
+                    protection_status: "unprotected",
+                    source: "cache",
                     position_id: "position-2",
                     quantity: "1",
                     side: "short",
@@ -490,9 +506,9 @@ describe("TradingPage", () => {
       "section",
     ) as HTMLElement;
     expect(within(block).getByText(/仓位 2 · 挂单 1 · 保护 未受保护/)).toBeVisible();
-    expect(within(block).getByText(/无计划认领的敞口，新入场已被阻止/)).toBeVisible();
+    expect(within(block).getByText(/最近检查发现异常；新增仓位受阻。/)).toBeVisible();
     expect(
-      within(screen.getByLabelText("执行安全状态")).getByText("出现无计划认领的敞口"),
+      within(screen.getByLabelText("执行安全状态")).getByText("账户检查发现异常"),
     ).toBeVisible();
 
     const strips = Array.from(block.querySelectorAll<HTMLElement>(".trading-protection-strip"));
@@ -504,9 +520,9 @@ describe("TradingPage", () => {
     expect(within(strips[0]!).getByText("止盈 未挂")).toBeVisible();
     expect(within(strips[1]!).getByText("止损 未挂")).toBeVisible();
     const unclaimed = within(block)
-      .getByText("SOLUSDT-PERP.BINANCE")
+      .getByText("SOLUSDT-PERP.BINANCE", { selector: ".trading-position-identity b" })
       .closest(".trading-position-row") as HTMLElement;
-    expect(within(unclaimed).getByText("无计划认领")).toBeVisible();
+    expect(within(unclaimed).getByText("计划关联待核实")).toBeVisible();
     expect(within(unclaimed).getByText("空仓")).toBeVisible();
   });
 

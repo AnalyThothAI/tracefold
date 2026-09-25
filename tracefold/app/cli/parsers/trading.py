@@ -10,7 +10,10 @@ def add_trading_commands(
 ) -> None:
     trading = subcommands.add_parser("trading", help="inspect Trading facts and record bounded operator intent")
     commands = trading.add_subparsers(dest="trading_command", required=True)
-    commands.add_parser("status", help="show Alpha producer and disabled execution readiness")
+    commands.add_parser("status", help="show Alpha producer and execution readiness")
+    diagnose = commands.add_parser("diagnose", help="sample bounded read-only execution evidence")
+    diagnose.add_argument("--probe-url", help="optional Runtime /readyz URL")
+    diagnose.add_argument("--status-url", help="optional serve /api/trading/status URL")
 
     cases = commands.add_parser("cases", help="list Trading cases newest first")
     cases.add_argument(

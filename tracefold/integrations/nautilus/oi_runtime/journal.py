@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import Lock
 
@@ -183,6 +184,7 @@ class JournalRow:
     value: ExecutionObservationV1 | TradePlan
     attempts: int = 0
     not_before: float = 0.0
+    offered_at_s: float = field(default_factory=time.monotonic)
 
     @property
     def key(self) -> str:
@@ -293,11 +295,18 @@ class ExecutionJournal:
             self._receipt = receipt
             self._prepare = None
 
-    def due(self, now_s: float) -> tuple[JournalRow, ...]:
-        """Every queued row whose backoff has passed, oldest first."""
+    def due(self, now_s: float, *, limit: int | None = None) -> tuple[JournalRow, ...]:
+        """Bound one bridge cycle; pending Plan transitions precede ordinary observations."""
 
+        if limit is not None and limit <= 0:
+            raise ValueError("oi_runtime_journal_due_limit_invalid")
         with self._lock:
-            return tuple(row for row in self._rows if row.not_before <= now_s)
+            ready = (row for row in self._rows if row.not_before <= now_s)
+            plans: list[JournalRow] = []
+            observations: list[JournalRow] = []
+            for row in ready:
+                (plans if isinstance(row.value, TradePlan) else observations).append(row)
+            return tuple((plans + observations)[:limit]) if limit is not None else tuple(plans + observations)
 
     def written(self, row: JournalRow, value: ExecutionObservationV1 | TradePlan) -> None:
         """`value` is durable (or the database will never take it), so its row leaves the journal.
@@ -326,6 +335,16 @@ class ExecutionJournal:
     def backlog(self) -> int:
         with self._lock:
             return len(self._rows)
+
+    def diagnostics(self) -> dict[str, int | float | None]:
+        with self._lock:
+            return {
+                "backlog": len(self._rows),
+                "pending_plan_transitions": sum(isinstance(row.value, TradePlan) for row in self._rows),
+                "oldest_wait_seconds": (
+                    None if not self._rows else max(0.0, time.monotonic() - min(row.offered_at_s for row in self._rows))
+                ),
+            }
 
 
 __all__ = [

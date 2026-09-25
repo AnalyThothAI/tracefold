@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import closing
-from uuid import uuid4
 
 import pytest
 from psycopg.errors import RaiseException, UniqueViolation
@@ -12,14 +11,12 @@ from tests.nautilus_oi_runtime_fixtures import NOW_NS, open_plan, trade_signal, 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
-    RuntimeStateProjector,
     commit_entry_plan,
     load_runtime_inputs,
 )
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.journal import EntryValidityReceipt
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
-from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 from tracefold.trading.storage.trade_plans import prepare_trade_plan, prepare_trade_plan_update
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -33,21 +30,6 @@ def _bridge(runtime) -> OiRuntimeDatabaseBridge:  # type: ignore[no-untyped-def]
         heartbeat=lambda: True,
     )
     assert singleton.acquire()
-    state = ExecutionRuntimeState(
-        account_slot=runtime.profile.account_slot,
-        mode="paper",
-        runtime_id=uuid4(),
-        alive=True,
-        entries_armed=False,
-        unexpected_exposure=False,
-        positions_count=0,
-        open_orders_count=0,
-        protection_status="not_applicable",
-        heartbeat_at_ns=NOW_NS,
-        entry_block_reason="runtime_starting",
-        started_at_ns=NOW_NS,
-        updated_at_ns=NOW_NS,
-    )
     return OiRuntimeDatabaseBridge(
         settings=None,
         profile=runtime.profile,
@@ -55,7 +37,6 @@ def _bridge(runtime) -> OiRuntimeDatabaseBridge:  # type: ignore[no-untyped-def]
         journal=runtime.journal,
         update_day_start=lambda _baseline: None,
         singleton=singleton,
-        projector=RuntimeStateProjector(initial=state),
     )
 
 

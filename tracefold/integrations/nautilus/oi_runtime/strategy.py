@@ -44,7 +44,7 @@ from threading import Lock
 from typing import Any, Literal
 
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
+from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, TriggerType
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
@@ -53,10 +53,17 @@ from tracefold.trading.execution_contracts import (
     TradeSignalV3,
     entry_condition_allows,
 )
-from tracefold.trading.storage.execution_stream import ExecutionAccountSnapshot
+from tracefold.trading.storage.execution_stream import ExecutionAccountSnapshot, ExecutionExposureFinding
 from tracefold.trading.trade_plan import ExitReason, TradePlan
 
-from .account_projection import OrderLeg, account_snapshot, open_and_inflight_orders, order_leg
+from .account_projection import (
+    OrderLeg,
+    account_snapshot,
+    exposure_findings,
+    open_and_inflight_orders,
+    order_leg,
+    position_claimed,
+)
 from .config import CONTINUOUS_CHECK_SECONDS, OiInstrumentRoute, OiRuntimeProfile
 from .entry import (
     RuntimeEntryRequest,
@@ -133,8 +140,13 @@ class RuntimeView:
     unexpected_exposure: bool
     positions_count: int
     open_orders_count: int
-    protection_status: Literal["not_applicable", "protected", "unprotected"]
+    protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]
     account_snapshot: ExecutionAccountSnapshot
+    convergence_checked_at_ns: int | None
+    convergence_failure: str | None
+    venue_read_started_at_ns: int | None
+    venue_read_completed_at_ns: int | None
+    venue_read_failure: str | None
 
 
 @dataclass(slots=True)
@@ -201,8 +213,13 @@ class OiNautilusStrategy(Strategy):
             if value.plan.status == "prepared" and value.signal is not None and not value.final_check_started:
                 self._awaiting_final[value.plan.entry_id] = RuntimeEntryRequest.from_signal(value.signal)
         self._unexpected: tuple[str, ...] = ()
+        self._findings: tuple[ExecutionExposureFinding, ...] = ()
         self._subscribed: set[InstrumentId] = set()
         self._converge_due_ns = 0
+        self._convergence_checked_at_ns: int | None = None
+        self._convergence_failure: str | None = None
+        self._recovery_requested_read_ns = 0
+        self._recovery_attempts: dict[str, tuple[str, int]] = {}
         self._day_start = day_start
         self._day_start_lock = Lock()
         # Venue truth (#680 PR-3). The latest successful read and the last failure's name; the read the
@@ -287,7 +304,12 @@ class OiNautilusStrategy(Strategy):
         try:
             run()
         except Exception as exc:
+            if step == "converge":
+                self._convergence_failure = type(exc).__name__
             self.log.exception(f"OI Runtime step failed ({step})", exc)
+        else:
+            if step == "converge":
+                self._convergence_failure = None
 
     def _now_ns(self) -> int:
         return int(self.clock.timestamp_ns())
@@ -461,6 +483,8 @@ class OiNautilusStrategy(Strategy):
             return _Verdict("defer", "singleton_lost")
         if self._unexpected:
             return _Verdict("refuse", "unexpected_exposure")
+        if self._convergence_checked_at_ns is None or self._convergence_failure is not None:
+            return _Verdict("defer", "convergence_unverified")
         if self._venue_unverified(now_ns):
             return _Verdict("defer", "venue_unverified")
         if request.source == "signal":
@@ -919,10 +943,15 @@ class OiNautilusStrategy(Strategy):
             working[order.instrument_id].append(order)
         self._judge_venue(positions)
         unexpected: list[str] = list(self._venue_mismatch.values())
-        planned = {InstrumentId.from_str(plan.instrument_id): plan for plan in self._plans.values()}
-        for instrument_id, plan in planned.items():
+        planned: dict[InstrumentId, list[TradePlan]] = defaultdict(list)
+        for plan in self._plans.values():
+            planned[InstrumentId.from_str(plan.instrument_id)].append(plan)
+        for instrument_id, candidates in planned.items():
+            if len(candidates) != 1:
+                unexpected.append(f"ambiguous:{instrument_id.value}")
+                continue
             self._converge_plan(
-                plan, positions.get(instrument_id, []), working.get(instrument_id, []), now_ns, unexpected
+                candidates[0], positions.get(instrument_id, []), working.get(instrument_id, []), now_ns, unexpected
             )
         for instrument_id, held in positions.items():
             if instrument_id not in planned:
@@ -950,7 +979,17 @@ class OiNautilusStrategy(Strategy):
                 ):
                     self.cancel_order(order)
             unexpected.extend(f"order:{order.client_order_id.value}" for order in orders if not order.is_pending_cancel)
-        self._set_unexpected(tuple(sorted(set(unexpected))), now_ns)
+        codes = tuple(sorted(set(unexpected)))
+        findings = exposure_findings(
+            codes,
+            positions={position.id.value: position for held in positions.values() for position in held},
+            orders={order.client_order_id.value: order for held in working.values() for order in held},
+            plans={instrument: tuple(values) for instrument, values in planned.items()},
+            venue_instruments=self._venue_instruments(),
+            observed_at_ns=now_ns,
+        )
+        self._set_unexpected(codes, findings, now_ns)
+        self._convergence_checked_at_ns = now_ns
 
     def _converge_plan(
         self,
@@ -968,9 +1007,8 @@ class OiNautilusStrategy(Strategy):
             for order in orders
             if not order.is_reduce_only and order.client_order_id.value != plan.entry_client_order_id
         )
-        expected_side = PositionSide.LONG if plan.direction == "long" else PositionSide.SHORT
-        own = [position for position in positions if position.strategy_id == self.id and position.side == expected_side]
-        unexpected.extend(f"position:{position.id.value}" for position in positions if position not in own)
+        own = [position for position in positions if position_claimed(position, plan, self.id)]
+        unexpected.extend(f"ownership:{position.id.value}" for position in positions if position not in own)
         if plan.entry_id in self._awaiting_final and not own and not entry_working:
             return
         if not own:
@@ -1145,13 +1183,18 @@ class OiNautilusStrategy(Strategy):
         if pending:
             self.cancel_all_orders(instrument_id)
 
-    def _set_unexpected(self, unexpected: tuple[str, ...], now_ns: int) -> None:
-        if unexpected == self._unexpected:
-            return
+    def _set_unexpected(
+        self, unexpected: tuple[str, ...], findings: tuple[ExecutionExposureFinding, ...], now_ns: int
+    ) -> None:
+        if len(unexpected) != len(findings):
+            raise ValueError("oi_runtime_findings_incomplete")
+        changed = unexpected != self._unexpected
         self._unexpected = unexpected
-        if unexpected:
-            self.log.warning(f"OI Runtime exposure no plan claims: {', '.join(unexpected)}")
-        self._observations.exposure(unexpected=unexpected, observed_at_ns=now_ns)
+        self._findings = findings
+        if changed:
+            if unexpected:
+                self.log.warning(f"OI Runtime exposure findings: {', '.join(unexpected)}")
+            self._observations.exposure(unexpected=unexpected, observed_at_ns=now_ns)
 
     # -- venue truth (#680 PR-3) -------------------------------------------------------------------
 
@@ -1182,6 +1225,44 @@ class OiNautilusStrategy(Strategy):
         if self._venue is None or reading.started_at_ns >= self._venue.started_at_ns:
             self._venue = reading
             self._converge_due_ns = 0
+
+    def take_recovery_request(self, now_ns: int) -> int | None:
+        """One native reconciliation attempt per new, stable venue read for a unique Plan."""
+
+        reading = self._fresh_venue(now_ns)
+        if (
+            reading is None
+            or self._venue_failure is not None
+            or self._convergence_failure is not None
+            or self._convergence_checked_at_ns is None
+            or reading.completed_at_ns <= self._recovery_requested_read_ns
+        ):
+            return None
+        for symbol in self._venue_mismatch:
+            instrument_id = self._venue_instruments().get(symbol)
+            if instrument_id is None:
+                continue
+            candidates = [plan for plan in self._plans.values() if plan.instrument_id == instrument_id.value]
+            if len(candidates) != 1:
+                continue
+            venue_quantity = reading.positions.get(symbol) if reading.positions is not None else None
+            if venue_quantity and (
+                (venue_quantity > 0 and candidates[0].direction != "long")
+                or (venue_quantity < 0 and candidates[0].direction != "short")
+            ):
+                continue
+            cached_positions = self.cache.positions_open(instrument_id=instrument_id)
+            if any(not position_claimed(position, candidates[0], self.id) for position in cached_positions):
+                continue
+            signature = f"{venue_quantity}:{sum(position.signed_decimal_qty() for position in cached_positions)}"
+            previous = self._recovery_attempts.get(symbol)
+            attempts = previous[1] if previous is not None and previous[0] == signature else 0
+            if attempts >= 3:
+                continue
+            self._recovery_attempts[symbol] = (signature, attempts + 1)
+            self._recovery_requested_read_ns = reading.completed_at_ns
+            return reading.completed_at_ns
+        return None
 
     def _touch(self, instrument_id: InstrumentId) -> None:
         self._activity_ns[instrument_id] = self._now_ns()
@@ -1258,6 +1339,9 @@ class OiNautilusStrategy(Strategy):
             else:
                 suspects[symbol] = finding
         self._venue_suspect = suspects
+        self._recovery_attempts = {
+            symbol: attempt for symbol, attempt in self._recovery_attempts.items() if symbol in self._venue_mismatch
+        }
 
     def _venue_symbol(self, instrument_id: InstrumentId) -> str:
         """The venue's spelling of an instrument (`APTUSDT` for `APTUSDT-PERP.BINANCE`)."""
@@ -1269,32 +1353,6 @@ class OiNautilusStrategy(Strategy):
 
     def _venue_instruments(self) -> dict[str, InstrumentId]:
         return {str(instrument.raw_symbol.value): instrument.id for instrument in self.cache.instruments()}
-
-    def _venue_only_positions(self, now_ns: int) -> dict[str, Decimal]:
-        """What the latest fresh venue read holds on symbols the Cache holds no position on."""
-
-        reading = self._fresh_venue(now_ns) if self._venue_reads else None
-        if reading is None or reading.positions is None:
-            return {}
-        held = {self._venue_symbol(position.instrument_id) for position in self.cache.positions_open()}
-        return {symbol: quantity for symbol, quantity in reading.positions.items() if quantity and symbol not in held}
-
-    def _rests_protection(self, symbol: str, quantity: Decimal, instruments: Mapping[str, InstrumentId]) -> bool:
-        """Do a reduce-only stop and a reduce-only take-profit rest against this venue-only position?"""
-
-        instrument_id = instruments.get(symbol)
-        if instrument_id is None:
-            return False
-        closing_side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
-        open_orders, inflight = open_and_inflight_orders(self.cache)
-        resting = [
-            order
-            for order in (*open_orders, *inflight)
-            if order.instrument_id == instrument_id and order.is_reduce_only and order.side == closing_side
-        ]
-        return any(order.order_type == OrderType.STOP_MARKET for order in resting) and any(
-            order.order_type == OrderType.MARKET_IF_TOUCHED for order in resting
-        )
 
     # -- plans -------------------------------------------------------------------------------------
 
@@ -1404,6 +1462,10 @@ class OiNautilusStrategy(Strategy):
             (self._entries_paused, "entries_paused"),
             (not self._singleton_ready(), "singleton_lost"),
             (bool(self._unexpected), "unexpected_exposure"),
+            (
+                self._convergence_checked_at_ns is None or self._convergence_failure is not None,
+                "convergence_unverified",
+            ),
             (self._venue_unverified(at_ns), "venue_unverified"),
         ):
             if blocked:
@@ -1411,48 +1473,54 @@ class OiNautilusStrategy(Strategy):
         return None
 
     def runtime_view(self, now_ns: int) -> RuntimeView:
-        """What the projection and the probe publish: the Cache, plus what only the venue holds.
+        """One bounded account projection, including venue-only positions and named findings."""
 
-        `current_account` is the Cache's picture. `positions_count` and `protection_status` also count
-        every position the latest fresh venue read holds where the Cache holds none, so a position the
-        Cache lost is never reported as a flat account.
-        """
-
+        planned: dict[InstrumentId, list[TradePlan]] = defaultdict(list)
+        for plan in self._plans.values():
+            planned[InstrumentId.from_str(plan.instrument_id)].append(plan)
+        # Keep the last successful venue rows visible even after a later failure or expiry.
+        # Entry and recovery gates still use _fresh_venue; this is historical display evidence.
+        reading = self._venue if self._venue_reads else None
         snapshot = account_snapshot(
             cache=self.cache,
             account_id=self._profile.account_id,
-            plan_entry_orders={
-                InstrumentId.from_str(plan.instrument_id): plan.entry_client_order_id for plan in self._plans.values()
-            },
+            plans={instrument: tuple(values) for instrument, values in planned.items()},
+            strategy_id=self.id,
+            venue_positions=None if reading is None else reading.positions,
+            venue_instruments=self._venue_instruments(),
+            findings=self._findings,
             baseline=self._current_day_start(now_ns),
             now_ns=now_ns,
             market_stale_after_ns=self._profile.risk.market_stale_after_ns,
         )
-        venue_only = self._venue_only_positions(now_ns)
-        instruments = self._venue_instruments() if venue_only else {}
-        owned = [position for position in snapshot.positions if position.owned]
-        cache_protected = not snapshot.positions or (
-            bool(owned) and len(owned) == len(snapshot.positions) and all(position.protected for position in owned)
-        )
-        venue_protected = all(
-            self._rests_protection(symbol, quantity, instruments) for symbol, quantity in venue_only.items()
-        )
-        protection: Literal["not_applicable", "protected", "unprotected"] = (
-            "not_applicable"
-            if not snapshot.positions and not venue_only
-            else "protected"
-            if cache_protected and venue_protected
-            else "unprotected"
-        )
+        statuses = {position.protection_status for position in snapshot.positions}
+        protection: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]
+        if not snapshot.positions_total:
+            protection = "not_applicable"
+        elif "unprotected" in statuses:
+            protection = "unprotected"
+        elif snapshot.positions_total > len(snapshot.positions):
+            protection = "unknown"
+        elif "pending" in statuses:
+            protection = "pending"
+        elif statuses == {"protected"}:
+            protection = "protected"
+        else:
+            protection = "unknown"
         reason = self.entry_block_reason(now_ns)
         return RuntimeView(
             entries_armed=reason is None,
             entry_block_reason=reason,
-            unexpected_exposure=bool(self._unexpected),
-            positions_count=len(snapshot.positions) + len(venue_only),
+            unexpected_exposure=bool(snapshot.findings_total),
+            positions_count=snapshot.positions_total,
             open_orders_count=snapshot.open_orders_count,
             protection_status=protection,
             account_snapshot=snapshot,
+            convergence_checked_at_ns=self._convergence_checked_at_ns,
+            convergence_failure=self._convergence_failure,
+            venue_read_started_at_ns=None if self._venue is None else self._venue.started_at_ns,
+            venue_read_completed_at_ns=None if self._venue is None else self._venue.completed_at_ns,
+            venue_read_failure=self._venue_failure,
         )
 
 

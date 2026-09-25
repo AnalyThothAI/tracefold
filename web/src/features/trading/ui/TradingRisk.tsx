@@ -13,19 +13,7 @@ import {
   protectionStatusLabel,
 } from "../model/tradingLabels";
 
-/**
- * The two blocks `/api/trading/status` owns, and the reason they are not adjacent on the desk (#604 T4).
- *
- * ① is the strip an operator reads first and ⑤ is the detail they open only when something is on the
- * account; the tally, the funnel and the ledger sit between them. They stay one module because they are
- * one read and one vocabulary — split across two files, the second would eventually consult a second
- * source for the same account.
- *
- * `stale` is the page's one freshness comparison — `Date.now() > execution.facts_expire_at_ms`, the instant
- * the server itself published as the end of this projection's budget (the Runtime heartbeat plus five
- * seconds). Past it the safety words are not what the response says they are, so they read 待确认 rather
- * than the browser recomputing a heartbeat age of its own and disagreeing with the server about it.
- */
+/** Read the single current-state contract, keeping expired observations explicitly historical. */
 export function TradingSafetyStrip({
   execution,
   stale,
@@ -43,9 +31,9 @@ export function TradingSafetyStrip({
        */}
       <MetricRow className="trading-safety-grid" columns={2} label="执行安全状态">
         <Metric
-          eyebrow="执行服务在线"
+          eyebrow="执行状态通道"
           value={safety(execution.alive, stale)}
-          caption="执行进程与事件循环"
+          caption="Runtime 心跳经数据库与 HTTP 发布"
           tone={!stale && execution.alive ? "accent" : "caution"}
         />
         <Metric
@@ -57,7 +45,38 @@ export function TradingSafetyStrip({
       </MetricRow>
       {stale ? (
         <p role="status" className="trading-alert-line" data-tone="caution">
-          状态待确认：未取得有效期内的新状态，无法确认当前运行状态；下方保留上次读取的仓位与订单。
+          状态通道失联：未取得有效期内的新状态，无法确认 Runtime 当前运行情况；下方保留上次观察。
+        </p>
+      ) : null}
+      {!stale && execution.account_projection_failure ? (
+        <p role="status" className="trading-alert-line" data-tone="caution">
+          执行服务仍在发布心跳；账户投影失败（{execution.account_projection_failure}
+          ），账户资料取自上次成功观察。
+        </p>
+      ) : null}
+      {!stale && execution.convergence_failure ? (
+        <p role="status" className="trading-alert-line" data-tone="caution">
+          认领检查失败（{execution.convergence_failure}）；上次检查结论仍保留，新增仓位待重新核实。
+        </p>
+      ) : null}
+      {!stale && execution.venue_read_failure ? (
+        <p role="status" className="trading-alert-line" data-tone="caution">
+          最近一次场所读取失败（{execution.venue_read_failure}
+          ）；上次成功的场所证据不会被当作新观察。
+        </p>
+      ) : null}
+      {!stale && execution.recovery_result ? (
+        <p
+          role="status"
+          className="trading-alert-line"
+          data-tone={execution.recovery_result === "succeeded" ? "neutral" : "caution"}
+        >
+          原生对账：
+          {execution.recovery_result === "running"
+            ? "进行中"
+            : execution.recovery_result === "succeeded"
+              ? "已完成，等待新的场所证据确认"
+              : "未收敛，保留风险提示"}
         </p>
       ) : null}
       <p className="trading-routes-line">
@@ -67,18 +86,7 @@ export function TradingSafetyStrip({
   );
 }
 
-/**
- * ⑤ Exposure and protection, closed while there is nothing on the account.
- *
- * The positions list, the order list and the protection strip can all be empty. The
- * block opens itself the moment the account holds a position or an order, or the Runtime reports exposure
- * no trade plan claims, and stays open until that is no longer true.
- *
- * Everything here is the Runtime's own Nautilus Cache as the last heartbeat published it (#680). A
- * position is protected when both its stop and its take-profit rest on the venue; the strip prints the two
- * trigger prices rather than a coverage verdict the browser would have to compute. An empty list is what
- * the Cache shows, stated as such — the desk makes no separate claim that the account is flat.
- */
+/** Account rows, Plan association and venue differences from one Runtime observation. */
 export function TradingExposure({
   execution,
   stale,
@@ -89,18 +97,22 @@ export function TradingExposure({
   const account = execution.current_account;
   const positions = account?.positions ?? [];
   const orders = account?.orders ?? [];
-  const open = positions.length > 0 || orders.length > 0 || execution.unexpected_exposure;
+  const findings = account?.findings ?? [];
+  const open =
+    (account?.positions_total ?? 0) > 0 || orders.length > 0 || execution.unexpected_exposure;
   return (
     <Card data-block="exposure" flush title="当前仓位与保护">
       <details className="trading-exposure" open={open}>
         <summary>
           <span>
-            仓位 {positions.length} · 挂单 {account?.open_orders_count ?? "—"} · 保护{" "}
+            仓位 {account?.positions_total ?? "—"} · 挂单 {account?.open_orders_count ?? "—"} · 保护{" "}
             {stale ? "待确认" : protectionStatusLabel(execution.protection_status)}
           </span>
           <small>
             {open
-              ? "当前账户仓位与订单"
+              ? stale
+                ? "上次观察的仓位与订单"
+                : "最近观察的仓位与订单"
               : account == null
                 ? "未取得 Runtime 账户快照"
                 : stale
@@ -110,11 +122,46 @@ export function TradingExposure({
         </summary>
 
         {execution.unexpected_exposure ? (
-          <p className="trading-alert-line" data-tone="alert">
-            Runtime 报告了无计划认领的敞口，新入场已被阻止；当前敞口需要由运维核查。
+          <div className="trading-alert-line" data-tone="alert">
+            <b>
+              {stale ? "上次检查发现异常；最新状态未取得。" : "最近检查发现异常；新增仓位受阻。"}
+            </b>
+            {findings.length ? (
+              <ul>
+                {findings.map((finding) => (
+                  <li key={finding.kind + finding.object_id}>
+                    {findingLabel(finding.kind)}：{finding.instrument_id} · {finding.object_id}
+                    {finding.plan_entry_id ? " · Plan " + finding.plan_entry_id : ""}
+                    {finding.venue_quantity != null || finding.cache_quantity != null
+                      ? " · 场所 " +
+                        (finding.venue_quantity ?? "未知") +
+                        " / 本地 " +
+                        (finding.cache_quantity ?? "未知")
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>旧检查未保存对象明细；需要 Runtime 的新检查。</p>
+            )}
+            {account && account.findings_total > findings.length ? (
+              <p>另有 {account.findings_total - findings.length} 项未在本页展开。</p>
+            ) : null}
+          </div>
+        ) : null}
+        {account &&
+        (account.positions_total > positions.length || account.orders_total > orders.length) ? (
+          <p className="trading-alert-line" data-tone="caution">
+            账户列表已截断：仓位 {positions.length}/{account.positions_total}，订单 {orders.length}/
+            {account.orders_total}。
           </p>
         ) : null}
 
+        <p className="trading-routes-line">
+          账户采样 {observedTime(account?.observed_at_ms)} · 认领检查{" "}
+          {observedTime(execution.convergence_checked_at_ms)} · 上次成功场所读取{" "}
+          {observedTime(execution.venue_read_completed_at_ms)}
+        </p>
         <div className="trading-fact-grid">
           <Fact label="账户权益" value={moneyLabel(account?.equity_usd)} />
           <Fact
@@ -127,8 +174,8 @@ export function TradingExposure({
             warn={Number(account?.daily_drawdown_usd ?? 0) > 0}
           />
           <Fact
-            label="账户事实"
-            value={account?.complete ? "完整" : account ? "部分资料缺失" : "未取得"}
+            label="账户字段"
+            value={account?.complete ? "字段完整" : account ? "部分字段缺失" : "未取得"}
             warn={!account?.complete}
           />
           <Fact label="在途订单" value={account?.inflight_orders_count ?? "—"} />
@@ -137,8 +184,7 @@ export function TradingExposure({
         {positions.length ? (
           <div className="trading-position-list">
             {positions.map((position) => {
-              const guarded =
-                position.stop_trigger_price != null && position.take_profit_trigger_price != null;
+              const guarded = position.protection_status === "protected";
               return (
                 <article className="trading-position-row" key={position.position_id}>
                   <div className="trading-position-identity">
@@ -146,11 +192,15 @@ export function TradingExposure({
                     <span data-tone={position.side === "long" ? "long" : "short"}>
                       {position.side === "long" ? "多仓" : "空仓"}
                     </span>
-                    {!position.owned ? <span data-tone="alert">无计划认领</span> : null}
+                    {position.source === "venue" ? (
+                      <span data-tone="caution">上次场所观察</span>
+                    ) : null}
+                    {position.plan_entry_id ? <span>Plan {position.plan_entry_id}</span> : null}
+                    {!position.owned ? <span data-tone="alert">计划关联待核实</span> : null}
                   </div>
                   <div className="trading-position-facts">
                     <Fact label="数量" value={position.quantity} />
-                    <Fact label="入场均价" value={position.entry_price} />
+                    <Fact label="入场均价" value={position.entry_price ?? "未取得"} />
                     <Fact label="标记价格" value={position.mark_price ?? "未取得"} />
                     <Fact
                       label="未实现盈亏"
@@ -164,8 +214,8 @@ export function TradingExposure({
                   >
                     <b>
                       {stale
-                        ? "保护事实已过期"
-                        : protectionStatusLabel(guarded ? "protected" : "unprotected")}
+                        ? "上次观察的保护；当前未确认"
+                        : protectionStatusLabel(position.protection_status)}
                     </b>
                     <span>止损 {position.stop_trigger_price ?? "未挂"}</span>
                     <span>止盈 {position.take_profit_trigger_price ?? "未挂"}</span>
@@ -195,7 +245,7 @@ export function TradingExposure({
                 </span>
                 <span>Trigger {order.trigger_price ?? "—"}</span>
                 <span data-tone={!order.owned ? "caution" : undefined}>
-                  {order.owned ? "OWNED" : "无计划认领"}
+                  {order.owned ? "关联计划" : "计划关联待核实"}
                   {order.reduce_only ? " · REDUCE ONLY" : ""}
                 </span>
               </article>
@@ -211,7 +261,7 @@ export function TradingExposure({
           </p>
         )}
       </details>
-      <SourceLine path="GET /api/trading/status → execution.current_account" />
+      <SourceLine path="GET /api/trading/status → execution.current_account / findings" />
     </Card>
   );
 }
@@ -228,4 +278,20 @@ function Fact({ label, value, warn = false }: { label: string; value: ReactNode;
 function safety(value: boolean, stale: boolean): string {
   if (stale) return "待确认";
   return value ? "是" : "否";
+}
+
+function findingLabel(kind: string): string {
+  const labels: Record<string, string> = {
+    unclaimed_position: "未认领仓位",
+    unexpected_order: "非预期订单",
+    ownership_mismatch: "计划与仓位身份不符",
+    venue_cache_mismatch: "场所与本地数量不符",
+    close_unconfirmed: "平仓尚未确认",
+    ambiguous: "多个计划可能关联",
+  };
+  return labels[kind] ?? kind;
+}
+
+function observedTime(value: number | null | undefined): string {
+  return value == null ? "未取得" : new Date(value).toLocaleString("zh-CN");
 }
