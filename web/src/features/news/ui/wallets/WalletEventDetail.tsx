@@ -208,13 +208,8 @@ function Members({ members }: { members: NewsWalletSnapshot["window"]["members"]
                 {member.handle || "未提供名称"}
                 <code>{member.wallet}</code>
                 <small>
-                  名单版本 {member.roster_version ?? "未知"} · 来源表现榜{" "}
-                  {member.rank_quality ?? "未入榜"} · 近 14 天参与{" "}
+                  名单版本 {member.roster_version ?? "未知"} · 近 14 天参与{" "}
                   {member.recent_episodes ?? "未知"} 次
-                </small>
-                <small>
-                  来源平仓数 {member.source_closed_trades ?? "未知"} · 来源盈亏因子{" "}
-                  {member.source_profit_factor ?? "未知"}
                 </small>
                 <small>资料取得 {optionalTime(member.roster_known_at_ms)}</small>
                 <small>监控覆盖起点 {optionalTime(member.monitoring_from_ms)}</small>

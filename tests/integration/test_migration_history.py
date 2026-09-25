@@ -32,6 +32,7 @@ from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.news.smart_money import PARSER_VERSION
 from tracefold.news.smart_money import source_key as smart_money_source_key
 from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
+from tracefold.news.storage.wallet_snapshots import wallet_snapshot
 from tracefold.news.wallet_contracts import NetBuySnapshot
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.storage.execution_stream import (
@@ -48,7 +49,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260925_0398"
+HEAD = "20260925_0399"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -238,7 +239,7 @@ def test_the_one_window_rewrite_keeps_the_surviving_window_and_marks_the_new_fac
             " WHERE item_id = 'two-window-episode'"
         ).fetchone()
         for column in ("initial_snapshot", "latest_snapshot", "send_snapshot"):
-            snapshot = NetBuySnapshot.model_validate(row[column])
+            snapshot = NetBuySnapshot.model_validate(wallet_snapshot(row[column]))
             assert snapshot.window.from_ms == at_ms - 1_800_000 and snapshot.window.required_n == 5
             assert snapshot.window.matched and snapshot.window.qualified_n == 1
             assert snapshot.token_first_seen_at_ms is None and snapshot.token_age_ms is None
@@ -255,6 +256,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260925_0398",
         "20260925_0397",
         "20260924_0396",
         "20260924_0395",
@@ -354,7 +356,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="trading_agent_records_forward_only"):
+    with pytest.raises(RuntimeError, match="wallet_complete_prefix_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     command.stamp(config, "20260924_0396")

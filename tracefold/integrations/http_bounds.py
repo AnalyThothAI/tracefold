@@ -11,6 +11,10 @@ in this repository controls.
 
 from __future__ import annotations
 
+import math
+import time
+from email.utils import parsedate_to_datetime
+
 import httpx
 
 
@@ -50,4 +54,20 @@ async def read_bounded(response: httpx.Response, *, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
-__all__ = ["ResponseTooLarge", "read_bounded", "refuse_declared_length"]
+__all__ = ["ResponseTooLarge", "read_bounded", "refuse_declared_length", "retry_after_ms"]
+
+
+def retry_after_ms(value: str | None) -> int:
+    """An HTTP retry floor, either delay seconds or an HTTP date; malformed means absent."""
+    if not value:
+        return 0
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            seconds = parsedate_to_datetime(value).timestamp() - time.time()
+        except (ValueError, TypeError, OverflowError):
+            return 0
+    milliseconds = seconds * 1000
+    # A malformed/unrepresentable delay must not overflow a PostgreSQL bigint due time.
+    return max(0, math.ceil(milliseconds)) if math.isfinite(milliseconds) and milliseconds < 2**62 else 0

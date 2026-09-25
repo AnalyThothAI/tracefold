@@ -101,7 +101,7 @@ def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(
         settings=_settings(
             enabled=True,
             notifications_enabled=notifications_enabled,
-            roster={"top_quality": 5, "top_whale_by_open_cost": 3},
+            roster={"refresh_interval_s": 600},
         ),
         db=object(),  # type: ignore[arg-type]
         capabilities=capabilities,
@@ -110,7 +110,7 @@ def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(
     assert isinstance(composed, ChainTapeComposition)
     loop = composed.loop
     assert isinstance(loop, ChainTapeLoop)
-    assert (composed.roster.rules.top_quality, composed.roster.rules.top_whale_by_open_cost) == (5, 3)
+    assert composed.roster.refresh_period_ms == 600_000
     assert loop.chain.chain_id == 4663
     assert capabilities.payload()[CHAIN_TAPE] == {"state": "running", "reason": None}
     assert capabilities.payload()[WALLET_NET_BUY]["state"] == "running"
@@ -138,7 +138,7 @@ def test_the_operators_endpoints_and_list_rules_reach_the_loop(no_proxy_environm
             rpc_url="https://rpc.example/",
             roster_provider_url="https://roster.example/",
             poll_interval_s=7.5,
-            roster={"min_closed_trades": 3, "min_profit_factor": 2.5, "window": "90d", "refresh_interval_s": 600},
+            roster={"window": "90d", "refresh_interval_s": 600},
             rules={"net_buy_slow_n": 6, "min_net_buy_usd": "1234.5", "trigger_max_age_s": 45},
         ),
         db=object(),  # type: ignore[arg-type]
@@ -153,7 +153,6 @@ def test_the_operators_endpoints_and_list_rules_reach_the_loop(no_proxy_environm
     assert not hasattr(loop, "roster_provider")
     roster = composed.roster
     assert roster.provider.base_url == "https://roster.example"  # type: ignore[attr-defined]
-    assert (roster.rules.min_closed_trades, roster.rules.min_profit_factor) == (3, 2.5)
     # Both endpoints get the operator's statistics window, and the period is the operator's too.
     assert (roster.window, roster.refresh_period_ms) == ("90d", 600_000)
     # The operator's cadence is a runtime parameter, not a decoration on a config page: it has to
@@ -266,10 +265,18 @@ def test_a_slow_price_does_not_stop_the_production_ingestion_task(monkeypatch: p
         roster = RosterSnapshot(
             roster_version=1,
             taken_at_ms=10**15,
-            members=(RosterMember("0x" + "1" * 40, "one", 0, 0.0, 10, 0.0, 2.0, 1000.0, 1, None),),
+            members=(RosterMember("0x" + "1" * 40, "one"),),
         )
 
         class Repository:
+            def chain_tape_collection_plan(self):
+                return None, roster, roster.wallets
+
+            def wallet_read_snapshot(self):
+                from contextlib import nullcontext
+
+                return nullcontext()
+
             def chain_tape_state(self) -> None:
                 return None
 
@@ -408,10 +415,6 @@ def test_the_defaults_are_off_and_public() -> None:
     assert chain_tape.roster_provider_url == "https://rhtrenches.com"
     assert (chain_tape.poll_interval_s, chain_tape.retention_days) == (2.0, 90)
     assert chain_tape.roster.model_dump() == {
-        "min_closed_trades": 10,
-        "min_profit_factor": 1.2,
-        "top_quality": 20,
-        "top_whale_by_open_cost": 20,
         # #649 §5.3: the provider statistics window both roster endpoints are asked for, and how old
         # a published list may be before the refresh task rebuilds it.
         "window": "30d",

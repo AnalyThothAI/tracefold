@@ -341,3 +341,22 @@ def test_the_diagnostic_queries_run_against_the_real_schema_and_count_per_unit(c
     assert [row["reason"] for row in unsent] == ["merging_into_prepared_card"]
     assert [row["market_kind"] for row in queue] == ["wallet"]
     assert queue[0]["state"] == "unavailable"
+
+
+def test_repaired_cutoff_behind_trigger_defers_then_sends_same_intent(conn: Any) -> None:
+    """A conservative migration/recovery cutoff cannot invalidate an unseen trigger."""
+    seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
+    run(conn)
+    first = events(conn)[0]["initial_snapshot"]
+    _cut_off_at(conn, block=first["cutoff_block"] - 1, log=2147483647, at_ms=NOW - 1)
+    sender = Sender()
+    turn = asyncio.run(_loop(conn, sender).advance())
+    row = _wallet_delivery(conn)
+    assert not sender.cards and turn.deferred == 1
+    assert (row["state"], row["attempts"], row["error"]) == ("pending", 0, "collection_cutoff_before_trigger")
+    delivery_key = row["delivery_key"]
+    _cut_off_at(conn, block=first["cutoff_block"], log=first["cutoff_log"], at_ms=NOW)
+    asyncio.run(_loop(conn, sender, at_ms=NOW + DEFER_BACKOFF_MS).advance())
+    assert len(sender.cards) == 1
+    assert _wallet_delivery(conn)["delivery_key"] == delivery_key
+    assert _wallet_delivery(conn)["attempts"] == 1

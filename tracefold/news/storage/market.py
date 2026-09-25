@@ -35,6 +35,7 @@ from ..market_contracts import (
 from ..oi_contracts import OI_METRIC_VERSION
 from ..source_contracts import MARKET_KINDS
 from .sql_values import _dumps
+from .wallet_snapshots import wallet_snapshot
 
 
 class MarketObservationRow(TypedDict):
@@ -1075,6 +1076,7 @@ def _observation(row: Any) -> MarketObservationRow:
     """Name every projected column once. No coercion beyond the two integer identities."""
 
     values: dict[str, Any] = {key: row[key] for key in _OBSERVATION_KEYS}
+    values["wallet_snapshot"] = wallet_snapshot(values["wallet_snapshot"])
     values["historical"] = bool(values["historical"])
     values["event_at_ms"] = int(values["event_at_ms"])
     values["received_at_ms"] = int(values["received_at_ms"])

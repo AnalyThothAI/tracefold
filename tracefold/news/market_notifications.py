@@ -1721,6 +1721,9 @@ class MarketNotificationLoop:
             # was following at it, so there is nothing to evaluate the evidence against. Deferred
             # rather than suppressed: this says nothing at all about the evidence.
             return self._defer(news, due, "collection_cutoff_unknown", now_ms=now_ms)
+        trigger = event["initial_snapshot"]
+        if (state["scanned_block"], state["scanned_log"]) < (trigger["cutoff_block"], trigger["cutoff_log"]):
+            return self._defer(news, due, "collection_cutoff_before_trigger", now_ms=now_ms)
         if news.wallet_underived_within_cutoff(
             chain_id=event["chain_id"],
             token=event["token"],

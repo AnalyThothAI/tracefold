@@ -10,57 +10,27 @@ from .common import ExactApiSchema
 
 
 class NewsWalletRosterMemberData(ExactApiSchema):
-    """One followed wallet in the current roster version, and the two ranks that put it there.
-
-    A member can hold both ranks and can hold either alone; `null` means "this list did not select
-    this wallet", which is not the same as rank 0. Win rate is recorded and is deliberately not a
-    selection criterion (#572 §3.2).
-    """
+    """One source address; source performance is not a subscription or trigger gate."""
 
     wallet: str
     handle: str
-    followers: int = 0
-    realized_pnl: float = 0.0
-    closed_trades: int = 0
-    win_rate: float = 0.0
-    profit_factor: float | None = None
-    open_cost: float = 0.0
-    rank_quality: int | None = None
-    rank_whale: int | None = None
     provider: str
     monitoring_from_ms: int | None = None
 
 
 class NewsWalletRosterData(ExactApiSchema):
-    """The roster as one version: when it was taken, who was on it, and how the last refresh went.
-
-    `address_count` is the pool the quorum is counted against: every published address counts, and
-    `supported_count` is the subset whose monitoring already covers a whole window at the collection
-    cutoff -- a wallet the list gained minutes ago cannot complete a quorum yet, and a page that
-    counted it would promise a trigger that cannot fire. `quality_count` and `whale_count` are the
-    provider's own ranks, published as information about the list and no longer as a filter on it
-    (#649 PR-3 §1).
-
-    The published version and the last refresh attempt are separate on purpose. `taken_at_ms` and
-    `last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`
-    belong to the refresh task whether or not it published, so a provider that has been refusing to
-    answer for five hours reads as exactly that rather than as a fresh list (#649 §5.1).
-    """
+    """Current membership and last refresh outcome, independent of collection progress."""
 
     version: int = 0
     taken_at_ms: int | None = None
     provider: str | None = None
-    # The provider statistics window both roster endpoints were asked for. It is published because the
-    # closed-trade count and the profit factor are only comparable over one window, and because moving
-    # it from `7d` to `30d` is what made the quality pool reachable at all (#649 §5.3).
     window: str
     address_count: int = 0
-    quality_count: int = 0
-    whale_count: int = 0
     supported_count: int = 0
     last_attempt_at_ms: int | None = None
     last_success_at_ms: int | None = None
     last_error: str | None = None
+    next_attempt_at_ms: int | None = None
     members: list[NewsWalletRosterMemberData]
 
 
@@ -94,6 +64,12 @@ class NewsWalletTapeStateData(ExactApiSchema):
     roster_last_attempt_at_ms: int | None = None
     roster_last_success_at_ms: int | None = None
     roster_last_error: str | None = None
+    roster_next_attempt_at_ms: int = 0
+    roster_consecutive_failures: int = 0
+    next_attempt_at_ms: int = 0
+    consecutive_failures: int = 0
+    blocked_tx_hash: str | None = None
+    enrichment_error: str | None = None
 
 
 class NewsWalletThresholdsData(ExactApiSchema):

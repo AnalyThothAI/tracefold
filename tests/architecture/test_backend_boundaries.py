@@ -66,6 +66,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # enough to fill the window. That width is the product's own code-owned constant, and a literal
         # here would stop meaning the same thing the day the rule changes it (#649 PR-3 §4).
         "tracefold.news.wallet_contracts",
+        # #697: the same pure monitoring predicate serves rules, HTTP and CLI.
+        "tracefold.news.chain_tape.rules",
         "tracefold.news.review.desk",
         # #675 §4: `news review audit-report` is pure folding over a draft batch and the decisions the
         # desk already published. The CLI composes the two; the module reaches no database of its own.
@@ -129,6 +131,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # `rules.py` measures a member against; a literal here would stop matching the day that
         # constant moved (#649 PR-3 §4).
         "tracefold.news.wallet_contracts",
+        # #697: the same pure monitoring predicate serves rules, HTTP and CLI.
+        "tracefold.news.chain_tape.rules",
         "tracefold.news.review.desk",
         "tracefold.trading.intent",
         "tracefold.trading.stages",
@@ -138,6 +142,12 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     # keeping a second copy of it, the same way the venue catalogue adapters answer in the instrument
     # vocabulary. `evm` is pure string work with no network, no ABI library and no business rule.
     "integrations.robinhood_chain": ("tracefold.news.chain_tape.evm",),
+    # The source adapter returns the consumer-owned member value and reuses the
+    # chain adapter's address decoder, not a second address/roster representation.
+    "integrations.robinhoodtrenches": (
+        "tracefold.news.chain_tape.contracts",
+        "tracefold.news.chain_tape.evm",
+    ),
     "app.workers": (
         # The code-owned Program contract: the version every verdict row is stamped with, the route
         # budget the composition seam builds its LM clients against, and the computed identity of that
@@ -217,6 +227,7 @@ INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
     "nautilus": {"trading"},
     "marketdata": {"trading"},
     "robinhood_chain": {"news"},
+    "robinhoodtrenches": {"news"},
     "opentrade": {"trading"},
     "trading_catalog": {"trading"},
 }
@@ -376,6 +387,8 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
         family = "integrations.rabbitmq"
     elif parts == ["tracefold", "integrations", "robinhood_chain"]:
         family = "integrations.robinhood_chain"
+    elif parts == ["tracefold", "integrations", "robinhoodtrenches"]:
+        family = "integrations.robinhoodtrenches"
     allowed_imports = PRIVATE_BUSINESS_IMPORT_RULES.get(family or "", ())
     return any(imported == allowed or imported.startswith(f"{allowed}.") for allowed in allowed_imports)
 

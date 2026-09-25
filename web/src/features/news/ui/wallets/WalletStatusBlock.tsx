@@ -43,8 +43,7 @@ export function WalletStatusBlock({ token }: { token: string }) {
         <summary>名单成员 · {status?.roster.members.length ?? 0}</summary>
         <p className="news-wallets-note">
           来源 {status?.roster.provider ?? "未取得"} · {optionalTime(status?.roster.taken_at_ms)}{" "}
-          取得。 名单内任一地址都计入人数门槛；表现榜与规模榜排名仅作背景说明，不改变触发资格。
-          供应商短期统计不是长期策略胜率。
+          取得。监控来源范围内全部有效地址；建立完整窗口后参与净买入计算。
         </p>
         {status ? <WalletRosterTable members={status.roster.members} /> : null}
       </details>
@@ -64,8 +63,8 @@ function StatusFacts({ status }: { status: NewsWallets }) {
           { label: "链数据截止", value: cutoff },
           { label: "最近成功采集", value: optionalTime(tape?.last_success_at_ms) },
           {
-            label: "名单地址（表现榜 / 规模榜）",
-            value: `${roster.address_count}（${roster.quality_count} / ${roster.whale_count}）`,
+            label: "来源地址",
+            value: `${roster.address_count}`,
           },
           {
             label: "完整窗口监控支持",
@@ -75,17 +74,17 @@ function StatusFacts({ status }: { status: NewsWallets }) {
             label: "触发门槛",
             value: `30 分钟 · ${thresholds.required_n} 个地址 · 每地址净买入 $${thresholds.min_net_buy_usd}`,
           },
-          { label: "当前名单", value: thresholds.sufficient ? "足以触发" : "不足以触发" },
+          {
+            label: "截止内完整监控人数",
+            value: thresholds.sufficient ? "满足人数要求" : "不足人数要求",
+          },
           {
             label: "最近完整名单",
             value: roster.version
               ? `v${roster.version} · ${optionalTime(roster.last_success_at_ms)}`
               : "尚未取得",
           },
-          // The provider statistics window both roster endpoints were asked for. It no longer decides
-          // who may trigger — every published address does — but it is what the closed-trade counts
-          // and profit factors in the member table below are measured over (#649 §5.3, PR-3 §1).
-          { label: "名单统计窗口", value: roster.window },
+          { label: "来源范围", value: `${roster.window} · 非股票` },
           {
             label: "24 小时 事件 / 意图 / 已发送",
             value: `${funnel.events} / ${funnel.intents} / ${funnel.sent}`,
@@ -97,11 +96,14 @@ function StatusFacts({ status }: { status: NewsWallets }) {
           ? `采集落后：链数据截止 ${cutoff}，当前变化可能尚未完整。`
           : `按已完成的链范围计算，链数据截止 ${cutoff}。`}
         {tape?.last_error ? ` 采集异常：${tape.last_error}` : ""}
+        {tape?.blocked_tx_hash ? ` 未完成交易：${tape.blocked_tx_hash}` : ""}
+        {tape?.next_attempt_at_ms ? ` 下次采集：${optionalTime(tape.next_attempt_at_ms)}` : ""}
+        {tape?.enrichment_error ? ` 可选元数据：${tape.enrichment_error}` : ""}
       </p>
       <p className="news-wallets-note">
         {roster.last_error
-          ? `名单刷新失败 ${optionalTime(roster.last_attempt_at_ms)}：${roster.last_error}；保留上一份完整名单。`
-          : "名单刷新没有失败记录；只有完整成功的刷新才会发布新版本。"}
+          ? `名单刷新失败 ${optionalTime(roster.last_attempt_at_ms)}：${roster.last_error}；保留上一份完整名单。下次尝试 ${optionalTime(roster.next_attempt_at_ms)}。`
+          : "名单刷新没有失败记录；成员集合变化时发布新版本。"}
       </p>
       <p className="news-wallets-note">
         {funnel.unsent_reason

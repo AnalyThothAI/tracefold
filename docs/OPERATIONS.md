@@ -2015,11 +2015,11 @@ The default-off roster refresh, collector, pure detector and independent price s
 corresponding `wallet_roster`, `chain_tape`, `wallet_net_buy`, `wallet_prices` capabilities. Their
 clients and shutdown are independently supervised. A price/provider failure cannot hold the detection
 turn, and a slow or throttled roster site cannot hold collection: the collector reads the last
-published list out of PostgreSQL and makes no provider call of its own (#649 §5.1).
+published list out of PostgreSQL and makes no roster-provider call of its own.
 
 Inspect operator-owned configuration with `uv run tracefold config`. Keep existing
 `enabled`, `notifications_enabled`, provider URLs, roster settings, retention and polling
-values. The four rule defaults are:
+values. The three rule defaults are:
 
 | Rule | Default | Meaning |
 | --- | --- | --- |
@@ -2035,20 +2035,25 @@ removes it offline, and the migration that rewrites stored snapshots to the one-
 `20260918_0382`; the running image reads the old shape, so Workers and Serve are stopped for that
 deploy as usual.
 
-Any address on the published roster counts towards the quorum. The provider's quality and whale ranks
-are still collected, stored and displayed — they are what the list is built from — but they no longer
-decide who may trigger: on the provider's own seven-day statistics 147 watched addresses held one
-qualifying wallet, which is a rule that cannot fire (#649 §2.1, PR-3 §1). Monitoring support still
-applies per address: an address must have been watched for a whole window before it can complete a
-quorum.
+The roster contains all unique valid addresses returned by `/api/traders?window=30d&stocks=false`
+for chain 4663. No per-handle request or profitability ranking is made. Remove the obsolete
+`news.chain_tape.roster.min_closed_trades`, `min_profit_factor`, `top_quality` and
+`top_whale_by_open_cost` keys from the deployment configuration before starting the new image;
+unknown old keys fail validation. Raising a Top-N value is no longer a way to enable coverage.
 
-`news.chain_tape.roster` carries two more: `window` (default `30d`) is the provider statistics
-window, passed to both `/api/traders` and `/api/trader/{handle}`, and `refresh_interval_s`
-(default 3600) is how old a published list may be before the refresh task rebuilds it. `window` is the statistics
-window the list is *selected* with — the closed-trade floor, the 1.2 profit factor and the top-20 cut
-— and it does not change the alert's own threshold. It moved from `7d` to
-`30d` because on a seven-day window the provider's own numbers left one qualifying address against
-thresholds of three and five, which is a rule that cannot fire (#649 §5.3).
+`news.chain_tape.roster` contains only `window` (default `30d`, source request scope) and
+`refresh_interval_s` (default 3600). The source window does not change alert thresholds.
+Membership changes alone open a new version. Successful unchanged refreshes and alias changes
+preserve monitoring starts. New addresses build a real 30-minute monitored window; removed
+addresses retain the existing sweep window without counting as current members. Rejoining
+inherits a start only where uninterrupted collection is provable.
+
+Roster and collector failures use persisted next-attempt times: 30 seconds, exponentially
+increasing to 5 minutes; a longer provider Retry-After is respected. Success clears failures.
+Malformed/empty/partially invalid lists preserve the previous membership; valid duplicate
+addresses are deduplicated. Valid source shrinkage is published, not blocked by an arbitrary
+percentage or manual approval. With a bare-list endpoint, completeness means the complete
+validated response, not proof that the source itself omitted nothing.
 
 These are engineering starting values, not optimized trading results. All removed rule
 keys and `digest` are errors in the current loader. Use the
@@ -2072,23 +2077,18 @@ uv run tracefold news wallets --hours 72   # a wider window for the flow and dec
 
 | Section | Answers |
 | --- | --- |
-| `roster_funnel` | how many addresses the published version selected, how many cleared the closed-trade floor, how many have a known profit factor, the quality/whale split, and when the refresh task last **attempted** and last **succeeded** — with `refresh_last_error` when the two differ |
+| `roster_funnel` | source address count, source scope, membership version, attempt/success/error, next retry and consecutive failures |
 | `triggerability` | the configured `N`, the published roster's size, how many of those addresses have been monitored long enough to fill the 30-minute window, and how many more are needed |
 | `flow_coverage` | the window's fills, receipts, addresses and tokens counted separately, the buy/sell/transfer split, priced against unpriced, the `derived_reason` distribution, and the oldest underived fill; the tape's lifetime discard totals are labelled as lifetime totals and are not a rate |
 | `decision_and_delivery` | episodes, intents and each delivery state in the window, plus the reasons the unsent ones carry |
 | `send_queue` | the one shared delivery queue in `market_due_delivery` order, with the head's waiting age and due time, across every family |
 
-Read `triggerability` first. A `monitoring_supported` count below `net_buy_slow_n` means the rule is
-arithmetically unsatisfiable and no amount of chain activity will produce a card: that is "this roster
-cannot trigger", not "there were no opportunities". `roster_funnel`'s `quality` / `whale` counts
-describe the provider's ranking of the same list and are not what the quorum is counted against. A `refresh_last_attempt_at_ms` well
-ahead of `refresh_last_success_at_ms` means the site has been refusing to answer and the list on the
-page is the last complete one, kept deliberately.
-
-`uv run python scripts/compare_roster_windows.py --windows 7d,30d` is the companion that *does* call
-the site, at the client's own pace, to compare the candidate pool and profit factors under two
-windows. It touches no database. `--print-sql` prints the hit-bucket query for the other half of that
-comparison, which is a question for the deployment's own fills table.
+Read `triggerability` first. `monitoring_supported` includes the same start/gap predicate
+as detection. A count below `net_buy_slow_n` means coverage cannot currently establish a
+quorum, not that the market has no opportunities. Then inspect `collection_lagging` and
+`flow_coverage` for a stale cutoff, blocked receipt or unpriced cash leg. Roster and collector
+failures are independent; a roster failure keeps the previously published list usable.
+The retired `compare_roster_windows.py` PF-ranking probe has been removed.
 
 Read-only progress checks:
 
@@ -2097,7 +2097,8 @@ SELECT count(*) AS pending_fills, min(classified_at_ms) AS oldest_pending_ms
 FROM news_market_wallet_fills WHERE derived_at_ms IS NULL;
 
 SELECT high_water_block, high_water_tx_index, scanned_at_ms, scanned_block, scanned_log,
-       coverage_from_ms, gap_at_ms, last_outcome, last_error
+       coverage_from_ms, gap_at_ms, last_outcome, last_error,
+       blocked_tx_hash, enrichment_error, next_attempt_at_ms, consecutive_failures
 FROM news_market_wallet_tape_state;
 
 -- what the roster refresh task last did, which is not what the collector last did
@@ -2121,19 +2122,24 @@ The collector does not automatically rewrite old facts. Investigate the named ra
 the RPC and apply the established recovery procedure. Network failure leaves the last
 scanned chain time visible; wall time never advances a completed window.
 
-A roster refresh publishes a new version only when every candidate lookup answered. A throttled or
-timed-out per-trader document is retried a bounded number of times inside the same call and then ends
-the refresh: the previous version keeps its membership and its own `taken_at_ms`, and the attempt's
-time and reason are recorded. An explicit 404 is different — that handle's profit factor is unknown,
-it cannot pass the quality rule, and the list still publishes. Nothing about a refresh resets an
-address's monitoring support: `monitoring_from_ms` is inherited across versions, so a statistics-only
-change does not re-warm an address that has been watched for hours (#649 §5.1, §5.2).
+A real missing receipt stops the current turn at the last complete prefix; it does not
+repeatedly query the successful suffix or let the detector see a later buy before a missing
+sell. On recovery the same durable position resumes and bounded batches drain normally.
+Optional traded-token metadata is best effort. Cash decimals are queried independently;
+unknown cash precision stays unpriced and never defaults to 18. Only explicit contract
+revert is cached as unsupported metadata; transient RPC errors are retryable observations.
 
-A first report is decided against the collector's committed cutoff `(scanned_block, scanned_log)`.
-A card whose evidence inside that cutoff is not yet derived is **deferred** — its `next_attempt_at_ms`
-moves, no attempt is consumed, and the rest of the shared queue proceeds in the same turn. A card
-whose evidence no longer satisfies either window at that cutoff is **suppressed** with its reason.
-New fills above the cutoff never hold a report back (#649 §6.1, §6.2).
+A first report is re-evaluated at the collector's committed cutoff `(scanned_block, scanned_log)`.
+A cutoff that has not reached the trigger or contains underived evidence defers without spending
+an attempt. A stale trigger or window no longer satisfying the one rule is suppressed.
+Re-evaluation uses the same pure function as detection; no external pricing call is required.
+
+`advance()` reports actual `rpc_requests` and `rpc_bytes`, including real metadata/header calls
+and excluding cache hits. Address batching is not enabled speculatively: it reduces individual
+request size but increases request count. Use a suitable production endpoint through `rpc_url`
+and measure full-range latency/429/backlog under the actual address set before changing batching.
+The 147/201/256-address integration cases are controlled transport checks, not live endpoint capacity
+certification. Never drop addresses or advance incomplete coverage to satisfy a latency target.
 
 `initial_snapshot` remains immutable; the detector alone updates current business facts.
 Unchanged scans write no latest snapshot. Timers do not create episodes. Read price

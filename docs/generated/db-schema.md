@@ -598,17 +598,10 @@
 | `taken_at_ms` | `BIGINT` | False | `None` |
 | `wallet` | `TEXT` | False | `None` |
 | `handle` | `TEXT` | False | `''::text` |
-| `followers` | `BIGINT` | False | `0` |
-| `realized_pnl` | `DOUBLE PRECISION` | False | `0` |
-| `closed_trades` | `INTEGER` | False | `0` |
-| `win_rate` | `DOUBLE PRECISION` | False | `0` |
-| `profit_factor` | `DOUBLE PRECISION` | True | `None` |
-| `open_cost` | `DOUBLE PRECISION` | False | `0` |
-| `rank_quality` | `INTEGER` | True | `None` |
-| `rank_whale` | `INTEGER` | True | `None` |
 | `provider` | `TEXT` | False | `'robinhoodtrenches'::text` |
 | `known_at_ms` | `BIGINT` | False | `None` |
 | `monitoring_from_ms` | `BIGINT` | True | `None` |
+| `archived_source_statistics` | `JSONB` | True | `None` |
 
 ## `news_market_wallet_tape_state`
 
@@ -635,6 +628,13 @@
 | `roster_last_attempt_at_ms` | `BIGINT` | True | `None` |
 | `roster_last_success_at_ms` | `BIGINT` | True | `None` |
 | `roster_last_error` | `TEXT` | True | `None` |
+| `next_attempt_at_ms` | `BIGINT` | False | `0` |
+| `consecutive_failures` | `INTEGER` | False | `0` |
+| `blocked_tx_hash` | `TEXT` | True | `None` |
+| `enrichment_error` | `TEXT` | True | `None` |
+| `roster_next_attempt_at_ms` | `BIGINT` | False | `0` |
+| `roster_consecutive_failures` | `INTEGER` | False | `0` |
+| `pre_0399_cursor` | `JSONB` | True | `None` |
 
 ## `news_model_recordings`
 

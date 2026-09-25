@@ -43,9 +43,12 @@ from .classify import CashLeg, classify_receipt, usd_face_value
 from .contracts import (
     BLOCK_COMPLETE_TX_INDEX,
     CHAIN_TAPE_NAME,
+    ChainTapeDatabasePort,
     ClassifiedFill,
+    CompletePrefix,
     RosterSnapshot,
     TapeCursor,
+    retry_delay_ms,
 )
 from .evm import TRANSFER_TOPIC, address_topic
 
@@ -68,11 +71,7 @@ CHAIN_SOURCE: Final[NewsExternalDataSource] = "robinhood_rpc"
 # "This provider call did not answer". Distinct from a provider that answered `None`, which is a fact
 # about the chain (no such transaction) rather than a failure.
 _FAILED: Final = object()
-# "This transaction could not be classified this turn, and the rest of the batch is unaffected." A
-# receipt the node did not answer for, or a token whose metadata did not answer, holds the durable
-# position at the last transaction that *was* classified -- the batch carries on, because a missing
-# ERC-20 `symbol()` is not a reason to stop reading the chain for the next two seconds, and one
-# transaction's metadata has nothing to do with the next one's (#649 §6.3).
+# A missing complete receipt stops the continuous prefix. Optional metadata never does.
 _HOLD: Final = object()
 
 
@@ -101,24 +100,7 @@ class ChainLogPort(Protocol):
 
     async def token(self, address: str) -> Any: ...
 
-
-class ChainTapeRepositories(Protocol):
-    """The callback capability one turn needs; no instruments, no price, no Trading."""
-
-    @property
-    def news(self) -> Any: ...
-
-
-class ChainTapeDatabasePort(Protocol):
-    """Bounded read/transaction, in the News error vocabulary. The composition root picks the lane."""
-
-    async def read[T](
-        self, name: str, fn: Callable[[ChainTapeRepositories], T], *, timeout_seconds: float = 3.0
-    ) -> T: ...
-
-    async def tx[T](
-        self, name: str, fn: Callable[[ChainTapeRepositories], T], *, timeout_seconds: float = 3.0
-    ) -> T: ...
+    async def token_decimals(self, address: str) -> int | None: ...
 
 
 class ChainTapeLoop:
@@ -138,6 +120,7 @@ class ChainTapeLoop:
         catch_up_blocks_max: int = CATCH_UP_BLOCKS_MAX,
         receipts_per_turn_max: int = RECEIPTS_PER_TURN_MAX,
         telemetry: NewsExternalDataTelemetryPort | None = None,
+        clock: Callable[[], int] = now_ms,
     ) -> None:
         self.db = db
         self.chain = chain
@@ -145,6 +128,11 @@ class ChainTapeLoop:
         self.catch_up_blocks_max = max(1, int(catch_up_blocks_max))
         self.receipts_per_turn_max = max(1, int(receipts_per_turn_max))
         self.telemetry = telemetry
+        self._clock = clock
+        self._failures = 0
+        self._retry_after_ms = 0
+        self._blocked_tx: str | None = None
+        self._enrichment_errors: list[str] = []
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
         self._roster: RosterSnapshot | None = None
@@ -174,6 +162,8 @@ class ChainTapeLoop:
         """
 
         started = time.perf_counter()
+        self._network_start = int(getattr(self.chain, "request_count", 0))
+        self._bytes_start = int(getattr(self.chain, "response_bytes_total", 0))
         self.last_error = None
         self._store_refused = False
         self._coverage_from = None
@@ -183,33 +173,23 @@ class ChainTapeLoop:
         self._collection_wallets = ()
         errors: list[str] = []
         result = _empty_result()
+        self._retry_after_ms = 0
+        self._blocked_tx = None
+        self._enrichment_errors = []
         try:
-            stored_state, self._roster = await self.db.read(
-                "news_chain_tape_state",
-                lambda repos: (repos.news.chain_tape_state(), repos.news.chain_tape_current_roster()),
-                timeout_seconds=_DB_READ_TIMEOUT_SECONDS,
+            stored_state, self._roster, wallets = await self.db.read(
+                "news_chain_tape_plan", _read_plan, timeout_seconds=_DB_READ_TIMEOUT_SECONDS
             )
         except (TransientError, DeferError) as exc:
-            # The lane refused the read or it overran. There is no position to record and nothing to
-            # record it with; the next turn re-reads the same row.
             errors.append(f"db:{type(exc).__name__}")
             self._record_turn(started, "error", result, errors)
             return result
+        if self._clock() < int((stored_state or {}).get("next_attempt_at_ms") or 0):
+            result["deferred"] = True
+            self.last_result = result
+            return result
+        self._failures = int((stored_state or {}).get("consecutive_failures") or 0)
         roster = self._roster
-        wallets = ()
-        if roster is not None:
-            try:
-                wallets = await self.db.read(
-                    "news_chain_tape_collection_roster",
-                    lambda repos: repos.news.chain_tape_collection_wallets(
-                        through_at_ms=int((stored_state or {}).get("scanned_at_ms") or 0)
-                    ),
-                    timeout_seconds=_DB_READ_TIMEOUT_SECONDS,
-                )
-            except (TransientError, DeferError) as exc:
-                errors.append(f"db:{type(exc).__name__}")
-                self._record_turn(started, "error", result, errors)
-                return result
         self._collection_wallets = wallets
         cursor = _cursor_of(stored_state)
         noise_cursor = _noise_cursor_of(stored_state)
@@ -287,13 +267,10 @@ class ChainTapeLoop:
 
         fills: list[ClassifiedFill] = []
         classified_through = cursor
+        prefix: CompletePrefix | None = None
         counted_through = noise_cursor
-        # Where the *durable position* stops. One transaction the node or a token contract would not
-        # answer for holds the mark at the last transaction before it, so that one is re-offered next
-        # turn -- but the rest of the batch is still classified and still written, because the chain's
-        # own identity makes re-writing those rows one `ON CONFLICT DO NOTHING` (#649 §6.3). The noise
-        # counters stop with the mark for the opposite reason: they have no key to collapse on, so a
-        # movement counted above a held mark would be counted again when the mark finally passes it.
+        # A missing receipt is a real gap. Stop there rather than repeatedly processing
+        # a successful suffix that cannot extend the continuous complete prefix.
         held = False
         for position in taken:
             outcome = await self._classify(position, wallets=wallets, roster=roster, errors=errors)
@@ -303,48 +280,39 @@ class ChainTapeLoop:
                 break
             if outcome is _HOLD:
                 held = True
-                continue
+                self._blocked_tx = position.transaction_hash
+                break
             fills.extend(outcome.fills)
             # A fill collapses on its primary key however many times the lagging position re-offers it.
             # A count has no key to collapse on, so the marker is the key: what is at or below it has
             # already been counted, and this pass only reports what is above it.
-            if not held and noise_cursor.precedes(position.block_number, position.transaction_index):
+            if noise_cursor.precedes(position.block_number, position.transaction_index):
                 result["ignored_inbound"] += outcome.ignored_inbound
                 result["unknown"] += outcome.unknown
             result["receipts"] += 1
-            if held:
-                continue
-            classified_through = TapeCursor(position.block_number, position.transaction_index)
+            prefix = outcome.prefix
+            classified_through = prefix.cursor
             counted_through = classified_through
         if not held and result["receipts"] == len(candidates) and len(errors) == errors_before_chain:
-            # The whole planned range is classified -- and the durable position deliberately stops one
-            # overlap short of the head it was read to.
-            #
-            # A mark set to `to_block` would declare the head block complete on the very turn it was
-            # first read, and every re-fetched log from the overlap would then be filtered out before a
-            # receipt was ever requested: sixty blocks fetched and discarded every two seconds, and a
-            # tip that answered short never picked up. Lagging the mark is what makes the overlap an
-            # overlap. The re-read costs at most a handful of receipts, and the fills' identity is the
-            # chain's own, so writing them again is one `ON CONFLICT DO NOTHING`.
-            classified_through = TapeCursor(_lagged(from_block, to_block, self.block_overlap), BLOCK_COMPLETE_TX_INDEX)
-        # A partial turn keeps the position it actually reached instead of the lagged one. Clamping it
-        # back would re-plan the same bounded batch of receipts every turn and never drain a backlog.
-
-        if classified_through != cursor or not candidates:
-            scanned_time = await self._provider(
-                CHAIN_SOURCE, lambda: self.chain.block_timestamp_ms(classified_through.block_number), errors
-            )
-            if scanned_time is not _FAILED:
-                self._scanned_at = int(scanned_time)
-                self._scanned_block = classified_through.block_number
-                self._scanned_log = (
-                    BLOCK_COMPLETE_TX_INDEX
-                    if classified_through.transaction_index == BLOCK_COMPLETE_TX_INDEX
-                    else max(
-                        (fill.log_index for fill in fills if fill.block_number == classified_through.block_number),
-                        default=-1,
-                    )
+            # The overlap remains speculative; a successful tail is stored but is not
+            # released to detectors until a later turn establishes its complete prefix.
+            lagged = TapeCursor(_lagged(from_block, to_block, self.block_overlap), BLOCK_COMPLETE_TX_INDEX)
+            if cursor.precedes(lagged.block_number, lagged.transaction_index):
+                stamp = await self._provider(
+                    CHAIN_SOURCE, lambda: self.chain.block_timestamp_ms(lagged.block_number), errors
                 )
+                prefix = None if stamp is _FAILED else CompletePrefix(lagged, BLOCK_COMPLETE_TX_INDEX, int(stamp))
+                classified_through = cursor if prefix is None else prefix.cursor
+            else:
+                # Never rewind an already committed partial prefix on a short/head-stalled turn.
+                prefix = None
+                classified_through = cursor
+        if prefix is not None:
+            self._scanned_at = prefix.event_at_ms
+            self._scanned_block = prefix.cursor.block_number
+            self._scanned_log = prefix.log_index
+        result["pending"] = len(candidates) - int(result["receipts"])
+        result["enrichment_errors"] = len(self._enrichment_errors)
         result["written"] = await self._store(
             fills,
             cursor=classified_through,
@@ -398,7 +366,7 @@ class ChainTapeLoop:
         before.
         """
 
-        if cursor.block_number <= 0:
+        if cursor.block_number <= 0 and cursor.transaction_index != BLOCK_COMPLETE_TX_INDEX:
             start = max(0, head - self.block_overlap)
             return start, head, TapeCursor(start, -1)
         from_block = max(0, cursor.block_number - self.block_overlap)
@@ -467,7 +435,7 @@ class ChainTapeLoop:
         )
         if event_at_ms is _FAILED:
             return _HOLD
-        stamp = now_ms()
+        stamp = self._clock()
         classification = classify_receipt(
             receipt,
             roster_wallets=wallets,
@@ -480,15 +448,16 @@ class ChainTapeLoop:
         priced = []
         for fill in classification.fills:
             enriched = await self._price(fill, errors=errors)
-            if enriched is None:
-                # One token's metadata did not answer. That is this transaction's problem and nobody
-                # else's: it is held for the next turn, and the batch behind it carries on (#649 §6.3).
-                return _HOLD
             priced.append(enriched)
         return _Classified(
             fills=tuple(priced),
             ignored_inbound=classification.ignored_inbound,
             unknown=classification.unknown,
+            prefix=CompletePrefix(
+                TapeCursor(position.block_number, position.transaction_index),
+                max((log.log_index for log in receipt.logs), default=-1),
+                int(event_at_ms),
+            ),
         )
 
     def _missing_receipt(self, position: _Transaction, errors: list[str]) -> Any:
@@ -497,18 +466,22 @@ class ChainTapeLoop:
         errors.append(f"{CHAIN_SOURCE}:receipt_missing")
         return _HOLD
 
-    async def _price(self, fill: ClassifiedFill, *, errors: list[str]) -> ClassifiedFill | None:
+    async def _price(self, fill: ClassifiedFill, *, errors: list[str]) -> ClassifiedFill:
         """Attach the two tokens' own metadata, and a dollar figure only when the cash leg is the stablecoin."""
 
-        traded = await self._provider(CHAIN_SOURCE, lambda: self.chain.token(fill.token), errors)
+        # These are display/valuation failures, not missing chain facts. In particular,
+        # they must not affect the global error count used to finish a block range.
+        del errors
+        traded = await self._provider(CHAIN_SOURCE, lambda: self.chain.token(fill.token), self._enrichment_errors)
         if traded is _FAILED:
-            return None
+            traded = None
         cash_decimals: int | None = None
         if fill.cash_token:
-            cash = await self._provider(CHAIN_SOURCE, lambda: self.chain.token(str(fill.cash_token)), errors)
-            if cash is _FAILED:
-                return None
-            cash_decimals = getattr(cash, "decimals", None)
+            cash = await self._provider(
+                CHAIN_SOURCE, lambda: self.chain.token_decimals(str(fill.cash_token)), self._enrichment_errors
+            )
+            if cash is not _FAILED:
+                cash_decimals = cash
         usd, usd_source = usd_face_value(
             None if fill.cash_token is None else CashLeg(fill.cash_token, int(fill.cash_amount_raw or 0)),
             cash_decimals=cash_decimals,
@@ -556,19 +529,26 @@ class ChainTapeLoop:
                 roster_version=roster.roster_version,
                 outcome=outcome,
                 error=errors[0] if errors else None,
-                now_ms=now_ms(),
+                now_ms=self._clock(),
                 succeeded=not errors,
                 ignored_inbound=int(counts.get("ignored_inbound") or 0),
                 unknown=int(counts.get("unknown") or 0),
                 noise_cursor=noise_cursor,
+                next_attempt_at_ms=self._clock() + retry_delay_ms(self._failures + 1, self._retry_after_ms)
+                if errors
+                else 0,
+                consecutive_failures=self._failures + 1 if errors else 0,
+                blocked_tx_hash=self._blocked_tx,
+                enrichment_error=self._enrichment_errors[0] if self._enrichment_errors else None,
             )
             repos.news.chain_tape_record_coverage(
                 from_ms=self._coverage_from,
                 through_ms=self._scanned_at,
                 through_block=self._scanned_block,
                 through_log=self._scanned_log,
-                gap_at_ms=now_ms() if any("reorg_unresolved" in error for error in errors) else None,
+                gap_at_ms=self._clock() if any("reorg_unresolved" in error for error in errors) else None,
                 wallets=self._collection_wallets,
+                roster_version=roster.roster_version,
             )
             return int(written)
 
@@ -596,9 +576,13 @@ class ChainTapeLoop:
         """
 
         started = time.perf_counter()
+        requests_before = getattr(self.chain, "request_count", None)
+        bytes_before = int(getattr(self.chain, "response_bytes_total", 0))
         try:
             answer = await call()
         except Exception as exc:  # provider failures are expected; the turn ends with state intact
+            if errors is not self._enrichment_errors:
+                self._retry_after_ms = max(self._retry_after_ms, int(getattr(exc, "retry_after_ms", 0) or 0))
             code = getattr(exc, "code", None) or type(exc).__name__
             errors.append(f"{source}:{code}")
             if self.telemetry is not None:
@@ -609,13 +593,17 @@ class ChainTapeLoop:
                     time.perf_counter() - started,
                 )
             return _FAILED
-        if self.telemetry is not None:
+        if self.telemetry is not None and (
+            requests_before is None or int(getattr(self.chain, "request_count", 0)) > requests_before
+        ):
             self.telemetry.record_external_data_provider_call(
                 CHAIN_TAPE_NAME,
                 source,
                 "success",
                 time.perf_counter() - started,
-                byte_count=_response_bytes(self.chain),
+                byte_count=(int(getattr(self.chain, "response_bytes_total", 0)) - bytes_before)
+                if requests_before is not None
+                else _response_bytes(self.chain),
             )
         return answer
 
@@ -642,6 +630,8 @@ class ChainTapeLoop:
         the row by exactly the refused turns, so they are emitted only when the row moved too.
         """
 
+        result["rpc_requests"] = int(getattr(self.chain, "request_count", 0)) - self._network_start
+        result["rpc_bytes"] = int(getattr(self.chain, "response_bytes_total", 0)) - self._bytes_start
         self.last_result = dict(result)
         self.last_error = ",".join(errors) or None
         if self.telemetry is None:
@@ -651,7 +641,7 @@ class ChainTapeLoop:
             outcome,
             time.perf_counter() - started,
             target_count=int(result.get("wallets") or 0),
-            source_count=2,
+            source_count=1,
         )
         if not stored:
             return
@@ -678,12 +668,15 @@ class _Transaction:
 class _Classified:
     """One receipt's outcome, after the tokens' metadata was attached."""
 
-    __slots__ = ("fills", "ignored_inbound", "unknown")
+    __slots__ = ("fills", "ignored_inbound", "prefix", "unknown")
 
-    def __init__(self, fills: tuple[ClassifiedFill, ...], ignored_inbound: int, unknown: int) -> None:
+    def __init__(
+        self, fills: tuple[ClassifiedFill, ...], ignored_inbound: int, unknown: int, prefix: CompletePrefix
+    ) -> None:
         self.fills = fills
         self.ignored_inbound = ignored_inbound
         self.unknown = unknown
+        self.prefix = prefix
 
 
 def _empty_result() -> dict[str, Any]:
@@ -762,7 +755,10 @@ __all__ = [
     "POLL_INTERVAL_SECONDS",
     "RECEIPTS_PER_TURN_MAX",
     "ChainLogPort",
-    "ChainTapeDatabasePort",
     "ChainTapeLoop",
-    "ChainTapeRepositories",
 ]
+
+
+def _read_plan(repos: Any) -> tuple[Any, RosterSnapshot | None, tuple[str, ...]]:
+    plan: tuple[Any, RosterSnapshot | None, tuple[str, ...]] = repos.news.chain_tape_collection_plan()
+    return plan

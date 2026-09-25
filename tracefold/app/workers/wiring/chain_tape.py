@@ -30,7 +30,6 @@ from tracefold.news.chain_tape import ChainTapeLoop
 from tracefold.news.chain_tape.detect import NetBuyDetector
 from tracefold.news.chain_tape.loop import POLL_INTERVAL_SECONDS
 from tracefold.news.chain_tape.prices import WalletPriceSampler
-from tracefold.news.chain_tape.roster import RosterRules
 from tracefold.news.chain_tape.roster_refresh import RosterRefreshLoop
 from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.platform.config.models import Settings
@@ -84,12 +83,6 @@ def _wire_chain_tape(
     roster = RosterRefreshLoop(
         db=tape_db,
         provider=RobinhoodTrenchesClient(base_url=chain_tape.roster_provider_url),
-        rules=RosterRules(
-            min_closed_trades=chain_tape.roster.min_closed_trades,
-            min_profit_factor=chain_tape.roster.min_profit_factor,
-            top_quality=chain_tape.roster.top_quality,
-            top_whale_by_open_cost=chain_tape.roster.top_whale_by_open_cost,
-        ),
         window=chain_tape.roster.window,
         refresh_period_ms=chain_tape.roster.refresh_interval_s * 1000,
         telemetry=telemetry,
