@@ -1,7 +1,10 @@
 import { expect, test } from "@tests/e2e/fixtures";
 import { expectNoDocumentHorizontalOverflow } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
-import { newsWalletDecimalDetailFixture, newsWalletEventFixture } from "@tests/fixtures/newsFixture";
+import {
+  newsWalletDecimalDetailFixture,
+  newsWalletEventFixture,
+} from "@tests/fixtures/newsFixture";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
