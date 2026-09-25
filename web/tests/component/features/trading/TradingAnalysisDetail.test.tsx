@@ -105,7 +105,7 @@ it.each([
     source: { kind: "catalyst", title: "不应使用的别名" },
     expected: "catalyst",
   },
-])("renders public source text without a title alias ($expected)", async ({ source, expected }) => {
+])("uses public source text ($expected)", async ({ source, expected }) => {
   server.use(
     http.get(/.*\/api\/trading\/cases\/case-hype\/replay$/, () =>
       HttpResponse.json({
