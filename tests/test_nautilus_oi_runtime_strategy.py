@@ -17,6 +17,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.enums import OrderSide, OrderType, TradingState, TriggerType
 from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.identifiers import ClientOrderId, StrategyId
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 from tests.nautilus_oi_runtime_fixtures import (
@@ -36,6 +37,7 @@ from tests.nautilus_oi_runtime_fixtures import (
     trade_signal,
     unit_runtime,
 )
+from tracefold.integrations.nautilus.oi_runtime.config import OiInstrumentRoute
 from tracefold.integrations.nautilus.oi_runtime.entry import deterministic_client_order_id
 from tracefold.integrations.nautilus.oi_runtime.strategy import OpenPlan, RuntimeControlSnapshot
 
@@ -334,7 +336,7 @@ def test_a_stop_out_cools_the_market_down_for_signals_but_not_for_a_manual_entry
     assert expired.settle() is not None
 
 
-def test_position_limit_counts_the_instrument_a_plan_already_holds() -> None:
+def test_a_held_instrument_still_refuses_a_second_entry_without_a_position_count_gate() -> None:
     runtime = unit_runtime(
         signals=(trade_signal(signal_id="2" * 64),),
         open_plans=(OpenPlan(open_plan(), disposition_pending=False),),
@@ -343,19 +345,50 @@ def test_position_limit_counts_the_instrument_a_plan_already_holds() -> None:
     cached_protection(runtime, leg="stop", trigger=Decimal(9_800))
     cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200))
     runtime.pump()
-    assert runtime.dispositions() == [{"disposition": "position_limit"}]
+    assert runtime.dispositions() == [{"disposition": "exposure_already_present"}]
 
 
-def test_the_daily_loss_limit_counts_what_this_trade_can_still_lose() -> None:
-    # 40 already lost, 10 at risk: 50 is the limit and 50 is not over it.
-    within = unit_runtime(signals=(trade_signal(),), day_start_equity=Decimal(1_040), profile=oi_profile())
-    within.pump()
-    assert within.settle() is not None
-    # 45 already lost + ~10 at risk crosses 50, although the day has not lost 50 yet.
-    over = unit_runtime(signals=(trade_signal(),), day_start_equity=Decimal(1_045))
-    over.pump()
-    assert over.journal.pending_prepare() is None
-    assert over.dispositions() == [{"disposition": "daily_loss_limit"}]
+def test_a_second_instrument_can_enter_while_the_first_is_protected() -> None:
+    eth = TestInstrumentProvider.ethusdt_perp_binance()
+    route = OiInstrumentRoute(market_key="crypto:perp:ETH:USDT", instrument_id=eth.id, stop_distance_bps=200)
+    profile = replace(oi_profile(), routes=(*oi_profile().routes, route))
+    asset_id, mapping_digest = profile.route_semantics(route) or (None, None)
+    assert asset_id is not None and mapping_digest is not None
+    original = trade_signal(signal_id="2" * 64)
+    assert original.entry_envelope is not None
+    signal = original.model_copy(
+        update={
+            "asset_id": asset_id,
+            "market_key": route.market_key,
+            "native_symbol": "ETHUSDT",
+            "mapping_semantics_digest": mapping_digest,
+            "entry_envelope": original.entry_envelope.model_copy(update={"universe_version": profile.universe_digest}),
+        }
+    )
+    runtime = unit_runtime(
+        signals=(signal,),
+        open_plans=(OpenPlan(open_plan(), disposition_pending=False),),
+        profile=profile,
+    )
+    runtime.cache.add_instrument(eth)
+    runtime.cache.add_quote_tick(
+        TestDataStubs.quote_tick(instrument=eth, bid_price=9_999, ask_price=10_000, ts_event=NOW_NS, ts_init=NOW_NS)
+    )
+    cached_position(runtime)
+    cached_protection(runtime, leg="stop", trigger=Decimal(9_800))
+    cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200))
+    runtime.pump()
+    plan = runtime.settle()
+    assert plan is not None and plan.instrument_id == eth.id.value
+    assert runtime.dispositions() == []
+
+
+def test_equity_fraction_sizes_above_the_removed_dollar_cap_and_drawdown_does_not_halt() -> None:
+    runtime = unit_runtime(signals=(trade_signal(),), balance=5_000, day_start_equity=Decimal(5_100))
+    runtime.pump()
+    plan = runtime.settle()
+    assert plan is not None
+    assert plan.risk_budget_usd == Decimal("50")
 
 
 def test_an_unrouted_market_is_refused_by_name() -> None:

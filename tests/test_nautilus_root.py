@@ -122,9 +122,7 @@ def test_risk_limits_come_from_the_operator_config() -> None:
     default = _risk_limits(Settings())
 
     assert default.risk_fraction_per_trade == Decimal("0.01")
-    assert default.max_risk_per_trade_usd == Decimal("10")
-    assert (default.max_positions, default.max_leverage) == (1, 1)
-    assert default.max_daily_loss_usd == Decimal("25")
+    assert default.max_leverage == 1
     assert default.max_spread_fraction_of_stop == Decimal("0.3")
     assert default.post_stop_cooldown_ns == 14_400_000_000_000
     assert default.market_stale_after_ns == 5_000_000_000
@@ -135,9 +133,18 @@ def test_risk_limits_come_from_the_operator_config() -> None:
     assert edited.post_stop_cooldown_ns == 0
 
 
-@pytest.mark.parametrize("retired", ["max_total_risk_usd", "reconciliation_interval_seconds"])
+@pytest.mark.parametrize(
+    "retired",
+    [
+        "max_total_risk_usd",
+        "reconciliation_interval_seconds",
+        "max_risk_per_trade_usd",
+        "max_positions",
+        "max_daily_loss_usd",
+    ],
+)
 def test_the_retired_risk_keys_are_refused_by_name(retired: str) -> None:
-    """#680. Nautilus owns reconciliation, and `max_positions` is the only concurrency limit."""
+    """Removed execution limits cannot silently reappear as no-op operator settings."""
 
     with pytest.raises(ValidationError, match=retired):
         _settings_with_risk(**{retired: 5})
@@ -147,10 +154,7 @@ def test_the_retired_risk_keys_are_refused_by_name(retired: str) -> None:
     "override",
     [
         {"risk_fraction_per_trade": "0.02"},
-        {"max_risk_per_trade_usd": "9"},
-        {"max_positions": 2},
         {"max_leverage": 2},
-        {"max_daily_loss_usd": "40"},
         {"stop_distance_bps": 120},
         {"max_spread_fraction_of_stop": "0.2"},
         {"post_stop_cooldown_seconds": 60},
@@ -213,13 +217,8 @@ def test_the_runtime_namespace_produces_exactly_these_venue_visible_identities(m
     [
         ({"risk_fraction_per_trade": "0"}, "trading_execution_risk_fraction_invalid"),
         ({"risk_fraction_per_trade": "0.2"}, "trading_execution_risk_fraction_invalid"),
-        ({"max_risk_per_trade_usd": "0.5"}, "trading_execution_risk_limit_invalid"),
-        ({"max_risk_per_trade_usd": "20000"}, "trading_execution_risk_limit_invalid"),
-        ({"max_positions": 0}, "trading_execution_max_positions_invalid"),
-        ({"max_positions": 11}, "trading_execution_max_positions_invalid"),
         ({"max_leverage": 0}, "trading_execution_max_leverage_invalid"),
         ({"max_leverage": 125}, "trading_execution_max_leverage_invalid"),
-        ({"max_daily_loss_usd": "5"}, "trading_execution_daily_loss_invalid"),
         ({"stop_distance_bps": 0}, "trading_execution_stop_distance_invalid"),
         ({"stop_distance_bps": 6_000}, "trading_execution_stop_distance_invalid"),
         ({"max_spread_fraction_of_stop": "0"}, "trading_execution_max_spread_invalid"),

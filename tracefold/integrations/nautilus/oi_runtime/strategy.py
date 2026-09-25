@@ -467,21 +467,17 @@ class OiNautilusStrategy(Strategy):
             stopped_at = self._stop_exits.get(request.market_key)
             if stopped_at is not None and now_ns < stopped_at + risk.post_stop_cooldown_ns:
                 return _Verdict("refuse", "post_stop_cooldown")
-        if len(self._exposed_instruments()) >= risk.max_positions:
-            return _Verdict("refuse", "position_limit")
         equity = account_equity_usd(cache=self.cache, account_id=self._profile.account_id)
         if equity is None or equity <= 0:
             return _Verdict("defer", "account_unavailable")
+        # Keep the day-start fact for account reporting; it no longer halts entries.
         try:
-            baseline = self.day_start_baseline(equity_usd=equity, now_ns=now_ns)
+            self.day_start_baseline(equity_usd=equity, now_ns=now_ns)
         except ValueError as exc:
             return _Verdict("refuse", str(exc))
-        allowed_risk = min(equity * risk.risk_fraction_per_trade, risk.max_risk_per_trade_usd)
+        allowed_risk = equity * risk.risk_fraction_per_trade
         if allowed_risk <= 0:
             return _Verdict("refuse", "risk_non_positive")
-        # What the day has already lost plus what this trade can still lose (#680 RC12).
-        if baseline.equity_usd - equity + allowed_risk > risk.max_daily_loss_usd:
-            return _Verdict("refuse", "daily_loss_limit")
         route = self._routes.get(request.market_key)
         if route is None:
             return _Verdict("refuse", "instrument_unmapped")
@@ -661,8 +657,6 @@ class OiNautilusStrategy(Strategy):
             )
         ):
             refusal = "exposure_already_present"
-        elif len(self._exposed_instruments() - {instrument_id}) >= risk.max_positions:
-            refusal = "position_limit"
         elif self._unexpected:
             refusal = "unexpected_exposure"
         else:
@@ -1329,15 +1323,6 @@ class OiNautilusStrategy(Strategy):
     @staticmethod
     def _correlation(plan: TradePlan | None) -> dict[str, str]:
         return {} if plan is None else RuntimeObservations.correlation(plan.source, plan.entry_id)
-
-    def _exposed_instruments(self) -> set[InstrumentId]:
-        exposed = {InstrumentId.from_str(plan.instrument_id) for plan in self._plans.values()}
-        exposed.update(position.instrument_id for position in self.cache.positions_open())
-        if self._submitting is not None:
-            route = self._routes.get(self._submitting.market_key)
-            if route is not None:
-                exposed.add(route.instrument_id)
-        return exposed
 
     def _instrument_busy(self, instrument_id: InstrumentId) -> bool:
         """An entry never shares its instrument: a resting close-all stop there would close it too."""

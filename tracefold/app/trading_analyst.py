@@ -62,15 +62,19 @@ class _RecordFailure(Exception):
     pass
 
 
-def _caused_by(exc: BaseException, kinds: tuple[type[BaseException], ...]) -> bool:
+def _first_cause(exc: BaseException, kinds: tuple[type[BaseException], ...]) -> BaseException | None:
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         if isinstance(current, kinds):
-            return True
+            return current
         seen.add(id(current))
         current = current.__cause__ or current.__context__
-    return False
+    return None
+
+
+def _caused_by(exc: BaseException, kinds: tuple[type[BaseException], ...]) -> bool:
+    return _first_cause(exc, kinds) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,7 +289,7 @@ class TradeAnalyst:
         endpoint: ConfiguredLMEndpoint,
         *,
         timeout_seconds: float = 20,
-        max_input_bytes: int = 32_768,
+        max_input_bytes: int = 65_536,
         max_output_tokens: int = 2_000,
         max_concurrent_calls: int = 2,
         cost_budget_microusd: int | None = None,
@@ -413,8 +417,8 @@ class TradeAnalyst:
         except Exception as exc:
             if _caused_by(exc, (_RecordFailure,)):
                 status, error_code = "record_error", "model_call_record_failed"
-            elif _caused_by(exc, (_BudgetExceeded,)):
-                status, error_code = "budget_exhausted", "model_cost_budget_exceeded"
+            elif budget_error := _first_cause(exc, (_BudgetExceeded,)):
+                status, error_code = "budget_exhausted", str(budget_error)
             elif _caused_by(exc, (TimeoutError, dspy.LMTimeoutError)):
                 status, error_code = "timeout", "model_timeout"
             else:

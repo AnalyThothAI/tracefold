@@ -59,6 +59,9 @@ from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prep
 
 _BAR_MS = 60_000
 _PROFILE_BARS = 241
+# Shadow paths use a fixed $10 reference risk to keep historical comparisons stable.
+# This number never reaches the execution Runtime or limits a real order.
+_SHADOW_REFERENCE_RISK_USD = Decimal("10")
 _LOG = logging.getLogger(__name__)
 _FILE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-files")
 
@@ -1853,9 +1856,7 @@ class AnalysisRunner:
                     planned_quote=planned_quote,
                     exit_quotes=exit_quotes,
                     requested_notional_usdt=(
-                        self.settings.trading.execution.risk.max_risk_per_trade_usd
-                        * Decimal(10_000)
-                        / Decimal(plan.stop_distance_bps)
+                        _SHADOW_REFERENCE_RISK_USD * Decimal(10_000) / Decimal(plan.stop_distance_bps)
                     ),
                     mark_rows=mark_rows,
                     mark_status=mark_status,

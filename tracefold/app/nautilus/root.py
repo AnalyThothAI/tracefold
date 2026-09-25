@@ -545,10 +545,7 @@ def _risk_limits(settings: Settings) -> OiRiskLimits:
     risk = settings.trading.execution.risk
     return OiRiskLimits(
         risk_fraction_per_trade=risk.risk_fraction_per_trade,
-        max_risk_per_trade_usd=risk.max_risk_per_trade_usd,
-        max_positions=risk.max_positions,
         max_leverage=risk.max_leverage,
-        max_daily_loss_usd=risk.max_daily_loss_usd,
         max_spread_fraction_of_stop=risk.max_spread_fraction_of_stop,
         post_stop_cooldown_ns=risk.post_stop_cooldown_seconds * 1_000_000_000,
         market_stale_after_ns=int(risk.market_stale_after_seconds * 1_000_000_000),

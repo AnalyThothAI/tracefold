@@ -70,8 +70,7 @@ export function TradingSafetyStrip({
 /**
  * ⑤ Exposure and protection, closed while there is nothing on the account.
  *
- * `max_positions` is 1 and the lane emits a handful of Signals a day, so the positions list, the order list
- * and the protection strip are empty most of the time — three empty regions holding a full card each. The
+ * The positions list, the order list and the protection strip can all be empty. The
  * block opens itself the moment the account holds a position or an order, or the Runtime reports exposure
  * no trade plan claims, and stays open until that is no longer true.
  *

@@ -86,7 +86,6 @@ describe("execution labels", () => {
     expect(signalDispositionLabel("venue_rejected")).toBe("交易所拒绝入场");
     expect(signalDispositionLabel("instrument_unmapped")).toBe("运行时目录里没有这个市场");
     expect(signalDispositionLabel("expired")).toBe("Signal 已过期");
-    expect(signalDispositionLabel("position_limit")).toBe("持仓数已达上限");
     expect(signalDispositionLabel("post_stop_cooldown")).toBe("止损后冷却期内");
     expect(signalDispositionLabel("spread_limit")).toBe("点差在 Signal 有效期内始终超限");
     expect(signalDispositionLabel("entry_outcome_unknown")).toBe("入场结果未知");

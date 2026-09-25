@@ -448,10 +448,7 @@ class CliTests(unittest.TestCase):
                 # here is reported so an operator can read the limits the Runtime runs under.
                 "risk": {
                     "risk_fraction_per_trade": 0.01,
-                    "max_risk_per_trade_usd": 10.0,
-                    "max_positions": 1,
                     "max_leverage": 1,
-                    "max_daily_loss_usd": 25.0,
                     "stop_distance_bps": 100,
                     "max_spread_fraction_of_stop": 0.3,
                     "post_stop_cooldown_seconds": 14400,
