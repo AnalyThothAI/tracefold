@@ -134,8 +134,46 @@ def test_partial_entry_is_protected_before_the_remaining_fill_and_resized_afterw
         if value.normalized_kind == "protection" and value.summary.get("status") == "submitted"
     } == {"stop", "take_profit"}
     orders = _by_id(runtime.orders())
-    assert orders[_leg_id("stop").value].quantity.as_decimal() == Decimal("0.049")
-    assert orders[_leg_id("take_profit").value].quantity.as_decimal() == Decimal("0.049")
+    for leg, kind in (("stop", OrderType.STOP_MARKET), ("take_profit", OrderType.MARKET_IF_TOUCHED)):
+        original = orders[_leg_id(leg).value]
+        assert original.status.name == "CANCELED" and original.quantity.as_decimal() == Decimal("0.01")
+        [replacement] = [order for order in runtime.orders() if order.is_open and order.order_type == kind]
+        assert replacement.client_order_id != original.client_order_id
+        assert replacement.quantity.as_decimal() == Decimal("0.049")
+        assert replacement.is_reduce_only and replacement.trigger_type == TriggerType.MARK_PRICE
+        assert replacement.trigger_price != original.trigger_price
+        leg_events = [
+            value.summary["status"]
+            for value in observations
+            if value.normalized_kind == "protection" and value.summary.get("leg") == leg
+        ]
+        assert leg_events.count("accepted") == 2 and leg_events.count("canceled") == 1
+        assert leg_events.index("canceled") > max(
+            index for index, status in enumerate(leg_events) if status == "accepted"
+        )
+    view = runtime.strategy.runtime_view(runtime.strategy._now_ns())
+    assert view.protection_status == "protected"
+    assert {order.leg for order in view.account_snapshot.orders if order.owned} == {"stop", "take_profit"}
+
+
+def test_a_refused_protection_replacement_leaves_the_prior_orders_live() -> None:
+    runtime = unit_runtime(open_plans=(OpenPlan(open_plan(), disposition_pending=False),))
+    cached_position(runtime)
+    old_stop = cached_protection(runtime, leg="stop", trigger=Decimal(9_800), quantity=Decimal("0.01"))
+    old_take_profit = cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200), quantity=Decimal("0.01"))
+
+    runtime.pump()
+    assert {order.order_type for order, _position_id in runtime.strategy.submitted} == {
+        OrderType.STOP_MARKET,
+        OrderType.MARKET_IF_TOUCHED,
+    }
+    assert runtime.strategy.canceled == []
+    replacement_stop = next(
+        order for order, _position_id in runtime.strategy.submitted if order.order_type == OrderType.STOP_MARKET
+    )
+    runtime.strategy.on_order_rejected(_rejected(replacement_stop, "venue refused replacement"))
+    assert old_stop.is_open and old_take_profit.is_open
+    assert runtime.strategy.canceled == [] and runtime.strategy.closed == []
 
 
 def test_short_entry_uses_buy_side_mark_price_protection_in_real_engine() -> None:

@@ -23,7 +23,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import msgspec
 import pytest
@@ -34,7 +36,7 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock, MessageBus
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports
+from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports, ModifyOrder
 from nautilus_trader.execution.reports import ExecutionMassStatus, OrderStatusReport, PositionStatusReport
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.currencies import USDT
@@ -571,6 +573,73 @@ def test_pinned_adapter_preserves_position_read_failure_and_true_empty_report(ac
     runtime.venue.position_amount = "0"
     [flat] = runtime.loop.run_until_complete(runtime.client.generate_position_status_reports(specific))
     assert flat.position_side == PositionSide.FLAT and flat.quantity == Quantity.zero()
+
+
+def test_pinned_adapter_replaces_mark_price_protection_through_algo_submit_and_cancel(
+    account: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = account()
+    new_algo = AsyncMock(return_value=None)
+    cancel_algo = AsyncMock(return_value=SimpleNamespace(algoId=1, code=None, msg=None))
+    modify = AsyncMock(return_value=None)
+    monkeypatch.setattr(runtime.client._http_account, "new_algo_order", new_algo)
+    monkeypatch.setattr(runtime.client._http_account, "cancel_algo_order", cancel_algo)
+    monkeypatch.setattr(runtime.client._http_account, "modify_order", modify)
+    rejected: list[str] = []
+    monkeypatch.setattr(
+        runtime.client,
+        "generate_order_modify_rejected",
+        lambda *_args: rejected.append(str(_args[4])),
+    )
+    position = runtime.cache.positions_open()[0]
+    for client_order_id, _venue_order_id, order_type, trigger in PROTECTION:
+        old = runtime.cache.order(client_order_id)
+        assert old is not None
+        attempted_modify = ModifyOrder(
+            TRADER,
+            runtime.strategy.id,
+            APT,
+            client_order_id,
+            old.venue_order_id,
+            Quantity.from_str("1200.0"),
+            None,
+            Price.from_str(trigger),
+            UUID4(),
+            runtime.clock.timestamp_ns(),
+        )
+        runtime.loop.run_until_complete(runtime.client._modify_order(attempted_modify))
+        assert rejected[-1].startswith("only LIMIT orders supported")
+
+        create = (
+            runtime.strategy.order_factory.stop_market
+            if order_type == OrderType.STOP_MARKET
+            else runtime.strategy.order_factory.market_if_touched
+        )
+        replacement = create(
+            instrument_id=APT,
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_str("1200.0"),
+            trigger_price=Price.from_str(trigger),
+            trigger_type=TriggerType.MARK_PRICE,
+            reduce_only=True,
+        )
+        runtime.cache.add_order(replacement, position.id, ClientId(BINANCE))
+        runtime.loop.run_until_complete(runtime.client._submit_order_inner(replacement, None))
+        sent = new_algo.await_args.kwargs
+        assert sent["client_algo_id"] == replacement.client_order_id.value
+        assert sent["order_type"].value == (
+            "STOP_MARKET" if order_type == OrderType.STOP_MARKET else "TAKE_PROFIT_MARKET"
+        )
+        assert sent["working_type"] == "MARK_PRICE" and sent["reduce_only"] == "True"
+        assert sent["quantity"] == "1200.0" and old.is_open
+
+        runtime.loop.run_until_complete(runtime.client._cancel_order_single(APT, client_order_id, old.venue_order_id))
+        assert cancel_algo.await_args.kwargs == {
+            "algo_id": int(old.venue_order_id.value),
+            "client_algo_id": client_order_id.value,
+        }
+    assert new_algo.await_count == cancel_algo.await_count == 2
+    assert modify.await_count == 0
 
 
 def test_a_reduce_only_fill_on_a_flat_cache_never_opens_a_mirror_position(account: Any) -> None:

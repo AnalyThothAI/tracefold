@@ -161,10 +161,14 @@ the venue's own positions:
 - a position with any entry fill gets one reduce-only `STOP_MARKET` and one
   reduce-only `MARKET_IF_TOUCHED` take-profit order, both triggered on the
   **mark price**, at the plan's stop and take-profit distance from the average
-  fill. A missing one is placed again; an existing one is resized or repriced
-  as partial fills change the position quantity or average price. Position-opened
-  and position-changed events run this check immediately; the periodic pass
-  recovers missed or refused updates. A stop or
+  fill. A missing one is placed again. When a partial fill changes quantity or
+  average price, the Runtime submits a new mark-price reduce-only Algo order and
+  keeps the old one live until the replacement is accepted, then cancels the old
+  one. Nautilus 1.231.0's Binance adapter rejects in-place modification of
+  STOP_MARKET and MARKET_IF_TOUCHED orders; the installed-adapter regression
+  verifies the submit/cancel path. Position-opened and position-changed events
+  run this check immediately; the periodic pass recovers missed or refused
+  replacements. A stop or
   take-profit the venue refuses with `-2021 would immediately trigger` means the
   condition is already met, so the position is closed at market under that leg's
   reason;

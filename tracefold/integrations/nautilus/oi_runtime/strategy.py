@@ -796,6 +796,9 @@ class OiNautilusStrategy(Strategy):
         )
         if plan is not None and leg == "entry" and status == "accepted":
             self._dispose_owed(plan, "accepted")
+        if leg in {"stop", "take_profit"} and status == "accepted":
+            # Retire an old protective leg promptly after its replacement is live.
+            self._converge_due_ns = 0
 
     def _order_filled(self, event: Any) -> None:
         plan, leg = self._order_context(event.client_order_id, event.instrument_id)
@@ -1095,10 +1098,7 @@ class OiNautilusStrategy(Strategy):
             return
         average = decimal_value(position.avg_px_open)
         for leg, order_type in (("stop", OrderType.STOP_MARKET), ("take_profit", OrderType.MARKET_IF_TOUCHED)):
-            existing = next((order for order in protective if order.order_type == order_type), None)
-            if existing is None:
-                self._submit_protection(plan, position, instrument, closing_side, leg, average, now_ns)
-                continue
+            leg_orders = [order for order in protective if order.order_type == order_type]
             trigger = instrument.make_price(
                 protective_trigger(
                     direction=plan.direction,
@@ -1107,12 +1107,32 @@ class OiNautilusStrategy(Strategy):
                     leg=leg,
                 )
             )
-            if (
-                (existing.quantity != position.quantity or existing.trigger_price != trigger)
-                and not existing.is_pending_cancel
-                and not existing.is_pending_update
-            ):
-                self.modify_order(existing, quantity=position.quantity, trigger_price=trigger)
+
+            def matches(order: Any, expected_trigger: Any = trigger) -> bool:
+                return (
+                    order.quantity == position.quantity
+                    and order.trigger_price == expected_trigger
+                    and order.trigger_type == TriggerType.MARK_PRICE
+                )
+
+            accepted = next(
+                (
+                    order
+                    for order in leg_orders
+                    if matches(order) and order.is_open and not order.is_pending_cancel and not order.is_pending_update
+                ),
+                None,
+            )
+            if accepted is not None:
+                # Binance USD-M only modifies LIMIT orders. Keep the old stop/TP live until the
+                # replacement is accepted, then retire it; both are reduce-only while they overlap.
+                for order in leg_orders:
+                    if order is not accepted and order.is_open and not order.is_pending_cancel:
+                        self.cancel_order(order)
+                continue
+            if any(matches(order) and order.is_inflight for order in leg_orders):
+                continue
+            self._submit_protection(plan, position, instrument, closing_side, leg, average, now_ns)
 
     def _submit_protection(
         self,
