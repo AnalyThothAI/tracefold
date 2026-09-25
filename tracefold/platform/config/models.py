@@ -573,19 +573,15 @@ class TradingExecutionRiskSettings(BaseModel):
     any of these numbers takes effect at the next Runtime restart and needs nothing else. None of
     them is a secret and `tracefold config` prints all of them.
 
-    `max_total_risk_usd` and `reconciliation_interval_seconds` are gone (#680): with `max_positions`
-    the only concurrency limit the aggregate budget could never bind, and Nautilus owns reconciliation
-    and its five-second cadence. The stop distance stays a Runtime number: the Strategy places the
-    stop, and neither the Case nor the Signal ever carries it.
+    The stop distance stays a Runtime number: the Strategy places the stop, and neither the Case
+    nor the Signal ever carries it. Equity, the risk fraction, leverage and venue filters bound
+    entry size without separate dollar, position-count or daily-loss gates.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     risk_fraction_per_trade: Decimal = Decimal("0.01")
-    max_risk_per_trade_usd: Decimal = Decimal("10")
-    max_positions: int = 1
     max_leverage: int = 1
-    max_daily_loss_usd: Decimal = Decimal("25")
     stop_distance_bps: int = 100
     # The widest spread an entry may cross, as a fraction of the stop distance: 0.3 of a 100 bps stop
     # is 30 bps. An entry waits for a narrower book within its Signal's TTL rather than being refused
@@ -597,25 +593,13 @@ class TradingExecutionRiskSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> TradingExecutionRiskSettings:
-        # A single stop-out has to stay a fraction of the day: above five percent of equity one stop
-        # is the day, and `max_daily_loss_usd` stops being a limit and becomes a description.
+        # A single stop-out remains bounded by a fraction of equity.
         if not Decimal("0") < self.risk_fraction_per_trade <= Decimal("0.05"):
             raise ValueError("trading_execution_risk_fraction_invalid")
-        # Below one dollar of risk every candidate rounds to zero size at the venue's increment, so
-        # the Runtime would refuse every Signal with `quantity_below_increment` instead of trading.
-        # Ten thousand dollars of stop distance is larger than the account this slot is.
-        if not 1 <= self.max_risk_per_trade_usd <= 10_000:
-            raise ValueError("trading_execution_risk_limit_invalid")
-        if not 1 <= self.max_positions <= 10:
-            raise ValueError("trading_execution_max_positions_invalid")
         # Sizing is fixed-risk and only clamps notional to `equity * leverage`, so leverage is a
         # notional ceiling, not a risk input. Twenty keeps a stop-out from reaching liquidation.
         if not 1 <= self.max_leverage <= 20:
             raise ValueError("trading_execution_max_leverage_invalid")
-        # A day cannot be allowed to end before its first trade: the day limit is a halt for the
-        # whole UTC day, and one trade's risk is the smallest thing it can be asked to survive.
-        if self.max_daily_loss_usd < self.max_risk_per_trade_usd or self.max_daily_loss_usd > 10_000:
-            raise ValueError("trading_execution_daily_loss_invalid")
         # The same bound `OiInstrumentRoute` enforces: a stop inside one basis point is inside the
         # spread, and one at half the mark is not a stop.
         if not 1 <= self.stop_distance_bps <= 5_000:
@@ -711,7 +695,7 @@ class TradingAnalysisSettings(BaseModel):
     root_ttl_seconds: int = Field(default=600, ge=60, le=3_600)
     max_active_cases: int = Field(default=8, ge=1, le=32)
     model_timeout_seconds: int = Field(default=60, ge=1, le=120)
-    max_model_input_bytes: int = Field(default=32_768, ge=1_024, le=131_072)
+    max_model_input_bytes: int = Field(default=65_536, ge=1_024, le=131_072)
     max_model_output_tokens: int = Field(default=2_000, ge=256, le=4_096)
     max_model_concurrent_calls: int = Field(default=2, ge=1, le=8)
     model_cost_budget_microusd: int | None = Field(default=5_000_000, ge=1)

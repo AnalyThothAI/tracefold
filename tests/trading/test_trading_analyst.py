@@ -117,3 +117,16 @@ def test_budget_refuses_dispatch_before_provider_call() -> None:
         await analyst.aclose()
 
     asyncio.run(exercise())
+
+
+def test_model_request_size_reports_input_budget_instead_of_cost_budget() -> None:
+    async def exercise() -> None:
+        delegate = ScriptedLM([])
+        analyst = TradeAnalyst(_endpoint(), delegate=delegate, max_input_bytes=1_024)
+        receipt = await analyst.assess(_brief())
+        assert receipt.status == "budget_exhausted"
+        assert receipt.error_code == "model_input_budget_exceeded"
+        assert delegate.requests == []
+        await analyst.aclose()
+
+    asyncio.run(exercise())

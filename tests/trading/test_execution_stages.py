@@ -59,7 +59,6 @@ def test_a_signal_that_never_got_a_disposition_expires_when_its_own_ttl_passes()
         ("expired", "expired"),
         ("entries_paused", "rejected"),
         ("instrument_unmapped", "rejected"),
-        ("daily_loss_limit", "rejected"),
     ],
 )
 def test_a_disposition_alone_decides_between_ordered_expired_and_rejected(reason: str, expected: str) -> None:

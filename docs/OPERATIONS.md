@@ -231,8 +231,7 @@ read younger than two minutes that agreed with the Cache on every instrument; at
 startup that is the first read, seconds after the node starts),
 `post_stop_cooldown` (Signals only: a stop-out on the same
 market inside `post_stop_cooldown_seconds`, read from the durable plans),
-`position_limit` (`max_positions`), `daily_loss_limit` (what the UTC day already
-lost plus this trade's risk exceeds `max_daily_loss_usd`), `instrument_unmapped`.
+`instrument_unmapped`.
 It then waits, inside its own TTL, for a fresh quote (`market_unavailable`), for a
 spread no wider than `max_spread_fraction_of_stop` of its stop distance
 (`spread_limit`, which records the spread it measured as `spread_bps`), and for
@@ -240,7 +239,11 @@ its instrument to hold no position and no order (`instrument_busy`); if the TTL
 runs out while it waits, the reason it was waiting for is its disposition. It is
 sized once, its plan is committed, and only then is one market order sent with the
 plan's deterministic client order id. Nothing is re-measured between the commit
-and the order.
+and the order. The Runtime sizes each entry from current equity times
+`risk_fraction_per_trade`, constrained by `max_leverage` and the venue's quantity
+and notional filters. It has no separate per-trade dollar, position-count or
+daily-loss admission limit. Existing exposure on the same instrument still
+blocks another entry, and the account snapshot still reports daily drawdown.
 
 A Signal's disposition is written once the venue answered: `accepted` when the
 venue accepted or filled the entry, `venue_rejected` (with `venue_reason`) when the
@@ -273,13 +276,14 @@ Quote streams are opened per waiting entry and per held position rather than for
 whole route catalogue, so an operator reading Nautilus logs should expect one
 market-data stream per live thesis and none at rest. The operator-owned numbers
 under `trading.execution.risk` — `risk_fraction_per_trade`,
-`max_risk_per_trade_usd`, `max_positions`, `max_leverage`, `max_daily_loss_usd`,
-`stop_distance_bps`, `max_spread_fraction_of_stop`, `post_stop_cooldown_seconds`
+`max_leverage`, `stop_distance_bps`, `max_spread_fraction_of_stop`, `post_stop_cooldown_seconds`
 and `market_stale_after_seconds` — and `trading.execution.exit_policy` reach the
 Runtime at start; editing one needs a restart and nothing else, and moves neither
 the account slot, the client order namespace nor the Nautilus instance id, which is
 derived from `account_slot:mode`. Existing plans keep the stop distance, take-profit
 and maximum holding time they were admitted with.
+Remove retired `max_risk_per_trade_usd`, `max_positions` and `max_daily_loss_usd`
+entries from `config.yaml` before upgrading; configuration validation rejects them.
 
 **A runtime replacement is a restart, and a product deploy is not one.**
 Changing the runtime image, the release or any `trading.execution.*` value does

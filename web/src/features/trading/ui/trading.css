@@ -93,8 +93,7 @@
   }
 
   /*
-   * ⑤ Exposure and protection, closed while the account holds nothing (#604 T4). `max_positions` is 1 and
-   * the lane emits a handful of Signals a day, so this block is empty most of the time; the disclosure
+   * ⑤ Exposure and protection, closed while the account holds nothing (#604 T4). The disclosure
    * keeps it one line until a position, an order or unowned exposure exists.
    */
   .trading-exposure {
