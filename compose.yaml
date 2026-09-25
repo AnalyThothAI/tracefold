@@ -20,6 +20,7 @@ services:
     image: postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
     restart: unless-stopped
     shm_size: 256mb
+    entrypoint: ["/bin/sh", "/usr/local/bin/tracefold-postgres-entrypoint.sh"]
     command:
       [
         "postgres",
@@ -54,6 +55,7 @@ services:
       - "${TRACEFOLD_POSTGRES_HOST:-127.0.0.1}:${TRACEFOLD_POSTGRES_PORT:-56532}:5432"
     volumes:
       - tracefold-postgres:/var/lib/postgresql
+      - ./docker/postgres-entrypoint.sh:/usr/local/bin/tracefold-postgres-entrypoint.sh:ro
       - ./docker/postgres-init-single-login.sh:/docker-entrypoint-initdb.d/10-tracefold-single-login.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tracefold -d tracefold"]
@@ -100,7 +102,9 @@ services:
           "PATH=/opt/rabbitmq/sbin:/opt/erlang/bin:/usr/local/bin:/usr/bin:/bin rabbitmq-diagnostics -q check_port_connectivity",
         ]
       interval: 10s
-      timeout: 10s
+      # The Erlang diagnostics CLI can take longer than ten seconds while
+      # Compose starts PostgreSQL and the application image on the same host.
+      timeout: 30s
       retries: 6
       start_period: 30s
     deploy:

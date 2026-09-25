@@ -12,6 +12,7 @@ import psycopg
 import pytest
 from pydantic import ValidationError
 
+from tests.helpers.prepared_signal_v3 import prepared_v3_signal
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.platform.postgres.audit import PostgresQueryAudit, QueryAuditCatalog
@@ -29,7 +30,6 @@ from tracefold.trading.storage.execution_stream import (
     materialize_trade_signals,
     prepare_execution_observations,
     prepare_operator_intent,
-    prepare_trade_signal,
 )
 from tracefold.trading.storage.root import TradingRepository
 
@@ -46,7 +46,7 @@ def _prepare_signal(*, suffix: str, case_id: str | None = None, **updates: objec
         "expires_at_ns": 10_000,
     }
     values.update(updates)
-    return prepare_trade_signal(**values)
+    return prepared_v3_signal(**values)
 
 
 def _append_signal(repo: TradingRepository, prepared: PreparedTradeSignal) -> dict[str, object]:
@@ -231,7 +231,7 @@ def test_execution_stream_append_requires_caller_owned_transaction() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
-        prepared = prepare_trade_signal(
+        prepared = prepared_v3_signal(
             signal_id="a" * 64,
             case_id="case-a",
             market_key="crypto:perp:BTC:USDT",
@@ -319,7 +319,11 @@ def test_a_final_disposition_drives_the_bounded_anti_join_reads() -> None:
         return (
             materialize_trade_signals(
                 repo.unresolved_trade_signals(
-                    account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
+                    account_slot="demo-v1",
+                    execution_strategy="oi_nautilus_v1",
+                    now_ns=now_ns,
+                    limit=10,
+                    runtime_mode="paper",
                 )
             ),
             materialize_operator_intents(
@@ -404,7 +408,11 @@ def test_unresolved_reads_return_only_unexpired_intents() -> None:
 
         with conn.transaction():
             signals = repo.unresolved_trade_signals(
-                account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
+                account_slot="demo-v1",
+                execution_strategy="oi_nautilus_v1",
+                now_ns=now_ns,
+                limit=10,
+                runtime_mode="paper",
             )
             commands = repo.unresolved_operator_intents(
                 account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
@@ -943,8 +951,8 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_trade_signals_case_id_key",
         "ix_trading_trade_signals_observed_at",
         "ix_trading_trade_signals_expires_at",
-        "ix_trading_trade_signals_unresolved",
-        "ix_trading_trade_signals_v2_account",
+        "ix_trading_trade_signals_seq_payload",
+        "ix_trading_trade_signals_account_mode_expiry",
         "trading_operator_intents_pkey",
         "trading_operator_intent_slot_unique",
         "ix_trading_operator_intents_pending",
@@ -960,16 +968,17 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_execution_runtime_state_pkey",
         "trading_execution_runtime_state_runtime_id_key",
     }
-    assert indexes["ix_trading_trade_signals_unresolved"].endswith(
+    assert indexes["ix_trading_trade_signals_seq_payload"].endswith(
         "USING btree (seq) INCLUDE (signal_id, expires_at_ns, payload)"
     )
     assert "USING btree (account_slot, occurred_at_ns)" in indexes["ix_trading_execution_funding_slot_time"]
     assert indexes["ix_trading_trade_signals_observed_at"].endswith("USING btree (observed_at_ns)")
     assert indexes["ix_trading_trade_signals_expires_at"].endswith("USING btree (expires_at_ns)")
     assert (
-        "USING btree (account_slot, runtime_mode, expires_at_ns, seq)" in indexes["ix_trading_trade_signals_v2_account"]
+        "USING btree (account_slot, runtime_mode, expires_at_ns, seq)"
+        in indexes["ix_trading_trade_signals_account_mode_expiry"]
     )
-    assert "account_slot IS NOT NULL" in indexes["ix_trading_trade_signals_v2_account"]
+    assert "account_slot IS NOT NULL" in indexes["ix_trading_trade_signals_account_mode_expiry"]
     assert indexes["ix_trading_operator_intents_pending"].endswith(
         "USING btree (account_slot, seq) INCLUDE (command_id, expires_at_ns)"
     )
@@ -979,6 +988,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     )
     assert constraints == {
         "trading_trade_signals": {
+            "trading_signal_v3_only",
             "trading_trade_signals_pkey",
             "trading_trade_signals_case_id_key",
             "trading_trade_signals_case_fkey",

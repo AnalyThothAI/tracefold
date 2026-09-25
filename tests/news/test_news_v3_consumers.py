@@ -729,6 +729,7 @@ def _program_call(
         output_tokens=output_tokens,
         cached_tokens=cached_tokens,
         total_tokens=input_tokens + output_tokens,
+        usage_coverage="complete",
         provider_cost_microusd=provider_cost_microusd,
         finish_reason="stop",
         terminal_disposition="provider_success",
@@ -832,6 +833,7 @@ def _judgment(
             output_tokens=sum(call.output_tokens for call in actual_trace.calls),
             cached_tokens=sum(call.cached_tokens for call in actual_trace.calls),
             total_tokens=sum(call.total_tokens for call in actual_trace.calls),
+            usage_coverage="complete" if physical_calls else "unknown",
             provider_cost_microusd=(
                 sum(int(call.provider_cost_microusd) for call in physical_calls) if complete_cost else None
             ),
@@ -896,6 +898,7 @@ def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_cal
         "output_tokens": 5,
         "cached_tokens": 1,
         "total_tokens": 17,
+        "usage_coverage": "complete",
         "provider_cost_microusd": 24,
     }
     assert trace["model_attempts"] == 3
@@ -921,6 +924,7 @@ def test_failed_program_synthetic_only_trace_has_zero_physical_cost() -> None:
         "output_tokens": 0,
         "cached_tokens": 0,
         "total_tokens": 0,
+        "usage_coverage": "unknown",
         "provider_cost_microusd": 0,
     }
     assert trace["model_attempts"] == 1
@@ -3638,6 +3642,7 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
                     output_tokens=5,
                     cached_tokens=1,
                     total_tokens=17,
+                    usage_coverage="complete",
                     provider_cost_microusd=24,
                 ),
             ),  # judged against the empty ledger
@@ -3652,6 +3657,7 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
                     output_tokens=9,
                     cached_tokens=3,
                     total_tokens=33,
+                    usage_coverage="complete",
                     provider_cost_microusd=36,
                 ),
             ),  # sees ev-just-pushed
@@ -3941,6 +3947,7 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
                     output_tokens=5,
                     cached_tokens=1,
                     total_tokens=17,
+                    usage_coverage="complete",
                     provider_cost_microusd=24,
                 ),
             )

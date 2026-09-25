@@ -8,6 +8,7 @@ from typing import Any
 
 import dspy  # type: ignore[import-untyped]
 import pytest
+from dspy.lm15 import Message, Request, Response, Usage, response_to_events
 
 from tracefold.news.program import routing as routing_module
 from tracefold.news.program.artifact import NewsProgramStateV1, build_code_owned_program_state
@@ -17,6 +18,16 @@ from tracefold.news.program.module import NativeNewsProgram
 from tracefold.news.program.routing import RoutedSemanticJudge, RouteLMs
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.taxonomy import source_authority_from_evidence
+
+
+def _response(text: str, *, model: str, finish_reason: str = "stop") -> Response:
+    return Response(
+        id=None,
+        model=model,
+        message=Message.assistant(text),
+        finish_reason=finish_reason,
+        usage=Usage(),
+    )
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:
@@ -238,31 +249,29 @@ def test_successful_judgment_route_matches_fallback_cause(answering_route: str, 
         type(judgment).model_validate(payload)
 
 
-def test_stock_json_adapter_format_fallback_is_audited_and_route_stays_bounded() -> None:
+def test_json_adapter_parse_failure_falls_back_by_route() -> None:
     artifact = build_code_owned_program_state()
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(
             artifact,
             route="primary",
-            semantics=["not-json", _semantics()],
-            taxonomies=["not-json", _taxonomy()],
-            cards=["not-json", _card()],
+            semantics=["not-json"],
+            cards=[],
         ),
+        fallback=_route(artifact, route="fallback", semantics=[_semantics()], cards=[_card()]),
     )
 
     judgment = asyncio.run(judge.judge(_context()))
 
-    assert judgment.usage.physical_call_count == 6
+    assert judgment.usage.physical_call_count == 4
     assert [call.terminal_disposition for call in judgment.trace.calls] == [
         "adapter_parse_error",
         "provider_success",
-        "adapter_parse_error",
         "provider_success",
-        "adapter_parse_error",
         "provider_success",
     ]
-    assert [call.attempt for call in judgment.trace.calls] == [1, 2, 1, 2, 1, 2]
+    assert [call.attempt for call in judgment.trace.calls] == [1, 1, 1, 1]
 
 
 def test_provider_failure_falls_back_and_restarts_from_event_semantics() -> None:
@@ -332,8 +341,7 @@ def test_domain_invalid_semantics_fail_closed_without_novelty_default() -> None:
 
 def test_truncated_provider_answer_remains_provider_success_and_skips_format_retry() -> None:
     artifact = build_code_owned_program_state()
-    response = dspy.LMResponse.from_text('{"semantics":', model="scripted/truncated")
-    response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
+    response = _response('{"semantics":', model="scripted/truncated", finish_reason="length")
     judge = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=_route(artifact, route="primary", semantics=[response], cards=[]),
@@ -434,20 +442,47 @@ def test_compile_mode_without_primary_breaker_attempts_every_independent_case() 
     assert all(error.partial_trace is not None and len(error.partial_trace.calls) == 1 for error in errors)
 
 
-class _CancelledLM(dspy.BaseLM):
-    """Typed provider spy that never answers and observes route cancellation."""
-
-    forward_contract = "typed_lm"
-
-    def __init__(self) -> None:
-        super().__init__("scripted/cancelled", cache=False, num_retries=0)
-        self.requests: list[dspy.LMRequest] = []
-        self.cancelled = False
-
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+class _SpySyncEngine:
+    def complete(self, request: Request) -> Response:
         raise AssertionError("production route must use the async LM entry")
 
-    async def aforward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+    def stream(self, request: Request) -> Any:
+        return response_to_events(self.complete(request))
+
+    def close(self) -> None:
+        pass
+
+
+class _SpyAsyncEngine:
+    def __init__(self, owner: _CancelledLM) -> None:
+        self.owner = owner
+
+    async def complete(self, request: Request) -> Response:
+        return await self.owner._acomplete(request)
+
+    async def stream(self, request: Request) -> Any:
+        for event in response_to_events(await self.complete(request)):
+            yield event
+
+    async def aclose(self) -> None:
+        pass
+
+
+class _CancelledLM(dspy.LM):
+    """Native engine spy that never answers and observes route cancellation."""
+
+    def __init__(self) -> None:
+        self.requests: list[Request] = []
+        self.cancelled = False
+        super().__init__(
+            "scripted/cancelled",
+            cache=False,
+            num_retries=0,
+            engine=_SpySyncEngine(),
+            async_engine=_SpyAsyncEngine(self),
+        )
+
+    async def _acomplete(self, request: Request) -> Response:
         self.requests.append(request)
         try:
             await asyncio.Event().wait()
@@ -465,16 +500,13 @@ class _LateLM(_CancelledLM):
         self.model = "scripted/late"
         self.answer = answer
 
-    async def aforward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+    async def _acomplete(self, request: Request) -> Response:
         self.requests.append(request)
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             self.cancelled = True
-        return dspy.LMResponse.from_text(
-            json.dumps(self.answer, ensure_ascii=False),
-            model=self.model,
-        )
+        return _response(json.dumps(self.answer, ensure_ascii=False), model=self.model)
 
 
 def _wrap_provider_spy(
@@ -588,8 +620,7 @@ def test_a_taxonomy_provider_failure_keeps_the_card_and_never_restarts_the_route
 
 
 def test_a_truncated_taxonomy_answer_is_named_on_the_judgment_it_did_not_stop() -> None:
-    response = dspy.LMResponse.from_text('{"taxonomy":', model="scripted/truncated")
-    response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
+    response = _response('{"taxonomy":', model="scripted/truncated", finish_reason="length")
 
     judgment, fallback = _taxonomy_only_failure([response])
 
@@ -602,18 +633,17 @@ def test_a_truncated_taxonomy_answer_is_named_on_the_judgment_it_did_not_stop() 
 
 
 def test_an_unparseable_taxonomy_answer_costs_the_label_and_nothing_else() -> None:
-    """The adapter's own one format fallback still runs; only the third call is the ReaderCard's."""
+    """A parse failure is one physical call and the ReaderCard still runs."""
 
     judgment, _ = _taxonomy_only_failure(["not-json", "not-json"])
 
     assert [(call.predictor, call.attempt, call.terminal_disposition) for call in judgment.trace.calls] == [
         ("event_semantics", 1, "provider_success"),
         ("taxonomy", 1, "adapter_parse_error"),
-        ("taxonomy", 2, "adapter_parse_error"),
         ("reader_card", 1, "provider_success"),
     ]
     assert judgment.editorial.taxonomy_error_code == "news_program_adapter_parse_error"
-    assert judgment.usage.physical_call_count == 4
+    assert judgment.usage.physical_call_count == 3
 
 
 def test_a_card_failure_after_a_taxonomy_failure_still_fails_the_whole_judgment() -> None:

@@ -16,12 +16,12 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final, Literal, cast
 
 import dspy  # type: ignore[import-untyped]
-from dspy import LMRequest, LMResponse
+from dspy.lm15 import Message, Request, Response, Usage, response_to_events  # type: ignore[import-untyped]
 from dspy.utils import BaseCallback  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -37,9 +37,9 @@ TerminalDisposition = Literal[
     "late_completion",
 ]
 
-_RECORDING_SCHEMA: Final[str] = "tracefold.news.recorded_lm.v1"
-LM_REQUEST_PROJECTION_SCHEMA: Final[str] = "tracefold.news.lm_request.v1"
-LM_REQUEST_IDENTITY_SCHEMA: Final[str] = "tracefold.news.audited_lm_request.v2"
+_RECORDING_SCHEMA: Final[str] = "tracefold.news.recorded_lm.v2"
+LM_REQUEST_PROJECTION_SCHEMA: Final[str] = "tracefold.news.lm_request.v2"
+LM_REQUEST_IDENTITY_SCHEMA: Final[str] = "tracefold.news.audited_lm_request.v3"
 _SHA_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 _SECRET_CONFIG_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -150,10 +150,10 @@ class LMCallReceipt:
     model: str | None = None
     model_sha256: str | None = None
     latency_ms: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cached_tokens: int = 0
-    total_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    total_tokens: int | None = None
     provider_cost_microusd: int | None = None
     finish_reason: str | None = None
     error_code: str | None = None
@@ -170,6 +170,7 @@ class LMCallReceipt:
             raise ValueError("news_program_lm_receipt_route_not_traceable")
         from .contracts import ProgramCallTrace
 
+        usage_values = (self.input_tokens, self.output_tokens, self.cached_tokens, self.total_tokens)
         return ProgramCallTrace(
             predictor=self.predictor,
             route=self.route,
@@ -187,10 +188,17 @@ class LMCallReceipt:
             model=self.model,
             model_sha256=self.model_sha256,
             latency_ms=self.latency_ms,
-            input_tokens=self.input_tokens,
-            output_tokens=self.output_tokens,
-            cached_tokens=self.cached_tokens,
-            total_tokens=self.total_tokens,
+            input_tokens=self.input_tokens or 0,
+            output_tokens=self.output_tokens or 0,
+            cached_tokens=self.cached_tokens or 0,
+            total_tokens=self.total_tokens or 0,
+            usage_coverage=(
+                "complete"
+                if all(value is not None for value in usage_values)
+                else "partial"
+                if any(value is not None for value in usage_values)
+                else "unknown"
+            ),
             provider_cost_microusd=self.provider_cost_microusd,
             finish_reason=self.finish_reason,
             error_code=self.error_code,
@@ -567,41 +575,22 @@ def _reject_secret_shaped_config(value: Any, *, path: str) -> None:
         raise dspy.LMConfigurationError(f"news_program_lm_secret_in_request:{path}")
 
 
-def _safe_config_projection(request: LMRequest) -> dict[str, Any]:
-    config = request.config
+def _safe_config_projection(request: Request) -> dict[str, Any]:
     if request.tools:
         raise dspy.LMConfigurationError("news_program_lm_tools_unsupported")
-    if request.metadata:
-        raise dspy.LMConfigurationError("news_program_lm_metadata_unsupported")
-    if config.reasoning is not None:
-        raise dspy.LMConfigurationError("news_program_lm_reasoning_unsupported")
-    if config.tool_choice is not None:
-        raise dspy.LMConfigurationError("news_program_lm_tool_choice_unsupported")
-    if config.prompt_cache is not None:
-        raise dspy.LMConfigurationError("news_program_lm_prompt_cache_unsupported")
-    if config.cache is not None and (config.cache.enabled not in {None, False} or config.cache.rollout_id is not None):
-        raise dspy.LMConfigurationError("news_program_lm_cache_unsupported")
-
-    extensions = dict(config.extensions)
-    # Timeout and retry controls belong to the transport/execution contract,
-    # not to the model-visible request address.  The wrapper separately forces
-    # cache off and delegate retries to zero.
-    extensions.pop("timeout", None)
-    retries = extensions.pop("num_retries", None)
-    if retries not in {None, 0}:
-        raise dspy.LMConfigurationError("news_program_lm_retries_unsupported")
-    extra_body = _safe_extra_body(extensions.pop("extra_body", None))
-    if extensions:
-        raise dspy.LMConfigurationError(
-            "news_program_lm_extension_unsupported:" + ",".join(sorted(str(key) for key in extensions))
-        )
-
-    projected = {
-        name: _safe_json(getattr(config, name), path=f"request.config.{name}")
-        for name in _SAFE_CONFIG_FIELDS
-        if getattr(config, name) is not None
-    }
-    projected["extensions"] = {"extra_body": extra_body} if extra_body else {}
+    config = request.config
+    if config.cache is not None or config.tool_choice is not None:
+        raise dspy.LMConfigurationError("news_program_lm_cache_or_tools_unsupported")
+    raw = asdict(config)
+    allowed = {"max_tokens", "temperature", "top_p", "stop", "response_format", "logprobs", "extensions"}
+    if any(value not in (None, (), {}) for key, value in raw.items() if key not in allowed):
+        raise dspy.LMConfigurationError("news_program_lm_config_unsupported")
+    extensions = raw.get("extensions")
+    if extensions is not None:
+        if not isinstance(extensions, dict) or set(extensions) != {"extra_body"}:
+            raise dspy.LMConfigurationError("news_program_lm_extensions_unsupported")
+        _safe_extra_body(extensions["extra_body"])
+    projected = cast(dict[str, Any], _safe_json(raw, path="request.config"))
     _reject_secret_shaped_config(projected, path="request.config")
     return projected
 
@@ -615,7 +604,7 @@ def _validate_request_defaults(defaults: Mapping[str, Any]) -> None:
     _reject_secret_shaped_config(defaults, path="request.defaults")
 
 
-def lm_request_projection(request: LMRequest) -> dict[str, Any]:
+def lm_request_projection(request: Request) -> dict[str, Any]:
     """Canonical, credential-free projection of the normalized physical request."""
 
     return cast(
@@ -624,7 +613,8 @@ def lm_request_projection(request: LMRequest) -> dict[str, Any]:
             {
                 "schema": LM_REQUEST_PROJECTION_SCHEMA,
                 "model": request.model,
-                "messages": request.messages,
+                "system": request.system,
+                "messages": [asdict(message) for message in request.messages],
                 "tools": [],
                 "config": _safe_config_projection(request),
             }
@@ -646,7 +636,7 @@ def lm_request_identity(*, endpoint_fingerprint: str, model_binding: str) -> dic
 
 
 def lm_request_sha256(
-    request: LMRequest,
+    request: Request,
     *,
     endpoint_fingerprint: str,
     model_binding: str,
@@ -672,31 +662,9 @@ def _scrub_detail(value: str) -> str | None:
     return encoded[:200].decode("utf-8", errors="ignore")
 
 
-def _usage_values(response: LMResponse) -> tuple[int, int, int, int]:
+def _usage_values(response: Response) -> tuple[int | None, int | None, int | None, int | None]:
     usage = response.usage
-    if usage is None:
-        return 0, 0, 0, 0
-    if isinstance(usage, Mapping):
-        get = usage.get
-        details = dict(cast(Mapping[str, Any], usage.get("details") or {}))
-        extras = usage
-    else:
-
-        def get(key: str, default: Any = None) -> Any:
-            return getattr(usage, key, default)
-
-        details = dict(get("details") or {})
-        extras = cast(Mapping[str, Any], getattr(usage, "model_extra", None) or {})
-    input_tokens = int(get("input_tokens") or get("prompt_tokens") or 0)
-    output_tokens = int(get("output_tokens") or get("completion_tokens") or 0)
-    total_tokens = int(get("total_tokens") or input_tokens + output_tokens)
-    cached_tokens = int(get("cache_read_tokens") or 0)
-    for key in ("prompt_tokens_details", "input_tokens_details"):
-        for source in (details, extras):
-            child = source.get(key)
-            if isinstance(child, Mapping):
-                cached_tokens = max(cached_tokens, int(child.get("cached_tokens") or 0))
-    return input_tokens, output_tokens, cached_tokens, total_tokens
+    return usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.total_tokens
 
 
 def physical_call_usage(response: Any) -> dict[str, int | None]:
@@ -713,8 +681,8 @@ def physical_call_usage(response: Any) -> dict[str, int | None]:
     """
 
     input_tokens, output_tokens, cached_tokens, total_tokens = _usage_values(cast(Any, response))
-    hidden = getattr(response, "_hidden_params", None)
-    raw_cost = dict(hidden).get("response_cost") if isinstance(hidden, Mapping) else getattr(response, "cost", None)
+    provider_data = getattr(response, "provider_data", None)
+    raw_cost = provider_data.get("cost") if isinstance(provider_data, Mapping) else None
     try:
         cost = _cost_microusd(float(raw_cost) if raw_cost is not None else None)
     except (dspy.LMUnexpectedError, TypeError, ValueError):
@@ -737,23 +705,23 @@ def _cost_microusd(cost: float | None) -> int | None:
     return int((value * Decimal(1_000_000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _recorded_response(response: LMResponse, runtime: RuntimeModelIdentity) -> dict[str, Any]:
+def _recorded_response(response: Response, runtime: RuntimeModelIdentity) -> dict[str, Any]:
     input_tokens, output_tokens, cached_tokens, total_tokens = _usage_values(response)
     text = response.text
-    if text is None or len(response.outputs) != 1:
+    if text is None:
         raise dspy.LMUnexpectedError("news_program_lm_response_text_missing")
     return {
-        "model": runtime.model,
+        "model": response.model,
         "text": text,
-        "finish_reason": _scrub_detail(response.output.finish_reason or ""),
-        "truncated": response.output.truncated,
+        "finish_reason": _scrub_detail(response.finish_reason),
+        "truncated": response.finish_reason == "length",
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
             "cache_read_tokens": cached_tokens,
         },
-        "cost": response.cost,
+        "cost": (response.provider_data or {}).get("cost"),
     }
 
 
@@ -809,7 +777,7 @@ def _recording(
     request_sha: str,
     *,
     runtime: RuntimeModelIdentity,
-    response: LMResponse | None = None,
+    response: Response | None = None,
     error: dspy.LMError | None = None,
 ) -> dict[str, Any]:
     return {
@@ -822,14 +790,41 @@ def _recording(
     }
 
 
-class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
-    """Typed DSPy LM that audits one configured stock-LM delegate per call."""
+class _AuditedSyncEngine:
+    def __init__(self, owner: AuditedConfiguredLM) -> None:
+        self.owner = owner
 
-    forward_contract = "typed_lm"
+    def complete(self, request: Request) -> Response:
+        return self.owner._complete(request)
+
+    def stream(self, request: Request) -> Any:
+        return response_to_events(self.complete(request))
+
+    def close(self) -> None:
+        self.owner._delegate.close()
+
+
+class _AuditedAsyncEngine:
+    def __init__(self, owner: AuditedConfiguredLM) -> None:
+        self.owner = owner
+
+    async def complete(self, request: Request) -> Response:
+        return await self.owner._acomplete(request)
+
+    async def stream(self, request: Request) -> Any:
+        for event in response_to_events(await self.complete(request)):
+            yield event
+
+    async def aclose(self) -> None:
+        await self.owner._delegate.aclose()
+
+
+class AuditedConfiguredLM(dspy.LM):  # type: ignore[misc]
+    """Native LM with a one-attempt, canonical Request/Response audit engine."""
 
     def __init__(
         self,
-        delegate: dspy.BaseLM,
+        delegate: dspy.LM,
         *,
         structured_output: StructuredOutputMode,
         runtime_identity: RuntimeModelIdentity,
@@ -848,14 +843,14 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
         defaults = {
             key: value
             for key, value in delegate.kwargs.items()
-            if key.casefold() not in _SECRET_CONFIG_KEYS and value is not None
+            if key.casefold() not in _SECRET_CONFIG_KEYS and key != "timeout" and value is not None
         }
         requested = dict(request_kwargs or {})
         if any(str(key).casefold() in _SECRET_CONFIG_KEYS for key in requested):
             raise dspy.LMConfigurationError("news_program_lm_secret_in_request_kwargs")
         defaults.update(requested)
+        self._extra_body = _safe_extra_body(defaults.pop("extra_body", None))
         _validate_request_defaults(defaults)
-        super().__init__(delegate.model, cache=False, num_retries=0, **defaults)
         self._delegate = delegate
         self._structured_output = structured_output
         self.runtime_identity = runtime_identity
@@ -863,10 +858,30 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
         self.route = route
         self.model_binding = model_binding
         self.ledger = ledger
+        super().__init__(
+            delegate.model,
+            cache=False,
+            num_retries=0,
+            engine=_AuditedSyncEngine(self),
+            async_engine=_AuditedAsyncEngine(self),
+            **defaults,
+        )
         replay_identity = getattr(delegate, "runtime_identity", None)
         replay_binding = getattr(delegate, "model_binding", None)
         if replay_identity is not None and (replay_identity != runtime_identity or replay_binding != model_binding):
             raise dspy.LMConfigurationError("news_program_lm_replay_identity_mismatch")
+
+    def copy(self, **kwargs: Any) -> AuditedConfiguredLM:
+        delegate = self._delegate.copy(**kwargs)
+        return AuditedConfiguredLM(
+            delegate,
+            structured_output=self._structured_output,
+            runtime_identity=self.runtime_identity,
+            predictor=self.predictor,
+            route=self.route,
+            model_binding=self.model_binding,
+            ledger=self.ledger,
+        )
 
     @property
     def supported_params(self) -> set[str]:
@@ -876,11 +891,22 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
     def supports_response_schema(self) -> bool:
         return bool(structured_output_capability(self._structured_output)["supports_response_schema"])
 
-    def forward(self, request: LMRequest) -> LMResponse:
+    def _with_provider_extensions(self, request: Request) -> Request:
+        if not self._extra_body:
+            return request
+        if request.config.extensions:
+            raise dspy.LMConfigurationError("news_program_lm_extensions_conflict")
+        return replace(
+            request,
+            config=replace(request.config, extensions={"extra_body": self._extra_body}),
+        )
+
+    def _complete(self, request: Request) -> Response:
+        request = self._with_provider_extensions(request)
         projection, request_sha, ledger, call = self._start(request)
         try:
-            response = self._delegate(request=request)
-            if not isinstance(response, LMResponse):
+            response = self._delegate(request)
+            if not isinstance(response, Response):
                 raise dspy.LMUnexpectedError("news_program_lm_delegate_response_invalid")
             self._answered(call, response, projection, request_sha)
             self._raise_if_truncated(response)
@@ -890,9 +916,13 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
             raise
         except LMOutputTruncatedError as exc:
             replayed = getattr(exc, "response", None)
-            if isinstance(replayed, LMResponse) and not call.answered:
+            if isinstance(replayed, Response) and not call.answered:
                 self._answered(call, replayed, projection, request_sha)
             raise
+        except dspy.LMUnexpectedError as exc:
+            if isinstance(exc.__cause__, Exception):
+                raise LMDelegateProgramError(exc.__cause__) from None
+            raise self._failed(call, exc, "provider_error") from None
         except dspy.LMError as exc:
             if call.receipt.terminal_disposition is None:
                 sanitized = self._failed(call, exc, "provider_error")
@@ -904,11 +934,12 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
         finally:
             del ledger
 
-    async def aforward(self, request: LMRequest) -> LMResponse:
+    async def _acomplete(self, request: Request) -> Response:
+        request = self._with_provider_extensions(request)
         projection, request_sha, ledger, call = self._start(request)
         try:
-            response = await self._delegate.acall(request=request)
-            if not isinstance(response, LMResponse):
+            response = await self._delegate.acall(request)
+            if not isinstance(response, Response):
                 raise dspy.LMUnexpectedError("news_program_lm_delegate_response_invalid")
             self._answered(call, response, projection, request_sha)
             self._raise_if_truncated(response)
@@ -918,9 +949,13 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
             raise
         except LMOutputTruncatedError as exc:
             replayed = getattr(exc, "response", None)
-            if isinstance(replayed, LMResponse) and not call.answered:
+            if isinstance(replayed, Response) and not call.answered:
                 self._answered(call, replayed, projection, request_sha)
             raise
+        except dspy.LMUnexpectedError as exc:
+            if isinstance(exc.__cause__, Exception):
+                raise LMDelegateProgramError(exc.__cause__) from None
+            raise self._failed(call, exc, "provider_error") from None
         except dspy.LMError as exc:
             if call.receipt.terminal_disposition is None:
                 sanitized = self._failed(call, exc, "provider_error")
@@ -932,7 +967,7 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
         finally:
             del ledger
 
-    def _start(self, request: LMRequest) -> tuple[dict[str, Any], str, LMCallLedger, _CallState]:
+    def _start(self, request: Request) -> tuple[dict[str, Any], str, LMCallLedger, _CallState]:
         projection = lm_request_projection(request)
         request_identity = lm_request_identity(
             endpoint_fingerprint=self.runtime_identity.model_sha256,
@@ -959,7 +994,7 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
     def _answered(
         self,
         call: _CallState,
-        response: LMResponse,
+        response: Response,
         projection: dict[str, Any],
         request_sha: str,
     ) -> None:
@@ -968,7 +1003,7 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
         call.answered = True
         disposition: TerminalDisposition | None = "late_completion" if call.scope.closed else None
         error_code = None
-        if response.output.truncated and disposition is None:
+        if response.finish_reason == "length" and disposition is None:
             disposition = "provider_success"
             error_code = "news_program_lm_output_truncated"
         call.receipt = replace(
@@ -981,8 +1016,8 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
             output_tokens=output_tokens,
             cached_tokens=cached_tokens,
             total_tokens=total_tokens,
-            provider_cost_microusd=_cost_microusd(response.cost),
-            finish_reason=_scrub_detail(response.output.finish_reason or ""),
+            provider_cost_microusd=physical_call_usage(response)["cost_microusd"],
+            finish_reason=_scrub_detail(response.finish_reason),
             error_code=error_code,
             terminal_disposition=disposition,
             recording=_recording(
@@ -1018,8 +1053,8 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
         return sanitized
 
     @staticmethod
-    def _raise_if_truncated(response: LMResponse) -> None:
-        if response.output.truncated:
+    def _raise_if_truncated(response: Response) -> None:
+        if response.finish_reason == "length":
             raise LMOutputTruncatedError(
                 "news_program_lm_output_truncated",
                 code="news_program_lm_output_truncated",
@@ -1034,10 +1069,37 @@ def _error_code(exc: dspy.LMError) -> str:
 type ScriptedStep = Any
 
 
-class ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
-    """Ordered typed LM for deterministic native-DSPy tests."""
+class _ScriptedSyncEngine:
+    def __init__(self, owner: ScriptedLM) -> None:
+        self.owner = owner
 
-    forward_contract = "typed_lm"
+    def complete(self, request: Request) -> Response:
+        return self.owner._next(request)
+
+    def stream(self, request: Request) -> Any:
+        return response_to_events(self.complete(request))
+
+    def close(self) -> None:
+        pass
+
+
+class _ScriptedAsyncEngine:
+    def __init__(self, owner: ScriptedLM) -> None:
+        self.owner = owner
+
+    async def complete(self, request: Request) -> Response:
+        return self.owner._next(request)
+
+    async def stream(self, request: Request) -> Any:
+        for event in response_to_events(self.owner._next(request)):
+            yield event
+
+    async def aclose(self) -> None:
+        pass
+
+
+class ScriptedLM(dspy.LM):  # type: ignore[misc]
+    """Ordered canonical test engine behind the public DSPy LM entry."""
 
     def __init__(
         self,
@@ -1049,10 +1111,26 @@ class ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
     ) -> None:
         cache = kwargs.pop("cache", False)
         num_retries = kwargs.pop("num_retries", 0)
-        super().__init__(model, cache=cache, num_retries=num_retries, **kwargs)
         self._steps = list(steps)
         self._structured_output = structured_output
-        self.requests: list[LMRequest] = []
+        self.requests: list[Request] = []
+        super().__init__(
+            model,
+            cache=cache,
+            num_retries=num_retries,
+            engine=_ScriptedSyncEngine(self),
+            async_engine=_ScriptedAsyncEngine(self),
+            **kwargs,
+        )
+
+    def copy(self, **kwargs: Any) -> ScriptedLM:
+        defaults = {**self.kwargs, **kwargs}
+        return ScriptedLM(
+            list(self._steps),
+            model=self.model,
+            structured_output=self._structured_output,
+            **defaults,
+        )
 
     @property
     def supported_params(self) -> set[str]:
@@ -1062,13 +1140,7 @@ class ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
     def supports_response_schema(self) -> bool:
         return bool(structured_output_capability(self._structured_output)["supports_response_schema"])
 
-    def forward(self, request: LMRequest) -> LMResponse:
-        return self._next(request)
-
-    async def aforward(self, request: LMRequest) -> LMResponse:
-        return self._next(request)
-
-    def _next(self, request: LMRequest) -> LMResponse:
+    def _next(self, request: Request) -> Response:
         self.requests.append(request)
         if not self._steps:
             raise dspy.LMUnexpectedError("news_program_lm_script_exhausted")
@@ -1077,10 +1149,16 @@ class ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
             step = step(request)
         if isinstance(step, BaseException):
             raise step
-        if isinstance(step, LMResponse):
+        if isinstance(step, Response):
             return step
         text = step if isinstance(step, str) else _json_text(step)
-        return LMResponse.from_text(text, model=self.model)
+        return Response(
+            id=None,
+            model=self.model,
+            message=Message.assistant(text),
+            finish_reason="stop",
+            usage=Usage(input_tokens=0, output_tokens=0, total_tokens=0, cache_read_tokens=0),
+        )
 
 
 def _json_text(value: Mapping[str, Any]) -> str:
@@ -1113,7 +1191,7 @@ _ERROR_TYPES: Final[dict[str, type[dspy.LMError]]] = {
 class _RequestIdentityModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_name: Literal["tracefold.news.audited_lm_request.v2"] = Field(alias="schema")
+    schema_name: Literal["tracefold.news.audited_lm_request.v3"] = Field(alias="schema")
     endpoint_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     model_binding: str = Field(min_length=1)
 
@@ -1121,10 +1199,10 @@ class _RequestIdentityModel(BaseModel):
 class _RecordedUsageModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    input_tokens: int = Field(ge=0, strict=True)
-    output_tokens: int = Field(ge=0, strict=True)
-    total_tokens: int = Field(ge=0, strict=True)
-    cache_read_tokens: int = Field(ge=0, strict=True)
+    input_tokens: int | None = Field(default=None, ge=0, strict=True)
+    output_tokens: int | None = Field(default=None, ge=0, strict=True)
+    total_tokens: int | None = Field(default=None, ge=0, strict=True)
+    cache_read_tokens: int | None = Field(default=None, ge=0, strict=True)
 
 
 class _RecordedResponseModel(BaseModel):
@@ -1169,7 +1247,7 @@ class _RecordedErrorModel(BaseModel):
 class _RecordingModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_name: Literal["tracefold.news.recorded_lm.v1"] = Field(alias="schema")
+    schema_name: Literal["tracefold.news.recorded_lm.v2"] = Field(alias="schema")
     request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     request_identity: _RequestIdentityModel
     request: dict[str, Any]
@@ -1191,10 +1269,37 @@ class _RecordingModel(BaseModel):
         return self
 
 
-class RecordedLM(dspy.BaseLM):  # type: ignore[misc]
-    """Strict typed request-addressed replay with no live fallback."""
+class _RecordedSyncEngine:
+    def __init__(self, owner: RecordedLM) -> None:
+        self.owner = owner
 
-    forward_contract = "typed_lm"
+    def complete(self, request: Request) -> Response:
+        return self.owner._replay(request)
+
+    def stream(self, request: Request) -> Any:
+        return response_to_events(self.complete(request))
+
+    def close(self) -> None:
+        pass
+
+
+class _RecordedAsyncEngine:
+    def __init__(self, owner: RecordedLM) -> None:
+        self.owner = owner
+
+    async def complete(self, request: Request) -> Response:
+        return self.owner._replay(request)
+
+    async def stream(self, request: Request) -> Any:
+        for event in response_to_events(self.owner._replay(request)):
+            yield event
+
+    async def aclose(self) -> None:
+        pass
+
+
+class RecordedLM(dspy.LM):  # type: ignore[misc]
+    """Strict canonical request-addressed replay with no live fallback."""
 
     def __init__(
         self,
@@ -1207,7 +1312,6 @@ class RecordedLM(dspy.BaseLM):  # type: ignore[misc]
     ) -> None:
         if model != runtime_identity.model:
             raise ValueError("news_program_recording_runtime_model_mismatch")
-        super().__init__(model, cache=False, num_retries=0)
         self.runtime_identity = runtime_identity
         self.model_binding = str(model_binding).strip()
         expected_identity = lm_request_identity(
@@ -1228,7 +1332,25 @@ class RecordedLM(dspy.BaseLM):  # type: ignore[misc]
             parsed[key] = recording
         self._recordings = parsed
         self._structured_output = structured_output
-        self.requests: list[LMRequest] = []
+        self.requests: list[Request] = []
+        super().__init__(
+            model,
+            cache=False,
+            num_retries=0,
+            engine=_RecordedSyncEngine(self),
+            async_engine=_RecordedAsyncEngine(self),
+        )
+
+    def copy(self, **kwargs: Any) -> RecordedLM:
+        if kwargs:
+            raise ValueError("news_program_recording_copy_config_change_unsupported")
+        return RecordedLM(
+            {key: value.model_dump(mode="json", by_alias=True) for key, value in self._recordings.items()},
+            model=self.model,
+            runtime_identity=self.runtime_identity,
+            model_binding=self.model_binding,
+            structured_output=self._structured_output,
+        )
 
     @property
     def supported_params(self) -> set[str]:
@@ -1238,13 +1360,7 @@ class RecordedLM(dspy.BaseLM):  # type: ignore[misc]
     def supports_response_schema(self) -> bool:
         return bool(structured_output_capability(self._structured_output)["supports_response_schema"])
 
-    def forward(self, request: LMRequest) -> LMResponse:
-        return self._replay(request)
-
-    async def aforward(self, request: LMRequest) -> LMResponse:
-        return self._replay(request)
-
-    def _replay(self, request: LMRequest) -> LMResponse:
+    def _replay(self, request: Request) -> Response:
         self.requests.append(request)
         request_sha = lm_request_sha256(
             request,
@@ -1265,20 +1381,15 @@ class RecordedLM(dspy.BaseLM):  # type: ignore[misc]
         raw = recording.response
         if raw is None:  # Guard for type checkers; the model validator rejects this state.
             raise ValueError("news_program_recording_terminal_invalid")
-        response = LMResponse.from_text(
-            raw.text,
+        response = Response(
+            id=None,
             model=raw.model,
-            usage=raw.usage.model_dump(mode="json"),
-            cost=raw.cost,
-            cache_hit=False,
+            message=Message.assistant(raw.text),
+            finish_reason="length" if raw.truncated else raw.finish_reason or "stop",
+            usage=Usage(**raw.usage.model_dump(mode="json")),
+            provider_data={"cost": raw.cost} if raw.cost is not None else None,
         )
-        response.outputs[0] = response.output.model_copy(
-            update={
-                "finish_reason": raw.finish_reason,
-                "truncated": raw.truncated,
-            }
-        )
-        if response.output.truncated:
+        if raw.truncated:
             error = LMOutputTruncatedError(
                 "news_program_lm_output_truncated",
                 code="news_program_lm_output_truncated",

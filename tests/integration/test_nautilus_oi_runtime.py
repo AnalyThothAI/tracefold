@@ -19,7 +19,7 @@ import psycopg
 import pytest
 
 from tests.helpers.nautilus_oi_runtime_process import run_runtime_on_postgres
-from tests.helpers.published_signal_v2 import append_published_v2_signal
+from tests.helpers.published_signal_v3 import append_published_v3_signal
 from tests.nautilus_oi_runtime_fixtures import (
     MARKET,
     NOW_NS,
@@ -67,7 +67,7 @@ def _control_row(repo: TradingRepository) -> None:
 def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> str:
     case_id = f"case-{suffix}"
     signal_id = suffix * 64
-    return append_published_v2_signal(
+    return append_published_v3_signal(
         repo,
         signal_id=signal_id,
         case_id=case_id,
@@ -146,7 +146,7 @@ def test_a_database_signal_becomes_one_committed_plan_one_order_and_its_protecti
         submitted = [summary for kind, summary in kinds if kind == "protection" and summary["status"] == "submitted"]
         assert [summary["leg"] for summary in submitted] == ["stop", "take_profit"]
         # The Signal is resolved for good: a plan exists and its verdict is durable.
-        assert load_unresolved_trade_signals(repos, _ACCOUNT_SLOT, "oi_nautilus_v1", 10) == ()
+        assert load_unresolved_trade_signals(repos, _ACCOUNT_SLOT, "oi_nautilus_v1", 10, "paper") == ()
         inputs = load_runtime_inputs(repos, oi_profile(), now_ns=NOW_NS)
         assert [(value.plan.entry_id, value.disposition_pending) for value in inputs.open_plans] == [
             (_SIGNAL_ID, False)
@@ -588,7 +588,7 @@ def test_the_unresolved_reads_are_indexed_anti_joins_the_next_poll_answers() -> 
         writer_repo = TradingRepository(writer)
         _control_row(writer_repo)
         client = ExecutionSignalClient(account_slot=_ACCOUNT_SLOT, execution_strategy="oi_nautilus_v1")
-        reader = partial(load_unresolved_trade_signals, reader_repos)
+        reader = partial(load_unresolved_trade_signals, reader_repos, runtime_mode="paper")
         assert client.poll_once(reader) == 0
         _append_signal(writer_repo)
         assert client.poll_once(reader) == 1

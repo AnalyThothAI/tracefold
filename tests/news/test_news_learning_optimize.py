@@ -6,6 +6,7 @@ from typing import Any, Literal, cast
 
 import dspy  # type: ignore[import-untyped]
 import pytest
+from dspy.lm15 import Message, Request, Response, Usage
 from pydantic import ValidationError
 
 from tracefold.news.artifact_identity import canonical_sha
@@ -117,13 +118,14 @@ def _ready_dataset() -> FrozenDevelopmentDataset:
 
 
 def _learning_models(*, role: Literal["task", "reflection"]) -> tuple[dspy.BaseLM, dspy.BaseLM, LMCallLedger]:
-    truncated = dspy.LMResponse.from_text(
-        "{",
+    truncated = Response(
+        id=None,
         model=f"openai/{role}",
-        usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
-        cost=0.000003,
+        message=Message.assistant("{"),
+        finish_reason="length",
+        usage=Usage(input_tokens=11, output_tokens=7, total_tokens=18),
+        provider_data={"cost": 0.000003},
     )
-    truncated.outputs[0] = truncated.output.model_copy(update={"finish_reason": "length", "truncated": True})
     ledger = LMCallLedger()
     task = build_task_lm(
         model_name="openai/task",
@@ -153,10 +155,7 @@ def test_truncated_reflection_writes_an_exact_terminal_usage_receipt(
 
     def terminate(**kwargs: Any) -> Any:
         lm = kwargs[f"{role}_lm"]
-        request = dspy.LMRequest.from_call(
-            model=lm.model,
-            messages=[{"role": "user", "content": "classify"}],
-        )
+        request = Request(model=lm.model, messages=(Message.user("classify"),))
         with ledger.scope(LMCallContext(PROGRAM_VERSION, "a" * 64, "b" * 64)), pytest.raises(OptimizationRunTerminated):
             lm(request=request)
         raise RuntimeError("upstream evaluator exhausted its error limit")
@@ -224,10 +223,7 @@ def test_report_keeps_spend_that_exceeds_the_per_call_reservation(monkeypatch: p
 
     def terminate(**kwargs: Any) -> Any:
         lm = kwargs["task_lm"]
-        request = dspy.LMRequest.from_call(
-            model=lm.model,
-            messages=[{"role": "user", "content": "classify"}],
-        )
+        request = Request(model=lm.model, messages=(Message.user("classify"),))
         with ledger.scope(LMCallContext(PROGRAM_VERSION, "a" * 64, "b" * 64)):
             lm(request=request)
         raise AssertionError("overspend must terminate the run")

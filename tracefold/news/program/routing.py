@@ -8,12 +8,13 @@ What a route restart is for (#651 §5.3): the fallback re-runs all three Predict
 `event_semantics`, so it is the right answer only when the judgment has no answer to publish.
 A semantics failure is that -- ReaderCard reads the semantics, so there is no card without it -- and so
 is a card failure, because the reader's headline and why copy are the product. A taxonomy failure is
-not: the four classification axes describe a card the other two Predictors already produced, and the
-code-owned source authority `decide()` actually reads is computed from the evidence, not from the
-label. The Program therefore returns a complete judgment whose `editorial.taxonomy_status` is
+not: the four classification axes describe a card the other two Predictors already produced. The
+code-owned source authority is computed from evidence. The Program returns a complete judgment whose
+`editorial.taxonomy_status` is
 `unavailable`, this module publishes it, and no second pair of provider calls is spent re-asking two
-Predictors that already answered. The taxonomy receipt keeps its own terminal disposition in the
-ledger, so the partial failure is audit truth rather than silence.
+Predictors that already answered. Taxonomy still affects the later deterministic News policy when it is
+available; an unavailable taxonomy skips those classification-dependent branches. The taxonomy receipt
+keeps its own terminal disposition in the ledger, so the partial failure is audit truth rather than silence.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ from .contracts import (
     aggregate_program_usage,
 )
 from .identity import EXECUTION_ENVELOPE_SHA256
-from .lm import AuditedConfiguredLM, LMCallContext, LMCallLedger, LMDelegateProgramError, LMOutputTruncatedError
+from .lm import LMCallContext, LMCallLedger, LMDelegateProgramError, LMOutputTruncatedError
 from .module import NativeNewsProgram, NativeProgramResult, ProgramOutputError
 from .runtime import (
     PROGRAM_JUDGMENT_MAX_CALLS,
@@ -126,12 +127,15 @@ class RoutedSemanticJudge:
             ("taxonomy", lms.taxonomy),
             ("reader_card", lms.reader_card),
         ):
-            if not isinstance(lm, AuditedConfiguredLM):
+            if not isinstance(lm, dspy.LM):
                 raise TypeError("news_program_route_lm_invalid")
-            declared_predictor = lm.predictor
-            declared_route = lm.route
+            binding_fields = ("predictor", "route", "model_binding", "runtime_identity")
+            if any(getattr(lm, field, None) is None for field in binding_fields):
+                raise TypeError("news_program_route_lm_invalid")
+            declared_predictor = getattr(lm, "predictor", None)
+            declared_route = getattr(lm, "route", None)
             expected_binding = getattr(getattr(self.state, predictor).model_bindings, route)
-            declared_binding = lm.model_binding
+            declared_binding = getattr(lm, "model_binding", None)
             if (declared_predictor, declared_route, declared_binding) != (predictor, route, expected_binding):
                 raise ValueError("news_program_route_lm_binding_mismatch")
 

@@ -8,7 +8,8 @@ dependencies = [
     "alembic>=1.18.0",
     # #344 owns one exact native-DSPy execution envelope. GEPA is consumed only through `dspy.GEPA`, so its
     # compatible version is DSPy's transitive responsibility rather than a second direct project contract.
-    "dspy==3.3.1",
+    "dspy[typesafe]==3.4.0",
+    "typesafe-sdk==0.7.1",
     "fastapi>=0.115.0",
     "httpx[socks]>=0.27.0",
     "loguru>=0.7.2",

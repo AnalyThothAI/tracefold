@@ -7,7 +7,6 @@ from typing import Any
 
 import dspy
 import pytest
-from pydantic import BaseModel
 
 from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
@@ -123,9 +122,6 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
         "confidence": 0.8,
     }
     delegate_kwargs: dict[str, Any] = {
-        "api_key": endpoint.api_key,
-        "api_base": endpoint.api_base,
-        "timeout": 20.0,
         "max_tokens": 2048,
         **endpoint.model_kwargs,
     }
@@ -159,8 +155,9 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
     assert len(delegate.requests) == 1
     request = delegate.requests[0]
     if expected_format == "schema":
-        assert isinstance(request.config.response_format, type)
-        assert issubclass(request.config.response_format, BaseModel)
+        assert isinstance(request.config.response_format, dict)
+        assert request.config.response_format["type"] == "json_schema"
+        assert isinstance(request.config.response_format["schema"], dict)
     elif expected_format == "object":
         assert request.config.response_format == {"type": "json_object"}
     else:
@@ -168,7 +165,7 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
     projection = lm_request_projection(request)
     assert projection["config"]["extensions"]["extra_body"] == expected_extra
     visible_request = repr(projection["messages"])
-    assert "Visible event_status.told index" in visible_request
+    assert "evidence_json" in visible_request
     assert "request-shape-secret" not in repr(projection)
     assert base_url not in repr(projection)
 
@@ -222,8 +219,6 @@ def test_configured_endpoint_rejects_unreviewed_secret_bearing_extra_body_before
     delegate = ScriptedLM(
         [],
         model=endpoint.model_name,
-        api_key=endpoint.api_key,
-        api_base=endpoint.api_base,
         **endpoint.model_kwargs,
     )
 
@@ -319,6 +314,8 @@ def test_compile_baseline_uses_native_module_without_production_availability_con
     artifact = load_stable_program_state()
 
     def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
+        for setting in ("api_key", "api_base", "timeout"):
+            kwargs.pop(setting, None)
         return ScriptedLM([], model=model, **kwargs)
 
     compile_judge = composition.compile_semantic_judge(artifact, lm_type=scripted_factory)
@@ -339,6 +336,8 @@ def _compile_route_models(settings: Any) -> dict[str, str]:
     composition = learning_runtime.compose_news_program_runtime(settings)
 
     def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
+        for setting in ("api_key", "api_base", "timeout"):
+            kwargs.pop(setting, None)
         return ScriptedLM([], model=model, **kwargs)
 
     judge = composition.compile_semantic_judge(load_stable_program_state(), lm_type=scripted_factory)

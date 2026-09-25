@@ -21,8 +21,8 @@ SIGNAL_PATH = (
     "trading/engine/features.py",
     "trading/engine/marketdata.py",
     "trading/engine/outcomes.py",
+    "trading/engine/plans.py",
     "trading/engine/policy.py",
-    "trading/engine/strategy.py",
     "trading/engine/target.py",
     "trading/storage/analysis.py",
     "app/trading_analysis.py",
@@ -195,7 +195,7 @@ def test_news_and_trading_never_import_each_other() -> None:
 
 
 def test_relative_imports_resolve_to_full_module_paths() -> None:
-    modules = _imports(TRADING / "engine/policy.py")
+    modules = _imports(TRADING / "engine/plans.py")
     assert "tracefold.trading.engine.contracts" in modules
 
 
@@ -297,7 +297,7 @@ def test_research_left_the_service_package_without_a_forwarder() -> None:
     assert [relative for relative in moved if relative in tracked] == []
     assert [relative for relative in tracked if relative.startswith("trading/research/")] == []
 
-    retired_names = ("trading.research", "open_interest_history", "trading_research")
+    retired_names = ("trading.research", "trading_research")
     offenders = [
         f"{path.relative_to(ROOT)}:{name}"
         for path in _service_sources()

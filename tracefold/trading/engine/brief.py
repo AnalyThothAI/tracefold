@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from .contracts import Candidate
+from .plans import EntryPlan
 from .policy import is_citable_evidence
 
 
@@ -23,7 +23,7 @@ def sha256(value: str) -> str:
 class AnalystBrief:
     text: str
     sha: str
-    candidate_menu_sha: str
+    plan_menu_sha: str
     evidence_catalog: dict[str, dict[str, Any]]
 
 
@@ -35,19 +35,19 @@ def build_brief(
     source_history: tuple[dict[str, Any], ...],
     evidence: dict[str, dict[str, Any]],
     features: dict[str, Any],
-    candidates: tuple[Candidate, ...],
+    plans: tuple[EntryPlan, ...],
     trigger_context: dict[str, Any] | None = None,
     typed_evidence: dict[str, Any] | None = None,
 ) -> AnalystBrief:
     if any(
-        candidate.asset_id != target_asset_id or candidate.instrument_semantics_digest != instrument_semantics_digest
-        for candidate in candidates
+        plan.asset_id != target_asset_id or plan.instrument_semantics_digest != instrument_semantics_digest
+        for plan in plans
     ):
-        raise ValueError("brief_candidate_target_mismatch")
-    menu = [candidate.model_dump(mode="json") for candidate in candidates]
+        raise ValueError("brief_plan_target_mismatch")
+    menu = [plan.model_dump(mode="json") for plan in plans]
     menu_sha = sha256(canonical_json(menu))
     payload = {
-        "brief_version": "trade_brief_v3",
+        "brief_version": "trade_brief_v4",
         "target_asset_id": target_asset_id,
         "instrument_semantics_digest": instrument_semantics_digest,
         "source_fact": source_fact,
@@ -55,8 +55,8 @@ def build_brief(
         "evidence": evidence,
         "citable_evidence_ids": sorted(ref for ref, item in evidence.items() if is_citable_evidence(item)),
         "features": features,
-        "candidate_menu": menu,
-        "candidate_menu_sha": menu_sha,
+        "plan_menu": menu,
+        "plan_menu_sha": menu_sha,
         "trigger_context": trigger_context,
         "typed_evidence": typed_evidence,
     }

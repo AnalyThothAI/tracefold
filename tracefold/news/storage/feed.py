@@ -787,6 +787,8 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
 
 
 def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
+    trace = row.get("trace")
+    trace = trace if isinstance(trace, dict) else {}
     editorial = editorial_read_shape(row.get("editorial"))
     model_editorial = None
     if editorial is not None:
@@ -811,6 +813,10 @@ def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
         "override_rule": row.get("override_rule"),
         "throttled_by": row.get("throttled_by"),
         "model": row.get("model"),
+        "model_usage_coverage": trace.get("usage_coverage", "unknown"),
+        "model_input_tokens": trace.get("input_tokens") if trace.get("usage_coverage") == "complete" else None,
+        "model_output_tokens": trace.get("output_tokens") if trace.get("usage_coverage") == "complete" else None,
+        "model_provider_cost_microusd": (trace.get("provider_cost_microusd") if "usage_coverage" in trace else None),
         "program_version": row.get("program_version"),
         "program_sha256": row.get("program_sha256"),
         "degraded": bool(row.get("degraded")),

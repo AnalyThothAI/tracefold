@@ -355,8 +355,10 @@ def _configured_program_lm(
     }
     if endpoint.temperature is not None:
         request["temperature"] = float(endpoint.temperature)
+    if lm_type is dspy.LM:
+        request["engine"] = "litellm"
     delegate = lm_type(str(endpoint.model_name), **request)
-    if not isinstance(delegate, dspy.BaseLM):
+    if not isinstance(delegate, dspy.LM):
         raise TypeError("news_program_configured_lm_factory_invalid")
     return AuditedConfiguredLM(
         delegate,

@@ -15,9 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
-from tracefold.trading.engine.contracts import ExitPlan
-from tracefold.trading.engine.evaluation import EVALUATION_VERSION
-from tracefold.trading.engine.strategy import (
+from scripts.historical_price_confirmation import (
     BAR_MS,
     ENTRY_WINDOW_MS,
     MAX_HOLDING_SECONDS,
@@ -25,6 +23,8 @@ from tracefold.trading.engine.strategy import (
     build_event_price_candidates,
     range_cross_side,
 )
+from tracefold.trading.engine.contracts import ExitPlan
+from tracefold.trading.engine.evaluation import EVALUATION_VERSION
 
 ARMS = ("rule", "dspy")
 # The last entry can occur just before the root expires. The root tape's

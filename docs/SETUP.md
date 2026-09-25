@@ -268,6 +268,13 @@ llm:
     api_key: "<compiler reflection secret>"
     base_url: "https://reflection.example/v1"
     model: "reflection-model"
+  # Optional, Trading-only Jev semantic tool. Supply all three or omit all.
+  # Current OpenRouter System One protocol; a direct Jev route uses the same
+  # fields with its own base_url, api_key and model when available.
+  trading_semantics:
+    api_key: "<operator OpenRouter secret>"
+    base_url: "https://openrouter.ai/api"
+    model: "<System One model id>"
 
 news:
   enabled: true

@@ -17,6 +17,7 @@ from tracefold.app.nautilus.oi_runtime import (
     load_runtime_inputs,
 )
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.integrations.nautilus.oi_runtime.journal import EntryValidityReceipt
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 from tracefold.trading.storage.trade_plans import prepare_trade_plan, prepare_trade_plan_update
@@ -63,11 +64,20 @@ def test_the_plan_is_durable_on_another_connection_before_its_entry_order_exists
     runtime.pump()
     assert runtime.strategy.submitted == []
     with closing(connect_postgres_test(read_only=False)) as conn:
-        _bridge(runtime)._cycle(repositories_for_connection(conn))
+        bridge = _bridge(runtime)
+        repos = repositories_for_connection(conn)
+        bridge._cycle(repos)
         with closing(connect_postgres_test(read_only=True)) as observer:
             row = observer.execute("SELECT entry_id, status FROM trading_trade_plans").fetchone()
             assert row == {"entry_id": trade_signal().signal_id, "status": "prepared"}
         assert runtime.strategy.submitted == []
+        runtime.pump()
+        assert runtime.strategy.submitted == []
+        pending = runtime.journal.pending_entry_validity()
+        assert pending is not None and pending.entry_id == trade_signal().signal_id
+        runtime.journal.settle_entry_validity(
+            EntryValidityReceipt(entry_id=pending.entry_id, allowed=True, reason="fixture_valid", checked_at_ns=NOW_NS)
+        )
         runtime.pump()
         [(order, _position)] = runtime.strategy.submitted
         assert order.client_order_id.value == open_plan(opened_at_ns=None).entry_client_order_id

@@ -111,37 +111,6 @@ def _validate_metadata(value: object) -> dict[str, MetadataScalar]:
     return cast(dict[str, MetadataScalar], value)
 
 
-class TradeSignalV1(_FrozenContract):
-    """A time-bounded Alpha conclusion; never an order or capital instruction.
-
-    It carried a bounded metadata map too, and every Signal ever written carried the same one key in
-    it: the policy rule, which the Case that emitted the Signal already records as `policy_reason`
-    with the checks behind it. One fact, one place (#537 PR-3).
-    """
-
-    signal_version: Literal["trade_signal_v1"] = "trade_signal_v1"
-    seq: int = Field(ge=1)
-    signal_id: str = Field(pattern=SHA256_PATTERN)
-    case_id: str = Field(min_length=1, max_length=128)
-    market_key: str = Field(pattern=MARKET_KEY_PATTERN)
-    direction: Literal["long", "short"]
-    observed_at_ns: int = Field(gt=0)
-    expires_at_ns: int = Field(gt=0)
-
-    @field_validator("case_id")
-    @classmethod
-    def validate_case_id(cls, value: str) -> str:
-        if not postgres_text_valid(value):
-            raise ValueError("trade_signal_case_invalid")
-        return value
-
-    @model_validator(mode="after")
-    def validate_clock(self) -> Self:
-        if self.expires_at_ns <= self.observed_at_ns:
-            raise ValueError("trade_signal_clock_invalid")
-        return self
-
-
 class SignalExitPlanV1(_FrozenContract):
     version: Literal["analysis_dynamic_v1"] = "analysis_dynamic_v1"
     stop_distance_bps: int = Field(ge=1, le=5_000)
@@ -149,23 +118,46 @@ class SignalExitPlanV1(_FrozenContract):
     max_holding_ns: int = Field(gt=0, le=86_400_000_000_000)
 
 
-class SignalEntryEnvelopeV2(_FrozenContract):
-    version: Literal["entry_envelope_v2"] = "entry_envelope_v2"
+class SignalEntryEnvelopeV3(_FrozenContract):
+    version: Literal["entry_envelope_v3"] = "entry_envelope_v3"
+    plan_id: str = Field(pattern=SHA256_PATTERN)
+    entry_kind: Literal["immediate_entry_v1", "closed_bar_cross_v1"]
     root_expires_at_ns: int = Field(gt=0)
     reference_price: Decimal = Field(gt=0)
-    structure_level: Decimal = Field(gt=0)
+    structure_level: Decimal | None = Field(default=None, gt=0)
+    parent_plan_id: str | None = Field(default=None, pattern=SHA256_PATTERN)
     max_price_drift_bps: int = Field(ge=1, le=2_000)
     universe_version: str = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> Self:
+        conditional = self.entry_kind == "closed_bar_cross_v1"
+        if conditional != (self.structure_level is not None and self.parent_plan_id is not None):
+            raise ValueError("entry_envelope_condition_invalid")
+        return self
 
 
 def entry_structure_allows(*, direction: Literal["long", "short"], executable: Decimal, level: Decimal) -> bool:
     return executable > level if direction == "long" else executable < level
 
 
-class TradeSignalV2(_FrozenContract):
-    """Scoped, bounded Analysis intent. Runtime alone sizes and owns execution."""
+def entry_condition_allows(
+    *,
+    direction: Literal["long", "short"],
+    executable: Decimal,
+    envelope: SignalEntryEnvelopeV3,
+) -> bool:
+    """Apply a structure gate only when the frozen plan actually declares one."""
+    if envelope.entry_kind == "immediate_entry_v1":
+        return True
+    level = envelope.structure_level
+    return level is not None and entry_structure_allows(direction=direction, executable=executable, level=level)
 
-    signal_version: Literal["trade_signal_v2"] = "trade_signal_v2"
+
+class TradeSignalV3(_FrozenContract):
+    """A selected v4 Analysis plan with explicit immediate or activated condition semantics."""
+
+    signal_version: Literal["trade_signal_v3"] = "trade_signal_v3"
     seq: int = Field(ge=1)
     signal_id: str = Field(pattern=SHA256_PATTERN)
     case_id: str = Field(min_length=1, max_length=128)
@@ -181,10 +173,17 @@ class TradeSignalV2(_FrozenContract):
     observed_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
     exit_plan: SignalExitPlanV1
-    entry_envelope: SignalEntryEnvelopeV2
+    entry_envelope: SignalEntryEnvelopeV3
+
+    @field_validator("case_id")
+    @classmethod
+    def validate_case_id(cls, value: str) -> str:
+        if not postgres_text_valid(value):
+            raise ValueError("trade_signal_case_invalid")
+        return value
 
     @model_validator(mode="after")
-    def validate_v2(self) -> Self:
+    def validate_v3(self) -> Self:
         if self.expires_at_ns <= self.observed_at_ns:
             raise ValueError("trade_signal_clock_invalid")
         if self.expires_at_ns > self.entry_envelope.root_expires_at_ns:
@@ -301,10 +300,10 @@ __all__ = [
     "SHA256_PATTERN",
     "ExecutionObservationV1",
     "OperatorIntentV1",
-    "SignalEntryEnvelopeV2",
+    "SignalEntryEnvelopeV3",
     "SignalExitPlanV1",
-    "TradeSignalV1",
-    "TradeSignalV2",
+    "TradeSignalV3",
+    "entry_condition_allows",
     "market_key",
     "postgres_text_valid",
 ]

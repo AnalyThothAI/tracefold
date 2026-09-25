@@ -267,7 +267,7 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     assert data["decision"] == {
         "last_case_at_ms": NOW,
         "state": "disabled",
-        "active_policy": "event_price_confirmation_v1",
+        "active_policy": "entry_plan_v1",
         "model_name": None,
         "publish_signals": False,
         "config_digest": None,

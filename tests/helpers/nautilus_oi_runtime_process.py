@@ -23,7 +23,7 @@ from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Money
 
-from tests.helpers.published_signal_v2 import execution_fixture_profile
+from tests.helpers.published_signal_v3 import execution_fixture_profile
 from tests.nautilus_oi_runtime_fixtures import INSTRUMENT, NOW_NS
 from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, RuntimeStateProjector, load_runtime_inputs
 from tracefold.app.repository_session import RepositorySession

@@ -11,6 +11,7 @@ import psycopg
 import pytest
 from alembic import command
 
+from tests.helpers.prepared_signal_v3 import prepared_v3_signal
 from tests.postgres_test_utils import (
     connect_postgres_test,
     news_genesis_test_evidence,
@@ -23,8 +24,6 @@ from tracefold.platform.postgres.migrations import alembic_config, latest_migrat
 from tracefold.trading.execution_contracts import EXECUTION_STRATEGY_ID
 from tracefold.trading.storage.execution_stream import (
     PreparedTradeSignal,
-    materialize_trade_signals,
-    prepare_trade_signal,
 )
 from tracefold.trading.storage.root import TradingRepository
 
@@ -93,7 +92,7 @@ def _signal(
     suffix: str = "c",
     expires_at_ns: int = 10_000,
 ) -> PreparedTradeSignal:
-    return prepare_trade_signal(
+    return prepared_v3_signal(
         signal_id=suffix * 64,
         case_id=case_id,
         market_key="crypto:perp:SOL:USDT",
@@ -819,8 +818,10 @@ def test_0360_keeps_the_answer_the_console_showed_and_rewrites_the_signal_payloa
             execution_strategy=EXECUTION_STRATEGY_ID,
             now_ns=1,
             limit=10,
+            runtime_mode="paper",
         )
-        # The contract forbids extra keys, so this materialises only because the payload lost the one
-        # `alpha_metadata` key every Signal ever carried.
-        assert [signal.signal_id for signal in materialize_trade_signals(stored)] == ["c" * 64]
-        assert "alpha_metadata" not in stored[0][1]
+        assert stored == ()
+        historical = conn.execute(
+            "SELECT payload FROM trading_trade_signals WHERE signal_id=%s", ("c" * 64,)
+        ).fetchone()
+        assert historical is not None and "alpha_metadata" not in historical["payload"]

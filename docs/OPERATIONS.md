@@ -50,17 +50,25 @@ not retain the full bar path, execution prices or costs. These labels establish
 only endpoint gross returns, never a tradable or net result.
 `trading.analysis.publish_signals` is false by default. An unavailable model
 is recorded as unavailable; it never silently activates the retired OI v5
-policy. `event_price_confirmation_v1` also requires
+policy. `entry_plan_v1` also requires
 `trading.analysis.strategy_publication_enabled=true` before it can publish a
 Signal, and that setting accepts PAPER mode only. It defaults false pending
 recorded replay, development/holdout comparison and PAPER receipts. Turning on
 publication requires a separately running Nautilus deployment; changing either
 flag does not start Nautilus or grant order authority.
-With strategy publication disabled, newly selected Cases use the mainnet/live
-market identity for the contemporaneous shadow cohort even if the configured
-execution mode is PAPER. When PAPER strategy publication is enabled, new Cases
-use Demo market identity. Preserve the frozen identity of already accepted
-Cases across this change: an old live Case is refused at PAPER Signal creation
+The Analysis process runs native DSPy 3.4 ReAct with bounded, read-only Case
+tools. Optional `llm.trading_semantics` connects the Jev ClaimSupport tool
+through the TypeSafe System One SDK. The current OpenRouter base is
+`https://openrouter.ai/api`; a future direct route changes only the complete
+base URL/key/model triple. A missing Jev route leaves the other three tools and
+the Agent available. Jev judgments are archived as semantic evidence, never
+as a second trade approval. Each physical generator or Jev call is tied to
+its Case attempt with requested/served model and known or unknown cost.
+`trading.analysis.data_environment` explicitly selects `live` or `demo` for
+new Cases and defaults to `live`, regardless of publication flags. PAPER
+Signal creation requires a Case frozen in `demo`; live execution requires
+`live`. Preserve the frozen identity of already accepted Cases: a live Case
+is refused at PAPER Signal creation
 with `analysis_execution_environment_mismatch`. Capture and export the mainnet
 shadow cohort before switching to the separately authorized PAPER venue check;
 do not count a Demo shadow receipt as mainnet strategy evidence.
@@ -74,8 +82,8 @@ For a Case with no Decision, inspect `analysis_attempts` in the Case detail:
 each claim attempt has a structured validation error, frozen evidence ref and
 one indexed row per physical model response. A late attempt can remain visible
 while `settled=false`; it did not replace the fenced Decision. A WATCH with a
-machine condition shows both frozen range boundaries, latest closed-bar
-observation, expiry and conditional child Case. The first crossing consumes
+machine condition shows its frozen side and level, latest closed-bar
+observation, expiry and conditional child Case. The directed crossing consumes
 the opportunity even when found after its 120-second entry window. Shadow
 evaluations show `simulated`, `pending` or
 `unevaluable` with archived quote, mark and funding refs. Fee or spread
@@ -96,7 +104,9 @@ retired key is refused by `Settings` validation naming that key, and the
 operator edits it (#589). For a direct schema upgrade, require this order:
 `uv run tracefold init`, `uv run tracefold config`, then `make db-migrate`.
 This cut removes the old `trading.candidates` setting; remove that key from an
-existing operator config before starting the new image.
+existing operator config before starting the new image. Set
+`trading.analysis.active_policy: entry_plan_v1` when an older config explicitly
+names `event_price_confirmation_v1`.
 
 Run `uv run tracefold config` to inspect only the execution mode, account slot,
 risk section and resolved secret-file references. Never print or copy a

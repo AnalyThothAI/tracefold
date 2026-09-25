@@ -2669,6 +2669,18 @@ export interface components {
             /** Model */
             model?: string | null;
             model_editorial?: components["schemas"]["NewsModelEditorialData"] | null;
+            /** Model Input Tokens */
+            model_input_tokens?: number | null;
+            /** Model Output Tokens */
+            model_output_tokens?: number | null;
+            /** Model Provider Cost Microusd */
+            model_provider_cost_microusd?: number | null;
+            /**
+             * Model Usage Coverage
+             * @default unknown
+             * @enum {string}
+             */
+            model_usage_coverage: "complete" | "partial" | "unknown";
             /** Override Rule */
             override_rule?: string | null;
             /** Policy Version */
@@ -3176,6 +3188,8 @@ export interface components {
             error_code?: string | null;
             /** Evidence Ref */
             evidence_ref?: string | null;
+            /** Final Manifest Ref */
+            final_manifest_ref?: string | null;
             /** Input Tokens */
             input_tokens?: number | null;
             /**
@@ -3199,6 +3213,8 @@ export interface components {
             settled: boolean;
             /** Started At Ms */
             started_at_ms?: number | null;
+            /** Termination Reason */
+            termination_reason?: string | null;
             /**
              * Unknown Cost Calls
              * @default 0
@@ -3268,6 +3284,10 @@ export interface components {
             evidence?: {
                 [key: string]: unknown;
             } | null;
+            /** Final Manifest */
+            final_manifest?: {
+                [key: string]: unknown;
+            } | null;
             /** Selected Attempt */
             selected_attempt?: number | null;
             /** Source Fact */
@@ -3276,6 +3296,10 @@ export interface components {
             } | null;
             /** Status */
             status: string;
+            /** Tool Observations */
+            tool_observations?: {
+                [key: string]: unknown;
+            }[];
         };
         /**
          * TradingCaseData
@@ -3349,7 +3373,7 @@ export interface components {
              * @default none
              * @enum {string}
              */
-            review_mode: "none" | "historical_timed" | "event_wait" | "research_note";
+            review_mode: "none" | "event_wait" | "research_note";
             /** Root Chain */
             root_chain?: components["schemas"]["TradingRootChainCaseData"][];
             /** Root Expires At Ms */
@@ -3727,20 +3751,28 @@ export interface components {
             cost_microusd?: number | null;
             /** Cost Unknown Reason */
             cost_unknown_reason?: string | null;
+            /** Endpoint */
+            endpoint?: string | null;
             /** Finished At Ms */
             finished_at_ms?: number | null;
             /** Input Tokens */
             input_tokens?: number | null;
             /** Output Tokens */
             output_tokens?: number | null;
+            /** Phase */
+            phase?: string | null;
             /** Remaining Deadline Ms */
             remaining_deadline_ms?: number | null;
             /** Request Ref */
             request_ref?: string | null;
+            /** Requested Model */
+            requested_model?: string | null;
             /** Reserved Cost Microusd */
             reserved_cost_microusd?: number | null;
             /** Response Ref */
             response_ref?: string | null;
+            /** Served Model */
+            served_model?: string | null;
             /** Started At Ms */
             started_at_ms?: number | null;
             /** Status */

@@ -681,6 +681,9 @@ class ProgramCallTrace(_ExactContractModel):
     output_tokens: int = 0
     cached_tokens: int = 0
     total_tokens: int = 0
+    # Older zero-filled traces have unknown coverage. New calls distinguish a
+    # provider-reported zero from counters the provider never returned.
+    usage_coverage: Literal["complete", "partial", "unknown"] = "unknown"
     provider_cost_microusd: int | None = None
     finish_reason: str | None = None
     error_code: str | None = None
@@ -724,6 +727,7 @@ class ProgramCallTrace(_ExactContractModel):
             or self.output_tokens != 0
             or self.cached_tokens != 0
             or self.total_tokens != 0
+            or self.usage_coverage != "unknown"
             or self.provider_cost_microusd is not None
             or self.finish_reason is not None
             or self.terminal_disposition is not None
@@ -782,12 +786,20 @@ class ProgramUsage(_ExactContractModel):
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
+    usage_coverage: Literal["complete", "partial", "unknown"] = "unknown"
     provider_cost_microusd: int | None = Field(default=None, ge=0)
 
 
 def aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]:
     physical_calls = [call for call in calls if call.physical_provider_call]
     complete_cost = bool(physical_calls) and all(call.provider_cost_microusd is not None for call in physical_calls)
+    coverage = (
+        "complete"
+        if physical_calls and all(call.usage_coverage == "complete" for call in physical_calls)
+        else "unknown"
+        if not physical_calls or all(call.usage_coverage == "unknown" for call in physical_calls)
+        else "partial"
+    )
     return {
         "call_count": len(calls),
         "physical_call_count": len(physical_calls),
@@ -795,6 +807,7 @@ def aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]
         "output_tokens": sum(call.output_tokens for call in physical_calls),
         "cached_tokens": sum(call.cached_tokens for call in physical_calls),
         "total_tokens": sum(call.total_tokens for call in physical_calls),
+        "usage_coverage": coverage,
         "provider_cost_microusd": (
             sum(cast(int, call.provider_cost_microusd) for call in physical_calls) if complete_cost else None
         ),

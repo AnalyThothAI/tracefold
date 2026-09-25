@@ -344,7 +344,7 @@ def build_judge(
         "num_retries": 0,
         **dict(model_kwargs or {}),
     }
-    delegate = dspy.LM(str(model_name), **request)
+    delegate = dspy.LM(str(model_name), engine="litellm", **request)
     audited = AuditedConfiguredLM(
         delegate,
         structured_output=structured_output or "json_schema",

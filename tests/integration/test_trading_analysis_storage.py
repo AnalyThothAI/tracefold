@@ -88,7 +88,8 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
                 "INSERT INTO trading_case_decisions "
                 "(case_id,decision_id,policy_id,policy_version,input_ref,action,decision,"
                 "publish_status,decided_at_ms,valid_until_ms) "
-                "VALUES (%s,'shadow-quote-decision','fixture','v1','fixture','TRADE','{}'::jsonb,"
+                "VALUES (%s,'shadow-quote-decision','fixture','v4','fixture','TRADE',"
+                '\'{"decision_version":"trade_decision_v4"}\'::jsonb,'
                 "'disabled',1500,300000)",
                 (case_id,),
             )
@@ -143,7 +144,7 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
         assert trading.due_shadow_quote_samples(now_ms=122_000)[0]["quote_tape_ref"] == "tape-1"
         export, manifest = export_cases(conn, AnalysisFiles(tmp_path / "missing-archive"), start_ms=1_100, end_ms=1_101)
         assert len(export) == 1 and export[0]["root_trigger_id"]
-        assert export[0]["decision_policy_version"] == "v1"
+        assert export[0]["decision_policy_version"] == "v4"
         assert export[0]["attempts"][0]["evidence_ref"] == "first-evidence"
         assert export[0]["attempts"][0]["calls"][0]["request_ref"] == "request-ref"
         assert export[0]["attempts"][0]["physical_call_count"] == 0
@@ -215,6 +216,103 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
         )
         assert excluded_report["arms"]["holdout"]["rule"]["ending_equity_usdt"] == "1000"
         assert excluded_report["arms"]["holdout"]["dspy"]["ending_equity_usdt"] == "1000"
+    finally:
+        conn.close()
+
+
+def test_directed_watch_ignores_reverse_cross_and_keeps_one_child(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "directed-watch-db", read_only=False)
+    try:
+        migrate(conn)
+        trading = TradingRepository(conn)
+        with conn.transaction():
+            _, case_id, _ = trading.accept_trigger(
+                kind="oi",
+                source_fact_key="directed-watch",
+                source_revision="v1",
+                payload_sha256="d" * 64,
+                payload={
+                    "kind": "oi",
+                    "source_recorded_at_ms": 1_000_000,
+                    "provider_event_at_ms": 999_000,
+                    "assets": [{"symbol": "SOL", "market_type": "crypto", "role": "primary"}],
+                },
+                selection=_selection(),
+                now_ms=1_000_000,
+                root_ttl_ms=600_000,
+            )
+            claim = trading.claim_analysis_case(now_ms=1_021_000, lease_ms=300_000)
+        assert claim is not None
+        watch = {
+            "kind": "closed_1m_directed_cross",
+            "plan_id": "a" * 64,
+            "side": "long",
+            "level": "101",
+            "previous_close": "100",
+            "source_first_visible_at_ms": 1_000_000,
+            "exit_plan": {"stop_distance_bps": 400, "take_profit_bps": 800, "max_holding_seconds": 14_400},
+            "unit": "USDT/base_asset",
+            "frozen_at_ms": 1_020_000,
+            "expires_at_ms": 1_600_000,
+        }
+        with conn.transaction():
+            assert trading.finish_analysis_case(
+                case_id=case_id,
+                claim_token=claim["claim_token"],
+                now_ms=1_022_000,
+                analysis_status="analyzed",
+                evidence_ref="evidence-ref",
+                decision={
+                    "decision_version": "trade_decision_v4",
+                    "action": "WATCH",
+                    "side": "long",
+                    "selected_plan_id": "a" * 64,
+                    "reason": "wait",
+                    "watch_condition": watch,
+                },
+            )
+        with pytest.raises(ValueError, match="watch_observation_condition_unmet"), conn.transaction():
+            trading.advance_watch_observation(
+                parent_case_id=case_id,
+                now_ms=1_081_000,
+                observation_status="satisfied",
+                observed_at_ms=1_080_000,
+                observed_value="98",
+                previous_close="100",
+                trigger_side="short",
+                observed_path=((1_080_000, "98"),),
+                observation_ref="archive:reverse",
+            )
+        with conn.transaction():
+            assert trading.advance_watch_observation(
+                parent_case_id=case_id,
+                now_ms=1_081_000,
+                observation_status="not_met",
+                observed_at_ms=1_080_000,
+                observed_value="98",
+                previous_close="100",
+                observed_path=((1_080_000, "98"),),
+                observation_ref="archive:first",
+            )
+            assert trading.advance_watch_observation(
+                parent_case_id=case_id,
+                now_ms=1_141_000,
+                observation_status="satisfied",
+                observed_at_ms=1_140_000,
+                observed_value="102",
+                previous_close="98",
+                trigger_side="long",
+                observed_path=((1_140_000, "102"),),
+                observation_ref="archive:hit",
+            )
+        row = conn.execute(
+            "SELECT w.status,w.child_case_id,c.manifest FROM trading_watch_observations w "
+            "JOIN trading_cases c ON c.case_id=w.child_case_id WHERE w.parent_case_id=%s",
+            (case_id,),
+        ).fetchone()
+        assert row["status"] == "triggered"
+        assert row["manifest"]["watch_condition"]["plan_id"] == "a" * 64
+        assert row["manifest"]["watch_trigger_side"] == "long"
     finally:
         conn.close()
 
@@ -363,7 +461,13 @@ def test_claim_serializes_one_asset_without_blocking_another(tmp_path) -> None:
                 now_ms=1_800,
                 analysis_status="analyzed",
                 evidence_ref="fixture",
-                decision={"action": "NO_TRADE", "side": None, "reason": "fixture"},
+                decision={
+                    "decision_version": "trade_decision_v4",
+                    "action": "NO_TRADE",
+                    "selected_plan_id": None,
+                    "side": None,
+                    "reason": "fixture",
+                },
             )
         with conn.transaction():
             next_sol = trading.claim_analysis_case(now_ms=1_900, lease_ms=2_000)
@@ -526,7 +630,13 @@ def test_relay_retries_reuse_case_and_old_claim_cannot_finish(tmp_path) -> None:
             ).fetchone()["status"]
             == "result_unknown"
         )
-        decision = {"action": "NO_TRADE", "side": None, "reason": "No durable directional edge."}
+        decision = {
+            "decision_version": "trade_decision_v4",
+            "action": "NO_TRADE",
+            "selected_plan_id": None,
+            "side": None,
+            "reason": "No durable directional edge.",
+        }
 
         def record_attempt(claim: dict[str, object]) -> None:
             trading.record_analysis_attempt(
@@ -636,7 +746,13 @@ def test_valid_trade_analysis_records_publication_refusal(tmp_path) -> None:
                 now_ms=1_600,
                 analysis_status="analyzed",
                 evidence_ref="evidence-ref",
-                decision={"action": "TRADE", "side": "long", "reason": "test"},
+                decision={
+                    "decision_version": "trade_decision_v4",
+                    "action": "TRADE",
+                    "selected_plan_id": "a" * 64,
+                    "side": "long",
+                    "reason": "test",
+                },
                 publish_block_reason="analysis_signal_expired",
             )
         row = conn.execute(
@@ -681,9 +797,10 @@ def test_watch_condition_creates_one_child_only_after_adjacent_closed_cross(tmp_
             claim = trading.claim_analysis_case(now_ms=1_021_000, lease_ms=300_000)
             assert claim is not None
             watch = {
-                "kind": "closed_1m_range_cross",
-                "upper_level": "101",
-                "lower_level": "99",
+                "kind": "closed_1m_directed_cross",
+                "plan_id": "a" * 64,
+                "side": "long",
+                "level": "101",
                 "previous_close": "100",
                 "source_first_visible_at_ms": 1_000_000,
                 "exit_plan": {"stop_distance_bps": 400, "take_profit_bps": 800, "max_holding_seconds": 14_400},
@@ -698,8 +815,10 @@ def test_watch_condition_creates_one_child_only_after_adjacent_closed_cross(tmp_
                 analysis_status="analyzed",
                 evidence_ref="evidence-ref",
                 decision={
+                    "decision_version": "trade_decision_v4",
                     "action": "WATCH",
-                    "side": None,
+                    "selected_plan_id": "a" * 64,
+                    "side": "long",
                     "reason_code": "model_watch",
                     "reason": "wait",
                     "watch_condition": watch,
@@ -775,7 +894,8 @@ def test_watch_condition_creates_one_child_only_after_adjacent_closed_cross(tmp_
                 "INSERT INTO trading_case_decisions "
                 "(case_id,decision_id,policy_id,policy_version,input_ref,action,decision,"
                 "publish_status,decided_at_ms,valid_until_ms) "
-                "VALUES (%s,'child-shadow-decision','fixture','v3','fixture','TRADE','{}'::jsonb,"
+                "VALUES (%s,'child-shadow-decision','fixture','v4','fixture','TRADE',"
+                '\'{"decision_version":"trade_decision_v4"}\'::jsonb,'
                 "'shadow',1141000,1260000)",
                 (row["child_case_id"],),
             )

@@ -6,6 +6,7 @@ from typing import Any, Literal, cast
 
 import dspy  # type: ignore[import-untyped]
 import pytest
+from dspy.lm15 import Message, Request, Response, Usage, response_to_events
 from pydantic import BaseModel
 
 from tracefold.news.artifact_identity import canonical_sha
@@ -33,11 +34,23 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 from tracefold.news.taxonomy import EVENT_FAMILY_DEFINITIONS, ModelTaxonomyV1
 
 
-class _RoleLM(dspy.BaseLM):  # type: ignore[misc]
-    forward_contract = "typed_lm"
+class _RoleEngine:
+    def __init__(self, owner: _RoleLM) -> None:
+        self.owner = owner
 
+    def complete(self, request: Request) -> Response:
+        return self.owner._complete(request)
+
+    def stream(self, request: Request) -> Any:
+        return response_to_events(self.complete(request))
+
+    def close(self) -> None:
+        pass
+
+
+class _RoleLM(dspy.LM):
     def __init__(self, role: Literal["task", "reflection"]) -> None:
-        super().__init__(f"openai/{role}", cache=False, num_retries=0)
+        super().__init__(f"openai/{role}", cache=False, num_retries=0, engine=_RoleEngine(self))
         max_tokens = REFLECTION_MAX_TOKENS if role == "reflection" else 1_000
         timeout = REFLECTION_TIMEOUT_SECONDS if role == "reflection" else 30
         self.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
@@ -50,13 +63,13 @@ class _RoleLM(dspy.BaseLM):  # type: ignore[misc]
             model_kwargs={},
         )
 
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+    def _complete(self, request: Request) -> Response:
         del request
         raise AssertionError("provider call not expected")
 
 
 class _TruncatedRoleLM(_RoleLM):
-    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+    def _complete(self, request: Request) -> Response:
         del request
         raise LMOutputTruncatedError("[task] news_program_lm_output_truncated")
 
@@ -232,11 +245,13 @@ def test_budget_meter_reserves_before_a_physical_call() -> None:
     meter.before("task")
     meter.after(
         "task",
-        dspy.LMResponse.from_text(
-            "{}",
+        Response(
+            id=None,
             model="openai/task",
-            usage={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
-            cost=0,
+            message=Message.assistant("{}"),
+            finish_reason="stop",
+            usage=Usage(input_tokens=7, output_tokens=3, total_tokens=10),
+            provider_data={"cost": 0},
         ),
     )
     assert meter.task_input_tokens == 7
@@ -248,11 +263,13 @@ def test_budget_meter_reserves_before_a_physical_call() -> None:
 
 def test_budget_meter_records_an_answer_before_rejecting_its_reported_cost() -> None:
     meter = _BudgetMeter(_budget(max_call_cost_microusd=2), imputed_call_cost_microusd=2)
-    response = dspy.LMResponse.from_text(
-        "{}",
+    response = Response(
+        id=None,
         model="openai/task",
-        usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
-        cost=0.000003,
+        message=Message.assistant("{}"),
+        finish_reason="stop",
+        usage=Usage(input_tokens=11, output_tokens=7, total_tokens=18),
+        provider_data={"cost": 0.000003},
     )
 
     meter.before("task")
@@ -281,7 +298,7 @@ def test_unreceipted_task_truncation_remains_a_run_termination() -> None:
     metered = _MeteredLearningLM(task, meter=meter, role="task")
 
     with pytest.raises(OptimizationRunTerminated, match="news_program_compile_task_model_output_truncated"):
-        metered(messages=[{"role": "user", "content": "classify"}])
+        metered(Request(model="openai/task", messages=(Message.user("classify"),)))
 
     assert meter.task_model_calls == 1
     assert meter.task_total_tokens == 0

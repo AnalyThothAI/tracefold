@@ -20,11 +20,13 @@ def test_late_watch_scan_records_first_cross_as_missed(monkeypatch: pytest.Monke
     row = {
         "parent_case_id": "case-1",
         "condition": {
+            "kind": "closed_1m_directed_cross",
+            "plan_id": "a" * 64,
+            "side": "long",
+            "level": "101",
             "frozen_at_ms": frozen,
             "expires_at_ms": expiry,
             "previous_close": "100",
-            "upper_level": "101",
-            "lower_level": "99",
         },
         "last_observed_at_ms": None,
         "last_observed_value": None,

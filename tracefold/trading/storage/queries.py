@@ -96,13 +96,15 @@ TRADING_CASE_ATTEMPTS_SQL = (
     "prompt_sha,started_at_ms,ended_at_ms,provider_status,analysis_status,error_code,"
     "validation_errors,physical_call_count,input_tokens,output_tokens,cost_microusd,"
     "known_cost_microusd,unknown_cost_calls,cost_upper_estimate_microusd,"
-    "cost_unknown_reason,settled FROM trading_case_attempts WHERE case_id=%s "
+    "cost_unknown_reason,settled,final_manifest_ref,termination_reason "
+    "FROM trading_case_attempts WHERE case_id=%s "
     "ORDER BY claim_attempt DESC LIMIT 128"
 )
 TRADING_CASE_MODEL_CALLS_SQL = (
     "SELECT claim_attempt,call_index,status,started_at_ms,finished_at_ms,timeout_ms,"
     "remaining_deadline_ms,reserved_cost_microusd,request_ref,response_ref,input_tokens,"
-    "output_tokens,cost_microusd,cost_unknown_reason FROM trading_model_calls "
+    "output_tokens,cost_microusd,cost_unknown_reason,phase,endpoint,requested_model,served_model "
+    "FROM trading_model_calls "
     "WHERE case_id=%s ORDER BY claim_attempt DESC,call_index LIMIT 256"
 )
 TRADING_CASE_WATCH_SQL = (

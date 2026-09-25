@@ -9,6 +9,7 @@ Dataset = Literal[
     "perp_bars",
     "spot_bars",
     "open_interest",
+    "open_interest_history",
     "funding_basis",
     "market_bars",
     "book_ticker",
@@ -44,9 +45,21 @@ class MarketDataRequest:
                 raise ValueError("market_data_window_incomplete")
             if self.start_ms >= self.end_ms or self.interval_ms <= 0:
                 raise ValueError("market_data_window_invalid")
-        elif self.dataset == "funding_history":
+        elif self.dataset in ("funding_history", "open_interest_history"):
             if self.start_ms is None or self.end_ms is None or self.start_ms >= self.end_ms:
                 raise ValueError("market_data_window_invalid")
+            if self.dataset == "open_interest_history" and self.interval_ms not in (
+                300_000,
+                900_000,
+                1_800_000,
+                3_600_000,
+                7_200_000,
+                14_400_000,
+                21_600_000,
+                43_200_000,
+                86_400_000,
+            ):
+                raise ValueError("open_interest_interval_unsupported")
         elif self.max_age_ms is None or self.max_age_ms <= 0:
             raise ValueError("market_data_age_invalid")
 

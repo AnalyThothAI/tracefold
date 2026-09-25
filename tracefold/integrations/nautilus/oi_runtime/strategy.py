@@ -48,7 +48,11 @@ from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, Posit
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading.execution_contracts import OperatorIntentV1, TradeSignalV2, entry_structure_allows
+from tracefold.trading.execution_contracts import (
+    OperatorIntentV1,
+    TradeSignalV3,
+    entry_condition_allows,
+)
 from tracefold.trading.storage.execution_stream import ExecutionAccountSnapshot
 from tracefold.trading.trade_plan import ExitReason, TradePlan
 
@@ -106,7 +110,7 @@ class OpenPlan:
 
     plan: TradePlan
     disposition_pending: bool
-    signal: TradeSignalV2 | None = None
+    signal: TradeSignalV3 | None = None
     final_check_started: bool = False
 
 
@@ -501,10 +505,10 @@ class OiNautilusStrategy(Strategy):
         if request.entry_envelope is not None:
             reference = request.entry_envelope.reference_price
             executable = decimal_value(quote.ask_price if request.direction == "long" else quote.bid_price)
-            if not entry_structure_allows(
+            if not entry_condition_allows(
                 direction=request.direction,
                 executable=executable,
-                level=request.entry_envelope.structure_level,
+                envelope=request.entry_envelope,
             ):
                 return _Verdict("refuse", "entry_structure_lost")
             drift = abs(executable / reference - Decimal(1)) * Decimal(10_000)
@@ -569,7 +573,7 @@ class OiNautilusStrategy(Strategy):
         return _Verdict("admit", plan=plan, detail=spread_detail(spread))
 
     def _submit_committed(self, now_ns: int) -> None:
-        """A V2 order needs both a durable plan and a fresh durable validity check."""
+        """A Signal order needs both a durable plan and a fresh durable validity check."""
 
         checked = self._journal.take_entry_validity()
         if checked is not None:
@@ -597,8 +601,7 @@ class OiNautilusStrategy(Strategy):
                 if request.exit_plan is not None:
                     self._awaiting_final[plan.entry_id] = request
                 else:
-                    # Historical/manual inputs keep their existing submission
-                    # path; the online reader only offers V2 Signals.
+                    # Operator manual entries have no Signal exit plan.
                     self._send_prepared_entry(plan, request, now_ns)
         self._request_waiting_final()
 
@@ -675,10 +678,10 @@ class OiNautilusStrategy(Strategy):
                 else:
                     executable = decimal_value(quote.ask_price if plan.direction == "long" else quote.bid_price)
                     envelope = request.entry_envelope
-                    if envelope is not None and not entry_structure_allows(
+                    if envelope is not None and not entry_condition_allows(
                         direction=plan.direction,
                         executable=executable,
-                        level=envelope.structure_level,
+                        envelope=envelope,
                     ):
                         refusal = "entry_structure_lost"
                     elif (

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from dspy.lm15 import Message, Request
 
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.postgres_test_utils import connect_postgres_test
@@ -59,6 +60,7 @@ from tracefold.news.program.contracts import (
     TriageContext,
 )
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
+from tracefold.news.program.lm import lm_request_identity, lm_request_projection
 from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
@@ -369,28 +371,20 @@ def _trace(
     calls: list[ProgramCallTrace] = []
     taxonomy = _model_taxonomy(editorial)
     for predictor, output in (("event_semantics", semantics), ("taxonomy", taxonomy), ("reader_card", card)):
-        request = {
-            "schema": "tracefold.news.lm_request.v1",
-            "model": "fixture-model",
-            "messages": [
-                {
-                    "role": "user",
-                    "parts": [{"type": "text", "metadata": {}, "text": f"fixture:{predictor}:{context_sha}"}],
-                    "metadata": {},
-                }
-            ],
-            "tools": [],
-            "config": {"extensions": {}},
-        }
-        request_identity = {
-            "schema": "tracefold.news.audited_lm_request.v2",
-            "endpoint_fingerprint": runtime_model_sha,
-            "model_binding": "news_triage_primary",
-        }
+        request = lm_request_projection(
+            Request(
+                model="fixture-model",
+                messages=(Message.user(f"fixture:{predictor}:{context_sha}"),),
+            )
+        )
+        request_identity = lm_request_identity(
+            endpoint_fingerprint=runtime_model_sha,
+            model_binding="news_triage_primary",
+        )
         request_sha = _sha({**request_identity, "request": request})
         output_field = _OUTPUT_FIELD[predictor]
         recording = {
-            "schema": "tracefold.news.recorded_lm.v1",
+            "schema": "tracefold.news.recorded_lm.v2",
             "request_sha256": request_sha,
             "request_identity": request_identity,
             "request": request,
@@ -2747,12 +2741,12 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     assert {row["cached_tokens"] for row in recordings} == {20}
     assert {row["total_tokens"] for row in recordings} == {295}
     assert {row["provider_cost_microusd"] for row in recordings} == {100}
-    assert all(row["request"]["schema"] == "tracefold.news.lm_request.v1" for row in recordings)
+    assert all(row["request"]["schema"] == "tracefold.news.lm_request.v2" for row in recordings)
     assert all(row["request"]["model"] == "fixture-model" for row in recordings)
     # Logical Program/arm metadata stays in columns and hashes, never in the
     # exact provider request replay payload.
     assert all("program_sha256" not in row["request"] for row in recordings)
-    assert all(row["response"]["schema"] == "tracefold.news.recorded_lm.v1" for row in recordings)
+    assert all(row["response"]["schema"] == "tracefold.news.recorded_lm.v2" for row in recordings)
     assert all((row["response"]["response"] is None) != (row["response"]["error"] is None) for row in recordings)
     candidate_artifact = conn.execute(
         "SELECT payload FROM news_learning_artifacts WHERE kind = 'candidate' AND payload->>'candidate_sha' = %s",
@@ -2894,7 +2888,7 @@ def test_every_physical_terminal_persists_a_complete_replay_document(conn) -> No
     ).fetchall()
     assert len(rows) == len(terminals) == 6
     assert all(row["response_sha256"] for row in rows)
-    assert all(row["response"]["schema"] == "tracefold.news.recorded_lm.v1" for row in rows)
+    assert all(row["response"]["schema"] == "tracefold.news.recorded_lm.v2" for row in rows)
     assert all(row["request"] == row["response"]["request"] for row in rows)
     assert all(row["request_sha256"] == row["response"]["request_sha256"] for row in rows)
 

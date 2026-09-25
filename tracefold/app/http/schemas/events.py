@@ -166,6 +166,10 @@ class NewsVerdictData(ExactApiSchema):
     override_rule: str | None = None
     throttled_by: str | None = None
     model: str | None = Field(default=None, min_length=1)
+    model_usage_coverage: Literal["complete", "partial", "unknown"] = "unknown"
+    model_input_tokens: int | None = Field(default=None, ge=0)
+    model_output_tokens: int | None = Field(default=None, ge=0)
+    model_provider_cost_microusd: int | None = Field(default=None, ge=0)
     program_version: str = Field(min_length=1)
     program_sha256: str = Field(pattern=_SHA256_PATTERN)
     degraded: bool = False

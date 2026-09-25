@@ -2,7 +2,7 @@
 
 set -eu
 
-secret_dir=${1:-/run/secrets}
+secret_dir=${1:-${TRACEFOLD_POSTGRES_SECRET_DIR:-/run/secrets}}
 
 read_role_password() {
   secret_name=$1

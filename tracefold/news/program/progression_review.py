@@ -17,7 +17,7 @@ from ..progression_review import (
     ProgressionReview,
     compact_progression_reason,
 )
-from .lm import AuditedConfiguredLM, LMCallContext, LMCallLedger, program_json_adapter
+from .lm import LMCallContext, LMCallLedger, program_json_adapter
 
 PROGRESSION_REVIEW_VERSION = "news_progression_review_v4"
 PROGRESSION_REVIEW_MAX_CANDIDATES = 8
@@ -109,11 +109,11 @@ class ProgressionReviewProgram(dspy.Module):  # type: ignore[misc]
 
     def __init__(self, lm: dspy.BaseLM) -> None:
         super().__init__()
-        if not isinstance(lm, AuditedConfiguredLM):
+        if not isinstance(lm, dspy.LM):
             raise TypeError("news_progression_review_lm_invalid")
         if lm.cache is not False or lm.num_retries != 0:
             raise dspy.LMConfigurationError("news_progression_review_lm_must_disable_cache_and_retries")
-        if (lm.predictor, lm.route, lm.model_binding) != (
+        if (getattr(lm, "predictor", None), getattr(lm, "route", None), getattr(lm, "model_binding", None)) != (
             "progression_review",
             "primary",
             "progression_review.primary",

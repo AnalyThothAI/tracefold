@@ -231,7 +231,7 @@ delivery consumer settles `terminal/delivery_unavailable`.
 `trading.*` is `enabled: false` by default. When enabled, a separate Analysis
 process consumes the News trade-event outbox and runs a real model in shadow by
 default. `trading.analysis` accepts `model_name` (or the configured News triage
-model), `active_policy=event_price_confirmation_v1`, `publish_signals=false`,
+model), `active_policy=entry_plan_v1`, `publish_signals=false`,
 `root_ttl_seconds`, `model_timeout_seconds`, `max_active_cases`,
 `max_model_input_bytes`, `max_model_output_tokens`, `max_model_concurrent_calls`,
 `model_cost_budget_microusd` (default 5,000,000) with both route price ceilings
@@ -265,40 +265,41 @@ TradingNode. `paper` and `live` require secure non-empty files and select the
 same canonical Nautilus owner with Binance `DEMO` and `LIVE` environments,
 respectively.
 
-  The frozen `trade_brief_v3` includes `citable_evidence_ids`, the exact
+  The frozen `trade_brief_v4` includes `citable_evidence_ids`, the exact
   evidence keys that pass the compiler's availability rule at the Case cutoff.
   The model may cite only those IDs in its supporting/opposing arrays; missing
   frames and other brief fields can appear in the rationale as limitations.
   Catalyst source evidence carries the public `headline`/`why` text when present;
   an empty source value set is marked missing instead of presenting a false
   `ok` citation. Source text remains untrusted input to the model.
-  The `trade_assessment_v3` answer proposes TRADE, NO_TRADE or WATCH over the
-code-owned `event_price_confirmation_v1` candidate family. Catalyst and OI
-facts use the same 16 continuous closed one-minute bars. The first 15 define
-the high/low range and ATR14; the sixteenth crosses only when the previous
-close was inside the range. The source must be visible before that bar closed.
-OI direction and a positive OI change are not entry gates. Code freezes a stop
-between 100 and 1000 bps from twice ATR14, take profit at twice the stop and
-a four-hour maximum hold. The model supplies action, hypothesis side, candidate
-ID, cited supporting/opposing evidence, public rationale and research notes.
-It does not return factor scores, weights, summaries or a digest echo. A TRADE
-proposal for an ineligible candidate is recorded with a final NO_TRADE reason.
-These parameters are research candidates and do not establish an edge.
+  The native DSPy 3.4 ReAct agent receives code-owned `entry_plan_v1` instances.
+`immediate_entry_v1` requests an entry at the current executable quote;
+`closed_bar_cross_v1` waits for one named direction and frozen level. The
+`trade_assessment_v4` proposal selects one plan for TRADE/WATCH, or none for
+NO_TRADE, and cites visible evidence and optional Jev judgment refs. The
+compiler derives side and the ATR14 exit template from the selected plan.
+The model cannot set position size, stop distance, arbitrary order type or
+override the source, asset, expiry and Case fences. Market snapshots may append
+new plans without replacing the frozen seed; identical inputs retain plan IDs.
+The initial reader requests 241 closed one-minute bars so 15m, 60m and 240m
+features represent their actual intervals. Missing coverage is missing, not
+a shorter interval relabeled as 60m. Binance OI history uses separate 5m
+`sumOpenInterest` quantity and `sumOpenInterestValue` fields.
 
-A machine WATCH freezes both range boundaries, previous close, ATR-derived
-exit plan and expiry in one root-owned row. Later continuous closed bars are
-scanned in order from the initial bar. The first crossing in either direction
-consumes the opportunity, including a crossing found after its 120-second
-entry window. An on-time crossing creates at most one conditional child Case
-with the triggering bar and parent Decision. Gaps remain explicit; duplicate
-polls do not create another child. Textual notes do not schedule work.
+A WATCH freezes one directed crossing, parent plan ID, previous close, exit
+plan and root expiry. The observer scans contiguous closed bars from the
+frozen point. An on-time match creates at most one conditional child Case;
+the child re-analyzes the same source and can only select the parent's side.
+Gaps, late matches and duplicate polls remain explicit. Neither WATCH nor
+NO_TRADE grants an order or closes an existing position.
 Each DSPy transport invocation and returned response is indexed by claim
 attempt even when validation fails or a late attempt loses the settlement
 fence. A provider error or cancellation retains its request and error type;
 the provider response is marked unconfirmed, and unavailable tokens and cost
 remain null.
-The Case API exposes attempts, validation errors, WATCH state and the root
-chain. Replay reads their archived refs without a model or market call.
+The Case API exposes attempts, validation errors, WATCH state, tool observations,
+requested/served model, the final input manifest and the root chain. Replay
+reads their archived refs without a model or market call.
 
 TRADE decisions also start a `shadow_net_v1` evaluation. Archived decision,
 planned and exit bid/ask quotes with displayed size, frozen Binance contract
@@ -322,10 +323,11 @@ historical replay and held-out net evaluation are pending.
 assessment references without calling market data or the model. Its optional
 `attempt=<claim_attempt>` selects one failed or late attempt's archive; omitted
 means the latest attempt, while old Cases fall back to their Decision archive. A published
-TRADE commits one `TradeSignalV2` with the Case decision and state in one
-transaction; shadow TRADE and NO_TRADE create no online Signal. SignalV2
+TRADE commits one `TradeSignalV3` with the Case decision and state in one
+transaction; shadow TRADE and NO_TRADE create no online Signal. SignalV3
 contains account/mode isolation, `entry_scope_id`, native mapping digest,
-versioned exit parameters and a bounded entry-price envelope. Nautilus
+versioned exit parameters and a bounded entry-price envelope with explicit
+immediate or activated condition semantics. Nautilus
 rechecks current Trading fact validity after persisting its scoped TradePlan
 and before sending an order. The retired binding, Capital, capability, catalog, Intent, order,
 replay and evidence-clock tables were dropped by `20260901_0347`; execution
@@ -1169,8 +1171,8 @@ documents differ from the running stable's in exactly the target Predictor;
 property of the document rather than a claim in a receipt. The trusted side
 reads the state through the one loader, which refuses any `lm` route. Pickle, cloudpickle,
 dynamic Python/classes, endpoints and credentials are not artifact formats.
-One typed `AuditedConfiguredLM` invocation is one stock DSPy/LiteLLM provider
-call, with no client cache or provider retry. JSONAdapter may make one additional
+One canonical DSPy `lm15.Request` reaches the stock LiteLLM engine per physical
+News call, with no client cache or provider retry. JSONAdapter may make one additional
 format call per Predictor, and every physical invocation appears in the trace.
 There is no legacy Prompt runtime, dual stack, compatibility Adapter or
 production operator-selected artifact path. Nullable Prompt-era fields remain
@@ -2015,7 +2017,7 @@ projection, so the CLI and the desk cannot be told two different things about
 the same instant (#537 PR-4, PR-5). It never infers protection, PnL, or fees.
 `trading cases [--state] [--limit]` lists the Case ledger through the same
 bounded projection the HTTP route reads;
-`trading signals [--limit]` lists engine-neutral `TradeSignalV1` rows; and
+`trading signals [--limit]` lists bounded Signal ledger rows (new publications use V3); and
 `trading observations [--limit]` lists append-only Runtime observations —
 those two ledgers have no HTTP route since #537 PR-5, and this is where an
 operator reads them;
