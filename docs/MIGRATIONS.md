@@ -737,3 +737,42 @@ sha256 predicate. No row rewrite, no backfill; verdicts written under v11-v14 ke
 validating and are not rewritten. Failure rolls back atomically; recover by
 rolling forward or restoring a verified backup. Downgrade refuses. The matching
 image also carries a new Program SHA, because the EventSemantics seed moved.
+
+
+### 20260925_0399: full wallet membership and continuous complete prefix (#697)
+
+Stop Workers and Serve before this hard cut. Back up the roster, tape state, fills,
+episodes, Items, tracks and deliveries; retain the matching old image/config for a verified
+restore. Remove the four retired roster ranking keys, then run the normal migration entry
+with the new image and start that image only. There is no mixed-writer compatibility period.
+Do not enable notifications or change their recipients as part of this migration.
+
+The migration archives historical roster statistics into `archived_source_statistics` before
+removing the ranking columns/constraint. It adds durable retry times/failure counts and separate
+blocked-receipt/enrichment diagnostics to the existing tape state, with no new task or table.
+Same-set updates preserve membership version and monitoring time.
+
+An old partial high-water cursor did not persist a provable safe log boundary. The migration
+archives that cursor as `pre_0399_cursor`, conservatively resumes at the preceding complete
+block and clears the suspect scanned cutoff. Complete but inconsistent encodings also clear
+the cutoff for re-establishment. This repair must precede normal monotonic coverage writes,
+otherwise an old oversized scanned position could survive forever. The collector must establish
+a new complete cutoff before positive conclusions; overlap re-reading and natural fill keys
+avoid duplicates. No derived marker, detection cutover, episode, intent or delivery identity is reset.
+
+Raw initial/send snapshots, frozen cards and receipts are unchanged. A single storage read
+projection drops only the three known retired member keys before strict current validation;
+unknown fields still fail. New writes contain only the current model. The roster statistics
+archive is historical evidence, not a second current ranking or monitoring path.
+
+DDL takes ACCESS EXCLUSIVE locks in roster-then-state order, with a 5-second lock timeout
+and 60-second statement timeout. The roster archive is a one-time row rewrite and the cursor
+repair affects one state row; test the archive cost against the deployment's roster history.
+All changes are transactional. An error rolls back; recovery is roll-forward or verified
+pre-migration backup restore, not a destructive downgrade.
+
+After restart, check a successful full-source refresh, current coverage and retry state,
+progress beyond the repaired cursor, and the episode/intent/delivery read model. A naturally
+occurring five-buyer event is not required for deployment diagnosis; deterministic PostgreSQL
+regressions exercise the positive and missing-sell notification paths. Implementation tests
+are not evidence of live endpoint capacity or production deployment.

@@ -175,7 +175,7 @@ model names, refresh intervals, and historical tasks:
 | OpenNews admission and editorial processing | `tracefold/news/pipeline/` and App News wiring |
 | Instruments, current quotes, Event reactions | News market-review owners and their provider adapters |
 | OI, liquidation, smart-money notifications | `tracefold/news/market_notifications.py` |
-| Wallet receipts, net-buy detection, price sampling | App chain-tape wiring and its three independently supervised task declarations |
+| Wallet roster, receipts, net-buy detection, price sampling | App chain-tape wiring and its four independently supervised task declarations |
 | News/OI Trigger → Case → assessment → Decision | `tracefold/app/trading_analysis.py` and `tracefold/trading/engine/` |
 | Claim attempt and physical LM receipts, event WATCH, shadow net evaluation | Trading ledgers in `tracefold/trading/storage/analysis.py`; App performs bounded market/model I/O outside transactions |
 | Account, orders, protection, reconciliation | Nautilus (the Cache, reconciled with the venue), driven by the Runtime Strategy composed in `tracefold/app/nautilus/` |
@@ -204,8 +204,8 @@ market notifications and the wallet tasks. Analysis has its own process and its
 own market/Agent budgets.
 The root also owns the probe and singleton/control work.
 
-The wallet composition currently declares `news-chain-tape`, `news-wallet-net-buy`,
-and, when available, `news-wallet-prices`. There is no current wallet digest or
+The enabled wallet composition declares `news-wallet-roster`, `news-chain-tape`,
+`news-wallet-net-buy` and `news-wallet-prices`. There is no current wallet digest or
 single-wallet research task. A declared task is not proof that its capability is
 available or healthy; read composition status and actual durable progress.
 
@@ -468,11 +468,13 @@ prove complete historic position coverage.
 
 The four independent tasks refresh the followed list, collect receipts, detect concentrated
 net-buy episodes, and sample prices. The refresh task owns every provider call to the roster site
-and publishes a new version only when every candidate lookup answered; the collector reads the last
+and publishes every unique valid address in a complete source response; the collector reads the last
 published version out of PostgreSQL and makes no roster call at all, so a slow or throttled provider
 cannot stop collection (#649 §5.1). Detection and first notification have no balance, bags, external
 quote, or model dependency. Complete transaction facts and derivation progress commit
-atomically. The detector calculates the supported windows from the same fill set,
+atomically. Membership versions change only with the address set; source statistics do not gate subscription.
+A single continuous receipt prefix owns both collection and detection cutoffs. Real missing receipts
+stop the turn and retry durably; optional metadata cannot block it. The detector calculates the one window from the same fill set,
 with explicit member coverage, pricing, and exclusion reasons.
 
 An episode retains an immutable first snapshot and an independently updated current

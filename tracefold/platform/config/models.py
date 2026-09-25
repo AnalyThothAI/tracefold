@@ -415,26 +415,11 @@ class NewsVenuesSettings(BaseModel):
 
 
 class NewsChainTapeRosterSettings(BaseModel):
-    """Which wallets the chain tape follows (#572 decision 5).
-
-    Four numbers and no model. Win rate is deliberately absent: over the addresses with five or more
-    closes its rank correlation with realized P&L was 0.31, and four of the nine with a win rate above
-    0.6 were losing money (#572 §3.2).
-    """
+    """Source-list request range and cadence; every valid source address is monitored."""
 
     model_config = ConfigDict(extra="forbid")
 
-    min_closed_trades: int = 10
-    min_profit_factor: float = 1.2
-    top_quality: int = 20
-    top_whale_by_open_cost: int = 20
-    # The provider's own statistics window, passed to both roster endpoints. `7d` is what the site
-    # defaults to, and on a seven-day window almost nothing clears a 1.2 profit factor: production
-    # list v203 had one qualifying address against thresholds of three and five (#649 §2.1). The same
-    # addresses over thirty days are a different population -- 92 candidates instead of 45, and
-    # sampled factors of 3.29 against 0.41 -- so the deployed window is `30d` (#649 §5.3). This is a
-    # statistics window, not a change to what "quality" means: the closed-trade floor, the factor
-    # floor, the top-20 cut and the two net-buy thresholds are unchanged.
+    # Source request scope, not a ranking or a net-buy observation window.
     window: str = "30d"
     # How old a published list may be before the refresh task rebuilds it. One hour, unchanged from
     # the constant the collector used to carry (#649 §5.1), and now the operator's number rather than
@@ -443,18 +428,6 @@ class NewsChainTapeRosterSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> NewsChainTapeRosterSettings:
-        if not 0 <= self.min_closed_trades <= 10_000:
-            raise ValueError("news_chain_tape_roster_min_closed_trades_invalid")
-        if not 0.0 <= self.min_profit_factor <= 1_000.0:
-            raise ValueError("news_chain_tape_roster_min_profit_factor_invalid")
-        # The roster is a topic array on every `eth_getLogs` call. A list that is not bounded here is a
-        # request size that is not bounded on a public endpoint.
-        if not 0 <= self.top_quality <= 200:
-            raise ValueError("news_chain_tape_roster_top_quality_invalid")
-        if not 0 <= self.top_whale_by_open_cost <= 200:
-            raise ValueError("news_chain_tape_roster_top_whale_invalid")
-        if self.top_quality + self.top_whale_by_open_cost <= 0:
-            raise ValueError("news_chain_tape_roster_empty")
         # The window reaches the provider as a query parameter; anything but a short token is a
         # configuration error rather than a request to make.
         if not re.fullmatch(r"[0-9]{1,3}[dhwmy]", self.window):

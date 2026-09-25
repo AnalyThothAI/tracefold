@@ -38,7 +38,9 @@ SELECT high_water_block, high_water_tx_index, roster_version,
        ignored_inbound_total, unknown_total,
        noise_through_block, noise_through_tx_index, detection_cutover_at_ms,
        coverage_from_ms, scanned_at_ms, scanned_block, scanned_log, gap_at_ms,
-       roster_last_attempt_at_ms, roster_last_success_at_ms, roster_last_error
+       roster_last_attempt_at_ms, roster_last_success_at_ms, roster_last_error,
+       roster_next_attempt_at_ms, roster_consecutive_failures,
+       next_attempt_at_ms, consecutive_failures, blocked_tx_hash, enrichment_error
   FROM news_market_wallet_tape_state
  WHERE state_id = %s
 """
@@ -48,12 +50,17 @@ INSERT INTO news_market_wallet_tape_state (
     state_id, high_water_block, high_water_tx_index, roster_version,
     last_outcome, last_error, last_success_at_ms, updated_at_ms,
     ignored_inbound_total, unknown_total,
-    noise_through_block, noise_through_tx_index
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    noise_through_block, noise_through_tx_index,
+    next_attempt_at_ms, consecutive_failures, blocked_tx_hash, enrichment_error
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (state_id) DO UPDATE SET
     high_water_block = EXCLUDED.high_water_block,
     high_water_tx_index = EXCLUDED.high_water_tx_index,
     roster_version = EXCLUDED.roster_version,
+    next_attempt_at_ms = EXCLUDED.next_attempt_at_ms,
+    consecutive_failures = EXCLUDED.consecutive_failures,
+    blocked_tx_hash = EXCLUDED.blocked_tx_hash,
+    enrichment_error = EXCLUDED.enrichment_error,
     last_outcome = EXCLUDED.last_outcome,
     last_error = EXCLUDED.last_error,
     last_success_at_ms = COALESCE(EXCLUDED.last_success_at_ms,
@@ -85,8 +92,9 @@ _SAVE_ROSTER_REFRESH_SQL: Final = """
 INSERT INTO news_market_wallet_tape_state (
     state_id, high_water_block, high_water_tx_index, roster_version,
     last_outcome, updated_at_ms,
-    roster_last_attempt_at_ms, roster_last_success_at_ms, roster_last_error
-) VALUES (%s, 0, -1, 0, '', %s, %s, %s, %s)
+    roster_last_attempt_at_ms, roster_last_success_at_ms, roster_last_error,
+    roster_next_attempt_at_ms, roster_consecutive_failures
+) VALUES (%s, 0, -1, 0, '', %s, %s, %s, %s, %s, %s)
 ON CONFLICT (state_id) DO UPDATE SET
     updated_at_ms = EXCLUDED.updated_at_ms,
     roster_last_attempt_at_ms = EXCLUDED.roster_last_attempt_at_ms,
@@ -94,12 +102,13 @@ ON CONFLICT (state_id) DO UPDATE SET
     -- the one figure an operator uses to decide whether the published roster is still the truth.
     roster_last_success_at_ms = COALESCE(EXCLUDED.roster_last_success_at_ms,
                                          news_market_wallet_tape_state.roster_last_success_at_ms),
-    roster_last_error = EXCLUDED.roster_last_error
+    roster_last_error = EXCLUDED.roster_last_error,
+    roster_next_attempt_at_ms = EXCLUDED.roster_next_attempt_at_ms,
+    roster_consecutive_failures = EXCLUDED.roster_consecutive_failures
 """
 
 _CURRENT_ROSTER_SQL: Final = """
-SELECT roster_version, taken_at_ms, wallet, handle, followers, realized_pnl,
-       closed_trades, win_rate, profit_factor, open_cost, rank_quality, rank_whale, provider
+SELECT roster_version, taken_at_ms, wallet, handle, provider
   FROM news_market_wallet_roster
  WHERE roster_version = (SELECT max(roster_version) FROM news_market_wallet_roster)
  ORDER BY wallet
@@ -107,16 +116,8 @@ SELECT roster_version, taken_at_ms, wallet, handle, followers, realized_pnl,
 
 _INSERT_ROSTER_MEMBER_SQL: Final = """
 INSERT INTO news_market_wallet_roster (
-    roster_version, taken_at_ms, wallet, handle, followers, realized_pnl,
-    closed_trades, win_rate, profit_factor, open_cost, rank_quality, rank_whale,
-    provider, known_at_ms, monitoring_from_ms
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-"""
-
-_TOUCH_ROSTER_SQL: Final = """
-UPDATE news_market_wallet_roster
-   SET taken_at_ms = %s
- WHERE roster_version = %s
+    roster_version, taken_at_ms, wallet, handle, provider, known_at_ms, monitoring_from_ms
+) VALUES (%s, %s, %s, %s, %s, %s, %s)
 """
 
 _PURGE_FILLS_SQL: Final = """
@@ -129,13 +130,32 @@ DELETE FROM news_market_wallet_fills
 """
 
 WALLET_ROSTER_ROWS_SQL: Final = """
-SELECT roster_version, taken_at_ms, wallet, handle, followers, realized_pnl,
-       closed_trades, win_rate, profit_factor, open_cost, rank_quality, rank_whale, provider,
-       monitoring_from_ms
+SELECT roster_version, taken_at_ms, wallet, handle, provider, monitoring_from_ms
   FROM news_market_wallet_roster
  WHERE roster_version = (SELECT max(roster_version) FROM news_market_wallet_roster)
- ORDER BY COALESCE(rank_quality, 1000000), COALESCE(rank_whale, 1000000), wallet
+ ORDER BY wallet
 """
+
+# One statement pins current membership, sweep addresses and progress to one MVCC
+# snapshot. Workers already own the transaction; nesting SET TRANSACTION after the
+# worker's timeout setup SELECT would fail in production.
+_COLLECTION_PLAN_SQL: Final = f"""
+WITH state AS ({WALLET_TAPE_STATE_SQL}), versions AS (
+    SELECT roster_version, lead(min(known_at_ms)) OVER (ORDER BY roster_version) AS next_at_ms
+      FROM news_market_wallet_roster GROUP BY roster_version
+), current_roster AS (
+    SELECT roster_version, taken_at_ms, wallet, handle, provider
+      FROM news_market_wallet_roster
+     WHERE roster_version = (SELECT max(roster_version) FROM versions)
+), wallets AS (
+    SELECT DISTINCT r.wallet FROM news_market_wallet_roster r JOIN versions v USING (roster_version)
+     WHERE v.next_at_ms IS NULL OR (r.monitoring_from_ms IS NOT NULL AND
+         v.next_at_ms > COALESCE((SELECT scanned_at_ms FROM state), 0) - 1800000)
+)
+SELECT (SELECT to_jsonb(s) FROM state s) AS state,
+       COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.wallet) FROM current_roster r), '[]') AS roster,
+       ARRAY(SELECT wallet FROM wallets ORDER BY wallet) AS wallets
+"""  # noqa: S608 -- interpolates only the code-owned production state SELECT.
 
 
 class ChainTapeStateRow(TypedDict):
@@ -161,14 +181,37 @@ class ChainTapeStateRow(TypedDict):
     roster_last_attempt_at_ms: int | None
     roster_last_success_at_ms: int | None
     roster_last_error: str | None
+    roster_next_attempt_at_ms: int
+    roster_consecutive_failures: int
+    next_attempt_at_ms: int
+    consecutive_failures: int
+    blocked_tx_hash: str | None
+    enrichment_error: str | None
 
 
 class ChainTapeStorage:
     conn: Any
 
+    def chain_tape_collection_plan(self) -> tuple[ChainTapeStateRow | None, RosterSnapshot | None, tuple[str, ...]]:
+        row = self.conn.execute(_COLLECTION_PLAN_SQL, (TAPE_STATE_ID,)).fetchone()
+        members = row["roster"]
+        roster = (
+            None
+            if not members
+            else RosterSnapshot(
+                roster_version=members[0]["roster_version"],
+                taken_at_ms=members[0]["taken_at_ms"],
+                members=tuple(RosterMember(wallet=m["wallet"], handle=m["handle"]) for m in members),
+                provider=members[0]["provider"],
+            )
+        )
+        return row["state"], roster, tuple(row["wallets"])
+
     def chain_tape_roster_version(self, version: int) -> RosterSnapshot | None:
         rows = self.conn.execute(
-            "SELECT * FROM news_market_wallet_roster WHERE roster_version = %s ORDER BY wallet", (int(version),)
+            "SELECT roster_version, taken_at_ms, wallet, handle FROM news_market_wallet_roster "
+            "WHERE roster_version = %s ORDER BY wallet",
+            (int(version),),
         ).fetchall()
         if not rows:
             return None
@@ -260,7 +303,13 @@ class ChainTapeStorage:
             gap_at_ms=row["gap_at_ms"],
             roster_last_attempt_at_ms=row["roster_last_attempt_at_ms"],
             roster_last_success_at_ms=row["roster_last_success_at_ms"],
-            roster_last_error=None if row["roster_last_error"] is None else str(row["roster_last_error"]),
+            roster_last_error=row["roster_last_error"],
+            roster_next_attempt_at_ms=int(row["roster_next_attempt_at_ms"]),
+            roster_consecutive_failures=int(row["roster_consecutive_failures"]),
+            next_attempt_at_ms=int(row["next_attempt_at_ms"]),
+            consecutive_failures=int(row["consecutive_failures"]),
+            blocked_tx_hash=row["blocked_tx_hash"],
+            enrichment_error=row["enrichment_error"],
         )
 
     def chain_tape_save_state(
@@ -275,6 +324,10 @@ class ChainTapeStorage:
         ignored_inbound: int = 0,
         unknown: int = 0,
         noise_cursor: TapeCursor | None = None,
+        next_attempt_at_ms: int = 0,
+        consecutive_failures: int = 0,
+        blocked_tx_hash: str | None = None,
+        enrichment_error: str | None = None,
     ) -> None:
         """Record the classified position, the turn's outcome, and what it read but did not store.
 
@@ -299,7 +352,26 @@ class ChainTapeStorage:
                 max(0, int(unknown)),
                 0 if noise_cursor is None else max(0, int(noise_cursor.block_number)),
                 -1 if noise_cursor is None else max(-1, int(noise_cursor.transaction_index)),
+                next_attempt_at_ms,
+                consecutive_failures,
+                blocked_tx_hash,
+                enrichment_error,
             ),
+        )
+
+    def chain_tape_begin_roster_refresh(self, *, now_ms: int, next_attempt_at_ms: int) -> None:
+        """An in-flight request is an attempt, never a success or a fabricated failure."""
+        self.conn.execute(
+            """
+            INSERT INTO news_market_wallet_tape_state (
+                state_id, high_water_block, high_water_tx_index, roster_version, last_outcome,
+                updated_at_ms, roster_last_attempt_at_ms, roster_next_attempt_at_ms
+            ) VALUES ('chain_tape', 0, -1, 0, '', %s, %s, %s)
+            ON CONFLICT (state_id) DO UPDATE SET
+                roster_last_attempt_at_ms = EXCLUDED.roster_last_attempt_at_ms,
+                roster_next_attempt_at_ms = EXCLUDED.roster_next_attempt_at_ms
+        """,
+            (now_ms, now_ms, next_attempt_at_ms),
         )
 
     def chain_tape_save_roster_refresh(
@@ -308,123 +380,85 @@ class ChainTapeStorage:
         now_ms: int,
         succeeded: bool,
         error: str | None,
+        completed_at_ms: int | None = None,
+        next_attempt_at_ms: int = 0,
+        consecutive_failures: int = 0,
     ) -> None:
-        """Record one refresh attempt: when it ran, whether it published, and why it did not."""
-
         self.conn.execute(
             _SAVE_ROSTER_REFRESH_SQL,
             (
                 TAPE_STATE_ID,
-                int(now_ms),
-                int(now_ms),
-                int(now_ms) if succeeded else None,
+                completed_at_ms or now_ms,
+                now_ms,
+                (completed_at_ms or now_ms) if succeeded else None,
                 None if succeeded else (error or "roster_refresh_failed"),
+                next_attempt_at_ms,
+                consecutive_failures,
             ),
         )
 
     def chain_tape_roster_rows(self) -> list[dict[str, Any]]:
-        """The current roster version as the page publishes it: who is followed, and why."""
-
-        return [
-            {
-                "roster_version": int(row["roster_version"]),
-                "taken_at_ms": int(row["taken_at_ms"]),
-                "wallet": str(row["wallet"]),
-                "handle": str(row["handle"] or ""),
-                "followers": int(row["followers"] or 0),
-                "realized_pnl": float(row["realized_pnl"] or 0.0),
-                "closed_trades": int(row["closed_trades"] or 0),
-                "win_rate": float(row["win_rate"] or 0.0),
-                "profit_factor": None if row["profit_factor"] is None else float(row["profit_factor"]),
-                "open_cost": float(row["open_cost"] or 0.0),
-                "rank_quality": None if row["rank_quality"] is None else int(row["rank_quality"]),
-                "rank_whale": None if row["rank_whale"] is None else int(row["rank_whale"]),
-                "provider": str(row["provider"] or ROSTER_PROVIDER),
-                # A statistics refresh inherits this rather than restarting it, so it is the honest
-                # answer to "can this address complete a quorum yet" (#641 §5.2).
-                "monitoring_from_ms": None if row["monitoring_from_ms"] is None else int(row["monitoring_from_ms"]),
-            }
-            for row in self.conn.execute(WALLET_ROSTER_ROWS_SQL).fetchall()
-        ]
+        return list(self.conn.execute(WALLET_ROSTER_ROWS_SQL).fetchall())
 
     def chain_tape_current_roster(self) -> RosterSnapshot | None:
         rows = self.conn.execute(_CURRENT_ROSTER_SQL).fetchall()
         if not rows:
             return None
-        members = tuple(
-            RosterMember(
-                wallet=str(row["wallet"]),
-                handle=str(row["handle"] or ""),
-                followers=int(row["followers"] or 0),
-                realized_pnl=float(row["realized_pnl"] or 0.0),
-                closed_trades=int(row["closed_trades"] or 0),
-                win_rate=float(row["win_rate"] or 0.0),
-                profit_factor=None if row["profit_factor"] is None else float(row["profit_factor"]),
-                open_cost=float(row["open_cost"] or 0.0),
-                rank_quality=None if row["rank_quality"] is None else int(row["rank_quality"]),
-                rank_whale=None if row["rank_whale"] is None else int(row["rank_whale"]),
-            )
-            for row in rows
-        )
         return RosterSnapshot(
             roster_version=int(rows[0]["roster_version"]),
             taken_at_ms=int(rows[0]["taken_at_ms"]),
-            members=members,
-            provider=str(rows[0]["provider"] or ROSTER_PROVIDER),
+            members=tuple(RosterMember(wallet=row["wallet"], handle=row["handle"]) for row in rows),
+            provider=rows[0]["provider"],
         )
 
-    def chain_tape_store_roster(
-        self,
-        members: Sequence[RosterMember],
-        *,
-        now_ms: int,
-    ) -> RosterSnapshot:
-        """Version membership, ranks and statistics together so prior observations retain their evidence.
-
-        An unchanged snapshot only refreshes its fetch time. Any member statistic change opens a new
-        version instead of presenting an old figure as a fresh fetch.
-        """
-
-        proposed = RosterSnapshot(roster_version=0, taken_at_ms=int(now_ms), members=tuple(members))
+    def chain_tape_store_roster(self, members: Sequence[RosterMember], *, now_ms: int) -> RosterSnapshot:
+        """Version only source membership. Preserve measured coverage across continuous collection."""
+        members = tuple(sorted(members, key=lambda member: member.wallet))
+        if not members or len({m.wallet for m in members}) != len(members):
+            raise ValueError("roster_members_empty_or_duplicate")
         current = self.chain_tape_current_roster()
-        if current is not None and current.members == proposed.members:
-            self.conn.execute(_TOUCH_ROSTER_SQL, (int(now_ms), current.roster_version))
-            return RosterSnapshot(
-                roster_version=current.roster_version,
-                taken_at_ms=int(now_ms),
-                members=current.members,
-                provider=current.provider,
-            )
+        if current is not None and current.wallets == tuple(m.wallet for m in members):
+            for member in members:
+                self.conn.execute(
+                    """
+                    UPDATE news_market_wallet_roster SET taken_at_ms = %s, handle = %s
+                     WHERE roster_version = %s AND wallet = %s
+                """,
+                    (now_ms, member.handle, current.roster_version, member.wallet),
+                )
+            return RosterSnapshot(current.roster_version, now_ms, members)
         version = 1 if current is None else current.roster_version + 1
+        # Last membership intervals still being swept are continuously collected.
+        # Once the committed cutoff passed an interval's sweep, rejoining starts anew.
         monitoring = {
             row["wallet"]: row["monitoring_from_ms"]
-            for row in self.conn.execute(
-                "SELECT wallet, monitoring_from_ms FROM news_market_wallet_roster WHERE roster_version = %s",
-                (0 if current is None else current.roster_version,),
-            ).fetchall()
+            for row in self.conn.execute("""
+            WITH versions AS (
+                SELECT roster_version, lead(min(known_at_ms)) OVER (ORDER BY roster_version) AS next_at_ms
+                  FROM news_market_wallet_roster GROUP BY roster_version
+            )
+            SELECT DISTINCT ON (r.wallet) r.wallet, r.monitoring_from_ms
+              FROM news_market_wallet_roster r JOIN versions v USING (roster_version)
+             WHERE v.next_at_ms IS NULL OR (
+                 r.monitoring_from_ms IS NOT NULL AND v.next_at_ms >
+                 (SELECT scanned_at_ms FROM news_market_wallet_tape_state WHERE state_id = 'chain_tape') - 1800000
+             ) ORDER BY r.wallet, r.roster_version DESC
+        """).fetchall()
         }
         for member in members:
             self.conn.execute(
                 _INSERT_ROSTER_MEMBER_SQL,
                 (
                     version,
-                    int(now_ms),
-                    str(member.wallet),
-                    str(member.handle or ""),
-                    int(member.followers),
-                    float(member.realized_pnl),
-                    int(member.closed_trades),
-                    float(member.win_rate),
-                    None if member.profit_factor is None else float(member.profit_factor),
-                    float(member.open_cost),
-                    None if member.rank_quality is None else int(member.rank_quality),
-                    None if member.rank_whale is None else int(member.rank_whale),
+                    now_ms,
+                    member.wallet,
+                    member.handle,
                     ROSTER_PROVIDER,
-                    int(now_ms),
+                    now_ms,
                     monitoring.get(member.wallet),
                 ),
             )
-        return RosterSnapshot(roster_version=version, taken_at_ms=int(now_ms), members=tuple(members))
+        return RosterSnapshot(version, now_ms, members)
 
     def chain_tape_collection_wallets(self, *, through_at_ms: int) -> tuple[str, ...]:
         """Keep removed members until their last supported thirty-minute window is scanned."""
@@ -454,6 +488,7 @@ class ChainTapeStorage:
         through_log: int | None,
         gap_at_ms: int | None,
         wallets: Sequence[str],
+        roster_version: int | None = None,
     ) -> None:
         self.conn.execute(
             """
@@ -479,22 +514,23 @@ class ChainTapeStorage:
                 gap_at_ms,
             ),
         )
-        if from_ms is not None:
+        if from_ms is not None and through_ms is not None and from_ms <= through_ms:
             self.conn.execute(
                 """
                 UPDATE news_market_wallet_roster
                    SET monitoring_from_ms = GREATEST(known_at_ms, %s)
                  WHERE wallet = ANY(%s) AND monitoring_from_ms IS NULL
+                   AND roster_version <= COALESCE(%s, (SELECT max(roster_version) FROM news_market_wallet_roster))
             """,
-                (int(from_ms), list(wallets)),
+                (int(from_ms), list(wallets), roster_version),
             )
 
     def chain_tape_members(self, version: int) -> list[dict[str, Any]]:
         return list(
             self.conn.execute(
                 """
-            SELECT roster_version, wallet, handle, rank_quality, rank_whale,
-                   known_at_ms, monitoring_from_ms, closed_trades, profit_factor,
+            SELECT roster_version, wallet, handle,
+                   known_at_ms, monitoring_from_ms,
                    taken_at_ms, provider
               FROM news_market_wallet_roster WHERE roster_version = %s ORDER BY wallet
         """,

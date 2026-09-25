@@ -378,7 +378,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertIs(news["policy"]["restatement_drop"], True)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
-        # Public sources, roster criteria and the four current net-buy parameters.
+        # Public sources, roster scope and the three current net-buy parameters.
         self.assertEqual(
             news["chain_tape"],
             {
@@ -388,10 +388,6 @@ class CliTests(unittest.TestCase):
                 "poll_interval_s": 2.0,
                 "roster_provider_url": "https://rhtrenches.com",
                 "roster": {
-                    "min_closed_trades": 10,
-                    "min_profit_factor": 1.2,
-                    "top_quality": 20,
-                    "top_whale_by_open_cost": 20,
                     "window": "30d",
                     "refresh_interval_s": 3600,
                 },

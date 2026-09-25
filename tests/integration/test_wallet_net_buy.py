@@ -73,14 +73,6 @@ def member(wallet: int, *, quality: bool = True) -> RosterMember:
     return RosterMember(
         wallet="0x" + f"{wallet:040x}",
         handle=f"wallet{wallet}",
-        followers=0,
-        realized_pnl=1000,
-        closed_trades=20,
-        win_rate=0.5,
-        profit_factor=2,
-        open_cost=10000,
-        rank_quality=wallet if quality else None,
-        rank_whale=wallet,
     )
 
 
@@ -533,7 +525,6 @@ def test_a_newly_monitored_address_cannot_complete_the_quorum_but_an_unranked_on
     conn.execute(
         "UPDATE news_market_wallet_roster SET monitoring_from_ms=%s WHERE wallet=%s", (NOW - 1799999, member(1).wallet)
     )
-    conn.execute("UPDATE news_market_wallet_roster SET rank_quality=NULL WHERE wallet=%s", (member(2).wallet,))
     run(conn)
     assert events(conn) == []
     excluded = conn.execute("SELECT derived_reason FROM news_market_wallet_fills WHERE wallet=%s", (member(1).wallet,))

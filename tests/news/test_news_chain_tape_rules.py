@@ -22,14 +22,14 @@ def test_one_quorum_boundary(count, matched):
 
 
 def test_any_published_roster_member_counts_whatever_rank_put_it_there():
-    """The quality/whale distinction is published information about the list, not a filter on it."""
+    """Historical rank information cannot change the rule or leak into a new snapshot."""
 
     members = roster()
     for member in members[:4]:
         member["rank_quality"] = None
     result = snapshot(members=members)
     assert result.window.qualified_n == 5 and result.window.matched
-    assert all(member.rank_quality is None for member in result.window.members[:4])
+    assert all("rank_quality" not in member.model_dump() for member in result.window.members)
     assert not any("not_on_roster" in member.reasons for member in result.window.members)
 
 

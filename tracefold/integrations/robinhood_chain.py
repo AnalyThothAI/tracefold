@@ -29,7 +29,7 @@ from typing import Any, Final
 
 import httpx
 
-from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
+from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded, retry_after_ms
 from tracefold.news.chain_tape.evm import (
     normalize_address,
 )
@@ -60,11 +60,21 @@ class ChainRpcError(RuntimeError):
     never carries a response body.
     """
 
-    def __init__(self, code: str, *, status_code: int | None = None, rpc_code: int | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        status_code: int | None = None,
+        rpc_code: int | None = None,
+        retry_after_ms: int = 0,
+        execution_reverted: bool = False,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.status_code = status_code
         self.rpc_code = rpc_code
+        self.retry_after_ms = retry_after_ms
+        self.execution_reverted = execution_reverted
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +133,10 @@ class RobinhoodChainClient:
             headers={"user-agent": CHAIN_RPC_USER_AGENT, "content-type": "application/json"},
         )
         self._block_timestamps_ms: dict[int, int] = {}
-        self._tokens: dict[str, ChainToken] = {}
+        self._symbols: dict[str, str | None] = {}
+        self._decimals: dict[str, int | None] = {}
+        self.request_count = 0
+        self.response_bytes_total = 0
         self._last_bytes = 0
 
     @property
@@ -199,44 +212,56 @@ class RobinhoodChainClient:
         return stamp_ms
 
     async def token(self, address: str) -> ChainToken:
-        """`symbol` and `decimals` for one ERC-20, cached for the life of the process.
-
-        A contract that reverts or answers an unreadable word is not an error: it is a token with no
-        readable metadata, and the fill still records its raw integer amount.
-        """
-
+        """Optional display metadata. Each successfully resolved method is cached separately."""
         normalized = normalize_address(address)
         if not normalized:
             raise ValueError("chain_address_invalid")
-        cached = self._tokens.get(normalized)
-        if cached is not None:
-            return cached
-        symbol = _decode_string(await self._maybe_call(normalized, _SYMBOL_SELECTOR))
-        decimals = _decode_uint8(await self._maybe_call(normalized, _DECIMALS_SELECTOR))
-        resolved = ChainToken(address=normalized, symbol=symbol, decimals=decimals)
-        self._tokens[normalized] = resolved
-        return resolved
+        if normalized not in self._symbols:
+            self._symbols[normalized] = _decode_string(await self._maybe_call(normalized, _SYMBOL_SELECTOR))
+        decimals = await self.token_decimals(normalized)
+        return ChainToken(normalized, self._symbols[normalized], decimals)
+
+    async def token_decimals(self, address: str) -> int | None:
+        """Cash scaling never depends on a symbol() request succeeding."""
+        normalized = normalize_address(address)
+        if not normalized:
+            raise ValueError("chain_address_invalid")
+        if normalized not in self._decimals:
+            self._decimals[normalized] = _decode_uint8(await self._maybe_call(normalized, _DECIMALS_SELECTOR))
+        return self._decimals[normalized]
 
     async def _maybe_call(self, address: str, selector: str) -> str | None:
         try:
             result = await self._call("eth_call", [{"to": address, "data": selector}, "latest"])
         except ChainRpcError as exc:
-            if exc.rpc_code is None:
+            if not exc.execution_reverted:
                 raise
-            # An execution revert is the contract's answer, not a provider failure.
             return None
-        return result if isinstance(result, str) else None
+        if not isinstance(result, str):
+            # A broken provider response is not permanent evidence about the contract.
+            raise ChainRpcError("chain_rpc_payload_invalid")
+        return result
 
     async def _call(self, method: str, params: list[Any]) -> Any:
+        self.request_count += 1
+        self._last_bytes = 0
         body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         try:
             async with self._client.stream("POST", self.rpc_url, json=body) as response:
                 if response.status_code in {401, 403, 451}:
                     raise ChainRpcError("chain_rpc_blocked", status_code=response.status_code)
                 if response.status_code in {418, 429}:
-                    raise ChainRpcError("chain_rpc_rate_limited", status_code=response.status_code)
+                    raise ChainRpcError(
+                        "chain_rpc_rate_limited",
+                        status_code=response.status_code,
+                        retry_after_ms=retry_after_ms(response.headers.get("Retry-After")),
+                    )
                 if response.status_code >= 400:
-                    raise ChainRpcError("chain_rpc_http_error", status_code=response.status_code)
+                    raise ChainRpcError(
+                        "chain_rpc_http_error",
+                        status_code=response.status_code,
+                        retry_after_ms=retry_after_ms(response.headers.get("Retry-After")),
+                    )
                 # Streamed, so the ceiling stops the read rather than describing it afterwards.
                 raw = await read_bounded(response, max_bytes=_MAX_BYTES)
         except httpx.TimeoutException:
@@ -246,6 +271,7 @@ class RobinhoodChainClient:
         except httpx.HTTPError:
             raise ChainRpcError("chain_rpc_transport_error") from None
         self._last_bytes = len(raw)
+        self.response_bytes_total += len(raw)
         try:
             payload = json.loads(raw)
         except ValueError:
@@ -255,7 +281,11 @@ class RobinhoodChainClient:
         error = payload.get("error")
         if error is not None:
             code = error.get("code") if isinstance(error, Mapping) else None
-            raise ChainRpcError("chain_rpc_error", rpc_code=None if code is None else int(code))
+            message = str(error.get("message") or "").lower() if isinstance(error, Mapping) else ""
+            reverted = code == 3 or (code == -32000 and "execution reverted" in message)
+            raise ChainRpcError(
+                "chain_rpc_error", rpc_code=None if code is None else int(code), execution_reverted=reverted
+            )
         return payload.get("result")
 
 

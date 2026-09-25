@@ -571,8 +571,6 @@ export interface components {
             net_usd: string | null;
             /** Qualified */
             qualified: boolean;
-            /** Rank Quality */
-            rank_quality: number | null;
             /** Reasons */
             reasons: string[];
             /** Recent Episodes */
@@ -585,10 +583,6 @@ export interface components {
             sell_token_raw: string;
             /** Sell Usd */
             sell_usd: string;
-            /** Source Closed Trades */
-            source_closed_trades: number | null;
-            /** Source Profit Factor */
-            source_profit_factor: string | null;
             /** Transfer Out Count */
             transfer_out_count: number;
             /** Unpriced Count */
@@ -2881,19 +2875,7 @@ export interface components {
         };
         /**
          * NewsWalletRosterData
-         * @description The roster as one version: when it was taken, who was on it, and how the last refresh went.
-         *
-         *     `address_count` is the pool the quorum is counted against: every published address counts, and
-         *     `supported_count` is the subset whose monitoring already covers a whole window at the collection
-         *     cutoff -- a wallet the list gained minutes ago cannot complete a quorum yet, and a page that
-         *     counted it would promise a trigger that cannot fire. `quality_count` and `whale_count` are the
-         *     provider's own ranks, published as information about the list and no longer as a filter on it
-         *     (#649 PR-3 §1).
-         *
-         *     The published version and the last refresh attempt are separate on purpose. `taken_at_ms` and
-         *     `last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`
-         *     belong to the refresh task whether or not it published, so a provider that has been refusing to
-         *     answer for five hours reads as exactly that rather than as a fresh list (#649 §5.1).
+         * @description Current membership and last refresh outcome, independent of collection progress.
          */
         NewsWalletRosterData: {
             /**
@@ -2909,13 +2891,10 @@ export interface components {
             last_success_at_ms?: number | null;
             /** Members */
             members: components["schemas"]["NewsWalletRosterMemberData"][];
+            /** Next Attempt At Ms */
+            next_attempt_at_ms?: number | null;
             /** Provider */
             provider?: string | null;
-            /**
-             * Quality Count
-             * @default 0
-             */
-            quality_count: number;
             /**
              * Supported Count
              * @default 0
@@ -2928,62 +2907,22 @@ export interface components {
              * @default 0
              */
             version: number;
-            /**
-             * Whale Count
-             * @default 0
-             */
-            whale_count: number;
             /** Window */
             window: string;
         };
         /**
          * NewsWalletRosterMemberData
-         * @description One followed wallet in the current roster version, and the two ranks that put it there.
-         *
-         *     A member can hold both ranks and can hold either alone; `null` means "this list did not select
-         *     this wallet", which is not the same as rank 0. Win rate is recorded and is deliberately not a
-         *     selection criterion (#572 §3.2).
+         * @description One source address; source performance is not a subscription or trigger gate.
          */
         NewsWalletRosterMemberData: {
-            /**
-             * Closed Trades
-             * @default 0
-             */
-            closed_trades: number;
-            /**
-             * Followers
-             * @default 0
-             */
-            followers: number;
             /** Handle */
             handle: string;
             /** Monitoring From Ms */
             monitoring_from_ms?: number | null;
-            /**
-             * Open Cost
-             * @default 0
-             */
-            open_cost: number;
-            /** Profit Factor */
-            profit_factor?: number | null;
             /** Provider */
             provider: string;
-            /** Rank Quality */
-            rank_quality?: number | null;
-            /** Rank Whale */
-            rank_whale?: number | null;
-            /**
-             * Realized Pnl
-             * @default 0
-             */
-            realized_pnl: number;
             /** Wallet */
             wallet: string;
-            /**
-             * Win Rate
-             * @default 0
-             */
-            win_rate: number;
         };
         /**
          * NewsWalletTapeStateData
@@ -2993,10 +2932,19 @@ export interface components {
          *     have been taken, so a movement is counted once however many times the overlap re-offers it.
          */
         NewsWalletTapeStateData: {
+            /** Blocked Tx Hash */
+            blocked_tx_hash?: string | null;
+            /**
+             * Consecutive Failures
+             * @default 0
+             */
+            consecutive_failures: number;
             /** Coverage From Ms */
             coverage_from_ms: number | null;
             /** Detection Cutover At Ms */
             detection_cutover_at_ms: number;
+            /** Enrichment Error */
+            enrichment_error?: string | null;
             /** Gap At Ms */
             gap_at_ms: number | null;
             /**
@@ -3024,6 +2972,11 @@ export interface components {
             /** Last Success At Ms */
             last_success_at_ms?: number | null;
             /**
+             * Next Attempt At Ms
+             * @default 0
+             */
+            next_attempt_at_ms: number;
+            /**
              * Noise Through Block
              * @default 0
              */
@@ -3033,12 +2986,22 @@ export interface components {
              * @default 0
              */
             noise_through_tx_index: number;
+            /**
+             * Roster Consecutive Failures
+             * @default 0
+             */
+            roster_consecutive_failures: number;
             /** Roster Last Attempt At Ms */
             roster_last_attempt_at_ms?: number | null;
             /** Roster Last Error */
             roster_last_error?: string | null;
             /** Roster Last Success At Ms */
             roster_last_success_at_ms?: number | null;
+            /**
+             * Roster Next Attempt At Ms
+             * @default 0
+             */
+            roster_next_attempt_at_ms: number;
             /**
              * Roster Version
              * @default 0

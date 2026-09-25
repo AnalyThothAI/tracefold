@@ -133,7 +133,7 @@ describe("wallet net-buy events", () => {
       ),
     );
     renderWallets();
-    expect(await screen.findByText("名单地址（表现榜 / 规模榜）")).toBeVisible();
+    expect(await screen.findByText("来源地址")).toBeVisible();
     expect(await statusState()).toBe("healthy");
   });
 

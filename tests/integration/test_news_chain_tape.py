@@ -261,6 +261,9 @@ class _Chain:
         # 0.1 s blocks, anchored on the recorded sell's own header.
         return 1_788_642_791_000 + (int(block_number) - SELL_BLOCK) * 100
 
+    async def token_decimals(self, address: str) -> int | None:
+        return (await self.token(address)).decimals
+
     async def token(self, address: str) -> _Token:
         normalized = normalize_address(address)
         if normalized in self.fail_token_with:
@@ -272,14 +275,6 @@ def _member(wallet: str, *, quality: int | None = 1, whale: int | None = None) -
     return RosterMember(
         wallet=wallet,
         handle=f"handle-{wallet[-4:]}",
-        followers=1_000,
-        realized_pnl=1.5,
-        closed_trades=20,
-        win_rate=0.5,
-        profit_factor=1.4,
-        open_cost=2.0,
-        rank_quality=quality,
-        rank_whale=whale,
     )
 
 
@@ -454,32 +449,26 @@ def test_a_log_the_node_has_withdrawn_is_not_classified(conn: Any) -> None:
 
 
 def test_missing_receipt_never_advances_cursor_and_recovers_when_complete(conn: Any) -> None:
-    """A transaction that 404s from one node of a load-balanced RPC must not be dropped on sight."""
-
     version = _seed_roster(conn, [SELL_WALLET])
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 2)
     chain.withhold_receipts = {SELL_TX}
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
-    loop = _loop(conn, chain)
-
-    # Carried: the position does not pass it, and the turn says so.
-    for _turn in range(2):
+    clock = [1_900_000_000_000]
+    loop = _loop(conn, chain, clock=lambda: clock[0])
+    for _turn in range(3):
         asyncio.run(loop.advance())
         state = _state(conn)
-        assert state is not None
         assert state["high_water_block"] < SELL_BLOCK
+        assert state["blocked_tx_hash"] == SELL_TX
         assert state["last_outcome"] == "partial"
-    assert len(chain.receipt_calls) == 2
-
-    # A prolonged gap is still unresolved, never counted as classified.
-    for _ in range(5):
-        assert asyncio.run(loop.advance())["unknown"] == 0
-        assert _state(conn)["high_water_block"] < SELL_BLOCK
-    assert _state(conn)["unknown_total"] == 0
-    chain.withhold_receipts = set()
+        before = len(chain.receipt_calls)
+        assert asyncio.run(_loop(conn, chain, clock=lambda: clock[0]).advance())["deferred"]
+        assert len(chain.receipt_calls) == before
+        clock[0] = state["next_attempt_at_ms"]
+    assert len(chain.receipt_calls) == 3 and _state(conn)["unknown_total"] == 0
+    chain.withhold_receipts.clear()
     assert asyncio.run(loop.advance())["written"] == 1
-    assert len(_fills(conn)) == 1
-    assert _state(conn)["unknown_total"] == 0
+    assert len(_fills(conn)) == 1 and _state(conn)["blocked_tx_hash"] is None
 
 
 def test_a_wide_backlog_is_walked_in_bounded_ranges_rather_than_one_request(conn: Any) -> None:
@@ -523,63 +512,24 @@ def test_a_turn_beyond_the_receipt_bound_leaves_the_rest_pending_for_the_next_on
     assert {row["kind"] for row in _fills(conn)} == {"sell", "buy"}
 
 
-def test_a_token_whose_metadata_will_not_answer_holds_only_its_own_transaction(conn: Any) -> None:
-    """#649 §6.3: one ERC-20 that will not say its decimals is not a reason to stop the batch.
-
-    The sell comes first and its tokens answer. The buy's traded token does not, so the buy is held:
-    its fills are not written, the durable position stops at the sell, and the next turn re-offers it.
-    What is *not* held is the rest of the turn -- before this, `_classify` returning `None` broke out
-    of the loop and every later transaction in the planned batch waited on one metadata call.
-    """
-
+@pytest.mark.parametrize("broken_token", [FSD, MADETEST])
+def test_optional_metadata_never_blocks_receipts_or_complete_cutoff(conn: Any, broken_token: str) -> None:
     version = _seed_roster(conn, [SELL_WALLET, BUY_WALLET])
     chain = _Chain(
         [_recorded("receipt_sell_fsd.json"), _recorded("receipt_buy_madetest.json", block_number=BUY_BLOCK)],
-        head=BUY_BLOCK,
+        head=BUY_BLOCK + 40,
     )
     _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
-    chain.fail_token_with = {MADETEST: RuntimeError("chain_rpc_rate_limited")}
-    loop = _loop(conn, chain, catch_up_blocks_max=100_000)
-
-    held = asyncio.run(loop.advance())
-
-    assert held["receipts"] == 1
-    assert [row["kind"] for row in _fills(conn)] == ["sell"]
-    state = _state(conn)
-    assert state is not None
-    # The mark stopped at the sell, so the buy is planned again rather than skipped past.
-    assert state["high_water_block"] == SELL_BLOCK
-    assert state["last_outcome"] == "partial"
-
-    chain.fail_token_with = {}
-    asyncio.run(loop.advance())
+    chain.fail_token_with = {broken_token: RuntimeError("chain_rpc_rate_limited")}
+    result = asyncio.run(_loop(conn, chain).advance())
+    assert result["receipts"] == 2
     assert {row["kind"] for row in _fills(conn)} == {"sell", "buy"}
-
-
-def test_a_held_transaction_does_not_stop_the_transactions_after_it(conn: Any) -> None:
-    """The batch carries on: the *later* transaction is classified and written in the same turn.
-
-    The chain's own identity makes re-writing it on the next turn one `ON CONFLICT DO NOTHING`, which
-    is what lets the position stop at the held transaction while the work behind it still happens.
-    """
-
-    version = _seed_roster(conn, [SELL_WALLET, BUY_WALLET])
-    chain = _Chain(
-        [_recorded("receipt_sell_fsd.json"), _recorded("receipt_buy_madetest.json", block_number=BUY_BLOCK)],
-        head=BUY_BLOCK,
-    )
-    _seed_cursor(conn, block=SELL_BLOCK - 1, roster_version=version)
-    # The *first* transaction is the one that will not answer.
-    chain.fail_token_with = {FSD: RuntimeError("chain_rpc_rate_limited")}
-    loop = _loop(conn, chain, catch_up_blocks_max=100_000)
-
-    result = asyncio.run(loop.advance())
-
-    assert result["receipts"] == 1
-    assert [row["kind"] for row in _fills(conn)] == ["buy"]
     state = _state(conn)
-    assert state is not None
-    assert state["high_water_block"] == SELL_BLOCK - 1
+    assert state["high_water_block"] == BUY_BLOCK + 10
+    assert state["last_outcome"] == "success" and state["last_error"] is None
+    assert state["enrichment_error"] is not None
+    broken = next(row for row in _fills(conn) if row["token"] == broken_token)
+    assert broken["token_symbol"] is None and broken["usd"] is not None
 
 
 def test_a_chain_failure_ends_the_turn_with_the_previous_position_intact(conn: Any) -> None:
@@ -589,7 +539,8 @@ def test_a_chain_failure_ends_the_turn_with_the_previous_position_intact(conn: A
     chain = _Chain([_recorded("receipt_sell_fsd.json")], head=SELL_BLOCK + 5)
     _seed_cursor(conn, block=SELL_BLOCK, roster_version=version)
     chain.fail_logs_with = RuntimeError("chain_rpc_rate_limited")
-    loop = _loop(conn, chain)
+    clock = [1_900_000_000_000]
+    loop = _loop(conn, chain, clock=lambda: clock[0])
 
     result = asyncio.run(loop.advance())
 
@@ -606,8 +557,9 @@ def test_a_chain_failure_ends_the_turn_with_the_previous_position_intact(conn: A
     assert state["last_success_at_ms"] is None
     assert loop.last_error is not None
 
+    clock[0] = _state(conn)["next_attempt_at_ms"]
     chain.fail_logs_with = None
-    assert asyncio.run(_loop(conn, chain).advance())["written"] == 1
+    assert asyncio.run(_loop(conn, chain, clock=lambda: clock[0]).advance())["written"] == 1
     recovered = _state(conn)
     assert recovered is not None
     assert (recovered["last_outcome"], recovered["last_error"]) == ("success", None)
@@ -785,7 +737,7 @@ def test_a_refused_read_ends_the_turn_and_leaves_the_capability_running(conn: An
 
     _seed_roster(conn, [SELL_WALLET])
     db = _Db(conn)
-    db.fail_on = {"news_chain_tape_state": DeferError("db_admission_timeout")}
+    db.fail_on = {"news_chain_tape_plan": DeferError("db_admission_timeout")}
     loop = ChainTapeLoop(db=db, chain=_Chain([], head=SELL_BLOCK))
 
     result = asyncio.run(loop.advance())
@@ -795,7 +747,7 @@ def test_a_refused_read_ends_the_turn_and_leaves_the_capability_running(conn: An
 
 
 # --------------------------------------------------------------------------- roster versions
-def test_a_roster_version_appears_only_when_the_membership_or_the_ranks_change(conn: Any) -> None:
+def test_a_roster_version_appears_only_when_the_membership_changes(conn: Any) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():
         first = repos.news.chain_tape_store_roster([_member(SELL_WALLET)], now_ms=1_000)
@@ -811,14 +763,14 @@ def test_a_roster_version_appears_only_when_the_membership_or_the_ranks_change(c
 
     with repos.transaction():
         moved = repos.news.chain_tape_store_roster([_member(SELL_WALLET, quality=2)], now_ms=3_000)
-    assert moved.roster_version == 2
+    assert moved.roster_version == 1
 
     with repos.transaction():
         joined = repos.news.chain_tape_store_roster(
             [_member(SELL_WALLET, quality=2), _member(BUY_WALLET, quality=1)], now_ms=4_000
         )
-    assert joined.roster_version == 3
-    assert conn.execute("SELECT count(*) AS n FROM news_market_wallet_roster").fetchone()["n"] == 4
+    assert joined.roster_version == 2
+    assert conn.execute("SELECT count(*) AS n FROM news_market_wallet_roster").fetchone()["n"] == 3
 
 
 # --------------------------------------------------------------------------- retention

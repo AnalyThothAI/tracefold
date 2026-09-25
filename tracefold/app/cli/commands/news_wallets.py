@@ -20,6 +20,7 @@ import time
 from argparse import Namespace
 from typing import Any
 
+from tracefold.news.chain_tape.rules import supported_member_count
 from tracefold.news.wallet_contracts import NET_BUY_WINDOW_MS
 from tracefold.platform.config.loader import load_settings
 
@@ -31,7 +32,7 @@ def handle_wallets(args: Namespace) -> tuple[int, dict[str, Any]]:
     chain_tape = settings.news.chain_tape
     now_ms = int(time.time() * 1000)
     from_ms = now_ms - max(1, int(args.hours)) * 3_600_000
-    with repositories(settings) as repos:
+    with repositories(settings) as repos, repos.news.wallet_read_snapshot():
         news = repos.news
         members = news.chain_tape_roster_rows()
         tape = news.chain_tape_state()
@@ -57,55 +58,35 @@ def handle_wallets(args: Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def _roster_funnel(members: list[dict[str, Any]], *, state: dict[str, Any], settings: Any) -> dict[str, Any]:
-    """What the last published list contains, and what the last refresh attempt did.
-
-    The provider's own source-address count is deliberately absent: this command makes no network
-    call, and the only honest local answer is "the addresses that were selected". `scripts/
-    compare_roster_windows.py` is the one that asks the site.
-    """
-
-    rules = settings.roster
-    at_floor = [member for member in members if int(member["closed_trades"] or 0) >= rules.min_closed_trades]
+    """The locally published complete source response and its refresh outcome."""
     return {
         "roster_version": 0 if not members else int(members[0]["roster_version"]),
         "taken_at_ms": None if not members else int(members[0]["taken_at_ms"]),
-        "window": rules.window,
-        "selected_addresses": len(members),
-        "closed_trades_at_or_above_floor": len(at_floor),
-        "profit_factor_known": sum(1 for member in at_floor if member["profit_factor"] is not None),
-        "profit_factor_unknown": sum(1 for member in at_floor if member["profit_factor"] is None),
-        "quality": sum(1 for member in members if member["rank_quality"] is not None),
-        "whale": sum(1 for member in members if member["rank_whale"] is not None),
-        "min_closed_trades": rules.min_closed_trades,
-        "min_profit_factor": rules.min_profit_factor,
+        "window": settings.roster.window,
+        "source_addresses": len(members),
         "refresh_last_attempt_at_ms": state.get("roster_last_attempt_at_ms"),
         "refresh_last_success_at_ms": state.get("roster_last_success_at_ms"),
         "refresh_last_error": state.get("roster_last_error"),
+        "refresh_next_attempt_at_ms": state.get("roster_next_attempt_at_ms"),
     }
 
 
 def _triggerability(
     members: list[dict[str, Any]], *, state: dict[str, Any], settings: Any, now_ms: int
 ) -> dict[str, Any]:
-    """Whether the one window *can* be satisfied by the addresses currently being watched.
-
-    Every published address counts towards the quorum, so the pool here is the roster itself; the
-    quality and whale ranks stay in `roster_funnel` as information about the list. Monitoring support
-    is measured against the tape's own scan time, not the host clock: the question is what collection
-    had covered by the last position it committed.
-    """
-
-    reference = state.get("scanned_at_ms") or now_ms
+    """Coverage at the committed chain cutoff; collection freshness is separate."""
+    reference = state.get("scanned_at_ms")
     required = settings.rules.net_buy_slow_n
-    supported = sum(
-        1
-        for member in members
-        if member["monitoring_from_ms"] is not None
-        and int(member["monitoring_from_ms"]) <= int(reference) - NET_BUY_WINDOW_MS
+    supported = supported_member_count(
+        members,
+        cutoff_at_ms=reference,
+        coverage_from_ms=state.get("coverage_from_ms"),
+        gap_at_ms=state.get("gap_at_ms"),
     )
     return {
-        "measured_at_ms": int(reference),
-        "measured_against": "scanned_at_ms" if state.get("scanned_at_ms") else "host_clock",
+        "measured_at_ms": reference,
+        "measured_against": "scanned_at_ms",
+        "collection_lag_ms": None if reference is None else now_ms - reference,
         "min_net_buy_usd": str(settings.rules.min_net_buy_usd),
         "trigger_max_age_s": settings.rules.trigger_max_age_s,
         "window": "30m",
@@ -131,6 +112,9 @@ def _flow_coverage(coverage: dict[str, Any], derived: list[dict[str, Any]], *, s
             "scanned_log": state.get("scanned_log"),
             "coverage_from_ms": state.get("coverage_from_ms"),
             "gap_at_ms": state.get("gap_at_ms"),
+            "next_attempt_at_ms": state.get("next_attempt_at_ms"),
+            "blocked_tx_hash": state.get("blocked_tx_hash"),
+            "enrichment_error": state.get("enrichment_error"),
         },
         # Named for what they are. These accumulate for the life of the row and are not a rate.
         "lifetime_totals": {

@@ -148,10 +148,8 @@ news:
     poll_interval_s: 2.0
     roster_provider_url: "https://rhtrenches.com"
     roster:
-      min_closed_trades: 10
-      min_profit_factor: 1.2
-      top_quality: 20
-      top_whale_by_open_cost: 20
+      window: "30d"
+      refresh_interval_s: 3600
     rules:
       net_buy_slow_n: 5
       min_net_buy_usd: 1000

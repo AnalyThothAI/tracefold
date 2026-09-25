@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -181,7 +180,7 @@ def test_token_metadata_is_decoded_from_the_recorded_calls_and_cached() -> None:
     stable, again, fsd = asyncio.run(_with(_chain(seen), work))
 
     assert (stable.symbol, stable.decimals) == ("USDG", 6)
-    assert again is stable
+    assert again == stable
     assert (fsd.symbol, fsd.decimals) == ("FSD", 18)
     assert [call["method"] for call in seen].count("eth_call") == 4
 
@@ -256,7 +255,7 @@ def test_an_oversized_roster_answer_is_refused_the_same_way(monkeypatch: pytest.
         return await client.traders()
 
     monkeypatch.setattr("tracefold.integrations.robinhoodtrenches._MAX_BYTES", 64)
-    client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport, pace_seconds=0.0)
+    client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport)
     with pytest.raises(RosterProviderError) as failure:
         asyncio.run(_with(client, work))
 
@@ -286,17 +285,16 @@ def _roster_transport(seen: list[httpx.Request] | None = None) -> httpx.MockTran
     return httpx.MockTransport(handler)
 
 
-def _roster(seen: list[httpx.Request] | None = None, *, pace_seconds: float = 0.0) -> RobinhoodTrenchesClient:
+def _roster(seen: list[httpx.Request] | None = None) -> RobinhoodTrenchesClient:
     return RobinhoodTrenchesClient(
         base_url="https://trenches.test",
         transport=_roster_transport(seen),
-        pace_seconds=pace_seconds,
     )
 
 
 def test_the_default_roster_host_reads_the_recorded_list_at_the_current_domain() -> None:
     seen: list[httpx.Request] = []
-    client = RobinhoodTrenchesClient(transport=_roster_transport(seen), pace_seconds=0.0)
+    client = RobinhoodTrenchesClient(transport=_roster_transport(seen))
 
     async def work(site: RobinhoodTrenchesClient) -> Any:
         return await site.traders()
@@ -313,7 +311,7 @@ def test_a_roster_redirect_is_explicit_and_never_followed(status: int) -> None:
         seen.append(request)
         return httpx.Response(status, headers={"location": "https://different.test/api/traders"}, content=b"")
 
-    client = RobinhoodTrenchesClient(transport=httpx.MockTransport(handler), pace_seconds=0.0)
+    client = RobinhoodTrenchesClient(transport=httpx.MockTransport(handler))
 
     async def work(site: RobinhoodTrenchesClient) -> Any:
         return await site.traders()
@@ -432,50 +430,8 @@ def test_the_tracked_list_decodes_into_the_fields_the_roster_rules_read() -> Non
 
     assert len(rows) == 10
     frank = next(row for row in rows if row.handle == "frankdegods")
-    assert frank.address == "0x696d1265c8fc4f14797abebfae3c43ebfa9d8e28"
-    assert (frank.closed_trades, frank.followers) == (50, 244_322)
-    assert round(frank.open_cost) == 545_894
-    assert dict(seen[0].url.params) == {"window": "7d", "stocks": "false"}
-
-
-def test_a_trader_document_carries_the_profit_factor_no_other_endpoint_publishes() -> None:
-    """And carries different closed-trade and P&L numbers than the list does for the same handle.
-
-    The recorded pair says 51 closes and 51,334 realized here against 50 and 510,047 on the list. The
-    two endpoints do not agree, which is exactly why the roster stores the list's figures and takes only
-    `profit_factor` -- which exists nowhere else -- from this one. Mixing them would put two
-    incomparable numbers in one row (#572 §3.1).
-    """
-
-    async def work(client: RobinhoodTrenchesClient) -> Any:
-        return await client.trader("frankdegods")
-
-    stats = asyncio.run(_with(_roster(), work))
-
-    assert stats is not None
-    assert stats.profit_factor is not None
-    assert round(stats.profit_factor, 4) == 1.5653
-    assert (stats.closed_trades, round(stats.realized_pnl)) == (51, 51_334)
-
-
-def test_an_unknown_handle_is_absent_rather_than_a_failure() -> None:
-    async def work(client: RobinhoodTrenchesClient) -> Any:
-        return await client.trader("nobody")
-
-    assert asyncio.run(_with(_roster(), work)) is None
-
-
-def test_calls_are_paced_apart_because_this_is_somebody_elses_small_site() -> None:
-    async def work(client: RobinhoodTrenchesClient) -> float:
-        started = time.monotonic()
-        await client.traders()
-        await client.trader("frankdegods")
-        await client.trader("rasmr")
-        return time.monotonic() - started
-
-    elapsed = asyncio.run(_with(_roster(pace_seconds=0.05), work))
-
-    assert elapsed >= 0.1
+    assert frank.wallet == "0x696d1265c8fc4f14797abebfae3c43ebfa9d8e28"
+    assert dict(seen[0].url.params) == {"window": "30d", "stocks": "false"}
 
 
 def test_a_list_that_parses_to_nothing_is_a_broken_answer_not_an_empty_roster() -> None:
@@ -486,104 +442,11 @@ def test_a_list_that_parses_to_nothing_is_a_broken_answer_not_an_empty_roster() 
     async def work(client: RobinhoodTrenchesClient) -> Any:
         return await client.traders()
 
-    client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport, pace_seconds=0.0)
+    client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport)
     with pytest.raises(RosterProviderError) as failure:
         asyncio.run(_with(client, work))
 
-    assert failure.value.code == "roster_payload_empty"
-
-
-def test_both_roster_endpoints_carry_the_same_statistics_window() -> None:
-    """#649 §2.1: the list was asked for 7d and the profit factor for the provider's own default.
-
-    The profit factor and the closed-trade count are compared against each other by one rule, so they
-    have to be computed over one window. They were not.
-    """
-
-    seen: list[httpx.Request] = []
-
-    async def work(client: RobinhoodTrenchesClient) -> Any:
-        await client.traders(window="30d")
-        return await client.trader("frankdegods", window="30d")
-
-    asyncio.run(_with(_roster(seen), work))
-
-    assert [dict(request.url.params)["window"] for request in seen] == ["30d", "30d"]
-
-
-def test_a_throttled_call_is_asked_again_before_it_becomes_a_refresh_failure() -> None:
-    """#649 §5.1: measured, the site answers 429 sporadically whatever the pace.
-
-    A refresh publishes nothing unless every candidate answered, so one unlucky handle would
-    otherwise withhold the whole list. The retry is this call being made again -- nothing is cached
-    and the answer, when it comes, is the site's.
-    """
-
-    attempts: list[int] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        attempts.append(1)
-        if len(attempts) < 3:
-            return httpx.Response(429, text="slow down")
-        return httpx.Response(200, json=_fixture("trader_stats.json")["frankdegods"])
-
-    async def work(client: RobinhoodTrenchesClient) -> Any:
-        return await client.trader("frankdegods")
-
-    client = RobinhoodTrenchesClient(
-        base_url="https://trenches.test",
-        transport=httpx.MockTransport(handler),
-        pace_seconds=0.0,
-        retry_backoff_seconds=(0.0,),
-    )
-    stats = asyncio.run(_with(client, work))
-
-    assert len(attempts) == 3
-    assert stats is not None and stats.profit_factor is not None
-
-
-def test_an_exhausted_retry_is_raised_as_the_rate_limit_it_is() -> None:
-    attempts: list[int] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        attempts.append(1)
-        return httpx.Response(429, text="slow down")
-
-    async def work(client: RobinhoodTrenchesClient) -> Any:
-        return await client.trader("frankdegods")
-
-    client = RobinhoodTrenchesClient(
-        base_url="https://trenches.test",
-        transport=httpx.MockTransport(handler),
-        pace_seconds=0.0,
-        retry_attempts=2,
-        retry_backoff_seconds=(0.0,),
-    )
-    with pytest.raises(RosterProviderError) as failure:
-        asyncio.run(_with(client, work))
-
-    assert (failure.value.code, len(attempts)) == ("roster_rate_limited", 2)
-
-
-def test_an_unknown_handle_is_not_retried_because_404_is_an_answer() -> None:
-    attempts: list[int] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        attempts.append(1)
-        return httpx.Response(404, json={"error": "not found"})
-
-    async def work(client: RobinhoodTrenchesClient) -> Any:
-        return await client.trader("nobody")
-
-    client = RobinhoodTrenchesClient(
-        base_url="https://trenches.test",
-        transport=httpx.MockTransport(handler),
-        pace_seconds=0.0,
-        retry_backoff_seconds=(0.0,),
-    )
-
-    assert asyncio.run(_with(client, work)) is None
-    assert len(attempts) == 1
+    assert failure.value.code == "roster_address_invalid"
 
 
 def test_a_blocked_roster_provider_has_its_own_stable_code() -> None:
@@ -592,8 +455,73 @@ def test_a_blocked_roster_provider_has_its_own_stable_code() -> None:
     async def work(client: RobinhoodTrenchesClient) -> Any:
         return await client.traders()
 
-    client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport, pace_seconds=0.0)
+    client = RobinhoodTrenchesClient(base_url="https://trenches.test", transport=transport)
     with pytest.raises(RosterProviderError) as failure:
         asyncio.run(_with(client, work))
 
     assert failure.value.code == "roster_blocked"
+
+
+def test_roster_throttle_is_one_attempt_with_retry_floor_not_hidden_retries() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(429, headers={"Retry-After": "900"})
+
+    client = RobinhoodTrenchesClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(RosterProviderError) as failure:
+        asyncio.run(_with(client, lambda site: site.traders()))
+    assert len(seen) == 1 and seen[0].url.path == "/api/traders"
+    assert failure.value.retry_after_ms == 900_000
+
+
+def test_cash_precision_does_not_require_the_optional_symbol() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        selector = body["params"][0]["data"]
+        return httpx.Response(
+            200,
+            json={"result": "0x" + f"{6:064x}"}
+            if selector == "0x313ce567"
+            else {"error": {"code": -32603, "message": "internal error"}},
+        )
+
+    client = RobinhoodChainClient(transport=httpx.MockTransport(handler))
+
+    async def work(session):
+        with pytest.raises(ChainRpcError):
+            await session.token(STABLE)
+        assert await session.token_decimals(STABLE) == 6
+        count = session.request_count
+        assert await session.token_decimals(STABLE) == 6
+        assert session.request_count == count
+
+    asyncio.run(_with(client, work))
+    assert len(calls) == 2
+
+
+def test_rpc_internal_error_does_not_poison_metadata_cache() -> None:
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request)
+        return httpx.Response(
+            200,
+            json={"error": {"code": -32603, "message": "busy"}}
+            if len(attempts) == 1
+            else {"result": "0x" + f"{6:064x}"},
+        )
+
+    client = RobinhoodChainClient(transport=httpx.MockTransport(handler))
+
+    async def work(session):
+        with pytest.raises(ChainRpcError):
+            await session.token_decimals(STABLE)
+        assert await session.token_decimals(STABLE) == 6
+
+    asyncio.run(_with(client, work))
+    assert len(attempts) == 2

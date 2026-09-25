@@ -16,9 +16,8 @@ export function WalletRosterTable({ members }: { members: readonly NewsWalletRos
         <thead>
           <tr>
             <th>钱包</th>
-            <th>来源表现榜</th>
-            <th>规模榜</th>
-            <th>来源平仓数 / 盈亏因子</th>
+            <th>来源</th>
+            <th>开始监控</th>
           </tr>
         </thead>
         <tbody>
@@ -28,10 +27,11 @@ export function WalletRosterTable({ members }: { members: readonly NewsWalletRos
                 {member.handle || "未提供名称"}
                 <code>{member.wallet}</code>
               </td>
-              <td>{member.rank_quality ?? "未入榜"}</td>
-              <td>{member.rank_whale ?? "未入榜"}</td>
+              <td>{member.provider}</td>
               <td>
-                {member.closed_trades} / {member.profit_factor ?? "未知"}
+                {member.monitoring_from_ms == null
+                  ? "等待采集"
+                  : displayTime(member.monitoring_from_ms)}
               </td>
             </tr>
           ))}

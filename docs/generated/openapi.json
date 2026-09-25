@@ -812,17 +812,6 @@
             "title": "Qualified",
             "type": "boolean"
           },
-          "rank_quality": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rank Quality"
-          },
           "reasons": {
             "items": {
               "type": "string"
@@ -872,28 +861,6 @@
             "title": "Sell Usd",
             "type": "string"
           },
-          "source_closed_trades": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Closed Trades"
-          },
-          "source_profit_factor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Profit Factor"
-          },
           "transfer_out_count": {
             "title": "Transfer Out Count",
             "type": "integer"
@@ -910,12 +877,9 @@
         "required": [
           "wallet",
           "handle",
-          "rank_quality",
           "roster_version",
           "roster_known_at_ms",
           "monitoring_from_ms",
-          "source_closed_trades",
-          "source_profit_factor",
           "recent_episodes",
           "buy_usd",
           "sell_usd",
@@ -7062,7 +7026,7 @@
       },
       "NewsWalletRosterData": {
         "additionalProperties": false,
-        "description": "The roster as one version: when it was taken, who was on it, and how the last refresh went.\n\n`address_count` is the pool the quorum is counted against: every published address counts, and\n`supported_count` is the subset whose monitoring already covers a whole window at the collection\ncutoff -- a wallet the list gained minutes ago cannot complete a quorum yet, and a page that\ncounted it would promise a trigger that cannot fire. `quality_count` and `whale_count` are the\nprovider's own ranks, published as information about the list and no longer as a filter on it\n(#649 PR-3 \u00a71).\n\nThe published version and the last refresh attempt are separate on purpose. `taken_at_ms` and\n`last_success_at_ms` belong to a refresh that completed; `last_attempt_at_ms` and `last_error`\nbelong to the refresh task whether or not it published, so a provider that has been refusing to\nanswer for five hours reads as exactly that rather than as a fresh list (#649 \u00a75.1).",
+        "description": "Current membership and last refresh outcome, independent of collection progress.",
         "properties": {
           "address_count": {
             "default": 0,
@@ -7109,6 +7073,17 @@
             "title": "Members",
             "type": "array"
           },
+          "next_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At Ms"
+          },
           "provider": {
             "anyOf": [
               {
@@ -7119,11 +7094,6 @@
               }
             ],
             "title": "Provider"
-          },
-          "quality_count": {
-            "default": 0,
-            "title": "Quality Count",
-            "type": "integer"
           },
           "supported_count": {
             "default": 0,
@@ -7146,11 +7116,6 @@
             "title": "Version",
             "type": "integer"
           },
-          "whale_count": {
-            "default": 0,
-            "title": "Whale Count",
-            "type": "integer"
-          },
           "window": {
             "title": "Window",
             "type": "string"
@@ -7165,18 +7130,8 @@
       },
       "NewsWalletRosterMemberData": {
         "additionalProperties": false,
-        "description": "One followed wallet in the current roster version, and the two ranks that put it there.\n\nA member can hold both ranks and can hold either alone; `null` means \"this list did not select\nthis wallet\", which is not the same as rank 0. Win rate is recorded and is deliberately not a\nselection criterion (#572 \u00a73.2).",
+        "description": "One source address; source performance is not a subscription or trigger gate.",
         "properties": {
-          "closed_trades": {
-            "default": 0,
-            "title": "Closed Trades",
-            "type": "integer"
-          },
-          "followers": {
-            "default": 0,
-            "title": "Followers",
-            "type": "integer"
-          },
           "handle": {
             "title": "Handle",
             "type": "string"
@@ -7192,61 +7147,13 @@
             ],
             "title": "Monitoring From Ms"
           },
-          "open_cost": {
-            "default": 0.0,
-            "title": "Open Cost",
-            "type": "number"
-          },
-          "profit_factor": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Profit Factor"
-          },
           "provider": {
             "title": "Provider",
             "type": "string"
           },
-          "rank_quality": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rank Quality"
-          },
-          "rank_whale": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rank Whale"
-          },
-          "realized_pnl": {
-            "default": 0.0,
-            "title": "Realized Pnl",
-            "type": "number"
-          },
           "wallet": {
             "title": "Wallet",
             "type": "string"
-          },
-          "win_rate": {
-            "default": 0.0,
-            "title": "Win Rate",
-            "type": "number"
           }
         },
         "required": [
@@ -7261,6 +7168,22 @@
         "additionalProperties": false,
         "description": "Where the tape has read to, and what its last turn did there.\n\n`noise_through_block` is the second position and never lags: it is how far the two discard counters\nhave been taken, so a movement is counted once however many times the overlap re-offers it.",
         "properties": {
+          "blocked_tx_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Tx Hash"
+          },
+          "consecutive_failures": {
+            "default": 0,
+            "title": "Consecutive Failures",
+            "type": "integer"
+          },
           "coverage_from_ms": {
             "anyOf": [
               {
@@ -7275,6 +7198,17 @@
           "detection_cutover_at_ms": {
             "title": "Detection Cutover At Ms",
             "type": "integer"
+          },
+          "enrichment_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enrichment Error"
           },
           "gap_at_ms": {
             "anyOf": [
@@ -7329,6 +7263,11 @@
             ],
             "title": "Last Success At Ms"
           },
+          "next_attempt_at_ms": {
+            "default": 0,
+            "title": "Next Attempt At Ms",
+            "type": "integer"
+          },
           "noise_through_block": {
             "default": 0,
             "title": "Noise Through Block",
@@ -7337,6 +7276,11 @@
           "noise_through_tx_index": {
             "default": 0,
             "title": "Noise Through Tx Index",
+            "type": "integer"
+          },
+          "roster_consecutive_failures": {
+            "default": 0,
+            "title": "Roster Consecutive Failures",
             "type": "integer"
           },
           "roster_last_attempt_at_ms": {
@@ -7371,6 +7315,11 @@
               }
             ],
             "title": "Roster Last Success At Ms"
+          },
+          "roster_next_attempt_at_ms": {
+            "default": 0,
+            "title": "Roster Next Attempt At Ms",
+            "type": "integer"
           },
           "roster_version": {
             "default": 0,
