@@ -30,6 +30,8 @@ their separate existing semantics. The replay summary no longer falls back to
 `title`. Tests start at the actual News outbox-producing method and exercise the
 FrameReader, archive, evidence menu and final compiler, with external storage and
 market ports faked. These are contract tests, not a PostgreSQL or venue receipt.
+The compiler and cohort replay fixtures also use public `headline` text; remaining
+Trading test uses of the old spellings explicitly verify that aliases are rejected.
 
 ## Historical data and rollout
 
