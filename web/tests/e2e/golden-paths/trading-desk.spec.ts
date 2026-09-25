@@ -16,7 +16,7 @@ test("positions lead the desk; execution opens a keyboard-dismissible Case and r
   await page.goto("/trading");
   await expect(page.getByRole("heading", { name: "交易执行" })).toBeVisible();
   const safety = page.getByLabel("执行安全状态");
-  await expect(safety.getByText("执行服务在线")).toBeVisible();
+  await expect(safety.getByText("执行状态通道")).toBeVisible();
   await expect(page.getByRole("heading", { name: "当前仓位与保护" })).toBeVisible();
   for (const name of ["暂停新入场", "恢复新入场", "平掉账户仓位"]) {
     await expect(page.getByRole("button", { name })).toHaveCount(0);

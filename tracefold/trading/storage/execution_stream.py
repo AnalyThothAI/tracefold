@@ -351,13 +351,13 @@ class ExecutionRuntimeState:
             raise ValueError("execution_runtime_entry_reason_invalid")
         if self.routes_count < 0:
             raise ValueError("execution_runtime_routes_invalid")
-        for value in (
+        for clock_ns in (
             self.convergence_checked_at_ns,
             self.venue_read_started_at_ns,
             self.venue_read_completed_at_ns,
             self.recovery_attempted_at_ns,
         ):
-            if value is not None and value <= 0:
+            if clock_ns is not None and clock_ns <= 0:
                 raise ValueError("execution_runtime_observation_clock_invalid")
         if (
             self.venue_read_started_at_ns is not None
@@ -365,13 +365,13 @@ class ExecutionRuntimeState:
             and self.venue_read_completed_at_ns < self.venue_read_started_at_ns
         ):
             raise ValueError("execution_runtime_venue_window_invalid")
-        for value in (
+        for failure_name in (
             self.account_projection_failure,
             self.convergence_failure,
             self.venue_read_failure,
             self.recovery_result,
         ):
-            if value is not None and _IDENTITY.fullmatch(value) is None:
+            if failure_name is not None and _IDENTITY.fullmatch(failure_name) is None:
                 raise ValueError("execution_runtime_failure_invalid")
 
 
