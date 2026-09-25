@@ -49,6 +49,7 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
       {
         case_id: "case-hype",
         claim_attempt: 1,
+        started_at_ms: 900,
         ended_at_ms: 1000,
         analysis_status: "model_schema_invalid",
         physical_call_count: 1,
@@ -62,6 +63,8 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
             claim_attempt: 1,
             call_index: 0,
             status: "completed",
+            started_at_ms: 925,
+            finished_at_ms: 975,
             request_ref: "request",
             response_ref: "response",
           },
@@ -79,6 +82,8 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
   );
   expect(screen.getByText(/相邻 1 分钟收盘首次越过冻结区间/)).toHaveTextContent("101");
   expect(screen.getByText(/未取得结案权/)).toBeVisible();
+  expect(screen.getByText(/尝试开始/)).toHaveTextContent(/\.900.*\.000/);
+  expect(screen.getByText(/本地开始/)).toHaveTextContent(/\.925.*\.975/);
   screen.getByRole("button", { name: "回放尝试 1" }).click();
   await waitFor(() => expect(requested).toEqual(["1"]));
   const replayCard = screen

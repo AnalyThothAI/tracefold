@@ -16,6 +16,12 @@ function word(value: unknown): string {
   return value == null ? "—" : String(value);
 }
 
+function attemptClock(value: number | null | undefined): string {
+  if (value == null) return "—";
+  const date = new Date(value);
+  return `${caseClock(value)}:${String(date.getSeconds()).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}`;
+}
+
 export function TradingAnalysisDetail({ item, token }: { item: TradingCase; token: string }) {
   const [openReplay, setOpenReplay] = useState(false);
   const [selectedAttempt, setSelectedAttempt] = useState<number | undefined>();
@@ -187,6 +193,10 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
                 错误：{word(attempt.error_code)} · 物理调用 {attempt.physical_call_count} 次
               </p>
               <p>
+                尝试开始 {attemptClock(attempt.started_at_ms)} · 结束{" "}
+                {attemptClock(attempt.ended_at_ms)}
+              </p>
+              <p>
                 用量：输入 {word(attempt.input_tokens)} / 输出 {word(attempt.output_tokens)} token ·
                 费用{" "}
                 {attempt.cost_microusd == null
@@ -201,7 +211,9 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
               {(attempt.physical_calls ?? []).map((call) => (
                 <p key={call.call_index}>
                   物理调用 {call.call_index + 1} · {call.status} · 预算 {word(call.timeout_ms)} ms ·
-                  请求 {word(call.request_ref)} · 响应 {word(call.response_ref)} · 费用{" "}
+                  本地开始 {attemptClock(call.started_at_ms)} · 结束{" "}
+                  {attemptClock(call.finished_at_ms)} · 请求 {word(call.request_ref)} · 响应{" "}
+                  {word(call.response_ref)} · 费用{" "}
                   {call.cost_microusd == null ? "未知" : `${call.cost_microusd} 微美元`}
                 </p>
               ))}
