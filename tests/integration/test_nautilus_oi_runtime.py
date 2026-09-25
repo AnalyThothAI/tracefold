@@ -32,6 +32,7 @@ from tests.postgres_test_utils import connect_postgres_test, postgres_settings_s
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
     RuntimeStateProjector,
+    RuntimeStateWriter,
     load_or_record_day_start,
     load_runtime_inputs,
     load_unresolved_operator_intents,
@@ -380,6 +381,110 @@ def _wait(predicate: Callable[[], bool], *, timeout_seconds: float = 3.0) -> Non
     while not predicate() and time.monotonic() < deadline:
         time.sleep(0.005)
     assert predicate()
+
+
+def test_journal_table_lock_does_not_starve_the_current_state_writer() -> None:
+    initial = _runtime_state()
+    projector = RuntimeStateProjector(initial=initial)
+    writer = RuntimeStateWriter(
+        settings=Settings(ws_token="699-writer", storage=postgres_settings_storage()),
+        projector=projector,
+        poll_seconds=0.02,
+    )
+    signals = ExecutionSignalClient(account_slot=_ACCOUNT_SLOT, execution_strategy="oi_nautilus_v1")
+    journal = ExecutionJournal(factory=ObservationFactory(_ACCOUNT_SLOT, "oi_nautilus_v1"))
+    bridge = _runtime_bridge(signals, journal=journal)
+    observer = connect_postgres_test(read_only=False)
+    locker = connect_postgres_test(read_only=False)
+    try:
+        writer.start()
+        _wait(lambda: writer.diagnostics["last_written_at_ns"] == NOW_NS)
+        with locker.transaction():
+            locker.execute("LOCK TABLE trading_execution_observations IN ACCESS EXCLUSIVE MODE")
+            journal.offer(
+                journal.factory.create(
+                    normalized_kind="risk",
+                    occurred_at_ns=NOW_NS,
+                    observed_at_ns=NOW_NS,
+                    summary={"risk_fact": "unexpected_exposure", "count": 0, "exposure": ""},
+                    event_identity="locked_journal",
+                )
+            )
+            bridge.start()
+            _wait(
+                lambda: (
+                    observer.execute(
+                        """
+                    SELECT wait_event_type FROM pg_stat_activity
+                     WHERE datname = current_database()
+                       AND application_name = 'tracefold_nautilus_stream'
+                    """
+                    ).fetchone()
+                    == {"wait_event_type": "Lock"}
+                )
+            )
+            next_heartbeat = NOW_NS + SECOND_NS
+            projector.offer(
+                replace(
+                    initial,
+                    heartbeat_at_ns=next_heartbeat,
+                    updated_at_ns=next_heartbeat,
+                    entry_block_reason="entries_paused",
+                )
+            )
+            started = time.perf_counter()
+            _wait(lambda: writer.diagnostics["last_written_at_ns"] == next_heartbeat)
+            assert time.perf_counter() - started < 5.0
+            assert observer.execute(
+                "SELECT heartbeat_at_ns, entry_block_reason FROM trading_execution_runtime_state"
+            ).fetchone() == {"heartbeat_at_ns": next_heartbeat, "entry_block_reason": "entries_paused"}
+        _wait(lambda: journal.backlog() == 0)
+    finally:
+        bridge.stop()
+        writer.stop()
+        bridge.join(3.0)
+        writer.join(3.0)
+        locker.close()
+        observer.close()
+
+
+def test_current_state_lock_preserves_failed_write_verdict_and_recovers() -> None:
+    initial = _runtime_state()
+    projector = RuntimeStateProjector(initial=initial)
+    writer = RuntimeStateWriter(
+        settings=Settings(ws_token="699-writer-recovery", storage=postgres_settings_storage()),
+        projector=projector,
+        poll_seconds=0.02,
+    )
+    observer = connect_postgres_test(read_only=False)
+    locker = connect_postgres_test(read_only=False)
+    try:
+        writer.start()
+        _wait(lambda: writer.diagnostics["last_written_at_ns"] == NOW_NS)
+        next_heartbeat = NOW_NS + SECOND_NS
+        with locker.transaction():
+            locker.execute("LOCK TABLE trading_execution_runtime_state IN ACCESS EXCLUSIVE MODE")
+            projector.offer(
+                replace(
+                    initial,
+                    heartbeat_at_ns=next_heartbeat,
+                    updated_at_ns=next_heartbeat,
+                    entry_block_reason="entries_paused",
+                )
+            )
+            _wait(lambda: writer.diagnostics["failure"] is not None)
+            assert projector.current == initial
+            assert writer.diagnostics["last_written_at_ns"] == NOW_NS
+        _wait(lambda: writer.diagnostics["last_written_at_ns"] == next_heartbeat, timeout_seconds=5.0)
+        assert writer.diagnostics["failure"] is None
+        assert observer.execute(
+            "SELECT heartbeat_at_ns, entry_block_reason FROM trading_execution_runtime_state"
+        ).fetchone() == {"heartbeat_at_ns": next_heartbeat, "entry_block_reason": "entries_paused"}
+    finally:
+        writer.stop()
+        writer.join(3.0)
+        locker.close()
+        observer.close()
 
 
 def test_the_bridge_delivers_within_one_poll_interval_on_one_session_and_survives_its_termination() -> None:
