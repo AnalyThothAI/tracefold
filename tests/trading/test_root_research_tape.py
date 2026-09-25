@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from tracefold.app import trading_analysis
 from tracefold.app.analysis_files import AnalysisFiles
+from tracefold.platform.config.models import TradingExecutionRiskSettings, TradingExecutionSettings
 from tracefold.trading.engine.marketdata import MarketDataResult
 
 
@@ -275,7 +276,9 @@ def test_shadow_evaluation_consumes_contemporaneous_root_tape_without_historical
         reader=SimpleNamespace(market_data=NoHistoricalFetch()),
         settings=SimpleNamespace(
             trading=SimpleNamespace(
-                execution=SimpleNamespace(max_risk_per_trade_usd=Decimal("1")),
+                execution=TradingExecutionSettings(
+                    risk=TradingExecutionRiskSettings(max_risk_per_trade_usd=Decimal("1"))
+                ),
                 analysis=SimpleNamespace(shadow_fee_bps_per_side=Decimal("5")),
             )
         ),

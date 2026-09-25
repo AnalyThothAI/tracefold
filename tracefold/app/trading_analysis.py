@@ -1784,7 +1784,7 @@ class AnalysisRunner:
                     planned_quote=planned_quote,
                     exit_quotes=exit_quotes,
                     requested_notional_usdt=(
-                        self.settings.trading.execution.max_risk_per_trade_usd
+                        self.settings.trading.execution.risk.max_risk_per_trade_usd
                         * Decimal(10_000)
                         / Decimal(plan.stop_distance_bps)
                     ),
