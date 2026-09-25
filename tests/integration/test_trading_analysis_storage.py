@@ -6,9 +6,14 @@ import json
 from decimal import Decimal
 
 import pytest
+from psycopg.rows import dict_row
 
 from scripts.export_trading_analysis_cohort import export_cases
-from scripts.relabel_trading_price_paths import _audit_v1_path, _pending_corrections
+from scripts.relabel_trading_price_paths import (
+    _audit_v1_path,
+    _pending_correction_count,
+    _pending_corrections,
+)
 from scripts.trading_analysis_cohort import evaluate as evaluate_cohort
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
@@ -292,6 +297,8 @@ def test_price_path_v2_correction_appends_without_overwriting_v1(tmp_path) -> No
         assert rows[1]["path_ref"] is None
         pending = _pending_corrections(repositories_for_connection(conn), limit=10)
         assert len(pending) == 1 and pending[0]["case_id"] == case_id
+        conn.row_factory = dict_row
+        assert _pending_correction_count(repositories_for_connection(conn)) == 1
         audit = _audit_v1_path(pending[0], archive.read(legacy_ref))
         assert audit["status"] == "ok" and Decimal(audit["return_bps"]) == Decimal("100")
         correction_ref = archive.write(audit)
@@ -313,6 +320,7 @@ def test_price_path_v2_correction_appends_without_overwriting_v1(tmp_path) -> No
         ).fetchall()
         assert settled[0]["status"] == "ok" and settled[0]["path_ref"] == legacy_ref
         assert settled[1]["status"] == "ok" and settled[1]["return_bps"] == 100
+        assert _pending_correction_count(repositories_for_connection(conn)) == 0
         assert archive.read(settled[1]["path_ref"])["historical_quality"] == "verified_endpoint_only"
     finally:
         conn.close()

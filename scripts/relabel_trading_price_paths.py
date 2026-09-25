@@ -128,6 +128,20 @@ def _pending_corrections(repos: RepositorySession, *, limit: int) -> list[dict[s
     return [dict(row) for row in rows]
 
 
+def _pending_correction_count(repos: RepositorySession) -> int:
+    row = repos.conn.execute(
+        """
+        SELECT count(*) AS pending_count FROM trading_case_outcomes old
+          JOIN trading_case_outcomes newer
+            ON newer.case_id=old.case_id AND newer.axis=old.axis
+           AND newer.horizon_seconds=old.horizon_seconds
+         WHERE old.label_version='price_path_v1'
+           AND newer.label_version='price_path_v2' AND newer.status='pending'
+        """
+    ).fetchone()
+    return int(row["pending_count"])
+
+
 def relabel(*, batch_size: int, max_batches: int) -> dict[str, Any]:
     settings = load_settings(require_ws_token=False)
     files = AnalysisFiles(settings.app_home / "archive" / "trading-analysis")
@@ -177,20 +191,11 @@ def relabel(*, batch_size: int, max_batches: int) -> dict[str, Any]:
                     else:
                         unverifiable += 1
                         reasons[audit["reason"]] += 1
-        pending = repos.conn.execute(
-            """
-            SELECT count(*) FROM trading_case_outcomes old
-              JOIN trading_case_outcomes newer
-                ON newer.case_id=old.case_id AND newer.axis=old.axis
-               AND newer.horizon_seconds=old.horizon_seconds
-             WHERE old.label_version='price_path_v1'
-               AND newer.label_version='price_path_v2' AND newer.status='pending'
-            """
-        ).fetchone()[0]
+        pending = _pending_correction_count(repos)
     return {
         "queued": queued,
         "processed": processed,
-        "pending": int(pending),
+        "pending": pending,
         "verified_endpoint_labels": verified,
         "unverifiable": unverifiable,
         "unverifiable_reasons": dict(sorted(reasons.items())),
