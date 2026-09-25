@@ -13,6 +13,9 @@ whose HTTP transport answers from this file instead of Binance.
 * Path B (12:19): positionRisk answers `-1021`, the adapter swallows it and reports no position, and
   the 5 s position check closed the position as flat. The production engine no longer generates an
   order to match a position report.
+* Triggered Algo child (#699): a protection order's regular child has the fill while the Cache still
+  indexes the parent Algo ID. A signed parent receipt establishes the child ID before native replay;
+  full and partial real fills advance only their actual quantity.
 
 The engine's own coroutines (`_check_positions_consistency`) are driven directly: they are what its
 five-second timer runs, and no public entry point runs one pass of them.
@@ -105,8 +108,8 @@ PROTECTION = (
     (STOP_ID, 1_000_000_215_275_001, OrderType.STOP_MARKET, "0.8310"),
     (TAKE_PROFIT_ID, 1_000_000_215_275_002, OrderType.MARKET_IF_TOUCHED, "0.8562"),
 )
-TAKE_PROFIT_CHILD_ORDER_ID = 308_654_865
-TAKE_PROFIT_CHILD_TRADE_ID = 63_772_472
+TAKE_PROFIT_CHILD_ORDER_ID = 478_532_088
+TAKE_PROFIT_CHILD_TRADE_ID = 62_685_283
 
 
 class _Venue:
@@ -120,14 +123,18 @@ class _Venue:
         triggered_take_profit: bool = False,
         wrong_algo_child: bool = False,
         missing_child_trade: bool = False,
+        child_status: str = "FILLED",
+        split_child_trades: bool = False,
     ) -> None:
         self.position_risk_error = position_risk_error
         self.prior_round_trip = prior_round_trip
         self.triggered_take_profit = triggered_take_profit
         self.wrong_algo_child = wrong_algo_child
         self.missing_child_trade = missing_child_trade
+        self.child_status = child_status
+        self.split_child_trades = split_child_trades
         self.user_trade_symbols: list[str] = []
-        self.position_amount = "0" if triggered_take_profit else "1188.3"
+        self.position_amount = "588.3" if child_status != "FILLED" else ("0" if triggered_take_profit else "1188.3")
 
     async def send_request(
         self, _client: Any, _method: Any, url_path: str, payload: dict[str, str] | None = None, **_: Any
@@ -150,19 +157,41 @@ class _Venue:
                     for order_id, trade_id, side, at_ms in PRIOR_ROUND_TRIP
                 ] + trades
             if self.triggered_take_profit and not self.missing_child_trade:
-                trades.append(
+                child_quantities = (
+                    ("600.0", "588.3")
+                    if self.split_child_trades
+                    else ("600.0" if self.child_status != "FILLED" else "1188.3",)
+                )
+                trades.extend(
                     _trade(
-                        TAKE_PROFIT_CHILD_TRADE_ID,
+                        TAKE_PROFIT_CHILD_TRADE_ID + offset,
                         TAKE_PROFIT_CHILD_ORDER_ID,
                         "SELL",
-                        "1188.3",
-                        FILL_MS + 2_000,
+                        quantity,
+                        FILL_MS + 2_000 + offset,
                         price="0.8562",
                     )
+                    for offset, quantity in enumerate(child_quantities)
                 )
             return msgspec.json.encode(trades)
         if self.triggered_take_profit:
-            if url_path.endswith("/openOrders") or url_path.endswith("/openAlgoOrders"):
+            if url_path.endswith("/openOrders"):
+                return msgspec.json.encode(
+                    [
+                        _binance_order(
+                            TAKE_PROFIT_CHILD_ORDER_ID,
+                            TAKE_PROFIT_ID.value,
+                            "SELL",
+                            "0.8562",
+                            FILL_MS + 2_000,
+                            filled="600.0",
+                            status="PARTIALLY_FILLED",
+                        )
+                    ]
+                    if self.child_status == "PARTIALLY_FILLED"
+                    else []
+                )
+            if url_path.endswith("/openAlgoOrders"):
                 return msgspec.json.encode([])
             if url_path.endswith("/allOrders"):
                 return msgspec.json.encode(
@@ -174,6 +203,8 @@ class _Venue:
                             "SELL",
                             "0.8562",
                             FILL_MS + 2_000,
+                            filled="600.0" if self.child_status != "FILLED" else "1188.3",
+                            status=self.child_status,
                         ),
                     ]
                 )
@@ -194,7 +225,7 @@ class _Venue:
                         "workingType": "MARK_PRICE",
                         "quantity": "1188.3",
                         "triggerPrice": "0.8562",
-                        "algoStatus": "FINISHED",
+                        "algoStatus": "TRIGGERED" if self.child_status != "FILLED" else "FINISHED",
                         "actualOrderId": str(TAKE_PROFIT_CHILD_ORDER_ID + int(self.wrong_algo_child)),
                         "triggerTime": FILL_MS + 2_000,
                     }
@@ -235,15 +266,24 @@ def _trade(trade_id: int, order_id: int, side: str, qty: str, at_ms: int, *, pri
     }
 
 
-def _binance_order(order_id: int, client_order_id: str, side: str, price: str, at_ms: int) -> dict[str, Any]:
+def _binance_order(
+    order_id: int,
+    client_order_id: str,
+    side: str,
+    price: str,
+    at_ms: int,
+    *,
+    filled: str = "1188.3",
+    status: str = "FILLED",
+) -> dict[str, Any]:
     return {
         "symbol": "APTUSDT",
         "orderId": order_id,
         "clientOrderId": client_order_id,
         "price": "0",
         "origQty": "1188.3",
-        "executedQty": "1188.3",
-        "status": "FILLED",
+        "executedQty": filled,
+        "status": status,
         "timeInForce": "GTC",
         "type": "MARKET",
         "side": side,
@@ -643,6 +683,15 @@ def test_native_reconciliation_connects_a_triggered_algo_child_fill_to_the_cache
     assert child.venue_order_id == VenueOrderId(str(TAKE_PROFIT_CHILD_ORDER_ID))
 
 
+def test_triggered_algo_child_replays_each_distinct_venue_trade_once(account: Any) -> None:
+    runtime = account(triggered_take_profit=True, split_child_trades=True)
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is True
+    assert runtime.open_positions() == []
+    assert runtime.strategy.filled == [TAKE_PROFIT_ID.value, TAKE_PROFIT_ID.value]
+    assert runtime.strategy.closed == [TAKE_PROFIT_ID.value]
+
+
 def test_triggered_algo_child_requires_signed_parent_child_receipt(account: Any) -> None:
     runtime = account(triggered_take_profit=True, wrong_algo_child=True)
 
@@ -658,6 +707,19 @@ def test_triggered_algo_child_without_venue_trade_cannot_infer_a_close(account: 
     assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is False
     assert runtime.open_positions() == _HELD
     assert runtime.strategy.filled == []
+
+
+@pytest.mark.parametrize("child_status", ["PARTIALLY_FILLED", "EXPIRED", "CANCELED"])
+def test_triggered_algo_partial_child_fill_preserves_the_remaining_position(account: Any, child_status: str) -> None:
+    runtime = account(triggered_take_profit=True, child_status=child_status)
+    runtime.position_checks(count=4)
+    assert runtime.open_positions() == _HELD
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is True
+    assert runtime.open_positions() == [(str(runtime.cache.positions_open()[0].id), "588.3")]
+    assert runtime.strategy.filled == [TAKE_PROFIT_ID.value]
+    assert runtime.strategy.closed == []
+    assert runtime.cache.order(TAKE_PROFIT_ID).is_closed is (child_status != "PARTIALLY_FILLED")
 
 
 async def _reconcile_with_event_queue(runtime: _Account) -> bool:

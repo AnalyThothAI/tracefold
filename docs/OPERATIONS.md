@@ -160,7 +160,9 @@ During full native reconciliation the Runtime's Binance client verifies the
 parent's signed `GET /fapi/v1/algoOrder` receipt, including `actualOrderId`, against
 the child order and its complete venue trades. It then sends Nautilus an
 `OrderUpdated` to move the cached order to the child ID before the engine replays
-those real fills. Missing or contradictory evidence fails reconciliation; a
+those real fills. A partial child fill reduces only the traded quantity; its
+remaining position and Plan stay open for protection and exit. Missing or
+contradictory evidence fails reconciliation; a
 matching client order ID by itself never authorizes a close. The original
 strategy order and its Plan retain the stop or take-profit attribution.
 

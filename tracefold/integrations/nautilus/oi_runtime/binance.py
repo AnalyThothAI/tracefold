@@ -102,10 +102,13 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
                 or order.side != report.order_side
                 or report.order_side not in (OrderSide.BUY, OrderSide.SELL)
                 or report.order_type != OrderType.MARKET
-                or report.order_status != OrderStatus.FILLED
+                or report.order_status
+                not in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED, OrderStatus.EXPIRED, OrderStatus.CANCELED)
                 or not report.reduce_only
                 or order.quantity != report.quantity
-                or report.filled_qty != order.quantity
+                or report.filled_qty.as_decimal() <= 0
+                or report.filled_qty > order.quantity
+                or (report.order_status == OrderStatus.FILLED and report.filled_qty != order.quantity)
                 or not fills
                 or sum((fill.last_qty.as_decimal() for fill in fills), Decimal()) != report.filled_qty.as_decimal()
                 or any(
