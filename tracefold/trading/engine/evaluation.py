@@ -131,13 +131,16 @@ def evaluate_shadow(
         if at_ms - prior_at > 60_000:
             return _unevaluable("mark_path_gap", **context)
         prior_at = at_ms
+        received_at_ms = row.get("received_at_ms")
+        if not row.get("snapshot_ref") or not isinstance(received_at_ms, int):
+            return _unevaluable("mark_path_incomplete", **context)
         try:
             high = Decimal(str(row["high"]))
             low = Decimal(str(row["low"]))
             close = Decimal(str(row["close"]))
-            visible_at = int(row.get("received_at_ms", at_ms))
         except (InvalidOperation, KeyError, TypeError, ValueError):
             return _unevaluable("mark_bar_invalid", **context)
+        visible_at = received_at_ms
         if (
             not all(value.is_finite() for value in (high, low, close))
             or low <= 0
@@ -146,6 +149,8 @@ def evaluate_shadow(
             or visible_at < at_ms
         ):
             return _unevaluable("mark_bar_invalid", **context)
+        if visible_at > at_ms + SHADOW_MARK_RECEIPT_MAX_DELAY_MS:
+            return _unevaluable("mark_path_incomplete", **context)
         # A 1m OHLC bar cannot order two touches; stop-first is conservative.
         stop_hit = low <= stop if side == "long" else high >= stop
         # The bar containing the planned entry also contains prices from

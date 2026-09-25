@@ -21,7 +21,7 @@ from psycopg.rows import dict_row
 
 from scripts.trading_analysis_cohort import RuleDecision, _rule_decision
 from tracefold.app.analysis_files import AnalysisFiles
-from tracefold.trading.engine.evaluation import EVALUATION_VERSION, SHADOW_MARK_RECEIPT_MAX_DELAY_MS, evaluate_shadow
+from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
 from tracefold.trading.engine.strategy import ENTRY_WINDOW_MS, MAX_HOLDING_SECONDS, STRATEGY_VERSION
 from tracefold.trading.execution_contracts import entry_structure_allows
 
@@ -226,18 +226,7 @@ def _rule_shadow_receipt(
         and funding["scan_received_at_ms"] >= research_end_ms + 120_000
         and isinstance(funding.get("payload"), list)
     )
-    try:
-        mark_complete = all(
-            isinstance(mark, dict)
-            and mark.get("snapshot_ref")
-            and isinstance(mark.get("received_at_ms"), int)
-            and int(mark["event_at_ms"])
-            <= int(mark["received_at_ms"])
-            <= int(mark["event_at_ms"]) + SHADOW_MARK_RECEIPT_MAX_DELAY_MS
-            for mark in marks
-        )
-    except (KeyError, TypeError, ValueError):
-        mark_complete = False
+    mark_complete = all(isinstance(mark, dict) and isinstance(mark.get("event_at_ms"), int) for mark in marks)
     fee_assumption = {"kind": "research_fee_assumption_v1", "fee_bps_per_side": str(fee_bps_per_side)}
     fee_ref = hashlib.sha256(json.dumps(fee_assumption, sort_keys=True).encode()).hexdigest()
     try:

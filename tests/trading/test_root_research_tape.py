@@ -206,6 +206,9 @@ def test_shadow_evaluation_consumes_contemporaneous_root_tape_without_historical
     mark_snapshot_ref = files.write(
         {"status": "ok", "payload": [{"event_at_ms": 60_000, "high": "106", "low": "98", "close": "100"}]}
     )
+    later_mark_ref = files.write(
+        {"status": "ok", "payload": [{"event_at_ms": 120_000, "high": "101", "low": "99", "close": "100"}]}
+    )
     root_tape_ref = files.write(
         {
             "version": "root_research_tape_v2",
@@ -223,7 +226,15 @@ def test_shadow_evaluation_consumes_contemporaneous_root_tape_without_historical
                     "low": "98",
                     "close": "100",
                     "snapshot_ref": mark_snapshot_ref,
-                }
+                },
+                {
+                    "event_at_ms": 120_000,
+                    "received_at_ms": 300_001,
+                    "high": "101",
+                    "low": "99",
+                    "close": "100",
+                    "snapshot_ref": later_mark_ref,
+                },
             ],
             "funding_history": {
                 "status": "ok",

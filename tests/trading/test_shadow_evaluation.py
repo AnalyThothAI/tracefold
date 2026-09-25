@@ -41,7 +41,16 @@ def _shadow(**overrides: object) -> dict[str, object]:
             "market_step_size": "0.01",
             "minimum_notional": "5",
         },
-        "mark_rows": ({"event_at_ms": 60_000, "high": "106", "low": "98", "close": "100"},),
+        "mark_rows": (
+            {
+                "event_at_ms": 60_000,
+                "received_at_ms": 60_000,
+                "snapshot_ref": "mark-ref",
+                "high": "106",
+                "low": "98",
+                "close": "100",
+            },
+        ),
         "mark_status": "ok",
         "funding_events": (),
         "funding_coverage_complete": True,
@@ -136,7 +145,14 @@ def test_shadow_does_not_use_a_future_or_wrong_environment_exit_quote() -> None:
 
 
 def test_shadow_exit_quote_must_follow_mark_bar_visibility() -> None:
-    mark = {"event_at_ms": 60_000, "received_at_ms": 60_100, "high": "106", "low": "98", "close": "100"}
+    mark = {
+        "event_at_ms": 60_000,
+        "received_at_ms": 60_100,
+        "snapshot_ref": "mark-ref",
+        "high": "106",
+        "low": "98",
+        "close": "100",
+    }
     assert _shadow(mark_rows=(mark,))["reason"] == "exit_quote_missing"
     later_quote = {
         "status": "ok",
@@ -154,8 +170,51 @@ def test_shadow_exit_quote_must_follow_mark_bar_visibility() -> None:
     assert result["exit_quote_ref"] == "later-exit-ref"
 
 
+def test_shadow_mark_receipt_deadline_applies_to_consumed_path() -> None:
+    on_time_exit = {
+        "event_at_ms": 60_000,
+        "received_at_ms": 60_100,
+        "snapshot_ref": "exit-mark-ref",
+        "high": "106",
+        "low": "98",
+        "close": "100",
+    }
+    late_after_exit = {
+        "event_at_ms": 120_000,
+        "received_at_ms": 300_001,
+        "snapshot_ref": "late-mark-ref",
+        "high": "101",
+        "low": "99",
+        "close": "100",
+    }
+    exit_quote = {
+        "status": "ok",
+        "bid": "98",
+        "ask": "99",
+        "bid_quantity": "20",
+        "ask_quantity": "20",
+        "received_at_ms": 60_100,
+        "environment": "live",
+        "quote_ref": "exit-ref",
+    }
+    assert _shadow(mark_rows=(on_time_exit, late_after_exit), exit_quotes=(exit_quote,))["status"] == "simulated"
+    assert _shadow(mark_rows=({**on_time_exit, "received_at_ms": 180_001},))["reason"] == "mark_path_incomplete"
+    assert _shadow(mark_rows=({**on_time_exit, "snapshot_ref": None},))["reason"] == "mark_path_incomplete"
+
+
 def test_entry_minute_favorable_extreme_cannot_claim_a_take_profit() -> None:
-    result = _shadow(mark_rows=({"event_at_ms": 60_000, "high": "110", "low": "100", "close": "102"},))
+    result = _shadow(
+        mark_rows=(
+            {
+                "event_at_ms": 60_000,
+                "received_at_ms": 60_000,
+                "snapshot_ref": "mark-ref",
+                "high": "110",
+                "low": "100",
+                "close": "102",
+            },
+        )
+    )
     assert result["status"] == "unevaluable"
     assert result["reason"] == "mark_endpoint_missing"
 

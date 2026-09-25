@@ -516,6 +516,14 @@ def test_rule_arm_replays_frozen_quote_mark_funding_and_contract_rules(tmp_path)
         "close": "100",
     }
     mark["snapshot_ref"] = files.write({"status": "ok", "payload": [mark]})
+    late_after_exit = {
+        "event_at_ms": at_ms + 180_000,
+        "received_at_ms": at_ms + 400_001,
+        "high": "103",
+        "low": "99",
+        "close": "100",
+    }
+    late_after_exit["snapshot_ref"] = files.write({"status": "ok", "payload": [late_after_exit]})
     funding_ref = files.write({"status": "ok", "payload": []})
     tape = {
         "version": "root_research_tape_v2",
@@ -525,7 +533,7 @@ def test_rule_arm_replays_frozen_quote_mark_funding_and_contract_rules(tmp_path)
         "mapping_semantics_digest": "a" * 64,
         "root_accepted_at_ms": at_ms,
         "quotes": [entry, exit_quote],
-        "mark_bars": [mark],
+        "mark_bars": [mark, late_after_exit],
         "funding_history": {
             "status": "ok",
             "payload": [],

@@ -27,7 +27,7 @@ from tracefold.platform.market_identity import (
 )
 from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
 from tracefold.trading.engine.contracts import Candidate, ExitPlan
-from tracefold.trading.engine.evaluation import EVALUATION_VERSION, SHADOW_MARK_RECEIPT_MAX_DELAY_MS, evaluate_shadow
+from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
 from tracefold.trading.engine.features import PROFILE_VERSION, extract_features, freeze_features
 from tracefold.trading.engine.marketdata import Dataset, MarketDataPort, MarketDataRequest, MarketDataResult
 from tracefold.trading.engine.outcomes import price_path_label
@@ -1747,12 +1747,7 @@ class AnalysisRunner:
                             raise ValueError("root_market_tape_mark_invalid")
                         mark_rows = tuple(mark for mark in marks if isinstance(mark, dict))
                         if len(mark_rows) == len(marks) and all(
-                            mark.get("snapshot_ref")
-                            and isinstance(mark.get("received_at_ms"), int)
-                            and int(mark["event_at_ms"])
-                            <= mark["received_at_ms"]
-                            <= int(mark["event_at_ms"]) + SHADOW_MARK_RECEIPT_MAX_DELAY_MS
-                            for mark in mark_rows
+                            isinstance(mark.get("event_at_ms"), int) for mark in mark_rows
                         ):
                             mark_status = "ok"
                         mark_ref = str(tape_ref)
