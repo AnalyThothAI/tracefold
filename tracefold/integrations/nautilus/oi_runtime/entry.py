@@ -48,7 +48,6 @@ class RuntimeEntryRequest:
     asset_id: str | None = None
     mapping_semantics_digest: str | None = None
     account_slot: str | None = None
-    runtime_mode: Literal["paper", "live"] | None = None
 
     @classmethod
     def from_signal(cls, signal: TradeSignalV3) -> RuntimeEntryRequest:
@@ -66,7 +65,6 @@ class RuntimeEntryRequest:
             asset_id=signal.asset_id,
             mapping_semantics_digest=signal.mapping_semantics_digest,
             account_slot=signal.account_slot,
-            runtime_mode=signal.runtime_mode,
         )
 
     @classmethod

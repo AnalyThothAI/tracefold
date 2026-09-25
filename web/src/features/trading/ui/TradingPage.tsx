@@ -74,7 +74,7 @@ export function TradingPage({ token }: { token: string }) {
   /*
    * The whole freshness rule. `facts_expire_at_ms` is an absolute instant, so this one comparison also
    * covers a body kept from a failed refresh. A `null` expiry is not staleness: it means there is no live
-   * projection at all (mode disabled, or no Runtime state), and every safety word below is already `false`
+   * projection at all (execution disabled, or no Runtime state), and every safety word below is already `false`
    * for that reason and says so.
    */
 
@@ -97,6 +97,12 @@ export function TradingPage({ token }: { token: string }) {
     casesQuery.isError ? "策略判定" : "",
     statusQuery.isError ? "执行状态" : "",
   ].filter(Boolean);
+  const execution = status?.execution;
+  const connectionSummary = execution?.connection
+    ? `Binance USD-M · ${execution.connection} · ${execution.account_slot} · 最后报告 ${caseClock(execution.connection_observed_at_ms)}${stale || execution.entry_block_reason === "runtime_heartbeat_stale" ? " · 状态过期，连接状态未知" : ""}${execution.configured_connection !== execution.connection ? ` · 配置待重启：${execution.configured_connection}` : ""}`
+    : execution
+      ? `已配置连接：Binance USD-M · ${execution.configured_connection} · ${execution.account_slot}；尚未连接`
+      : "连接状态未取得";
 
   return (
     <PageShell archetype="scan" className="trading-shell" label="交易执行监控">
@@ -106,11 +112,6 @@ export function TradingPage({ token }: { token: string }) {
           <h1>交易执行</h1>
           <p>从市场线索、Agent 判定到信号发布与真实执行，逐步追踪每一笔决策。</p>
         </div>
-        {/*
-         * `EXECUTION paper` is a constant and no longer wears the caution colour. Amber is what the desk
-         * says when something needs an operator, and spending it on a word that has not changed since the
-         * lane started taught readers to ignore it (#604 T4).
-         */}
         <div className="trading-heading-aside">
           <span>最近策略判定 {caseClock(status?.decision.last_case_at_ms)}</span>
           <small>
@@ -131,15 +132,7 @@ export function TradingPage({ token }: { token: string }) {
               ? ` · 配置 ${status.decision.config_digest.slice(0, 12)}`
               : ""}
           </small>
-          <small>
-            {status?.execution.mode === "live"
-              ? "实盘模式"
-              : status?.execution.mode === "paper"
-                ? "模拟模式"
-                : status?.execution.mode === "disabled"
-                  ? "执行已停用"
-                  : "模式未取得"}
-          </small>
+          <small>{connectionSummary}</small>
         </div>
       </header>
 

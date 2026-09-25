@@ -74,33 +74,32 @@ def test_immediate_trade_and_one_direction_watch_compile() -> None:
     immediate = next(plan for plan in plans if plan.kind == "immediate_entry_v1" and plan.side == "short")
     watch = next(plan for plan in plans if plan.kind == "closed_bar_cross_v1" and plan.side == "long")
     decision = compile_proposal(
-        proposal=AnalysisProposal(action="TRADE", selected_plan_id=immediate.plan_id, public_rationale="Sell now."),
+        proposal=AnalysisProposal(selected_plan_id=immediate.plan_id, public_rationale="Sell now."),
         plans=plans,
         evidence_catalog=_evidence(),
         judgment_refs=frozenset(),
         now_ms=970_000,
     )
-    assert decision.side == "short" and decision.watch_condition is None
+    assert decision.action == "TRADE" and decision.side == "short" and decision.watch_condition is None
     decision = compile_proposal(
-        proposal=AnalysisProposal(action="WATCH", selected_plan_id=watch.plan_id, public_rationale="Wait."),
+        proposal=AnalysisProposal(selected_plan_id=watch.plan_id, public_rationale="Wait."),
         plans=plans,
         evidence_catalog=_evidence(),
         judgment_refs=frozenset(),
         now_ms=970_000,
     )
-    assert decision.watch_condition is not None
+    assert decision.action == "WATCH" and decision.watch_condition is not None
     assert decision.watch_condition.side == "long"
     assert decision.watch_condition.plan_id == watch.plan_id
     assert directed_cross(side="long", previous=Decimal("100"), current=Decimal("103"), level=Decimal("102"))
     assert not directed_cross(side="long", previous=Decimal("100"), current=Decimal("97"), level=Decimal("102"))
 
 
-def test_proposal_cannot_change_plan_kind_or_invent_judgment() -> None:
+def test_proposal_cannot_invent_plan_or_judgment() -> None:
     plans = _plans()
-    watch = next(plan for plan in plans if plan.kind == "closed_bar_cross_v1")
-    with pytest.raises(ValueError, match="proposal_trade_plan_kind_invalid"):
+    with pytest.raises(ValueError, match="proposal_plan_outside_menu"):
         compile_proposal(
-            proposal=AnalysisProposal(action="TRADE", selected_plan_id=watch.plan_id, public_rationale="Now."),
+            proposal=AnalysisProposal(selected_plan_id="invented", public_rationale="Now."),
             plans=plans,
             evidence_catalog=_evidence(),
             judgment_refs=frozenset(),
@@ -108,7 +107,7 @@ def test_proposal_cannot_change_plan_kind_or_invent_judgment() -> None:
         )
     with pytest.raises(ValueError, match="proposal_judgment_ref_unknown"):
         compile_proposal(
-            proposal=AnalysisProposal(action="NO_TRADE", judgment_refs=("invented",), public_rationale="Unknown."),
+            proposal=AnalysisProposal(selected_plan_id=None, judgment_refs=("invented",), public_rationale="Unknown."),
             plans=plans,
             evidence_catalog=_evidence(),
             judgment_refs=frozenset(),

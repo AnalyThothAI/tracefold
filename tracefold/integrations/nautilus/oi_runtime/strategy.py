@@ -57,7 +57,7 @@ from tracefold.trading.storage.execution_stream import ExecutionAccountSnapshot
 from tracefold.trading.trade_plan import ExitReason, TradePlan
 
 from .account_projection import OrderLeg, account_snapshot, open_and_inflight_orders, order_leg
-from .config import CONTINUOUS_CHECK_SECONDS, OiInstrumentRoute, OiRuntimeProfile
+from .config import CONTINUOUS_CHECK_SECONDS, OiInstrumentRoute, OiRiskLimits, OiRuntimeProfile
 from .entry import (
     RuntimeEntryRequest,
     deterministic_client_order_id,
@@ -152,6 +152,34 @@ class _Verdict:
     plan: TradePlan | None = None
 
 
+def _quote_verdict(
+    request: RuntimeEntryRequest,
+    quote: Any | None,
+    *,
+    now_ns: int,
+    risk: OiRiskLimits,
+    stop_distance_bps: int,
+) -> _Verdict:
+    """One side-effect-free market check for admission and commit-before-submit."""
+
+    if quote is None or now_ns - int(quote.ts_event) > risk.market_stale_after_ns:
+        return _Verdict("defer", "market_unavailable")
+    spread = spread_bps(quote)
+    if spread is None:
+        return _Verdict("defer", "market_unavailable")
+    if request.entry_envelope is not None:
+        envelope = request.entry_envelope
+        executable = decimal_value(quote.ask_price if request.direction == "long" else quote.bid_price)
+        if not entry_condition_allows(direction=request.direction, executable=executable, envelope=envelope):
+            return _Verdict("refuse", "entry_structure_lost")
+        drift = abs(executable / envelope.reference_price - Decimal(1)) * Decimal(10_000)
+        if drift > envelope.max_price_drift_bps:
+            return _Verdict("refuse", "entry_price_outside_envelope")
+    if spread > risk.max_spread_fraction_of_stop * Decimal(stop_distance_bps):
+        return _Verdict("defer", "spread_limit", spread_detail(spread))
+    return _Verdict("admit", detail=spread_detail(spread))
+
+
 class OiNautilusStrategy(Strategy):
     """Route inputs and Nautilus events to intent; never call PostgreSQL synchronously."""
 
@@ -197,6 +225,14 @@ class OiNautilusStrategy(Strategy):
         self._submitting: RuntimeEntryRequest | None = None
         self._awaiting_final: dict[str, RuntimeEntryRequest] = {}
         self._final_requested: set[str] = set()
+        self._final_retry_at_ns: dict[str, int] = {}
+        # A persisted final check may have been followed by a venue submission before the
+        # previous process died. A missing cache order is not proof that submission failed.
+        self._submission_unknown: set[str] = {
+            value.plan.entry_id
+            for value in inputs.open_plans
+            if value.plan.status == "prepared" and value.signal is not None and value.final_check_started
+        }
         for value in inputs.open_plans:
             if value.plan.status == "prepared" and value.signal is not None and not value.final_check_started:
                 self._awaiting_final[value.plan.entry_id] = RuntimeEntryRequest.from_signal(value.signal)
@@ -436,23 +472,15 @@ class OiNautilusStrategy(Strategy):
             return
         self._submitting = request
 
-    def _gate(self, request: RuntimeEntryRequest, now_ns: int) -> _Verdict:
-        """The first gate an entry fails, in the order an operator reads them, or the plan it becomes."""
+    def _entry_authority_verdict(self, request: RuntimeEntryRequest, now_ns: int) -> _Verdict:
+        """Read current authority once at either entry decision point, without mutating it."""
 
-        risk = self._profile.risk
         if request.account_slot is not None and request.account_slot != self._profile.account_slot:
             return _Verdict("refuse", "account_slot_mismatch")
-        if request.runtime_mode is not None and request.runtime_mode != self._profile.mode:
-            return _Verdict("refuse", "runtime_mode_mismatch")
         if request.asset_id is not None and request.asset_id in self._profile.excluded_asset_ids:
             return _Verdict("refuse", "asset_excluded")
         if request.entry_envelope is not None and request.entry_envelope.root_expires_at_ns <= now_ns:
             return _Verdict("refuse", "root_expired")
-        if (
-            request.entry_envelope is not None
-            and request.entry_envelope.universe_version != self._profile.universe_digest
-        ):
-            return _Verdict("refuse", "universe_changed")
         if self._emergency_halted:
             return _Verdict("refuse", "emergency_halted")
         if self._entries_paused:
@@ -465,16 +493,25 @@ class OiNautilusStrategy(Strategy):
             return _Verdict("defer", "venue_unverified")
         if request.source == "signal":
             stopped_at = self._stop_exits.get(request.market_key)
-            if stopped_at is not None and now_ns < stopped_at + risk.post_stop_cooldown_ns:
+            if stopped_at is not None and now_ns < stopped_at + self._profile.risk.post_stop_cooldown_ns:
                 return _Verdict("refuse", "post_stop_cooldown")
+        return _Verdict("admit")
+
+    def _gate(self, request: RuntimeEntryRequest, now_ns: int) -> _Verdict:
+        """The first gate an entry fails, in the order an operator reads them, or the plan it becomes."""
+
+        risk = self._profile.risk
+        authority = self._entry_authority_verdict(request, now_ns)
+        if authority.action != "admit":
+            return authority
         equity = account_equity_usd(cache=self.cache, account_id=self._profile.account_id)
         if equity is None or equity <= 0:
             return _Verdict("defer", "account_unavailable")
-        # Keep the day-start fact for account reporting; it no longer halts entries.
+        # This reporting baseline cannot decide whether current equity can size an entry.
         try:
             self.day_start_baseline(equity_usd=equity, now_ns=now_ns)
         except ValueError as exc:
-            return _Verdict("refuse", str(exc))
+            self.log.warning(f"OI Runtime day-start reporting unavailable ({type(exc).__name__})")
         allowed_risk = equity * risk.risk_fraction_per_trade
         if allowed_risk <= 0:
             return _Verdict("refuse", "risk_non_positive")
@@ -493,28 +530,14 @@ class OiNautilusStrategy(Strategy):
         if instrument is None:
             return _Verdict("defer", "instrument_unavailable")
         quote = self.cache.quote_tick(route.instrument_id)
-        if quote is None or now_ns - int(quote.ts_event) > risk.market_stale_after_ns:
-            return _Verdict("defer", "market_unavailable")
-        spread = spread_bps(quote)
-        if spread is None:
-            return _Verdict("defer", "market_unavailable")
-        if request.entry_envelope is not None:
-            reference = request.entry_envelope.reference_price
-            executable = decimal_value(quote.ask_price if request.direction == "long" else quote.bid_price)
-            if not entry_condition_allows(
-                direction=request.direction,
-                executable=executable,
-                envelope=request.entry_envelope,
-            ):
-                return _Verdict("refuse", "entry_structure_lost")
-            drift = abs(executable / reference - Decimal(1)) * Decimal(10_000)
-            if drift > request.entry_envelope.max_price_drift_bps:
-                return _Verdict("refuse", "entry_price_outside_envelope")
         stop_distance_bps = (
             request.exit_plan.stop_distance_bps if request.exit_plan is not None else route.stop_distance_bps
         )
-        if spread > risk.max_spread_fraction_of_stop * Decimal(stop_distance_bps):
-            return _Verdict("defer", "spread_limit", spread_detail(spread))
+        market = _quote_verdict(request, quote, now_ns=now_ns, risk=risk, stop_distance_bps=stop_distance_bps)
+        if market.action != "admit":
+            return market
+        if quote is None:
+            return _Verdict("defer", "market_unavailable")
         if self._instrument_busy(route.instrument_id):
             return _Verdict("refuse", "exposure_already_present")
         if self._submitting is not None:
@@ -540,7 +563,6 @@ class OiNautilusStrategy(Strategy):
             source=request.source,
             case_id=request.case_id,
             account_slot=self._profile.account_slot,
-            runtime_mode_at_creation=self._profile.mode,
             market_key=request.market_key,
             instrument_id=route.instrument_id.value,
             direction=request.direction,
@@ -566,7 +588,7 @@ class OiNautilusStrategy(Strategy):
             ),
             updated_at_ns=now_ns,
         )
-        return _Verdict("admit", plan=plan, detail=spread_detail(spread))
+        return _Verdict("admit", plan=plan, detail=market.detail)
 
     def _submit_committed(self, now_ns: int) -> None:
         """A Signal order needs both a durable plan and a fresh durable validity check."""
@@ -575,6 +597,7 @@ class OiNautilusStrategy(Strategy):
         if checked is not None:
             request = self._awaiting_final.pop(checked.entry_id, None)
             self._final_requested.discard(checked.entry_id)
+            self._final_retry_at_ns.pop(checked.entry_id, None)
             plan = self._plans.get(checked.entry_id)
             if request is None or plan is None:
                 self.log.error(f"OI Runtime final check without plan ({checked.entry_id})")
@@ -599,11 +622,18 @@ class OiNautilusStrategy(Strategy):
                 else:
                     # Operator manual entries have no Signal exit plan.
                     self._send_prepared_entry(plan, request, now_ns)
-        self._request_waiting_final()
+        self._request_waiting_final(now_ns)
 
-    def _request_waiting_final(self) -> None:
-        for entry_id in self._awaiting_final:
-            if entry_id not in self._final_requested:
+    def _request_waiting_final(self, now_ns: int) -> None:
+        for entry_id in tuple(self._awaiting_final):
+            plan = self._plans[entry_id]
+            if plan.entry_expires_at_ns <= now_ns:
+                self._awaiting_final.pop(entry_id, None)
+                self._final_retry_at_ns.pop(entry_id, None)
+                self._close_plan(plan, "not_submitted", terminal_at_ns=now_ns, now_ns=now_ns)
+                self._dispose_owed(plan, "expired")
+                continue
+            if entry_id not in self._final_requested and now_ns >= self._final_retry_at_ns.get(entry_id, 0):
                 if self._journal.request_entry_validity(self._plans[entry_id]):
                     self._final_requested.add(entry_id)
                 return
@@ -628,67 +658,51 @@ class OiNautilusStrategy(Strategy):
         instrument = self.cache.instrument(instrument_id)
         risk = self._profile.risk
         refusal: str | None = None
-        if self._emergency_halted:
-            refusal = "emergency_halted"
-        elif self._entries_paused:
-            refusal = "entries_paused"
-        elif not self._singleton_ready():
-            refusal = "singleton_lost"
-        elif plan.entry_expires_at_ns <= now_ns:
+        retry = False
+        if plan.entry_expires_at_ns <= now_ns:
             refusal = "expired"
-        elif request.entry_envelope is not None and request.entry_envelope.root_expires_at_ns <= now_ns:
-            refusal = "root_expired"
-        elif (
-            request.entry_envelope is not None
-            and request.entry_envelope.universe_version != self._profile.universe_digest
-        ):
-            refusal = "universe_changed"
-        elif request.asset_id is not None and request.asset_id in self._profile.excluded_asset_ids:
-            refusal = "asset_excluded"
-        elif request.mapping_semantics_digest is not None and not self._mapping_current(request):
-            refusal = "mapping_changed"
-        elif instrument is None:
-            refusal = "instrument_unavailable"
-        elif self.cache.positions_open(instrument_id=instrument_id) or any(
-            order.client_order_id.value != plan.entry_client_order_id
-            for order in (
-                *self.cache.orders_open(instrument_id=instrument_id),
-                *self.cache.orders_inflight(instrument_id=instrument_id),
-            )
-        ):
-            refusal = "exposure_already_present"
-        elif self._unexpected:
-            refusal = "unexpected_exposure"
         else:
-            quote = self.cache.quote_tick(instrument_id)
-            if quote is None or now_ns - int(quote.ts_event) > risk.market_stale_after_ns:
-                refusal = "market_unavailable"
+            authority = self._entry_authority_verdict(request, now_ns)
+            if authority.action != "admit":
+                refusal, retry = authority.reason, authority.action == "defer"
+            elif (
+                request.native_symbol is not None and instrument_id.value.split("-PERP.", 1)[0] != request.native_symbol
+            ) or (request.mapping_semantics_digest is not None and not self._mapping_current(request)):
+                refusal = "mapping_changed"
+            elif instrument is None:
+                refusal, retry = "instrument_unavailable", True
+            elif self.cache.positions_open(instrument_id=instrument_id) or any(
+                order.client_order_id.value != plan.entry_client_order_id
+                for order in (
+                    *self.cache.orders_open(instrument_id=instrument_id),
+                    *self.cache.orders_inflight(instrument_id=instrument_id),
+                )
+            ):
+                refusal = "exposure_already_present"
             else:
-                spread = spread_bps(quote)
-                if spread is None:
-                    refusal = "market_unavailable"
-                elif spread > risk.max_spread_fraction_of_stop * Decimal(plan.stop_distance_bps):
-                    refusal = "spread_limit"
+                equity = account_equity_usd(cache=self.cache, account_id=self._profile.account_id)
+                if equity is None or equity <= 0:
+                    refusal, retry = "account_unavailable", True
                 else:
-                    executable = decimal_value(quote.ask_price if plan.direction == "long" else quote.bid_price)
-                    envelope = request.entry_envelope
-                    if envelope is not None and not entry_condition_allows(
-                        direction=plan.direction,
-                        executable=executable,
-                        envelope=envelope,
-                    ):
-                        refusal = "entry_structure_lost"
-                    elif (
-                        envelope is not None
-                        and abs(executable / envelope.reference_price - Decimal(1)) * Decimal(10_000)
-                        > envelope.max_price_drift_bps
-                    ):
-                        refusal = "entry_price_outside_envelope"
-                    elif (
-                        plan.entry_quantity * executable * Decimal(plan.stop_distance_bps) / Decimal(10_000)
-                        > plan.risk_budget_usd
-                    ):
-                        refusal = "frozen_risk_exceeded"
+                    quote = self.cache.quote_tick(instrument_id)
+                    market = _quote_verdict(
+                        request, quote, now_ns=now_ns, risk=risk, stop_distance_bps=plan.stop_distance_bps
+                    )
+                    if market.action != "admit":
+                        refusal, retry = market.reason, market.action == "defer"
+                    elif quote is None:
+                        refusal, retry = "market_unavailable", True
+                    else:
+                        executable = decimal_value(quote.ask_price if plan.direction == "long" else quote.bid_price)
+                        frozen_loss = (
+                            plan.entry_quantity * executable * Decimal(plan.stop_distance_bps) / Decimal(10_000)
+                        )
+                        if frozen_loss > min(plan.risk_budget_usd, equity * risk.risk_fraction_per_trade):
+                            refusal = "frozen_risk_exceeded"
+        if retry and request.source == "signal" and plan.entry_expires_at_ns > now_ns:
+            self._awaiting_final[plan.entry_id] = request
+            self._final_retry_at_ns[plan.entry_id] = now_ns + 1_000_000_000
+            return
         if refusal is not None or instrument is None:
             self._close_plan(plan, "not_submitted", terminal_at_ns=now_ns, now_ns=now_ns)
             self._dispose_owed(plan, refusal or "instrument_unavailable")
@@ -971,6 +985,11 @@ class OiNautilusStrategy(Strategy):
         expected_side = PositionSide.LONG if plan.direction == "long" else PositionSide.SHORT
         own = [position for position in positions if position.strategy_id == self.id and position.side == expected_side]
         unexpected.extend(f"position:{position.id.value}" for position in positions if position not in own)
+        if plan.entry_id in self._submission_unknown:
+            if entry is None and not own:
+                unexpected.append(f"submission_unknown:{plan.entry_client_order_id}")
+                return
+            self._submission_unknown.discard(plan.entry_id)
         if plan.entry_id in self._awaiting_final and not own and not entry_working:
             return
         if not own:

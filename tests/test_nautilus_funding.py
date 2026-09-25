@@ -33,7 +33,7 @@ def test_signed_demo_income_keeps_venue_transaction_identity() -> None:
             ).encode()
 
     reader = BinanceFundingIncome(
-        mode="paper",
+        environment=None,
         credentials=BinanceRuntimeCredentials(api_key="fixture", api_secret="fixture"),
         clock=Clock(),
         client=Client(),
@@ -120,7 +120,7 @@ def test_signed_income_paginates_and_refuses_conflicting_transaction_identity() 
 
     client = Client()
     reader = BinanceFundingIncome(
-        mode="paper",
+        environment=None,
         credentials=BinanceRuntimeCredentials(api_key="fixture", api_secret="fixture"),
         clock=Clock(),
         client=client,
@@ -146,7 +146,7 @@ def test_signed_income_paginates_and_refuses_conflicting_transaction_identity() 
             ).encode()
 
     conflicting = BinanceFundingIncome(
-        mode="paper",
+        environment=None,
         credentials=BinanceRuntimeCredentials(api_key="fixture", api_secret="fixture"),
         clock=Clock(),
         client=Conflict(),

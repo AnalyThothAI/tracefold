@@ -61,7 +61,7 @@ def _idle_projector(profile: OiRuntimeProfile) -> RuntimeStateProjector:
     return RuntimeStateProjector(
         initial=ExecutionRuntimeState(
             account_slot=profile.account_slot,
-            mode=profile.mode,
+            connection=profile.environment.value if profile.environment is not None else "LIVE",
             runtime_id=uuid4(),
             alive=True,
             entries_armed=False,

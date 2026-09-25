@@ -14,8 +14,12 @@ from tracefold.trading.storage.execution_stream import (
 )
 
 
-def _execution(mode: str = "paper") -> SimpleNamespace:
-    return SimpleNamespace(mode=mode, account_slot="binance_usdm_primary")
+def _execution(*, enabled: bool = True, environment: str = "DEMO") -> SimpleNamespace:
+    return SimpleNamespace(
+        enabled=enabled,
+        binance=SimpleNamespace(environment=environment),
+        account_slot="binance_usdm_primary",
+    )
 
 
 def _account_snapshot(*, positions: tuple[ExecutionAccountPosition, ...] = ()) -> ExecutionAccountSnapshot:
@@ -35,7 +39,7 @@ def _account_snapshot(*, positions: tuple[ExecutionAccountPosition, ...] = ()) -
 def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        mode="paper",
+        connection="DEMO",
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
         alive=True,
         entries_armed=True,
@@ -55,6 +59,7 @@ def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
 def _control(*, entries_paused: bool = False) -> ExecutionRuntimeControlState:
     return ExecutionRuntimeControlState(
         account_slot="binance_usdm_primary",
+        execution_namespace="tracefold:binance_usdm_primary:paper",
         entries_paused=entries_paused,
         emergency_halted=False,
         last_command_seq=1,
@@ -64,7 +69,7 @@ def _control(*, entries_paused: bool = False) -> ExecutionRuntimeControlState:
 
 
 def test_disabled_execution_never_projects_a_stale_runtime_as_ready() -> None:
-    projection = execution_readiness_projection(_execution("disabled"), _state(), _control(), now_ns=10_000_000_000)
+    projection = execution_readiness_projection(_execution(enabled=False), _state(), _control(), now_ns=10_000_000_000)
 
     assert (projection["alive"], projection["entries_armed"]) == (False, False)
     assert projection["entry_block_reason"] == "disabled"
@@ -76,7 +81,9 @@ def test_a_live_runtime_projects_exactly_its_own_answers_and_the_private_proof_f
     projection = execution_readiness_projection(_execution(), _state(), _control(), now_ns=10_000_000_000)
 
     assert set(projection) == {
-        "mode",
+        "configured_connection",
+        "connection",
+        "connection_observed_at_ms",
         "account_slot",
         "alive",
         "entries_armed",
@@ -125,10 +132,20 @@ def test_the_runtimes_own_block_reason_and_the_operator_switches_pass_straight_t
     assert projection["entries_paused"] is True
 
 
-def test_a_row_from_another_account_or_mode_is_not_this_runtime() -> None:
-    projection = execution_readiness_projection(_execution("live"), _state(), _control(), now_ns=10_000_000_000)
+def test_a_row_from_another_account_is_not_this_runtime() -> None:
+    other = replace(_state(), account_slot="other_connection")
+    projection = execution_readiness_projection(_execution(), other, _control(), now_ns=10_000_000_000)
     assert projection["entry_block_reason"] == "runtime_identity_mismatch"
     assert projection["alive"] is False
+
+
+def test_changed_config_does_not_relabel_the_running_connection() -> None:
+    projection = execution_readiness_projection(
+        _execution(environment="LIVE"), _state(), _control(), now_ns=10_000_000_000
+    )
+    assert projection["configured_connection"] == "LIVE"
+    assert projection["connection"] == "DEMO"
+    assert projection["alive"] is True
 
 
 def test_the_account_snapshot_round_trips_positions_with_their_protection_and_orders_by_leg() -> None:

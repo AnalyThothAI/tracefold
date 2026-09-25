@@ -146,7 +146,7 @@ def test_a_database_signal_becomes_one_committed_plan_one_order_and_its_protecti
         submitted = [summary for kind, summary in kinds if kind == "protection" and summary["status"] == "submitted"]
         assert [summary["leg"] for summary in submitted] == ["stop", "take_profit"]
         # The Signal is resolved for good: a plan exists and its verdict is durable.
-        assert load_unresolved_trade_signals(repos, _ACCOUNT_SLOT, "oi_nautilus_v1", 10, "paper") == ()
+        assert load_unresolved_trade_signals(repos, _ACCOUNT_SLOT, "oi_nautilus_v1", 10) == ()
         inputs = load_runtime_inputs(repos, oi_profile(), now_ns=NOW_NS)
         assert [(value.plan.entry_id, value.disposition_pending) for value in inputs.open_plans] == [
             (_SIGNAL_ID, False)
@@ -260,8 +260,8 @@ def test_a_crash_after_final_check_keeps_an_unknown_send_from_retrying() -> None
 
         assert restarted.engine.cache.orders() == []
         plan = _plan(conn)
-        assert (plan["status"], plan["exit_reason"], plan["opened_at_ns"]) == ("closed", "venue_unknown", None)
-        assert ("signal_disposition", {"disposition": "entry_outcome_unknown"}) in _kinds(conn)
+        assert (plan["status"], plan["exit_reason"], plan["opened_at_ns"]) == ("prepared", None, None)
+        assert ("signal_disposition", {"disposition": "entry_outcome_unknown"}) not in _kinds(conn)
     finally:
         conn.close()
 
@@ -333,7 +333,7 @@ def _bridge_singleton() -> AccountSlotSingleton:
 def _runtime_state() -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot=_ACCOUNT_SLOT,
-        mode="paper",
+        connection="DEMO",
         runtime_id=uuid4(),
         alive=True,
         entries_armed=False,
@@ -588,7 +588,7 @@ def test_the_unresolved_reads_are_indexed_anti_joins_the_next_poll_answers() -> 
         writer_repo = TradingRepository(writer)
         _control_row(writer_repo)
         client = ExecutionSignalClient(account_slot=_ACCOUNT_SLOT, execution_strategy="oi_nautilus_v1")
-        reader = partial(load_unresolved_trade_signals, reader_repos, runtime_mode="paper")
+        reader = partial(load_unresolved_trade_signals, reader_repos)
         assert client.poll_once(reader) == 0
         _append_signal(writer_repo)
         assert client.poll_once(reader) == 1

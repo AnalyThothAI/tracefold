@@ -49,6 +49,19 @@ class _Market:
             )
         elif request.dataset == "open_interest":
             payload = ({"event_at_ms": now_ms, "received_at_ms": now_ms, "open_interest_quantity": "10000"},)
+        elif request.dataset == "instrument_rules":
+            payload = (
+                {
+                    "event_at_ms": now_ms,
+                    "received_at_ms": now_ms,
+                    "native_symbol": request.native_symbol,
+                    "base_asset": request.native_symbol.removesuffix("USDT"),
+                    "quote_asset": "USDT",
+                    "settlement_asset": "USDT",
+                    "trading_status": "TRADING",
+                    "contract_type": "PERPETUAL",
+                },
+            )
         else:
             payload = (
                 {
@@ -77,7 +90,7 @@ class _Market:
 class _Analyst:
     async def assess(self, brief):
         answer = AnalysisProposal(
-            action="NO_TRADE",
+            selected_plan_id=None,
             public_rationale="The frozen evidence is insufficient to trade.",
             supporting_evidence=("market:perp_bars",),
         )
@@ -221,13 +234,13 @@ def test_poison_outbox_event_does_not_block_later_fact(tmp_path) -> None:
         assert events[0]["source_fact_key"] == "poison"
         assert events[0]["rejected_reason"] == "trade_event_payload_invalid"
         assert events[1]["source_fact_key"] == "after-poison"
-        assert events[1]["acknowledged_at_ms"] is not None
+        assert events[1]["acknowledged_at_ms"] is not None, events[1]
         assert conn.execute("SELECT count(*) AS n FROM trading_triggers").fetchone()["n"] == 1
     finally:
         conn.close()
 
 
-def test_runner_finishes_frozen_shadow_case(tmp_path) -> None:
+def test_runner_finishes_frozen_unpublished_case(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "runner-db", read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -254,7 +267,7 @@ def test_runner_finishes_frozen_shadow_case(tmp_path) -> None:
         assert result == "accepted"
         with conn.transaction():
             trading.heartbeat_analysis_runtime(
-                runtime_id="binance_usdm_primary:disabled",
+                runtime_id="binance_usdm_primary",
                 now_ms=now_ms,
                 active_policy="trade_assessment_v1",
                 model_name="fixture",
@@ -262,7 +275,7 @@ def test_runner_finishes_frozen_shadow_case(tmp_path) -> None:
                 publish_signals=False,
                 config_digest="a" * 64,
             )
-        heartbeat = trading.analysis_runtime("binance_usdm_primary:disabled")
+        heartbeat = trading.analysis_runtime("binance_usdm_primary")
         assert heartbeat is not None
         assert heartbeat["model_configured"] and heartbeat["heartbeat_at_ms"] == now_ms
         settings = Settings()

@@ -323,7 +323,6 @@ def test_a_final_disposition_drives_the_bounded_anti_join_reads() -> None:
                     execution_strategy="oi_nautilus_v1",
                     now_ns=now_ns,
                     limit=10,
-                    runtime_mode="paper",
                 )
             ),
             materialize_operator_intents(
@@ -412,7 +411,6 @@ def test_unresolved_reads_return_only_unexpired_intents() -> None:
                 execution_strategy="oi_nautilus_v1",
                 now_ns=now_ns,
                 limit=10,
-                runtime_mode="paper",
             )
             commands = repo.unresolved_operator_intents(
                 account_slot="demo-v1", execution_strategy="oi_nautilus_v1", now_ns=now_ns, limit=10
@@ -510,7 +508,7 @@ def test_account_slot_advisory_lock_has_one_session_owner() -> None:
 def test_runtime_state_is_single_generation_per_account_slot() -> None:
     running = ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        mode="paper",
+        connection="DEMO",
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
         alive=True,
         entries_armed=True,
@@ -952,7 +950,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "ix_trading_trade_signals_observed_at",
         "ix_trading_trade_signals_expires_at",
         "ix_trading_trade_signals_seq_payload",
-        "ix_trading_trade_signals_account_mode_expiry",
+        "ix_trading_trade_signals_account_expiry",
         "trading_operator_intents_pkey",
         "trading_operator_intent_slot_unique",
         "ix_trading_operator_intents_pending",
@@ -974,11 +972,8 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     assert "USING btree (account_slot, occurred_at_ns)" in indexes["ix_trading_execution_funding_slot_time"]
     assert indexes["ix_trading_trade_signals_observed_at"].endswith("USING btree (observed_at_ns)")
     assert indexes["ix_trading_trade_signals_expires_at"].endswith("USING btree (expires_at_ns)")
-    assert (
-        "USING btree (account_slot, runtime_mode, expires_at_ns, seq)"
-        in indexes["ix_trading_trade_signals_account_mode_expiry"]
-    )
-    assert "account_slot IS NOT NULL" in indexes["ix_trading_trade_signals_account_mode_expiry"]
+    assert "USING btree (account_slot, expires_at_ns, seq)" in indexes["ix_trading_trade_signals_account_expiry"]
+    assert "account_slot IS NOT NULL" in indexes["ix_trading_trade_signals_account_expiry"]
     assert indexes["ix_trading_operator_intents_pending"].endswith(
         "USING btree (account_slot, seq) INCLUDE (command_id, expires_at_ns)"
     )
@@ -997,7 +992,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_trade_signal_case_check",
             "trading_trade_signal_market_check",
             "trading_trade_signal_direction_check",
-            "trading_trade_signals_runtime_mode_check",
             "trading_trade_signal_clock_check",
         },
         "trading_operator_intents": {
@@ -1024,6 +1018,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         },
         "trading_execution_runtime_control_state": {
             "trading_execution_runtime_control_state_pkey",
+            "trading_execution_namespace_check",
             "trading_execution_runtime_control_slot_check",
             "trading_execution_runtime_control_seq_check",
             "trading_execution_runtime_control_command_check",
@@ -1034,7 +1029,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_runtime_state_pkey",
             "trading_execution_runtime_state_runtime_id_key",
             "trading_execution_runtime_slot_check",
-            "trading_execution_runtime_mode_check",
+            "trading_execution_runtime_connection_check",
             "trading_execution_runtime_clock_check",
             "trading_execution_runtime_reason_check",
             "trading_execution_runtime_counts_check",
@@ -1107,6 +1102,7 @@ def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
         "ix_trading_trade_signals_expires_at",
         "ux_trading_execution_signal_disposition",
         "trading_trade_plans_pkey",
+        "trading_signal_retirements_pkey",
     }
     assert "trading_trade_plans_pkey" in plans["trading_unresolved_operator_intents"]
     assert "ix_trading_operator_intents_pending" in plans["trading_unresolved_operator_intents"]

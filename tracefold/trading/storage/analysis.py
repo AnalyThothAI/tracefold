@@ -507,7 +507,7 @@ class AnalysisStorage:
             publish_status = (
                 "superseded"
                 if superseded
-                else ("blocked" if publish_block_reason else "shadow")
+                else ("blocked" if publish_block_reason else "unpublished")
                 if action == "TRADE" and prepared_signal is None
                 else "not_applicable"
                 if action != "TRADE"
@@ -553,7 +553,7 @@ class AnalysisStorage:
                     else publish_block_reason
                     if publish_status == "blocked"
                     else "publish_disabled"
-                    if publish_status == "shadow"
+                    if publish_status == "unpublished"
                     else None,
                     int(now_ms),
                     int(row["root_expires_at_ms"]),
@@ -1237,131 +1237,6 @@ class AnalysisStorage:
             (int(next_attempt_at_ms), case_id, axis, horizon_seconds, label_version),
         )
 
-    def record_shadow_evaluation(
-        self,
-        *,
-        case_id: str,
-        decision_at_ms: int,
-        scheduled_at_ms: int,
-        due_at_ms: int,
-        decision_quote_ref: str | None,
-        planned_quote_ref: str | None,
-        initial_result: dict[str, Any] | None,
-    ) -> None:
-        status = "pending" if initial_result is None else "unevaluable"
-        self.conn.execute(
-            """
-            INSERT INTO trading_case_evaluations
-              (case_id,source,evaluation_version,status,reason,decision_at_ms,
-               scheduled_at_ms,due_at_ms,next_attempt_at_ms,decision_quote_ref,
-               planned_quote_ref,result,evaluated_at_ms,next_quote_at_ms)
-            VALUES (%s,'shadow_simulation','shadow_net_v1',%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
-            ON CONFLICT (case_id,source,evaluation_version) DO NOTHING
-            """,
-            (
-                case_id,
-                status,
-                None if initial_result is None else initial_result.get("reason"),
-                int(decision_at_ms),
-                int(scheduled_at_ms),
-                int(due_at_ms),
-                int(due_at_ms),
-                decision_quote_ref,
-                planned_quote_ref,
-                None if initial_result is None else json.dumps(initial_result),
-                None if initial_result is None else int(scheduled_at_ms),
-                int(scheduled_at_ms) + 60_000 if initial_result is None else None,
-            ),
-        )
-
-    def due_shadow_quote_samples(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT evaluation.case_id,evaluation.quote_tape_ref,evaluation.next_quote_at_ms,
-                   c.target_selection
-              FROM trading_case_evaluations evaluation
-              JOIN trading_cases c USING (case_id)
-             WHERE evaluation.source='shadow_simulation' AND evaluation.status='pending'
-               AND evaluation.next_quote_at_ms<=%s AND evaluation.due_at_ms>=%s
-             ORDER BY evaluation.next_quote_at_ms,evaluation.case_id LIMIT %s
-            """,
-            (int(now_ms), int(now_ms), max(1, min(64, limit))),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def record_shadow_quote_sample(
-        self, *, case_id: str, prior_ref: str | None, tape_ref: str, sampled_at_ms: int
-    ) -> bool:
-        updated = self.conn.execute(
-            """
-            UPDATE trading_case_evaluations
-               SET quote_tape_ref=%s,next_quote_at_ms=%s
-             WHERE case_id=%s AND source='shadow_simulation' AND status='pending'
-               AND quote_tape_ref IS NOT DISTINCT FROM %s
-               AND next_quote_at_ms<=%s
-            """,
-            (tape_ref, int(sampled_at_ms) + 60_000, case_id, prior_ref, int(sampled_at_ms)),
-        )
-        return bool(updated.rowcount)
-
-    def due_shadow_evaluations(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT evaluation.*,c.target_selection,d.decision,frozen.evidence_ref,
-                   tape.tape_ref AS root_market_tape_ref,
-                   root_case.case_id AS root_case_id,
-                   root_case.created_at_ms AS root_accepted_at_ms,
-                   root_case.root_expires_at_ms AS root_expires_at_ms
-              FROM trading_case_evaluations evaluation
-              JOIN trading_cases c USING (case_id)
-              JOIN trading_case_decisions d USING (case_id)
-              LEFT JOIN trading_root_market_tapes tape
-                ON tape.case_id=COALESCE(c.manifest->>'parent_case_id',c.case_id)
-              LEFT JOIN trading_cases root_case ON root_case.case_id=tape.case_id
-              LEFT JOIN LATERAL (
-                SELECT a.evidence_ref FROM trading_case_attempts a
-                 WHERE a.case_id=evaluation.case_id AND a.evidence_ref IS NOT NULL
-                 ORDER BY a.claim_attempt LIMIT 1
-              ) frozen ON true
-             WHERE evaluation.source='shadow_simulation' AND evaluation.status='pending'
-               AND evaluation.next_attempt_at_ms<=%s
-             ORDER BY evaluation.next_attempt_at_ms,evaluation.case_id LIMIT %s
-            """,
-            (int(now_ms), max(1, min(64, limit))),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def settle_shadow_evaluation(
-        self,
-        *,
-        case_id: str,
-        result: dict[str, Any],
-        mark_path_ref: str | None,
-        funding_ref: str | None,
-        now_ms: int,
-    ) -> bool:
-        status = result.get("status")
-        if status not in ("simulated", "unevaluable"):
-            raise ValueError("shadow_evaluation_status_invalid")
-        updated = self.conn.execute(
-            """
-            UPDATE trading_case_evaluations
-               SET status=%s,reason=%s,mark_path_ref=%s,funding_ref=%s,
-                   result=%s::jsonb,evaluated_at_ms=%s
-             WHERE case_id=%s AND source='shadow_simulation'
-               AND evaluation_version='shadow_net_v1' AND status='pending'
-            """,
-            (status, result.get("reason"), mark_path_ref, funding_ref, json.dumps(result), int(now_ms), case_id),
-        )
-        return bool(updated.rowcount)
-
-    def retry_shadow_evaluation(self, *, case_id: str, next_attempt_at_ms: int) -> None:
-        self.conn.execute(
-            "UPDATE trading_case_evaluations SET next_attempt_at_ms=%s "
-            "WHERE case_id=%s AND source='shadow_simulation' AND status='pending'",
-            (int(next_attempt_at_ms), case_id),
-        )
-
     def validate_signal_entry(self, *, entry_id: str, now_ns: int) -> tuple[bool, str]:
         """Persist the last Trading fact check before Nautilus submits a V3 entry."""
         asset = self.conn.execute(
@@ -1374,7 +1249,7 @@ class AnalysisStorage:
         row = self.conn.execute(
             """
             SELECT plan.entry_id,plan.entry_scope_id,plan.account_slot,
-                   plan.runtime_mode_at_creation,plan.market_key,plan.direction,
+                   plan.market_key,plan.direction,
                    plan.terminal_at_ns,signal.payload,signal.seq,
                    case_row.state,case_row.target_asset_id,
                    case_row.mapping_semantics_digest,case_row.root_expires_at_ms,
@@ -1421,7 +1296,6 @@ class AnalysisStorage:
             elif (
                 row["entry_scope_id"] != signal.entry_scope_id
                 or row["account_slot"] != signal.account_slot
-                or row["runtime_mode_at_creation"] != signal.runtime_mode
                 or row["market_key"] != signal.market_key
                 or row["direction"] != signal.direction
                 or row["target_asset_id"] != signal.asset_id

@@ -83,7 +83,6 @@ class InstrumentRef:
 
         payload = (
             self.venue,
-            self.environment,
             self.product,
             self.native_symbol,
             self.asset_id.key,
@@ -130,7 +129,6 @@ class AssetRegistry:
         raw_symbol: str,
         asset_class: AssetClass = "crypto",
         *,
-        execution_environment: str = "live",
         quote_asset: str = "USDT",
     ) -> ResolvedAsset:
         symbol = raw_symbol.strip().upper()
@@ -156,7 +154,6 @@ class AssetRegistry:
             if i.asset_id == asset_id
             and i.product == "perpetual"
             and i.venue == "binance.usdm"
-            and i.environment == execution_environment
             and i.quote_asset == quote_asset
             and (
                 not matching_aliases

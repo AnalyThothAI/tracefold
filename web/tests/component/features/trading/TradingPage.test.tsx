@@ -62,6 +62,7 @@ describe("TradingPage", () => {
     expect(within(safety).queryByText("当前仓位可保护 / 退出")).toBeNull();
     expect(within(safety).getByText("执行通道未启用")).toBeVisible();
     expect(screen.getByText(/可执行市场 0 个/)).toBeVisible();
+    expect(screen.getByText(/已配置连接：Binance USD-M · LIVE.*尚未连接/)).toBeVisible();
   });
 
   it("degrades every safety word once the server's own expiry instant has passed", async () => {
@@ -86,6 +87,24 @@ describe("TradingPage", () => {
     expect(within(safety).getAllByText("待确认")).toHaveLength(2);
     expect(within(safety).queryByText("是")).toBeNull();
     expect(screen.getByText(/状态待确认：未取得有效期内的新状态/)).toBeVisible();
+    expect(
+      screen.getByText(/Binance USD-M · DEMO.*最后报告.*状态过期，连接状态未知/),
+    ).toBeVisible();
+  });
+
+  it("shows the last Runtime connection when configuration has changed", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            execution: tradingLiveExecutionFixture({ configured_connection: "LIVE" }),
+          }),
+        }),
+      ),
+    );
+    renderTrading();
+    expect(await screen.findByText(/Binance USD-M · DEMO.*配置待重启：LIVE/)).toBeVisible();
   });
 
   it("keeps the ledger readable when the readiness projection is the read that failed", async () => {
@@ -212,6 +231,12 @@ describe("TradingPage", () => {
               pnl_known_total: 0,
               pnl_missing_today: 3,
               pnl_missing_total: 3,
+              net_known_today_usd: null,
+              net_known_total_usd: null,
+              net_known_today: 0,
+              net_known_total: 0,
+              net_missing_today: 3,
+              net_missing_total: 3,
             },
             executions: [
               /*
@@ -231,14 +256,16 @@ describe("TradingPage", () => {
     renderTrading();
     const tally = await screen.findByRole("heading", { name: "今日战况" });
     const card = tally.closest("[data-block]") as HTMLElement;
-    expect(within(card).getByText("今日已知手续费后盈亏").nextSibling).toHaveTextContent("—");
+    expect(within(card).getByText("今日已知净收益").nextSibling).toHaveTextContent("—");
     expect(within(card).getAllByText("平仓 3 · 已知 0 · 缺失 3")).toHaveLength(2);
     expect(
-      within(card).getByText(/^3 笔已平仓交易的成交或手续费记录不全.*不能视为账户完整净利润/),
+      within(card).getByText(
+        /^3 笔已平仓交易缺少完整成交、手续费或资金费归因.*不能视为账户完整净利润/,
+      ),
     ).toBeVisible();
-    expect(within(card).getByText(/PAPER 净值需场所资金费完整覆盖/)).toBeVisible();
+    expect(within(card).getByText(/净收益需场所资金费完整覆盖/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
-    expect(await screen.findByText("盈亏未知")).toBeVisible();
+    expect(await screen.findByText("净收益未知")).toBeVisible();
     expect(screen.queryByText(/^手续费 /)).toBeNull();
     expect(screen.getByText("冻结止损 200 bps")).toBeVisible();
     expect(screen.getByText(/风险预算.*10.00.*2×/)).toBeVisible();
@@ -284,17 +311,15 @@ describe("TradingPage", () => {
     const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest(
       "section",
     ) as HTMLElement;
-    expect(within(tally).getByText("今日已知手续费后盈亏").nextSibling).toHaveTextContent(
-      "−$13.80",
-    );
-    expect(within(tally).getByText("累计已知手续费后盈亏").nextSibling).toHaveTextContent("$56.40");
+    expect(within(tally).getByText("今日已知净收益").nextSibling).toHaveTextContent("−$13.80");
+    expect(within(tally).getByText("累计已知净收益").nextSibling).toHaveTextContent("$56.40");
     expect(within(tally).getByText("平仓 9 · 已知 9 · 缺失 0")).toBeVisible();
     // Four entries in the window, two of which never opened anything: one the venue refused, one expired.
     expect(within(tally).getByText("所列入场").nextSibling).toHaveTextContent("4");
     expect(within(tally).getByText("受理 2 · 拒绝 2")).toBeVisible();
   });
 
-  it("shows signed PAPER net separately from the fee-only fill result", async () => {
+  it("shows signed venue net separately from the fee-only fill result", async () => {
     const base = tradingExecutionsFixture();
     server.use(
       http.get(/.*\/api\/trading\/executions$/, () =>
@@ -303,19 +328,16 @@ describe("TradingPage", () => {
           data: tradingExecutionsFixture({
             executions: [
               tradingExecutionRowFixture({
-                runtime_mode_at_creation: "paper",
                 funding_usd: "0.11",
-                paper_net_pnl_usd: "-14.81274518",
+                net_pnl_usd: "-14.81274518",
               }),
             ],
             totals: {
               ...base.totals,
-              paper_closed_today: 1,
-              paper_closed_total: 1,
-              paper_net_known_today: 1,
-              paper_net_known_total: 1,
-              paper_net_known_today_usd: "-14.81274518",
-              paper_net_known_total_usd: "-14.81274518",
+              net_known_today: 1,
+              net_known_total: 1,
+              net_known_today_usd: "-14.81274518",
+              net_known_total_usd: "-14.81274518",
             },
           }),
         }),
@@ -323,7 +345,7 @@ describe("TradingPage", () => {
     );
     renderTrading();
     const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest("section")!;
-    expect(within(tally as HTMLElement).getByText("今日已知 PAPER 净收益")).toBeVisible();
+    expect(within(tally as HTMLElement).getByText("今日已知净收益")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
     const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(".trading-ledger-row")!;
     expect(within(row as HTMLElement).getByText("手续费后 −$14.92")).toBeVisible();
@@ -331,19 +353,19 @@ describe("TradingPage", () => {
     expect(within(row as HTMLElement).getByText("−$14.81")).toBeVisible();
   });
 
-  it("shows Agent outcomes and distinguishes shadow judgments from published Signals", async () => {
+  it("shows Agent outcomes and distinguishes unpublished judgments from published Signals", async () => {
     renderTrading("/trading?tab=decisions");
 
     const funnel = (
       await screen.findByRole("heading", { name: "一条市场线索，如何走到交易" })
     ).closest("section") as HTMLElement;
     expect(within(funnel).getByText("交易 3 · 观察 1 · 不交易 3")).toBeVisible();
-    expect(within(funnel).getByText("影子 2 · 阻断或失效 0")).toBeVisible();
+    expect(within(funnel).getByText("未发布 2 · 阻断或失效 0")).toBeVisible();
     expect(within(funnel).getByText("TRADE 判断已发布").previousSibling).toHaveTextContent("1");
     expect(within(funnel).queryByText("smart_money_ratio_below_or_equal_floor")).toBeNull();
   });
 
-  it("opens on completed Agent Cases and labels shadow decisions without claiming a Signal", async () => {
+  it("opens on completed Agent Cases and labels unpublished decisions without claiming a Signal", async () => {
     const listStates: string[] = [];
     server.use(
       http.get(/.*\/api\/trading\/cases$/, ({ request }) => {
@@ -356,7 +378,7 @@ describe("TradingPage", () => {
               cases: [
                 tradingCaseFixture({
                   analysis_action: "TRADE",
-                  analysis_publish_status: "shadow",
+                  analysis_publish_status: "unpublished",
                   analysis_side: "short",
                   base_symbol: "SOL",
                   case_id: "case-agent",
@@ -374,7 +396,7 @@ describe("TradingPage", () => {
     );
     renderTrading("/trading?tab=decisions");
 
-    expect(await screen.findByText("影子判断 · 做空")).toBeVisible();
+    expect(await screen.findByText("未发布判断 · 做空")).toBeVisible();
     expect(screen.getByText("OI 触发")).toBeVisible();
     expect(screen.queryByText("Signal 已发布")).toBeNull();
     expect(listStates).toContain("DONE");

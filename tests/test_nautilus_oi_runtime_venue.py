@@ -41,7 +41,7 @@ _RECV_WINDOW = BinanceClientError(
 
 def test_position_risk_is_read_as_signed_positions_and_flat_rows_are_not_positions() -> None:
     account = _Account([_row("APTUSDT", "1188.3"), _row("ETHUSDT", "-0.050"), _row("BTCUSDT", "0.000")])
-    venue = BinanceVenuePositions(mode="paper", credentials=_CREDENTIALS, account=account)
+    venue = BinanceVenuePositions(environment=None, credentials=_CREDENTIALS, account=account)
 
     positions = asyncio.run(venue.read())
 
@@ -51,7 +51,7 @@ def test_position_risk_is_read_as_signed_positions_and_flat_rows_are_not_positio
 
 
 def test_a_position_risk_error_is_raised_never_answered_as_flat() -> None:
-    venue = BinanceVenuePositions(mode="paper", credentials=_CREDENTIALS, account=_Account(_RECV_WINDOW))
+    venue = BinanceVenuePositions(environment=None, credentials=_CREDENTIALS, account=_Account(_RECV_WINDOW))
 
     with pytest.raises(BinanceClientError):
         asyncio.run(venue.read())
@@ -59,7 +59,7 @@ def test_a_position_risk_error_is_raised_never_answered_as_flat() -> None:
 
 def test_the_reader_hands_every_outcome_to_the_strategy_and_a_failure_is_unknown() -> None:
     account = _Account([_row("APTUSDT", "1188.3")], _RECV_WINDOW, [])
-    venue = BinanceVenuePositions(mode="paper", credentials=_CREDENTIALS, account=account)
+    venue = BinanceVenuePositions(environment=None, credentials=_CREDENTIALS, account=account)
     seen: list[VenueReading] = []
     clock = iter(range(1_000, 10_000, 10))
 

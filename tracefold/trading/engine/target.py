@@ -42,7 +42,6 @@ def select_target(
     assets: tuple[SourceAsset, ...],
     registry: AssetRegistry,
     universe: UniversePolicy,
-    execution_environment: str = "live",
 ) -> TargetSelection:
     """Mentioned assets never replace a primary; order has no decision meaning."""
 
@@ -59,7 +58,6 @@ def select_target(
         registry.resolve(
             asset.symbol,
             "commodity" if asset.market_type == "commodity" else "crypto",
-            execution_environment=execution_environment,
         )
         for asset in selected
     ]

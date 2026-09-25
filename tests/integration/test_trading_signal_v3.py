@@ -61,7 +61,6 @@ def test_immediate_plan_publishes_and_is_visible_to_runtime(tmp_path) -> None:
             case_id=case_id,
             decision_id=decision_identity(case_id, decision),
             account_slot="binance_usdm_primary",
-            runtime_mode="paper",
             entry_scope_id=case["entry_scope_id"],
             asset_id="crypto:SOL",
             market_key=market_key("SOL"),
@@ -105,7 +104,6 @@ def test_immediate_plan_publishes_and_is_visible_to_runtime(tmp_path) -> None:
             execution_strategy="oi_nautilus_v1",
             now_ns=2_100_000_000,
             limit=10,
-            runtime_mode="paper",
         ) == ((1, signal.model_dump(mode="json", exclude={"seq"})),)
         assert trading.console_case(case_id=case_id)["analysis_decision"]["policy_version"] == "v4"
     finally:

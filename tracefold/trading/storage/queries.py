@@ -222,7 +222,7 @@ _FILL_FOLD = """
 
 
 def _realized_pnl(direction: str, fills: str) -> str:
-    """Fee-adjusted realized PnL; PAPER funding is folded separately below.
+    """Fee-adjusted realized PnL; signed funding is folded separately below.
 
     Known only for a fully closed entry whose every fill carries a quote-currency commission.
     """
@@ -236,13 +236,12 @@ def _realized_pnl(direction: str, fills: str) -> str:
 
 
 # Signed account income has no entry identity. It can be attributed only to a sole
-# PAPER plan for that symbol and account during the actual fill-to-fill interval.
+# plan for that symbol and account during the actual fill-to-fill interval.
 # A successful complete signed-income read proves zero funding as well as nonzero
 # cashflows. range_agg joins overlapping scan windows; a gap leaves net unknown.
-_PAPER_FUNDING_FOLD = """
+_FUNDING_FOLD = """
     LEFT JOIN LATERAL (
-      SELECT CASE WHEN plan.runtime_mode_at_creation = 'paper'
-                       AND fills.entry_filled_at_ns IS NOT NULL
+      SELECT CASE WHEN fills.entry_filled_at_ns IS NOT NULL
                        AND fills.exit_filled_at_ns IS NOT NULL
                        AND fills.exit_filled_at_ns >= fills.entry_filled_at_ns
                        AND coverage.covered @> int8range(
@@ -285,7 +284,7 @@ _PAPER_FUNDING_FOLD = """
              AND observation.summary ->> 'symbol' = split_part(plan.instrument_id, '-', 1)
              AND observation.occurred_at_ns BETWEEN fills.entry_filled_at_ns AND fills.exit_filled_at_ns
         ) income
-    ) paper_funding ON true
+    ) funding ON true
 """
 
 
@@ -405,14 +404,14 @@ def console_executions_statement(
                trim_scale(fills.exit_notional / NULLIF(fills.exit_quantity, 0))::text AS exit_price,
                trim_scale({_realized_pnl("folded.direction", "fills")})::text AS realized_pnl_usd,
                CASE WHEN fills.fees_known THEN trim_scale(fills.fees)::text END AS fees_usd,
-               trim_scale(paper_funding.funding_usd)::text AS funding_usd,
-               CASE WHEN paper_funding.funding_usd IS NOT NULL
+               trim_scale(funding.funding_usd)::text AS funding_usd,
+               CASE WHEN funding.funding_usd IS NOT NULL
                     THEN trim_scale({_realized_pnl("folded.direction", "fills")}
-                                    + paper_funding.funding_usd)::text END AS paper_net_pnl_usd,
+                                    + funding.funding_usd)::text END AS net_pnl_usd,
                plan.exit_reason,
                plan.status AS plan_status, plan.stop_distance_bps, plan.exit_policy_id,
                plan.take_profit_bps, plan.max_holding_ns,
-               plan.account_slot, plan.runtime_mode_at_creation, plan.instrument_id,
+               plan.account_slot, plan.instrument_id,
                plan.entry_client_order_id, trim_scale(plan.risk_budget_usd)::text AS risk_budget_usd,
                plan.max_leverage_at_creation,
                CASE WHEN coalesce(position_closed_at_ns, plan.terminal_at_ns) IS NOT NULL
@@ -427,7 +426,7 @@ def console_executions_statement(
              WHERE (fill.signal_id = folded.entry_id OR fill.command_id = folded.entry_id)
                AND fill.normalized_kind = 'fill'
           ) fills
-          {_PAPER_FUNDING_FOLD}
+          {_FUNDING_FOLD}
          ORDER BY folded.observed_at_ns DESC, folded.entry_id DESC
          LIMIT %(limit)s
     """  # noqa: S608 -- module-owned fragments; every value stays bound
@@ -442,11 +441,10 @@ def console_realized_totals_statement(
     sql = f"""
         WITH closed AS (
           SELECT plan.terminal_at_ns AS closed_at_ns,
-                 plan.runtime_mode_at_creation AS runtime_mode,
                  {_realized_pnl("plan.direction", "fills")} AS pnl,
-                 CASE WHEN paper_funding.funding_usd IS NOT NULL
+                 CASE WHEN funding.funding_usd IS NOT NULL
                       THEN {_realized_pnl("plan.direction", "fills")}
-                           + paper_funding.funding_usd END AS paper_net_pnl
+                           + funding.funding_usd END AS net_pnl
             FROM trading_trade_plans plan
             CROSS JOIN LATERAL (
               SELECT {_FILL_FOLD}
@@ -455,7 +453,7 @@ def console_realized_totals_statement(
                  AND (fill.signal_id = plan.entry_id OR fill.command_id = plan.entry_id)
                  AND fill.normalized_kind = 'fill'
             ) fills
-            {_PAPER_FUNDING_FOLD}
+            {_FUNDING_FOLD}
            WHERE plan.account_slot = %(slot)s AND plan.terminal_at_ns IS NOT NULL AND plan.opened_at_ns IS NOT NULL
         )
         SELECT trim_scale(sum(pnl) FILTER (WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s))::text
@@ -469,22 +467,17 @@ def console_realized_totals_statement(
                count(*) FILTER (WHERE pnl IS NULL AND closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
                  AS pnl_missing_today,
                count(*) FILTER (WHERE pnl IS NULL) AS pnl_missing_total,
-               trim_scale(sum(paper_net_pnl) FILTER (
+               trim_scale(sum(net_pnl) FILTER (
                  WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s))::text
-                 AS paper_net_known_today_usd,
-               trim_scale(sum(paper_net_pnl))::text AS paper_net_known_total_usd,
-               count(paper_net_pnl) FILTER (WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
-                 AS paper_net_known_today,
-               count(paper_net_pnl) AS paper_net_known_total,
-               count(*) FILTER (WHERE paper_net_pnl IS NULL
-                                 AND runtime_mode = 'paper'
+                 AS net_known_today_usd,
+               trim_scale(sum(net_pnl))::text AS net_known_total_usd,
+               count(net_pnl) FILTER (WHERE closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
+                 AS net_known_today,
+               count(net_pnl) AS net_known_total,
+               count(*) FILTER (WHERE net_pnl IS NULL
                                  AND closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
-                 AS paper_net_missing_today,
-               count(*) FILTER (WHERE paper_net_pnl IS NULL AND runtime_mode = 'paper') AS paper_net_missing_total,
-               count(*) FILTER (WHERE runtime_mode = 'paper'
-                                 AND closed_at_ns >= %(day_start)s AND closed_at_ns < %(day_end)s)
-                 AS paper_closed_today,
-               count(*) FILTER (WHERE runtime_mode = 'paper') AS paper_closed_total
+                 AS net_missing_today,
+               count(*) FILTER (WHERE net_pnl IS NULL) AS net_missing_total
           FROM closed
     """  # noqa: S608 -- module-owned fragments; every value stays bound
     return sql, {"slot": str(account_slot), "day_start": int(day_start_ns), "day_end": int(day_end_ns)}

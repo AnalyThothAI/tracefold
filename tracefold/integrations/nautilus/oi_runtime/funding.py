@@ -1,4 +1,4 @@
-"""Signed Binance USD-M funding-income reconciliation for PAPER.
+"""Signed Binance USD-M funding-income reconciliation.
 
 GET /fapi/v1/income (FUNDING_FEE) is account cashflow, unlike public funding
 rates. A complete paginated read also proves a zero-cashflow interval.
@@ -17,11 +17,12 @@ from typing import Any
 
 from loguru import logger
 from nautilus_trader.adapters.binance import BinanceAccountType
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 
-from .config import ActiveRuntimeMode, BinanceRuntimeCredentials, binance_environment
+from .config import BinanceRuntimeCredentials
 from .venue import read_failure
 
 _FIRST_LOOKBACK_MS = 7 * 86_400_000
@@ -67,20 +68,18 @@ class BinanceFundingIncome:
     def __init__(
         self,
         *,
-        mode: ActiveRuntimeMode,
+        environment: BinanceEnvironment | None,
         credentials: BinanceRuntimeCredentials,
         clock: LiveClock | None = None,
         client: Any = None,
     ) -> None:
-        if mode != "paper":
-            raise ValueError("funding_income_paper_only")
         self._clock = clock or LiveClock()
         self._client = client or get_cached_binance_http_client(
             clock=self._clock,
             account_type=BinanceAccountType.USDT_FUTURES,
             api_key=credentials.api_key,
             api_secret=credentials.api_secret,
-            environment=binance_environment(mode),
+            **({} if environment is None else {"environment": environment}),
         )
 
     async def read(self, start_ms: int, end_ms: int) -> tuple[FundingCashflow, ...]:
@@ -139,7 +138,7 @@ async def watch_funding(
             if all(observe(flow) for flow in flows) and observe_coverage(start_ms, end_ms):
                 first = False
         except Exception as exc:
-            logger.warning("PAPER funding income unavailable: {}", read_failure(exc))
+            logger.warning("Binance funding income unavailable: {}", read_failure(exc))
         with suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
 

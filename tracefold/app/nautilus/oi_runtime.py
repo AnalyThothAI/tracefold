@@ -141,7 +141,6 @@ def load_runtime_inputs(
         control = repos.trading.ensure_execution_runtime_control_state(profile.account_slot, now_ns=now_ns)
     rows = repos.trading.open_trade_plans(
         account_slot=profile.account_slot,
-        mode=profile.mode,
         limit=MAX_OPEN_TRADE_PLANS,
     )
     materialized: list[OpenPlan] = []
@@ -184,7 +183,6 @@ def commit_entry_plan(repos: RepositorySession, plan: TradePlan) -> PlanReceipt:
     with repos.transaction():
         scoped = repos.trading.trade_plan_for_scope(
             account_slot=plan.account_slot,
-            mode=plan.runtime_mode_at_creation,
             entry_scope_id=plan.entry_scope_id,
         )
         if scoped is not None and scoped["entry_id"] != plan.entry_id:
@@ -322,9 +320,7 @@ class OiRuntimeDatabaseBridge:
         self._step(
             "signals",
             lambda: self._signals.poll_once(
-                lambda slot, strategy, limit: load_unresolved_trade_signals(
-                    repos, slot, strategy, limit, runtime_mode=self._profile.mode
-                ),
+                lambda slot, strategy, limit: load_unresolved_trade_signals(repos, slot, strategy, limit),
             ),
         )
         self._step("projection", lambda: self._projector.write_once(repos))
@@ -340,7 +336,6 @@ class OiRuntimeDatabaseBridge:
             logger.error("OI Runtime entry plan refused ({}): {}", plan.entry_id, type(exc).__name__)
             scoped = repos.trading.trade_plan_for_scope(
                 account_slot=plan.account_slot,
-                mode=plan.runtime_mode_at_creation,
                 entry_scope_id=plan.entry_scope_id,
             )
             receipt = PlanReceipt(
@@ -459,7 +454,6 @@ def load_unresolved_trade_signals(
     account_slot: str,
     execution_strategy: str,
     limit: int,
-    runtime_mode: str,
 ) -> tuple[TradeSignalV3, ...]:
     """Materialize Trading-owned rows at the App composition boundary."""
 
@@ -468,7 +462,6 @@ def load_unresolved_trade_signals(
         execution_strategy=execution_strategy,
         now_ns=time.time_ns(),
         limit=limit,
-        runtime_mode=runtime_mode,
     )
     return materialize_trade_signals(rows)
 

@@ -50,10 +50,6 @@ NAUTILUS_LOG_FILE_NAME = "nautilus-engine"
 NAUTILUS_LOG_FILE_MAX_BYTES = 10 * 1024 * 1024
 NAUTILUS_LOG_FILE_BACKUPS = 5
 
-# What a Runtime that is actually going to trade can be. `disabled` is not one of them: `run_nautilus`
-# returns on it before any profile exists (#589 PR-2).
-ActiveRuntimeMode = Literal["paper", "live"]
-
 
 class _SecretValue(str):
     def __repr__(self) -> str:
@@ -143,17 +139,17 @@ class OiExitPolicy:
 class OiRuntimeProfile:
     """The account slot this Runtime executes for, and the policy it executes under.
 
-    `account_slot` plus `mode` is the whole execution identity (#520). `namespace` is that identity
-    spelled once: the Nautilus trader id and every deterministic client order id derive from it.
+    `account_slot` identifies the connection. The persisted opaque `namespace` preserves Nautilus
+    trader and order identities across an upgrade, even when the old namespace contains a mode word.
     """
 
-    mode: ActiveRuntimeMode
     account_slot: str
     account_id: AccountId
     namespace: str
     routes: tuple[OiInstrumentRoute, ...]
     risk: OiRiskLimits
     exit_policy: OiExitPolicy
+    environment: BinanceEnvironment | None = None
     excluded_asset_ids: frozenset[str] = frozenset(
         {
             "commodity:CL",
@@ -167,8 +163,6 @@ class OiRuntimeProfile:
     recovery_max_holding_ns: int = 86_400_000_000_000
 
     def __post_init__(self) -> None:
-        if self.mode not in ("paper", "live"):
-            raise ValueError("oi_runtime_mode_invalid")
         for value, reason in (
             (self.account_slot, "oi_runtime_account_slot_invalid"),
             (self.namespace, "oi_runtime_namespace_invalid"),
@@ -205,7 +199,7 @@ class OiRuntimeProfile:
         asset = AssetId("crypto", reviewed[1].split(":", 1)[1] if reviewed else base)
         ref = InstrumentRef(
             venue="binance.usdm",
-            environment="demo" if self.mode == "paper" else "live",
+            environment=connection_environment(self.environment),
             product="perpetual",
             native_symbol=native,
             asset_id=asset,
@@ -234,17 +228,17 @@ def _trader_id(profile: OiRuntimeProfile) -> TraderId:
 
 
 def _instance_id(profile: OiRuntimeProfile) -> UUID4:
-    """Stable per account slot and mode, which is what the namespace already carries (#537 PR-4)."""
+    """Keep the historical instance identity derived from the opaque persisted namespace."""
 
-    digest = hashlib.sha256(f"tracefold:oi-runtime:{profile.account_slot}:{profile.mode}".encode()).digest()
+    digest = hashlib.sha256(f"tracefold:oi-runtime:{profile.namespace.removeprefix('tracefold:')}".encode()).digest()
     value = uuid.UUID(bytes=digest[:16], version=4)
     return UUID4.from_str(str(value))
 
 
-def binance_environment(mode: ActiveRuntimeMode) -> BinanceEnvironment:
-    """The one place `paper` becomes Binance's demo environment and `live` becomes production."""
+def connection_environment(environment: BinanceEnvironment | None) -> str:
+    """Source identity for public executable data; None uses the pinned SDK's LIVE default."""
 
-    return BinanceEnvironment.DEMO if mode == "paper" else BinanceEnvironment.LIVE
+    return (environment or BinanceEnvironment.LIVE).value.lower()
 
 
 def build_oi_node_config(
@@ -253,7 +247,7 @@ def build_oi_node_config(
     *,
     log_directory: Path | None = None,
 ) -> TradingNodeConfig:
-    """The pinned paper/live graph, in which Nautilus owns every order and position (#680).
+    """The pinned Binance graph, in which Nautilus owns every order and position (#680).
 
     Startup reconciliation rebuilds the Cache from the venue before the Strategy starts; the open-order
     and position checks keep it converged every five seconds after that, over open orders only so the
@@ -271,7 +265,7 @@ def build_oi_node_config(
     With `log_directory`, Nautilus' WARN and ERROR lines also go to a size-rotated file there.
     """
 
-    environment = binance_environment(profile.mode)
+    environment = profile.environment
     instrument_ids = frozenset(route.instrument_id for route in profile.routes)
     provider = BinanceInstrumentProviderConfig(
         load_ids=instrument_ids,
@@ -356,13 +350,12 @@ __all__ = [
     "NAUTILUS_LOG_FILE_BACKUPS",
     "NAUTILUS_LOG_FILE_MAX_BYTES",
     "NAUTILUS_LOG_FILE_NAME",
-    "ActiveRuntimeMode",
     "BinanceRuntimeCredentials",
     "OiExitPolicy",
     "OiInstrumentRoute",
     "OiRiskLimits",
     "OiRuntimeProfile",
-    "binance_environment",
     "build_oi_node_config",
+    "connection_environment",
     "route_catalogue",
 ]

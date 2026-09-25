@@ -234,7 +234,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="trading_analysis_runtime",
             sql=TRADING_ANALYSIS_RUNTIME_SQL,
-            params=("binance_usdm_primary:paper",),
+            params=("binance_usdm_primary",),
             max_read_return_amplification=4.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),

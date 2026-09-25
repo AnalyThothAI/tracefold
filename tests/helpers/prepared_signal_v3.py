@@ -29,7 +29,6 @@ def prepared_v3_signal(
             case_id=case_id,
             decision_id="b" * 64,
             account_slot="demo-v1",
-            runtime_mode="paper",
             entry_scope_id="c" * 64,
             asset_id="crypto:BTC",
             market_key=market_key,

@@ -1,4 +1,4 @@
-"""Conservative, replayable shadow net path and venue PAPER receipt evaluation.
+"""Historical offline shadow path evaluation for archived cohort reports.
 
 Shadow prices are assumptions, never exchange fills. A PAPER result requires
 reconciled venue fills, commissions and funding; missing components stay unknown.
@@ -9,7 +9,7 @@ from __future__ import annotations
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Any
 
-from .contracts import ExitPlan
+from tracefold.trading.engine.contracts import ExitPlan
 
 EVALUATION_VERSION = "shadow_net_v1"
 SHADOW_MARK_RECEIPT_MAX_DELAY_MS = 120_000

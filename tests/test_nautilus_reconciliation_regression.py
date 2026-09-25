@@ -194,7 +194,7 @@ class _Account:
         self.msgbus = MessageBus(TRADER, self.clock)
         self.cache = Cache(database=None)
         self.portfolio = Portfolio(self.msgbus, self.cache, self.clock)
-        profile = oi_profile("paper")
+        profile = oi_profile()
         node = build_oi_node_config(profile, BinanceRuntimeCredentials("paper-key", "paper-secret"))
         engine_config = node.exec_engine
         if generate_missing_orders is not None:

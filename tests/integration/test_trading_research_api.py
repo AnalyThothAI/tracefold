@@ -130,7 +130,7 @@ def test_analysis_case_list_exposes_action_publication_and_source_identity(tmp_p
                    (case_id,decision_id,policy_id,policy_version,input_ref,action,decision,
                     publish_status,decided_at_ms,valid_until_ms)
                    VALUES (%s,%s,'trade_assessment','v4','research-evidence','TRADE',
-                           '{"side":"short","decision_version":"trade_decision_v4"}'::jsonb,'shadow',%s,%s)""",
+                           '{"side":"short","decision_version":"trade_decision_v4"}'::jsonb,'unpublished',%s,%s)""",
                 (case_id, "d" * 64, now, now + 60_000),
             )
     finally:
@@ -143,11 +143,11 @@ def test_analysis_case_list_exposes_action_publication_and_source_identity(tmp_p
         listed = client.get("/api/trading/cases", headers=auth, params={"view": "list", "state": "DONE"})
         assert listed.status_code == 200, listed.text
         data = listed.json()["data"]
-        assert {"action": "TRADE", "publish_status": "shadow", "count": 1} in data["decision_counts_24h"]
+        assert {"action": "TRADE", "publish_status": "unpublished", "count": 1} in data["decision_counts_24h"]
         row = next(row for row in data["cases"] if row["case_id"] == case_id)
         assert (row["analysis_action"], row["analysis_publish_status"], row["analysis_side"]) == (
             "TRADE",
-            "shadow",
+            "unpublished",
             "short",
         )
         assert row["source_item_id"] == source_item_id
