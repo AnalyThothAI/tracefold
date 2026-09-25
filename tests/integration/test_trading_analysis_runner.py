@@ -458,8 +458,9 @@ def test_runner_persists_physical_request_before_dispatch(tmp_path, monkeypatch:
         conn.close()
 
 
+@pytest.mark.parametrize("finish_callback_lost", [False, True])
 def test_provider_timeout_keeps_requested_call_and_unknown_cost_on_failed_case(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path, monkeypatch: pytest.MonkeyPatch, finish_callback_lost: bool
 ) -> None:
     conn = connect_postgres_test(tmp_path / "model-timeout-db", read_only=False)
     try:
@@ -496,6 +497,12 @@ def test_provider_timeout_keeps_requested_call_and_unknown_cost_on_failed_case(
             raise TimeoutError("fixture timeout")
 
         monkeypatch.setattr(dspy.LM, "aforward", provider)
+        if finish_callback_lost:
+
+            def fail_finish(*_args: object, **_kwargs: object) -> None:
+                raise TimeoutError("fixture finish callback lost")
+
+            monkeypatch.setattr(TradingRepository, "record_model_call_finish", fail_finish)
         analyst = TradeAnalyst(
             ConfiguredLMEndpoint(
                 model_name="openai/test-model", api_key="fixture", api_base="http://localhost:1/v1", model_kwargs={}
