@@ -1403,6 +1403,13 @@ class AnalysisRunner:
                 ):
                     raise ValueError("root_research_tape_invalid")
                 end_ms = now_ms // _BAR_MS * _BAR_MS
+                # Retry the recent closed path after a failed minute. Late
+                # backfills retain their actual received_at_ms; WATCH and net
+                # evaluation can still reject observations that arrived late.
+                bar_start_ms = min(
+                    end_ms - _BAR_MS,
+                    max(int(row["created_at_ms"]) // _BAR_MS * _BAR_MS, end_ms - 4 * _BAR_MS),
+                )
                 request = MarketDataRequest(
                     dataset="perp_bars",
                     native_symbol=native,
@@ -1411,7 +1418,7 @@ class AnalysisRunner:
                     product="perpetual",
                     source_identity="binance_public_v1",
                     unit_definition="quote_per_base_and_volume_v1",
-                    start_ms=end_ms - 2 * _BAR_MS,
+                    start_ms=bar_start_ms,
                     end_ms=end_ms,
                     interval_ms=_BAR_MS,
                     max_age_ms=None,
@@ -1425,7 +1432,7 @@ class AnalysisRunner:
                     product="perpetual",
                     source_identity="binance_public_v1",
                     unit_definition="mark_quote_per_base_v1",
-                    start_ms=end_ms - 2 * _BAR_MS,
+                    start_ms=bar_start_ms,
                     end_ms=end_ms,
                     interval_ms=_BAR_MS,
                     max_age_ms=None,

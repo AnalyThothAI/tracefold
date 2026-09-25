@@ -74,10 +74,13 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
                     missing_reasons=(),
                     request_receipts=({"endpoint": "/fapi/v1/fundingRate", "http_status": 200},),
                 )
-            assert request.start_ms == now // 60_000 * 60_000 - 120_000
+            assert request.start_ms == min(
+                now // 60_000 * 60_000 - 60_000,
+                max(row["created_at_ms"] // 60_000 * 60_000, now // 60_000 * 60_000 - 240_000),
+            )
             assert request.end_ms == now // 60_000 * 60_000
             bar = {
-                "event_at_ms": request.end_ms - 60_000,
+                "event_at_ms": 180_000 if now == 300_000 else request.end_ms - 60_000,
                 "received_at_ms": now,
                 "close": "100",
                 "high": "101",
@@ -114,6 +117,12 @@ def test_root_tape_archives_quote_and_closed_bars_without_decision(tmp_path, mon
     assert tape["coverage"][0]["bar_status"] == "partial"
     assert tape["coverage"][0]["mark_status"] == "partial"
     assert files.read(tape["quotes"][0]["quote_ref"])["status"] == "ok"
+    now = 300_000
+    monkeypatch.setattr(trading_analysis, "_clock_ms", lambda: now)
+    assert asyncio.run(trading_analysis.AnalysisRunner.sample_root_research_once(runner)) == 1
+    tape = files.read(row["tape_ref"])
+    assert [bar["event_at_ms"] for bar in tape["mark_bars"]] == [120_000, 180_000]
+    assert tape["mark_bars"][1]["received_at_ms"] == 300_000
     now = row["root_expires_at_ms"] + 14_400_000 + 120_000 + 120_000
     monkeypatch.setattr(trading_analysis, "_clock_ms", lambda: now)
     assert asyncio.run(trading_analysis.AnalysisRunner.sample_root_research_once(runner)) == 1

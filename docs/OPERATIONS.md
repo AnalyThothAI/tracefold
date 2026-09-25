@@ -64,6 +64,11 @@ Cases across this change: an old live Case is refused at PAPER Signal creation
 with `analysis_execution_environment_mismatch`. Capture and export the mainnet
 shadow cohort before switching to the separately authorized PAPER venue check;
 do not count a Demo shadow receipt as mainnet strategy evidence.
+The root tape retries a bounded recent closed-bar window after a failed market
+read. Recovered bars retain their actual receipt time; a late bar can fill an
+archive gap but cannot retroactively make WATCH timely or make a late mark path
+eligible for net evaluation. Inspect tape coverage and receipt clocks before
+interpreting an `unevaluable` result.
 
 For a Case with no Decision, inspect `analysis_attempts` in the Case detail:
 each claim attempt has a structured validation error, frozen evidence ref and
