@@ -752,3 +752,6 @@ or browser command authority is added. Freshness uses the server's remaining hea
 monotonic clock; repeated old responses cannot renew it. The Trading account
 shows typed findings, source and Plan association, venue-only positions,
 truncation and protection status separately from field completeness.
+An account projection or convergence failure keeps the last account and risk
+evidence visible as historical, even while the Runtime heartbeat is fresh;
+protection remains unconfirmed until the relevant check succeeds.

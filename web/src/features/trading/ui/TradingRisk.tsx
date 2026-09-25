@@ -98,6 +98,8 @@ export function TradingExposure({
   const positions = account?.positions ?? [];
   const orders = account?.orders ?? [];
   const findings = account?.findings ?? [];
+  const accountUnconfirmed = stale || Boolean(execution.account_projection_failure);
+  const riskUnconfirmed = accountUnconfirmed || Boolean(execution.convergence_failure);
   const open =
     (account?.positions_total ?? 0) > 0 || orders.length > 0 || execution.unexpected_exposure;
   return (
@@ -106,16 +108,16 @@ export function TradingExposure({
         <summary>
           <span>
             仓位 {account?.positions_total ?? "—"} · 挂单 {account?.open_orders_count ?? "—"} · 保护{" "}
-            {stale ? "待确认" : protectionStatusLabel(execution.protection_status)}
+            {accountUnconfirmed ? "待确认" : protectionStatusLabel(execution.protection_status)}
           </span>
           <small>
             {open
-              ? stale
+              ? accountUnconfirmed
                 ? "上次观察的仓位与订单"
                 : "最近观察的仓位与订单"
               : account == null
                 ? "未取得 Runtime 账户快照"
-                : stale
+                : accountUnconfirmed
                   ? "上次读取未见仓位"
                   : "Runtime 当前未见仓位"}
           </small>
@@ -124,7 +126,11 @@ export function TradingExposure({
         {execution.unexpected_exposure ? (
           <div className="trading-alert-line" data-tone="alert">
             <b>
-              {stale ? "上次检查发现异常；最新状态未取得。" : "最近检查发现异常；新增仓位受阻。"}
+              {riskUnconfirmed
+                ? stale
+                  ? "上次检查发现异常；最新状态未取得。"
+                  : "上次检查发现异常；最新检查未取得。"
+                : "最近检查发现异常；新增仓位受阻。"}
             </b>
             {findings.length ? (
               <ul>
@@ -175,7 +181,15 @@ export function TradingExposure({
           />
           <Fact
             label="账户字段"
-            value={account?.complete ? "字段完整" : account ? "部分字段缺失" : "未取得"}
+            value={
+              account?.complete
+                ? accountUnconfirmed
+                  ? "上次采样字段完整"
+                  : "字段完整"
+                : account
+                  ? "部分字段缺失"
+                  : "未取得"
+            }
             warn={!account?.complete}
           />
           <Fact label="在途订单" value={account?.inflight_orders_count ?? "—"} />
@@ -210,10 +224,10 @@ export function TradingExposure({
                   </div>
                   <div
                     className="trading-protection-strip"
-                    data-tone={!stale && guarded ? "protected" : "caution"}
+                    data-tone={!accountUnconfirmed && guarded ? "protected" : "caution"}
                   >
                     <b>
-                      {stale
+                      {accountUnconfirmed
                         ? "上次观察的保护；当前未确认"
                         : protectionStatusLabel(position.protection_status)}
                     </b>
@@ -228,7 +242,7 @@ export function TradingExposure({
           <EmptyNote className="trading-empty-note">
             {account == null
               ? "未取得 Runtime 账户快照，不能据此断言没有仓位。"
-              : stale
+              : accountUnconfirmed
                 ? "上次读取时 Runtime 未见仓位；当前状态待确认。"
                 : "Runtime 当前未见仓位。"}
           </EmptyNote>
@@ -255,7 +269,7 @@ export function TradingExposure({
           <p className="trading-inline-empty">
             {account == null
               ? "未取得挂单与在途订单。"
-              : stale
+              : accountUnconfirmed
                 ? "上次读取时未见挂单或在途订单。"
                 : "Runtime 当前未见挂单或在途订单。"}
           </p>

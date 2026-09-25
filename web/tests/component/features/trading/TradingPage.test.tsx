@@ -21,8 +21,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  *
  * The tests below are mostly about the page not inventing anything: every stage word, disposition, count
  * and figure is a field the server already folded, and the two computations the browser is allowed are
- * `Date.now()` against the expiry instant `/status` publishes and the holding interval between the two
- * clocks the execution ledger stores. The other subject is failure: three reads, three failures, and no
+ * monotonic elapsed time against the server's remaining heartbeat budget and the holding interval
+ * between the two clocks the execution ledger stores. The other subject is failure: three reads, three failures, and no
  * one of them may blank a block another read answers.
  */
 describe("TradingPage", () => {
@@ -435,6 +435,37 @@ describe("TradingPage", () => {
     expect(within(open).getByText("Trigger 9800")).toBeVisible();
     expect(within(open).getByText("Trigger 10200")).toBeVisible();
     expect(within(open).queryByText("无计划认领")).toBeNull();
+  });
+
+  it("keeps the last account and risk evidence historical when checks fail under a fresh heartbeat", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            execution: tradingLiveExecutionFixture({
+              account_projection_failure: "ValueError",
+              convergence_failure: "RuntimeError",
+              entry_block_reason: "convergence_unverified",
+              unexpected_exposure: true,
+            }),
+          }),
+        }),
+      ),
+    );
+    renderTrading();
+
+    const block = (await screen.findByRole("heading", { name: "当前仓位与保护" })).closest(
+      "section",
+    ) as HTMLElement;
+    expect(within(block).getByText(/仓位 1 · 挂单 2 · 保护 待确认/)).toBeVisible();
+    expect(within(block).getByText("上次观察的保护；当前未确认")).toBeVisible();
+    expect(within(block).getByText("上次采样字段完整")).toBeVisible();
+    expect(within(block).getByText("上次检查发现异常；最新检查未取得。")).toBeVisible();
+    expect(block.querySelector(".trading-protection-strip")).toHaveAttribute(
+      "data-tone",
+      "caution",
+    );
   });
 
   it("names a position without a take-profit unprotected and exposure no plan claims", async () => {
