@@ -112,10 +112,7 @@ class OiRiskLimits:
     """The operator's entry and sizing policy, as the Runtime enforces it."""
 
     risk_fraction_per_trade: Decimal
-    max_risk_per_trade_usd: Decimal
-    max_positions: int
     max_leverage: int
-    max_daily_loss_usd: Decimal
     max_spread_fraction_of_stop: Decimal
     post_stop_cooldown_ns: int
     market_stale_after_ns: int
@@ -123,14 +120,8 @@ class OiRiskLimits:
     def __post_init__(self) -> None:
         if not Decimal("0") < self.risk_fraction_per_trade <= Decimal("1"):
             raise ValueError("oi_runtime_risk_fraction_invalid")
-        if self.max_risk_per_trade_usd <= 0:
-            raise ValueError("oi_runtime_risk_limit_invalid")
-        if not 1 <= self.max_positions <= 100:
-            raise ValueError("oi_runtime_max_positions_invalid")
         if not 1 <= self.max_leverage <= 125:
             raise ValueError("oi_runtime_max_leverage_invalid")
-        if self.max_daily_loss_usd <= 0:
-            raise ValueError("oi_runtime_daily_loss_invalid")
         if not Decimal("0") < self.max_spread_fraction_of_stop <= Decimal("1"):
             raise ValueError("oi_runtime_max_spread_invalid")
         if self.post_stop_cooldown_ns < 0 or self.market_stale_after_ns <= 0:

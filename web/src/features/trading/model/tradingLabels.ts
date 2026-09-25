@@ -115,9 +115,7 @@ export const SIGNAL_DISPOSITION_ZH: Record<string, string> = {
   trade_plan_busy: "交易计划写入未完成",
   trade_plan_conflict: "交易计划冲突",
   trade_plan_rejected: "交易计划被拒绝",
-  // The risk policy's halts and denials.
-  daily_loss_limit: "当日亏损已达上限",
-  position_limit: "持仓数已达上限",
+  // Risk and data-quality refusals.
   risk_non_positive: "可用风险预算不为正",
   oi_runtime_day_start_baseline_invalid: "当日起始权益无法作为基线",
   // Sizing refusals: the order the venue would accept is not the order the risk budget allows.

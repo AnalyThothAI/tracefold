@@ -233,12 +233,15 @@ process consumes the News trade-event outbox and runs a real model in shadow by
 default. `trading.analysis` accepts `model_name` (or the configured News triage
 model), `active_policy=entry_plan_v1`, `publish_signals=false`,
 `root_ttl_seconds`, `model_timeout_seconds`, `max_active_cases`,
-`max_model_input_bytes`, `max_model_output_tokens`, `max_model_concurrent_calls`,
+`max_model_input_bytes` (default 65,536), `max_model_output_tokens`, `max_model_concurrent_calls`,
 `model_cost_budget_microusd` (default 5,000,000) with both route price ceilings
 in USD per million tokens (defaults 100 input / 500 output; all three are set or
 disabled together). These are conservative admission assumptions supplied by
 the operator, not the provider's reported charge; a returned actual cost over
-the cap blocks publication. The market budgets are `market_max_connections`,
+the cap blocks publication. Set the price ceilings for the configured route's
+actual billing model; an inflated ceiling can exhaust the Case cap before a
+request reaches the provider. Input-size refusal has its own
+`model_input_budget_exceeded` code. The market budgets are `market_max_connections`,
 `market_max_cached_rows`, `market_weight_soft_limit_1m`, excluded economic
 asset IDs and reviewed native routes.
 A reviewed route states source symbol, canonical `asset_id`, exact native
@@ -306,7 +309,9 @@ planned and exit bid/ask quotes with displayed size, frozen Binance contract
 filters, mark-price bars, funding history, latency and an explicit fee
 assumption determine a conservative simulated result. Missing filters, quotes,
 costs or complete price/funding coverage produce `unevaluable`, not a zero-cost
-win. A shadow result is never a venue fill or an actual PAPER return.
+win. The shadow quantity uses a fixed $10 reference risk at the plan's stop
+distance for comparable research paths; it does not size or limit an order.
+A shadow result is never a venue fill or an actual PAPER return.
 In the offline rule arm, a verified arrival quote that fails the frozen entry
 structure, price envelope or spread bound produces an archived `refused`
 receipt with zero trading cashflow and an `entry_refused` count. A missing or
