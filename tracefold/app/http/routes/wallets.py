@@ -8,6 +8,7 @@ from typing import Annotated, Any, Final, Literal
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
+from tracefold.news.chain_tape.rules import supported_member_count
 from tracefold.news.wallet_contracts import NET_BUY_WINDOW_MS
 
 from ..dependencies import _authenticated_runtime, _now_ms, _validate_query_params
@@ -51,14 +52,19 @@ def get_news_wallets(request: Request) -> Response:
     chain_tape = runtime.settings.news.chain_tape
     until = now - now % WALLET_FUNNEL_BUCKET_MS
     since = max(0, until - WALLET_FUNNEL_WINDOW_MS)
-    with runtime.repositories() as repos:
+    with runtime.repositories() as repos, repos.news.wallet_read_snapshot():
         members = repos.news.chain_tape_roster_rows()
         tape = repos.news.chain_tape_state()
         funnel = repos.news.wallet_notification_funnel(from_ms=since, to_ms=until)
     cutoff = None if tape is None else tape["scanned_at_ms"]
     coverage_from = None if tape is None else tape["coverage_from_ms"]
     rules = chain_tape.rules
-    supported = _supported(members, cutoff, coverage_from)
+    supported = supported_member_count(
+        members,
+        cutoff_at_ms=cutoff,
+        coverage_from_ms=coverage_from,
+        gap_at_ms=None if tape is None else tape["gap_at_ms"],
+    )
     return _etagged(
         {
             "roster": _roster(
@@ -238,34 +244,13 @@ def _roster(
         **published,
         "window": window,
         "address_count": len(members),
-        "quality_count": sum(member["rank_quality"] is not None for member in members),
-        "whale_count": sum(member["rank_whale"] is not None for member in members),
         "supported_count": supported,
         "last_attempt_at_ms": None if tape is None else tape["roster_last_attempt_at_ms"],
         "last_success_at_ms": None if tape is None else tape["roster_last_success_at_ms"],
         "last_error": None if tape is None else tape["roster_last_error"],
+        "next_attempt_at_ms": None if tape is None else tape["roster_next_attempt_at_ms"],
         "members": [
             {key: value for key, value in member.items() if key not in {"roster_version", "taken_at_ms"}}
             for member in members
         ],
     }
-
-
-def _supported(members: list[dict[str, Any]], cutoff: int | None, coverage_from_ms: int | None) -> int:
-    """Roster addresses whose monitoring already covers a whole window at the collection cutoff.
-
-    The same test `rules.py` applies to a member inside the window, asked of the roster as a whole:
-    both the address's own `monitoring_from_ms` and the tape's coverage must start before the window
-    does. Every published address is counted, because every published address counts towards the
-    quorum -- the quality and whale ranks are still published beside this number and no longer decide
-    it (#649 PR-3 §1).
-    """
-
-    if cutoff is None or coverage_from_ms is None:
-        return 0
-    start = int(cutoff) - NET_BUY_WINDOW_MS
-    if int(coverage_from_ms) > start:
-        return 0
-    return sum(
-        member["monitoring_from_ms"] is not None and int(member["monitoring_from_ms"]) <= start for member in members
-    )

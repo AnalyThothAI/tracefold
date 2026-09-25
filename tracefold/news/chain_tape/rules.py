@@ -147,10 +147,14 @@ def _window(
         if member is None:
             reasons.append("not_on_roster")
         monitoring = None if member is None else member["monitoring_from_ms"]
-        if coverage_from_ms is None or coverage_from_ms > start or monitoring is None or monitoring > start:
-            reasons.append("incomplete_monitoring_window")
-        if coverage_gap_at_ms is not None and coverage_gap_at_ms > start:
-            reasons.append("collection_gap")
+        reasons.extend(
+            monitoring_reasons(
+                cutoff_at_ms=cutoff_at_ms,
+                coverage_from_ms=coverage_from_ms,
+                gap_at_ms=coverage_gap_at_ms,
+                monitoring_from_ms=monitoring,
+            )
+        )
         if unpriced:
             reasons.append("unpriced_trade")
         if transfers:
@@ -164,14 +168,9 @@ def _window(
             NetBuyMember(
                 wallet=wallet,
                 handle="" if member is None else str(member["handle"]),
-                rank_quality=None if member is None else member["rank_quality"],
                 roster_version=None if member is None else int(member["roster_version"]),
                 roster_known_at_ms=None if member is None else int(member["known_at_ms"]),
                 monitoring_from_ms=monitoring,
-                source_closed_trades=None if member is None else int(member["closed_trades"]),
-                source_profit_factor=None
-                if member is None or member["profit_factor"] is None
-                else str(member["profit_factor"]),
                 recent_episodes=member_episodes.get(wallet, 0),
                 buy_usd=buy_usd,
                 sell_usd=sell_usd,
@@ -222,3 +221,37 @@ def effective_buy(fills: Sequence[ClassifiedFill], snapshot: NetBuySnapshot) -> 
             if has_buy and net_change > 0:
                 return True
     return False
+
+
+def monitoring_reasons(
+    *, cutoff_at_ms: int | None, coverage_from_ms: int | None, gap_at_ms: int | None, monitoring_from_ms: int | None
+) -> tuple[str, ...]:
+    """The one coverage predicate for rule, HTTP and CLI. Host time is never coverage."""
+    if cutoff_at_ms is None:
+        return ("incomplete_monitoring_window",)
+    start = cutoff_at_ms - NET_BUY_WINDOW_MS
+    reasons = []
+    if coverage_from_ms is None or coverage_from_ms > start or monitoring_from_ms is None or monitoring_from_ms > start:
+        reasons.append("incomplete_monitoring_window")
+    # An unresolved gap reported after C cannot make an older C a fresh usable window.
+    if gap_at_ms is not None and gap_at_ms > start:
+        reasons.append("collection_gap")
+    return tuple(reasons)
+
+
+def supported_member_count(
+    members: Sequence[Mapping[str, Any]],
+    *,
+    cutoff_at_ms: int | None,
+    coverage_from_ms: int | None,
+    gap_at_ms: int | None,
+) -> int:
+    return sum(
+        not monitoring_reasons(
+            cutoff_at_ms=cutoff_at_ms,
+            coverage_from_ms=coverage_from_ms,
+            gap_at_ms=gap_at_ms,
+            monitoring_from_ms=member["monitoring_from_ms"],
+        )
+        for member in members
+    )

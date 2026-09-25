@@ -9,6 +9,7 @@ from typing import Any, Final, cast
 from ..chain_tape.contracts import ClassifiedFill
 from ..wallet_contracts import WALLET_OUTCOME_HORIZONS, WalletEvent, WalletOutcome, WalletReference
 from .sql_values import _dumps
+from .wallet_snapshots import wallet_event_row
 
 FILL_COLUMNS: Final = """chain_id, tx_hash, log_index, block_number, block_hash, wallet, token,
     token_symbol, token_decimals, kind, amount_raw, cash_token, cash_amount_raw, cash_decimals,
@@ -285,8 +286,7 @@ class WalletEventStorage:
             )
 
     def wallet_active_event(self, *, chain_id: int, token: str) -> dict[str, Any] | None:
-        return cast(
-            dict[str, Any] | None,
+        return wallet_event_row(
             self.conn.execute(
                 f"""
             SELECT {EVENT_COLUMNS} FROM news_market_wallet_events e
@@ -297,7 +297,7 @@ class WalletEventStorage:
         )
 
     def wallet_active_events(self, *, after_id: str = "", limit: int = 100) -> list[dict[str, Any]]:
-        return list(
+        rows = list(
             self.conn.execute(
                 f"""
             SELECT {EVENT_COLUMNS} FROM news_market_wallet_events e
@@ -306,6 +306,7 @@ class WalletEventStorage:
                 (after_id, limit),
             ).fetchall()
         )
+        return [cast(dict[str, Any], wallet_event_row(row)) for row in rows]
 
     def chain_tape_insert_wallet_event(self, event: WalletEvent, *, snapshot_json: str) -> bool:
         snapshot = snapshot_json
@@ -368,8 +369,7 @@ class WalletEventStorage:
 
     def wallet_event(self, episode_id: str, *, for_update: bool = False) -> dict[str, Any] | None:
         locking = " FOR UPDATE OF e" if for_update else ""
-        return cast(
-            dict[str, Any] | None,
+        return wallet_event_row(
             self.conn.execute(
                 WALLET_EVENT_SQL + locking,
                 (episode_id,),
@@ -385,12 +385,13 @@ class WalletEventStorage:
         before_id: str | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        return list(
+        rows = list(
             self.conn.execute(
                 WALLET_EVENTS_SQL,
                 (from_ms, to_ms, before_at_ms, before_at_ms, before_id, limit),
             ).fetchall()
         )
+        return [cast(dict[str, Any], wallet_event_row(row)) for row in rows]
 
     def wallet_event_totals(self, *, from_ms: int, to_ms: int) -> dict[str, Any]:
         return cast(

@@ -26,7 +26,7 @@ from ..wallet_contracts import (
     WalletOutcome,
     WalletReference,
 )
-from .loop import ChainTapeDatabasePort
+from .contracts import ChainTapeDatabasePort
 from .tape_io import FAILED, TapePasses, log
 
 PRICE_SOURCE = "dexscreener_robinhood_chain_base_token"

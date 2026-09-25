@@ -191,25 +191,22 @@ the route components into the eager shell chunk.
   Collection/parse/notification counts are secondary and explicitly describe
   the full time window before asset/definition filtering.
 
-  `/news/wallets` is 聪明钱警报: Robinhood Chain · 多钱包集中净买入 (#641).
-  One row represents one token episode, including muted and unsent episodes. It presents
-  the initial 5m/30m counts, initial primary-window net amount, time, episode state and
-  notification result. Current insufficiency, negative other-address facts and gaps are
-  explicit. The UI never sums pages or recomputes business money.
+  `/news/wallets` is 聪明钱警报: Robinhood Chain · 多钱包集中净买入.
+  One row is one token episode, including muted/unsent episodes. It presents the initial
+  30-minute buyer count and net amount, time, episode state and notification result.
+  The UI never sums pages or recomputes business money.
 
-  One status block leads the page (#649 §7.3), because an empty table is four different
-  answers and the reader cannot tell them apart from the rows. It reads `/api/news/wallets`
-  and renders the server's own numbers: the collection cutoff, the quality pool beside the
-  whale list, the monitoring support behind it, the two window quorums with the verdict on
-  whether the pool can reach either, the last complete roster with any refresh failure, and
-  the 24-hour episode → intent → sent funnel with its leading unsent reason. Its
-  `data-status-state` names which answer leads — `unread`, `query_failed`,
-  `notifications_disabled`, `roster_insufficient`, `warming_up`, `collection_lagging`,
-  `send_failed`, `no_match`, `healthy` — and each carries its own sentence, so 「当前质量地址
-  1 个，低于 5m 3 个及 30m 5 个门槛；当前名单不足以触发」 is never rendered as 「没有机会」.
-  The browser computes none of those numbers: the freshness judgement is the server's
-  `collection_lagging`, replacing a `Date.now()` comparison the page used to make itself.
-  The block and the event list fail independently in both directions.
+  The independent `/api/news/wallets` status block shows source address count, source scope,
+  complete-window support, collection cutoff, roster attempt/success/error/next retry, blocked
+  receipt and the 24-hour episode → intent → sent funnel. The source is the full valid address
+  list, not a quality/whale leaderboard. Display metadata failures are a separate warning.
+  Server coverage includes gaps; an adequate address count alone is not a trading signal.
+  The status states remain `unread`, `query_failed`, `notifications_disabled`,
+  `roster_insufficient`, `warming_up`, `collection_lagging`, `send_failed`, `no_match`, `healthy`.
+  Each explains a different absence of events. The browser consumes the server's
+  `collection_lagging` and does not compare chain time with its own clock.
+  Status and event-list failures preserve the other section's data. “刷新事件” refreshes
+  event reads only; it does not initiate a provider roster refresh.
 
   The URL owns history range (24h/72h/7d), anchored end time, cursor and episode ID.
   Deep links query the episode directly. Detail order is initial event → member net flows

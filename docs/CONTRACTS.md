@@ -759,22 +759,24 @@ every Event this code can open.
   policy retain their delivery row as `failed` with that reason and their original attempt evidence.
   A later alert round may report earlier unclaimed observations as `uncovered`; it never adopts them.
 - `GET /api/news/wallets` returns `roster`, `tape`, `thresholds`, `funnel`,
-  `collection_lagging` and `notifications_enabled`. Authentication `token` is its only query
-  parameter. Roster source statistics and quality/whale ranks retain their original meaning as
-  information about the published list; monitoring and scanned-chain state disclose coverage.
-  `address_count` is the pool the quorum is counted against — every published address counts (#649
-  PR-3 §1) — with `supported_count`, the addresses whose `monitoring_from_ms` already covers a whole
-  window at the collection cutoff, `quality_count` / `whale_count` beside them, the `window` both
-  provider endpoints were asked for, and the refresh task's own `last_attempt_at_ms` /
-  `last_success_at_ms` / `last_error`. Those three are the
-  `news-wallet-roster` task's record rather than a guess from the collection turn: only a complete
-  refresh publishes a version and moves the success stamp, so a provider that has been refusing to
-  answer moves the attempt stamp alone and the published version keeps its own `taken_at_ms`.
-  `thresholds` carries the one rule — `required_n`, `window_ms`, `min_net_buy_usd` — and whether the
-  addresses currently being watched can satisfy it. `collection_lagging` is the server's judgement on
-  the chain cutoff and the browser makes no clock comparison of its own. `funnel` counts episodes, intents and
-  sends over its own stated 24-hour window with the leading unsent reason — window counts, never
-  accumulated totals, and never summed with each other.
+  `collection_lagging` and `notifications_enabled` from one read snapshot. Authentication
+  `token` is its only query parameter. `roster.address_count` is every unique valid address
+  in the source response for chain 4663 and `stocks=false`; no rank, PF or PnL selects members.
+  The source `window` defaults to `30d` and is unrelated to the 30-minute alert window.
+  Membership versions change only when the normalized address set changes. Alias-only updates
+  and successful refreshes preserve the version and each continuous monitoring start.
+  `supported_count` uses the detector's coverage predicate, including the global start, member
+  start and any window gap. It does not certify that a token has five qualifying buyers.
+  `last_attempt_at_ms`, `last_success_at_ms`, `last_error`, `next_attempt_at_ms` and
+  `consecutive_failures` describe the independent roster task. Failed/invalid responses keep
+  the last valid list; attempts never masquerade as successful refreshes.
+  `tape.high_water_*` and `scanned_*` encode the same continuous complete receipt prefix.
+  The tape also exposes its next attempt, consecutive failures, blocked transaction and optional
+  `enrichment_error`. Missing display metadata is not a collection gap or a failed scan.
+  `thresholds` carries `required_n`, `window_ms`, `min_net_buy_usd` and coverage sufficiency.
+  `collection_lagging` is server-owned; the browser does not substitute its own clock.
+  `funnel` counts episodes, intents and sends over its stated 24-hour window with the leading
+  unsent reason. These distinct stages must not be summed.
 - `GET /api/news/wallets/events` returns `events`, full-scope `totals`, and a keyset
   `next_cursor`. `history_range=24h|72h|7d` defaults to 24h; `limit=1..200` defaults
   to 50 (UI 25). Optional `to_ms` anchors the range. Cursors bind the range and end
@@ -793,7 +795,10 @@ every Event this code can open.
   qualified in over the preceding fourteen days; `null` on a snapshot written before the count
   existed). A snapshot holds one `window` — the 30-minute rule — and the 5-minute window it used to
   carry beside it is gone from the contract, the rule and the page (#649 PR-3).
-  The first snapshot is immutable.
+  The first snapshot is immutable. Current member DTOs contain no rank/PF/performance fields.
+  The storage read boundary projects only the three retired member keys from historical JSON
+  before strict current-model validation. Raw initial/send snapshots and delivery payloads remain
+  unchanged; unknown fields are still errors, not silently ignored.
   Timeline pages never define the totals. Notification status and episode end are separate.
   Price outcomes record target/actual/reference time, source, nullable price/reference/change and
   `comparable|missing_reference|late`; missing never becomes 0%. `reference_price` /

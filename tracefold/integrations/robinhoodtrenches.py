@@ -1,211 +1,78 @@
-"""Read-only access to rhtrenches.com, which is the roster's authority and nothing else (#572 PR-1).
-
-The site is the only place that knows *which* wallets are worth following: the addresses are hand-curated
-by its operator, and the handle, follower count and seven-day statistics live nowhere on chain. What the
-site is deliberately **not** used for is fills. Its `tape` endpoint is missing about two thirds of the
-closes its own ledger reports (#572 §3.1), so trades come from chain logs and only the roster comes from
-here.
-
-Two unauthenticated roster endpoints, both taking the same statistics window:
-* GET /api/traders?window=W&stocks=false supplies addresses and source statistics.
-* GET /api/trader/{handle}?window=W&stocks=false supplies the source profit factor.
-Wallet position/bags and token mark/depth endpoints have no current consumer.
-Their adapters and caches were removed with the retired wallet research product (#641).
-
-Calls are paced at least `PACE_SECONDS` apart because this is somebody's small public site, and the
-caller only asks for a per-trader document when the list row already passed the closed-trade floor.
-A throttled call is retried `RETRY_ATTEMPTS` times and then raised, never swallowed: the refresh task
-treats an exhausted retry as a failed refresh rather than as a trader with an unknown profit factor
-(#649 §5.1).
-"""
+"""One bounded read of the source's complete address list; no ranking or per-handle requests."""
 
 from __future__ import annotations
 
-import asyncio
 import json
-import time
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any, Final
 
 import httpx
 
-from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded
+from tracefold.integrations.http_bounds import ResponseTooLarge, read_bounded, retry_after_ms
+from tracefold.news.chain_tape.contracts import RosterMember
+from tracefold.news.chain_tape.evm import normalize_address
 
 ROBINHOODTRENCHES_BASE_URL: Final = "https://rhtrenches.com"
-# Measured, not chosen for politeness. At 0.25 s the per-trader endpoint -- which answers in about
-# 1.2 s -- returned 429 on the eighteenth call inside 25 s, and a refresh that hits 429 publishes
-# nothing at all, so the pace is what decides whether the roster is ever rebuilt. Two seconds walks
-# 45 candidates in about 90 s and 92 in about three minutes, inside a one-hour refresh period
-# (#649 §2.1, §5.1).
-PACE_SECONDS: Final = 2.0
-# Measured 2026-09-15: the site answers 429 sporadically whatever the pace -- two of twenty calls at a
-# four-second pace, twelve of forty-five at two seconds -- so throttling here is not something a pace
-# alone can walk around. Since a refresh publishes nothing unless *every* candidate answered, one
-# unlucky handle would otherwise withhold the whole list, so a throttled or timed-out call is retried
-# this many times in total before it becomes the refresh's failure. Nothing is cached and nothing is
-# remembered between refreshes: this is one call being made again (#649 §5.1).
-RETRY_ATTEMPTS: Final = 3
-RETRY_BACKOFF_SECONDS: Final = (5.0, 15.0)
-_RETRIABLE_CODES: Final = frozenset({"roster_rate_limited", "roster_timeout", "roster_transport_error"})
-
-_CONNECT_TIMEOUT_SECONDS: Final = 5.0
-_READ_TIMEOUT_SECONDS: Final = 15.0
-_MAX_BYTES: Final = 16 * 1024 * 1024
 ROSTER_USER_AGENT: Final = "tracefold-news-chain-tape/1.0 (+https://github.com/AnalyThothAI/tracefold)"
+_MAX_BYTES: Final = 16 * 1024 * 1024
 
 
 class RosterProviderError(RuntimeError):
-    """An anticipated site failure. The loop keeps the previous roster version and ends the refresh."""
+    """An expected source failure; retry scheduling belongs to the refresh task."""
 
-    def __init__(self, code: str, *, status_code: int | None = None) -> None:
+    def __init__(self, code: str, *, status_code: int | None = None, retry_after_ms: int = 0) -> None:
         super().__init__(code)
         self.code = code
         self.status_code = status_code
-
-
-@dataclass(frozen=True, slots=True)
-class RosterCandidate:
-    """One row of the tracked-trader list, in the fields the roster rules read."""
-
-    address: str
-    handle: str
-    followers: int
-    realized_pnl: float
-    closed_trades: int
-    win_rate: float
-    open_cost: float
-
-
-@dataclass(frozen=True, slots=True)
-class TraderStats:
-    """The per-handle window statistics. `profit_factor` is the reason this endpoint is called at all."""
-
-    handle: str
-    closed_trades: int
-    realized_pnl: float
-    profit_factor: float | None
+        self.retry_after_ms = retry_after_ms
 
 
 class RobinhoodTrenchesClient:
-    """One paced, bounded, read-only session against the roster provider."""
-
     def __init__(
         self,
         *,
         base_url: str = ROBINHOODTRENCHES_BASE_URL,
         transport: httpx.AsyncBaseTransport | None = None,
-        pace_seconds: float = PACE_SECONDS,
-        read_timeout_seconds: float = _READ_TIMEOUT_SECONDS,
-        retry_attempts: int = RETRY_ATTEMPTS,
-        retry_backoff_seconds: tuple[float, ...] = RETRY_BACKOFF_SECONDS,
+        read_timeout_seconds: float = 15.0,
     ) -> None:
         self.base_url = str(base_url).rstrip("/")
-        self.pace_seconds = max(0.0, float(pace_seconds))
-        self.retry_attempts = max(1, int(retry_attempts))
-        self.retry_backoff_seconds = tuple(max(0.0, float(value)) for value in retry_backoff_seconds)
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(read_timeout_seconds, connect=_CONNECT_TIMEOUT_SECONDS),
+            timeout=httpx.Timeout(read_timeout_seconds, connect=5.0),
             follow_redirects=False,
             transport=transport,
             headers={"user-agent": ROSTER_USER_AGENT, "accept": "application/json"},
         )
-        self._next_call_at = 0.0
-        self._last_bytes = 0
-
-    @property
-    def last_response_bytes(self) -> int:
-        return self._last_bytes
+        self.last_response_bytes = 0
+        self.last_row_count = 0
+        self.last_duplicate_count = 0
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def traders(self, *, window: str = "7d") -> tuple[RosterCandidate, ...]:
-        payload = await self._get("/api/traders", {"window": window, "stocks": "false"})
-        if not isinstance(payload, list):
-            raise RosterProviderError("roster_payload_invalid")
-        rows = []
-        for item in payload:
-            candidate = _candidate(item)
-            if candidate is not None:
-                rows.append(candidate)
-        if not rows:
-            # A list that parses to nothing is a broken answer, not "nobody is tracked any more".
-            raise RosterProviderError("roster_payload_empty")
-        return tuple(rows)
-
-    async def trader(self, handle: str, *, window: str = "7d") -> TraderStats | None:
-        """One trader document, or `None` when the site does not know that handle.
-
-        The window is passed because the profit factor is computed over it, exactly as the list's
-        statistics are. Omitting it here left the factor on the provider's own default while the list
-        was requested explicitly, which is two windows in one rule (#649 §2.1).
-        """
-
-        name = str(handle or "").strip()
-        if not name:
-            return None
-        payload = await self._get(f"/api/trader/{name}", {"window": window, "stocks": "false"}, missing_is_none=True)
-        if payload is None:
-            return None
-        if not isinstance(payload, Mapping):
-            raise RosterProviderError("roster_payload_invalid")
-        stats = payload.get("stats")
-        if not isinstance(stats, Mapping):
-            raise RosterProviderError("roster_payload_invalid")
-        return TraderStats(
-            handle=str(payload.get("handle") or name),
-            closed_trades=_int(stats.get("closed_trades")),
-            realized_pnl=_float(stats.get("realized_pnl")),
-            profit_factor=_optional_float(stats.get("profit_factor")),
-        )
-
-    async def _get(
-        self,
-        path: str,
-        params: Mapping[str, str],
-        *,
-        missing_is_none: bool = False,
-    ) -> Any:
-        """One bounded read, retried only for the failures that are about the moment, not the answer.
-
-        A 404, a redirect, a block and an unparseable body all say something about the request or the
-        resource and are raised at once. A throttle, a timeout and a transport error say the site was
-        busy, and the caller cannot publish without an answer, so they are asked again.
-        """
-
-        for attempt in range(self.retry_attempts):
-            try:
-                return await self._attempt(path, params, missing_is_none=missing_is_none)
-            except RosterProviderError as error:
-                if error.code not in _RETRIABLE_CODES or attempt == self.retry_attempts - 1:
-                    raise
-                index = min(attempt, len(self.retry_backoff_seconds) - 1)
-                await asyncio.sleep(self.retry_backoff_seconds[index] if self.retry_backoff_seconds else 0.0)
-        raise RosterProviderError("roster_retries_exhausted")  # pragma: no cover -- the loop returns or raises
-
-    async def _attempt(
-        self,
-        path: str,
-        params: Mapping[str, str],
-        *,
-        missing_is_none: bool = False,
-    ) -> Any:
-        await self._pace()
+    async def traders(self, *, window: str = "30d") -> tuple[RosterMember, ...]:
+        self.last_response_bytes = 0
+        self.last_row_count = self.last_duplicate_count = 0
         try:
-            async with self._client.stream("GET", f"{self.base_url}{path}", params=dict(params)) as response:
-                if 300 <= response.status_code < 400:
-                    raise RosterProviderError("roster_redirect", status_code=response.status_code)
-                if missing_is_none and response.status_code == 404:
-                    self._last_bytes = 0
-                    return None
-                if response.status_code in {401, 403, 451}:
-                    raise RosterProviderError("roster_blocked", status_code=response.status_code)
-                if response.status_code in {418, 429}:
-                    raise RosterProviderError("roster_rate_limited", status_code=response.status_code)
-                if response.status_code >= 400:
-                    raise RosterProviderError("roster_http_error", status_code=response.status_code)
-                # Streamed, so the ceiling stops the read rather than describing it afterwards.
+            async with self._client.stream(
+                "GET", f"{self.base_url}/api/traders", params={"window": window, "stocks": "false"}
+            ) as response:
+                status = response.status_code
+                if 300 <= status < 400:
+                    raise RosterProviderError("roster_redirect", status_code=status)
+                if status in {401, 403, 451}:
+                    raise RosterProviderError("roster_blocked", status_code=status)
+                if status in {418, 429}:
+                    raise RosterProviderError(
+                        "roster_rate_limited",
+                        status_code=status,
+                        retry_after_ms=retry_after_ms(response.headers.get("Retry-After")),
+                    )
+                if status >= 400:
+                    raise RosterProviderError(
+                        "roster_http_error",
+                        status_code=status,
+                        retry_after_ms=retry_after_ms(response.headers.get("Retry-After")),
+                    )
                 raw = await read_bounded(response, max_bytes=_MAX_BYTES)
         except httpx.TimeoutException:
             raise RosterProviderError("roster_timeout") from None
@@ -213,68 +80,34 @@ class RobinhoodTrenchesClient:
             raise RosterProviderError("roster_payload_too_large") from None
         except httpx.HTTPError:
             raise RosterProviderError("roster_transport_error") from None
-        self._last_bytes = len(raw)
+        self.last_response_bytes = len(raw)
         try:
-            return json.loads(raw)
+            payload = json.loads(raw)
         except ValueError:
             raise RosterProviderError("roster_payload_invalid") from None
-
-    async def _pace(self) -> None:
-        if self.pace_seconds <= 0:
-            return
-        now = time.monotonic()
-        wait = self._next_call_at - now
-        if wait > 0:
-            await asyncio.sleep(wait)
-            now = time.monotonic()
-        self._next_call_at = now + self.pace_seconds
+        members = parse_roster(payload)
+        self.last_row_count = len(payload)
+        self.last_duplicate_count = len(payload) - len(members)
+        return members
 
 
-def _candidate(item: Any) -> RosterCandidate | None:
-    if not isinstance(item, Mapping):
-        return None
-    address = str(item.get("address") or "").strip().lower()
-    if not address.startswith("0x") or len(address) != 42:
-        return None
-    return RosterCandidate(
-        address=address,
-        handle=str(item.get("handle") or "").strip(),
-        followers=_int(item.get("followers")),
-        realized_pnl=_float(item.get("realized_pnl")),
-        closed_trades=_int(item.get("closed_trades")),
-        win_rate=_float(item.get("win_rate")),
-        open_cost=_float(item.get("open_cost")),
-    )
+def parse_roster(payload: Any) -> tuple[RosterMember, ...]:
+    """All valid addresses in this response, or a failed response; never a partial parse.
 
-
-def _int(value: Any) -> int:
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _float(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _optional_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-__all__ = [
-    "PACE_SECONDS",
-    "ROBINHOODTRENCHES_BASE_URL",
-    "RobinhoodTrenchesClient",
-    "RosterCandidate",
-    "RosterProviderError",
-    "TraderStats",
-]
+    This source supplies a bare array, not a paginated contract. A valid reduction is
+    accepted. There is no evidence with which to infer hidden source-side truncation.
+    """
+    if not isinstance(payload, list):
+        raise RosterProviderError("roster_payload_invalid")
+    if not payload:
+        raise RosterProviderError("roster_payload_empty")
+    members: dict[str, str] = {}
+    for row in payload:
+        if not isinstance(row, Mapping) or not (address := normalize_address(row.get("address", ""))):
+            raise RosterProviderError("roster_address_invalid")
+        handle = row.get("handle")
+        handle = handle.strip() if isinstance(handle, str) else ""
+        # A stable alias for duplicates: prefer a nonempty name, then lexical order.
+        prior = members.get(address, "")
+        members[address] = min(filter(None, (prior, handle)), default="")
+    return tuple(RosterMember(wallet=address, handle=members[address]) for address in sorted(members))

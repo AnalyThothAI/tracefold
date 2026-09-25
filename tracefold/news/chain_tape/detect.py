@@ -15,8 +15,7 @@ from ..wallet_contracts import (
     NetBuySnapshot,
     WalletEvent,
 )
-from .contracts import ClassifiedFill
-from .loop import ChainTapeDatabasePort
+from .contracts import ChainTapeDatabasePort, ClassifiedFill
 from .rules import WalletRules, calculate_window, effective_buy, trigger_age_reason
 from .tape_io import FAILED, TapePasses
 

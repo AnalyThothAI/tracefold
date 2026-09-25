@@ -7,9 +7,10 @@ PR-2 is comparing two such quantities exactly.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final, Literal
+from typing import Any, Final, Literal, Protocol
 
 # Telemetry name and the two provider labels this flow reports under.
 CHAIN_TAPE_NAME: Final = "chain_tape"
@@ -78,28 +79,15 @@ class ClassifiedFill:
 
 @dataclass(frozen=True, slots=True)
 class RosterMember:
-    """One wallet in one roster version, with the ranks that put it there.
-
-    A member can hold both ranks: the two lists overlapped by five addresses on the day the rules were
-    chosen. `None` in a rank means "this list did not select this wallet", which is not the same as
-    rank 0.
-    """
+    """A source member; display statistics never determine subscription eligibility."""
 
     wallet: str
     handle: str
-    followers: int
-    realized_pnl: float
-    closed_trades: int
-    win_rate: float
-    profit_factor: float | None
-    open_cost: float
-    rank_quality: int | None
-    rank_whale: int | None
 
 
 @dataclass(frozen=True, slots=True)
 class RosterSnapshot:
-    """One version of the roster: the union of the quality and whale lists, and when it was taken."""
+    """One source membership version and its most recent successful fetch."""
 
     roster_version: int
     taken_at_ms: int
@@ -140,9 +128,46 @@ __all__ = [
     "STABLE_CASH_TOKEN",
     "SWAP_TOPICS",
     "USD_SOURCE_STABLE_CASH_LEG",
+    "ChainTapeDatabasePort",
+    "ChainTapeRepositories",
     "ClassifiedFill",
+    "CompletePrefix",
     "FillKind",
     "RosterMember",
     "RosterSnapshot",
     "TapeCursor",
+    "retry_delay_ms",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class CompletePrefix:
+    """One verified contiguous receipt prefix, encoded for collection and detection."""
+
+    cursor: TapeCursor
+    log_index: int
+    event_at_ms: int
+
+
+def retry_delay_ms(failures: int, provider_delay_ms: int = 0) -> int:
+    """The two wallet pollers' bounded failure schedule; never shorten Retry-After."""
+    return max(min(300_000, 30_000 * (1 << min(max(failures - 1, 0), 4))), provider_delay_ms)
+
+
+class ChainTapeRepositories(Protocol):
+    """The callback capability one turn needs; no instruments, no price, no Trading."""
+
+    @property
+    def news(self) -> Any: ...
+
+
+class ChainTapeDatabasePort(Protocol):
+    """Bounded read/transaction, in the News error vocabulary. The composition root picks the lane."""
+
+    async def read[T](
+        self, name: str, fn: Callable[[ChainTapeRepositories], T], *, timeout_seconds: float = 3.0
+    ) -> T: ...
+
+    async def tx[T](
+        self, name: str, fn: Callable[[ChainTapeRepositories], T], *, timeout_seconds: float = 3.0
+    ) -> T: ...

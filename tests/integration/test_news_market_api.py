@@ -638,7 +638,7 @@ def test_wallet_events_paging_totals_deep_link_and_old_contract_rejection(app, c
             "sufficient": False,
         }
         assert status["roster"]["address_count"] == 0
-        assert status["roster"]["quality_count"] == status["roster"]["whale_count"] == 0
+        assert "quality_count" not in status["roster"] and "whale_count" not in status["roster"]
         assert status["roster"]["supported_count"] == 0
         assert status["collection_lagging"] is True, "no collection cutoff at all is not a fresh one"
         # Three episodes, none of which reached a channel, and one stated leading reason.
@@ -657,14 +657,6 @@ def _roster_and_tape(conn: Any, *, quality: int, whale: int, at_ms: int, monitor
         RosterMember(
             wallet="0x" + f"{index + 1:040x}",
             handle=f"handle{index + 1}",
-            followers=0,
-            realized_pnl=1000.0,
-            closed_trades=20,
-            win_rate=0.5,
-            profit_factor=2.0,
-            open_cost=10000.0,
-            rank_quality=index + 1 if index < quality else None,
-            rank_whale=index + 1 if index < whale else None,
         )
         for index in range(whale)
     ]
@@ -695,15 +687,14 @@ def _roster_and_tape(conn: Any, *, quality: int, whale: int, at_ms: int, monitor
 
 
 def test_wallet_status_counts_every_published_address_against_the_one_quorum(app, conn):
-    """147 published addresses can trigger; the quality rank is published beside them, not instead."""
+    """All 147 published addresses have coverage; rankings are absent from the contract."""
 
     now = int(time.time() * 1000)
     _roster_and_tape(conn, quality=1, whale=147, at_ms=now, monitoring_from_ms=now - 3_600_000)
     with TestClient(app) as client:
         status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
     assert status["roster"]["address_count"] == 147
-    assert status["roster"]["quality_count"] == 1
-    assert status["roster"]["whale_count"] == 147
+    assert "quality_count" not in status["roster"] and "whale_count" not in status["roster"]
     assert status["roster"]["supported_count"] == 147
     assert status["thresholds"] == {
         "required_n": 5,
@@ -795,3 +786,15 @@ def test_wallet_detail_timeline_exact_cutoff_and_keyset_include_small_sell_and_t
         ).json()["data"]
         assert [row["amount_raw"] for row in second["fills"]] == ["1234567890123456789"]
         assert second["next_fills_cursor"] is None
+
+
+def test_wallet_status_does_not_call_a_gapped_monitoring_window_supported(app, conn):
+    now = int(time.time() * 1000)
+    _roster_and_tape(conn, quality=0, whale=147, at_ms=now, monitoring_from_ms=now - 3_600_000)
+    conn.execute("UPDATE news_market_wallet_tape_state SET gap_at_ms = %s", (now - 1000,))
+    conn.commit()
+    with TestClient(app) as client:
+        status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
+    assert status["roster"]["address_count"] == 147
+    assert status["roster"]["supported_count"] == 0
+    assert status["thresholds"]["sufficient"] is False

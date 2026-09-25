@@ -40,12 +40,9 @@ class NetBuyMember(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     wallet: str
     handle: str
-    rank_quality: int | None
     roster_version: int | None
     roster_known_at_ms: int | None
     monitoring_from_ms: int | None
-    source_closed_trades: int | None
-    source_profit_factor: str | None
     # How many episodes this address was a qualified member of in the fourteen days before this
     # snapshot's cutoff -- the card's "have these addresses done this before" fact, counted from the
     # stored episodes themselves. `None` is "not counted", which only a snapshot written before the

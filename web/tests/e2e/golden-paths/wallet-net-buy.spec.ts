@@ -4,7 +4,6 @@ import { installMockApi } from "@tests/e2e/support/mockApi";
 import {
   newsWalletDecimalDetailFixture,
   newsWalletEventFixture,
-  newsWalletsFixture,
 } from "@tests/fixtures/newsFixture";
 
 test.beforeEach(async ({ page }) => {
@@ -62,47 +61,4 @@ test("signed net amounts, zero return and tiny prices survive the real page", as
   expect(Math.max(...snapshotEdges)).toBeLessThanOrEqual(page.viewportSize()!.width);
   await expectNoDocumentHorizontalOverflow(page);
   await page.screenshot({ path: testInfo.outputPath("wallet-net-buy-values.png"), fullPage: true });
-});
-
-test("the status block leads the page and says why an untriggerable roster produced nothing", async ({
-  page,
-}, testInfo) => {
-  const base = newsWalletsFixture();
-  await page.route(/\/api\/news\/wallets(\?.*)?$/, (route) =>
-    route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        data: {
-          ...base,
-          roster: {
-            ...base.roster,
-            address_count: 4,
-            quality_count: 1,
-            whale_count: 4,
-            supported_count: 4,
-          },
-          thresholds: { ...base.thresholds, sufficient: false },
-          funnel: { ...base.funnel, events: 0, intents: 0, sent: 0 },
-        },
-      }),
-    }),
-  );
-  await page.goto("/news/wallets");
-  const status = page.getByRole("region", { name: "名单与采集状态" });
-  await expect(status).toBeVisible();
-  await expect(status).toHaveAttribute("data-status-state", "roster_insufficient");
-  await expect(status).toContainText(
-    "当前名单地址 4 个，低于 30 分钟 5 个地址的门槛；当前名单不足以触发",
-  );
-  await expect(status).toContainText("4（1 / 4）");
-  // It leads the page: the block sits above the episode list rather than under it.
-  const events = page.getByRole("region", { name: "集中净买入事件" });
-  const [statusTop, eventsTop] = await Promise.all([
-    status.evaluate((node) => node.getBoundingClientRect().top),
-    events.evaluate((node) => node.getBoundingClientRect().top),
-  ]);
-  expect(statusTop).toBeLessThan(eventsTop);
-  await expectNoDocumentHorizontalOverflow(page);
-  await page.screenshot({ path: testInfo.outputPath("wallet-status-block.png"), fullPage: true });
 });

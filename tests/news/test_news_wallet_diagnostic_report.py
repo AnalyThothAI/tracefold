@@ -60,11 +60,8 @@ def test_the_roster_funnel_separates_the_last_attempt_from_the_last_complete_lis
 
     report = _roster_funnel(members, state=state, settings=_settings())
 
-    assert report["selected_addresses"] == 3
+    assert report["source_addresses"] == 3
     # Counted separately, because "selected" and "cleared the closed-trade floor" are two questions.
-    assert report["closed_trades_at_or_above_floor"] == 2
-    assert (report["profit_factor_known"], report["profit_factor_unknown"]) == (1, 1)
-    assert (report["quality"], report["whale"]) == (1, 3)
     assert report["window"] == "30d"
     assert report["refresh_last_attempt_at_ms"] > report["refresh_last_success_at_ms"]
     assert report["refresh_last_error"] == "robinhoodtrenches:roster_rate_limited"
@@ -83,12 +80,13 @@ def test_the_ranks_no_longer_shrink_the_pool_the_quorum_is_counted_against() -> 
         for index in range(2, 148)
     ]
 
-    report = _triggerability(members, state={"scanned_at_ms": NOW}, settings=_settings(), now_ms=NOW)
+    report = _triggerability(
+        members, state={"scanned_at_ms": NOW, "coverage_from_ms": NOW - 86_400_000}, settings=_settings(), now_ms=NOW
+    )
 
     assert (report["required_n"], report["roster_addresses"], report["monitoring_supported"]) == (5, 147, 147)
     assert (report["short_by"], report["satisfiable"]) == (0, True)
     assert report["window"] == "30m" and report["measured_against"] == "scanned_at_ms"
-    assert _roster_funnel(members, state={}, settings=_settings())["quality"] == 1
 
 
 def test_an_address_still_warming_up_is_short_support_rather_than_absent() -> None:
@@ -99,19 +97,22 @@ def test_an_address_still_warming_up_is_short_support_rather_than_absent() -> No
         for index in range(1, 6)
     ]
 
-    report = _triggerability(members, state={"scanned_at_ms": NOW}, settings=_settings(), now_ms=NOW)
+    report = _triggerability(
+        members, state={"scanned_at_ms": NOW, "coverage_from_ms": NOW - 86_400_000}, settings=_settings(), now_ms=NOW
+    )
 
     assert (report["roster_addresses"], report["monitoring_supported"]) == (5, 0)
     assert (report["short_by"], report["satisfiable"]) == (5, False)
 
 
-def test_the_host_clock_is_only_the_fallback_when_nothing_has_been_scanned() -> None:
+def test_the_host_clock_never_substitutes_for_missing_coverage() -> None:
     members = [_member(wallet="a", quality=1, whale=None, closed=40, factor=2.5, monitoring=NOW - HALF_HOUR)]
 
     report = _triggerability(members, state={}, settings=_settings(), now_ms=NOW)
 
-    assert report["measured_against"] == "host_clock"
-    assert report["measured_at_ms"] == NOW
+    assert report["measured_against"] == "scanned_at_ms"
+    assert report["monitoring_supported"] == 0
+    assert report["measured_at_ms"] is None
 
 
 def test_lifetime_discard_totals_are_never_presented_inside_the_window() -> None:
@@ -158,8 +159,18 @@ def test_the_send_queue_reports_the_head_age_and_its_due_time() -> None:
 
 
 def test_an_empty_deployment_reports_zeroes_rather_than_failing() -> None:
-    assert _roster_funnel([], state={}, settings=_settings())["selected_addresses"] == 0
+    assert _roster_funnel([], state={}, settings=_settings())["source_addresses"] == 0
     assert _send_queue([], now_ms=NOW) == {"waiting": 0, "head": None, "queue": []}
     triggerability = _triggerability([], state={}, settings=_settings(), now_ms=NOW)
     assert (triggerability["roster_addresses"], triggerability["short_by"]) == (0, 5)
     assert triggerability["min_net_buy_usd"] == str(Decimal("1000"))
+
+
+def test_a_recent_gap_excludes_the_same_addresses_from_cli_and_the_rule() -> None:
+    members = [
+        _member(wallet=str(i), quality=1, whale=None, closed=0, factor=None, monitoring=NOW - 86_400_000)
+        for i in range(5)
+    ]
+    state = {"scanned_at_ms": NOW, "coverage_from_ms": NOW - 86_400_000, "gap_at_ms": NOW - 1000}
+    result = _triggerability(members, state=state, settings=_settings(), now_ms=NOW)
+    assert result["monitoring_supported"] == 0 and not result["satisfiable"]
