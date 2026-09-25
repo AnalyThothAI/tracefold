@@ -655,6 +655,7 @@ def main() -> None:
     if args.output.resolve() == args.manifest.resolve():
         parser.error("output and manifest must be different files")
     with psycopg.connect(dsn, row_factory=dict_row, options="-c default_transaction_read_only=on") as conn:
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         rows, manifest = export_cases(
             conn,
             AnalysisFiles(args.archive_root),
