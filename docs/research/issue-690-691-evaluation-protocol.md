@@ -143,12 +143,17 @@ child identity and archived observation ref. The funnel reports WATCH states;
 an absent child is not inferred to mean that a complete no-crossing path was
 observed.
 
-For Cases written by the new schema, the read-only exporter joins root/child
+For Cases written by the new schema, the exporter reads one read-only,
+repeatable-read database snapshot and joins root/child
 identities, all attempt and physical-call cost/status/clock refs, shadow receipts
 and archived evidence, then derives
 the independent rule watch path from the root market tape. It writes a SHA-256
 manifest with missing archive refs and coverage counts; missing data is not
-recovered from today's market. Use a restricted local output directory:
+recovered from today's market. A shadow receipt still within its scheduled
+evaluation window remains `receipt_pending`, with its due time, instead of being
+counted as a missing terminal receipt. Simulated receipts with absent, corrupt,
+or non-object archive refs are unevaluable and listed in the manifest. Use a
+restricted local output directory:
 
 ```bash
 uv run python scripts/export_trading_analysis_cohort.py \
