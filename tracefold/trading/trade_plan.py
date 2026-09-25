@@ -2,7 +2,7 @@
 
 Nautilus owns every order and position (#680). A plan is not a mirror of either: it records what was
 intended when the entry was admitted -- instrument, direction, sized quantity, stop and take-profit
-distance, maximum holding time -- and the three lifecycle facts a restart or a watchdog needs from
+distance, maximum holding time -- and the lifecycle facts a restart needs from
 PostgreSQL rather than from process memory: when the position opened, when the plan ended, and why.
 Prices, fills, fees and realized PnL are observations; the read models fold them from the fill journal.
 """

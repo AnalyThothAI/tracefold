@@ -85,8 +85,7 @@ class _TurnPipeline:
 
     def __init__(self, turns: tuple[tuple[str, Any, float], ...]) -> None:
         self._turns = turns
-        # The Deliverer's send entry as composition reads it. This harness builds no push sender, so
-        # the Trading watchdog beside a Trading test composes as `unavailable` (#680 PR-2).
+        # The Deliverer's send entry as composition reads it. This harness builds no push sender.
         self.deliverer = SimpleNamespace(send_entry=SimpleNamespace(available=False))
 
     @property

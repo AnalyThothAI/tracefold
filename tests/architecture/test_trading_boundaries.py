@@ -34,7 +34,6 @@ SIGNAL_PATH = (
 )
 EXECUTION_PATH = {
     "trading/execution_contracts.py",
-    "trading/storage/health.py",
     "trading/stages.py",
     "trading/operator_control.py",
     "trading/storage/execution_stream.py",

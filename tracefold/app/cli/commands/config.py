@@ -129,7 +129,6 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                 },
                 "trading": {
                     "enabled": settings.trading.enabled,
-                    "watchdog_enabled": settings.trading.watchdog_enabled,
                     "execution": {
                         "mode": settings.trading.execution.mode,
                         "account_slot": settings.trading.execution.account_slot,

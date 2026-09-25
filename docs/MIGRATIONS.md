@@ -57,7 +57,7 @@ restore, never invented reverse DDL.
 ## Operator archive before a destructive revision
 
 A revision that deletes durable data refuses to run rather than deleting it for
-the operator. Three revisions do this today, and all expect the same archive
+the operator. The revisions below expect the same archive
 step first: a `pg_dump` of the affected rows into `~/.tracefold/backups/`, taken
 after the writers are stopped by the canonical migration gate, so the dump and
 the database cannot diverge between the two.
@@ -606,12 +606,31 @@ DELETE leaves dead tuples for autovacuum and the column drops are catalog-only.
 Downgrade refuses; read a deleted proof row from the pre-0389 backup restored into
 a scratch database.
 
+### 20260925_0397: Retire Workers Trading watchdog ledger
+
+Drops `platform_watchdog_alerts` after the Workers Trading watchdog is removed.
+Trading plans, execution observations, Runtime state, News deliveries and
+Workers runtime state remain. A populated alert ledger raises
+`watchdog_alerts_present` before DDL. Under the stopped-Workers migration gate,
+archive and clear it before upgrading:
+
+```bash
+pg_dump --data-only --table=platform_watchdog_alerts \
+  > ~/.tracefold/backups/pre-0397-watchdog-alerts-$(date +%Y%m%d).sql
+psql -c "DELETE FROM platform_watchdog_alerts"
+```
+
+Downgrade recreates an empty table for the historical image and cannot recover
+the old notification timestamps without the pre-cut backup. Remove
+`trading.watchdog_enabled` from operator configuration before starting the new
+image because the strict config model no longer accepts it.
+
 ### 20260922_0388: Workers watchdog alert ledger (#680 PR-2)
 
-Creates `platform_watchdog_alerts`, one row per condition the Trading watchdog
-watches (six today): whether the condition is active, when its episode opened,
+Created `platform_watchdog_alerts`, one row per condition the Trading watchdog
+watched (six at the time): whether the condition was active, when its episode opened,
 when the operator was last told about it (`NULL` until a message got through), and
-since when an active condition has read clear. It exists so "already alerted"
+since when an active condition had read clear. It existed so "already alerted"
 survives a Workers restart — Workers restarted 10–21 times a day in the #680 audit
 window, and memory-held state would re-page every active condition on each one and
 lose the recovery message for one that cleared meanwhile. It is platform-owned

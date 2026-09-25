@@ -746,10 +746,6 @@ class TradingSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = False
-    # The Workers watchdog over the Runtime and open plans (#680 RC11). On by default:
-    # it runs whenever Trading is enabled and News push can deliver, and alerts through that provider.
-    # Its thresholds are code-owned; this is only the switch.
-    watchdog_enabled: bool = True
     analysis: TradingAnalysisSettings = Field(default_factory=TradingAnalysisSettings)
     execution: TradingExecutionSettings = Field(default_factory=TradingExecutionSettings)
 

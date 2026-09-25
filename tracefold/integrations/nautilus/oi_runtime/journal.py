@@ -224,7 +224,7 @@ class ExecutionJournal:
     def offer_plan(self, plan: TradePlan) -> None:
         """Queue one plan transition; a later transition of the same plan replaces a queued one.
 
-        A plan transition is never refused: it is the durable intent a restart and a watchdog read,
+        A plan transition is never refused: it is the durable intent a restart reads,
         so a full journal grows by one row rather than losing it.
         """
 

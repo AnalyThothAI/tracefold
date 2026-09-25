@@ -434,6 +434,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("title_presentation", news)
         trading = payload["data"]["trading"]
         self.assertFalse(trading["enabled"])
+        self.assertNotIn("watchdog_enabled", trading)
         self.assertEqual(
             trading["execution"],
             {
@@ -601,6 +602,9 @@ class CliTests(unittest.TestCase):
     def test_settings_reject_worker_runtime_configuration(self):
         with self.assertRaises(ValidationError):
             Settings.model_validate({"workers": {"collector": {"enabled": False}}})
+
+        with self.assertRaises(ValidationError):
+            Settings.model_validate({"trading": {"watchdog_enabled": True}})
 
     def test_nautilus_instrument_and_database_cadence_are_code_owned(self):
         for field, value in (

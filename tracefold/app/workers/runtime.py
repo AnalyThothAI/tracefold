@@ -39,9 +39,6 @@ CHAIN_TAPE = "chain_tape"
 WALLET_ROSTER = "wallet_roster"
 WALLET_NET_BUY = "wallet_net_buy"
 WALLET_PRICES = "wallet_prices"
-# The alert-only watcher over the Runtime and the plans (#680 RC11). Its own key, because a
-# watchdog that stopped is exactly what nothing else would report.
-TRADING_WATCHDOG = "trading_watchdog"
 
 CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]
 
@@ -351,7 +348,6 @@ __all__ = [
     "NEWS_QUOTES",
     "NEWS_REACTIONS",
     "SHARED_RESOURCE_FAILURES",
-    "TRADING_WATCHDOG",
     "WALLET_NET_BUY",
     "WALLET_PRICES",
     "WORKERS_RUNTIME_STALE_AFTER_MS",
