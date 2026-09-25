@@ -9,19 +9,60 @@ permissions:
   contents: read
 
 jobs:
-  source:
+  dependencies:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           ref: 4272509842ab3cc5d69bd6e29632bcbda4c7d225
-      - name: Archive tracked source only
-        run: git archive --format=tar HEAD | gzip > /tmp/tracefold-697-source.tar.gz
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: '3.13'}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: '0.11.7'}
+      - name: Install locked test environment
+        run: |
+          uv sync --locked
+          tar -czf /tmp/tracefold-697-python.tar.gz .venv/lib .venv/bin .venv/pyvenv.cfg
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: tracefold-697-source
-          path: /tmp/tracefold-697-source.tar.gz
+          name: tracefold-697-python
+          path: /tmp/tracefold-697-python.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+  postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Export the repository-pinned disposable PostgreSQL runtime
+        run: |
+          image=postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+          docker pull "$image"
+          id=$(docker create "$image")
+          docker export "$id" | gzip -1 > /tmp/tracefold-697-postgres.tar.gz
+          docker rm "$id"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tracefold-697-postgres
+          path: /tmp/tracefold-697-postgres.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: 4272509842ab3cc5d69bd6e29632bcbda4c7d225
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: {node-version: '22'}
+      - run: npm ci --prefix web
+      - run: tar -czf /tmp/tracefold-697-node.tar.gz web/node_modules
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tracefold-697-node
+          path: /tmp/tracefold-697-node.tar.gz
           retention-days: 1
           if-no-files-found: error
