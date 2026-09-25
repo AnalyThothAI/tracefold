@@ -52,6 +52,8 @@ ObservationKind = Literal[
     "fill",
     "position",
     "protection",
+    "funding",
+    "funding_coverage",
 ]
 
 
@@ -147,12 +149,17 @@ class SignalExitPlanV1(_FrozenContract):
     max_holding_ns: int = Field(gt=0, le=86_400_000_000_000)
 
 
-class SignalEntryEnvelopeV1(_FrozenContract):
-    version: Literal["entry_envelope_v1"] = "entry_envelope_v1"
+class SignalEntryEnvelopeV2(_FrozenContract):
+    version: Literal["entry_envelope_v2"] = "entry_envelope_v2"
     root_expires_at_ns: int = Field(gt=0)
     reference_price: Decimal = Field(gt=0)
+    structure_level: Decimal = Field(gt=0)
     max_price_drift_bps: int = Field(ge=1, le=2_000)
     universe_version: str = Field(min_length=1, max_length=64)
+
+
+def entry_structure_allows(*, direction: Literal["long", "short"], executable: Decimal, level: Decimal) -> bool:
+    return executable > level if direction == "long" else executable < level
 
 
 class TradeSignalV2(_FrozenContract):
@@ -174,7 +181,7 @@ class TradeSignalV2(_FrozenContract):
     observed_at_ns: int = Field(gt=0)
     expires_at_ns: int = Field(gt=0)
     exit_plan: SignalExitPlanV1
-    entry_envelope: SignalEntryEnvelopeV1
+    entry_envelope: SignalEntryEnvelopeV2
 
     @model_validator(mode="after")
     def validate_v2(self) -> Self:
@@ -294,7 +301,7 @@ __all__ = [
     "SHA256_PATTERN",
     "ExecutionObservationV1",
     "OperatorIntentV1",
-    "SignalEntryEnvelopeV1",
+    "SignalEntryEnvelopeV2",
     "SignalExitPlanV1",
     "TradeSignalV1",
     "TradeSignalV2",

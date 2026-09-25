@@ -10,7 +10,7 @@ from decimal import Decimal
 from tests.nautilus_oi_runtime_fixtures import MARKET, SECOND_NS, oi_profile
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.trading.execution_contracts import (
-    SignalEntryEnvelopeV1,
+    SignalEntryEnvelopeV2,
     SignalExitPlanV1,
     TradeSignalV2,
 )
@@ -61,9 +61,10 @@ def append_published_v2_signal(
         observed_at_ns=observed_at_ns,
         expires_at_ns=expires_at_ns,
         exit_plan=exit_plan,
-        entry_envelope=SignalEntryEnvelopeV1(
+        entry_envelope=SignalEntryEnvelopeV2(
             root_expires_at_ns=root_expires_at_ns,
             reference_price=Decimal("10000"),
+            structure_level=Decimal("9900"),
             max_price_drift_bps=200,
             universe_version=profile.universe_digest,
         ),

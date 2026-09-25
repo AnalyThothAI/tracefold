@@ -126,7 +126,7 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path, postgres_
         conn.close()
 
     names = {item["name"] for item in payload["queries"]}
-    assert payload["ok"] is True
+    assert payload["ok"] is True, [item for item in payload["queries"] if not item["ok"]]
     assert payload["analyze"] is False
     assert {"readiness_schema"} <= names
     retired_prefixes = ("recent_", "search_", "target_posts", "live_market", "provider_")
@@ -167,7 +167,7 @@ def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
     finally:
         conn.close()
 
-    assert payload["ok"] is True
+    assert payload["ok"] is True, [item for item in payload["queries"] if not item["ok"]]
     assert payload["analyze"] is True
     assert all(item["metrics"]["plan_json_valid"] for item in payload["queries"])
     assert all(item["violations"] == [] for item in payload["queries"])

@@ -1,16 +1,35 @@
-"""Compile a recorded Agent answer into a deterministic, bounded decision."""
+"""Compile one recorded model proposal against frozen, code-owned conditions."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from decimal import Decimal
+from typing import Any
 
-from .contracts import AgentAssessment, Candidate, CandidateScore, Decision
+from .contracts import AgentAssessment, Candidate, Decision, WatchCondition
 
 
 class InvalidAssessment(ValueError):
-    pass
+    """A malformed reference or candidate identity, not a rejected strategy proposal."""
+
+
+def is_citable_evidence(item: dict[str, Any]) -> bool:
+    """Use the same frozen availability rule for brief IDs and compilation."""
+    cutoff = item.get("knowledge_cutoff_ms")
+    event_at = item.get("event_at_ms")
+    received_at = item.get("received_at_ms")
+    values = item.get("values")
+    return (
+        item.get("status") == "ok"
+        and isinstance(values, dict)
+        and any(value is not None and value != "" for value in values.values())
+        and bool(item.get("unit_definition"))
+        and isinstance(cutoff, int)
+        and isinstance(event_at, int)
+        and isinstance(received_at, int)
+        and event_at <= cutoff
+        and received_at <= cutoff
+    )
 
 
 def decision_identity(case_id: str, decision: dict[str, object]) -> str:
@@ -23,50 +42,69 @@ def decision_identity(case_id: str, decision: dict[str, object]) -> str:
 def compile_assessment(
     *,
     assessment: AgentAssessment,
-    brief_sha: str,
-    candidate_menu_sha: str,
     candidates: tuple[Candidate, ...],
-    evidence_refs: frozenset[str],
+    evidence_catalog: dict[str, dict[str, Any]],
+    watch_expires_at_ms: int | None = None,
 ) -> Decision:
-    if assessment.brief_sha != brief_sha or assessment.candidate_menu_sha != candidate_menu_sha:
-        raise InvalidAssessment("assessment_input_digest_mismatch")
     menu = {candidate.candidate_id: candidate for candidate in candidates}
     if len(menu) != len(candidates) or len(menu) > 2:
         raise InvalidAssessment("candidate_menu_invalid")
+
+    def available(ref: str) -> bool:
+        return is_citable_evidence(evidence_catalog.get(ref) or {})
+
     cited = set(assessment.supporting_evidence + assessment.opposing_evidence)
-    scores: list[CandidateScore] = []
-    seen: set[str] = set()
-    for item in assessment.candidate_assessments:
-        if item.candidate_id not in menu or item.candidate_id in seen:
-            raise InvalidAssessment("candidate_outside_menu_or_duplicate")
-        seen.add(item.candidate_id)
-        total = 0
-        covered = 0
-        for factor in item.factors:
-            cited.update(factor.evidence_refs)
-            if factor.status == "known" and factor.support_score is not None:
-                covered += factor.weight_bps
-                total += factor.weight_bps * factor.support_score
-        value = Decimal(total) / Decimal(10_000) if covered == 10_000 else None
-        scores.append(CandidateScore(candidate_id=item.candidate_id, value=value, covered_weight_bps=covered))
-    if cited - evidence_refs:
+    if cited - evidence_catalog.keys():
         raise InvalidAssessment("assessment_evidence_ref_unknown")
-    selected = menu.get(assessment.selected_candidate_id or "")
-    if assessment.action == "TRADE":
-        if selected is None or selected.candidate_id not in seen:
-            raise InvalidAssessment("trade_candidate_not_assessed")
-        score = next(score for score in scores if score.candidate_id == selected.candidate_id)
-        if score.covered_weight_bps < 10_000:
-            raise InvalidAssessment("trade_assessment_partial")
-        if set(selected.required_evidence_refs) - cited:
-            raise InvalidAssessment("trade_required_evidence_missing")
+    if any(not available(ref) for ref in cited):
+        raise InvalidAssessment("assessment_evidence_unavailable")
+
+    selected = menu.get(assessment.entry_candidate_id or "")
+    action = assessment.action
+    reason_code = (
+        "model_no_trade" if action == "NO_TRADE" else "model_watch" if action == "WATCH" else "confirmed_entry"
+    )
+    watch: WatchCondition | None = None
+    if action == "TRADE":
+        if selected is None:
+            raise InvalidAssessment("trade_candidate_outside_menu")
+        if any(not available(ref) for ref in selected.required_evidence_refs):
+            action, reason_code = "NO_TRADE", "required_evidence_unavailable"
+        elif not selected.entry_ready:
+            action, reason_code = "NO_TRADE", selected.strategy_gate_reason or "entry_condition_unmet"
+    elif action == "WATCH":
+        eligible = [candidate for candidate in candidates if candidate.watch_eligible]
+        if len(eligible) == 2 and watch_expires_at_ms is not None:
+            if any(not available(ref) for candidate in eligible for ref in candidate.required_evidence_refs):
+                action, reason_code = "NO_TRADE", "required_evidence_unavailable"
+            elif watch_expires_at_ms <= eligible[0].entry_observed_at_ms:
+                action, reason_code = "NO_TRADE", "watch_expired"
+            else:
+                long = next(candidate for candidate in eligible if candidate.side == "long")
+                short = next(candidate for candidate in eligible if candidate.side == "short")
+                watch = WatchCondition(
+                    kind="closed_1m_range_cross",
+                    upper_level=long.entry_level,
+                    lower_level=short.entry_level,
+                    previous_close=long.entry_observed,
+                    exit_plan=long.exit_plan,
+                    source_first_visible_at_ms=long.source_first_visible_at_ms,
+                    unit="USDT/base_asset",
+                    frozen_at_ms=long.entry_observed_at_ms,
+                    expires_at_ms=watch_expires_at_ms,
+                )
+        else:
+            action, reason_code = "NO_TRADE", "watch_condition_unavailable"
+
     return Decision(
-        action=assessment.action,
-        selected_candidate_id=selected.candidate_id if selected is not None else None,
-        side=selected.side if selected is not None else None,
-        exit_plan=selected.exit_plan if selected is not None else None,
-        scores=tuple(scores),
+        action=action,
+        entry_candidate_id=selected.candidate_id if action == "TRADE" and selected else None,
+        side=selected.side if action == "TRADE" and selected else None,
+        exit_plan=selected.exit_plan if action == "TRADE" and selected else None,
         reason=assessment.public_rationale,
+        reason_code=reason_code,
         evidence_refs=tuple(sorted(cited)),
-        watch_condition=assessment.watch_condition,
+        watch_condition=watch,
+        hypothesis_side=assessment.hypothesis_side,
+        research_notes=assessment.research_notes,
     )

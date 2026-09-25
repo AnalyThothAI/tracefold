@@ -689,8 +689,11 @@ class TradingAnalysisSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     model_name: str | None = None
-    active_policy: Literal["trade_assessment_v1"] = "trade_assessment_v1"
+    active_policy: Literal["event_price_confirmation_v1"] = "event_price_confirmation_v1"
     publish_signals: bool = False
+    strategy_publication_enabled: bool = False
+    shadow_order_latency_ms: int = Field(default=1_000, ge=0, le=5_000)
+    shadow_fee_bps_per_side: Decimal | None = Field(default=None, ge=0)
     verified_routes: list[TradingVerifiedRouteSettings] = Field(default_factory=list)
     excluded_asset_ids: list[str] = Field(
         default_factory=lambda: [
@@ -713,7 +716,6 @@ class TradingAnalysisSettings(BaseModel):
     market_max_connections: int = Field(default=8, ge=1, le=32)
     market_max_cached_rows: int = Field(default=50_000, ge=1_000, le=200_000)
     market_weight_soft_limit_1m: int = Field(default=1_800, ge=100, le=5_000)
-    max_watch_rechecks: int = Field(default=2, ge=0, le=4)
 
     @model_validator(mode="after")
     def validate_model_cost_budget(self) -> TradingAnalysisSettings:

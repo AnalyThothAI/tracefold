@@ -14,8 +14,8 @@ import { moneyLabel, moneyTone } from "../model/tradingLabels";
  *
  * The realized pair is `totals` — the server's own sums over every trade plan the slot opened and closed,
  * one bounded to the current UTC day and one unbounded. Each plan's result is folded from its fill journal
- * (#680): exit minus entry notional, signed by direction, less every commission the venue charged; funding
- * is not in it. A closed plan whose fills cannot yield a result is counted as missing, never as zero, and
+ * (#680): exit minus entry notional, signed by direction, less every commission the venue charged. PAPER
+ * adds actual venue funding only after complete coverage. A closed plan with missing inputs is counted as missing, and
  * the caution line below says so whenever one exists. The desk used to print a third number instead: the
  * sum of the realized column on the rows it happened to be showing, which is neither today's result nor
  * the account's. Both of these include the manual entries an operator typed at the CLI, and the caption
@@ -40,11 +40,14 @@ export function TradingTally({
 }) {
   const account = execution?.current_account;
   const venue = entrySplit(executions);
+  const paper = (totals?.paper_closed_total ?? 0) > 0;
+  const today = paper ? totals?.paper_net_known_today_usd : totals?.realized_known_today_usd;
+  const total = paper ? totals?.paper_net_known_total_usd : totals?.realized_known_total_usd;
   const unread = executionsPending ? "读取中" : executionsFailed ? "读取失败" : "UNAVAILABLE";
   return (
     <Card
       data-block="tally"
-      hint="含手工入场，按 UTC 日界聚合；已实现盈亏由成交记录折算并扣除手续费，资金费未计入"
+      hint="含手工入场，按 UTC 日界聚合；PAPER 净值需场所资金费完整覆盖"
       title="今日战况"
     >
       {/*
@@ -53,21 +56,25 @@ export function TradingTally({
        * missing. A silently absent tile and a tile reading zero are the two things this band may not confuse.
        */}
       <div className="trading-fact-grid" data-columns="4">
-        <span className="trading-fact" data-tone={moneyTone(totals?.realized_known_today_usd)}>
-          <small>今日已知已实现盈亏</small>
-          <b>{totals ? moneyLabel(totals.realized_known_today_usd) : unread}</b>
+        <span className="trading-fact" data-tone={moneyTone(today)}>
+          <small>{paper ? "今日已知 PAPER 净收益" : "今日已知手续费后盈亏"}</small>
+          <b>{totals ? moneyLabel(today) : unread}</b>
           <small>
             {totals
-              ? `平仓 ${totals.closed_today} · 已知 ${totals.pnl_known_today} · 缺失 ${totals.pnl_missing_today}`
+              ? paper
+                ? `PAPER 平仓 ${totals.paper_closed_today} · 已知 ${totals.paper_net_known_today} · 缺失 ${totals.paper_net_missing_today}`
+                : `平仓 ${totals.closed_today} · 已知 ${totals.pnl_known_today} · 缺失 ${totals.pnl_missing_today}`
               : "读自 totals"}
           </small>
         </span>
-        <span className="trading-fact" data-tone={moneyTone(totals?.realized_known_total_usd)}>
-          <small>累计已知已实现盈亏</small>
-          <b>{totals ? moneyLabel(totals.realized_known_total_usd) : unread}</b>
+        <span className="trading-fact" data-tone={moneyTone(total)}>
+          <small>{paper ? "累计已知 PAPER 净收益" : "累计已知手续费后盈亏"}</small>
+          <b>{totals ? moneyLabel(total) : unread}</b>
           <small>
             {totals
-              ? `平仓 ${totals.closed_total} · 已知 ${totals.pnl_known_total} · 缺失 ${totals.pnl_missing_total}`
+              ? paper
+                ? `PAPER 平仓 ${totals.paper_closed_total} · 已知 ${totals.paper_net_known_total} · 缺失 ${totals.paper_net_missing_total}`
+                : `平仓 ${totals.closed_total} · 已知 ${totals.pnl_known_total} · 缺失 ${totals.pnl_missing_total}`
               : "读自 totals"}
           </small>
         </span>
@@ -87,9 +94,11 @@ export function TradingTally({
           <small>{account ? `挂单 ${account.open_orders_count}` : "读自 /status"}</small>
         </span>
       </div>
-      {totals && totals.pnl_missing_total > 0 ? (
+      {totals && (paper ? totals.paper_net_missing_total : totals.pnl_missing_total) > 0 ? (
         <p className="trading-empty-note" data-tone="caution">
-          {`${totals.pnl_missing_total} 笔已平仓交易的成交或手续费记录不全，盈亏未计入；以上仅为已知部分，不能视为账户完整净利润。`}
+          {paper
+            ? `${totals.paper_net_missing_total} 笔 PAPER 平仓交易缺少完整成交、手续费或资金费归因；已知部分不能视为账户完整净利润。`
+            : `${totals.pnl_missing_total} 笔已平仓交易的成交或手续费记录不全，盈亏未计入；以上仅为已知部分，不能视为账户完整净利润，资金费未计入。`}
         </p>
       ) : null}
       <SourceLine path="GET /api/trading/executions → totals · GET /api/trading/status → execution.current_account" />

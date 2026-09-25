@@ -28,12 +28,66 @@ mode, credential namespace, and Binance environment.
 Analysis runs `tracefold analysis` beside Serve and Workers. It
 drains News' durable catalyst/OI outbox independently of delivery, claims
 per-asset Cases with fenced leases, freezes market and model records under
-`~/.tracefold/cache/trading-analysis`, and labels due opportunity paths.
+`~/.tracefold/archive/trading-analysis`, and labels due opportunity paths.
+For an existing installation, stop Analysis and run
+`uv run python scripts/migrate_trading_analysis_archive.py` before switching
+the image. It copies every legacy content-addressed ref from cache to archive,
+verifies the digest and leaves the source intact. Include `archive/` in the
+durable backup and restore set. Preserve the historical v1 path inventory and
+run `uv run python scripts/relabel_trading_price_paths.py` while Analysis is
+stopped. The command audits archived v1 endpoint values, clocks, identity,
+receipts and arithmetic, then appends a v2 gross endpoint label with
+`historical_quality=verified_endpoint_only` when they agree. It marks a
+disagreement `missing` with a specific `historical_quality=unverifiable` reason.
+The old rows and archived paths remain unchanged. It does not fetch today's
+historical public bars to assert an observation from the original time. In the
+fixed #690 window, 705 of 708 settled v1 `ok` labels meet the endpoint check;
+three have mismatched endpoints. The pinned v1 `binance_public_v1` adapter
+(introduced at `f1ef42091`, unchanged through deployed `c69b6bc09`) used
+Binance USD-M mainnet klines and accepted only closed bars, so the correction
+records `data_environment=live` with that code provenance. The v1 archive does
+not retain the full bar path, execution prices or costs. These labels establish
+only endpoint gross returns, never a tradable or net result.
 `trading.analysis.publish_signals` is false by default. An unavailable model
 is recorded as unavailable; it never silently activates the retired OI v5
-policy. Turning on publication requires an operator-selected paper or live
-Runtime mode and a separately running Nautilus deployment. Changing that flag
-does not itself start Nautilus or grant execution authority.
+policy. `event_price_confirmation_v1` also requires
+`trading.analysis.strategy_publication_enabled=true` before it can publish a
+Signal, and that setting accepts PAPER mode only. It defaults false pending
+recorded replay, development/holdout comparison and PAPER receipts. Turning on
+publication requires a separately running Nautilus deployment; changing either
+flag does not start Nautilus or grant order authority.
+With strategy publication disabled, newly selected Cases use the mainnet/live
+market identity for the contemporaneous shadow cohort even if the configured
+execution mode is PAPER. When PAPER strategy publication is enabled, new Cases
+use Demo market identity. Preserve the frozen identity of already accepted
+Cases across this change: an old live Case is refused at PAPER Signal creation
+with `analysis_execution_environment_mismatch`. Capture and export the mainnet
+shadow cohort before switching to the separately authorized PAPER venue check;
+do not count a Demo shadow receipt as mainnet strategy evidence.
+The root tape retries a bounded recent closed-bar window after a failed market
+read. Recovered bars retain their actual receipt time; a late bar can fill an
+archive gap but cannot retroactively make WATCH timely or make a late mark path
+eligible for net evaluation. Inspect tape coverage and receipt clocks before
+interpreting an `unevaluable` result.
+
+For a Case with no Decision, inspect `analysis_attempts` in the Case detail:
+each claim attempt has a structured validation error, frozen evidence ref and
+one indexed row per physical model response. A late attempt can remain visible
+while `settled=false`; it did not replace the fenced Decision. A WATCH with a
+machine condition shows both frozen range boundaries, latest closed-bar
+observation, expiry and conditional child Case. The first crossing consumes
+the opportunity even when found after its 120-second entry window. Shadow
+evaluations show `simulated`, `pending` or
+`unevaluable` with archived quote, mark and funding refs. Fee or spread
+assumptions left unset intentionally make net results `unevaluable`. These
+records cannot be treated as exchange fills. Venue PAPER net values require
+reconciled fills, fees, funding and protection receipts from the PAPER account;
+the execution read model exposes signed funding income and scan coverage. A
+missing coverage interval or competing same-symbol plan leaves PAPER net
+unknown. PAPER reconciliation scans Binance USD-M `FUNDING_FEE` income every
+30 minutes, overlapping recent windows and reading seven days on startup.
+After a longer outage, recover signed income while Binance still retains it;
+historical periods outside venue retention remain unknown.
 
 Run `uv run tracefold init` before the first current startup; canonical
 `make up` and `make deploy-image` already do so. It creates and permissions the
@@ -98,7 +152,9 @@ the venue's own positions:
   reduce-only `MARKET_IF_TOUCHED` take-profit order, both triggered on the
   **mark price**, at the plan's stop and take-profit distance from the average
   fill. A missing one is placed again; an existing one is resized or repriced
-  as partial fills change the position quantity or average price. A stop or
+  as partial fills change the position quantity or average price. Position-opened
+  and position-changed events run this check immediately; the periodic pass
+  recovers missed or refused updates. A stop or
   take-profit the venue refuses with `-2021 would immediately trigger` means the
   condition is already met, so the position is closed at market under that leg's
   reason;
@@ -425,8 +481,11 @@ exit fills sum to the entry quantity and every commission was charged in the
 settlement currency (USDT); otherwise it is absent, never synthesized as zero or
 reconstructed from unrelated account balance changes. Binance
 [account updates](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/adapters/binance/futures/schemas/user.py)
-update balances; they do not allocate funding to a position. Thus the display is
-known execution PnL excluding funding, not complete account net profit.
+update balances; they do not allocate funding to a position. The historical
+`realized_pnl_usd` stays fee-adjusted and excludes funding. PAPER
+`paper_net_pnl_usd` adds signed income cashflows only with complete coverage
+and a sole plan for that symbol and account interval. Missing funding remains
+unknown, never zero. This per-plan result is not an account-equity statement.
 
 Runtime control restart reads the single
 `trading_execution_runtime_control_state` row for the active profile. Accepted

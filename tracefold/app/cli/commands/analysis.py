@@ -46,7 +46,7 @@ async def _run(settings: Settings) -> None:
             settings=settings,
             market_data=market,
             analyst=analyst,
-            files_root=settings.app_home / "cache" / "trading-analysis",
+            files_root=settings.app_home / "archive" / "trading-analysis",
             max_active_cases=settings.trading.analysis.max_active_cases,
         )
         await runner.run(stop)

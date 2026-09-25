@@ -56,6 +56,7 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
     build_oi_node_config,
     route_catalogue,
 )
+from tracefold.integrations.nautilus.oi_runtime.funding import BinanceFundingIncome, watch_funding
 from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.risk import account_equity_usd
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
@@ -311,6 +312,7 @@ async def _run_generation(
     bridge: OiRuntimeDatabaseBridge | None = None
     projector: RuntimeStateProjector | None = None
     venue_task: asyncio.Task[None] | None = None
+    funding_task: asyncio.Task[None] | None = None
     try:
         if not await _await_node_started(node=node, node_task=node_task, stop=stop):
             return
@@ -320,6 +322,17 @@ async def _run_generation(
         venue_task = asyncio.create_task(
             watch_venue(venue.read, strategy.observe_venue, stop), name="oi-venue-positions"
         )
+        if mode == "paper":
+            funding = BinanceFundingIncome(mode=mode, credentials=credentials)
+            funding_task = asyncio.create_task(
+                watch_funding(
+                    funding.read,
+                    strategy.observe_funding,
+                    strategy.observe_funding_coverage,
+                    stop,
+                ),
+                name="oi-paper-funding",
+            )
         started_at_ns = time.time_ns()
         state = _runtime_state(
             profile=profile,
@@ -371,6 +384,10 @@ async def _run_generation(
             with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
     finally:
+        if funding_task is not None:
+            funding_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await funding_task
         if venue_task is not None:
             venue_task.cancel()
             with suppress(asyncio.CancelledError, Exception):

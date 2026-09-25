@@ -6,15 +6,26 @@ import asyncio
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
 
 _FUTURES = "https://fapi.binance.com"
+_DEMO_FUTURES = "https://demo-fapi.binance.com"
 _SPOT = "https://api.binance.com"
 _BAR_INTERVALS = {60_000: "1m", 300_000: "5m"}
+
+
+def _futures_base(environment: str) -> str:
+    if environment == "live":
+        return _FUTURES
+    if environment == "demo":
+        return _DEMO_FUTURES
+    raise ValueError("market_data_environment_unsupported")
 
 
 class BinanceMarketData:
@@ -45,6 +56,10 @@ class BinanceMarketData:
         self._max_cached_rows = max_cached_rows
         self._weight_soft_limit_1m = weight_soft_limit_1m
         self._backoff_until = 0.0
+        self._server_clocks: dict[str, tuple[int, int, int]] = {}  # offset, half RTT, sampled local ms
+        self._clock_lock = asyncio.Lock()
+        self._rules_lock = asyncio.Lock()
+        self._rules_cache: dict[str, tuple[float, Any, int]] = {}
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -53,13 +68,151 @@ class BinanceMarketData:
     async def fetch(self, request: MarketDataRequest) -> MarketDataResult:
         if request.venue != "binance.usdm" or request.source_identity != "binance_public_v1":
             raise ValueError("market_data_source_mismatch")
+        _futures_base(request.environment)
         if request.dataset == "spot_bars" and request.product != "spot":
             raise ValueError("market_data_product_mismatch")
         if request.dataset != "spot_bars" and request.product != "perpetual":
             raise ValueError("market_data_product_mismatch")
-        if request.dataset in ("perp_bars", "spot_bars", "market_bars"):
+        if request.dataset in ("perp_bars", "spot_bars", "market_bars", "mark_bars"):
             return await self._bars(request)
+        if request.dataset == "funding_history":
+            return await self._funding_history(request)
+        if request.dataset == "instrument_rules":
+            return await self._instrument_rules(request)
         return await self._latest(request)
+
+    async def _instrument_rules(self, request: MarketDataRequest) -> MarketDataResult:
+        """Cache the exchange-wide response while archiving only one symbol's rules."""
+        receipts: list[dict[str, Any]] = []
+        if request.max_age_ms is None:
+            raise ValueError("market_data_age_invalid")
+        async with self._rules_lock:
+            cached = self._rules_cache.get(request.environment)
+            if cached is not None and time.monotonic() - cached[0] <= min(request.max_age_ms, 3_600_000) / 1_000:
+                raw, received = cached[1], cached[2]
+                receipts.append(
+                    {
+                        "endpoint": "cache:/fapi/v1/exchangeInfo",
+                        "native_symbol": request.native_symbol,
+                        "http_status": None,
+                        "latency_ms": 0,
+                        "request_weight": 0,
+                        "cache_hit": True,
+                    }
+                )
+            else:
+                remaining = request.deadline_at_monotonic - time.monotonic()
+                if remaining <= 0:
+                    return self._result(request, status="missing", rows=(), missing=("deadline_exceeded",))
+                try:
+                    raw = await asyncio.wait_for(
+                        self._get(
+                            _futures_base(request.environment) + "/fapi/v1/exchangeInfo",
+                            params={},
+                            receipts=receipts,
+                        ),
+                        timeout=remaining,
+                    )
+                except (httpx.HTTPError, TimeoutError):
+                    return self._result(
+                        request, status="error", rows=(), missing=("provider_error",), receipts=tuple(receipts)
+                    )
+                received = self._clock_ms()
+                if not isinstance(raw, dict) or not isinstance(raw.get("symbols"), list):
+                    return self._result(
+                        request, status="error", rows=(), missing=("exchange_info_invalid",), receipts=tuple(receipts)
+                    )
+                self._rules_cache[request.environment] = (time.monotonic(), raw, received)
+        symbols = raw["symbols"]
+        symbol = next(
+            (item for item in symbols if isinstance(item, dict) and item.get("symbol") == request.native_symbol),
+            None,
+        )
+        if symbol is None:
+            return self._result(
+                request, status="missing", rows=(), missing=("instrument_unlisted",), receipts=tuple(receipts)
+            )
+        raw_filters = symbol.get("filters")
+        if not isinstance(raw_filters, list):
+            return self._result(
+                request, status="partial", rows=(), missing=("contract_filter_missing",), receipts=tuple(receipts)
+            )
+        filters = {
+            item.get("filterType"): item
+            for item in raw_filters
+            if isinstance(item, dict) and isinstance(item.get("filterType"), str)
+        }
+        price = filters.get("PRICE_FILTER")
+        market_lot = filters.get("MARKET_LOT_SIZE")
+        notional = filters.get("MIN_NOTIONAL")
+        if (
+            not isinstance(price, dict)
+            or not isinstance(market_lot, dict)
+            or not isinstance(notional, dict)
+            or any(
+                value is None
+                for value in (
+                    price.get("tickSize"),
+                    market_lot.get("minQty"),
+                    market_lot.get("maxQty"),
+                    market_lot.get("stepSize"),
+                    notional.get("notional"),
+                )
+            )
+        ):
+            return self._result(
+                request, status="partial", rows=(), missing=("contract_filter_missing",), receipts=tuple(receipts)
+            )
+        try:
+            tick, minimum, maximum, step, minimum_notional = (
+                Decimal(str(value))
+                for value in (
+                    price["tickSize"],
+                    market_lot["minQty"],
+                    market_lot["maxQty"],
+                    market_lot["stepSize"],
+                    notional["notional"],
+                )
+            )
+        except (InvalidOperation, TypeError):
+            return self._result(
+                request, status="partial", rows=(), missing=("contract_filter_invalid",), receipts=tuple(receipts)
+            )
+        if not all(value.is_finite() for value in (tick, minimum, maximum, step, minimum_notional)) or (
+            min(tick, minimum, step, minimum_notional) <= 0 or maximum < minimum
+        ):
+            return self._result(
+                request, status="partial", rows=(), missing=("contract_filter_invalid",), receipts=tuple(receipts)
+            )
+        row = {
+            "event_at_ms": received,
+            "received_at_ms": received,
+            "source_time_kind": "local_response_receipt",
+            "native_symbol": request.native_symbol,
+            "contract_type": symbol.get("contractType"),
+            "trading_status": symbol.get("status"),
+            "base_asset": symbol.get("baseAsset"),
+            "quote_asset": symbol.get("quoteAsset"),
+            "settlement_asset": symbol.get("marginAsset"),
+            "price_tick_size": str(price["tickSize"]),
+            "market_min_quantity": str(market_lot["minQty"]),
+            "market_max_quantity": str(market_lot["maxQty"]),
+            "market_step_size": str(market_lot["stepSize"]),
+            "minimum_notional": str(minimum_notional),
+        }
+        tradable = (
+            symbol.get("status") == "TRADING"
+            and symbol.get("contractType") == "PERPETUAL"
+            and symbol.get("quoteAsset") == "USDT"
+            and symbol.get("marginAsset") == "USDT"
+        )
+        return self._result(
+            request,
+            status="ok" if tradable else "not_applicable",
+            rows=(row,),
+            missing=() if tradable else ("instrument_not_tradable_as_usdt_perpetual",),
+            receipts=tuple(receipts),
+        )
 
     def _result(
         self,
@@ -186,8 +339,14 @@ class BinanceMarketData:
         if request.interval_ms is None:
             raise ValueError("market_data_interval_unsupported")
         spot = request.dataset == "spot_bars"
-        base = _SPOT if spot else _FUTURES
-        path = "/api/v3/klines" if spot else "/fapi/v1/klines"
+        base = _SPOT if spot else _futures_base(request.environment)
+        path = (
+            "/api/v3/klines"
+            if spot
+            else "/fapi/v1/markPriceKlines"
+            if request.dataset == "mark_bars"
+            else "/fapi/v1/klines"
+        )
         receipts: list[dict[str, Any]] = []
         try:
             response = await self._get(
@@ -232,15 +391,32 @@ class BinanceMarketData:
             path = "/fapi/v1/openInterest"
         elif request.dataset == "funding_basis":
             path = "/fapi/v1/premiumIndex"
+        elif request.dataset == "book_ticker":
+            path = "/fapi/v1/ticker/bookTicker"
         else:
             raise ValueError("market_data_dataset_unsupported")
         remaining = request.deadline_at_monotonic - time.monotonic()
         if remaining <= 0:
             return self._result(request, status="missing", rows=(), missing=("deadline_exceeded",))
         try:
+            offset_ms, uncertainty_ms, sampled_at_ms = await asyncio.wait_for(
+                self._calibrated_server_clock(request.environment, receipts), timeout=remaining
+            )
             raw = await asyncio.wait_for(
-                self._get(_FUTURES + path, params={"symbol": request.native_symbol}, receipts=receipts),
-                timeout=remaining,
+                self._get(
+                    _futures_base(request.environment) + path,
+                    params={"symbol": request.native_symbol},
+                    receipts=receipts,
+                ),
+                timeout=max(0.01, request.deadline_at_monotonic - time.monotonic()),
+            )
+        except ValueError:
+            return self._result(
+                request,
+                status="error",
+                rows=(),
+                missing=("server_clock_unavailable",),
+                receipts=tuple(receipts),
             )
         except (httpx.HTTPError, TimeoutError):
             reason = "deadline_exceeded" if time.monotonic() >= request.deadline_at_monotonic else "provider_error"
@@ -252,11 +428,61 @@ class BinanceMarketData:
                 receipts=tuple(receipts),
             )
         received = self._clock_ms()
-        event_at = int(raw.get("time") or received)
+        if request.dataset == "book_ticker":
+            if (
+                not isinstance(raw, dict)
+                or raw.get("bidPrice") is None
+                or raw.get("askPrice") is None
+                or raw.get("bidQty") is None
+                or raw.get("askQty") is None
+            ):
+                return self._result(
+                    request,
+                    status="error",
+                    rows=(),
+                    missing=("quote_missing",),
+                    receipts=tuple(receipts),
+                )
+            return self._result(
+                request,
+                status="ok",
+                rows=(
+                    {
+                        "event_at_ms": received,
+                        "received_at_ms": received,
+                        "bid": str(raw["bidPrice"]),
+                        "ask": str(raw["askPrice"]),
+                        "bid_quantity": str(raw["bidQty"]),
+                        "ask_quantity": str(raw["askQty"]),
+                        "source_time_kind": "local_response_receipt",
+                    },
+                ),
+                receipts=tuple(receipts),
+            )
+        if not isinstance(raw, dict) or raw.get("time") is None:
+            return self._result(
+                request,
+                status="error",
+                rows=(),
+                missing=("source_time_missing",),
+                receipts=tuple(receipts),
+            )
+        event_at = int(raw["time"])
         if request.max_age_ms is None:
             raise ValueError("market_data_age_invalid")
-        age_ms = received - event_at
-        status = "ok" if 0 <= age_ms <= request.max_age_ms else "stale"
+        server_now = received + offset_ms
+        age_ms = server_now - event_at
+        # Small forward readings are accepted only within the measured clock
+        # uncertainty (plus one second for endpoint publication jitter).
+        future_bound_ms = uncertainty_ms + 1_000
+        reason = (
+            "source_clock_far_future"
+            if age_ms < -future_bound_ms
+            else "source_clock_expired"
+            if age_ms > request.max_age_ms + uncertainty_ms
+            else None
+        )
+        status = "ok" if reason is None else "stale"
         return self._result(
             request,
             status=status,
@@ -264,6 +490,16 @@ class BinanceMarketData:
                 {
                     "event_at_ms": event_at,
                     "received_at_ms": received,
+                    "server_clock_offset_ms": offset_ms,
+                    "server_clock_uncertainty_ms": uncertainty_ms,
+                    "server_clock_rtt_ms": uncertainty_ms * 2,
+                    "server_clock_sampled_at_ms": sampled_at_ms,
+                    "source_age_ms": age_ms,
+                    "source_clock_status": "small_future"
+                    if age_ms < 0 and reason is None
+                    else "current"
+                    if reason is None
+                    else reason,
                     "open_interest_quantity": str(raw["openInterest"]) if request.dataset == "open_interest" else None,
                     "mark_price": str(raw["markPrice"]) if request.dataset == "funding_basis" else None,
                     "index_price": str(raw["indexPrice"]) if request.dataset == "funding_basis" else None,
@@ -271,9 +507,86 @@ class BinanceMarketData:
                     "next_funding_at_ms": int(raw["nextFundingTime"]) if request.dataset == "funding_basis" else None,
                 },
             ),
-            missing=("stale_source_clock",) if status == "stale" else (),
+            missing=(reason,) if reason is not None else (),
             receipts=tuple(receipts),
         )
+
+    async def _funding_history(self, request: MarketDataRequest) -> MarketDataResult:
+        if request.start_ms is None or request.end_ms is None:
+            raise ValueError("market_data_window_incomplete")
+        receipts: list[dict[str, Any]] = []
+        remaining = request.deadline_at_monotonic - time.monotonic()
+        if remaining <= 0:
+            return self._result(request, status="missing", rows=(), missing=("deadline_exceeded",))
+        try:
+            raw = await asyncio.wait_for(
+                self._get(
+                    _futures_base(request.environment) + "/fapi/v1/fundingRate",
+                    params={
+                        "symbol": request.native_symbol,
+                        "startTime": request.start_ms,
+                        "endTime": request.end_ms,
+                        "limit": 1000,
+                    },
+                    receipts=receipts,
+                ),
+                timeout=remaining,
+            )
+        except (httpx.HTTPError, TimeoutError):
+            return self._result(
+                request, status="error", rows=(), missing=("funding_history_unavailable",), receipts=tuple(receipts)
+            )
+        if not isinstance(raw, list):
+            return self._result(
+                request, status="error", rows=(), missing=("funding_history_invalid",), receipts=tuple(receipts)
+            )
+        received = self._clock_ms()
+        try:
+            rows = tuple(
+                {
+                    "event_at_ms": int(item["fundingTime"]),
+                    "funding_at_ms": int(item["fundingTime"]),
+                    "funding_rate": str(item["fundingRate"]),
+                    "mark_price": str(item["markPrice"]),
+                    "rate_type": item.get("rateType"),
+                    "received_at_ms": received,
+                }
+                for item in raw
+            )
+        except (KeyError, TypeError, ValueError):
+            return self._result(
+                request, status="error", rows=(), missing=("funding_history_invalid",), receipts=tuple(receipts)
+            )
+        status = "partial" if len(rows) >= 1000 else "ok"
+        return self._result(
+            request,
+            status=status,
+            rows=rows,
+            missing=("funding_history_page_limit",) if status == "partial" else (),
+            receipts=tuple(receipts),
+        )
+
+    async def _calibrated_server_clock(
+        self,
+        environment: str,
+        receipts: list[dict[str, Any]],
+    ) -> tuple[int, int, int]:
+        sampled = self._server_clocks.get(environment)
+        if sampled is not None and 0 <= self._clock_ms() - sampled[2] < 60_000:
+            return sampled
+        async with self._clock_lock:
+            sampled = self._server_clocks.get(environment)
+            if sampled is not None and 0 <= self._clock_ms() - sampled[2] < 60_000:
+                return sampled
+            sent_at = self._clock_ms()
+            raw = await self._get(_futures_base(environment) + "/fapi/v1/time", params={}, receipts=receipts)
+            received_at = self._clock_ms()
+            if not isinstance(raw, dict) or raw.get("serverTime") is None:
+                raise ValueError("server_clock_unavailable")
+            rtt_ms = max(0, received_at - sent_at)
+            offset_ms = int(raw["serverTime"]) - (sent_at + rtt_ms // 2)
+            self._server_clocks[environment] = (offset_ms, rtt_ms // 2, received_at)
+            return self._server_clocks[environment]
 
     async def _get(self, url: str, *, params: dict[str, Any], receipts: list[dict[str, Any]]) -> Any:
         async with self._slots:
@@ -282,7 +595,8 @@ class BinanceMarketData:
             if time.monotonic() < self._backoff_until:
                 receipts.append(
                     {
-                        "endpoint": url.split(".com", 1)[-1],
+                        "endpoint": urlsplit(url).path,
+                        "host": urlsplit(url).hostname,
                         "native_symbol": params.get("symbol"),
                         "http_status": None,
                         "latency_ms": 0,
@@ -319,7 +633,8 @@ class BinanceMarketData:
             finally:
                 receipts.append(
                     {
-                        "endpoint": url.split(".com", 1)[-1],
+                        "endpoint": urlsplit(url).path,
+                        "host": urlsplit(url).hostname,
                         "native_symbol": params.get("symbol"),
                         "params": {k: v for k, v in params.items() if k != "symbol"},
                         "http_status": status,

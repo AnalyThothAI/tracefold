@@ -19,3 +19,36 @@ def test_missing_endpoint_is_not_a_zero_return() -> None:
     label = price_path_label(({"event_at_ms": 60_000, "close": "100"},), anchor_ms=60_000, horizon_seconds=60)
     assert label["status"] == "missing"
     assert "return_bps" not in label
+
+
+def test_partial_or_single_terminal_bar_never_becomes_ok_zero() -> None:
+    terminal_only = ({"event_at_ms": 900_000, "close": "100"},)
+    assert price_path_label(terminal_only, anchor_ms=0, horizon_seconds=900)["status"] == "missing"
+    complete_bars = (
+        {"event_at_ms": 60_000, "close": "100"},
+        {"event_at_ms": 120_000, "close": "105"},
+    )
+    assert (
+        price_path_label(complete_bars, anchor_ms=0, horizon_seconds=60, market_status="partial")["status"] == "missing"
+    )
+
+
+def test_partial_middle_path_can_label_exact_independent_closed_endpoints() -> None:
+    bars = (
+        {"event_at_ms": 120_000, "close": "100", "closed": True},
+        {"event_at_ms": 300_000, "close": "105", "closed": True},
+    )
+    label = price_path_label(bars, anchor_ms=61_000, horizon_seconds=180, market_status="partial")
+    assert label["status"] == "ok"
+    assert label["version"] == "price_path_v2"
+    assert label["start_close_at_ms"] == 120_000
+    assert label["end_close_at_ms"] == 300_000
+    assert label["return_bps"] == "500.00"
+
+
+def test_endpoint_must_be_grid_aligned_and_closed() -> None:
+    bars = (
+        {"event_at_ms": 120_001, "close": "100"},
+        {"event_at_ms": 300_000, "close": "105", "closed": False},
+    )
+    assert price_path_label(bars, anchor_ms=61_000, horizon_seconds=180)["status"] == "missing"

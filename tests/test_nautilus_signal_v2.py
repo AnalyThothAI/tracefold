@@ -7,7 +7,12 @@ from decimal import Decimal
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, SECOND_NS, oi_profile, unit_runtime
 from tracefold.integrations.nautilus.oi_runtime.journal import EntryValidityReceipt
-from tracefold.trading.execution_contracts import SignalEntryEnvelopeV1, SignalExitPlanV1, TradeSignalV2
+from tracefold.trading.execution_contracts import (
+    SignalEntryEnvelopeV2,
+    SignalExitPlanV1,
+    TradeSignalV2,
+    entry_structure_allows,
+)
 
 
 def _signal() -> TradeSignalV2:
@@ -30,9 +35,10 @@ def _signal() -> TradeSignalV2:
         observed_at_ns=NOW_NS - SECOND_NS,
         expires_at_ns=NOW_NS + 30 * SECOND_NS,
         exit_plan=SignalExitPlanV1(stop_distance_bps=100, take_profit_bps=250, max_holding_ns=1_800 * SECOND_NS),
-        entry_envelope=SignalEntryEnvelopeV1(
+        entry_envelope=SignalEntryEnvelopeV2(
             root_expires_at_ns=NOW_NS + 60 * SECOND_NS,
             reference_price=Decimal("10000"),
+            structure_level=Decimal("10100"),
             max_price_drift_bps=200,
             universe_version=profile.universe_digest,
         ),
@@ -118,3 +124,33 @@ def test_changed_asset_mapping_is_refused_again_before_order() -> None:
     runtime.pump()
     assert runtime.strategy.submitted == []
     assert {"disposition": "mapping_changed"} in runtime.dispositions()
+
+
+def test_structure_is_refused_before_plan_and_before_final_order() -> None:
+    profile = replace(oi_profile(), excluded_asset_ids=frozenset())
+    invalid = _signal().model_copy(
+        update={"entry_envelope": _signal().entry_envelope.model_copy(update={"structure_level": Decimal("9998")})}
+    )
+    runtime = unit_runtime(signals=(invalid,), profile=profile)
+    runtime.pump()
+    assert runtime.settle() is None
+    assert {"disposition": "entry_structure_lost"} in runtime.dispositions()
+
+    runtime = unit_runtime(signals=(_signal(),), profile=profile)
+    runtime.pump()
+    plan = runtime.settle()
+    assert plan is not None
+    runtime.add_quote(10_101, 10_102)
+    runtime.journal.settle_entry_validity(
+        EntryValidityReceipt(entry_id=plan.entry_id, allowed=True, reason="valid", checked_at_ns=NOW_NS)
+    )
+    runtime.pump()
+    assert runtime.strategy.submitted == []
+    assert {"disposition": "entry_structure_lost"} in runtime.dispositions()
+
+
+def test_long_and_short_structure_use_executable_side() -> None:
+    assert entry_structure_allows(direction="long", executable=Decimal("101.01"), level=Decimal("101"))
+    assert not entry_structure_allows(direction="long", executable=Decimal("101"), level=Decimal("101"))
+    assert entry_structure_allows(direction="short", executable=Decimal("98.99"), level=Decimal("99"))
+    assert not entry_structure_allows(direction="short", executable=Decimal("99"), level=Decimal("99"))

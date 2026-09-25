@@ -231,12 +231,12 @@ describe("TradingPage", () => {
     renderTrading();
     const tally = await screen.findByRole("heading", { name: "今日战况" });
     const card = tally.closest("[data-block]") as HTMLElement;
-    expect(within(card).getByText("今日已知已实现盈亏").nextSibling).toHaveTextContent("—");
+    expect(within(card).getByText("今日已知手续费后盈亏").nextSibling).toHaveTextContent("—");
     expect(within(card).getAllByText("平仓 3 · 已知 0 · 缺失 3")).toHaveLength(2);
     expect(
       within(card).getByText(/^3 笔已平仓交易的成交或手续费记录不全.*不能视为账户完整净利润/),
     ).toBeVisible();
-    expect(within(card).getByText(/由成交记录折算并扣除手续费，资金费未计入/)).toBeVisible();
+    expect(within(card).getByText(/PAPER 净值需场所资金费完整覆盖/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
     expect(await screen.findByText("盈亏未知")).toBeVisible();
     expect(screen.queryByText(/^手续费 /)).toBeNull();
@@ -284,12 +284,51 @@ describe("TradingPage", () => {
     const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest(
       "section",
     ) as HTMLElement;
-    expect(within(tally).getByText("今日已知已实现盈亏").nextSibling).toHaveTextContent("−$13.80");
-    expect(within(tally).getByText("累计已知已实现盈亏").nextSibling).toHaveTextContent("$56.40");
+    expect(within(tally).getByText("今日已知手续费后盈亏").nextSibling).toHaveTextContent(
+      "−$13.80",
+    );
+    expect(within(tally).getByText("累计已知手续费后盈亏").nextSibling).toHaveTextContent("$56.40");
     expect(within(tally).getByText("平仓 9 · 已知 9 · 缺失 0")).toBeVisible();
     // Four entries in the window, two of which never opened anything: one the venue refused, one expired.
     expect(within(tally).getByText("所列入场").nextSibling).toHaveTextContent("4");
     expect(within(tally).getByText("受理 2 · 拒绝 2")).toBeVisible();
+  });
+
+  it("shows signed PAPER net separately from the fee-only fill result", async () => {
+    const base = tradingExecutionsFixture();
+    server.use(
+      http.get(/.*\/api\/trading\/executions$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingExecutionsFixture({
+            executions: [
+              tradingExecutionRowFixture({
+                runtime_mode_at_creation: "paper",
+                funding_usd: "0.11",
+                paper_net_pnl_usd: "-14.81274518",
+              }),
+            ],
+            totals: {
+              ...base.totals,
+              paper_closed_today: 1,
+              paper_closed_total: 1,
+              paper_net_known_today: 1,
+              paper_net_known_total: 1,
+              paper_net_known_today_usd: "-14.81274518",
+              paper_net_known_total_usd: "-14.81274518",
+            },
+          }),
+        }),
+      ),
+    );
+    renderTrading();
+    const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest("section")!;
+    expect(within(tally as HTMLElement).getByText("今日已知 PAPER 净收益")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
+    const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(".trading-ledger-row")!;
+    expect(within(row as HTMLElement).getByText("手续费后 −$14.92")).toBeVisible();
+    expect(within(row as HTMLElement).getByText("资金费 $0.11")).toBeVisible();
+    expect(within(row as HTMLElement).getByText("−$14.81")).toBeVisible();
   });
 
   it("shows Agent outcomes and distinguishes shadow judgments from published Signals", async () => {

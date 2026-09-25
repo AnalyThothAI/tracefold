@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.http.app import create_app
 from tracefold.app.http.routes import trading as trading_routes
 from tracefold.platform.config.models import Settings
@@ -95,6 +96,14 @@ class _Trading:
             "pnl_known_total": 11,
             "pnl_missing_today": 0,
             "pnl_missing_total": 1,
+            "paper_net_known_today_usd": None,
+            "paper_net_known_total_usd": None,
+            "paper_net_known_today": 0,
+            "paper_net_known_total": 0,
+            "paper_net_missing_today": 0,
+            "paper_net_missing_total": 0,
+            "paper_closed_today": 0,
+            "paper_closed_total": 0,
         }
 
     def console_executions(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -258,7 +267,7 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
     assert data["decision"] == {
         "last_case_at_ms": NOW,
         "state": "disabled",
-        "active_policy": "trade_assessment_v1",
+        "active_policy": "event_price_confirmation_v1",
         "model_name": None,
         "publish_signals": False,
         "config_digest": None,
@@ -348,6 +357,57 @@ def test_case_reads_its_policy_identity_off_the_manifest(client: tuple[TestClien
         "whale_oi_ratio_bps",
         "whale_long_profit_bps",
     }.isdisjoint(case)
+
+
+def test_failed_attempt_replay_selects_its_own_frozen_archive(
+    client: tuple[TestClient, _Trading],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api, trading = client
+    files = AnalysisFiles(Path(api.app.state.service.settings.app_home) / "archive" / "trading-analysis")
+    first_evidence = files.write({"knowledge_cutoff_ms": 1, "attempt": 1})
+    second_evidence = files.write({"knowledge_cutoff_ms": 2, "attempt": 2})
+    first_assessment = files.write({"validation_status": "model_schema_invalid", "attempt": 1})
+    second_assessment = files.write({"validation_status": "model_timeout", "attempt": 2})
+    original = trading.console_case
+
+    def failed_case(**kwargs: Any) -> dict[str, Any] | None:
+        row = original(**kwargs)
+        if row is not None:
+            row["analysis_attempts"] = [
+                {
+                    "case_id": "case-sol",
+                    "claim_attempt": 2,
+                    "evidence_ref": second_evidence,
+                    "assessment_ref": second_assessment,
+                    "ended_at_ms": 2,
+                    "analysis_status": "model_timeout",
+                    "physical_call_count": 1,
+                    "settled": False,
+                },
+                {
+                    "case_id": "case-sol",
+                    "claim_attempt": 1,
+                    "evidence_ref": first_evidence,
+                    "assessment_ref": first_assessment,
+                    "ended_at_ms": 1,
+                    "analysis_status": "model_schema_invalid",
+                    "physical_call_count": 1,
+                    "settled": True,
+                },
+            ]
+        return row
+
+    monkeypatch.setattr(trading, "console_case", failed_case)
+    response = api.get("/api/trading/cases/case-sol/replay", params={"token": TOKEN, "attempt": 1})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["selected_attempt"] == 1
+    assert data["evidence"]["attempt"] == 1
+    assert data["assessment"]["attempt"] == 1
+    missing = api.get("/api/trading/cases/case-sol/replay", params={"token": TOKEN, "attempt": 3})
+    assert missing.json()["data"]["status"] == "attempt_missing"
+    assert missing.json()["data"]["evidence"] is None
 
 
 def test_cases_summary_does_not_fetch_rows_and_identity_reads_one_case(client: tuple[TestClient, _Trading]) -> None:
@@ -536,6 +596,14 @@ def test_executions_publishes_the_realized_totals_the_window_cannot_add_up(
         "pnl_known_total": 11,
         "pnl_missing_today": 0,
         "pnl_missing_total": 1,
+        "paper_net_known_today_usd": None,
+        "paper_net_known_total_usd": None,
+        "paper_net_known_today": 0,
+        "paper_net_known_total": 0,
+        "paper_net_missing_today": 0,
+        "paper_net_missing_total": 0,
+        "paper_closed_today": 0,
+        "paper_closed_total": 0,
     }
     totals_call = next(kwargs for name, kwargs in trading.calls if name == "console_realized_totals")
     assert totals_call["account_slot"] == "binance_usdm_primary"

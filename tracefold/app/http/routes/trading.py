@@ -203,9 +203,13 @@ def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_l
 
 
 @router.get("/trading/cases/{case_id}/replay", response_model=_ReplayEnvelope)
-def get_trading_case_replay(request: Request, case_id: str) -> Response:
+def get_trading_case_replay(
+    request: Request,
+    case_id: str,
+    attempt: Annotated[int | None, Query(ge=1)] = None,
+) -> Response:
     """Read recorded input and answer only; replay never invokes a model."""
-    _validate_query_params(request, supported={"token"})
+    _validate_query_params(request, supported={"token", "attempt"})
     identity = _case_id(case_id)
     if identity is None:
         raise ApiBadRequest("trading_cases_case_id_invalid", field="case_id")
@@ -221,13 +225,28 @@ def get_trading_case_replay(request: Request, case_id: str) -> Response:
         result: dict[str, Any] = {"case_id": identity, "status": "case_missing"}
     else:
         decision = row.get("analysis_decision")
-        files = AnalysisFiles(Path(runtime.settings.app_home) / "cache" / "trading-analysis")
+        attempts = row.get("analysis_attempts") or []
+        latest_attempt = (
+            next((item for item in attempts if item["claim_attempt"] == attempt), None)
+            if attempt is not None
+            else attempts[0]
+            if attempts
+            else None
+        )
+        files = AnalysisFiles(Path(runtime.settings.app_home) / "archive" / "trading-analysis")
         evidence = None
         assessment = None
-        status = "ok"
+        status = "attempt_missing" if attempt is not None and latest_attempt is None else "ok"
         for key, ref in (
-            ("evidence", row.get("evidence_ref")),
-            ("assessment", decision.get("assessment_ref") if decision else None),
+            (
+                "evidence",
+                (latest_attempt or {}).get("evidence_ref") or (row.get("evidence_ref") if attempt is None else None),
+            ),
+            (
+                "assessment",
+                (latest_attempt or {}).get("assessment_ref")
+                or (decision.get("assessment_ref") if decision and attempt is None else None),
+            ),
         ):
             if not ref:
                 continue
@@ -243,10 +262,12 @@ def get_trading_case_replay(request: Request, case_id: str) -> Response:
         result = {
             "case_id": identity,
             "status": status,
+            "selected_attempt": None if latest_attempt is None else latest_attempt["claim_attempt"],
             "source_fact": source["payload"] if source else None,
             "evidence": evidence,
             "assessment": assessment,
             "decision": decision,
+            "attempts": attempts,
         }
     return _etagged(result, request, envelope=_ReplayEnvelope)
 
@@ -262,8 +283,20 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
     market: dict[str, Any] = market_value if isinstance(market_value, dict) else {}
     decision = row.get("analysis_decision")
     outcomes = row.get("analysis_outcomes") or []
+    watch = row.get("watch_observation")
+    if watch is not None:
+        review_mode = "event_wait"
+    elif manifest.get("due_at_ms") is not None or (
+        decision is not None and decision.get("action") == "WATCH" and decision.get("policy_version") == "v1"
+    ):
+        review_mode = "historical_timed"
+    elif decision is not None and decision.get("action") == "WATCH":
+        review_mode = "research_note"
+    else:
+        review_mode = "none"
     return {
         "case_id": str(row["case_id"]),
+        "latest_case_id": _string_or_none(row.get("latest_case_id")),
         "event_id": _oi_event_id(row.get("primary_source_key")),
         "source_item_id": _string_or_none(row.get("source_item_id") or oi.get("source_item_id")),
         "base_symbol": _base_symbol(row.get("underlying_key")),
@@ -283,6 +316,9 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "created_at_ms": int(row["case_created_at_ms"]),
         "decided_at_ms": _int_or_none(row.get("decided_at_ms")),
         "trigger_id": _string_or_none(row.get("trigger_id")),
+        "run_kind": _string_or_none(row.get("run_kind")),
+        "recheck_seq": _int_or_none(row.get("recheck_seq")),
+        "root_expires_at_ms": _int_or_none(row.get("root_expires_at_ms")),
         "target_asset_id": _string_or_none(row.get("target_asset_id")),
         "target_selection": row.get("target_selection"),
         "entry_scope_id": _string_or_none(row.get("entry_scope_id")),
@@ -298,6 +334,15 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "evidence_ref": _string_or_none(row.get("evidence_ref")),
         "analysis_decision": decision,
         "analysis_outcomes": [{**item, "return_bps": _string_or_none(item.get("return_bps"))} for item in outcomes],
+        "analysis_attempts": row.get("analysis_attempts") or [],
+        "watch_observation": (
+            {**watch, "last_observed_value": _string_or_none(watch.get("last_observed_value"))}
+            if watch is not None
+            else None
+        ),
+        "root_chain": row.get("root_chain") or [],
+        "analysis_evaluations": row.get("analysis_evaluations") or [],
+        "review_mode": review_mode,
     }
 
 
@@ -306,6 +351,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
     fill_quantity = _string_or_none(row.get("fill_quantity"))
     stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
     realized = _string_or_none(row.get("realized_pnl_usd"))
+    paper_net = _string_or_none(row.get("paper_net_pnl_usd"))
     return {
         "source": str(row["source"]),
         "entry_id": str(row["entry_id"]),
@@ -324,6 +370,8 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "exit_price": _string_or_none(row.get("exit_price")),
         "realized_pnl_usd": realized,
         "fees_usd": _string_or_none(row.get("fees_usd")),
+        "funding_usd": _string_or_none(row.get("funding_usd")),
+        "paper_net_pnl_usd": paper_net,
         "exit_reason": _string_or_none(row.get("exit_reason")),
         "plan_status": _string_or_none(row.get("plan_status")),
         "account_slot": _string_or_none(row.get("account_slot")),
@@ -337,6 +385,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "take_profit_bps": _int_or_none(row.get("take_profit_bps")),
         "max_holding_ns": _int_or_none(row.get("max_holding_ns")),
         "pnl_known": realized is not None,
+        "paper_net_known": paper_net is not None,
         "duration_ns": _int_or_none(row.get("duration_ns")),
         # The venue's own `order_status` and `position_status` are inputs to this word, not a second
         # answer beside it (#537 PR-5). The Signal's own TTL is an input for the same reason (#604 T3).
@@ -358,6 +407,8 @@ def _totals(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "realized_known_today_usd": _string_or_none(row["realized_known_today_usd"]),
         "realized_known_total_usd": _string_or_none(row["realized_known_total_usd"]),
+        "paper_net_known_today_usd": _string_or_none(row["paper_net_known_today_usd"]),
+        "paper_net_known_total_usd": _string_or_none(row["paper_net_known_total_usd"]),
         **{
             key: int(row[key])
             for key in (
@@ -367,6 +418,12 @@ def _totals(row: dict[str, Any]) -> dict[str, Any]:
                 "pnl_known_total",
                 "pnl_missing_today",
                 "pnl_missing_total",
+                "paper_net_known_today",
+                "paper_net_known_total",
+                "paper_net_missing_today",
+                "paper_net_missing_total",
+                "paper_closed_today",
+                "paper_closed_total",
             )
         },
     }

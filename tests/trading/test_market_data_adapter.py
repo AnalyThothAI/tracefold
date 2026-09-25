@@ -33,6 +33,63 @@ def _bar(open_at: int) -> list[object]:
     return [open_at, "100", "101", "99", "100", "3", open_at + 59_999, "300", 1, "1", "100", "0"]
 
 
+def test_instrument_rules_fetch_and_cache_are_symbol_scoped() -> None:
+    asyncio.run(_instrument_rules_fetch_and_cache())
+
+
+async def _instrument_rules_fetch_and_cache() -> None:
+    calls = 0
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/fapi/v1/exchangeInfo"
+        return httpx.Response(
+            200,
+            json={
+                "symbols": [
+                    {
+                        "symbol": "SOLUSDT",
+                        "contractType": "PERPETUAL",
+                        "status": "TRADING",
+                        "baseAsset": "SOL",
+                        "quoteAsset": "USDT",
+                        "marginAsset": "USDT",
+                        "filters": [
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.001"},
+                            {"filterType": "MARKET_LOT_SIZE", "minQty": "0.01", "maxQty": "100", "stepSize": "0.01"},
+                            {"filterType": "MIN_NOTIONAL", "notional": "5"},
+                        ],
+                    }
+                ]
+            },
+        )
+
+    request = replace(
+        _request(dataset="perp_bars"),
+        dataset="instrument_rules",
+        start_ms=None,
+        end_ms=None,
+        interval_ms=None,
+        max_age_ms=3_600_000,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = BinanceMarketData(client=client, clock_ms=lambda: 300_000)
+        first = await adapter.fetch(request)
+        assert first.status == "ok"
+        assert first.payload[0]["price_tick_size"] == "0.001"
+        assert first.payload[0]["minimum_notional"] == "5"
+        assert first.received_at_ms == 300_000
+        second = await adapter.fetch(request)
+        assert second.status == "ok"
+        assert second.request_receipts[0]["cache_hit"] is True
+        assert calls == 1
+        unlisted = await adapter.fetch(replace(request, native_symbol="MISSINGUSDT"))
+        assert unlisted.status == "missing"
+        assert unlisted.missing_reasons == ("instrument_unlisted",)
+        assert calls == 1
+
+
 def test_overlap_shares_request_tail_refills_and_cache_receipt() -> None:
     asyncio.run(_overlap_shares_request_tail_refills_and_cache_receipt())
 
@@ -159,8 +216,10 @@ async def _weight_soft_limit() -> None:
 
 
 async def _latest_deadline_and_clock() -> None:
-    async def respond(_request: httpx.Request) -> httpx.Response:
+    async def respond(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(0.03)
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 300_000})
         return httpx.Response(200, json={"openInterest": "100", "time": 500_000})
 
     request = MarketDataRequest(
@@ -187,4 +246,122 @@ async def _latest_deadline_and_clock() -> None:
                 deadline_at_monotonic=time.monotonic() + 1,
             )
         )
-        assert future.status == "stale" and future.missing_reasons == ("stale_source_clock",)
+        assert future.status == "stale" and future.missing_reasons == ("source_clock_far_future",)
+
+
+def test_latest_clock_distinguishes_small_future_from_expired() -> None:
+    asyncio.run(_latest_clock_boundaries())
+
+
+async def _latest_clock_boundaries() -> None:
+    event_at = 300_500
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 300_000})
+        return httpx.Response(200, json={"openInterest": "100", "time": event_at})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = BinanceMarketData(client=client, clock_ms=lambda: 300_000)
+        request = MarketDataRequest(
+            dataset="open_interest",
+            native_symbol="SOLUSDT",
+            venue="binance.usdm",
+            environment="demo",
+            product="perpetual",
+            source_identity="binance_public_v1",
+            unit_definition="native_contract_quantity_v1",
+            start_ms=None,
+            end_ms=None,
+            interval_ms=None,
+            max_age_ms=90_000,
+            deadline_at_monotonic=time.monotonic() + 2,
+        )
+        small_future = await adapter.fetch(request)
+        assert small_future.status == "ok"
+        assert small_future.payload[0]["source_clock_status"] == "small_future"
+        event_at = 100_000
+        expired = await adapter.fetch(request)
+        assert expired.status == "stale"
+        assert expired.missing_reasons == ("source_clock_expired",)
+
+
+def test_shadow_quote_mark_and_funding_sources_are_distinct() -> None:
+    asyncio.run(_shadow_market_sources())
+
+
+async def _shadow_market_sources() -> None:
+    paths: list[str] = []
+    hosts: set[str | None] = set()
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        hosts.add(request.url.host)
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 300_000})
+        if request.url.path == "/fapi/v1/ticker/bookTicker":
+            return httpx.Response(
+                200,
+                json={"symbol": "SOLUSDT", "bidPrice": "99", "askPrice": "101", "bidQty": "3", "askQty": "4"},
+            )
+        if request.url.path == "/fapi/v1/markPriceKlines":
+            return httpx.Response(200, json=[_bar(0), _bar(60_000)])
+        if request.url.path == "/fapi/v1/fundingRate":
+            return httpx.Response(
+                200, json=[{"fundingTime": 60_000, "fundingRate": "0.0001", "markPrice": "100", "rateType": "Regular"}]
+            )
+        raise AssertionError(request.url.path)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = BinanceMarketData(client=client, clock_ms=lambda: 300_000)
+        quote = MarketDataRequest(
+            dataset="book_ticker",
+            native_symbol="SOLUSDT",
+            venue="binance.usdm",
+            environment="demo",
+            product="perpetual",
+            source_identity="binance_public_v1",
+            unit_definition="bid_ask_quote_and_base_size_v2",
+            start_ms=None,
+            end_ms=None,
+            interval_ms=None,
+            max_age_ms=5_000,
+            deadline_at_monotonic=time.monotonic() + 2,
+        )
+        mark = replace(_request(), dataset="mark_bars", unit_definition="mark_quote_per_base_v1")
+        funding = MarketDataRequest(
+            dataset="funding_history",
+            native_symbol="SOLUSDT",
+            venue="binance.usdm",
+            environment="demo",
+            product="perpetual",
+            source_identity="binance_public_v1",
+            unit_definition="funding_rate_and_mark_price_v2",
+            start_ms=0,
+            end_ms=120_000,
+            interval_ms=None,
+            max_age_ms=None,
+            deadline_at_monotonic=time.monotonic() + 2,
+        )
+        quote_result, mark_result, funding_result = await asyncio.gather(
+            adapter.fetch(quote), adapter.fetch(mark), adapter.fetch(funding)
+        )
+        assert quote_result.payload[0]["bid"] == "99"
+        assert quote_result.payload[0]["ask_quantity"] == "4"
+        assert mark_result.status == "ok"
+        assert funding_result.payload[0]["funding_rate"] == "0.0001"
+        assert funding_result.payload[0]["mark_price"] == "100"
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=[{"fundingTime": 60_000, "fundingRate": "0.0001"}])
+        )
+    ) as client:
+        missing_mark = await BinanceMarketData(client=client, clock_ms=lambda: 300_000).fetch(
+            replace(funding, deadline_at_monotonic=time.monotonic() + 2)
+        )
+        assert missing_mark.status == "error"
+        assert "funding_history_invalid" in missing_mark.missing_reasons
+    assert "/fapi/v1/ticker/bookTicker" in paths
+    assert "/fapi/v1/markPriceKlines" in paths
+    assert "/fapi/v1/fundingRate" in paths
+    assert hosts == {"demo-fapi.binance.com"}

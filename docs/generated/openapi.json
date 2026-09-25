@@ -7680,6 +7680,221 @@
         "title": "TradingAdmissionCountData",
         "type": "object"
       },
+      "TradingAnalysisAttemptData": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_status": {
+            "title": "Analysis Status",
+            "type": "string"
+          },
+          "assessment_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assessment Ref"
+          },
+          "brief_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brief Ref"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "claim_attempt": {
+            "title": "Claim Attempt",
+            "type": "integer"
+          },
+          "cost_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Microusd"
+          },
+          "cost_unknown_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Unknown Reason"
+          },
+          "cost_upper_estimate_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Upper Estimate Microusd"
+          },
+          "ended_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At Ms"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Ref"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "known_cost_microusd": {
+            "default": 0,
+            "title": "Known Cost Microusd",
+            "type": "integer"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "physical_call_count": {
+            "title": "Physical Call Count",
+            "type": "integer"
+          },
+          "physical_calls": {
+            "items": {
+              "$ref": "#/components/schemas/TradingPhysicalModelCallData"
+            },
+            "title": "Physical Calls",
+            "type": "array"
+          },
+          "prompt_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Sha"
+          },
+          "provider_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Status"
+          },
+          "settled": {
+            "title": "Settled",
+            "type": "boolean"
+          },
+          "started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At Ms"
+          },
+          "unknown_cost_calls": {
+            "default": 0,
+            "title": "Unknown Cost Calls",
+            "type": "integer"
+          },
+          "validation_errors": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Validation Errors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "case_id",
+          "claim_attempt",
+          "analysis_status",
+          "physical_call_count",
+          "settled"
+        ],
+        "title": "TradingAnalysisAttemptData",
+        "type": "object"
+      },
       "TradingAnalysisDecisionData": {
         "additionalProperties": false,
         "properties": {
@@ -7834,6 +8049,13 @@
             ],
             "title": "Assessment"
           },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/TradingAnalysisAttemptData"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
           "case_id": {
             "title": "Case Id",
             "type": "string"
@@ -7859,6 +8081,17 @@
               }
             ],
             "title": "Evidence"
+          },
+          "selected_attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Attempt"
           },
           "source_fact": {
             "anyOf": [
@@ -7899,6 +8132,13 @@
             ],
             "title": "Analysis Action"
           },
+          "analysis_attempts": {
+            "items": {
+              "$ref": "#/components/schemas/TradingAnalysisAttemptData"
+            },
+            "title": "Analysis Attempts",
+            "type": "array"
+          },
           "analysis_decision": {
             "anyOf": [
               {
@@ -7908,6 +8148,13 @@
                 "type": "null"
               }
             ]
+          },
+          "analysis_evaluations": {
+            "items": {
+              "$ref": "#/components/schemas/TradingCaseEvaluationData"
+            },
+            "title": "Analysis Evaluations",
+            "type": "array"
           },
           "analysis_outcomes": {
             "items": {
@@ -8004,6 +8251,17 @@
               }
             ],
             "title": "Evidence Ref"
+          },
+          "latest_case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Case Id"
           },
           "manifest_version": {
             "anyOf": [
@@ -8104,6 +8362,57 @@
             ],
             "title": "Pre Move Bps"
           },
+          "recheck_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recheck Seq"
+          },
+          "review_mode": {
+            "default": "none",
+            "enum": [
+              "none",
+              "historical_timed",
+              "event_wait",
+              "research_note"
+            ],
+            "title": "Review Mode",
+            "type": "string"
+          },
+          "root_chain": {
+            "items": {
+              "$ref": "#/components/schemas/TradingRootChainCaseData"
+            },
+            "title": "Root Chain",
+            "type": "array"
+          },
+          "root_expires_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root Expires At Ms"
+          },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
           "source_item_id": {
             "anyOf": [
               {
@@ -8163,6 +8472,16 @@
               }
             ],
             "title": "Trigger Kind"
+          },
+          "watch_observation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingWatchObservationData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -8173,6 +8492,138 @@
           "created_at_ms"
         ],
         "title": "TradingCaseData",
+        "type": "object"
+      },
+      "TradingCaseEvaluationData": {
+        "additionalProperties": false,
+        "properties": {
+          "decision_at_ms": {
+            "title": "Decision At Ms",
+            "type": "integer"
+          },
+          "decision_quote_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Quote Ref"
+          },
+          "due_at_ms": {
+            "title": "Due At Ms",
+            "type": "integer"
+          },
+          "evaluated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluated At Ms"
+          },
+          "evaluation_version": {
+            "title": "Evaluation Version",
+            "type": "string"
+          },
+          "funding_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funding Ref"
+          },
+          "mark_path_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mark Path Ref"
+          },
+          "planned_quote_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Quote Ref"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "scheduled_at_ms": {
+            "title": "Scheduled At Ms",
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "shadow_simulation",
+              "paper_venue"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "venue_receipt_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Receipt Ref"
+          }
+        },
+        "required": [
+          "source",
+          "evaluation_version",
+          "status",
+          "decision_at_ms",
+          "scheduled_at_ms",
+          "due_at_ms"
+        ],
+        "title": "TradingCaseEvaluationData",
         "type": "object"
       },
       "TradingCasesData": {
@@ -8680,7 +9131,7 @@
       },
       "TradingExecutionRowData": {
         "additionalProperties": false,
-        "description": "One entry identity's whole execution, folded from its plan and its own observations.\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.\n\n`realized_pnl_usd` and `fees_usd` are folded from the fill journal (#680): exit minus entry\nnotional, signed by direction, less every commission the venue charged. Both are absent until the\nentry is fully closed and every fill carries a quote-currency commission.",
+        "description": "One entry identity's whole execution, folded from its plan and its own observations.\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.\n\n`realized_pnl_usd` retains the historical fee-adjusted fill fold. PAPER net\nadditionally requires complete signed funding-income coverage and unambiguous\naccount-slot attribution over the fill-to-fill holding interval.",
         "properties": {
           "account_slot": {
             "anyOf": [
@@ -8826,6 +9277,17 @@
             ],
             "title": "Fill Quantity"
           },
+          "funding_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funding Usd"
+          },
           "instrument_id": {
             "anyOf": [
               {
@@ -8877,6 +9339,21 @@
               }
             ],
             "title": "Order Reject Reason"
+          },
+          "paper_net_known": {
+            "title": "Paper Net Known",
+            "type": "boolean"
+          },
+          "paper_net_pnl_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paper Net Pnl Usd"
           },
           "plan_status": {
             "anyOf": [
@@ -9014,6 +9491,7 @@
           "direction",
           "observed_at_ns",
           "pnl_known",
+          "paper_net_known",
           "stage"
         ],
         "title": "TradingExecutionRowData",
@@ -9042,6 +9520,151 @@
           "complete"
         ],
         "title": "TradingExecutionsData",
+        "type": "object"
+      },
+      "TradingPhysicalModelCallData": {
+        "additionalProperties": false,
+        "properties": {
+          "call_index": {
+            "title": "Call Index",
+            "type": "integer"
+          },
+          "claim_attempt": {
+            "title": "Claim Attempt",
+            "type": "integer"
+          },
+          "cost_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Microusd"
+          },
+          "cost_unknown_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Unknown Reason"
+          },
+          "finished_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At Ms"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "remaining_deadline_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remaining Deadline Ms"
+          },
+          "request_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Ref"
+          },
+          "reserved_cost_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved Cost Microusd"
+          },
+          "response_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Ref"
+          },
+          "started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At Ms"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Ms"
+          }
+        },
+        "required": [
+          "claim_attempt",
+          "call_index",
+          "status"
+        ],
+        "title": "TradingPhysicalModelCallData",
         "type": "object"
       },
       "TradingPolicyCheckData": {
@@ -9098,6 +9721,58 @@
             "title": "Closed Total",
             "type": "integer"
           },
+          "paper_closed_today": {
+            "minimum": 0.0,
+            "title": "Paper Closed Today",
+            "type": "integer"
+          },
+          "paper_closed_total": {
+            "minimum": 0.0,
+            "title": "Paper Closed Total",
+            "type": "integer"
+          },
+          "paper_net_known_today": {
+            "minimum": 0.0,
+            "title": "Paper Net Known Today",
+            "type": "integer"
+          },
+          "paper_net_known_today_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paper Net Known Today Usd"
+          },
+          "paper_net_known_total": {
+            "minimum": 0.0,
+            "title": "Paper Net Known Total",
+            "type": "integer"
+          },
+          "paper_net_known_total_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paper Net Known Total Usd"
+          },
+          "paper_net_missing_today": {
+            "minimum": 0.0,
+            "title": "Paper Net Missing Today",
+            "type": "integer"
+          },
+          "paper_net_missing_total": {
+            "minimum": 0.0,
+            "title": "Paper Net Missing Total",
+            "type": "integer"
+          },
           "pnl_known_today": {
             "minimum": 0.0,
             "title": "Pnl Known Today",
@@ -9144,6 +9819,14 @@
         "required": [
           "realized_known_today_usd",
           "realized_known_total_usd",
+          "paper_net_known_today_usd",
+          "paper_net_known_total_usd",
+          "paper_net_known_today",
+          "paper_net_known_total",
+          "paper_net_missing_today",
+          "paper_net_missing_total",
+          "paper_closed_today",
+          "paper_closed_total",
           "pnl_known_today",
           "pnl_known_total",
           "pnl_missing_today",
@@ -9152,6 +9835,107 @@
           "closed_total"
         ],
         "title": "TradingRealizedTotalsData",
+        "type": "object"
+      },
+      "TradingRootChainCaseData": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "analysis_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Status"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "created_at_ms": {
+            "title": "Created At Ms",
+            "type": "integer"
+          },
+          "decided_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At Ms"
+          },
+          "publish_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publish Status"
+          },
+          "recheck_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recheck Seq"
+          },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
+          "side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Side"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "state",
+          "created_at_ms"
+        ],
+        "title": "TradingRootChainCaseData",
         "type": "object"
       },
       "TradingStatusData": {
@@ -9170,6 +9954,122 @@
           "execution"
         ],
         "title": "TradingStatusData",
+        "type": "object"
+      },
+      "TradingWatchObservationData": {
+        "additionalProperties": false,
+        "properties": {
+          "child_case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Case Id"
+          },
+          "condition": {
+            "additionalProperties": true,
+            "title": "Condition",
+            "type": "object"
+          },
+          "created_at_ms": {
+            "title": "Created At Ms",
+            "type": "integer"
+          },
+          "expires_at_ms": {
+            "title": "Expires At Ms",
+            "type": "integer"
+          },
+          "last_observation_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Observation Ref"
+          },
+          "last_observation_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Observation Status"
+          },
+          "last_observed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Observed At Ms"
+          },
+          "last_observed_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Observed Value"
+          },
+          "next_check_at_ms": {
+            "title": "Next Check At Ms",
+            "type": "integer"
+          },
+          "parent_case_id": {
+            "title": "Parent Case Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "trigger_id": {
+            "title": "Trigger Id",
+            "type": "string"
+          },
+          "trigger_side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Side"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "parent_case_id",
+          "trigger_id",
+          "condition",
+          "status",
+          "next_check_at_ms",
+          "expires_at_ms",
+          "created_at_ms",
+          "updated_at_ms"
+        ],
+        "title": "TradingWatchObservationData",
         "type": "object"
       },
       "ValidationError": {
@@ -10304,6 +11204,23 @@
             "schema": {
               "title": "Case Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "attempt",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Attempt"
             }
           }
         ],

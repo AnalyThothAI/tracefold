@@ -17,10 +17,12 @@ NEWS = SRC / "news"
 SIGNAL_PATH = (
     "trading/engine/brief.py",
     "trading/engine/contracts.py",
+    "trading/engine/evaluation.py",
     "trading/engine/features.py",
     "trading/engine/marketdata.py",
     "trading/engine/outcomes.py",
     "trading/engine/policy.py",
+    "trading/engine/strategy.py",
     "trading/engine/target.py",
     "trading/storage/analysis.py",
     "app/trading_analysis.py",

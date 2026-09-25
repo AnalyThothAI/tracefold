@@ -48,7 +48,7 @@ from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, Posit
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading.execution_contracts import OperatorIntentV1, TradeSignalV2
+from tracefold.trading.execution_contracts import OperatorIntentV1, TradeSignalV2, entry_structure_allows
 from tracefold.trading.storage.execution_stream import ExecutionAccountSnapshot
 from tracefold.trading.trade_plan import ExitReason, TradePlan
 
@@ -61,6 +61,7 @@ from .entry import (
     protective_trigger,
     spread_bps,
 )
+from .funding import FundingCashflow
 from .journal import ExecutionJournal
 from .observations import RuntimeObservations, bounded_text, spread_detail
 from .risk import DayStartBaseline, account_equity_usd, decimal_value
@@ -500,6 +501,12 @@ class OiNautilusStrategy(Strategy):
         if request.entry_envelope is not None:
             reference = request.entry_envelope.reference_price
             executable = decimal_value(quote.ask_price if request.direction == "long" else quote.bid_price)
+            if not entry_structure_allows(
+                direction=request.direction,
+                executable=executable,
+                level=request.entry_envelope.structure_level,
+            ):
+                return _Verdict("refuse", "entry_structure_lost")
             drift = abs(executable / reference - Decimal(1)) * Decimal(10_000)
             if drift > request.entry_envelope.max_price_drift_bps:
                 return _Verdict("refuse", "entry_price_outside_envelope")
@@ -668,7 +675,13 @@ class OiNautilusStrategy(Strategy):
                 else:
                     executable = decimal_value(quote.ask_price if plan.direction == "long" else quote.bid_price)
                     envelope = request.entry_envelope
-                    if (
+                    if envelope is not None and not entry_structure_allows(
+                        direction=plan.direction,
+                        executable=executable,
+                        level=envelope.structure_level,
+                    ):
+                        refusal = "entry_structure_lost"
+                    elif (
                         envelope is not None
                         and abs(executable / envelope.reference_price - Decimal(1)) * Decimal(10_000)
                         > envelope.max_price_drift_bps
@@ -732,6 +745,9 @@ class OiNautilusStrategy(Strategy):
 
     def on_position_opened(self, event: Any) -> None:
         self._guard("position_opened", lambda: self._position_opened(event))
+
+    def on_position_changed(self, event: Any) -> None:
+        self._guard("position_changed", lambda: self._position_changed(event))
 
     def on_position_closed(self, event: Any) -> None:
         self._guard("position_closed", lambda: self._position_closed(event))
@@ -817,6 +833,14 @@ class OiNautilusStrategy(Strategy):
             average_entry_price=event.avg_px_open,
         )
         self._dispose_owed(opened, "accepted")
+        # A partial entry already holds venue exposure. Protect its actual
+        # quantity now rather than waiting for the next quote or final fill.
+        self._converge(self._now_ns())
+
+    def _position_changed(self, event: Any) -> None:
+        self._touch(event.instrument_id)
+        self._converge_due_ns = 0
+        self._converge(self._now_ns())
 
     def _position_closed(self, event: Any) -> None:
         """The Cache closed a position: end its plan now if one of this Runtime's legs closed it.
@@ -1133,6 +1157,12 @@ class OiNautilusStrategy(Strategy):
         self._observations.exposure(unexpected=unexpected, observed_at_ns=now_ns)
 
     # -- venue truth (#680 PR-3) -------------------------------------------------------------------
+
+    def observe_funding(self, flow: FundingCashflow) -> bool:
+        return self._observations.funding(flow)
+
+    def observe_funding_coverage(self, start_ms: int, end_ms: int) -> bool:
+        return self._observations.funding_coverage(start_ms, end_ms)
 
     def observe_venue(self, reading: VenueReading) -> None:
         """Take one venue read from the root's reader, on the callback thread; it is judged next pump.

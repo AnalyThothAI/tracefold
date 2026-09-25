@@ -5,7 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-Dataset = Literal["perp_bars", "spot_bars", "open_interest", "funding_basis", "market_bars"]
+Dataset = Literal[
+    "perp_bars",
+    "spot_bars",
+    "open_interest",
+    "funding_basis",
+    "market_bars",
+    "book_ticker",
+    "mark_bars",
+    "funding_history",
+    "instrument_rules",
+]
 DataStatus = Literal["ok", "partial", "stale", "missing", "error", "not_applicable"]
 
 
@@ -29,10 +39,13 @@ class MarketDataRequest:
             (self.native_symbol, self.venue, self.environment, self.product, self.source_identity, self.unit_definition)
         ):
             raise ValueError("market_data_identity_incomplete")
-        if self.dataset in ("perp_bars", "spot_bars", "market_bars"):
+        if self.dataset in ("perp_bars", "spot_bars", "market_bars", "mark_bars"):
             if self.start_ms is None or self.end_ms is None or self.interval_ms is None:
                 raise ValueError("market_data_window_incomplete")
             if self.start_ms >= self.end_ms or self.interval_ms <= 0:
+                raise ValueError("market_data_window_invalid")
+        elif self.dataset == "funding_history":
+            if self.start_ms is None or self.end_ms is None or self.start_ms >= self.end_ms:
                 raise ValueError("market_data_window_invalid")
         elif self.max_age_ms is None or self.max_age_ms <= 0:
             raise ValueError("market_data_age_invalid")
