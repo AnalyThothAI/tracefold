@@ -12,6 +12,23 @@ from .marketdata import MarketDataResult
 PROFILE_VERSION = "evidence_profile_v2"
 
 
+def catalyst_text_values(source_fact: dict[str, Any]) -> dict[str, str]:
+    """Read the public catalyst text used by both evidence and qualification.
+
+    News maps its internal editorial fields to headline/why in the outbox.
+    Other spellings are not public aliases. Keep the original strings for
+    evidence; strip only to test whether text is present, never to rewrite it.
+    """
+    if source_fact.get("kind") != "catalyst":
+        return {}
+    values: dict[str, str] = {}
+    for key in ("headline", "why"):
+        value = source_fact.get(key)
+        if isinstance(value, str) and value.strip():
+            values[key] = value
+    return values
+
+
 def _change_bps(rows: tuple[dict[str, Any], ...], interval_count: int) -> str | None:
     if len(rows) <= interval_count:
         return None

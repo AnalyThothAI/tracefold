@@ -11,6 +11,7 @@ from itertools import pairwise
 from typing import Any, Literal
 
 from .contracts import Candidate, ExitPlan
+from .features import catalyst_text_values
 
 STRATEGY_VERSION = "event_price_confirmation_v1"
 LOOKBACK_CLOSED_BARS = 15
@@ -70,7 +71,7 @@ def build_event_price_candidates(
     if source_fact["kind"] == "oi":
         source_ready = all(source_fact.get(key) is not None for key in ("oi_change_bps", "measurement_definition"))
     else:
-        source_ready = any(source_fact.get(key) for key in ("headline_zh", "title", "why_zh"))
+        source_ready = bool(catalyst_text_values(source_fact))
     if source_first_visible_at_ms <= 0:
         raise ValueError("source_visibility_missing")
     crossing = range_cross_side(previous_close=previous_close, close=close, upper=upper, lower=lower)

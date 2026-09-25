@@ -173,7 +173,7 @@ def _candidate(*, close: str = "102") -> tuple[Candidate, ...]:
     return build_event_price_candidates(
         asset_id="crypto:SOL",
         instrument_semantics_digest="c" * 64,
-        source_fact={"kind": "catalyst", "title": "A visible event"},
+        source_fact={"kind": "catalyst", "headline": "A visible event"},
         source_first_visible_at_ms=930_000,
         perp_rows=bars,
     )

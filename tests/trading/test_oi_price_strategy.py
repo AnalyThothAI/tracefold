@@ -1,9 +1,11 @@
 """The initial event setup is shared by catalyst and OI, with fixed bar semantics."""
 
+from copy import deepcopy
 from decimal import Decimal
 
 import pytest
 
+from tracefold.trading.engine.features import catalyst_text_values
 from tracefold.trading.engine.strategy import build_event_price_candidates, range_cross_side
 
 
@@ -19,7 +21,7 @@ def _candidates(*, kind: str = "oi", bars=None, visible_at=930_000, oi_change=-4
     source = (
         {"kind": "oi", "oi_change_bps": oi_change, "measurement_definition": "exchange-open-interest-v1"}
         if kind == "oi"
-        else {"kind": "catalyst", "title": "A visible announcement"}
+        else {"kind": "catalyst", "headline": "A visible announcement"}
     )
     return build_event_price_candidates(
         asset_id="crypto:SOL",
@@ -91,3 +93,62 @@ def test_missing_oi_measurement_definition_cannot_create_an_entry_or_watch() -> 
         perp_rows=_bars("100"),
     )
     assert all(not item.entry_ready and not item.watch_eligible for item in candidates)
+
+
+@pytest.mark.parametrize("text", [{"headline": "A reported announcement"}, {"why": "A reported explanation"}])
+@pytest.mark.parametrize("close,side", [("102", "long"), ("98", "short"), ("100", None)])
+def test_public_catalyst_text_qualifies_same_source_for_entry_or_watch(text, close, side) -> None:
+    candidates = build_event_price_candidates(
+        asset_id="crypto:SOL",
+        instrument_semantics_digest="a" * 64,
+        source_fact={"kind": "catalyst", **text},
+        source_first_visible_at_ms=930_000,
+        perp_rows=_bars(close),
+    )
+    assert all(candidate.source_gate_ready for candidate in candidates)
+    assert [candidate.side for candidate in candidates if candidate.entry_ready] == ([] if side is None else [side])
+    assert all(candidate.watch_eligible == (side is None) for candidate in candidates)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        {},
+        {"headline_zh": "News internal text"},
+        {"title": "Provider title"},
+        {"why_zh": "News internal explanation"},
+        {"headline": "", "why": " \t\n"},
+        {"headline": 123, "why": True},
+        {"headline": None, "why": {"text": "not a string"}},
+        {"headline": " ", "why": None, "headline_zh": "Must not rescue the public text"},
+    ],
+)
+@pytest.mark.parametrize("close", ["102", "100"])
+def test_missing_public_text_cannot_be_rescued_by_alias_or_non_text(text, close) -> None:
+    source = {"kind": "catalyst", **text}
+    before = deepcopy(source)
+    candidates = build_event_price_candidates(
+        asset_id="crypto:SOL",
+        instrument_semantics_digest="a" * 64,
+        source_fact=source,
+        source_first_visible_at_ms=930_000,
+        perp_rows=_bars(close),
+    )
+    assert all(not candidate.entry_ready and not candidate.watch_eligible for candidate in candidates)
+    assert all(candidate.strategy_gate_reason == "source_fact_unavailable" for candidate in candidates)
+    assert source == before
+
+
+def test_public_text_projection_preserves_verbatim_values_without_aliases() -> None:
+    source = {
+        "kind": "catalyst",
+        "headline": "  Public headline\n",
+        "why": "Public explanation",
+        "title": "Different provider title",
+        "headline_zh": "Different internal headline",
+        "why_zh": "Different internal explanation",
+    }
+    before = deepcopy(source)
+    assert catalyst_text_values(source) == {"headline": source["headline"], "why": source["why"]}
+    assert source == before
+    assert catalyst_text_values({**source, "kind": "oi"}) == {}

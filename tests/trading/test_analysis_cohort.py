@@ -370,7 +370,7 @@ def _watch_root(at_ms: int) -> dict[str, object]:
         mapping_semantics_digest="a" * 64,
         root_expires_at_ms=at_ms + 300_000,
         evidence={
-            "source_fact": {"kind": "catalyst", "headline_zh": "Fixture event"},
+            "source_fact": {"kind": "catalyst", "headline": "Fixture event"},
             "source_first_visible_at_ms": at_ms - 1_000,
             "market": {
                 "perp_bars": {
