@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from alembic import command
 from alembic.config import Config
@@ -24,3 +25,10 @@ def upgrade_head(database_url: str) -> None:
 
 def latest_migration_version() -> str:
     return str(ScriptDirectory.from_config(alembic_config()).get_current_head())
+
+
+def database_migration_version(conn: Any) -> str | None:
+    """Read the installed Alembic revision inside the caller's bounded transaction."""
+
+    row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+    return None if row is None else str(row["version_num"])

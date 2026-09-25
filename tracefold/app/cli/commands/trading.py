@@ -132,7 +132,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
 
 def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
     """Sequential read-only samples; each source keeps its own clock and failure."""
-    from tracefold.platform.postgres.migrations import latest_migration_version
+    from tracefold.platform.postgres.migrations import database_migration_version, latest_migration_version
 
     started_at_ns = time.time_ns()
     execution = settings.trading.execution
@@ -156,14 +156,14 @@ def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
             with repos.transaction():
                 repos.conn.execute("SET TRANSACTION READ ONLY")
                 repos.conn.execute("SET LOCAL statement_timeout = '3s'")
-                db_head = repos.conn.execute("SELECT version_num FROM alembic_version").fetchone()
+                db_head = database_migration_version(repos.conn)
                 state = repos.trading.execution_runtime_state(execution.account_slot)
                 plans, risks = repos.trading.execution_diagnostic_evidence(execution.account_slot, mode=execution.mode)
             read_at_ns = time.time_ns()
             result["database"] = {
                 "started_at_ns": db_started,
                 "completed_at_ns": read_at_ns,
-                "migration_head": None if db_head is None else db_head["version_num"],
+                "migration_head": db_head,
                 "runtime_id": None if state is None else str(state.runtime_id),
                 "heartbeat_at_ns": None if state is None else state.heartbeat_at_ns,
                 "account_observed_at_ns": (
