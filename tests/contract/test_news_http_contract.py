@@ -145,6 +145,16 @@ class _FakeNewsRepository:
         self.calls.append(("asset_usage_24h", {"now_ms": now_ms}))
         return {"ev-1": ["COPPER", "SPOT"], "ev-2": ["SPOT"]}
 
+    def semantic_status(self, *, now_ms: int) -> dict[str, Any]:
+        self.calls.append(("semantic_status", {"now_ms": now_ms}))
+        return {
+            "semantic_observations_24h": 0,
+            "semantic_adopted_24h": 0,
+            "semantic_failed_24h": 0,
+            "semantic_pending": 0,
+            "semantic_failed_by_code_24h": {},
+        }
+
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         self.calls.append(("status_snapshot", {"now_ms": now_ms}))
         return {
@@ -1368,14 +1378,50 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["pipeline"]["reader_card_model"] is None
-    assert data["pipeline"]["reader_card_fallback_model"] is None
-    assert data["pipeline"]["reader_card_fallback_dedicated"] is False
+    assert data["pipeline"]["extraction_model"] == "shared-model"
+    assert data["pipeline"]["card_model"] is None
+    assert data["pipeline"]["card_fallback_model"] is None
+    assert data["pipeline"]["card_fallback_dedicated"] is False
+    assert data["pipeline"]["news_program_identity"] is None
+    assert data["pipeline"]["judgment_backend"] is None
     assert data["health"]["model"] == {
         "level": "bad",
-        "summary_zh": "Reader 模型不可用",
-        "detail_zh": "ReaderCard 配置无效；所有事件按规则兜底",
+        "summary_zh": "卡片模型不可用",
+        "detail_zh": "卡片模型配置无效；语义工作等待可用配置",
     }
+
+
+def test_status_names_the_configured_routes_and_never_the_trading_jev(monkeypatch: pytest.MonkeyPatch) -> None:
+    jev = {"api_key": "jev-key", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
+    for llm, backend, judgment_model in (
+        ({"trading_semantics": jev}, "generated", "shared-model"),
+        ({"news_judgment": jev}, "native", "jev-1.13"),
+    ):
+        settings = Settings.model_validate(
+            {
+                "ws_token": TOKEN,
+                "llm": {
+                    "api_key": "triage-key",
+                    "base_url": "https://triage.test/v1",
+                    "news_triage_model": "shared-model",
+                    **llm,
+                },
+            }
+        )
+        app = create_app(settings=settings)
+        app.state.service = _FakeRuntime(settings, _FakeNewsRepository())
+        http = TestClient(app)
+        try:
+            response = http.get("/api/news/status", params={"token": TOKEN})
+        finally:
+            http.close()
+        pipeline = response.json()["data"]["pipeline"]
+        assert pipeline["judgment_backend"] == backend
+        assert pipeline["judgment_model"] == judgment_model
+        assert pipeline["news_judgment_configured"] is (backend == "native")
+        assert pipeline["card_model"] == "shared-model" and pipeline["card_dedicated"] is False
+        assert len(pipeline["news_program_identity"]) > 20
+        assert "jev-key" not in response.text and "triage-key" not in response.text
 
 
 def test_status_marks_the_product_degraded_when_model_outputs_are_unusable(
@@ -1406,15 +1452,20 @@ def test_status_marks_the_product_degraded_when_model_outputs_are_unusable(
             "last_frame_at_ms": now_ms,
         }
         snapshot["broker"] = {"connected": True, "queues": {}, "error_code": None, "observed_at_ms": now_ms}
-        snapshot["pipeline"] = {
-            **snapshot["pipeline"],
-            "model_triage_24h": 20,
-            "triage_degraded_24h": 20,
-            "triage_degraded_by_code_24h": {"news_program_event_semantics_invalid": 20},
-        }
         return snapshot
 
+    def semantic_status(*, now_ms: int) -> dict[str, Any]:
+        # Every semantic turn of the day ended in a contract fault: nothing was understood.
+        return {
+            "semantic_observations_24h": 0,
+            "semantic_adopted_24h": 0,
+            "semantic_failed_24h": 20,
+            "semantic_pending": 0,
+            "semantic_failed_by_code_24h": {"news_generation_output_contract_invalid": 20},
+        }
+
     news.status_snapshot = status_snapshot  # type: ignore[method-assign]
+    news.semantic_status = semantic_status  # type: ignore[method-assign]
     app = create_app(settings=settings)
     app.state.service = _FakeRuntime(settings, news)
     monkeypatch.setattr(
@@ -1427,6 +1478,8 @@ def test_status_marks_the_product_degraded_when_model_outputs_are_unusable(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["health"]["model"]["level"] == "bad"
+    assert data["health"]["model"]["summary_zh"] == "24 小时语义失败率 100%（20/20）"
+    assert data["pipeline"]["semantic_failed_by_code_24h"] == {"news_generation_output_contract_invalid": 20}
     assert data["state"] == "degraded"
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -9,10 +8,10 @@ import dspy
 import pytest
 
 from tracefold.app import learning_runtime
+from tracefold.app.cli.commands import news_learning_composition
 from tracefold.app.llm import configured_lm_endpoint
-from tracefold.app.workers.runtime import CapabilityStates
 from tracefold.app.workers.wiring import news as workers
-from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.evaluate import ArmManifest, CandidateManifest, ProposalReceipt
 from tracefold.news.program.artifact import load_stable_program_state
 from tracefold.news.program.contracts import TriageContext
@@ -26,15 +25,9 @@ from tracefold.news.program.lm import (
     lm_request_projection,
     program_json_adapter,
 )
-from tracefold.news.program.resources import candidates as candidate_programs
-from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
+from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.program.signatures import EventSemanticsSignature
 from tracefold.news.release import runtime as release_runtime
-from tracefold.news.release.canary import (
-    CANARY_ELIGIBILITY_PROFILE_SHA,
-    CANARY_ROLLING_PROFILE_SHA,
-    CANARY_SELECTOR_VERSION,
-)
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import LlmRequestConfig, Settings
 
@@ -256,8 +249,8 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
 
     settings = Settings()
 
-    composition = learning_runtime.compose_news_program_runtime(settings)
-    arm = learning_runtime.active_arm_manifest(settings, runtime_composition=composition)
+    composition = news_learning_composition.compose_news_program_runtime(settings)
+    arm = news_learning_composition.active_arm_manifest(settings, runtime_composition=composition)
 
     assert composition.program_configured is False
     assert composition.semantic_judge(load_stable_program_state()) is None
@@ -291,7 +284,7 @@ def test_news_runtime_composition_assigns_operator_request_controls_per_role() -
         }
     )
 
-    composition = learning_runtime.compose_news_program_runtime(settings)
+    composition = news_learning_composition.compose_news_program_runtime(settings)
 
     assert composition.event_semantics_primary.temperature is None
     assert composition.event_semantics_primary.structured_output == "prompt_json"
@@ -309,7 +302,7 @@ def test_compile_baseline_uses_native_module_without_production_availability_con
             }
         }
     )
-    composition = learning_runtime.compose_news_program_runtime(settings)
+    composition = news_learning_composition.compose_news_program_runtime(settings)
     artifact = load_stable_program_state()
 
     def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
@@ -332,7 +325,7 @@ def test_compile_baseline_uses_native_module_without_production_availability_con
 def _compile_route_models(settings: Any) -> dict[str, str]:
     """Which model each Predictor's offline compile call would be sent to."""
 
-    composition = learning_runtime.compose_news_program_runtime(settings)
+    composition = news_learning_composition.compose_news_program_runtime(settings)
 
     def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
         for setting in ("api_key", "api_base", "timeout"):
@@ -394,7 +387,7 @@ def test_compile_binds_each_predictor_to_its_own_production_primary_slot() -> No
 
 
 def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_identity() -> None:
-    pristine = learning_runtime.compose_news_program_runtime(Settings())
+    pristine = news_learning_composition.compose_news_program_runtime(Settings())
     invalid_reader = Settings.model_validate(
         {
             "llm": {
@@ -410,7 +403,7 @@ def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_iden
         }
     )
 
-    partial = learning_runtime.compose_news_program_runtime(invalid_reader)
+    partial = news_learning_composition.compose_news_program_runtime(invalid_reader)
 
     assert partial.program_configured is False
     assert partial.secret_free_slot_identities() == pristine.secret_free_slot_identities()
@@ -434,8 +427,8 @@ def test_active_arm_uses_the_composed_secret_free_runtime_bindings() -> None:
         }
     )
 
-    composition = learning_runtime.compose_news_program_runtime(settings)
-    arm = learning_runtime.active_arm_manifest(settings, runtime_composition=composition)
+    composition = news_learning_composition.compose_news_program_runtime(settings)
+    arm = news_learning_composition.active_arm_manifest(settings, runtime_composition=composition)
     slots = composition.secret_free_slot_identities()
 
     assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
@@ -476,8 +469,8 @@ def test_different_reader_backend_changes_same_named_model_identity() -> None:
         }
     )
 
-    inherited_composition = learning_runtime.compose_news_program_runtime(inherited)
-    dedicated_composition = learning_runtime.compose_news_program_runtime(dedicated)
+    inherited_composition = news_learning_composition.compose_news_program_runtime(inherited)
+    dedicated_composition = news_learning_composition.compose_news_program_runtime(dedicated)
     inherited_slots = inherited_composition.secret_free_slot_identities()
     dedicated_slots = dedicated_composition.secret_free_slot_identities()
 
@@ -503,8 +496,8 @@ def test_runtime_binding_identity_ignores_credential_rotation() -> None:
             }
         )
 
-    before = learning_runtime.compose_news_program_runtime(settings_with_key("key-before"))
-    after = learning_runtime.compose_news_program_runtime(settings_with_key("key-after"))
+    before = news_learning_composition.compose_news_program_runtime(settings_with_key("key-before"))
+    after = news_learning_composition.compose_news_program_runtime(settings_with_key("key-after"))
 
     assert before.slot_aliases() == after.slot_aliases() == {"taxonomy.primary": "event_semantics.primary"}
     assert before.secret_free_slot_identities() == after.secret_free_slot_identities()
@@ -523,10 +516,10 @@ def test_runtime_binding_identity_canonicalizes_equivalent_endpoint_urls() -> No
             }
         )
 
-    explicit_default_port = learning_runtime.compose_news_program_runtime(
+    explicit_default_port = news_learning_composition.compose_news_program_runtime(
         settings_with_endpoint("https://TRIAGE.TEST:443/v1/")
     )
-    canonical = learning_runtime.compose_news_program_runtime(settings_with_endpoint("https://triage.test/v1"))
+    canonical = news_learning_composition.compose_news_program_runtime(settings_with_endpoint("https://triage.test/v1"))
 
     assert explicit_default_port.secret_free_slot_identities() == canonical.secret_free_slot_identities()
     assert explicit_default_port.runtime_model_bindings_sha256 == canonical.runtime_model_bindings_sha256
@@ -553,7 +546,7 @@ def test_dedicated_reader_fallback_has_its_own_explicit_slot_identity() -> None:
         }
     )
 
-    composition = learning_runtime.compose_news_program_runtime(settings)
+    composition = news_learning_composition.compose_news_program_runtime(settings)
     slots = composition.secret_free_slot_identities()
 
     assert slots["event_semantics.fallback"] != slots["reader_card.fallback"]
@@ -590,7 +583,7 @@ def test_invalid_requested_reader_fallback_disables_the_whole_fallback_route() -
         }
     )
 
-    composition = learning_runtime.compose_news_program_runtime(settings)
+    composition = news_learning_composition.compose_news_program_runtime(settings)
 
     assert composition.program_configured is True
     assert composition.event_semantics_fallback is not None
@@ -647,7 +640,7 @@ def test_dedicated_reader_endpoint_produces_exact_three_model_trace() -> None:
         }
     )
     artifact = load_stable_program_state()
-    composition = learning_runtime.compose_news_program_runtime(settings)
+    composition = news_learning_composition.compose_news_program_runtime(settings)
     judge = composition.semantic_judge(artifact, lm_type=scripted_factory)
     assert judge is not None
     context = TriageContext.from_card(
@@ -695,7 +688,7 @@ def test_dedicated_reader_endpoint_produces_exact_three_model_trace() -> None:
     ]
     assert (
         composition.runtime_model_bindings_sha256
-        == learning_runtime.active_arm_manifest(
+        == news_learning_composition.active_arm_manifest(
             settings,
             runtime_composition=composition,
         ).runtime_model_bindings_sha256
@@ -729,87 +722,6 @@ def test_a_candidate_whose_parent_is_not_the_running_stable_never_resolves_an_ar
 
     with pytest.raises(ValueError, match="news_candidate_program_parent_mismatch"):
         release_runtime.candidate_program_artifact(candidate, stable, stable_artifact=stable_artifact)
-
-
-class _StartupNewsRepository:
-    def __init__(self, *, candidate_manifest_sha: str, candidate_bundle_sha: str) -> None:
-        self.activation: dict[str, Any] = {
-            "activation_id": "1" * 32,
-            "candidate_manifest_sha": candidate_manifest_sha,
-            "candidate_bundle_sha": candidate_bundle_sha,
-            "selector_version": CANARY_SELECTOR_VERSION,
-            "eligibility_profile_sha": CANARY_ELIGIBILITY_PROFILE_SHA,
-            "rolling_profile_sha": CANARY_ROLLING_PROFILE_SHA,
-            "state": "active",
-        }
-
-    def active_canary(self) -> dict[str, Any] | None:
-        return dict(self.activation) if self.activation["state"] == "active" else None
-
-    def canary_status(self) -> dict[str, Any]:
-        return {
-            "state": self.activation["state"],
-            "activation": dict(self.activation),
-            "assignments": {"stable": 0, "candidate": 0},
-        }
-
-    def transition_canary(
-        self,
-        *,
-        activation_id: str,
-        target_state: str,
-        reason: str,
-        now_ms: int,
-    ) -> bool:
-        assert activation_id == self.activation["activation_id"]
-        self.activation.update(state=target_state, trip_reason=reason, tripped_at_ms=now_ms)
-        return True
-
-
-class _StartupRepositories:
-    def __init__(self, news: _StartupNewsRepository) -> None:
-        self.news = news
-
-    @contextmanager
-    def transaction(self) -> Any:
-        yield
-
-
-class _StartupLane:
-    async def run_business(
-        self,
-        _name: str,
-        function: Any,
-        *,
-        operation_timeout_seconds: float,
-    ) -> Any:
-        del operation_timeout_seconds
-        return function()
-
-
-class _StartupDatabase:
-    def __init__(self, news: _StartupNewsRepository) -> None:
-        self.repos = _StartupRepositories(news)
-        self.lane = _StartupLane()
-
-    def heavy_business(self) -> _StartupLane:
-        return self.lane
-
-    @contextmanager
-    def worker_session(self, _name: str, _timeout_seconds: float) -> Any:
-        yield self.repos
-
-    async def run_news(
-        self,
-        _name: str,
-        function: Any,
-        /,
-        *args: Any,
-        operation_timeout_seconds: float,
-        **kwargs: Any,
-    ) -> Any:
-        del operation_timeout_seconds
-        return function(*args, **kwargs)
 
 
 class _StartupBus:
@@ -914,108 +826,121 @@ def test_canary_control_excludes_a_manifest_whose_program_artifact_cannot_load(m
     )
 
 
-def _wire_startup_test(
-    monkeypatch: Any,
-    *,
-    candidate_manifest_sha: str,
-    candidate_bundle_sha: str,
-) -> tuple[Any, _StartupNewsRepository]:
-    stable_arm = SimpleNamespace(
-        bundle_sha="a" * 64,
-        program_version=PROGRAM_VERSION,
-        program_sha256="b" * 64,
-        envelope_sha256=EXECUTION_ENVELOPE_SHA256,
-    )
-    stable_artifact = SimpleNamespace(program_sha256="b" * 64, schema_version=PROGRAM_SCHEMA_VERSION)
-    stable_program = object()
-    news = _StartupNewsRepository(
-        candidate_manifest_sha=candidate_manifest_sha,
-        candidate_bundle_sha=candidate_bundle_sha,
-    )
-    database = _StartupDatabase(news)
-    monkeypatch.setattr("tracefold.integrations.rabbitmq.RabbitMQBus", _StartupBus)
-    composition = SimpleNamespace(semantic_judge=lambda _artifact: stable_program)
-    monkeypatch.setattr(workers, "compose_news_program_runtime", lambda _settings: composition)
-    monkeypatch.setattr(workers, "active_arm_manifest", lambda _settings, **_kwargs: stable_arm)
-    monkeypatch.setattr(workers, "load_stable_program_state", lambda: stable_artifact)
-    identity_reads = 0
+def test_news_wiring_verifies_the_broker_policy_with_the_bounded_settle_before_consuming(monkeypatch: Any) -> None:
+    """#400: the attach runs the bounded settle; a one-shot read dies inside the statistics interval."""
 
-    def read_runtime_identity() -> SimpleNamespace:
-        nonlocal identity_reads
-        identity_reads += 1
-        return SimpleNamespace(image_digest="image", runtime_revision="revision")
-
-    monkeypatch.setattr(workers, "runtime_identity", read_runtime_identity)
-
-    bus, pipeline, _market = asyncio.run(
-        workers._wire_news_pipeline(
-            settings=_startup_settings(),
-            db=database,
-            finite=SimpleNamespace(),
-            capabilities=CapabilityStates(),
-        )
-    )
-
-    assert bus.connected is True
-    # The attach must run the bounded settle before consuming: a one-shot read dies inside the
-    # management statistics interval on every fresh broker volume (#400).
     from tracefold.integrations.rabbitmq import POLICY_EFFECTIVE_TIMEOUT_SECONDS
 
+    monkeypatch.setattr("tracefold.integrations.rabbitmq.RabbitMQBus", _StartupBus)
+    bus = asyncio.run(workers._connect_news_bus(_startup_settings()))
+
+    assert bus.connected is True
     assert bus.policies_verified is True
     assert bus.settle_timeout_seconds == POLICY_EFFECTIVE_TIMEOUT_SECONDS
-    assert pipeline.triage.judge is stable_program
-    assert identity_reads == 1
-    manifest = pipeline.triage.runtime_manifest
-    assert manifest["image_digest"] == "image"
-    assert manifest["runtime_revision"] == "revision"
-    assert manifest["manifest_sha"] == runtime_manifest_sha(
-        stable_bundle_sha=stable_arm.bundle_sha,
-        candidate_shas=manifest["candidate_shas"],
-        image_digest=manifest["image_digest"],
-        runtime_revision=manifest["runtime_revision"],
-    )
-    return pipeline, news
 
 
-def test_worker_startup_isolates_bad_candidate_schema_and_trips_active_activation(monkeypatch: Any) -> None:
-    monkeypatch.setattr(
-        candidate_programs,
-        "COMPILED_CANDIDATE_DOCUMENTS",
-        ({"target": "program", "candidate_arm": {"program_sha256": "c" * 64}},),
+def _news_settings(**llm: Any) -> Settings:
+    return Settings(
+        llm={
+            "api_key": "news-key",
+            "base_url": "https://triage.test/v1",
+            "news_triage_model": "triage-model",
+            **llm,
+        }
     )
 
-    pipeline, news = _wire_startup_test(
-        monkeypatch,
-        candidate_manifest_sha="d" * 64,
-        candidate_bundle_sha="e" * 64,
+
+def test_unconfigured_news_models_compose_no_runtime_route() -> None:
+    assert learning_runtime.compose_news_models(Settings()) is None
+    invalid_reader = Settings.model_construct(
+        llm=Settings().llm.model_copy(
+            update={
+                "api_key": "news-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+                "news_reader_card": Settings().llm.news_reader_card.model_copy(
+                    update={"api_key": "k", "base_url": "ftp://reader.test", "model": "reader"}
+                ),
+            }
+        )
     )
-
-    assert pipeline.triage.canary_arms == {}
-    assert news.activation["state"] == "tripped"
-    assert news.activation["trip_reason"] == "candidate_manifest_missing_or_invalid"
-    assert int(news.activation["tripped_at_ms"]) > 0
+    assert learning_runtime.compose_news_models(invalid_reader) is None
 
 
-def test_worker_startup_isolates_bad_candidate_artifact_and_trips_active_activation(monkeypatch: Any) -> None:
-    candidate = _program_candidate_document()
-    monkeypatch.setattr(
-        candidate_programs,
-        "COMPILED_CANDIDATE_DOCUMENTS",
-        (candidate.model_dump(mode="json"),),
+def test_extraction_and_judgment_share_the_triage_route_and_cards_use_the_reader_route() -> None:
+    models = learning_runtime.compose_news_models(
+        _news_settings(
+            news_triage_fallback={"api_key": "fb-key", "base_url": "https://fallback.test/v1", "model": "fb-model"},
+            news_reader_card={"api_key": "reader-key", "base_url": "https://reader.test/v1", "model": "reader"},
+        )
     )
+    assert models is not None
+    assert models.extraction.primary is models.judgment.primary
+    assert models.extraction.fallback is models.judgment.fallback
+    assert models.extraction.fallback is not None and models.extraction.fallback.model_name == "openai/fb-model"
+    assert models.card.primary.model_name == "openai/reader"
+    # No dedicated reader fallback: the card route inherits the extraction fallback, as before.
+    assert models.card.fallback is models.extraction.fallback
+    extraction = models.extraction.lms()
+    assert [lm.model for lm in extraction] == ["openai/triage-model", "openai/fb-model"]
+    assert all(lm.kwargs["max_tokens"] == learning_runtime.EXTRACTION_MAX_TOKENS for lm in extraction)
+    assert all(lm.num_retries == 0 and lm.cache is False for lm in extraction)
+    assert [lm.kwargs["max_tokens"] for lm in models.card.lms()] == [learning_runtime.CARD_MAX_TOKENS] * 2
+    assert models.news_judgment is None
+    assert models.status()["judgment_backend"] == "generated"
+    assert models.status()["judgment_model"] == "triage-model"
 
-    def reject_artifact(_program_sha256: str) -> Any:
-        raise ValueError("news_program_artifact_hash_mismatch")
 
-    monkeypatch.setattr(release_runtime, "load_program_state", reject_artifact)
+def test_route_identities_are_secret_free_and_ignore_key_rotation() -> None:
+    before = learning_runtime.compose_news_models(_news_settings(api_key="key-before"))
+    after = learning_runtime.compose_news_models(_news_settings(api_key="key-after"))
+    other = learning_runtime.compose_news_models(_news_settings(news_triage_model="other-model"))
+    assert before is not None and after is not None and other is not None
+    assert before.extraction.identity == after.extraction.identity
+    assert before.program_identity == after.program_identity
+    assert "key-before" not in repr(before.status())
+    assert other.extraction.identity != before.extraction.identity
+    assert other.program_identity != before.program_identity
 
-    pipeline, news = _wire_startup_test(
-        monkeypatch,
-        candidate_manifest_sha=candidate.candidate_sha,
-        candidate_bundle_sha=candidate.candidate_arm.bundle_sha,
+
+def test_news_jev_is_its_own_route_and_trading_semantics_never_enables_it() -> None:
+    jev = {"api_key": "jev-key", "base_url": "https://openrouter.ai/api/", "model": "jev-1.13"}
+    trading_only = learning_runtime.compose_news_models(_news_settings(trading_semantics=jev))
+    native = learning_runtime.compose_news_models(_news_settings(news_judgment=jev))
+    assert trading_only is not None and native is not None
+    assert trading_only.news_judgment is None
+    assert native.news_judgment is not None
+    assert native.news_judgment.base_url == "https://openrouter.ai/api"
+    assert "jev-key" not in repr(native.news_judgment)
+    assert native.status()["judgment_backend"] == "native"
+    assert native.status()["judgment_model"] == "jev-1.13"
+    assert native.program_identity != trading_only.program_identity
+
+
+def test_generative_lm_states_the_structured_output_capability_of_its_endpoint() -> None:
+    models = learning_runtime.compose_news_models(_news_settings(request={"structured_output": "json_object"}))
+    assert models is not None
+    (lm,) = models.extraction.lms()
+    assert lm.supported_params == {"response_format"}
+    assert lm.supports_response_schema is False
+    prompt_only = learning_runtime.generative_lm(
+        configured_lm_endpoint(_news_settings(request={"structured_output": "prompt_json"}), model_name="m"),
+        max_tokens=10,
+        timeout=1.0,
     )
+    assert prompt_only.supported_params == set()
 
-    assert pipeline.triage.canary_arms == {}
-    assert news.activation["state"] == "tripped"
-    assert news.activation["trip_reason"] == "candidate_artifact_invalid"
-    assert int(news.activation["tripped_at_ms"]) > 0
+
+def test_the_runtime_manifest_names_the_configured_program_and_image() -> None:
+    settings = _news_settings()
+    digest = "sha256:" + "1" * 64
+    first = learning_runtime.news_runtime_manifest_sha(settings, image_digest=digest, runtime_revision="r")
+    again = learning_runtime.news_runtime_manifest_sha(settings, image_digest=digest, runtime_revision="r")
+    image = learning_runtime.news_runtime_manifest_sha(
+        settings, image_digest="sha256:" + "2" * 64, runtime_revision="r"
+    )
+    unconfigured = learning_runtime.news_runtime_manifest_sha(Settings(), image_digest=digest, runtime_revision="r")
+    assert first == again
+    assert len({first, image, unconfigured}) == 3
+    identity = SimpleNamespace(image_digest=digest, runtime_revision="r")
+    assert workers.configured_runtime_manifest_sha(settings, identity=identity) == first

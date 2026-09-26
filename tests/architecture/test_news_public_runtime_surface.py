@@ -45,7 +45,6 @@ PUBLIC_NEWS_INTERFACE = {
     # (`PUSH_FACT_KINDS` and the rest) stay private: they are policy, not vocabulary.
     "FACT_KINDS",
     "FactKind",
-    "NEWS_RETRIEVAL_SHA256",
     "NewsTaxonomyV1",
     "NetBuySnapshot",
     "OI_METRIC_VERSION",
@@ -59,17 +58,11 @@ PUBLIC_NEWS_INTERFACE = {
     "MARKET_WINDOW_MAX_MS",
     "OpenNewsExpectedError",
     "SOURCE_AUTHORITIES",
-    "ProgramTrace",
-    "ProgramUsage",
     "ReaderDeliveryPresentation",
     "ReaderMarketMovement",
     "ReaderTradeTarget",
     "TelegramDeliveryReceipt",
-    "SemanticJudge",
-    "SemanticJudgeError",
-    "SemanticJudgment",
     "SourceAuthority",
-    "TriageContext",
     "source_authority_from_evidence",
 }
 
@@ -261,20 +254,41 @@ def test_only_the_drafter_may_call_a_model_inside_the_review_plane() -> None:
     assert callers == {"drafter.py"}
 
 
-def test_semantic_judge_contract_has_public_locality() -> None:
-    """#134: callers learn the framework-neutral Interface from ``tracefold.news`` only."""
+def test_the_semantic_runtime_imports_no_retired_program_or_rule_owner() -> None:
+    """#706: the EventUpdate runtime does not import the three-Predictor Program, the taxonomy axes'
+    rule owner, progression review, canary/release arms or the learning plane, and the package root
+    re-exports none of the retired Program contract."""
 
-    for symbol in (
-        "SemanticJudge",
-        "SemanticJudgeError",
-        "TriageContext",
-        "SemanticJudgment",
-        "ProgramTrace",
-        "ProgramUsage",
-    ):
-        assert symbol in news.__all__
-        assert getattr(news, symbol) is not None
-        assert not hasattr(news_agents, symbol)
+    for symbol in ("SemanticJudge", "SemanticJudgeError", "SemanticJudgment", "TriageContext", "ProgramTrace"):
+        assert symbol not in news.__all__
+    retired = (
+        "tracefold.news.program",
+        "tracefold.news.triage_rules",
+        "tracefold.news.progression_review",
+        "tracefold.news.release",
+        "tracefold.news.learning",
+        "tracefold.news.told_context",
+        "tracefold.app.cli",
+    )
+    runtime = [
+        SRC / "news" / "pipeline" / "semantic.py",
+        SRC / "news" / "pipeline" / "admission.py",
+        SRC / "news" / "pipeline" / "maintenance.py",
+        SRC / "news" / "pipeline" / "root.py",
+        SRC / "news" / "storage" / "event_updates.py",
+        SRC / "news" / "storage" / "event_update_store.py",
+        SRC / "app" / "news_updates.py",
+        SRC / "app" / "learning_runtime.py",
+        SRC / "app" / "workers" / "wiring" / "news.py",
+        SRC / "app" / "workers" / "wiring" / "components.py",
+        *sorted((SRC / "news" / "updates").glob("*.py")),
+    ]
+    offenders = {
+        str(path.relative_to(ROOT)): sorted(module for module in _imported_modules(path) if _under(module, retired))
+        for path in runtime
+    }
+    assert {path: modules for path, modules in offenders.items() if modules} == {}
+    assert not any(name.startswith("Program") for name in dir(news_agents) if name in news.__all__)
 
 
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:

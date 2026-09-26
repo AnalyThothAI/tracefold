@@ -38,7 +38,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_d
 
 RUNTIME_ID = "00000000-0000-0000-0000-000000000099"
 SECOND_RUNTIME_ID = "00000000-0000-0000-0000-000000000100"
-RUNTIME_MANIFEST_BARRIER_SHA = "a" * 64
 _PROCESS_ENTRY = Path(__file__).with_name("_workers_runtime_process_entry.py")
 _LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -76,75 +75,6 @@ def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(
     assert not hasattr(runtime, "providers")
     assert not hasattr(runtime, "collector")
     assert not hasattr(runtime, "scheduler")
-
-
-@pytest.mark.slow
-def test_real_workers_readiness_waits_for_the_persisted_runtime_manifest(tmp_path: Path) -> None:
-    port = _free_port()
-    release_gate = tmp_path / "release-runtime-manifest"
-    entered_gate = Path(f"{release_gate}.entered")
-    process = _start_workers_process(
-        "manifest_barrier",
-        port,
-        extra_env={"TRACEFOLD_TEST_MANIFEST_GATE": str(release_gate)},
-    )
-    try:
-        deadline = time.monotonic() + 20.0
-        while not entered_gate.exists() and time.monotonic() < deadline:
-            if process.poll() is not None:
-                output = process.stdout.read() if process.stdout is not None else ""
-                raise AssertionError(
-                    f"workers exited before manifest barrier: code={process.returncode}; output={output!r}"
-                )
-            time.sleep(0.01)
-        assert entered_gate.exists(), "workers never reached the runtime-manifest barrier"
-
-        try:
-            with _LOCAL_HTTP.open(f"http://127.0.0.1:{port}/readyz", timeout=0.2) as response:
-                readiness_status: int | None = response.status
-        except urllib.error.HTTPError as exc:
-            readiness_status = exc.code
-        except OSError:
-            readiness_status = None
-        assert readiness_status != 200
-
-        conn = connect_postgres_test(read_only=False)
-        try:
-            assert (
-                conn.execute(
-                    "SELECT manifest_sha FROM news_agent_runtime_manifests WHERE manifest_sha = %s",
-                    (RUNTIME_MANIFEST_BARRIER_SHA,),
-                ).fetchone()
-                is None
-            )
-        finally:
-            conn.close()
-
-        release_gate.touch()
-        _wait_ready(process, port)
-
-        conn = connect_postgres_test(read_only=False)
-        try:
-            manifest = conn.execute(
-                "SELECT manifest_sha FROM news_agent_runtime_manifests WHERE manifest_sha = %s",
-                (RUNTIME_MANIFEST_BARRIER_SHA,),
-            ).fetchone()
-            active = conn.execute(
-                "SELECT payload ->> 'runtime_manifest_sha' AS runtime_manifest_sha "
-                "FROM news_learning_artifacts WHERE kind = 'active_agent' "
-                "ORDER BY created_at_ms DESC, artifact_sha DESC LIMIT 1"
-            ).fetchone()
-        finally:
-            conn.close()
-        assert manifest is not None
-        assert active is not None
-        assert active["runtime_manifest_sha"] == RUNTIME_MANIFEST_BARRIER_SHA
-
-        process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=5.0) == 0
-    finally:
-        release_gate.touch(exist_ok=True)
-        _ensure_process_stopped(process)
 
 
 def test_steady_lock_retains_a_real_control_query_lane_and_excludes_other_runtimes(tmp_path) -> None:
@@ -444,21 +374,21 @@ def _news_item_count() -> int:
 
 
 @pytest.mark.slow
-def test_real_news_program_registration_fault_stays_inside_the_editorial_capability() -> None:
-    """#553 PR-3 acceptance 3: the Program manifest is editorial's, and nothing else waits on it."""
+def test_real_news_semantic_assembly_fault_stays_inside_the_editorial_capability() -> None:
+    """#553 PR-3 acceptance 3, for the #706 semantic runtime: editorial is faulted, nothing else waits."""
 
     _create_test_fact_table()
     port = _free_port()
-    process = _start_workers_process("manifest_registration_fault", port)
+    process = _start_workers_process("semantic_assembly_fault", port)
     try:
-        # Cold process imports and the schema gate precede editorial registration on loaded CI runners.
-        _wait_for_output(process, "MANIFEST_REGISTRATION_ABOUT_TO_FAIL", timeout_seconds=20.0)
+        # Cold process imports and the schema gate precede News composition on loaded CI runners.
+        _wait_for_output(process, "SEMANTIC_ASSEMBLY_ABOUT_TO_FAIL", timeout_seconds=20.0)
         _wait_ready(process, port)
         payload = _readiness_payload(port)
         assert payload["runtime_manifest_sha"] is None
         assert payload["capabilities"]["news_editorial"] == {
             "state": "faulted",
-            "reason": "news_editorial_manifest_registration_failed:RuntimeError",
+            "reason": "news_editorial_assembly_failed:RuntimeError",
         }
         assert payload["capabilities"]["news_ingestion"] == {"state": "running", "reason": None}
 

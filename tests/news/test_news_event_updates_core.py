@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from pydantic import ValidationError
 
@@ -25,7 +23,6 @@ from tracefold.news.updates.contracts import (
 )
 from tracefold.news.updates.public import public_updates
 from tracefold.news.updates.semantics import assemble_update, equivalent_is_possible
-from tracefold.news.updates.service import PublicRelay
 
 STAMP = 1_790_405_000_000
 
@@ -313,36 +310,3 @@ def test_source_authority_is_code_owned_provenance_not_evidence_identity() -> No
     named = Evidence.issue(plain.text, plain.source.model_copy(update={"source_authority": "issuer_first_party"}))
     assert named.ref == plain.ref
     assert Asset(symbol="CL", market_type="commodity", role="primary") in draft(plain).fields.assets
-
-
-def test_source_update_dispatch_does_not_enter_catalyst_consumer() -> None:
-    async def run() -> None:
-        _, updated = correction_update()
-        rows = public_updates(updated, semantic_completed_at_ms=STAMP + 90)
-
-        class Store:
-            def __init__(self) -> None:
-                self.acknowledged: list[str] = []
-
-            async def pending_public_updates(self, limit: int) -> tuple[PublicUpdate, ...]:
-                return rows
-
-            async def acknowledge_public_update(self, update_id: str) -> None:
-                self.acknowledged.append(update_id)
-
-        class Receiver:
-            def __init__(self) -> None:
-                self.updates: list[str] = []
-
-            async def receive_catalyst(self, update: PublicUpdate) -> None:
-                raise AssertionError("correction reached entry")
-
-            async def receive_source_update(self, update: PublicUpdate) -> None:
-                self.updates.append(update.update_id)
-
-        store = Store()
-        receiver = Receiver()
-        assert await PublicRelay(store, receiver).advance() == 1
-        assert store.acknowledged == receiver.updates
-
-    asyncio.run(run())

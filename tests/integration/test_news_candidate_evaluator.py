@@ -2382,8 +2382,8 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
 ) -> None:
     """F2P: registration must reject stale v2 population identity at the real CLI/PG seam."""
 
-    from tracefold.app import learning_runtime
     from tracefold.app.cli.commands import news_learning as news_commands
+    from tracefold.app.cli.commands import news_learning_composition
     from tracefold.app.cli.parser import build_parser
 
     base = load_stable_program_state()
@@ -2438,7 +2438,7 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
         yield conn
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: stable)
+    monkeypatch.setattr(news_learning_composition, "active_arm_manifest", lambda _settings: stable)
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", registered_connection)
     args = build_parser().parse_args(
         [

@@ -705,25 +705,6 @@ class DecisionStorage:
         )
         return bool(cursor.rowcount)
 
-    def enqueue_delivery(self, *, event_id: str, kind: str, now_ms: int) -> bool:
-        """Record that this Event owes a reader a card. Written in the Verdict's own transaction.
-
-        `ON CONFLICT DO NOTHING` on the natural key, so a re-decided Event never queues a second card
-        and no caller has to read before writing. Due immediately: the wait a retry earns is set when
-        an attempt fails, never before the first one.
-        """
-
-        cursor = self.conn.execute(
-            """
-            INSERT INTO news_delivery_queue (
-              intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, 'pending', 0, %s, %s, %s)
-            ON CONFLICT (intent_id) DO NOTHING
-            """,
-            (legacy_intent_id(event_id, kind), event_id, kind, int(now_ms), int(now_ms), int(now_ms)),
-        )
-        return bool(cursor.rowcount)
-
     def retire_legacy_delivery_intents(self, *, now_ms: int) -> int:
         """Dead-letter every still-pending legacy intent with an explicit reason; nothing is sent for them."""
 

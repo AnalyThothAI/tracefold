@@ -11,23 +11,8 @@ from ..models import ADMITTED_ADMISSIONS
 from ..opennews import source_artifact_identity
 from ..source_contracts import EventKind
 from .feed_sql import CURRENT_EVENT_CARD_SQL, EDITORIAL_EVENT_CARD_SQL
-from .sql_values import _ADMITTED_SQL, _dumps
+from .sql_values import _dumps
 
-_HANDOFF_STATE_LIMIT = 1_000
-UNPUBLISHED_EVENT_CANDIDATES_SQL = f"""
-    SELECT e.event_id, e.dedupe_family, e.queue_priority, e.trace_id, e.opened_at_ms
-      FROM news_events e
-     WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
-       AND e.opened_at_ms <= %s AND e.opened_at_ms >= %s
-       AND (
-         SELECT s.provenance = 'observed'
-            AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-           FROM news_event_evidence_snapshots s
-          WHERE s.event_id = e.event_id
-          ORDER BY s.evidence_version DESC LIMIT 1
-       )
-     ORDER BY e.opened_at_ms LIMIT %s
-"""  # noqa: S608
 BAND_CANDIDATES_SQL = """
             WITH hits AS (
               SELECT DISTINCT b.event_id
@@ -49,40 +34,6 @@ BAND_CANDIDATES_SQL = """
              ORDER BY e.opened_at_ms ASC
              LIMIT 25
 """
-_EVENT_HANDOFF_STATE_SQL = f"""
-    WITH pending AS MATERIALIZED (
-      SELECT e.opened_at_ms
-        FROM news_events e
-       WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
-         AND e.opened_at_ms >= %s
-         AND (
-           SELECT s.provenance = 'observed'
-              AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-             FROM news_event_evidence_snapshots s
-            WHERE s.event_id = e.event_id
-            ORDER BY s.evidence_version DESC LIMIT 1
-         )
-       ORDER BY e.opened_at_ms
-       LIMIT %s
-    ), expired AS MATERIALIZED (
-      SELECT e.opened_at_ms
-        FROM news_events e
-       WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
-         AND e.opened_at_ms < %s
-         AND (
-           SELECT s.provenance = 'observed'
-              AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-             FROM news_event_evidence_snapshots s
-            WHERE s.event_id = e.event_id
-            ORDER BY s.evidence_version DESC LIMIT 1
-         )
-       ORDER BY e.opened_at_ms DESC
-       LIMIT %s
-    )
-    SELECT (SELECT count(*) FROM pending) AS pending,
-           (SELECT min(opened_at_ms) FROM pending) AS oldest_pending_at_ms,
-           (SELECT count(*) FROM expired) AS expired
-"""  # noqa: S608
 
 
 def prepare_evidence_snapshot(
@@ -193,21 +144,7 @@ def prepare_evidence_snapshot(
         "event_id": event_id,
         "focus_fact": focus,
         "card": snapshot_card,
-        "members": [
-            {
-                "item_id": str(row["item_id"]),
-                "fact_id": str(row["fact_id"]),
-                "fact_text": str(row["fact_text"]),
-                "joined_at_ms": int(row["joined_at_ms"]),
-                "match_kind": str(row["match_kind"]),
-                "jaccard_estimate": row["jaccard_estimate"],
-                "reporting_origin": str(row["reporting_origin"] or ""),
-                "canonical_url": row["canonical_url"],
-                "provider_metadata": dict(row["provider_metadata"] or {}),
-                "provenance": list(row["provenance"] or []),
-            }
-            for row in members
-        ],
+        "members": [_snapshot_member(row) for row in members],
         "provenance": "observed",
     }
     serialized = _dumps(snapshot)
@@ -223,6 +160,28 @@ def prepare_evidence_snapshot(
         "snapshot_json": serialized,
         "now_ms": int(now_ms),
     }
+
+
+def _snapshot_member(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One frozen member. Later body revisions are named only when the Item has some, so a member
+    without one keeps the exact snapshot bytes -- and digest -- it always had."""
+
+    member: dict[str, Any] = {
+        "item_id": str(row["item_id"]),
+        "fact_id": str(row["fact_id"]),
+        "fact_text": str(row["fact_text"]),
+        "joined_at_ms": int(row["joined_at_ms"]),
+        "match_kind": str(row["match_kind"]),
+        "jaccard_estimate": row["jaccard_estimate"],
+        "reporting_origin": str(row["reporting_origin"] or ""),
+        "canonical_url": row["canonical_url"],
+        "provider_metadata": dict(row["provider_metadata"] or {}),
+        "provenance": list(row["provenance"] or []),
+    }
+    revisions = [str(value) for value in row.get("body_revisions") or ()]
+    if revisions:
+        member["body_revisions"] = revisions
+    return member
 
 
 def _market_notify_state(market_kind: str | None, ingest_mode: str) -> str | None:
@@ -279,7 +238,8 @@ class EventStorage:
         a replay of a record a card already covered must not put it back on the notification to-do
         list and interrupt the reader a second time. `provider_metadata.strategies` still merges,
         because an Item genuinely can be reported under a second Strategy later, and that is metadata
-        about the record rather than the record itself.
+        about the record rather than the record itself. A later, different body of the same record is
+        not merged here either: `record_item_revision` keeps it beside the first one.
         """
 
         row = self.conn.execute(
@@ -348,14 +308,6 @@ class EventStorage:
                 THEN EXCLUDED.evidence_text ELSE news_items.evidence_text END,
               evidence_text_sha256 = CASE WHEN news_items.provider_params = '{}'::jsonb
                 THEN EXCLUDED.evidence_text_sha256 ELSE news_items.evidence_text_sha256 END,
-              provider_params_conflict_sha256 = CASE
-                WHEN news_items.provider_params <> '{}'::jsonb AND EXCLUDED.provider_params <> '{}'::jsonb
-                  AND news_items.provider_params <> EXCLUDED.provider_params
-                THEN EXCLUDED.provider_params_sha256 ELSE news_items.provider_params_conflict_sha256 END,
-              provider_params_conflict_at_ms = CASE
-                WHEN news_items.provider_params <> '{}'::jsonb AND EXCLUDED.provider_params <> '{}'::jsonb
-                  AND news_items.provider_params <> EXCLUDED.provider_params
-                THEN EXCLUDED.updated_at_ms ELSE news_items.provider_params_conflict_at_ms END,
               market_notify_state = CASE
                 WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_notify_state
                 ELSE news_items.market_notify_state END,
@@ -393,6 +345,55 @@ class EventStorage:
             ),
         ).fetchone()
         return bool(row["inserted"])
+
+    def record_item_revision(
+        self,
+        *,
+        item_id: str,
+        evidence_text: str,
+        evidence_text_sha256: str,
+        provider_params_json: str,
+        received_at_ms: int,
+    ) -> bool:
+        """Keep a changed body of an already stored provider record as a later revision.
+
+        Returns True only for a body this record has not carried before. The first body stays on
+        `news_items`; an exact redelivery -- or a first fill of a record stored without a payload --
+        writes nothing, so the first-available clock of every body is its first receipt.
+        """
+
+        if not evidence_text.strip():
+            return False
+        row = self.conn.execute(
+            """
+            INSERT INTO news_item_revisions (item_id, body_sha256, evidence_text, provider_params, received_at_ms)
+            SELECT i.item_id, %s, %s, %s::jsonb, %s
+              FROM news_items i
+             WHERE i.item_id = %s
+               AND i.provider_params <> '{}'::jsonb
+               AND i.evidence_text_sha256 IS DISTINCT FROM %s
+            ON CONFLICT (item_id, body_sha256) DO NOTHING
+            RETURNING item_id
+            """,
+            (
+                evidence_text_sha256,
+                evidence_text,
+                provider_params_json,
+                int(received_at_ms),
+                item_id,
+                evidence_text_sha256,
+            ),
+        ).fetchone()
+        return row is not None
+
+    def item_event_ids(self, item_id: str) -> list[str]:
+        """Every Event this Item is evidence of: a revised body is new evidence for each of them."""
+
+        rows = self.conn.execute(
+            "SELECT DISTINCT event_id FROM news_event_members WHERE item_id = %s ORDER BY event_id",
+            (item_id,),
+        ).fetchall()
+        return [str(row["event_id"]) for row in rows]
 
     def find_artifact_event(
         self,
@@ -662,48 +663,6 @@ class EventStorage:
         )
         return bool(cursor.rowcount)
 
-    def unpublished_candidates(
-        self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
-    ) -> list[dict[str, Any]]:
-        """Admitted Events that never left the process, inside the rescue window.
-
-        Bounded on both sides (#76). The lower bound skips Events still mid-publish; the upper bound stops the
-        catch-up from delivering something the reader can no longer use — an unbounded scan once sent a 30.6 h old
-        exchange notice. Events past the ceiling stay in the table as durable audit facts; readers project them as
-        expired rather than pending.
-        """
-
-        rows = self.conn.execute(
-            UNPUBLISHED_EVENT_CANDIDATES_SQL,
-            (int(older_than_ms), int(newer_than_ms), int(limit)),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def event_handoff_scan(
-        self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
-    ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
-        """Bounded repair candidates plus the current pending/expired Event handoff projection."""
-
-        return (
-            self.unpublished_candidates(older_than_ms=older_than_ms, newer_than_ms=newer_than_ms, limit=limit),
-            self._event_handoff_state(deadline_ms=newer_than_ms),
-        )
-
-    def _event_handoff_state(self, *, deadline_ms: int) -> dict[str, int | None]:
-        """Current marker-null Event handoffs, capped per side for bounded maintenance telemetry."""
-
-        row = self.conn.execute(
-            _EVENT_HANDOFF_STATE_SQL,
-            (int(deadline_ms), _HANDOFF_STATE_LIMIT, int(deadline_ms), _HANDOFF_STATE_LIMIT),
-        ).fetchone()
-        return {
-            "pending": int(row["pending"] or 0) if row else 0,
-            "oldest_pending_at_ms": int(row["oldest_pending_at_ms"])
-            if row and row["oldest_pending_at_ms"] is not None
-            else None,
-            "expired": int(row["expired"] or 0) if row else 0,
-        }
-
     def upgrade_event_admission(
         self,
         *,
@@ -804,7 +763,11 @@ class EventStorage:
             for row in self.conn.execute(
                 """
             SELECT m.item_id, m.fact_id, m.fact_text, m.joined_at_ms, m.match_kind, m.jaccard_estimate,
-                   i.reporting_origin, i.canonical_url, i.provider_metadata, i.provenance
+                   i.reporting_origin, i.canonical_url, i.provider_metadata, i.provenance,
+                   COALESCE((
+                     SELECT jsonb_agg(r.body_sha256 ORDER BY r.received_at_ms, r.body_sha256)
+                       FROM news_item_revisions r WHERE r.item_id = m.item_id
+                   ), '[]'::jsonb) AS body_revisions
               FROM news_event_members m
               JOIN news_items i ON i.item_id = m.item_id
              WHERE m.event_id = %s

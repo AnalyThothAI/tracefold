@@ -275,6 +275,13 @@ llm:
     api_key: "<operator OpenRouter secret>"
     base_url: "https://openrouter.ai/api"
     model: "<System One model id>"
+  # Optional, News-only Jev judgments (#706). Supply all three or omit all; unset,
+  # News judgments run on the generative News endpoints above. trading_semantics
+  # never enables it. Direct route: https://api.typesafe.ai with jev-1.13.0.
+  news_judgment:
+    api_key: "<operator OpenRouter secret>"
+    base_url: "https://openrouter.ai/api"
+    model: "jev-1.13"
 
 news:
   enabled: true
@@ -428,7 +435,10 @@ owns one all-or-none direct Triage triple (`api_key`, `base_url`,
 an absent Reader endpoint inherits Triage. The optional fallback route has an
 all-or-none `news_triage_fallback` endpoint and may add an all-or-none
 `news_reader_card_fallback`; absent Reader fallback is an explicit alias of the
-EventSemantics fallback endpoint. There is no environment-variable
+EventSemantics fallback endpoint. Claim extraction and the generative News
+judgments use the Triage route; cards use the Reader route. The optional
+all-or-none `news_judgment` System One route moves the narrow News judgments to
+Jev and is independent of `trading_semantics`. There is no environment-variable
 credential path or inferred URL/model. Configs written before the GMGN lane removal must drop the
 `gmgn`, `upstream`, `providers.binance`, `api.heartbeat_interval`, and
 `api.replay_limit` keys, and configs written before the Analyst lane removal

@@ -8,10 +8,7 @@ import pytest
 
 from tests.integration.test_news_review_desk import NOW, _open_event
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.app.worker_database import WorkerDatabase
-from tracefold.app.workers.wiring import news as workers
 from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.release import runtime as release_runtime
 from tracefold.news.release.canary import (
@@ -22,8 +19,6 @@ from tracefold.news.release.canary import (
     parse_canary_control,
 )
 from tracefold.news.release.runtime import CandidateRuntimeFact, reconcile_canary_startup
-from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.postgres.client import create_pool
 
 pytestmark = pytest.mark.integration
 
@@ -273,94 +268,6 @@ def test_canary_resume_trips_a_held_candidate_no_longer_carried_by_the_image(con
     ).fetchone()
     assert receipt["payload"]["action"] == "canary_trip"
     assert receipt["payload"]["reason"] == "candidate_artifact_missing"
-
-
-def test_worker_startup_persists_unrunnable_candidate_trip_before_consumption(conn) -> None:
-    activation_id = "1" * 32
-    stable_bundle = "2" * 64
-    candidate_sha = "3" * 64
-    candidate_bundle = "4" * 64
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.news.arm_canary(
-            activation_id=activation_id,
-            baseline_bundle_sha=stable_bundle,
-            candidate_manifest_sha=candidate_sha,
-            candidate_bundle_sha=candidate_bundle,
-            selector_version=CANARY_SELECTOR_VERSION,
-            exposure_bps=1_000,
-            eligibility_profile_sha=CANARY_ELIGIBILITY_PROFILE_SHA,
-            rolling_profile_sha=CANARY_ROLLING_PROFILE_SHA,
-            now_ms=NOW,
-        )
-        repos.news.transition_canary(
-            activation_id=activation_id,
-            target_state="armed",
-            reason="operator_hold",
-            now_ms=NOW + 1,
-        )
-
-    pool = create_pool(
-        _test_postgres_dsn(),
-        min_size=0,
-        max_size=1,
-        connect_timeout_seconds=5.0,
-        application_name="tracefold_canary_startup_test",
-        statement_timeout_seconds=5.0,
-    )
-    pool.wait(timeout=5.0)
-    database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
-    try:
-        facts = {
-            candidate_sha: CandidateRuntimeFact(
-                candidate_manifest_sha=candidate_sha,
-                compiled_bundle_sha=candidate_bundle,
-                runnable_bundle_sha=None,
-                failure_kind="artifact_invalid",
-            )
-        }
-        assert workers._reconcile_news_canary_startup(
-            database,
-            facts,
-        )
-        assert not workers._reconcile_news_canary_startup(
-            database,
-            facts,
-        )
-    finally:
-        database.close_executors()
-        pool.close()
-
-    activation = conn.execute(
-        "SELECT baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha, state, revision, trip_reason "
-        "FROM news_canary_activations WHERE activation_id = %s",
-        (activation_id,),
-    ).fetchone()
-    assert activation == {
-        "baseline_bundle_sha": stable_bundle,
-        "candidate_manifest_sha": candidate_sha,
-        "candidate_bundle_sha": candidate_bundle,
-        "state": "tripped",
-        "revision": 3,
-        "trip_reason": "candidate_artifact_invalid",
-    }
-    receipts = conn.execute(
-        "SELECT payload FROM news_learning_artifacts WHERE kind = 'rollback_receipt' "
-        "AND payload->>'activation_id' = %s",
-        (activation_id,),
-    ).fetchall()
-    assert len(receipts) == 1
-    assert receipts[0]["payload"] == {
-        "action": "canary_trip",
-        "activation_id": activation_id,
-        "baseline_bundle_sha": stable_bundle,
-        "candidate_manifest_sha": candidate_sha,
-        "candidate_bundle_sha": candidate_bundle,
-        "reason": "candidate_artifact_invalid",
-        "transitioned_at_ms": receipts[0]["payload"]["transitioned_at_ms"],
-        "previous_revision": 2,
-        "new_revision": 3,
-    }
 
 
 class _StartupRepositoryProbe:

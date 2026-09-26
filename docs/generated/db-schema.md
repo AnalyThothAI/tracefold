@@ -329,8 +329,6 @@
 | `provider_params_sha256` | `TEXT` | True | `None` |
 | `evidence_text` | `TEXT` | True | `None` |
 | `evidence_text_sha256` | `TEXT` | True | `None` |
-| `provider_params_conflict_sha256` | `TEXT` | True | `None` |
-| `provider_params_conflict_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_judgment_cache`
 

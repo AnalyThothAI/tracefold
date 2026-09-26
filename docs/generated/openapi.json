@@ -5688,6 +5688,38 @@
             "title": "Candidates 24H",
             "type": "integer"
           },
+          "card_dedicated": {
+            "default": false,
+            "title": "Card Dedicated",
+            "type": "boolean"
+          },
+          "card_fallback_dedicated": {
+            "default": false,
+            "title": "Card Fallback Dedicated",
+            "type": "boolean"
+          },
+          "card_fallback_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Fallback Model"
+          },
+          "card_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Model"
+          },
           "decided_push_24h": {
             "default": 0,
             "title": "Decided Push 24H",
@@ -5712,6 +5744,28 @@
             "default": 0,
             "title": "Events 24H",
             "type": "integer"
+          },
+          "extraction_fallback_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Fallback Model"
+          },
+          "extraction_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Model"
           },
           "funnel_admitted_24h": {
             "default": 0,
@@ -5738,6 +5792,32 @@
             "title": "Grounded 24H",
             "type": "integer"
           },
+          "judgment_backend": {
+            "anyOf": [
+              {
+                "enum": [
+                  "native",
+                  "generated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judgment Backend"
+          },
+          "judgment_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judgment Model"
+          },
           "keep_ratio_sent_24h": {
             "$ref": "#/components/schemas/NewsReviewRatio24hData"
           },
@@ -5748,6 +5828,22 @@
             "default": 0,
             "title": "Model Triage 24H",
             "type": "integer"
+          },
+          "news_judgment_configured": {
+            "default": false,
+            "title": "News Judgment Configured",
+            "type": "boolean"
+          },
+          "news_program_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "News Program Identity"
           },
           "pushed_by_rule": {
             "additionalProperties": {
@@ -5767,38 +5863,6 @@
             ],
             "title": "Queue Lag P95 Ms"
           },
-          "reader_card_dedicated": {
-            "default": false,
-            "title": "Reader Card Dedicated",
-            "type": "boolean"
-          },
-          "reader_card_fallback_dedicated": {
-            "default": false,
-            "title": "Reader Card Fallback Dedicated",
-            "type": "boolean"
-          },
-          "reader_card_fallback_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reader Card Fallback Model"
-          },
-          "reader_card_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reader Card Model"
-          },
           "reasked_24h": {
             "default": 0,
             "title": "Reasked 24H",
@@ -5812,6 +5876,33 @@
           "reviewed_should_push_24h": {
             "default": 0,
             "title": "Reviewed Should Push 24H",
+            "type": "integer"
+          },
+          "semantic_adopted_24h": {
+            "default": 0,
+            "title": "Semantic Adopted 24H",
+            "type": "integer"
+          },
+          "semantic_failed_24h": {
+            "default": 0,
+            "title": "Semantic Failed 24H",
+            "type": "integer"
+          },
+          "semantic_failed_by_code_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Semantic Failed By Code 24H",
+            "type": "object"
+          },
+          "semantic_observations_24h": {
+            "default": 0,
+            "title": "Semantic Observations 24H",
+            "type": "integer"
+          },
+          "semantic_pending": {
+            "default": 0,
+            "title": "Semantic Pending",
             "type": "integer"
           },
           "source_classifier_version": {
@@ -5862,28 +5953,6 @@
             },
             "title": "Triage Degraded By Code 24H",
             "type": "object"
-          },
-          "triage_fallback_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Triage Fallback Model"
-          },
-          "triage_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Triage Model"
           },
           "triage_p50_ms": {
             "anyOf": [

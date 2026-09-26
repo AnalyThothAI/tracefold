@@ -197,7 +197,13 @@ class StubAnalyzer:
         return self.build(source)
 
     async def understand(
-        self, source: FrozenInput, extracted: Extraction, budget: Any, *, rebase_only: bool = False
+        self,
+        source: FrozenInput,
+        extracted: Extraction,
+        budget: Any,
+        *,
+        rebase_only: bool = False,
+        final_attempt: bool = True,
     ) -> Extraction:
         return extracted
 
@@ -326,7 +332,8 @@ async def adopt_next(
         understanding=extracted,
     )
     await pg.save_observation(observation)
-    update = assemble_update(source, extracted, head, adopted_at_ms=STAMP + 100)
+    # Adoption happens after the semantic completion it adopts; the two clocks stay distinct.
+    update = assemble_update(source, extracted, head, adopted_at_ms=STAMP + 150)
     assert update is not None
     adopted = await pg.atomic_adopt(
         expected_head_ref=expected_head_ref if head is None else head.ref,
@@ -533,7 +540,7 @@ async def adopt_other_event(pg: PgNewsStore) -> PriorClaim:
     return PriorClaim(event_id="ev-other", content_revision=update.content_revision, claim=update.claims[0])
 
 
-def test_a_correction_is_a_source_update_row_that_the_relay_reads_and_acknowledges() -> None:
+def test_a_correction_is_a_source_update_outbox_row_in_the_app_relay_mapping() -> None:
     pg, _db, clock = store()
     head = adopted_head(pg, clock)
     correction = evidence("Correction: Agency orders a 50% tariff, not 25%.")
@@ -555,13 +562,35 @@ def test_a_correction_is_a_source_update_row_that_the_relay_reads_and_acknowledg
     kinds = {(row["kind"], row["source_revision"]) for row in trade_rows()}
     assert ("source_update", update.content_revision) in kinds
 
-    pending = asyncio.run(pg.pending_public_updates(10))
-    assert {row.kind for row in pending} == {"catalyst_delta", "source_update"}
-    corrected = next(row for row in pending if row.kind == "source_update")
-    assert corrected.retired_claim_refs == (head.claims[0].ref,)
-    for row in pending:
-        asyncio.run(pg.acknowledge_public_update(row.update_id))
-    assert asyncio.run(pg.pending_public_updates(10)) == ()
+    # Exactly the rows the App relay consumes (tests/trading/news_public_updates.py::outbox_row): the
+    # Event, its content revision, the PublicUpdate JSON and the semantic completion clock -- never the
+    # adoption clock. Nothing in News reads or acknowledges them: the App relay is the only relay.
+    rows = sql(
+        """
+        SELECT kind, source_fact_key, source_revision, payload, source_recorded_at_ms, acknowledged_at_ms
+          FROM news_trade_events WHERE source_revision = %s ORDER BY kind
+        """,
+        (update.content_revision,),
+    )
+    expected = sorted(
+        (
+            {
+                "kind": "catalyst" if row.kind == "catalyst_delta" else "source_update",
+                "source_fact_key": row.event_id,
+                "source_revision": row.content_revision,
+                "payload": row.model_dump(mode="json"),
+                "source_recorded_at_ms": row.semantic_completed_at_ms,
+                "acknowledged_at_ms": None,
+            }
+            for row in public_updates(update, semantic_completed_at_ms=STAMP + 100)
+        ),
+        key=lambda row: str(row["kind"]),
+    )
+    assert rows == expected
+    assert [row["kind"] for row in rows] == ["source_update"]
+    corrected = next(row for row in rows if row["kind"] == "source_update")
+    assert corrected["payload"]["retired_claim_refs"] == [head.claims[0].ref]
+    assert all(row["source_recorded_at_ms"] == STAMP + 100 != update.adopted_at_ms for row in rows)
 
 
 # ------------------------------------------------------------------ semantic work bookkeeping
@@ -595,8 +624,19 @@ def test_semantic_work_is_leased_bounded_and_reopened_by_a_new_revision() -> Non
     finally:
         conn.close()
     assert revision == 2
+    # A new revision is new work: the failed outcome, its code and the spent attempts belong to the old one.
+    row = sql("SELECT attempts, last_outcome, last_error_code FROM news_semantic_work")[0]
+    assert row == {"attempts": 0, "last_outcome": None, "last_error_code": None}
     assert asyncio.run(pg.pending_semantic_events(10)) == (EVENT,)
-    asyncio.run(pg.mark_semantic_work_published(EVENT))
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            news = repositories_for_connection(conn).news
+            # A wake recorded for an older revision does not hide the newer one from repair.
+            assert news.mark_semantic_work_published(event_id=EVENT, revision=1, now_ms=clock.now_ms) is False
+            assert news.mark_semantic_work_published(event_id=EVENT, revision=2, now_ms=clock.now_ms) is True
+    finally:
+        conn.close()
     assert asyncio.run(pg.pending_semantic_events(10)) == ()
     clock.now_ms += 20_000
     assert asyncio.run(pg.pending_semantic_events(10)) == (EVENT,)

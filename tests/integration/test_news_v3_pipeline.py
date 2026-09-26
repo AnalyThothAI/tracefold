@@ -506,8 +506,9 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     delivered_row = next(e for e in feed["events"] if e["event_id"] == event_id)
     assert delivered_row["outcome"]["kind"] == "delivered" and delivered_row["outcome"]["group"] == "pushed"
     assert detail["outcome"]["kind"] == "delivered"
-    # This test writes the delivery without a verdict, so the timeline has no triage/decide steps.
-    assert [step["stage"] for step in detail["timeline"]] == ["received", "gate", "delivery"]
+    # This test writes the delivery without a verdict, so the timeline has no triage/decide steps. The
+    # evidence version is the one admission committed semantic work for (#706).
+    assert [step["stage"] for step in detail["timeline"]] == ["received", "gate", "evidence", "delivery"]
 
     def _feed(**over):
         base = dict(
@@ -2173,6 +2174,8 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
             final_decision="drop",
             now_ms=1_800_000_000_000,
         )
+        # The old Event was settled by a verdict before the #706 cutover, so it has no semantic work.
+        conn.execute("DELETE FROM news_semantic_work WHERE event_id = %s", (tagged_old,))
     as_of_ms = (
         int(
             conn.execute(

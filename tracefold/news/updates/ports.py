@@ -206,27 +206,3 @@ class NewsStore(Protocol):
     async def pending_semantic_events(self, limit: int) -> tuple[str, ...]: ...
 
     async def pending_notification_events(self, channel: str, limit: int) -> tuple[str, ...]: ...
-
-    async def pending_public_updates(self, limit: int) -> tuple[PublicUpdate, ...]: ...
-
-    async def acknowledge_public_update(self, update_id: str) -> None: ...
-
-
-class TradingReceiver(Protocol):
-    async def receive_catalyst(self, update: PublicUpdate) -> None:
-        """App maps to existing target selection/accept-trigger, once per update_id.
-
-        superseded_claim_refs names earlier claims this delta replaced; research
-        citing only other claims of the Event stays valid.
-        """
-        ...
-
-    async def receive_source_update(self, update: PublicUpdate) -> None:
-        """App maps to Trading-owned claim-scoped research amendments.
-
-        Atomically receive update_id and amend only research referencing
-        affected_claim_refs/previous_content_refs; retired_claim_refs are the
-        claims a correction withdrew. Do not accept a trigger, create a Case,
-        refresh TTL, cancel orders or expand execution authority.
-        """
-        ...

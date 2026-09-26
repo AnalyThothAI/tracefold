@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from tracefold.app import learning_runtime
 from tracefold.app.cli.commands import news_learning as news_commands
+from tracefold.app.cli.commands import news_learning_composition
 from tracefold.app.cli.commands.news_learning import _handle_learning
 from tracefold.app.cli.commands.news_learning_runtime import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
@@ -177,7 +177,7 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
         drafts=(),
     )
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: settings)
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: object())
+    monkeypatch.setattr(news_learning_composition, "active_arm_manifest", lambda _settings: object())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr(review_desk, "ReviewDesk", _Desk)
     monkeypatch.setattr(news_learning_baseline, "_drafter_context", lambda _view: _Context())
@@ -304,7 +304,7 @@ def test_emergency_canary_trip_does_not_load_stable_or_parse_candidate_catalog(m
         raise AssertionError("emergency rollback must not load the Program catalog")
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", unexpected_stable)
+    monkeypatch.setattr(news_learning_composition, "active_arm_manifest", unexpected_stable)
     monkeypatch.setattr("tracefold.app.repository_session.repositories", fake_repositories)
     monkeypatch.setattr(
         candidate_programs,
@@ -457,7 +457,7 @@ def _readiness_args(**updates: Any) -> SimpleNamespace:
 def _readiness_settings(monkeypatch: Any) -> None:
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
     monkeypatch.setattr(
-        learning_runtime,
+        news_learning_composition,
         "active_arm_manifest",
         lambda _settings: SimpleNamespace(
             program_version=PROGRAM_VERSION,
@@ -650,7 +650,7 @@ def _baseline_args(**updates: Any) -> SimpleNamespace:
 
 def test_a_baseline_with_an_incomplete_window_is_refused(monkeypatch: Any) -> None:
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr(news_learning_composition, "active_arm_manifest", lambda _settings: SimpleNamespace())
     code, payload = _handle_learning(_baseline_args(to_ms=None))
     assert code == 2
     assert payload["error"] == "news_program_baseline_requires_window"
@@ -686,7 +686,7 @@ def test_baseline_refuses_a_mode_and_action_source_that_measure_nothing(
         raise AssertionError("the guard must fail before the corpus is read")
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr(news_learning_composition, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
 
     code, payload = _handle_learning(_baseline_args(mode=mode, action_source=action_source))
@@ -712,7 +712,7 @@ def test_a_live_baseline_refuses_to_run_without_an_explicit_provider_bound(monke
         raise AssertionError("the bound must be checked before the corpus is read")
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr(news_learning_composition, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
 
     for mode in ("compile_live", "runtime_live"):
@@ -757,7 +757,7 @@ def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(mo
             built["artifact"] = artifact
             return object()
 
-    monkeypatch.setattr(learning_runtime, "compose_news_program_runtime", lambda _settings: _Composition())
+    monkeypatch.setattr(news_learning_composition, "compose_news_program_runtime", lambda _settings: _Composition())
 
     program, identity = _baseline_model_route(
         "compile_live",
@@ -787,7 +787,7 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
         yield object()
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr(news_learning_composition, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Evaluator)
 
@@ -814,7 +814,7 @@ def test_a_live_baseline_reads_only_the_current_cohort(monkeypatch: Any) -> None
         yield object()
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr(news_learning_composition, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Evaluator)
 

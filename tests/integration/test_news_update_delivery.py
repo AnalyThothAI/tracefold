@@ -521,7 +521,15 @@ def test_a_pending_legacy_intent_is_retired_with_its_reason_and_its_sent_row_sti
     try:
         repos = repositories_for_connection(conn)
         with repos.transaction():
-            assert repos.news.enqueue_delivery(event_id=EVENT, kind="first", now_ms=STAMP)
+            # A card the retired verdict path owed before the cutover, exactly as that path queued it.
+            conn.execute(
+                """
+                INSERT INTO news_delivery_queue (
+                  intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms, updated_at_ms
+                ) VALUES (%s, %s, 'first', 'pending', 0, %s, %s, %s)
+                """,
+                (legacy_intent_id(EVENT, "first"), EVENT, STAMP, STAMP, STAMP),
+            )
             assert repos.news.begin_delivery(event_id="ev-legacy-sent", kind="first", card={"x": 1}, now_ms=STAMP)
             assert repos.news.settle_delivery(
                 event_id="ev-legacy-sent", kind="first", state="sent", receipt=receipt, error_code=None, now_ms=STAMP

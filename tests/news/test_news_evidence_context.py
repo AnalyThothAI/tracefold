@@ -287,71 +287,6 @@ def test_all_channels_reject_typed_collision_even_with_unknown_tag(reason):
     )
 
 
-def test_preparation_uses_only_bounded_batches_and_one_cutoff(monkeypatch):
-    import asyncio
-    from types import SimpleNamespace
-
-    from tracefold.news.pipeline.triage_evidence import prepare_evidence
-
-    def no_network(*args, **kwargs):
-        raise AssertionError("evidence preparation attempted network I/O")
-
-    monkeypatch.setattr("socket.getaddrinfo", no_network)
-    monkeypatch.setattr("httpx.AsyncClient.request", no_network)
-    body = "Acme acquisition announced."
-    correction = body + " Agreement is non-binding."
-    members = [{"item_id": str(i), "fact_id": str(i), "fact_text": body, "joined_at_ms": i} for i in range(30)]
-    calls = []
-
-    class Store:
-        def evidence_member_metadata(self, ids):
-            calls.append(("metadata", ids))
-            return [
-                {
-                    "item_id": i,
-                    "evidence_text_sha256": text_sha(correction if i == "3" else body),
-                    "provider_params_available_at_ms": 1,
-                }
-                for i in ids
-            ]
-
-        def evidence_material(self, ids):
-            calls.append(("material", ids))
-            return [
-                {
-                    "item_id": i,
-                    "evidence_text": correction if i == "3" else body,
-                    "provider_params_available_at_ms": 1,
-                    "canonical_url": "https://example.invalid/story",
-                }
-                for i in ids
-            ]
-
-        def evidence_candidates(self, query):
-            calls.append(("candidates", query.cutoff_at_ms))
-            return []
-
-    class DB:
-        async def read(self, name, fn):
-            return fn(SimpleNamespace(news=Store()))
-
-    stamps = iter([10])
-    prepared = asyncio.run(
-        prepare_evidence(
-            DB(),
-            {"leader_item_id": "0", "leader_title": body, "evidence_members": members},
-            catalog={},
-            clock=lambda: next(stamps),
-        )
-    )
-    assert [name for name, _ in calls] == ["metadata", "material", "candidates"]
-    assert len(calls[0][1]) == 16 and calls[1][1] == ["0", "3"]
-    assert prepared.cutoff_at_ms == 10
-    assert "non-binding" in " ".join(s.text for s in prepared.current_evidence)
-    assert "member_candidates_truncated" in prepared.exclusions
-    assert "document_status" not in prepared.model_dump()
-
-
 def test_old_document_execution_is_rendered_from_archive_and_adapted_without_lookup():
     import copy
 
@@ -390,19 +325,6 @@ def test_old_document_execution_is_rendered_from_archive_and_adapted_without_loo
     assert "Approval pending" in " ".join(s.text for s in adapted.prepared_evidence.current_evidence)
     assert "document_status" not in adapted.prepared_evidence.model_dump()
     assert raw == before
-
-
-def test_database_failure_is_not_empty_background():
-    import asyncio
-
-    from tracefold.news.pipeline.triage_evidence import prepare_evidence
-
-    class BrokenDB:
-        async def read(self, name, fn):
-            raise RuntimeError("primary database unavailable")
-
-    with pytest.raises(RuntimeError, match="primary database unavailable"):
-        asyncio.run(prepare_evidence(BrokenDB(), {"leader_item_id": "leader"}, catalog={}))
 
 
 def test_focus_has_priority_over_large_opening_boilerplate():

@@ -19,11 +19,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 
+from ..evidence import query_for
+from ..models import MarketAsset, market_type_of
 from ..taxonomy import source_authority
-from ..updates.contracts import EventUpdate, Evidence, FrozenInput, PriorClaim, Source
+from ..updates.contracts import EventUpdate, Evidence, FrozenInput, IdentityHint, PriorClaim, ReadTarget, Source
 from ..updates.identity import digest, identity
 from ..updates.notification import DeliveredText, FrozenCard, NotificationPlan
 from .decisions import DecisionStorage
+from .evidence import EvidenceStorage
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
 
@@ -47,7 +50,47 @@ READER_REVISION_PREFIX: Final = "reader_v1"
 EXTRA_READ_OUTCOMES: Final = frozenset({"attached", "no_material", "unavailable_or_budget_exhausted"})
 # The public kind of a PublicUpdate in the News outbox. A catalyst delta keeps the existing kind.
 PUBLIC_TRADE_KINDS: Final[dict[str, str]] = {"catalyst_delta": "catalyst", "source_update": "source_update"}
-PUBLIC_UPDATE_SCHEMA: Final = "news_public_update_v1"
+# Related Events whose adopted claims are compared with this Event's claims. Every current/prior pair
+# is a relation question, so the recall is bounded by claims, not only by Events.
+RELATED_PRIOR_EVENTS_MAX: Final = 8
+RELATED_PRIOR_CLAIMS_MAX: Final = 8
+# Code-prepared optional read targets: related Events' leader Items not already in the input.
+READ_TARGETS_MAX: Final = 4
+READ_TARGET_PREFIX: Final = "news_item:"
+_WAKE_STATE_LIMIT: Final = 1_000
+SEMANTIC_WAKE_STATE_SQL: Final = f"""
+    WITH pending AS MATERIALIZED (
+      SELECT attempts, updated_at_ms FROM news_semantic_work
+       WHERE done_revision IS NULL OR done_revision < wanted_revision
+       ORDER BY next_attempt_at_ms, event_id
+       LIMIT {_WAKE_STATE_LIMIT}
+    )
+    SELECT count(*) FILTER (WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}) AS pending,
+           min(updated_at_ms) FILTER (WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}) AS oldest_pending_at_ms,
+           count(*) FILTER (WHERE attempts >= {SEMANTIC_ATTEMPTS_MAX}) AS expired
+      FROM pending
+"""  # noqa: S608 - code-owned integer constants only
+# The semantic stage's 24 h health: completed turns, adoptions and visibly failed work. Model health reads
+# these, not legacy verdicts; pending work is bounded like the wake state.
+SEMANTIC_STATUS_SQL: Final = f"""
+    SELECT
+      (SELECT count(*) FROM news_semantic_observations WHERE completed_at_ms >= %(since)s)
+        AS semantic_observations_24h,
+      (SELECT count(*) FROM news_event_updates WHERE adopted_at_ms >= %(since)s) AS semantic_adopted_24h,
+      (SELECT count(*) FROM news_semantic_work WHERE last_outcome = 'failed' AND updated_at_ms >= %(since)s)
+        AS semantic_failed_24h,
+      (SELECT count(*) FROM (
+         SELECT 1 FROM news_semantic_work
+          WHERE done_revision IS NULL OR done_revision < wanted_revision
+          LIMIT {_WAKE_STATE_LIMIT}
+       ) pending) AS semantic_pending
+"""  # noqa: S608 - code-owned integer constant only
+SEMANTIC_FAILED_CODES_SQL: Final = """
+    SELECT COALESCE(last_error_code, 'unknown') AS code, count(*) AS n
+      FROM news_semantic_work
+     WHERE last_outcome = 'failed' AND updated_at_ms >= %s
+     GROUP BY 1
+"""
 _ADOPT_LOCK_NAMESPACE: Final = 0x4E455755  # 'NEWU', distinct from the storyline lock namespace.
 
 IntentOutcome = Literal["sent", "not_sent", "ambiguous"]
@@ -205,27 +248,107 @@ def item_evidence(item: Mapping[str, Any]) -> Evidence | None:
     )
 
 
+def revision_evidence(item: Mapping[str, Any], revision: Mapping[str, Any]) -> Evidence | None:
+    """A later body of one provider record: the same provenance, its own body identity and clock.
+
+    The first body stays evidence too; a correction or an added exemption is visible only beside the
+    text it revised.
+    """
+
+    text = str(revision.get("evidence_text") or "").strip()
+    first = item_evidence(item)
+    if not text or first is None:
+        return None
+    return Evidence.issue(
+        text,
+        first.source.model_copy(
+            update={
+                "artifact_revision": str(revision["body_sha256"]),
+                "first_available_at_ms": int(revision["received_at_ms"]),
+            }
+        ),
+    )
+
+
+def read_target_ref(item_id: str) -> str:
+    return f"{READ_TARGET_PREFIX}{item_id}"
+
+
+def read_target_item_id(ref: str) -> str | None:
+    value = ref.removeprefix(READ_TARGET_PREFIX)
+    return value if ref.startswith(READ_TARGET_PREFIX) and value else None
+
+
+def _identity_hints(evidence: Sequence[Evidence], symbols: Iterable[str]) -> tuple[IdentityHint, ...]:
+    """Code-owned identities only: a Gate-grounded asset written as its cashtag in the evidence.
+
+    The hint refuses an `equivalent` answer between claims whose quotes name different grounded
+    assets; it never asserts equality and is never inferred from a model or a name.
+    """
+
+    hints: list[IdentityHint] = []
+    for symbol in sorted({str(value).strip().upper() for value in symbols if str(value).strip()}):
+        surface = f"${symbol}"
+        hints.extend(
+            IdentityHint(key="subject_id", value=symbol, evidence_ref=item.ref, surface=surface)
+            for item in evidence
+            if surface in item.text
+        )
+    return tuple(hints)
+
+
+def _related_prior(documents: Sequence[Mapping[str, Any]], own: set[str]) -> tuple[PriorClaim, ...]:
+    """At most RELATED_PRIOR_CLAIMS_MAX current claims of related Events, in retrieval order."""
+
+    prior: list[PriorClaim] = []
+    for document in documents:
+        head = EventUpdate.model_validate(document)
+        retired = set(head.retired_claim_refs)
+        for claim in head.claims:
+            if len(prior) >= RELATED_PRIOR_CLAIMS_MAX:
+                return tuple(prior)
+            if claim.ref in retired or claim.ref in own:
+                continue
+            own.add(claim.ref)
+            prior.append(PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim))
+    return tuple(prior)
+
+
 def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     """Assemble the frozen semantic input from one consistent read.
 
-    Evidence is the latest observed snapshot's leader and member Items, or, for a revision produced by
-    an optional read, only the attached material with its focus claims. Prior claims are this Event's
-    adopted head claims. Read targets and identity hints are supplied by the semantic path (U2).
+    Evidence is the latest observed snapshot's leader and member Items, each with the later body
+    revisions that snapshot froze; or, for a revision produced by an optional read, only the attached
+    material with its focus claims. Prior claims are this Event's adopted head claims plus a bounded
+    set of related Events' head claims recalled by the existing candidate retrieval. Read targets are
+    related Events' stored leader Items; identity hints are Gate-grounded cashtags.
     """
 
-    work = material.get("work")
+    work: Mapping[str, Any] | None = material.get("work")
     head_document = material.get("head")
-    if work is not None and work.get("attached_evidence"):
+    attached = work is not None and bool(work.get("attached_evidence"))
+    if work is not None and attached:
         evidence = [Evidence.model_validate(value) for value in work["attached_evidence"]]
         focus = tuple(str(value) for value in work.get("focus_claim_refs") or ())
     else:
         items = {str(row["item_id"]): row for row in material.get("items") or ()}
+        revisions: dict[str, list[Mapping[str, Any]]] = {}
+        for row in material.get("revisions") or ():
+            revisions.setdefault(str(row["item_id"]), []).append(row)
         evidence = []
         for item_id in material.get("item_ids") or ():
             item = items.get(str(item_id))
-            value = None if item is None else item_evidence(item)
+            if item is None:
+                continue
+            value = item_evidence(item)
             if value is not None:
                 evidence.append(value)
+            for revision in sorted(
+                revisions.get(str(item_id), ()), key=lambda row: (int(row["received_at_ms"]), row["body_sha256"])
+            ):
+                revised = revision_evidence(item, revision)
+                if revised is not None:
+                    evidence.append(revised)
         focus = ()
     if not evidence:
         raise LookupError("news_event_input_missing")
@@ -237,15 +360,30 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
             PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim)
             for claim in head.claims
         )
-    revision = int(work["wanted_revision"]) if work is not None else max(1, int(material.get("evidence_version") or 1))
-    lineage = str(work["lineage_id"]) if work is not None else identity("lineage", event_id, revision)
+    read_targets: tuple[ReadTarget, ...] = ()
+    hints: tuple[IdentityHint, ...] = ()
+    if not attached:
+        # An optional read's revision re-asks only its focus claims against the attached material.
+        prior = (*prior, *_related_prior(material.get("related_heads") or (), {row.claim.ref for row in prior}))
+        read_targets = tuple(
+            ReadTarget(
+                ref=read_target_ref(str(row["item_id"])), action="load_prior_statement", description=str(row["title"])
+            )
+            for row in material.get("read_targets") or ()
+            if str(row.get("title") or "").strip()
+        )
+        hints = _identity_hints(unique, material.get("grounded_assets") or ())
+    wanted = int(work["wanted_revision"]) if work is not None else max(1, int(material.get("evidence_version") or 1))
+    lineage = str(work["lineage_id"]) if work is not None else identity("lineage", event_id, wanted)
     return FrozenInput(
         event_id=event_id,
-        revision=revision,
+        revision=wanted,
         lineage_id=lineage,
         evidence=unique,
         prior=prior,
+        read_targets=read_targets,
         focus_claim_refs=focus,
+        identity_hints=hints,
     )
 
 
@@ -285,10 +423,15 @@ class EventUpdateStorage:
         ).fetchone()
         return int(row["wanted_revision"])
 
-    def mark_semantic_work_published(self, *, event_id: str, now_ms: int) -> bool:
+    def mark_semantic_work_published(self, *, event_id: str, revision: int, now_ms: int) -> bool:
+        """Record the broker wake of one wanted revision; a newer revision keeps its own unwoken marker."""
+
         cursor = self.conn.execute(
-            "UPDATE news_semantic_work SET published_at_ms = %s, updated_at_ms = %s WHERE event_id = %s",
-            (int(now_ms), int(now_ms), event_id),
+            """
+            UPDATE news_semantic_work SET published_at_ms = %s
+             WHERE event_id = %s AND wanted_revision = %s
+            """,
+            (int(now_ms), event_id, int(revision)),
         )
         return bool(cursor.rowcount)
 
@@ -441,7 +584,7 @@ class EventUpdateStorage:
         return None if row is None else dict(row)
 
     # ------------------------------------------------------------------ semantic input and results
-    def semantic_input_material(self, event_id: str) -> dict[str, Any]:
+    def semantic_input_material(self, event_id: str, *, now_ms: int) -> dict[str, Any]:
         work = self.conn.execute(
             """
             SELECT wanted_revision, lineage_id, attached_evidence, focus_claim_refs
@@ -457,17 +600,21 @@ class EventUpdateStorage:
             """,
             (event_id,),
         ).fetchone()
-        item_ids: list[str] = []
-        if snapshot is not None:
-            document = snapshot["snapshot"] or {}
-            leader = (document.get("card") or {}).get("leader_item_id")
-            item_ids = list(
-                dict.fromkeys(
-                    str(value)
-                    for value in (leader, *(member.get("item_id") for member in document.get("members") or ()))
-                    if value
-                )
+        document: dict[str, Any] = {} if snapshot is None else dict(snapshot["snapshot"] or {})
+        card = dict(document.get("card") or {})
+        members = list(document.get("members") or ())
+        item_ids = list(
+            dict.fromkeys(
+                str(value)
+                for value in (card.get("leader_item_id"), *(member.get("item_id") for member in members))
+                if value
             )
+        )
+        frozen_revisions = [
+            (str(member["item_id"]), str(body_sha))
+            for member in members
+            for body_sha in member.get("body_revisions") or ()
+        ]
         items = (
             self.conn.execute(
                 """
@@ -481,12 +628,137 @@ class EventUpdateStorage:
             if item_ids
             else []
         )
+        revisions = (
+            self.conn.execute(
+                """
+                SELECT r.item_id, r.body_sha256, r.evidence_text, r.received_at_ms
+                  FROM news_item_revisions r
+                  JOIN unnest(%s::text[], %s::text[]) AS frozen(item_id, body_sha256)
+                    ON frozen.item_id = r.item_id AND frozen.body_sha256 = r.body_sha256
+                """,
+                ([row[0] for row in frozen_revisions], [row[1] for row in frozen_revisions]),
+            ).fetchall()
+            if frozen_revisions
+            else []
+        )
+        leader = next((dict(row) for row in items if str(row["item_id"]) == str(card.get("leader_item_id"))), None)
+        related_ids = [] if leader is None else self._related_event_ids(event_id, card, leader, now_ms=now_ms)
         return {
             "work": None if work is None else dict(work),
             "evidence_version": None if snapshot is None else int(snapshot["evidence_version"]),
             "item_ids": item_ids,
             "items": [dict(row) for row in items],
+            "revisions": [dict(row) for row in revisions],
             "head": self.event_update_head_document(event_id),
+            "related_heads": self._related_head_documents(related_ids),
+            "read_targets": self._read_target_rows(related_ids, exclude_item_ids=item_ids),
+            "grounded_assets": [str(value) for value in card.get("grounded_assets") or ()],
+        }
+
+    def _related_event_ids(
+        self, event_id: str, card: Mapping[str, Any], leader: Mapping[str, Any], *, now_ms: int
+    ) -> list[str]:
+        """Related Events by the existing bounded candidate retrieval, in its priority order."""
+
+        assets = tuple(
+            MarketAsset(str(symbol), market_type_of(card.get("asset_class")))
+            for symbol in card.get("grounded_assets") or ()
+        )
+        query = query_for({**card, "event_id": event_id}, leader, cutoff=int(now_ms), assets=assets)
+        rows = cast(EvidenceStorage, self).evidence_candidates(query)
+        ordered = sorted(
+            rows, key=lambda row: (int(row["priority"]), -float(row["score"] or 0.0), str(row["event_id"]))
+        )
+        return [value for value in dict.fromkeys(str(row["event_id"]) for row in ordered) if value != event_id]
+
+    def _related_head_documents(self, event_ids: Sequence[str]) -> list[dict[str, Any]]:
+        if not event_ids:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT h.event_id, u.document
+              FROM news_event_update_heads h
+              JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+             WHERE h.event_id = ANY(%s)
+            """,
+            (list(event_ids),),
+        ).fetchall()
+        by_event = {str(row["event_id"]): dict(row["document"]) for row in rows}
+        return [by_event[value] for value in event_ids if value in by_event][:RELATED_PRIOR_EVENTS_MAX]
+
+    def _read_target_rows(self, event_ids: Sequence[str], *, exclude_item_ids: Sequence[str]) -> list[dict[str, Any]]:
+        if not event_ids:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT e.event_id, e.leader_item_id AS item_id, e.leader_title AS title
+              FROM news_events e WHERE e.event_id = ANY(%s)
+            """,
+            (list(event_ids),),
+        ).fetchall()
+        by_event = {str(row["event_id"]): dict(row) for row in rows}
+        excluded = set(exclude_item_ids)
+        targets: list[dict[str, Any]] = []
+        for value in event_ids:
+            row = by_event.get(value)
+            if row is None or str(row["item_id"]) in excluded:
+                continue
+            excluded.add(str(row["item_id"]))
+            targets.append(row)
+            if len(targets) >= READ_TARGETS_MAX:
+                break
+        return targets
+
+    def read_target_item(self, item_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT item_id, source_id, source_item_key, source_artifact_id, title, description,
+                   canonical_url, reporting_origin, published_at_ms, observed_at_ms,
+                   evidence_text, evidence_text_sha256
+              FROM news_items WHERE item_id = %s AND market_kind IS NULL
+            """,
+            (item_id,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def semantic_wake_route(self, event_id: str) -> dict[str, Any] | None:
+        """What a broker wake of pending semantic work carries: its revision and its routing key parts."""
+
+        row = self.conn.execute(
+            """
+            SELECT w.event_id, w.wanted_revision, e.dedupe_family, e.queue_priority, e.trace_id
+              FROM news_semantic_work w JOIN news_events e ON e.event_id = w.event_id
+             WHERE w.event_id = %s AND (w.done_revision IS NULL OR w.done_revision < w.wanted_revision)
+            """,
+            (event_id,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def semantic_status(self, *, now_ms: int) -> dict[str, Any]:
+        """The semantic stage's last 24 h, for the status page's model health."""
+
+        since = int(now_ms) - 24 * 3_600_000
+        row = self.conn.execute(SEMANTIC_STATUS_SQL, {"since": since}).fetchone()
+        codes = self.conn.execute(SEMANTIC_FAILED_CODES_SQL, (since,)).fetchall()
+        values = {key: int(value or 0) for key, value in dict(row or {}).items()}
+        return {
+            "semantic_observations_24h": values.get("semantic_observations_24h", 0),
+            "semantic_adopted_24h": values.get("semantic_adopted_24h", 0),
+            "semantic_failed_24h": values.get("semantic_failed_24h", 0),
+            "semantic_pending": values.get("semantic_pending", 0),
+            "semantic_failed_by_code_24h": {str(r["code"]): int(r["n"]) for r in codes},
+        }
+
+    def semantic_wake_state(self) -> dict[str, int | None]:
+        """Bounded pending/exhausted semantic work for maintenance telemetry."""
+
+        row = self.conn.execute(SEMANTIC_WAKE_STATE_SQL).fetchone()
+        return {
+            "pending": int(row["pending"] or 0) if row else 0,
+            "oldest_pending_at_ms": None
+            if row is None or row["oldest_pending_at_ms"] is None
+            else int(row["oldest_pending_at_ms"]),
+            "expired": int(row["expired"] or 0) if row else 0,
         }
 
     def event_update_head_document(self, event_id: str) -> dict[str, Any] | None:
@@ -627,12 +899,14 @@ class EventUpdateStorage:
         )
         outbox = cast(TradeProjectionStorage, self)
         for kind, payload in public_rows:
+            # The outbox clock is the semantic completion the public payload carries, never adoption:
+            # a slower adoption must not make the same public fact look newer to Trading.
             if not outbox.enqueue_trade_event(
                 kind=kind,
                 source_fact_key=event_id,
                 source_revision=update.content_revision,
                 payload=payload,
-                source_recorded_at_ms=update.adopted_at_ms,
+                source_recorded_at_ms=int(cast(int, payload["semantic_completed_at_ms"])),
             ):
                 raise EventUpdateConflict("news_public_update_conflict")
         self.conn.execute(
@@ -1272,33 +1546,6 @@ class EventUpdateStorage:
         ).fetchone()
         return None if row is None else int(row["wanted_revision"])
 
-    # ------------------------------------------------------------------ public outbox
-    def pending_public_update_payloads(self, *, limit: int) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT payload FROM news_trade_events
-             WHERE acknowledged_at_ms IS NULL AND rejected_reason IS NULL
-               AND kind IN ('catalyst', 'source_update')
-               AND payload ->> 'schema_version' = %s
-             ORDER BY event_id
-             LIMIT %s
-            """,
-            (PUBLIC_UPDATE_SCHEMA, int(limit)),
-        ).fetchall()
-        return [dict(row["payload"]) for row in rows]
-
-    def acknowledge_public_update(self, *, update_id: str, now_ms: int) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_trade_events SET acknowledged_at_ms = %s
-             WHERE acknowledged_at_ms IS NULL AND rejected_reason IS NULL
-               AND kind IN ('catalyst', 'source_update')
-               AND payload ->> 'update_id' = %s
-            """,
-            (int(now_ms), update_id),
-        )
-        return bool(cursor.rowcount)
-
     # ------------------------------------------------------------------ judgment cache and retention
     def judgment_cache_answer(self, cache_key: str) -> dict[str, Any] | None:
         row = self.conn.execute("SELECT answer FROM news_judgment_cache WHERE cache_key = %s", (cache_key,)).fetchone()
@@ -1350,7 +1597,10 @@ __all__ = [
     "delivered_text",
     "frozen_input",
     "item_evidence",
+    "read_target_item_id",
+    "read_target_ref",
     "reader_revision",
     "reader_revision_stamp",
+    "revision_evidence",
     "select_receipts",
 ]

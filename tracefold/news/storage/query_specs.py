@@ -21,7 +21,8 @@ from .chain_tape import (
     WALLET_TAPE_STATE_SQL,
 )
 from .decisions import MARKET_NEWS_PUSHED_SQL, MARKET_NEWS_TOTAL_SQL
-from .events import BAND_CANDIDATES_SQL, UNPUBLISHED_EVENT_CANDIDATES_SQL
+from .event_updates import SEMANTIC_FAILED_CODES_SQL, SEMANTIC_STATUS_SQL, SEMANTIC_WAKE_STATE_SQL
+from .events import BAND_CANDIDATES_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_CARD_SQL,
@@ -122,9 +123,23 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
-            name="news_event_handoff_candidates",
-            sql=UNPUBLISHED_EVENT_CANDIDATES_SQL,
-            params=(int(now_ms) - 15_000, day_ago, 50),
+            name="news_semantic_wake_state",
+            sql=SEMANTIC_WAKE_STATE_SQL,
+            params=(),
+            max_read_return_amplification=1_000.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_semantic_status",
+            sql=SEMANTIC_STATUS_SQL,
+            params={"since": day_ago},
+            max_read_return_amplification=20.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_semantic_failed_codes",
+            sql=SEMANTIC_FAILED_CODES_SQL,
+            params=(day_ago,),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

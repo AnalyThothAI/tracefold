@@ -151,6 +151,13 @@ def _default_change(current: DraftClaim, previous: Claim, relation: str) -> Chan
     return None
 
 
+def _require_available(answers: tuple[Answer, ...], code: str, *, final_attempt: bool) -> None:
+    """A provider failure is retried while attempts remain; content uncertainty (`unresolved`) never is."""
+
+    if not final_attempt and any(answer.status == "unavailable" for answer in answers):
+        raise ProviderUnavailable(code)
+
+
 def _replace(extraction: Extraction, **values: object) -> Extraction:
     """A validated copy: model_copy alone would skip the slot invariants."""
 
@@ -186,14 +193,22 @@ class SemanticAnalyzer:
         budget: Budget,
         *,
         rebase_only: bool = False,
+        final_attempt: bool = True,
     ) -> Extraction:
+        """Complete the narrow judgments of one extraction.
+
+        A relation or source answer the provider could not give is an unresolved comparison only on
+        the final attempt of a revision. Earlier attempts raise ProviderUnavailable so the worker
+        retries; successful answers are already cached and are not asked again.
+        """
+
         validate_extraction(source, extracted)
         result = extracted
         if self.judgments.native is not None and not rebase_only:
             result = await self._claim_readings(source, result, budget)
             result = await self._topics(result, budget)
-        result = await self._relations(source, result, budget)
-        return await self._supports(source, result, budget)
+        result = await self._relations(source, result, budget, final_attempt=final_attempt)
+        return await self._supports(source, result, budget, final_attempt=final_attempt)
 
     async def _claim_readings(self, source: FrozenInput, extraction: Extraction, budget: Budget) -> Extraction:
         """The native backend owns mode, phase and content kind for each claim."""
@@ -235,7 +250,9 @@ class SemanticAnalyzer:
         answers = await self.judgments.judge("topic", items, budget, context_json=context)
         return _replace(extraction, topics=project_topics(answers, self.topics))
 
-    async def _relations(self, source: FrozenInput, extraction: Extraction, budget: Budget) -> Extraction:
+    async def _relations(
+        self, source: FrozenInput, extraction: Extraction, budget: Budget, *, final_attempt: bool
+    ) -> Extraction:
         # Current/prior candidates are already bounded by retrieval. No global
         # pair search; no title-only key for relation cache reuse.
         known = {(row.slot, row.previous_ref): row for row in extraction.relations}
@@ -259,6 +276,7 @@ class SemanticAnalyzer:
         if not questions:
             return extraction
         answers = await self.judgments.judge("relation", tuple(questions), budget)
+        _require_available(answers, "news_relation_unavailable", final_attempt=final_attempt)
         for answer in answers:
             claim, prior = pairs[answer.item_id]
             # An unavailable answer is an unresolved relation, never a manufactured one.
@@ -273,7 +291,9 @@ class SemanticAnalyzer:
             )
         return _replace(extraction, relations=tuple(known.values()))
 
-    async def _supports(self, source: FrozenInput, extraction: Extraction, budget: Budget) -> Extraction:
+    async def _supports(
+        self, source: FrozenInput, extraction: Extraction, budget: Budget, *, final_attempt: bool
+    ) -> Extraction:
         # One source/claim comparison, reused later. Native mode does not ask the
         # generator to validate successful Jev results a second time.
         supports = {(row.slot, row.evidence_ref): row for row in extraction.supports}
@@ -292,7 +312,9 @@ class SemanticAnalyzer:
                 items.append(Question(item_id=key, payload_json=canonical_json({"claim": claim, "evidence": item})))
         if not items:
             return extraction
-        for answer in await self.judgments.judge("support", tuple(items), budget):
+        answers = await self.judgments.judge("support", tuple(items), budget)
+        _require_available(answers, "news_support_unavailable", final_attempt=final_attempt)
+        for answer in answers:
             slot, ref = pairs[answer.item_id]
             supports[(slot, ref)] = SupportDraft.model_validate(
                 {"slot": slot, "evidence_ref": ref, "relation": answer.value or "unresolved"}
