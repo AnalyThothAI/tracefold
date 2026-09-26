@@ -28,13 +28,12 @@ import psycopg
 import pytest
 from aio_pika import DeliveryMode
 
-from tests.support.rabbitmq import rabbitmq_management_url
+from tests.support.rabbitmq import UNDECLARED_MESSAGE, declared_amqp_url, rabbitmq_management_url
 
 if TYPE_CHECKING:
     from tracefold.news.bus import BusMessage
 
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
-DEFAULT_AMQP_URL = "amqp://tracefold:tracefold@127.0.0.1:5672/"
 
 
 def _default_management_url(amqp_url: str) -> str:
@@ -79,7 +78,9 @@ def _amqp_reachable(url: str) -> bool:
 
 @pytest.fixture(scope="session")
 def golden_rabbitmq_url() -> str:
-    url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", DEFAULT_AMQP_URL)
+    url = declared_amqp_url()
+    if not url:
+        pytest.fail(f"Golden tests require a declared broker: {UNDECLARED_MESSAGE}.", pytrace=False)
     if not _amqp_reachable(url):
         pytest.fail(
             f"Golden tests require RabbitMQ at {url}; start the declared broker or set TRACEFOLD_TEST_AMQP_URL.",

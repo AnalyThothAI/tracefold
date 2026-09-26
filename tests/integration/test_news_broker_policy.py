@@ -15,14 +15,13 @@ and a running product, which is the smaller failure and the one somebody can see
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from collections.abc import Iterator
 from urllib.parse import urlsplit
 
 import pytest
 
-from tests.support.rabbitmq import rabbitmq_management_url
+from tests.support.rabbitmq import declared_amqp_url, declared_management_url
 from tracefold.app.workers.wiring.news import _connect_news_bus
 from tracefold.integrations.rabbitmq import (
     POLICY_EFFECTIVE_TIMEOUT_SECONDS,
@@ -35,9 +34,9 @@ from tracefold.platform.observability import TelemetryRegistry
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 
-AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
+AMQP_URL = declared_amqp_url()
 _AMQP = urlsplit(AMQP_URL)
-MANAGEMENT_URL = rabbitmq_management_url(AMQP_URL)
+MANAGEMENT_URL = declared_management_url(AMQP_URL)
 # The production settle bound is 30 s, and it is not what these tests are about: they are about what
 # happens at the end of it. The drift, the queues, the management read and the attach are all real.
 SETTLE_SECONDS = 2.0
