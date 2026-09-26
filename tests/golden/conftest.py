@@ -28,6 +28,8 @@ import psycopg
 import pytest
 from aio_pika import DeliveryMode
 
+from tests.support.rabbitmq import rabbitmq_management_url
+
 if TYPE_CHECKING:
     from tracefold.news.bus import BusMessage
 
@@ -36,10 +38,7 @@ DEFAULT_AMQP_URL = "amqp://tracefold:tracefold@127.0.0.1:5672/"
 
 
 def _default_management_url(amqp_url: str) -> str:
-    return os.environ.get(
-        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-        f"http://{urlsplit(amqp_url).hostname or '127.0.0.1'}:15672",
-    ).rstrip("/")
+    return rabbitmq_management_url(amqp_url)
 
 
 GOLDEN_WS_TOKEN = "golden-token"

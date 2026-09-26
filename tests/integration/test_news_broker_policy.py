@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from tests.support.rabbitmq import rabbitmq_management_url
 from tracefold.app.workers.wiring.news import _connect_news_bus
 from tracefold.integrations.rabbitmq import (
     POLICY_EFFECTIVE_TIMEOUT_SECONDS,
@@ -36,10 +37,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 
 AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
 _AMQP = urlsplit(AMQP_URL)
-MANAGEMENT_URL = os.environ.get(
-    "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-    f"http://{_AMQP.hostname or '127.0.0.1'}:15672",
-).rstrip("/")
+MANAGEMENT_URL = rabbitmq_management_url(AMQP_URL)
 # The production settle bound is 30 s, and it is not what these tests are about: they are about what
 # happens at the end of it. The drift, the queues, the management read and the attach are all real.
 SETTLE_SECONDS = 2.0

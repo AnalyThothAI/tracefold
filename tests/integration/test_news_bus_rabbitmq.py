@@ -31,6 +31,7 @@ import aio_pika
 import pytest
 from aio_pika import DeliveryMode, ExchangeType
 
+from tests.support.rabbitmq import rabbitmq_management_url
 from tracefold.integrations.rabbitmq import (
     MANAGEMENT_READ_TIMEOUT_SECONDS,
     POLICY_EFFECTIVE_TIMEOUT_SECONDS,
@@ -58,10 +59,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 
 AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
 _AMQP = urlsplit(AMQP_URL)
-MANAGEMENT_URL = os.environ.get(
-    "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-    f"http://{_AMQP.hostname or '127.0.0.1'}:15672",
-).rstrip("/")
+MANAGEMENT_URL = rabbitmq_management_url(AMQP_URL)
 # Tests that only need "the message came back delayed" use a short delay so a three-attempt sequence
 # fits in an integration budget. The production 30 s value is asserted directly from the checked-in
 # document, and one test runs the whole frozen contract at its real timing.

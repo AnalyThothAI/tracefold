@@ -33,6 +33,7 @@ import pytest
 from psycopg.errors import UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.rabbitmq import rabbitmq_management_url
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.integrations.rabbitmq import RabbitMQBus, topology
@@ -56,10 +57,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
 AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
-MANAGEMENT_URL = os.environ.get(
-    "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-    f"http://{urlsplit(AMQP_URL).hostname or '127.0.0.1'}:15672",
-).rstrip("/")
+MANAGEMENT_URL = rabbitmq_management_url(AMQP_URL)
 FAST_DELAY_MS = 500
 
 

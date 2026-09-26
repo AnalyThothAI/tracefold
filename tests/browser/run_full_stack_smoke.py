@@ -21,6 +21,7 @@ import httpx
 import psycopg
 
 from tests.browser.research_seed import seed_research
+from tests.support.rabbitmq import rabbitmq_management_url
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
@@ -347,10 +348,7 @@ def _terminate(
 
 
 def _management_url(amqp_url: str) -> str:
-    return os.environ.get(
-        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-        f"http://{urlsplit(amqp_url).hostname or '127.0.0.1'}:15672",
-    ).rstrip("/")
+    return rabbitmq_management_url(amqp_url)
 
 
 async def _apply_policies(amqp_url: str, management_url: str, name_prefix: str) -> None:

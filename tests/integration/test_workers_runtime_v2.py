@@ -26,6 +26,7 @@ from tests.postgres_test_utils import (
 from tests.postgres_test_utils import (
     test_postgres_dsn as _test_postgres_dsn,
 )
+from tests.support.rabbitmq import rabbitmq_management_url
 from tracefold.app.http.app import create_app
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.runtime import WorkersRuntimeRepository
@@ -306,10 +307,7 @@ def test_real_push_misconfiguration_leaves_delivery_unavailable_and_everything_e
 
     import uuid
 
-    management_url = os.environ.get(
-        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-        f"http://{urllib.parse.urlsplit(rabbitmq_url).hostname or '127.0.0.1'}:15672",
-    ).rstrip("/")
+    management_url = rabbitmq_management_url(rabbitmq_url)
     name_prefix = f"tf_push_{uuid.uuid4().hex[:8]}"
     config_dir = tmp_path / "app-home"
     config_dir.mkdir()
