@@ -1,0 +1,26 @@
+name: Issue 706 workspace snapshot
+
+on:
+  push:
+    branches: [codex/issue-706-event-updates]
+    paths: [.github/workflows/issue-706-workspace.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Archive tracked source at the issue baseline
+        run: git archive --format=tar.gz --output=tracefold-source.tar.gz 1500112328cdbf7c5b501cde853b91e2c5c586c6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: issue-706-source
+          path: tracefold-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
