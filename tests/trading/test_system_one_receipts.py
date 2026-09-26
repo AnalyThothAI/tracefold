@@ -46,9 +46,7 @@ def _response() -> dict[str, Any]:
         ({}, None),
     ],
 )
-def test_native_response_identity_without_an_openai_body_id(
-    headers: dict[str, str], expected_id: str | None
-) -> None:
+def test_native_response_identity_without_an_openai_body_id(headers: dict[str, str], expected_id: str | None) -> None:
     calls: list[httpx2.Request] = []
 
     def respond(request: httpx2.Request) -> httpx2.Response:

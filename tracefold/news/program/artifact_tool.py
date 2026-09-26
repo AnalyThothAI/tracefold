@@ -1,4 +1,5 @@
 """Build the current program image, publish it, and remove obsolete packaged roots."""
+
 from __future__ import annotations
 
 import importlib.resources
@@ -10,8 +11,11 @@ from typing import Any
 
 from ..artifact_identity import canonical_json
 from .artifact import (
-    NewsProgramStateV1, _write_exclusive, build_code_owned_program_state,
-    decode_program_state, encode_program_state,
+    NewsProgramStateV1,
+    _write_exclusive,
+    build_code_owned_program_state,
+    decode_program_state,
+    encode_program_state,
 )
 
 _IMAGE_NAME = re.compile(r"[0-9a-f]{64}\.json\Z")

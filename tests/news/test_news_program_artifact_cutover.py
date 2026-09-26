@@ -1,4 +1,5 @@
 """Current-image cutover, with no historical-schema compatibility requirement."""
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,8 @@ def test_new_image_does_not_need_a_decodable_old_image(tmp_path: Path) -> None:
     assert not old.exists()
     assert note.exists()
     assert json.loads((tmp_path / "registry.json").read_text()) == {
-        "stable": current.program_sha256, "images": [current.program_sha256],
+        "stable": current.program_sha256,
+        "images": [current.program_sha256],
     }
     assert (tmp_path / f"{current.program_sha256}.json").read_text() == encode_program_state(current)
 
