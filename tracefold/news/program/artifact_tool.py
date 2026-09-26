@@ -21,7 +21,7 @@ from .artifact import (
     decode_program_state,
     encode_program_state,
 )
-from .runtime import PROGRAM_SCHEMA_VERSION
+from .artifact_history import historical_program_document
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -35,9 +35,12 @@ def _read_json_object(path: Path) -> dict[str, Any]:
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(canonical_json(value) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        _write_exclusive(temporary, canonical_json(value) + "\n")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _write_image(root: Path, state: NewsProgramStateV1) -> Path:
@@ -77,21 +80,18 @@ def regenerate_stable_program_state(*, programs_root: Path | None = None) -> str
     if [str(value) for value in registry["images"]] != [old_sha]:
         raise ValueError("news_program_regenerate_with_candidates_forbidden")
 
-    state = build_code_owned_program_state()
-    new_image = _write_image(root, state)
-    _atomic_json(registry_path, {"images": [state.program_sha256], "stable": state.program_sha256})
-    registered = _read_json_object(registry_path)
-    if registered != {"images": [state.program_sha256], "stable": state.program_sha256}:
-        _atomic_json(registry_path, registry)
-        raise ValueError("news_program_registry_switch_failed")
-    decode_program_state(new_image.read_text(encoding="utf-8"))
+    # Historical identity is checked before any write. A schema cut must not
+    # validate the previous graph with today's Signatures after switching stable.
+    if len(old_sha) != 64 or any(char not in "0123456789abcdef" for char in old_sha):
+        raise ValueError("news_program_registry_sha_invalid")
+    old_image = root / f"{old_sha}.json"
+    historical_program_document(old_image.read_text(encoding="utf-8"), expected_sha=old_sha)
 
-    if old_sha != state.program_sha256:
-        old_image = root / f"{old_sha}.json"
-        previous = _read_json_object(old_image)
-        if previous.get("program_sha256") != old_sha or previous.get("schema_version") != PROGRAM_SCHEMA_VERSION:
-            raise ValueError("news_program_previous_image_identity_invalid")
-        old_image.unlink()
+    state = build_code_owned_program_state()
+    _write_image(root, state)  # Complete current schema and identity verification before publication.
+    _atomic_json(registry_path, {"images": [state.program_sha256], "stable": state.program_sha256})
+    # Keep unregistered old images as historical evidence. Only registry members
+    # are executable, so retention does not add a second runtime profile.
     return state.program_sha256
 
 
