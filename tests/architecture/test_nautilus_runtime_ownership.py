@@ -3,7 +3,7 @@
 Three rules, each one the shape of a defect this Runtime had:
 
 * no private member of a Nautilus object is read or called outside the execution adapter's
-  installed-version active-symbol seam. The deleted private account proof reached into
+  installed adapter active-symbol and WebSocket dispatch seam. The deleted private account proof reached into
   `engine._clients`, `_fetch_algo_orders` and a replayed Cache repair; the narrow adapter seam
   is exercised by the installed-wheel reconciliation regression;
 * no private helper on the Strategy shadows a Nautilus lifecycle hook. A helper named `_dispose`
@@ -47,7 +47,7 @@ def test_the_runtime_confines_private_nautilus_access_to_the_installed_adapter_s
                 continue
             if (
                 path == ROOT / "tracefold/integrations/nautilus/oi_runtime/binance.py"
-                and node.attr == "_get_cache_active_symbols"
+                and node.attr in {"_get_cache_active_symbols", "_handle_algo_update", "_handle_order_trade_update"}
                 and isinstance(node.value, ast.Call)
                 and isinstance(node.value.func, ast.Name)
                 and node.value.func.id == "super"

@@ -813,7 +813,9 @@ def test_truncated_mass_history_cannot_infer_a_fill_or_change_native_identity(ac
 def test_generation_restart_replays_a_flat_venues_historical_take_profit(account: Any) -> None:
     """A PG-open plan must make its symbol visible even after the old Cache disappeared."""
     runtime = account(
-        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        factory=OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=frozenset({"APTUSDT"}), sink=lambda _: True, binding_lookup=lambda _: None
+        ),
         triggered_take_profit=True,
         seed_existing=False,
     )
@@ -831,7 +833,9 @@ def test_generation_restart_replays_a_flat_venues_historical_take_profit(account
 
 def test_generation_restart_replays_each_split_child_trade_once(account: Any) -> None:
     runtime = account(
-        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        factory=OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=frozenset({"APTUSDT"}), sink=lambda _: True, binding_lookup=lambda _: None
+        ),
         triggered_take_profit=True,
         split_child_trades=True,
         seed_existing=False,
@@ -849,7 +853,9 @@ def test_generation_restart_replays_each_split_child_trade_once(account: Any) ->
 @pytest.mark.parametrize("child_status", ["PARTIALLY_FILLED", "EXPIRED", "CANCELED"])
 def test_generation_restart_keeps_partial_child_quantity_open(account: Any, child_status: str) -> None:
     runtime = account(
-        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        factory=OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=frozenset({"APTUSDT"}), sink=lambda _: True, binding_lookup=lambda _: None
+        ),
         triggered_take_profit=True,
         child_status=child_status,
         seed_existing=False,
@@ -863,7 +869,9 @@ def test_generation_restart_keeps_partial_child_quantity_open(account: Any, chil
 
 def test_generation_restart_rejects_a_contradictory_signed_algo_child(account: Any) -> None:
     runtime = account(
-        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        factory=OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=frozenset({"APTUSDT"}), sink=lambda _: True, binding_lookup=lambda _: None
+        ),
         triggered_take_profit=True,
         wrong_algo_child=True,
         seed_existing=False,
@@ -875,7 +883,9 @@ def test_generation_restart_rejects_a_contradictory_signed_algo_child(account: A
 
 def test_generation_restart_does_not_infer_a_missing_child_trade(account: Any) -> None:
     runtime = account(
-        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        factory=OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=frozenset({"APTUSDT"}), sink=lambda _: True, binding_lookup=lambda _: None
+        ),
         triggered_take_profit=True,
         missing_child_trade=True,
         seed_existing=False,
@@ -887,7 +897,9 @@ def test_generation_restart_does_not_infer_a_missing_child_trade(account: Any) -
 
 def test_generation_restart_does_not_infer_missing_entry_trades(account: Any) -> None:
     runtime = account(
-        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        factory=OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=frozenset({"APTUSDT"}), sink=lambda _: True, binding_lookup=lambda _: None
+        ),
         triggered_take_profit=True,
         missing_entry_trades=True,
         seed_existing=False,
@@ -899,7 +911,9 @@ def test_generation_restart_does_not_infer_missing_entry_trades(account: Any) ->
 
 def test_generation_restart_keeps_a_plain_reduce_only_exit_as_market(account: Any) -> None:
     runtime = account(
-        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        factory=OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=frozenset({"APTUSDT"}), sink=lambda _: True, binding_lookup=lambda _: None
+        ),
         triggered_take_profit=True,
         no_algo_receipt=True,
         seed_existing=False,

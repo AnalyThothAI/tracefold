@@ -9693,6 +9693,28 @@
             ],
             "title": "Order Reject Reason"
           },
+          "original_exit_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Exit Reason"
+          },
+          "original_terminal_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Terminal At Ns"
+          },
           "plan_status": {
             "anyOf": [
               {
@@ -9729,6 +9751,29 @@
               }
             ],
             "title": "Realized Pnl Usd"
+          },
+          "result_evidence_source": {
+            "anyOf": [
+              {
+                "const": "signed_native_trades",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Evidence Source"
+          },
+          "result_verified_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Verified At Ns"
           },
           "risk_budget_usd": {
             "anyOf": [

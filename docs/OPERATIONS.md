@@ -550,9 +550,24 @@ Runtime cannot run against the old schema, so the Runtime is down across it:
 Never use live credentials for this procedure. Roll forward; the schema backup
 cannot roll back a Binance fill.
 
+Native execution reads offer the same immutable receipts to the journal before
+Cache application. The ledger enforces one economic fill per account slot,
+venue environment, native symbol and trade ID. Later costs and Plan associations
+are separate facts; they cannot add another economic quantity. Native order
+completion records bind the exact trade set and executed quantity. A conflicting
+fact stays a named write failure and is not silently replaced or dropped.
+
+The execution list, realized totals and post-stop cooldown use the same result
+projection. Once a Plan has associated native evidence, historical engine fills
+cannot supply missing native trades. Complete receipts determine the actual exit
+time and original business leg; the detail panel also shows the unchanged
+original termination and the later verification time. The raw Plan and historical
+observations remain auditable. A historical stop uses its actual exit time for
+cooldown, not the time its evidence was appended.
+
 Known realized PnL is folded from the journal's fills: exit notional minus entry
 notional, signed by side, minus every recorded commission. It is known only when the
-exit fills sum to the entry quantity and every commission was charged in the
+native order sets are complete, exit fills sum to the entry quantity and every commission was charged in the
 settlement currency (USDT); otherwise it is absent, never synthesized as zero or
 reconstructed from unrelated account balance changes. Binance
 [account updates](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/adapters/binance/futures/schemas/user.py)

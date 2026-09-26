@@ -15,6 +15,7 @@ the client from the same public helpers `BinanceLiveExecClientFactory.create` us
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any
@@ -50,9 +51,17 @@ from nautilus_trader.model.enums import OrderType, PositionSide
 from nautilus_trader.model.identifiers import ClientOrderId, VenueOrderId
 from nautilus_trader.model.objects import Quantity
 
+from tracefold.trading.trade_plan import PlanOrderBinding
+
 from .config import BinanceRuntimeCredentials
 from .order_evidence import BinanceOrderEvidence, OrderEvidenceRequest, read_order_evidence, validate_order_evidence
-from .trade_history import TRADE_WINDOW_MS, IncompleteTradeHistory, TradeHistoryCursor, read_trade_history
+from .trade_history import (
+    TRADE_WINDOW_MS,
+    BinanceTradeHistory,
+    IncompleteTradeHistory,
+    TradeHistoryCursor,
+    read_trade_history,
+)
 
 # How long a signed positionRisk read stays valid at Binance. The venue's default is 5 s, and this
 # host has measured 9-27 s round trips (`-1021`, #680); a read has no side effect a late arrival
@@ -70,9 +79,18 @@ class _OrderRecovery:
 class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
     """Nautilus' Binance USD-M execution client, whose fill reports name each venue trade once."""
 
-    def __init__(self, *, recovery_symbols: frozenset[str], **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        recovery_symbols: frozenset[str],
+        evidence_sink: Callable[[BinanceOrderEvidence | BinanceTradeHistory], bool] | None = None,
+        binding_lookup: Callable[[str], PlanOrderBinding | None] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._recovery_symbols = set(recovery_symbols)
+        self._evidence_sink = evidence_sink
+        self._binding_lookup = binding_lookup
         self._order_recovery: dict[OrderEvidenceRequest, _OrderRecovery] = {}
         self._evidence_reads: dict[tuple[str, str], asyncio.Task[BinanceOrderEvidence]] = {}
         self._evidence_slots = asyncio.Semaphore(2)
@@ -117,7 +135,15 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
             self._evidence_reads[key] = task
             task.add_done_callback(lambda completed: self._evidence_reads.pop(key, None))
         evidence = await asyncio.shield(task)
-        return validate_order_evidence(replace(evidence, request=request))
+        evidence = validate_order_evidence(
+            replace(evidence, request=request, observed_at_ns=self._clock.timestamp_ns())
+        )
+        self._record_native_evidence(evidence)
+        return evidence
+
+    def _record_native_evidence(self, evidence: BinanceOrderEvidence | BinanceTradeHistory) -> None:
+        if self._evidence_sink is not None and not self._evidence_sink(evidence):
+            self._log.error("native_execution_evidence_not_queued: durable history recovery remains pending")
 
     def _schedule_order_recovery(self, request: OrderEvidenceRequest) -> None:
         # Duplicate WS/open-list observations do not refresh the retry budget.
@@ -395,6 +421,7 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
             if report.client_order_id is None or report.venue_order_id is None:
                 continue
             order = self._cache.order(report.client_order_id)
+            binding = self._binding_lookup(report.client_order_id.value) if self._binding_lookup is not None else None
             instrument = self._cache.instrument(report.instrument_id)
             fills = status.fill_reports.get(report.venue_order_id, [])
             requires_native_fills = (
@@ -414,9 +441,9 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
                 and instrument is not None
                 and instrument.raw_symbol.value in self._recovery_symbols
             )
-            if not (conditional or cold_child) or report.filled_qty.as_decimal() <= 0:
+            if not (conditional or cold_child or binding is not None) or report.filled_qty.as_decimal() <= 0:
                 continue
-            if instrument is None or report.order_type != OrderType.MARKET:
+            if instrument is None or ((conditional or cold_child) and report.order_type != OrderType.MARKET):
                 return None
             if targeted_reads >= 16:
                 raise RuntimeError("binance_order_evidence_request_budget_exhausted")
@@ -426,7 +453,9 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
                 client_order_id=report.client_order_id.value,
                 venue_order_id=int(report.venue_order_id.value),
                 conditional_type=(
-                    "STOP_MARKET"
+                    {"stop": "STOP_MARKET", "take_profit": "TAKE_PROFIT_MARKET"}.get(binding.leg)
+                    if binding is not None
+                    else "STOP_MARKET"
                     if order is not None and order.order_type == OrderType.STOP_MARKET
                     else "TAKE_PROFIT_MARKET"
                     if conditional
@@ -486,6 +515,7 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
                 max_requests=remaining_requests,
             )
             remaining_requests -= history.requests_used
+            self._record_native_evidence(history)
             if not history.complete:
                 raise IncompleteTradeHistory(history)
             reports.extend(self._native_fill_report(trade) for trade in history.trades)
@@ -533,11 +563,26 @@ class OiBinanceExecClientFactory(LiveExecClientFactory):
     """`BinanceLiveExecClientFactory.create`'s USD-M branch, building `OiBinanceFuturesExecutionClient`."""
 
     recovery_symbols: frozenset[str] = frozenset()
+    evidence_sink: Callable[[BinanceOrderEvidence | BinanceTradeHistory], bool] | None = None
+    binding_lookup: Callable[[str], PlanOrderBinding | None] | None = None
 
     @classmethod
-    def with_recovery_symbols(cls, symbols: frozenset[str]) -> type[OiBinanceExecClientFactory]:
-        # TradingNode takes a factory class. Make its immutable query scope local to one generation.
-        return type("OiBinanceRecoveryExecClientFactory", (cls,), {"recovery_symbols": symbols})
+    def with_evidence_sink(
+        cls,
+        *,
+        symbols: frozenset[str],
+        sink: Callable[[BinanceOrderEvidence | BinanceTradeHistory], bool],
+        binding_lookup: Callable[[str], PlanOrderBinding | None],
+    ) -> type[OiBinanceExecClientFactory]:
+        return type(
+            "OiBinanceRuntimeExecClientFactory",
+            (cls,),
+            {
+                "recovery_symbols": symbols,
+                "evidence_sink": staticmethod(sink),
+                "binding_lookup": staticmethod(binding_lookup),
+            },
+        )
 
     @classmethod
     def create(  # type: ignore[override]
@@ -590,6 +635,8 @@ class OiBinanceExecClientFactory(LiveExecClientFactory):
             api_key=config.api_key,
             api_secret=config.api_secret,
             recovery_symbols=cls.recovery_symbols,
+            evidence_sink=cls.evidence_sink,
+            binding_lookup=cls.binding_lookup,
         )
 
 

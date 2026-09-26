@@ -164,7 +164,7 @@ export const EXECUTION_SOURCE_ZH: Record<string, string> = {
 };
 
 /**
- * Why a trade plan ended, as `trading_trade_plans.exit_reason` stores it.
+ * Why a trade ended, from verified native evidence or the original Plan termination.
  *
  * `external` is a close this Runtime observed but did not originate (a venue-side close, a liquidation, an
  * order placed on the venue by hand); `venue_unknown` is a plan whose end the Runtime never saw because the

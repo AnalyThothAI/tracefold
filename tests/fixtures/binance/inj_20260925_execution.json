@@ -157,6 +157,56 @@
     "captured_on": "2026-09-26",
     "account_slot": "binance_usdm_primary",
     "entry_id": "6314b55d65bd996d1939636c8641f0f9906594219cf40fdebc4c8f82882d06e6",
-    "scope": "Two exact INJUSDT order and userTrades reads plus one exact Algo read; credentials and transport metadata omitted. This is a read of historical Demo facts, not a new trade."
+    "scope": "Two exact INJUSDT order and userTrades reads plus one exact Algo read; credentials and transport metadata omitted. This is a read of historical Demo facts, not a new trade.",
+    "postgres_scope": "Exact original TradePlan and original entry observation seq 11716, read-only on 2026-09-26; no raw row was modified."
+  },
+  "original_plan": {
+    "entry_id": "6314b55d65bd996d1939636c8641f0f9906594219cf40fdebc4c8f82882d06e6",
+    "source": "signal",
+    "case_id": "14c598f69295303a226dbdc7f65a6cedf1f48fadf8fe3555ceca32c65094fc77",
+    "account_slot": "binance_usdm_primary",
+    "market_key": "crypto:perp:INJ:USDT",
+    "instrument_id": "INJUSDT-PERP.BINANCE",
+    "direction": "long",
+    "entry_client_order_id": "tfe9e61aa4d4d8100ee918f83096b54d",
+    "created_at_ns": 1790336079663552012,
+    "entry_expires_at_ns": 1790336160000000000,
+    "entry_quantity": "121.3",
+    "stop_distance_bps": 100,
+    "risk_budget_usd": "10.0",
+    "max_leverage_at_creation": 1,
+    "exit_policy_id": "analysis_dynamic_v1",
+    "take_profit_bps": 200,
+    "max_holding_ns": 14400000000000,
+    "status": "closed",
+    "opened_at_ns": 1790336082467000064,
+    "terminal_at_ns": 1790345174088448789,
+    "exit_reason": "venue_unknown",
+    "updated_at_ns": 1790345174088448789,
+    "entry_scope_id": "a8d69f73fa3ca3322d717334f08482b2b3731b8724129cc025b194df4131eeb2"
+  },
+  "original_entry_observation": {
+    "summary": {
+      "leg": "entry",
+      "commission": "0",
+      "last_price": "8.218",
+      "last_quantity": "121.3",
+      "commission_currency": "USDT"
+    },
+    "event_id": "0578f0480c8d6357d5296c686ef3ba64eb2179ff0e146ebaa5456bd017cab84f",
+    "signal_id": "6314b55d65bd996d1939636c8641f0f9906594219cf40fdebc4c8f82882d06e6",
+    "command_id": null,
+    "account_slot": "binance_usdm_primary",
+    "observed_at_ns": 1790336087295354196,
+    "occurred_at_ns": 1790336082467000064,
+    "normalized_kind": "fill",
+    "execution_strategy": "oi_nautilus_v1",
+    "observation_version": "execution_observation_v1",
+    "native_identity_references": [
+      "2ebf5b2a-f43c-5a10-852d-2553df748f4c",
+      "308643511",
+      "INJUSDT-PERP.BINANCE-OI-RUNTIME-F46",
+      "tfe9e61aa4d4d8100ee918f83096b54d"
+    ]
   }
 }

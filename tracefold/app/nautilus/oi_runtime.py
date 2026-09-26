@@ -2,9 +2,9 @@
 
 The bridge and the current-state writer use separate fixed connections. Nothing they do is fatal to the
 process (#680 RC1): a statement that fails is logged once per cause and retried, a lost session is
-replaced after a bounded backoff, and a journal row the database refuses on integrity grounds is
-dropped and logged rather than replayed. The account-slot lock is the one fact that stops the process,
-and it lives on its own session.
+replaced after a bounded backoff, and critical Plan, native fill, cost and binding writes remain pending after a
+refusal. Noncritical audit rows can be dropped with a logged reason. The account-slot lock is
+the one fact that stops the process, and it lives on its own session.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from tracefold.trading.execution_contracts import (
     OperatorIntentV1,
     TradeSignalV3,
 )
+from tracefold.trading.native_fills import NATIVE_EXECUTION_KINDS
 from tracefold.trading.storage.execution_stream import (
     ExecutionRuntimeState,
     materialize_execution_observation,
@@ -503,7 +504,7 @@ class OiRuntimeDatabaseBridge:
             except _ROW_REFUSALS as exc:
                 if (
                     isinstance(value, TradePlan)
-                    or value.normalized_kind == "fill"
+                    or value.normalized_kind in NATIVE_EXECUTION_KINDS | {"fill"}
                     or value.summary.get("binding_version") == "plan_order_v1"
                 ):
                     logger.error(

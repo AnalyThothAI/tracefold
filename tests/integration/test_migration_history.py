@@ -50,7 +50,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260926_0402"
+HEAD = "20260926_0403"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -3270,3 +3270,44 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
             "news_triage_policy_v17",
         ]
         assert TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
+
+
+def test_native_identity_cut_preserves_original_payloads_without_promoting_historical_ids():
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260926_0402")
+    raw = json.loads((ROOT / "tests/fixtures/binance/inj_20260925_execution.json").read_text())[
+        "original_entry_observation"
+    ]
+    # The historical raw fill has no dependency on today's Signal schema in this migration fixture.
+    raw["signal_id"] = None
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            conn.execute(
+                """INSERT INTO trading_execution_observations
+                   (event_id, account_slot, execution_strategy, normalized_kind,
+                    occurred_at_ns, observed_at_ns, native_identity_references, summary, payload)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb)""",
+                (
+                    raw["event_id"],
+                    raw["account_slot"],
+                    raw["execution_strategy"],
+                    raw["normalized_kind"],
+                    raw["occurred_at_ns"],
+                    raw["observed_at_ns"],
+                    json.dumps(raw["native_identity_references"]),
+                    json.dumps(raw["summary"]),
+                    json.dumps(raw),
+                ),
+            )
+        before = conn.execute("SELECT seq, payload, summary FROM trading_execution_observations").fetchone()
+        command.upgrade(config, HEAD)
+        after = conn.execute(
+            "SELECT seq, payload, summary, native_environment, native_instrument, native_trade_id "
+            "FROM trading_execution_observations"
+        ).fetchone()
+        assert {key: after[key] for key in before} == before
+        assert after["native_environment"] is after["native_instrument"] is after["native_trade_id"] is None
+    finally:
+        conn.close()

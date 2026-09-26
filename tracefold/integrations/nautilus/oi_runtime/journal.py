@@ -21,6 +21,7 @@ from decimal import Decimal
 from threading import Lock
 
 from tracefold.trading.execution_contracts import ExecutionObservationV1
+from tracefold.trading.native_fills import NATIVE_EXECUTION_KINDS
 from tracefold.trading.trade_plan import TradePlan
 
 from .risk import DayStartBaseline
@@ -220,12 +221,21 @@ class ExecutionJournal:
                 if (
                     isinstance(current, ExecutionObservationV1)
                     and (
-                        current.normalized_kind == "fill"
-                        or value.normalized_kind == "fill"
+                        current.normalized_kind in NATIVE_EXECUTION_KINDS | {"fill"}
+                        or value.normalized_kind in NATIVE_EXECUTION_KINDS | {"fill"}
                         or current.summary.get("binding_version") == "plan_order_v1"
                         or value.summary.get("binding_version") == "plan_order_v1"
                     )
-                    and current.model_dump(exclude={"observed_at_ns"}) != value.model_dump(exclude={"observed_at_ns"})
+                    and current.model_dump(
+                        exclude={"observed_at_ns", "execution_strategy", "native_identity_references"}
+                        if current.normalized_kind in NATIVE_EXECUTION_KINDS
+                        else {"observed_at_ns"}
+                    )
+                    != value.model_dump(
+                        exclude={"observed_at_ns", "execution_strategy", "native_identity_references"}
+                        if value.normalized_kind in NATIVE_EXECUTION_KINDS
+                        else {"observed_at_ns"}
+                    )
                 ):
                     raise ValueError("execution_observation_pending_identity_conflict")
                 return True

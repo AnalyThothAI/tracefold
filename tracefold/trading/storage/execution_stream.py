@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from typing import Any, Final, Literal
 from uuid import UUID
 
+from psycopg.errors import UniqueViolation
+
 from tracefold.platform.postgres.audit import BOUNDED_WINDOW_SCAN_BUDGET, ReadQuerySpec
 from tracefold.platform.postgres.client import require_transaction
 
@@ -569,25 +571,51 @@ class ExecutionStreamStorage:
             return ()
         self.conn.execute(f"SAVEPOINT {_OBSERVATION_BATCH_SAVEPOINT}")
         try:
-            # `prepare_execution_observations` already bounded the batch, refused duplicate event ids
-            # and validated every row, so the append is one ordinary INSERT. Until #520 PR-C this
-            # statement re-derived those same bounds in SQL to feed the per-key `payload` CHECK.
+            # Validation and batch bounds are prepared outside the transaction.
+            # Storage owns native-key concurrency and immutable replay checks.
+            # Serialize a native trade's separate economic/cost/binding facts by
+            # its real venue identity, including across different event IDs. Lock
+            # in a fixed order so bounded multi-trade batches cannot deadlock.
+            self.conn.execute(
+                """
+                WITH identities AS MATERIALIZED (
+                  SELECT DISTINCT hashtextextended(jsonb_build_array(
+                    payload ->> 'account_slot', payload -> 'summary' ->> 'venue_environment',
+                    payload -> 'summary' ->> 'native_instrument', payload -> 'summary' ->> 'native_trade_id'
+                  )::text, 699) AS lock_key
+                    FROM jsonb_array_elements(%s::jsonb) AS offered(payload)
+                   WHERE payload ->> 'normalized_kind' IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                )
+                SELECT pg_advisory_xact_lock(lock_key) FROM (SELECT lock_key FROM identities ORDER BY lock_key) ordered
+                """,
+                (prepared.payload_json,),
+            )
             self.conn.execute(
                 """
                 INSERT INTO trading_execution_observations (
                   event_id, account_slot, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                  native_identity_references, summary, payload
+                  native_identity_references, summary, payload,
+                  native_environment, native_instrument, native_trade_id
                 )
                 SELECT payload ->> 'event_id', payload ->> 'account_slot',
                        payload ->> 'execution_strategy',
                        payload ->> 'signal_id', payload ->> 'command_id',
                        payload ->> 'normalized_kind', (payload ->> 'occurred_at_ns')::bigint,
                        (payload ->> 'observed_at_ns')::bigint,
-                       payload -> 'native_identity_references', payload -> 'summary', payload
+                       payload -> 'native_identity_references', payload -> 'summary', payload,
+                       CASE WHEN payload ->> 'normalized_kind'
+                                 IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                            THEN payload -> 'summary' ->> 'venue_environment' END,
+                       CASE WHEN payload ->> 'normalized_kind'
+                                 IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                            THEN payload -> 'summary' ->> 'native_instrument' END,
+                       CASE WHEN payload ->> 'normalized_kind'
+                                 IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                            THEN payload -> 'summary' ->> 'native_trade_id' END
                   FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS offered(payload, ordinal)
                  ORDER BY offered.ordinal
-                ON CONFLICT (event_id) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 (prepared.payload_json,),
             )
@@ -596,9 +624,21 @@ class ExecutionStreamStorage:
                 SELECT array_agg(existing.seq ORDER BY offered.ordinal) AS sequences
                   FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS offered(payload, ordinal)
                   JOIN trading_execution_observations existing
-                    ON existing.event_id = offered.payload ->> 'event_id'
-                   AND CASE WHEN existing.normalized_kind = 'fill'
-                              OR offered.payload ->> 'normalized_kind' = 'fill'
+                    ON (existing.event_id = offered.payload ->> 'event_id'
+                        OR (existing.native_trade_id IS NOT NULL
+                            AND existing.account_slot = offered.payload ->> 'account_slot'
+                            AND existing.native_environment = offered.payload -> 'summary' ->> 'venue_environment'
+                            AND existing.native_instrument = offered.payload -> 'summary' ->> 'native_instrument'
+                            AND existing.native_trade_id = offered.payload -> 'summary' ->> 'native_trade_id'
+                            AND existing.normalized_kind = offered.payload ->> 'normalized_kind'))
+                   AND CASE WHEN existing.native_trade_id IS NOT NULL
+                              OR existing.normalized_kind = 'native_order_result' THEN
+                            existing.payload - ARRAY['observed_at_ns', 'execution_strategy',
+                                                     'event_id', 'native_identity_references']
+                            = offered.payload - ARRAY['observed_at_ns', 'execution_strategy',
+                                                     'event_id', 'native_identity_references']
+                            WHEN existing.normalized_kind IN ('fill', 'native_order_result')
+                              OR offered.payload ->> 'normalized_kind' IN ('fill', 'native_order_result')
                               OR existing.summary ->> 'binding_version' = 'plan_order_v1'
                               OR offered.payload -> 'summary' ->> 'binding_version' = 'plan_order_v1'
                             THEN existing.payload - 'observed_at_ns' = offered.payload - 'observed_at_ns'
@@ -608,7 +648,40 @@ class ExecutionStreamStorage:
             ).fetchone()
             stored = () if resolved is None else (resolved["sequences"] or ())
             if len(stored) != prepared.count:
+                # Preserve refusal of a second final Signal/Command verdict.
+                # The native-key conflict handler must not turn other unique
+                # constraints into successful no-ops or transient journal errors.
+                refused = self.conn.execute(
+                    """
+                    SELECT 1 FROM jsonb_array_elements(%s::jsonb) AS offered(payload)
+                     WHERE payload ->> 'normalized_kind'
+                           NOT IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                       AND NOT EXISTS (SELECT 1 FROM trading_execution_observations existing
+                                        WHERE existing.event_id = offered.payload ->> 'event_id')
+                     LIMIT 1
+                    """,
+                    (prepared.payload_json,),
+                ).fetchone()
+                if refused is not None:
+                    raise UniqueViolation("execution_stream_unique_identity_conflict")
                 raise RuntimeError("execution_stream_identity_conflict")
+            conflict = self.conn.execute(
+                """
+                SELECT 1 FROM jsonb_array_elements(%s::jsonb) AS offered(payload)
+                  JOIN trading_execution_observations existing
+                    ON existing.account_slot = offered.payload ->> 'account_slot'
+                   AND existing.native_environment = offered.payload -> 'summary' ->> 'venue_environment'
+                   AND existing.native_instrument = offered.payload -> 'summary' ->> 'native_instrument'
+                   AND existing.native_trade_id = offered.payload -> 'summary' ->> 'native_trade_id'
+                 WHERE (existing.summary ->> 'venue_order_id'
+                          IS DISTINCT FROM offered.payload -> 'summary' ->> 'venue_order_id'
+                        OR existing.occurred_at_ns <> (offered.payload ->> 'occurred_at_ns')::bigint)
+                 LIMIT 1
+                """,
+                (prepared.payload_json,),
+            ).fetchone()
+            if conflict is not None:
+                raise RuntimeError("execution_stream_native_trade_conflict")
             sequences = tuple(int(seq) for seq in stored)
             self._project_runtime_control_state(prepared.payload_json)
         except Exception:

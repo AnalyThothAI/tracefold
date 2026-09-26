@@ -137,10 +137,11 @@ def _real_node() -> Iterator[Any]:
     """
 
     profile = replace(oi_profile(BinanceEnvironment.DEMO), account_id=_MASTER_ACCOUNT_ID)
+    journal = ExecutionJournal(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1"))
     strategy = OiNautilusStrategy(
         profile=profile,
         signals=ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1"),
-        journal=ExecutionJournal(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1")),
+        journal=journal,
         inputs=RuntimeInputs(control=RESUMED),
         dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: True,
@@ -148,6 +149,7 @@ def _real_node() -> Iterator[Any]:
     )
     loop = asyncio.new_event_loop()
     node = _build_active_node(
+        journal=journal,
         profile=profile,
         credentials=BinanceRuntimeCredentials("paper-key", "paper-secret"),
         strategy=strategy,

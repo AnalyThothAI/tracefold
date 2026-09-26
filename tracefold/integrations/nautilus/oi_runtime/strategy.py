@@ -907,6 +907,10 @@ class OiNautilusStrategy(Strategy):
     def on_position_closed(self, event: Any) -> None:
         self._guard("position_closed", lambda: self._position_closed(event))
 
+    def order_binding(self, client_order_id: str) -> PlanOrderBinding | None:
+        """Immutable exact-order intent, available during startup before callbacks."""
+        return self._order_bindings.get(client_order_id)
+
     def _order_context(
         self, client_order_id: ClientOrderId, instrument_id: InstrumentId
     ) -> tuple[PlanOrderBinding | None, OrderLeg]:

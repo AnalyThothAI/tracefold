@@ -992,6 +992,9 @@
 | `native_identity_references` | `JSONB` | False | `None` |
 | `summary` | `JSONB` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
+| `native_environment` | `TEXT` | True | `None` |
+| `native_instrument` | `TEXT` | True | `None` |
+| `native_trade_id` | `TEXT` | True | `None` |
 
 ## `trading_execution_runtime_control_state`
 

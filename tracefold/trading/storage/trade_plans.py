@@ -92,18 +92,6 @@ class TradePlanStorage:
         ).fetchall()
         return tuple(dict(row) for row in rows)
 
-    def recent_stop_exits(self, *, account_slot: str, since_ns: int) -> dict[str, int]:
-        """The latest stop-out per market since `since_ns`: what the post-stop cooldown is keyed on."""
-
-        rows = self.conn.execute(
-            """SELECT market_key, max(terminal_at_ns) AS terminal_at_ns
-                 FROM trading_trade_plans
-                WHERE account_slot = %s AND exit_reason = 'stop_filled' AND terminal_at_ns >= %s
-                GROUP BY market_key""",
-            (account_slot, int(since_ns)),
-        ).fetchall()
-        return {str(row["market_key"]): int(row["terminal_at_ns"]) for row in rows}
-
     def trade_plan_order_bindings(
         self, *, account_slot: str, entry_ids: tuple[str, ...], after_seq: int, observed_before_ns: int, limit: int
     ) -> tuple[dict[str, Any], ...]:

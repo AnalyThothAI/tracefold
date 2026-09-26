@@ -3735,6 +3735,10 @@ export interface components {
             observed_at_ns: number;
             /** Order Reject Reason */
             order_reject_reason?: string | null;
+            /** Original Exit Reason */
+            original_exit_reason?: string | null;
+            /** Original Terminal At Ns */
+            original_terminal_at_ns?: number | null;
             /** Plan Status */
             plan_status?: string | null;
             /** Pnl Known */
@@ -3743,6 +3747,10 @@ export interface components {
             position_closed_at_ns?: number | null;
             /** Realized Pnl Usd */
             realized_pnl_usd?: string | null;
+            /** Result Evidence Source */
+            result_evidence_source?: "signed_native_trades" | null;
+            /** Result Verified At Ns */
+            result_verified_at_ns?: number | null;
             /** Risk Budget Usd */
             risk_budget_usd?: string | null;
             /**

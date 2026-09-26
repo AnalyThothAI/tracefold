@@ -60,10 +60,13 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
 )
 from tracefold.integrations.nautilus.oi_runtime.funding import BinanceFundingIncome, watch_funding
 from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.observations import offer_native_evidence
+from tracefold.integrations.nautilus.oi_runtime.order_evidence import BinanceOrderEvidence
 from tracefold.integrations.nautilus.oi_runtime.risk import account_equity_usd
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy, RuntimeView
+from tracefold.integrations.nautilus.oi_runtime.trade_history import BinanceTradeHistory
 from tracefold.integrations.nautilus.oi_runtime.venue import watch_venue
 from tracefold.platform.config.models import Settings, TradingExitPolicySettings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
@@ -338,6 +341,7 @@ async def _run_generation(
         venue_reads=True,
     )
     node = _build_active_node(
+        journal=journal,
         profile=profile,
         credentials=credentials,
         strategy=strategy,
@@ -624,6 +628,7 @@ def _active_profile(
 
 def _build_active_node(
     *,
+    journal: ExecutionJournal,
     profile: OiRuntimeProfile,
     credentials: BinanceRuntimeCredentials,
     strategy: OiNautilusStrategy,
@@ -634,8 +639,30 @@ def _build_active_node(
     node = TradingNode(config=build_oi_node_config(profile, credentials, log_directory=log_directory), loop=loop)
     node.trader.add_strategy(strategy)
     node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+
     # Nautilus' Binance client, with fill reports that name each venue trade once (#680 PR-3).
-    node.add_exec_client_factory(BINANCE, OiBinanceExecClientFactory.with_recovery_symbols(recovery_symbols))
+    def record_evidence(evidence: BinanceOrderEvidence | BinanceTradeHistory) -> bool:
+        binding = (
+            strategy.order_binding(evidence.request.client_order_id)
+            if isinstance(evidence, BinanceOrderEvidence)
+            else None
+        )
+        return offer_native_evidence(
+            journal,
+            evidence,
+            environment=profile.environment or BinanceEnvironment.LIVE,
+            observed_at_ns=time.time_ns(),
+            binding=binding,
+        )
+
+    node.add_exec_client_factory(
+        BINANCE,
+        OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=recovery_symbols,
+            sink=record_evidence,
+            binding_lookup=strategy.order_binding,
+        ),
+    )
     node.build()
     if len(node.kernel.exec_engine.registered_clients) != 1:
         raise RuntimeFatal("oi_runtime_execution_client_ambiguous")

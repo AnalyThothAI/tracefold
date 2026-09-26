@@ -422,6 +422,10 @@ class TradingExecutionRowData(ExactApiSchema):
     funding_usd: str | None = None
     net_pnl_usd: str | None = None
     exit_reason: str | None = None
+    original_exit_reason: str | None = None
+    original_terminal_at_ns: int | None = None
+    result_evidence_source: Literal["signed_native_trades"] | None = None
+    result_verified_at_ns: int | None = None
     plan_status: str | None = None
     account_slot: str | None = None
     instrument_id: str | None = None

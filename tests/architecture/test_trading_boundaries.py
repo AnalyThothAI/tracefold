@@ -32,6 +32,7 @@ SIGNAL_PATH = (
     "trading/storage/queries.py",
 )
 EXECUTION_PATH = {
+    "trading/native_fills.py",
     "trading/execution_contracts.py",
     "trading/stages.py",
     "trading/operator_control.py",
@@ -47,6 +48,11 @@ NEWS_NAME_RE = re.compile(r"\bnews_[a-z0-9_]+", re.I)
 WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 _SQL_KEYWORDS = {
+    "identities",
+    "bindings",
+    "native",
+    "complete_orders",
+    "results",
     "batch",
     "closed",
     "closing",

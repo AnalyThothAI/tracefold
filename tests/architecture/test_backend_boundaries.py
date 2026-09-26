@@ -191,6 +191,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     ),
     "app.nautilus": (
         "tracefold.trading.execution_contracts",
+        "tracefold.trading.native_fills",
         "tracefold.trading.trade_plan",
         # #433-B: the dormant Runtime composition root materializes Trading-owned execution rows,
         # prepares bounded Observation batches, and supplies the wake channel to the PostgreSQL
@@ -217,6 +218,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     "integrations.marketdata": ("tracefold.trading.engine.marketdata",),
     "integrations.nautilus": (
         "tracefold.trading.execution_contracts",
+        "tracefold.trading.native_fills",
         "tracefold.trading.trade_plan",
         "tracefold.trading.storage.execution_stream",
     ),
