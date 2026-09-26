@@ -445,10 +445,22 @@ def feed_page_sql(where_sql: str) -> str:
                sw.last_error_code AS semantic_last_error_code,
                h.content_revision AS update_content_revision, h.adopted_at_ms AS update_adopted_at_ms,
                jsonb_array_length(u.document -> 'claims') AS update_claim_n,
-               (SELECT claim ->> 'statement'
-                  FROM jsonb_array_elements(u.document -> 'claims') WITH ORDINALITY AS listed(claim, position)
-                 WHERE NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                 ORDER BY position LIMIT 1) AS update_claim_headline,
+               -- Twin of `update_view.headline_claim_statement`: what a later revision changed, else the lead claim.
+               COALESCE(
+                 (SELECT claim ->> 'statement'
+                    FROM jsonb_array_elements(u.document -> 'changes') WITH ORDINALITY AS changed(change, position)
+                    JOIN jsonb_array_elements(u.document -> 'claims') AS listed(claim)
+                      ON listed.claim ->> 'ref' = changed.change ->> 'current_ref'
+                   WHERE u.document ->> 'previous_content_revision' IS NOT NULL
+                     AND changed.change ->> 'kind' IN ('new_fact', 'parameter_change', 'phase_change', 'scope_change',
+                                                      'correction', 'conflict', 'possible_new')
+                     AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                   ORDER BY changed.position LIMIT 1),
+                 (SELECT claim ->> 'statement'
+                    FROM jsonb_array_elements(u.document -> 'claims') WITH ORDINALITY AS listed(claim, position)
+                   WHERE NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                   ORDER BY position LIMIT 1)
+               ) AS update_claim_headline,
                nw.state AS notification_state, nw.plan ->> 'action' AS notification_action,
                nw.plan -> 'claim_decisions' AS notification_claim_decisions,
                d.kind AS delivery_kind, d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms,

@@ -407,3 +407,23 @@ def test_a_change_against_a_related_events_head_names_that_event(conn) -> None:
     assert change["previous_event_id"] == "agent-silent"
     assert change["previous_statement"] == draft.statement
     assert detail["outcome"]["kind"] == "queued_notification"
+
+
+def test_an_unsent_later_revision_is_titled_by_the_claim_it_changed(conn) -> None:
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        _event(news, "agent-raised", opened_at_ms=NOW - 60_000)
+        head = first_update("agent-raised", adopted_at_ms=NOW - 50_000)
+        persist_update(conn, head)
+        raised = raised_update(head, adopted_at_ms=NOW - 40_000)
+        persist_update(conn, raised)
+        persist_semantic_work(conn, "agent-raised", wanted=2, done=2, now_ms=NOW - 40_000, last_outcome="adopted")
+        persist_plan(conn, raised, silent_plan(raised), state="done", now_ms=NOW - 35_000)
+
+    (row,) = _feed(news)["events"]
+    (change,) = [change for change in raised.changes if change.kind == "parameter_change"]
+    changed = next(claim for claim in raised.claims if claim.ref == change.current_ref)
+    # The SQL twin of `headline_claim_statement`: the 50% claim, not the superseded 25% lead claim.
+    assert changed.statement != head.claims[0].statement
+    assert (row["update"]["headline"], row["update"]["headline_source"]) == (changed.statement, "claim")

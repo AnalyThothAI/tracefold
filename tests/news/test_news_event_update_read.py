@@ -178,8 +178,11 @@ def test_a_change_whose_earlier_claim_was_not_found_keeps_its_refs_and_an_unknow
     assert change["kind"] == "parameter_change" and change["previous_ref"] == head.claims[0].ref
     assert change["previous_content_ref"] == head.ref
     assert change["previous_statement"] is None and change["previous_event_id"] is None
-    # No card was sent: the headline is the head's first unretired claim, and says so.
-    assert (view["headline"], view["headline_source"]) == (head.claims[0].statement, "claim")
+    # No card was sent: a later revision is titled by the claim it changed (50%), not the superseded
+    # lead claim (25%) that stays unretired beside it.
+    raised_claim = next(claim for claim in raised.claims if claim.ref == change["current_ref"])
+    assert raised_claim.statement != head.claims[0].statement
+    assert (view["headline"], view["headline_source"]) == (raised_claim.statement, "claim")
 
 
 def test_intents_join_their_queue_and_ledger_rows_and_the_ledger_outranks() -> None:

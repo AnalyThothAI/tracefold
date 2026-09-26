@@ -385,6 +385,8 @@ def _delivery_queue_intents() -> None:
          WHERE state = 'pending'
         """
     )
+    # The primary key used to lead with event_id; the detail and feed reads still find an Event's intents by it.
+    op.execute("CREATE INDEX ix_news_delivery_queue_event ON public.news_delivery_queue (event_id)")
 
 
 def _delivery_ledger_intents() -> None:

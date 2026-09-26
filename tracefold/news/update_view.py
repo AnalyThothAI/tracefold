@@ -174,9 +174,27 @@ def decode_plan(plan: Any) -> NotificationPlan | None:
         return None
 
 
-def first_claim_statement(update: EventUpdate) -> str | None:
+# Change kinds that name what a later revision is about. A restatement or a new source relationship
+# leaves the Event's headline where it was.
+_HEADLINE_CHANGE_KINDS = frozenset(
+    {"new_fact", "parameter_change", "phase_change", "scope_change", "correction", "conflict", "possible_new"}
+)
+
+
+def headline_claim_statement(update: EventUpdate) -> str | None:
+    """The claim an unsent Event is titled by: what its latest revision changed, else its lead claim.
+
+    A later revision keeps its earlier claims (a parameter change supersedes, it does not retire), so the
+    first listed claim would title a 25% -> 50% update with the 25% statement.
+    """
+
     retired = set(update.retired_claim_refs)
-    return next((claim.statement for claim in update.claims if claim.ref not in retired), None)
+    live = {claim.ref: claim.statement for claim in update.claims if claim.ref not in retired}
+    if update.previous_content_revision is not None:
+        for change in update.changes:
+            if change.kind in _HEADLINE_CHANGE_KINDS and change.current_ref in live:
+                return live[change.current_ref]
+    return next(iter(live.values()), None)
 
 
 def _source(evidence: Evidence) -> dict[str, Any]:
@@ -315,7 +333,7 @@ def event_update_view(
         }
         for item in update.evidence
     ]
-    claim_headline = first_claim_statement(update)
+    claim_headline = headline_claim_statement(update)
     return {
         "update_ref": update.ref,
         "content_revision": update.content_revision,
@@ -498,7 +516,7 @@ __all__ = [
     "decode_plan",
     "decode_update",
     "event_update_view",
-    "first_claim_statement",
+    "headline_claim_statement",
     "intent_views",
     "notification_view",
     "previous_content_refs",
