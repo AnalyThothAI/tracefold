@@ -72,6 +72,28 @@ class StorageConfig(BaseModel):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
 
 
+_SECRET_SHAPED_KEY = re.compile(r"(?i)(^|[_-])(api[_-]?key|access[_-]?token|authorization|password|secret)($|[_-])")
+
+
+def _secret_shaped_key(value: Any, *, path: str) -> str | None:
+    """The path of the first credential-shaped key inside a JSON-like value, or None."""
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if _SECRET_SHAPED_KEY.search(str(key)):
+                return child_path
+            found = _secret_shaped_key(child, path=child_path)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _secret_shaped_key(child, path=f"{path}[]")
+            if found is not None:
+                return found
+    return None
+
+
 class LlmRequestConfig(BaseModel):
     """Provider-neutral controls for one OpenAI-compatible request envelope."""
 
@@ -98,6 +120,11 @@ class LlmRequestConfig(BaseModel):
         overlap = owned.intersection(self.extra_body)
         if overlap:
             raise ValueError(f"llm_request_extra_body_owned:{','.join(sorted(overlap))}")
+        # Credentials belong in api_key (or a secret file), never in a request body that model-call receipts
+        # and error paths may render. The path is named; the value never is.
+        secret_path = _secret_shaped_key(self.extra_body, path="extra_body")
+        if secret_path is not None:
+            raise ValueError(f"llm_request_extra_body_secret:{secret_path}")
         return self
 
 

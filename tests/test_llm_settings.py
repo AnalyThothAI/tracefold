@@ -193,3 +193,27 @@ def test_news_judgment_is_reported_and_never_inferred_from_trading_semantics() -
     )
     assert _availability(news).news_judgment_model == "jev-1.13"
     assert _availability(trading).news_judgment_model is None
+
+
+@pytest.mark.parametrize(
+    ("extra_body", "path"),
+    [
+        ({"access_token": "sk-abcdefghijklmnopqrstu"}, "extra_body.access_token"),
+        ({"provider": {"Authorization": "Bearer sk-abcdefghijklmnopqrstu"}}, "extra_body.provider.Authorization"),
+        ({"routes": [{"api-key": "sk-abcdefghijklmnopqrstu"}]}, "extra_body.routes[].api-key"),
+        ({"client_secret": "sk-abcdefghijklmnopqrstu"}, "extra_body.client_secret"),
+    ],
+)
+def test_a_credential_in_the_request_body_is_refused_without_echoing_it(extra_body: dict, path: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        LlmConfig.model_validate({"request": {"extra_body": extra_body}})
+
+    assert f"llm_request_extra_body_secret:{path}" in str(caught.value)
+    assert "sk-abcdefghijklmnopqrstu" not in str(caught.value)
+
+
+def test_ordinary_provider_extensions_are_not_mistaken_for_credentials() -> None:
+    config = LlmConfig.model_validate(
+        {"request": {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}, "top_k": 20}}}
+    )
+    assert config.request.extra_body["chat_template_kwargs"] == {"enable_thinking": False}
