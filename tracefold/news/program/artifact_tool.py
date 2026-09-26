@@ -1,8 +1,4 @@
-"""Regenerate the sole packaged stable Program state image.
-
-The binary has exactly one executable factory and no second runtime-loadable
-profile.
-"""
+"""Regenerate the sole executable stable image without destroying its history."""
 
 from __future__ import annotations
 
@@ -10,10 +6,11 @@ import importlib.resources
 import json
 import os
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..artifact_identity import canonical_json
+from ..artifact_identity import canonical_json, canonical_sha
 from .artifact import (
     NewsProgramStateV1,
     _write_exclusive,
@@ -22,6 +19,10 @@ from .artifact import (
     encode_program_state,
 )
 from .runtime import PROGRAM_SCHEMA_VERSION
+
+# Historical images are verified as documents, never loaded through today's graph.
+# A future schema cut must explicitly retain the identity format it can read here.
+_HISTORICAL_SCHEMAS = frozenset({"news_program_state_v1"})
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -35,9 +36,49 @@ def _read_json_object(path: Path) -> dict[str, Any]:
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(canonical_json(value) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        _write_exclusive(temporary, canonical_json(value) + "\n")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _verify_previous_image(root: Path, identity: str) -> None:
+    """Check the original hash without applying current Predictor/schema validation.
+
+    In the v1 identity format, only each Predictor's ``lm`` entry is excluded.
+    Do not reissue the image with new defaults: that would authenticate different
+    bytes and could silently replace a previously deployed program's identity.
+    """
+
+    if len(identity) != 64 or any(char not in "0123456789abcdef" for char in identity):
+        raise ValueError("news_program_previous_image_identity_invalid")
+    previous = _read_json_object(root / f"{identity}.json")
+    if (
+        previous.get("program_sha256") != identity
+        or previous.get("schema_version") not in _HISTORICAL_SCHEMAS | {PROGRAM_SCHEMA_VERSION}
+    ):
+        raise ValueError("news_program_previous_image_identity_invalid")
+    try:
+        state = previous["state"]
+        if not isinstance(state, Mapping) or any(not isinstance(value, Mapping) for value in state.values()):
+            raise ValueError("news_program_previous_image_identity_invalid")
+        material = {
+            "schema_version": previous["schema_version"],
+            "evidence_input_version": previous["evidence_input_version"],
+            "dspy_version": previous["dspy_version"],
+            "predictors": previous["predictors"],
+            "state": {
+                name: {key: value for key, value in document.items() if key != "lm"}
+                for name, document in state.items()
+            },
+        }
+        digest = canonical_sha(material)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("news_program_previous_image_identity_invalid") from exc
+    if digest != identity:
+        raise ValueError("news_program_previous_image_identity_invalid")
 
 
 def _write_image(root: Path, state: NewsProgramStateV1) -> Path:
@@ -48,26 +89,24 @@ def _write_image(root: Path, state: NewsProgramStateV1) -> Path:
         if image.read_text(encoding="utf-8") != document:
             raise ValueError("news_program_artifact_existing_image_mismatch")
         return image
-    # Exclusive and unique, then unwound on any failure. #319 dropped the no-follow half; exclusive
-    # creation stays because two tool runs writing one image must collide loudly rather than interleave.
     temporary = image.with_name(f".{image.name}.{uuid.uuid4().hex}.tmp")
     try:
         _write_exclusive(temporary, document)
         os.replace(temporary, image)
-    except Exception:
+    finally:
         temporary.unlink(missing_ok=True)
-        raise
     decode_program_state(image.read_text(encoding="utf-8"))
     return image
 
 
 def regenerate_stable_program_state(*, programs_root: Path | None = None) -> str:
-    """Atomically replace the one-entry registry with the reviewed root."""
+    """Validate both sides before atomically publishing the new executable root.
 
-    # Resolved from the owning package, not from this module's own location: the registry lives with the
-    # Program (`news/program/resources`), while this tool lives with the learning plane, and PR8 moved
-    # both. A `Path(__file__).parent / "programs"` here silently pointed at a directory that no longer
-    # existed — the same failure mode the compile source seal hit in PR8-A.
+    A failed build can leave an unregistered content-addressed image, but cannot
+    retire the working registry. Old images remain readable historical documents;
+    omission from ``images`` keeps them out of the runtime's executable registry.
+    """
+
     root = programs_root or Path(str(importlib.resources.files("tracefold.news.program"))) / "resources"
     registry_path = root / "registry.json"
     registry = _read_json_object(registry_path)
@@ -77,21 +116,12 @@ def regenerate_stable_program_state(*, programs_root: Path | None = None) -> str
     if [str(value) for value in registry["images"]] != [old_sha]:
         raise ValueError("news_program_regenerate_with_candidates_forbidden")
 
+    _verify_previous_image(root, old_sha)
     state = build_code_owned_program_state()
-    new_image = _write_image(root, state)
+    _write_image(root, state)
+    # All fallible image reads, validation and construction precede this commit
+    # point. Never restore an old registry after publishing a verified new one.
     _atomic_json(registry_path, {"images": [state.program_sha256], "stable": state.program_sha256})
-    registered = _read_json_object(registry_path)
-    if registered != {"images": [state.program_sha256], "stable": state.program_sha256}:
-        _atomic_json(registry_path, registry)
-        raise ValueError("news_program_registry_switch_failed")
-    decode_program_state(new_image.read_text(encoding="utf-8"))
-
-    if old_sha != state.program_sha256:
-        old_image = root / f"{old_sha}.json"
-        previous = _read_json_object(old_image)
-        if previous.get("program_sha256") != old_sha or previous.get("schema_version") != PROGRAM_SCHEMA_VERSION:
-            raise ValueError("news_program_previous_image_identity_invalid")
-        old_image.unlink()
     return state.program_sha256
 
 
