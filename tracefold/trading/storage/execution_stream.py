@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from typing import Any, Final, Literal
 from uuid import UUID
 
+from psycopg.errors import UniqueViolation
+
 from tracefold.platform.postgres.audit import BOUNDED_WINDOW_SCAN_BUDGET, ReadQuerySpec
 from tracefold.platform.postgres.client import require_transaction
 
@@ -50,6 +52,14 @@ _RUNTIME_STATE_FIELDS: Final = (
     "updated_at_ns",
     "account_snapshot",
     "routes_count",
+    "account_projection_failure",
+    "convergence_checked_at_ns",
+    "convergence_failure",
+    "venue_read_started_at_ns",
+    "venue_read_completed_at_ns",
+    "venue_read_failure",
+    "recovery_attempted_at_ns",
+    "recovery_result",
 )
 _RUNTIME_STATE_COLUMNS: Final = ", ".join(_RUNTIME_STATE_FIELDS)
 
@@ -152,32 +162,61 @@ class PreparedExecutionObservationBatch:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionExposureFinding:
+    """One named difference from the last successful convergence check."""
+
+    kind: Literal[
+        "unclaimed_position",
+        "unexpected_order",
+        "ownership_mismatch",
+        "venue_cache_mismatch",
+        "close_unconfirmed",
+        "ambiguous",
+        "submission_unknown",
+    ]
+    object_id: str
+    instrument_id: str
+    plan_entry_id: str | None
+    cache_quantity: str | None
+    venue_quantity: str | None
+    observed_at_ns: int
+
+    def __post_init__(self) -> None:
+        if not self.object_id or len(self.object_id) > 256 or not postgres_text_valid(self.object_id):
+            raise ValueError("execution_finding_identity_invalid")
+        if _IDENTITY.fullmatch(self.instrument_id) is None or self.observed_at_ns <= 0:
+            raise ValueError("execution_finding_instrument_or_clock_invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionAccountPosition:
-    """One position the Nautilus Cache holds, with the protective orders resting against it."""
+    """A Cache or venue position, with plan association separate from venue agreement."""
 
     position_id: str
     instrument_id: str
+    source: Literal["cache", "venue"]
     side: Literal["long", "short"]
     quantity: str
-    entry_price: str
+    entry_price: str | None
     mark_price: str | None
     unrealized_pnl_usd: str | None
-    # Whether a non-terminal plan claims this instrument. Exposure no plan claims blocks new entries.
     owned: bool
+    plan_entry_id: str | None
+    protection_status: Literal["protected", "pending", "unprotected", "unknown"]
     stop_trigger_price: str | None
     take_profit_trigger_price: str | None
 
     def __post_init__(self) -> None:
         if not self.position_id or len(self.position_id) > 256 or not postgres_text_valid(self.position_id):
             raise ValueError("execution_account_position_identity_invalid")
-        if _IDENTITY.fullmatch(self.instrument_id) is None:
-            raise ValueError("execution_account_position_instrument_invalid")
-        if not self.quantity or not self.entry_price:
+        if _IDENTITY.fullmatch(self.instrument_id) is None or not self.quantity:
             raise ValueError("execution_account_position_value_invalid")
+        if self.source == "cache" and not self.entry_price:
+            raise ValueError("execution_account_position_entry_invalid")
 
     @property
     def protected(self) -> bool:
-        return self.stop_trigger_price is not None and self.take_profit_trigger_price is not None
+        return self.protection_status == "protected"
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +231,7 @@ class ExecutionAccountOrder:
     reduce_only: bool
     trigger_price: str | None
     owned: bool
+    plan_entry_id: str | None
 
     def __post_init__(self) -> None:
         if not self.client_order_id or len(self.client_order_id) > 256 or not postgres_text_valid(self.client_order_id):
@@ -202,19 +242,18 @@ class ExecutionAccountOrder:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionAccountSnapshot:
-    """What the account holds, read from the Nautilus Cache the Runtime executes against (#680).
-
-    Nautilus reconciles the Cache with the venue at start and every five seconds after, so this is the
-    Runtime's own picture, not a second proof beside it. `complete` says every position could be
-    marked and the account balance was known, so `equity_usd` and the drawdown are whole numbers.
-    """
+    """Bounded account view; completeness, row truncation and venue agreement stay distinct."""
 
     observed_at_ns: int
     equity_usd: str | None
     daily_drawdown_usd: str | None
     daily_drawdown_bps: int | None
     positions: tuple[ExecutionAccountPosition, ...]
+    positions_total: int
     orders: tuple[ExecutionAccountOrder, ...]
+    orders_total: int
+    findings: tuple[ExecutionExposureFinding, ...]
+    findings_total: int
     open_orders_count: int
     inflight_orders_count: int
     complete: bool
@@ -222,25 +261,38 @@ class ExecutionAccountSnapshot:
     def __post_init__(self) -> None:
         if self.observed_at_ns <= 0:
             raise ValueError("execution_account_snapshot_clock_invalid")
-        if min(self.open_orders_count, self.inflight_orders_count) < 0:
+        if (
+            min(
+                self.positions_total,
+                self.orders_total,
+                self.findings_total,
+                self.open_orders_count,
+                self.inflight_orders_count,
+            )
+            < 0
+        ):
             raise ValueError("execution_account_snapshot_count_invalid")
-        if len(self.positions) > 100 or len(self.orders) > 200:
+        if (
+            self.positions_total < len(self.positions)
+            or self.orders_total < len(self.orders)
+            or self.findings_total < len(self.findings)
+        ):
+            raise ValueError("execution_account_snapshot_count_invalid")
+        if len(self.positions) > 100 or len(self.orders) > 200 or len(self.findings) > 100:
             raise ValueError("execution_account_snapshot_bounds_invalid")
 
     def payload(self) -> dict[str, Any]:
-        return {
-            "version": "execution_account_snapshot_v2",
-            **asdict(self),
-        }
+        return {"version": "execution_account_snapshot_v3", **asdict(self)}
 
     @classmethod
     def from_payload(cls, value: object) -> ExecutionAccountSnapshot:
-        if not isinstance(value, dict) or value.get("version") != "execution_account_snapshot_v2":
+        if not isinstance(value, dict) or value.get("version") != "execution_account_snapshot_v3":
             raise ValueError("execution_account_snapshot_invalid")
         try:
             payload = {key: item for key, item in value.items() if key != "version"}
             payload["positions"] = tuple(ExecutionAccountPosition(**item) for item in payload["positions"])
             payload["orders"] = tuple(ExecutionAccountOrder(**item) for item in payload["orders"])
+            payload["findings"] = tuple(ExecutionExposureFinding(**item) for item in payload["findings"])
             return cls(**payload)
         except (KeyError, TypeError, ValueError):
             raise ValueError("execution_account_snapshot_invalid") from None
@@ -265,7 +317,7 @@ class ExecutionRuntimeState:
     unexpected_exposure: bool
     positions_count: int
     open_orders_count: int
-    protection_status: Literal["not_applicable", "protected", "unprotected"]
+    protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]
     heartbeat_at_ns: int
     entry_block_reason: str | None
     started_at_ns: int
@@ -274,6 +326,14 @@ class ExecutionRuntimeState:
     # How many `market_key`s this Runtime generation routes. Fixed for the life of one `runtime_id`,
     # so only the insert writes it.
     routes_count: int = 0
+    account_projection_failure: str | None = None
+    convergence_checked_at_ns: int | None = None
+    convergence_failure: str | None = None
+    venue_read_started_at_ns: int | None = None
+    venue_read_completed_at_ns: int | None = None
+    venue_read_failure: str | None = None
+    recovery_attempted_at_ns: int | None = None
+    recovery_result: str | None = None
 
     def __post_init__(self) -> None:
         if _IDENTITY.fullmatch(self.account_slot) is None:
@@ -294,6 +354,28 @@ class ExecutionRuntimeState:
             raise ValueError("execution_runtime_entry_reason_invalid")
         if self.routes_count < 0:
             raise ValueError("execution_runtime_routes_invalid")
+        for clock_ns in (
+            self.convergence_checked_at_ns,
+            self.venue_read_started_at_ns,
+            self.venue_read_completed_at_ns,
+            self.recovery_attempted_at_ns,
+        ):
+            if clock_ns is not None and clock_ns <= 0:
+                raise ValueError("execution_runtime_observation_clock_invalid")
+        if (
+            self.venue_read_started_at_ns is not None
+            and self.venue_read_completed_at_ns is not None
+            and self.venue_read_completed_at_ns < self.venue_read_started_at_ns
+        ):
+            raise ValueError("execution_runtime_venue_window_invalid")
+        for failure_name in (
+            self.account_projection_failure,
+            self.convergence_failure,
+            self.venue_read_failure,
+            self.recovery_result,
+        ):
+            if failure_name is not None and _IDENTITY.fullmatch(failure_name) is None:
+                raise ValueError("execution_runtime_failure_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,25 +571,51 @@ class ExecutionStreamStorage:
             return ()
         self.conn.execute(f"SAVEPOINT {_OBSERVATION_BATCH_SAVEPOINT}")
         try:
-            # `prepare_execution_observations` already bounded the batch, refused duplicate event ids
-            # and validated every row, so the append is one ordinary INSERT. Until #520 PR-C this
-            # statement re-derived those same bounds in SQL to feed the per-key `payload` CHECK.
+            # Validation and batch bounds are prepared outside the transaction.
+            # Storage owns native-key concurrency and immutable replay checks.
+            # Serialize a native trade's separate economic/cost/binding facts by
+            # its real venue identity, including across different event IDs. Lock
+            # in a fixed order so bounded multi-trade batches cannot deadlock.
+            self.conn.execute(
+                """
+                WITH identities AS MATERIALIZED (
+                  SELECT DISTINCT hashtextextended(jsonb_build_array(
+                    payload ->> 'account_slot', payload -> 'summary' ->> 'venue_environment',
+                    payload -> 'summary' ->> 'native_instrument', payload -> 'summary' ->> 'native_trade_id'
+                  )::text, 699) AS lock_key
+                    FROM jsonb_array_elements(%s::jsonb) AS offered(payload)
+                   WHERE payload ->> 'normalized_kind' IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                )
+                SELECT pg_advisory_xact_lock(lock_key) FROM (SELECT lock_key FROM identities ORDER BY lock_key) ordered
+                """,
+                (prepared.payload_json,),
+            )
             self.conn.execute(
                 """
                 INSERT INTO trading_execution_observations (
                   event_id, account_slot, execution_strategy,
                   signal_id, command_id, normalized_kind, occurred_at_ns, observed_at_ns,
-                  native_identity_references, summary, payload
+                  native_identity_references, summary, payload,
+                  native_environment, native_instrument, native_trade_id
                 )
                 SELECT payload ->> 'event_id', payload ->> 'account_slot',
                        payload ->> 'execution_strategy',
                        payload ->> 'signal_id', payload ->> 'command_id',
                        payload ->> 'normalized_kind', (payload ->> 'occurred_at_ns')::bigint,
                        (payload ->> 'observed_at_ns')::bigint,
-                       payload -> 'native_identity_references', payload -> 'summary', payload
+                       payload -> 'native_identity_references', payload -> 'summary', payload,
+                       CASE WHEN payload ->> 'normalized_kind'
+                                 IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                            THEN payload -> 'summary' ->> 'venue_environment' END,
+                       CASE WHEN payload ->> 'normalized_kind'
+                                 IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                            THEN payload -> 'summary' ->> 'native_instrument' END,
+                       CASE WHEN payload ->> 'normalized_kind'
+                                 IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                            THEN payload -> 'summary' ->> 'native_trade_id' END
                   FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS offered(payload, ordinal)
                  ORDER BY offered.ordinal
-                ON CONFLICT (event_id) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 (prepared.payload_json,),
             )
@@ -516,13 +624,64 @@ class ExecutionStreamStorage:
                 SELECT array_agg(existing.seq ORDER BY offered.ordinal) AS sequences
                   FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS offered(payload, ordinal)
                   JOIN trading_execution_observations existing
-                    ON existing.event_id = offered.payload ->> 'event_id'
+                    ON (existing.event_id = offered.payload ->> 'event_id'
+                        OR (existing.native_trade_id IS NOT NULL
+                            AND existing.account_slot = offered.payload ->> 'account_slot'
+                            AND existing.native_environment = offered.payload -> 'summary' ->> 'venue_environment'
+                            AND existing.native_instrument = offered.payload -> 'summary' ->> 'native_instrument'
+                            AND existing.native_trade_id = offered.payload -> 'summary' ->> 'native_trade_id'
+                            AND existing.normalized_kind = offered.payload ->> 'normalized_kind'))
+                   AND CASE WHEN existing.native_trade_id IS NOT NULL
+                              OR existing.normalized_kind = 'native_order_result' THEN
+                            existing.payload - ARRAY['observed_at_ns', 'execution_strategy',
+                                                     'event_id', 'native_identity_references']
+                            = offered.payload - ARRAY['observed_at_ns', 'execution_strategy',
+                                                     'event_id', 'native_identity_references']
+                            WHEN existing.normalized_kind IN ('fill', 'native_order_result')
+                              OR offered.payload ->> 'normalized_kind' IN ('fill', 'native_order_result')
+                              OR existing.summary ->> 'binding_version' = 'plan_order_v1'
+                              OR offered.payload -> 'summary' ->> 'binding_version' = 'plan_order_v1'
+                            THEN existing.payload - 'observed_at_ns' = offered.payload - 'observed_at_ns'
+                            ELSE TRUE END
                 """,
                 (prepared.payload_json,),
             ).fetchone()
             stored = () if resolved is None else (resolved["sequences"] or ())
             if len(stored) != prepared.count:
+                # Preserve refusal of a second final Signal/Command verdict.
+                # The native-key conflict handler must not turn other unique
+                # constraints into successful no-ops or transient journal errors.
+                refused = self.conn.execute(
+                    """
+                    SELECT 1 FROM jsonb_array_elements(%s::jsonb) AS offered(payload)
+                     WHERE payload ->> 'normalized_kind'
+                           NOT IN ('native_fill', 'native_fill_cost', 'native_fill_binding')
+                       AND NOT EXISTS (SELECT 1 FROM trading_execution_observations existing
+                                        WHERE existing.event_id = offered.payload ->> 'event_id')
+                     LIMIT 1
+                    """,
+                    (prepared.payload_json,),
+                ).fetchone()
+                if refused is not None:
+                    raise UniqueViolation("execution_stream_unique_identity_conflict")
                 raise RuntimeError("execution_stream_identity_conflict")
+            conflict = self.conn.execute(
+                """
+                SELECT 1 FROM jsonb_array_elements(%s::jsonb) AS offered(payload)
+                  JOIN trading_execution_observations existing
+                    ON existing.account_slot = offered.payload ->> 'account_slot'
+                   AND existing.native_environment = offered.payload -> 'summary' ->> 'venue_environment'
+                   AND existing.native_instrument = offered.payload -> 'summary' ->> 'native_instrument'
+                   AND existing.native_trade_id = offered.payload -> 'summary' ->> 'native_trade_id'
+                 WHERE (existing.summary ->> 'venue_order_id'
+                          IS DISTINCT FROM offered.payload -> 'summary' ->> 'venue_order_id'
+                        OR existing.occurred_at_ns <> (offered.payload ->> 'occurred_at_ns')::bigint)
+                 LIMIT 1
+                """,
+                (prepared.payload_json,),
+            ).fetchone()
+            if conflict is not None:
+                raise RuntimeError("execution_stream_native_trade_conflict")
             sequences = tuple(int(seq) for seq in stored)
             self._project_runtime_control_state(prepared.payload_json)
         except Exception:
@@ -631,12 +790,44 @@ class ExecutionStreamStorage:
         ).fetchone()
         return None if row is None else self._materialize_runtime_state(row)
 
+    def execution_diagnostic_evidence(
+        self, account_slot: str
+    ) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+        """Bounded read-only Plan and risk rows for one account slot."""
+        if _IDENTITY.fullmatch(account_slot) is None:
+            raise ValueError("execution_diagnostic_scope_invalid")
+        plans = self.conn.execute(
+            """
+            SELECT entry_id, source, account_slot,
+                   instrument_id, direction, entry_client_order_id, status,
+                   created_at_ns, opened_at_ns, terminal_at_ns, exit_reason
+              FROM trading_trade_plans
+             WHERE account_slot = %s AND terminal_at_ns IS NULL
+             ORDER BY created_at_ns, entry_id
+             LIMIT 1001
+            """,
+            (account_slot,),
+        ).fetchall()
+        risks = self.conn.execute(
+            """
+            SELECT seq, occurred_at_ns, observed_at_ns, summary
+              FROM trading_execution_observations
+             WHERE account_slot = %s AND normalized_kind = 'risk'
+               AND summary->>'risk_fact' = 'unexpected_exposure'
+             ORDER BY seq DESC
+             LIMIT 20
+            """,
+            (account_slot,),
+        ).fetchall()
+        return tuple(dict(row) for row in plans), tuple(dict(row) for row in risks)
+
     def put_execution_runtime_state(self, value: ExecutionRuntimeState) -> ExecutionRuntimeState:
         require_transaction(self.conn, operation="put_execution_runtime_state")
         self.conn.execute(
             f"""
             INSERT INTO trading_execution_runtime_state ({_RUNTIME_STATE_COLUMNS})
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (account_slot) DO UPDATE SET
               {", ".join(f"{column} = EXCLUDED.{column}" for column in _RUNTIME_STATE_FIELDS[1:])}
             """,  # noqa: S608 -- module-owned column names; every value stays bound
@@ -654,7 +845,11 @@ class ExecutionStreamStorage:
                SET alive = %s, entries_armed = %s, unexpected_exposure = %s,
                    positions_count = %s, open_orders_count = %s, protection_status = %s,
                    heartbeat_at_ns = %s, entry_block_reason = %s, updated_at_ns = %s,
-                   account_snapshot = %s::jsonb
+                   account_snapshot = %s::jsonb,
+                   account_projection_failure = %s, convergence_checked_at_ns = %s,
+                   convergence_failure = %s, venue_read_started_at_ns = %s,
+                   venue_read_completed_at_ns = %s, venue_read_failure = %s,
+                   recovery_attempted_at_ns = %s, recovery_result = %s
              WHERE account_slot = %s AND runtime_id = %s
             """,
             (
@@ -668,6 +863,14 @@ class ExecutionStreamStorage:
                 value.entry_block_reason,
                 value.updated_at_ns,
                 self._account_snapshot_json(value.account_snapshot),
+                value.account_projection_failure,
+                value.convergence_checked_at_ns,
+                value.convergence_failure,
+                value.venue_read_started_at_ns,
+                value.venue_read_completed_at_ns,
+                value.venue_read_failure,
+                value.recovery_attempted_at_ns,
+                value.recovery_result,
                 value.account_slot,
                 value.runtime_id,
             ),
@@ -696,6 +899,14 @@ class ExecutionStreamStorage:
                 else ExecutionAccountSnapshot.from_payload(dict(row["account_snapshot"]))
             ),
             routes_count=int(row["routes_count"]),
+            account_projection_failure=row["account_projection_failure"],
+            convergence_checked_at_ns=row["convergence_checked_at_ns"],
+            convergence_failure=row["convergence_failure"],
+            venue_read_started_at_ns=row["venue_read_started_at_ns"],
+            venue_read_completed_at_ns=row["venue_read_completed_at_ns"],
+            venue_read_failure=row["venue_read_failure"],
+            recovery_attempted_at_ns=row["recovery_attempted_at_ns"],
+            recovery_result=row["recovery_result"],
         )
 
     @staticmethod
@@ -720,6 +931,14 @@ class ExecutionStreamStorage:
             value.updated_at_ns,
             cls._account_snapshot_json(value.account_snapshot),
             value.routes_count,
+            value.account_projection_failure,
+            value.convergence_checked_at_ns,
+            value.convergence_failure,
+            value.venue_read_started_at_ns,
+            value.venue_read_completed_at_ns,
+            value.venue_read_failure,
+            value.recovery_attempted_at_ns,
+            value.recovery_result,
         )
 
     def ensure_execution_runtime_control_state(
@@ -840,6 +1059,7 @@ __all__ = [
     "ExecutionAccountOrder",
     "ExecutionAccountPosition",
     "ExecutionAccountSnapshot",
+    "ExecutionExposureFinding",
     "ExecutionRuntimeState",
     "ExecutionStreamStorage",
     "PreparedExecutionObservationBatch",

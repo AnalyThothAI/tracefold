@@ -1,24 +1,31 @@
 """Translate Runtime verdicts and Nautilus events into durable observations.
 
-One writer, so every observation of one entry carries the same correlation: a Signal's `signal_id` or
-a manual Command's `command_id`, which is also the plan's `entry_id`. Exposure no plan claims is
-recorded without one.
+Native economic receipts and costs are independently durable; verified associations carry the
+original Plan's Signal or Command identity. Strategy verdicts and lifecycle observations retain
+that same correlation. Exposure no Plan claims is recorded without one.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, Final, Literal
 
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
+
 from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1
+from tracefold.trading.native_fills import NativeFill, decimal_text
+from tracefold.trading.trade_plan import PlanOrderBinding
 
 from .account_projection import OrderLeg
 from .funding import FundingCashflow
 from .journal import ExecutionJournal
+from .order_evidence import BinanceOrderEvidence
 from .risk import decimal_value
 from .signal_client import ExecutionSignalClient
+from .trade_history import BinanceTradeHistory
 
 # The venue's own words for a refusal, bounded by what `ExecutionObservationV1` metadata accepts for
 # one string.
@@ -36,6 +43,106 @@ def bounded_text(value: str) -> str:
 
 def _decimal_text(value: Any) -> str:
     return format(decimal_value(value).normalize(), "f")
+
+
+def offer_native_evidence(
+    journal: ExecutionJournal,
+    evidence: BinanceOrderEvidence | BinanceTradeHistory,
+    *,
+    environment: BinanceEnvironment,
+    observed_at_ns: int,
+    binding: PlanOrderBinding | None = None,
+) -> bool:
+    """An adapter read can reach PG before any Strategy callback or Cache replay.
+
+    Return queue acceptance separately from native application. SQL receipts own
+    durability, and the immutable Plan/native identities own crash recovery.
+    """
+    history = evidence.history if isinstance(evidence, BinanceOrderEvidence) else evidence
+    if history is None:
+        return True
+    if binding is not None:
+        if (
+            not isinstance(evidence, BinanceOrderEvidence)
+            or evidence.order is None
+            or binding.client_order_id != evidence.request.client_order_id
+            or binding.account_slot != journal.factory.account_slot
+            or binding.instrument_id != f"{history.symbol}-PERP.BINANCE"
+        ):
+            raise ValueError("native_fill_binding_evidence_conflict")
+        expected = {"stop": "STOP_MARKET", "take_profit": "TAKE_PROFIT_MARKET"}.get(binding.leg)
+        if (expected is not None and (evidence.parent is None or evidence.parent.orderType != expected)) or (
+            expected is None and evidence.parent is not None
+        ):
+            raise ValueError("native_fill_binding_purpose_conflict")
+    accepted = True
+    for trade in history.trades:
+        if trade.id is None or trade.orderId is None or trade.time is None or trade.side is None:
+            raise ValueError("native_fill_evidence_identity_missing")
+        fill = NativeFill(
+            account_slot=journal.factory.account_slot,
+            environment=environment.value,
+            instrument=history.symbol,
+            trade_id=str(trade.id),
+            order_id=str(trade.orderId),
+            side=trade.side.value,
+            quantity=Decimal(trade.qty),
+            price=Decimal(trade.price),
+            occurred_at_ns=trade.time * 1_000_000,
+        )
+        for value in fill.observation(
+            execution_strategy=journal.factory.execution_strategy,
+            observed_at_ns=observed_at_ns,
+            commission=Decimal(trade.commission),
+            commission_currency=trade.commissionAsset,
+            binding=binding,
+        ):
+            offered = value
+            if value.normalized_kind == "native_fill_binding" and isinstance(evidence, BinanceOrderEvidence):
+                summary = dict(value.summary)
+                summary["proof"] = "signed_order_v1"
+                summary["native_client_order_id"] = evidence.order.clientOrderId
+                if evidence.parent is not None:
+                    summary["parent_algo_id"] = str(evidence.parent.algoId)
+                    summary["parent_order_type"] = evidence.parent.orderType
+                offered = value.model_copy(update={"summary": summary})
+            accepted = journal.offer(offered) and accepted
+    if (
+        isinstance(evidence, BinanceOrderEvidence)
+        and evidence.complete
+        and evidence.order is not None
+        and evidence.order.status.value in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
+    ):
+        order = evidence.order
+        trade_ids = sorted(str(trade.id) for trade in history.trades)
+        trade_digest = hashlib.sha256("\n".join(trade_ids).encode()).hexdigest()
+        identity = {
+            "account_slot": journal.factory.account_slot,
+            "environment": environment.value,
+            "symbol": history.symbol,
+            "order_id": str(order.orderId),
+            "kind": "native_order_result",
+        }
+        event_id = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        value = journal.factory.create(
+            normalized_kind="native_order_result",
+            occurred_at_ns=order.updateTime * 1_000_000,
+            observed_at_ns=observed_at_ns,
+            fixed_event_id=event_id,
+            native_identity_references=(str(order.orderId), order.clientOrderId),
+            summary={
+                "venue_environment": environment.value,
+                "native_instrument": history.symbol,
+                "venue_order_id": str(order.orderId),
+                "status": order.status.value,
+                "executed_quantity": decimal_text(Decimal(order.executedQty)),
+                "trade_count": len(history.trades),
+                "trade_digest": trade_digest,
+                "source": "signed_order_trades_v1",
+            },
+        )
+        accepted = journal.offer(value) and accepted
+    return accepted
 
 
 class RuntimeObservations:
@@ -195,26 +302,38 @@ class RuntimeObservations:
         reason: str | None = None,
         trigger_price: Any = None,
         venue_order_id: str | None = None,
+        binding: PlanOrderBinding | None = None,
     ) -> None:
         """One order lifecycle step. A stop or take-profit is `protection`; entries and exits are `order`."""
 
         summary: dict[str, str | int | bool] = {"leg": leg, "status": status}
+        if binding is not None:
+            if binding.client_order_id != client_order_id or binding.leg != leg:
+                raise ValueError("plan_order_observation_identity_mismatch")
+            summary.update(
+                {
+                    "binding_version": "plan_order_v1",
+                    "client_order_id": binding.client_order_id,
+                    "instrument_id": binding.instrument_id,
+                }
+            )
+            if binding.exit_reason is not None:
+                summary["exit_reason"] = binding.exit_reason
         if reason:
             summary["reason"] = bounded_text(reason)
         if trigger_price is not None:
             summary["trigger_price"] = _decimal_text(trigger_price)
         references = [client_order_id] if venue_order_id is None else [client_order_id, venue_order_id]
-        self._offer(
-            self._factory.create(
-                normalized_kind="protection" if leg in {"stop", "take_profit"} else "order",
-                **correlation,
-                occurred_at_ns=occurred_at_ns,
-                observed_at_ns=self._timestamp_ns(),
-                native_identity_references=references,
-                summary=summary,
-                event_identity=f"{status}:{client_order_id}",
-            )
+        observation = self._factory.create(
+            normalized_kind="protection" if leg in {"stop", "take_profit"} else "order",
+            **correlation,
+            occurred_at_ns=occurred_at_ns,
+            observed_at_ns=self._timestamp_ns(),
+            native_identity_references=references,
+            summary=summary,
+            event_identity=f"{status}:{client_order_id}",
         )
+        self._offer(observation)
 
     def fill(self, *, correlation: dict[str, str], leg: OrderLeg, event: Any) -> None:
         """One venue fill, with the commission the venue charged for it and the currency it charged in."""

@@ -19,6 +19,7 @@ from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.identifiers import ClientOrderId, StrategyId
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
 from tests.nautilus_oi_runtime_fixtures import (
     ACCOUNT_ID,
@@ -40,6 +41,7 @@ from tests.nautilus_oi_runtime_fixtures import (
 from tracefold.integrations.nautilus.oi_runtime.config import OiInstrumentRoute
 from tracefold.integrations.nautilus.oi_runtime.entry import deterministic_client_order_id
 from tracefold.integrations.nautilus.oi_runtime.strategy import OpenPlan, RuntimeControlSnapshot
+from tracefold.trading.trade_plan import PlanOrderBinding
 
 _NAMESPACE = oi_profile().namespace
 _ENTRY_ID = "1" * 64
@@ -134,8 +136,46 @@ def test_partial_entry_is_protected_before_the_remaining_fill_and_resized_afterw
         if value.normalized_kind == "protection" and value.summary.get("status") == "submitted"
     } == {"stop", "take_profit"}
     orders = _by_id(runtime.orders())
-    assert orders[_leg_id("stop").value].quantity.as_decimal() == Decimal("0.049")
-    assert orders[_leg_id("take_profit").value].quantity.as_decimal() == Decimal("0.049")
+    for leg, kind in (("stop", OrderType.STOP_MARKET), ("take_profit", OrderType.MARKET_IF_TOUCHED)):
+        original = orders[_leg_id(leg).value]
+        assert original.status.name == "CANCELED" and original.quantity.as_decimal() == Decimal("0.01")
+        [replacement] = [order for order in runtime.orders() if order.is_open and order.order_type == kind]
+        assert replacement.client_order_id != original.client_order_id
+        assert replacement.quantity.as_decimal() == Decimal("0.049")
+        assert replacement.is_reduce_only and replacement.trigger_type == TriggerType.MARK_PRICE
+        assert replacement.trigger_price != original.trigger_price
+        leg_events = [
+            value.summary["status"]
+            for value in observations
+            if value.normalized_kind == "protection" and value.summary.get("leg") == leg
+        ]
+        assert leg_events.count("accepted") == 2 and leg_events.count("canceled") == 1
+        assert leg_events.index("canceled") > max(
+            index for index, status in enumerate(leg_events) if status == "accepted"
+        )
+    view = runtime.strategy.runtime_view(runtime.strategy._now_ns())
+    assert view.protection_status == "protected"
+    assert {order.leg for order in view.account_snapshot.orders if order.owned} == {"stop", "take_profit"}
+
+
+def test_a_refused_protection_replacement_leaves_the_prior_orders_live() -> None:
+    runtime = unit_runtime(open_plans=(OpenPlan(open_plan(), disposition_pending=False),))
+    cached_position(runtime)
+    old_stop = cached_protection(runtime, leg="stop", trigger=Decimal(9_800), quantity=Decimal("0.01"))
+    old_take_profit = cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200), quantity=Decimal("0.01"))
+
+    runtime.pump()
+    assert {order.order_type for order, _position_id in runtime.strategy.submitted} == {
+        OrderType.STOP_MARKET,
+        OrderType.MARKET_IF_TOUCHED,
+    }
+    assert runtime.strategy.canceled == []
+    replacement_stop = next(
+        order for order, _position_id in runtime.strategy.submitted if order.order_type == OrderType.STOP_MARKET
+    )
+    runtime.strategy.on_order_rejected(_rejected(replacement_stop, "venue refused replacement"))
+    assert old_stop.is_open and old_take_profit.is_open
+    assert runtime.strategy.canceled == [] and runtime.strategy.closed == []
 
 
 def test_short_entry_uses_buy_side_mark_price_protection_in_real_engine() -> None:
@@ -241,16 +281,166 @@ def test_a_restart_with_a_position_and_both_orders_adopts_them_and_sends_nothing
     runtime.run()
 
     orders = runtime.orders()
-    assert sorted(order.client_order_id.value for order in orders) == [
-        "RECONCILED-ENTRY",
-        "RECONCILED-STOP",
-        "RECONCILED-TP",
-    ]
-    assert [order.client_order_id.value for order in orders if order.is_open] == ["RECONCILED-STOP", "RECONCILED-TP"]
+    assert {order.client_order_id.value for order in orders} == {
+        plan.entry_client_order_id,
+        _leg_id("stop").value,
+        _leg_id("take_profit").value,
+    }
+    assert {order.client_order_id.value for order in orders if order.is_open} == {
+        _leg_id("stop").value,
+        _leg_id("take_profit").value,
+    }
     assert len(runtime.engine.cache.positions_open()) == 1
     assert runtime.plans() == []
     assert runtime.observations("risk") == []
     assert runtime.strategy.runtime_view(NOW_NS + 12 * SECOND_NS).protection_status == "protected"
+
+
+def test_a_restart_attributes_a_replayed_historical_take_profit_close_to_its_plan() -> None:
+    """Startup reconciliation populated Cache before the Strategy could receive live callbacks."""
+    plan = open_plan()
+    runtime = unit_runtime(open_plans=(OpenPlan(plan, disposition_pending=False),), venue_reads=True)
+    position = cached_position(runtime, client_order_id=plan.entry_client_order_id)
+    take_profit = cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200))
+    fill = TestEventStubs.order_filled(
+        order=take_profit,
+        instrument=INSTRUMENT,
+        strategy_id=runtime.strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position.id,
+        last_qty=position.quantity,
+        last_px=INSTRUMENT.make_price(10_200),
+        ts_event=NOW_NS,
+    )
+    take_profit.apply(fill)
+    runtime.cache.update_order(take_profit)
+    position.apply(fill)
+    runtime.cache.update_position(position)
+    assert runtime.cache.positions_open() == []
+
+    runtime.venue({})
+
+    [closed] = runtime.plans()
+    assert (closed.status, closed.exit_reason, closed.terminal_at_ns) == ("closed", "take_profit", NOW_NS)
+
+
+@pytest.mark.parametrize("startup_replay", [True, False])
+def test_a_mixed_stop_and_take_profit_is_not_labeled_as_one_leg(startup_replay: bool) -> None:
+    plan = open_plan()
+    runtime = unit_runtime(open_plans=(OpenPlan(plan, disposition_pending=False),), venue_reads=True)
+    position = cached_position(runtime, client_order_id=plan.entry_client_order_id)
+    legs = (
+        (cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200)), Decimal("0.02"), 10_200),
+        (cached_protection(runtime, leg="stop", trigger=Decimal(9_800)), Decimal("0.029"), 9_800),
+    )
+    for index, (order, quantity, price) in enumerate(legs):
+        fill = TestEventStubs.order_filled(
+            order=order,
+            instrument=INSTRUMENT,
+            strategy_id=runtime.strategy.id,
+            account_id=ACCOUNT_ID,
+            position_id=position.id,
+            last_qty=INSTRUMENT.make_qty(quantity),
+            last_px=INSTRUMENT.make_price(price),
+            ts_event=NOW_NS + index,
+        )
+        order.apply(fill)
+        runtime.cache.update_order(order)
+        position.apply(fill)
+        runtime.cache.update_position(position)
+    assert runtime.cache.positions_open() == []
+
+    if startup_replay:
+        runtime.venue({})
+    else:
+        runtime.strategy.on_position_closed(TestEventStubs.position_closed(position))
+
+    [closed] = runtime.plans()
+    assert (closed.status, closed.exit_reason, closed.terminal_at_ns) == ("closed", "mixed_exit", NOW_NS + 1)
+
+
+def test_late_old_fill_and_close_keep_their_plan_and_do_not_cancel_a_new_plans_protection() -> None:
+    old = open_plan()
+    previous = unit_runtime(open_plans=(OpenPlan(old, disposition_pending=False),))
+    old_position = cached_position(previous)
+    old_tp = cached_protection(previous, leg="take_profit", trigger=Decimal(10_200))
+    fill = TestEventStubs.order_filled(
+        order=old_tp,
+        instrument=INSTRUMENT,
+        strategy_id=previous.strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=old_position.id,
+        last_qty=old_position.quantity,
+        last_px=INSTRUMENT.make_price(10_200),
+        ts_event=NOW_NS,
+    )
+    old_position.apply(fill)
+    old_close = TestEventStubs.position_closed(old_position)
+    bindings = tuple(
+        PlanOrderBinding(
+            account_slot=old.account_slot,
+            entry_id=old.entry_id,
+            source=old.source,
+            instrument_id=old.instrument_id,
+            client_order_id=client_id,
+            leg=leg,
+            exit_reason=reason,
+        )
+        for client_id, leg, reason in (
+            (old.entry_client_order_id, "entry", None),
+            (old_tp.client_order_id.value, "take_profit", "take_profit"),
+        )
+    )
+    new = open_plan(entry_id="2" * 64)
+    runtime = unit_runtime(open_plans=(OpenPlan(new, disposition_pending=False),), order_bindings=bindings)
+    new_position = cached_position(runtime, client_order_id=new.entry_client_order_id)
+    stop = cached_protection(
+        runtime, leg="stop", trigger=Decimal(9_800), client_order_id=_leg_id("stop", new.entry_id).value
+    )
+    tp = cached_protection(
+        runtime, leg="take_profit", trigger=Decimal(10_200), client_order_id=_leg_id("take_profit", new.entry_id).value
+    )
+
+    runtime.strategy.on_order_filled(fill)
+    runtime.strategy.on_position_closed(old_close)
+    runtime.pump()
+
+    assert runtime.strategy.canceled == runtime.strategy.canceled_all == runtime.strategy.submitted == []
+    assert runtime.plans() == []
+    assert runtime.cache.positions_open() == [new_position]
+    assert stop.is_open and tp.is_open
+    [recorded_fill] = runtime.observations("fill")
+    [recorded_close] = runtime.observations("position")
+    assert recorded_fill.signal_id == recorded_close.signal_id == old.entry_id
+    assert recorded_fill.summary["leg"] == "take_profit"
+    assert recorded_close.summary["exit_reason"] == "take_profit"
+    view = runtime.strategy.runtime_view(runtime.clock.timestamp_ns())
+    assert view.account_snapshot.positions[0].plan_entry_id == new.entry_id
+
+
+def test_unknown_order_type_or_tags_do_not_claim_the_current_plan() -> None:
+    plan = open_plan()
+    runtime = unit_runtime(open_plans=(OpenPlan(plan, disposition_pending=False),))
+    position = cached_position(runtime)
+    foreign = cached_protection(runtime, leg="stop", trigger=Decimal(9_800), client_order_id="unbound-stop")
+    fill = TestEventStubs.order_filled(
+        order=foreign,
+        instrument=INSTRUMENT,
+        strategy_id=runtime.strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position.id,
+        last_qty=position.quantity,
+        last_px=INSTRUMENT.make_price(9_800),
+        ts_event=NOW_NS,
+    )
+    runtime.strategy.on_order_filled(fill)
+
+    [observation] = runtime.observations("fill")
+    assert observation.signal_id is None
+    assert observation.summary["leg"] == "unknown"
+    view = runtime.strategy.runtime_view(runtime.clock.timestamp_ns())
+    [order] = view.account_snapshot.orders
+    assert not order.owned and order.plan_entry_id is None and order.leg == "unknown"
 
 
 def test_restart_after_final_check_keeps_unknown_submission_open_without_resending() -> None:
@@ -285,7 +475,7 @@ def test_a_restart_that_finds_the_stop_missing_places_it_again_and_touches_nothi
     stop = orders[_leg_id("stop").value]
     assert stop.order_type == OrderType.STOP_MARKET and stop.is_open and stop.trigger_type == TriggerType.MARK_PRICE
     assert stop.trigger_price == INSTRUMENT.make_price(9_800)
-    assert orders["RECONCILED-TP"].is_open
+    assert orders[_leg_id("take_profit").value].is_open
     assert len(orders) == 3
 
 
@@ -299,7 +489,7 @@ def test_a_restart_that_finds_the_plans_position_opens_it_and_writes_the_verdict
     runtime.run()
 
     [opened] = runtime.plans()
-    assert (opened.status, opened.opened_at_ns) == ("open", plan.created_at_ns)
+    assert (opened.status, opened.opened_at_ns) == ("open", NOW_NS - 1)
     assert runtime.dispositions() == [{"disposition": "accepted"}]
 
 
@@ -565,11 +755,17 @@ def test_a_failing_step_never_escapes_the_pump_and_the_next_input_still_runs() -
         calls.append(1)
         raise ConnectionError("tls close_notify EOF")
 
+    converge = runtime.strategy._converge
     runtime.strategy._converge = broken  # type: ignore[method-assign]
     runtime.pump()
     runtime.advance(6 * SECOND_NS)
     runtime.pump()
     assert calls == [1, 1]
+    assert runtime.strategy.runtime_view(NOW_NS).convergence_failure == "ConnectionError"
+    assert runtime.settle() is None
+    runtime.strategy._converge = converge  # type: ignore[method-assign]
+    runtime.strategy._converge_due_ns = 0
+    runtime.pump()
     assert runtime.settle() is not None
 
 

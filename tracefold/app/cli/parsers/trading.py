@@ -10,7 +10,18 @@ def add_trading_commands(
 ) -> None:
     trading = subcommands.add_parser("trading", help="inspect Trading facts and record bounded operator intent")
     commands = trading.add_subparsers(dest="trading_command", required=True)
-    commands.add_parser("status", help="show Alpha producer and disabled execution readiness")
+    commands.add_parser("status", help="show Alpha producer and execution readiness")
+    diagnose = commands.add_parser("diagnose", help="sample bounded read-only execution evidence")
+    diagnose.add_argument("--probe-url", help="optional Runtime /readyz URL")
+    diagnose.add_argument("--status-url", help="optional serve /api/trading/status URL")
+
+    history = commands.add_parser(
+        "verify-execution", help="preview signed evidence for one closed Plan; append only with --apply"
+    )
+    history.add_argument("--entry-id", required=True, help="exact historical Plan entry ID")
+    history.add_argument("--account-slot", required=True, help="must match the configured Binance account slot")
+    history.add_argument("--environment", required=True, choices=("LIVE", "DEMO", "TESTNET"))
+    history.add_argument("--apply", action="store_true", help="append verified evidence; default is read-only preview")
 
     cases = commands.add_parser("cases", help="list Trading cases newest first")
     cases.add_argument(

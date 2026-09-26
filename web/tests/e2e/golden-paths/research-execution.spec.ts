@@ -131,6 +131,7 @@ async function installResearchScenario(page: Page) {
 
 test("an observation retains its research context through Case, execution and hard reload", async ({
   page,
+  baseURL,
 }, testInfo) => {
   const calls = await installResearchScenario(page);
   await page.goto(origin);
@@ -164,7 +165,7 @@ test("an observation retains its research context through Case, execution and ha
   await expect(page.getByText("冻结止损 200 bps")).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await page.getByRole("link", { name: "返回原始观察与筛选" }).click();
-  await expect(page).toHaveURL(`http://127.0.0.1:4173${returnPath}`);
+  await expect(page).toHaveURL(new URL(returnPath, baseURL).href);
   await expect(evidence).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(evidence).toHaveCount(0);
@@ -177,6 +178,7 @@ test("an observation retains its research context through Case, execution and ha
 
 test("positions and recent decisions stay separate, and source identity survives detail reload", async ({
   page,
+  baseURL,
 }, testInfo) => {
   await installResearchScenario(page);
   await page.goto("/trading");
@@ -199,7 +201,7 @@ test("positions and recent decisions stay separate, and source identity survives
   await expect(page).toHaveURL(new RegExp(`/news/market/${observation.item_id}\\?`));
   await page.reload();
   await page.getByRole("link", { name: "返回研究列表" }).click();
-  await expect(page).toHaveURL(`http://127.0.0.1:4173${from}`);
+  await expect(page).toHaveURL(new URL(from, baseURL).href);
   await expect(page.getByRole("dialog", { name: "市场观察依据" })).toBeVisible();
   await expectNoUnhandledApiRequests(page);
 });

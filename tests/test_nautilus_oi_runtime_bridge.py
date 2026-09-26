@@ -13,7 +13,7 @@ import pytest
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile, open_plan, operator_intent, trade_signal
 from tracefold.app.nautilus import oi_runtime
-from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, RuntimeStateProjector
+from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge
 from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
@@ -119,7 +119,6 @@ def _bridge() -> tuple[OiRuntimeDatabaseBridge, ExecutionJournal, ExecutionSigna
         journal=journal,
         update_day_start=lambda _baseline: None,
         singleton=_singleton(),
-        projector=RuntimeStateProjector(initial=_runtime_state()),
     )
     return bridge, journal, signals
 
@@ -213,6 +212,26 @@ def test_plan_transitions_are_written_as_updates_one_per_transaction() -> None:
     assert values[0] == "open" and values[1] == NOW_NS and values[5] == plan.entry_id
 
 
+def test_plan_false_update_needs_a_storage_verdict_and_is_never_dropped() -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
+    prepared = open_plan(opened_at_ns=None)
+    opened = prepared.opened(opened_at_ns=NOW_NS, now_ns=NOW_NS)
+    trading.update_trade_plan = lambda _values: False  # type: ignore[method-assign]
+    trading.stored_plan = prepared.model_dump()
+    journal.offer_plan(opened)
+
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    assert journal.backlog() == 1
+    [waiting] = journal.due(float("inf"))
+    assert waiting.attempts == 1
+
+    trading.stored_plan = opened.model_dump()
+    waiting.not_before = 0.0
+    bridge._cycle(_FakeRepos(trading))  # type: ignore[arg-type]
+    assert journal.backlog() == 0
+
+
 def test_only_the_exact_prepared_plan_authorizes_its_entry_order() -> None:
     bridge, journal, _signals = _bridge()
     trading = _FakeTrading()
@@ -286,3 +305,49 @@ def test_a_lost_session_is_replaced_and_the_bridge_thread_never_dies(monkeypatch
     bridge.join(5.0)
 
     assert len(sessions) == 3
+
+
+@pytest.mark.parametrize("receipt", [False, (), None])
+def test_a_missing_observation_write_receipt_retains_the_critical_fill(
+    monkeypatch: pytest.MonkeyPatch, receipt: Any
+) -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
+    value = journal.factory.create(
+        normalized_kind="fill",
+        occurred_at_ns=NOW_NS,
+        observed_at_ns=NOW_NS,
+        summary={"leg": "entry", "last_quantity": "1", "last_price": "2"},
+        event_identity="native-trade:1",
+    )
+    assert journal.offer(value)
+    monkeypatch.setattr(trading, "append_execution_observations", lambda _prepared: receipt)
+    bridge._flush_journal(_FakeRepos(trading))
+    [pending] = journal.due(float("inf"))
+    assert pending.value == value and pending.attempts == 1
+
+    monkeypatch.setattr(trading, "append_execution_observations", lambda _prepared: (42,))
+    pending.not_before = 0
+    bridge._flush_journal(_FakeRepos(trading))
+    assert journal.due(float("inf")) == ()
+
+
+@pytest.mark.parametrize("kind", ["fill", "protection"])
+def test_pending_critical_replay_cannot_hide_a_conflicting_fact(kind: str) -> None:
+    _bridge_value, journal, _signals = _bridge()
+    summary: dict[str, str] = {"leg": "stop"}
+    if kind == "protection":
+        summary["binding_version"] = "plan_order_v1"
+    value = journal.factory.create(
+        normalized_kind=kind,
+        occurred_at_ns=NOW_NS,
+        observed_at_ns=NOW_NS,
+        summary=summary,
+        event_identity="native:1",
+    )
+    assert journal.offer(value)
+    assert journal.offer(value.model_copy(update={"observed_at_ns": NOW_NS + 1}))
+    with pytest.raises(ValueError, match="pending_identity_conflict"):
+        journal.offer(value.model_copy(update={"summary": {**summary, "leg": "take_profit"}}))
+    [pending] = journal.due(float("inf"))
+    assert pending.value == value

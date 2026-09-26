@@ -36,6 +36,7 @@ from tracefold.news.storage.wallet_snapshots import wallet_snapshot
 from tracefold.news.wallet_contracts import NetBuySnapshot
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.storage.execution_stream import (
+    ExecutionAccountSnapshot,
     materialize_execution_observation,
     materialize_operator_intents,
     materialize_trade_signals,
@@ -49,7 +50,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260925_0401"
+HEAD = "20260926_0403"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -256,6 +257,8 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260926_0402",
+        "20260925_0401",
         "20260925_0400",
         "20260925_0399",
         "20260925_0398",
@@ -353,6 +356,93 @@ def test_fresh_database_upgrades_through_baseline_and_signal_cut() -> None:
     assert _stamped_revision() == HEAD
 
 
+def test_runtime_observation_cut_keeps_old_account_facts_without_old_authority() -> None:
+    from contextlib import closing
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260925_0399")
+    snapshot = {
+        "version": "execution_account_snapshot_v2",
+        "observed_at_ns": 2_000,
+        "equity_usd": "1000",
+        "daily_drawdown_usd": "0",
+        "daily_drawdown_bps": 0,
+        "positions": [
+            {
+                "position_id": "old-position",
+                "instrument_id": "BTCUSDT-PERP.BINANCE",
+                "side": "long",
+                "quantity": "0.1",
+                "entry_price": "100",
+                "mark_price": "101",
+                "unrealized_pnl_usd": "0.1",
+                "owned": True,
+                "stop_trigger_price": "90",
+                "take_profit_trigger_price": "120",
+            }
+        ],
+        "orders": [
+            {
+                "client_order_id": "old-stop",
+                "instrument_id": "BTCUSDT-PERP.BINANCE",
+                "state": "open",
+                "leg": "stop",
+                "quantity": "0.1",
+                "reduce_only": True,
+                "trigger_price": "90",
+                "owned": True,
+            }
+        ],
+        "open_orders_count": 1,
+        "inflight_orders_count": 0,
+        "complete": True,
+    }
+    with closing(connect_postgres_test(read_only=False)) as conn, conn.transaction():
+        conn.execute(
+            """
+            INSERT INTO trading_execution_runtime_state (
+              account_slot, mode, runtime_id, alive, unexpected_exposure, heartbeat_at_ns,
+              entry_block_reason, started_at_ns, updated_at_ns, entries_armed,
+              positions_count, open_orders_count, protection_status, account_snapshot
+            ) VALUES (
+              'binance_usdm_primary', 'paper', '44444444-4444-4444-8444-444444444444',
+              TRUE, FALSE, 3000, NULL, 1000, 3000, TRUE, 1, 1, 'protected', %s::jsonb
+            )
+            """,
+            (json.dumps(snapshot),),
+        )
+
+    command.upgrade(config, "20260925_0401")
+    with closing(connect_postgres_test(read_only=False)) as conn, conn.transaction():
+        conn.execute("UPDATE trading_execution_runtime_state SET account_snapshot = account_snapshot - 'version'")
+    with pytest.raises(Exception, match="unexpected execution account snapshot version"):
+        command.upgrade(config, HEAD)
+    assert _stamped_revision() == "20260925_0401"
+    with closing(connect_postgres_test(read_only=False)) as conn, conn.transaction():
+        conn.execute(
+            "UPDATE trading_execution_runtime_state SET account_snapshot = %s::jsonb",
+            (json.dumps(snapshot),),
+        )
+
+    command.upgrade(config, HEAD)
+
+    with closing(connect_postgres_test(read_only=True)) as conn:
+        row = conn.execute("SELECT * FROM trading_execution_runtime_state").fetchone()
+    assert row is not None
+    assert row["protection_status"] == "unknown"
+    assert row["account_projection_failure"] is None
+    assert row["convergence_checked_at_ns"] is None
+    assert row["venue_read_completed_at_ns"] is None
+    account = ExecutionAccountSnapshot.from_payload(row["account_snapshot"])
+    assert (account.positions_total, account.orders_total, account.findings_total) == (1, 1, 0)
+    assert account.positions[0].source == "cache"
+    assert account.positions[0].owned is False and account.positions[0].plan_entry_id is None
+    assert account.positions[0].protection_status == "unknown"
+    assert account.positions[0].stop_trigger_price == "90"
+    assert account.orders[0].owned is False and account.orders[0].plan_entry_id is None
+
+
 def test_single_connection_cut_retires_unplanned_signal_and_removes_mode_payload() -> None:
     from contextlib import closing
 
@@ -425,9 +515,17 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="single_connection_forward_only"):
+    with pytest.raises(RuntimeError, match="native_fill_identity_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260926_0402")
+    with pytest.raises(RuntimeError, match="trading_runtime_observation_truth_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260926_0402"
+    command.stamp(config, "20260925_0399")
+    with pytest.raises(RuntimeError, match="wallet_complete_prefix_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260925_0399"
     command.stamp(config, "20260924_0396")
     with pytest.raises(RuntimeError, match="rule_research_tape_forward_only"):
         command.downgrade(config, "base")
@@ -3077,6 +3175,11 @@ def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_eve
         plan = conn.execute("SELECT * FROM trading_trade_plans").fetchone()
         assert plan["exit_reason"] == "recovery_safety_flatten" and "history_gap_reason" not in plan
         assert plan["entry_scope_id"] == "legacy:" + "1" * 64
+        reason_constraint = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+            "WHERE conname = 'trading_trade_plans_exit_reason_check'"
+        ).fetchone()["definition"]
+        assert "mixed_exit" in reason_constraint
         with pytest.raises(psycopg.errors.RaiseException, match="trade_plan_terminal_immutable"):
             conn.execute("UPDATE trading_trade_plans SET exit_reason = 'external'")
         conn.rollback()
@@ -3172,3 +3275,44 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
             "news_triage_policy_v17",
         ]
         assert TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
+
+
+def test_native_identity_cut_preserves_original_payloads_without_promoting_historical_ids():
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260926_0402")
+    raw = json.loads((ROOT / "tests/fixtures/binance/inj_20260925_execution.json").read_text())[
+        "original_entry_observation"
+    ]
+    # The historical raw fill has no dependency on today's Signal schema in this migration fixture.
+    raw["signal_id"] = None
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            conn.execute(
+                """INSERT INTO trading_execution_observations
+                   (event_id, account_slot, execution_strategy, normalized_kind,
+                    occurred_at_ns, observed_at_ns, native_identity_references, summary, payload)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb)""",
+                (
+                    raw["event_id"],
+                    raw["account_slot"],
+                    raw["execution_strategy"],
+                    raw["normalized_kind"],
+                    raw["occurred_at_ns"],
+                    raw["observed_at_ns"],
+                    json.dumps(raw["native_identity_references"]),
+                    json.dumps(raw["summary"]),
+                    json.dumps(raw),
+                ),
+            )
+        before = conn.execute("SELECT seq, payload, summary FROM trading_execution_observations").fetchone()
+        command.upgrade(config, HEAD)
+        after = conn.execute(
+            "SELECT seq, payload, summary, native_environment, native_instrument, native_trade_id "
+            "FROM trading_execution_observations"
+        ).fetchone()
+        assert {key: after[key] for key in before} == before
+        assert after["native_environment"] is after["native_instrument"] is after["native_trade_id"] is None
+    finally:
+        conn.close()

@@ -38,7 +38,7 @@ from tracefold.trading.stages import execution_stage
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
 from ..read_cursor import decode_read_cursor, encode_read_cursor
-from ..responses import _etagged
+from ..responses import _etagged, _validated_json
 from ..schemas import common as api_schemas
 from ..schemas import trading as trading_schemas
 
@@ -67,25 +67,28 @@ def get_trading_status(request: Request) -> Response:
         last_case_at_ms = repos.trading.latest_case_created_at_ms()
         execution = runtime.settings.trading.execution
         analysis_runtime = repos.trading.analysis_runtime(execution.account_slot)
-        execution_status = execution_readiness_projection(
-            execution,
-            repos.trading.execution_runtime_state(execution.account_slot),
-            repos.trading.execution_runtime_control_state(execution.account_slot),
-            now_ns=now_ms * 1_000_000,
-        )
-    return _etagged(
-        {
-            "decision": analysis_status_projection(
-                runtime.settings,
-                analysis_runtime,
-                now_ms=now_ms,
-                last_case_at_ms=last_case_at_ms,
-            ),
-            "execution": execution_status,
-        },
-        request,
-        envelope=_StatusEnvelope,
+        execution_state = repos.trading.execution_runtime_state(execution.account_slot)
+        execution_control = repos.trading.execution_runtime_control_state(execution.account_slot)
+    execution_status = execution_readiness_projection(
+        execution, execution_state, execution_control, now_ns=time.time_ns()
     )
+    response = _validated_json(
+        _StatusEnvelope,
+        {
+            "ok": True,
+            "data": {
+                "decision": analysis_status_projection(
+                    runtime.settings,
+                    analysis_runtime,
+                    now_ms=now_ms,
+                    last_case_at_ms=last_case_at_ms,
+                ),
+                "execution": execution_status,
+            },
+        },
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/trading/cases", response_model=_CasesEnvelope)
@@ -380,6 +383,10 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "funding_usd": _string_or_none(row.get("funding_usd")),
         "net_pnl_usd": net,
         "exit_reason": _string_or_none(row.get("exit_reason")),
+        "original_exit_reason": _string_or_none(row.get("original_exit_reason")),
+        "original_terminal_at_ns": _int_or_none(row.get("original_terminal_at_ns")),
+        "result_evidence_source": _string_or_none(row.get("result_evidence_source")),
+        "result_verified_at_ns": _int_or_none(row.get("result_verified_at_ns")),
         "plan_status": _string_or_none(row.get("plan_status")),
         "account_slot": _string_or_none(row.get("account_slot")),
         "instrument_id": _string_or_none(row.get("instrument_id")),

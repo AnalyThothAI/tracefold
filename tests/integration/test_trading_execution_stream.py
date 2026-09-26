@@ -173,6 +173,35 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
     assert materialize_operator_intents((command_row,))[0].command_id == command.value.command_id
 
 
+@pytest.mark.parametrize(
+    ("kind", "summary"),
+    [
+        ("fill", {"leg": "entry", "last_quantity": "1", "last_price": "2"}),
+        ("protection", {"binding_version": "plan_order_v1", "leg": "stop", "client_order_id": "original"}),
+    ],
+)
+def test_critical_evidence_replay_requires_the_same_immutable_fact(kind: str, summary: dict[str, str]) -> None:
+    original = _observation(event="f", kind=kind, summary=summary)
+    later_read = original.model_copy(update={"observed_at_ns": 3_000})
+    conflicting = original.model_copy(update={"summary": {**summary, "leg": "take_profit"}})
+    independent = _observation(event="e", kind="risk", summary={"risk_fact": "unrelated"})
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            repo = TradingRepository(conn)
+            [sequence] = repo.append_execution_observations(prepare_execution_observations((original,)))
+            assert repo.append_execution_observations(prepare_execution_observations((later_read,))) == (sequence,)
+            with pytest.raises(RuntimeError, match="execution_stream_identity_conflict"):
+                repo.append_execution_observations(prepare_execution_observations((independent, conflicting)))
+            [stored] = conn.execute("SELECT payload FROM trading_execution_observations ORDER BY seq").fetchall()
+            assert stored["payload"] == original.model_dump(mode="json")
+            # A refused batch rolls back its other insert and its savepoint;
+            # the surrounding transaction remains usable for the next fact.
+            assert repo.append_execution_observations(prepare_execution_observations((independent,)))
+    finally:
+        conn.close()
+
+
 def test_operator_ingress_records_only_the_idempotent_intent_without_interpreting_it() -> None:
     command = _prepare_command(suffix="9", requested_at_ns=2_000, expires_at_ns=10_000)
     conn = connect_postgres_test(read_only=False)
@@ -529,12 +558,15 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
                 ExecutionAccountPosition(
                     position_id="position-1",
                     instrument_id="BTCUSDT-PERP.BINANCE",
+                    source="cache",
                     side="long",
                     quantity="0.01",
                     entry_price="100000",
                     mark_price="100500",
                     unrealized_pnl_usd="5",
                     owned=True,
+                    plan_entry_id="plan-1",
+                    protection_status="protected",
                     stop_trigger_price="99000",
                     take_profit_trigger_price="102000",
                 ),
@@ -549,6 +581,7 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
                     reduce_only=True,
                     trigger_price="99000",
                     owned=True,
+                    plan_entry_id="plan-1",
                 ),
                 ExecutionAccountOrder(
                     client_order_id="take-profit-1",
@@ -559,8 +592,13 @@ def test_runtime_state_is_single_generation_per_account_slot() -> None:
                     reduce_only=True,
                     trigger_price="102000",
                     owned=True,
+                    plan_entry_id="plan-1",
                 ),
             ),
+            positions_total=1,
+            orders_total=2,
+            findings=(),
+            findings_total=0,
             open_orders_count=2,
             inflight_orders_count=0,
             complete=True,
@@ -961,6 +999,9 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "ix_trading_execution_observations_signal_recovery",
         "ix_trading_execution_observations_command_recovery",
         "ux_trading_execution_signal_disposition",
+        "ux_trading_observation_native_fact",
+        "ux_trading_observation_native_order_result",
+        "ix_trading_observation_native_order_fills",
         "ux_trading_execution_control_disposition",
         "trading_execution_runtime_control_state_pkey",
         "trading_execution_runtime_state_pkey",
@@ -1013,6 +1054,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_observation_slot_check",
             "trading_execution_observation_strategy_check",
             "trading_execution_observation_kind_check",
+            "trading_execution_native_identity_check",
             "trading_execution_observation_correlation_check",
             "trading_execution_observation_clock_check",
         },

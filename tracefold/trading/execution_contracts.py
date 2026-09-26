@@ -54,6 +54,10 @@ ObservationKind = Literal[
     "protection",
     "funding",
     "funding_coverage",
+    "native_fill",
+    "native_fill_cost",
+    "native_fill_binding",
+    "native_order_result",
 ]
 
 
@@ -283,11 +287,102 @@ class ExecutionObservationV1(_FrozenContract):
             raise ValueError("execution_observation_signal_identity_required")
         if self.normalized_kind == "control_disposition" and self.command_id is None:
             raise ValueError("execution_observation_command_identity_required")
+        if self.normalized_kind in {"native_fill", "native_fill_cost", "native_fill_binding", "native_order_result"}:
+            self._validate_native_fact()
         # A `signal_disposition` that also carried a command id, and a `control_disposition` that also
         # carried a signal id, were two more `correlation_ambiguous` raises here. Neither could fire:
         # the mutual-exclusion rule above rejects any row holding both identities before either kind
         # rule is reached, and each kind rule requires the identity of its own half (#589 PR-2).
         return self
+
+    def _validate_native_fact(self) -> None:
+        import re
+        from decimal import Decimal, InvalidOperation
+
+        summary = self.summary
+        if (
+            summary.get("venue_environment") not in {"LIVE", "DEMO", "TESTNET"}
+            or not isinstance(summary.get("native_instrument"), str)
+            or re.fullmatch(r"[A-Z0-9]+", str(summary["native_instrument"])) is None
+            or re.fullmatch(r"[1-9][0-9]*", str(summary.get("venue_order_id", ""))) is None
+        ):
+            raise ValueError("execution_native_identity_invalid")
+        if not isinstance(summary.get("venue_order_id"), str):
+            raise ValueError("execution_native_identity_invalid")
+        if self.normalized_kind == "native_order_result":
+            if (
+                self.signal_id is not None
+                or self.command_id is not None
+                or summary.get("source") != "signed_order_trades_v1"
+                or summary.get("status") not in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
+                or type(summary.get("trade_count")) is not int
+                or int(str(summary["trade_count"])) < 0
+                or not isinstance(summary.get("trade_digest"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", str(summary["trade_digest"])) is None
+            ):
+                raise ValueError("execution_native_order_result_invalid")
+            try:
+                raw = summary.get("executed_quantity")
+                quantity = Decimal(raw) if isinstance(raw, str) else Decimal("NaN")
+            except InvalidOperation as exc:
+                raise ValueError("execution_native_order_result_invalid") from exc
+            if not quantity.is_finite() or quantity < 0 or ((quantity == 0) != (summary["trade_count"] == 0)):
+                raise ValueError("execution_native_order_result_invalid")
+            if (
+                quantity == 0
+                and summary["trade_digest"] != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            ):
+                raise ValueError("execution_native_order_result_invalid")
+            text = format(quantity, "f")
+            summary["executed_quantity"] = (
+                "0" if quantity == 0 else text.rstrip("0").rstrip(".") if "." in text else text
+            )
+            return
+        if (
+            not isinstance(summary.get("native_trade_id"), str)
+            or re.fullmatch(r"0|[1-9][0-9]*", str(summary.get("native_trade_id", ""))) is None
+        ):
+            raise ValueError("execution_native_identity_invalid")
+        decimal_fields = (
+            ("last_quantity", "last_price")
+            if self.normalized_kind == "native_fill"
+            else ("commission",)
+            if self.normalized_kind == "native_fill_cost"
+            else ()
+        )
+        for key in decimal_fields:
+            raw = summary.get(key)
+            try:
+                value = Decimal(raw) if isinstance(raw, str) else Decimal("NaN")
+            except InvalidOperation as exc:
+                raise ValueError("execution_native_economics_invalid") from exc
+            if not value.is_finite() or (key != "commission" and value <= 0):
+                raise ValueError("execution_native_economics_invalid")
+            text = format(value, "f")
+            summary[key] = "0" if value == 0 else text.rstrip("0").rstrip(".") if "." in text else text
+        if self.normalized_kind == "native_fill" and summary.get("side") not in {"BUY", "SELL"}:
+            raise ValueError("execution_native_side_invalid")
+        if self.normalized_kind == "native_fill_cost" and (
+            not isinstance(summary.get("commission_currency"), str) or not summary["commission_currency"]
+        ):
+            raise ValueError("execution_native_cost_invalid")
+        correlated = self.signal_id is not None or self.command_id is not None
+        if (self.normalized_kind == "native_fill_binding") != correlated:
+            raise ValueError("execution_native_binding_invalid")
+        if self.normalized_kind == "native_fill_binding":
+            if not isinstance(summary.get("client_order_id"), str) or not summary["client_order_id"]:
+                raise ValueError("execution_native_binding_invalid")
+            purpose = {"entry": None, "stop": "stop_filled", "take_profit": "take_profit"}
+            leg = summary.get("leg")
+            if not isinstance(leg, str):
+                raise ValueError("execution_native_binding_invalid")
+            reason = summary.get("exit_reason")
+            if (
+                leg not in {"entry", "stop", "take_profit", "exit"}
+                or (leg in purpose and reason != purpose[leg])
+                or (leg == "exit" and reason not in {"stop_filled", "take_profit", "time_exit", "operator_flatten"})
+            ):
+                raise ValueError("execution_native_binding_invalid")
 
 
 __all__ = [

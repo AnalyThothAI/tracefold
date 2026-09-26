@@ -51,14 +51,14 @@ test("live status stays current across polling windows, expires on lost reads, a
   unavailable = true;
   await page.clock.runFor(6_000);
   await expect(safety.getByText("是", { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/状态待确认：未取得有效期内的新状态/)).toBeVisible();
+  await expect(page.getByText(/状态通道失联：未取得有效期内的新状态/)).toBeVisible();
   await expect(page.getByText("已受保护", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("保护事实已过期", { exact: true })).toBeVisible();
+  await expect(page.getByText("上次观察的保护；当前未确认", { exact: true })).toBeVisible();
   // The trigger prices are the last read, kept and labelled as such rather than blanked.
   await expect(strip.getByText("止损 9800", { exact: true })).toBeVisible();
   unavailable = false;
   await page.clock.runFor(1_000);
   await expect(safety.getByText("是", { exact: true })).toHaveCount(2);
   await expect(strip.getByText("已受保护", { exact: true })).toBeVisible();
-  await expect(page.getByText(/状态待确认：未取得有效期内的新状态/)).toHaveCount(0);
+  await expect(page.getByText(/状态通道失联：未取得有效期内的新状态/)).toHaveCount(0);
 });

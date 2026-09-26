@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from psycopg.sql import SQL
+
 # Keyed on `created_at_ms`: when the Case formed, which is what "the lane produced N cases today"
 # means. The admission ledger's own counts key on `source_observed_at_ms` instead, so a restarted
 # runner re-reading a backlog cannot move yesterday's frames into today's total; a Case is created
@@ -201,6 +203,74 @@ def observation_ledger_statement(*, since_ns: int, limit: int) -> tuple[str, dic
     return sql, {"since": int(since_ns), "limit": int(limit)}
 
 
+def _execution_fill_rows(entry_id: str, account_slot: str) -> str:
+    """One economic source per Plan; old engine rows remain auditable history.
+
+    Native evidence replaces the historical fold as soon as it is associated,
+    including while incomplete. Mixing an old aggregate with its native trades
+    would double count the entry. Every native order must prove its exact trade
+    set before the complete result can be projected.
+    """
+    return f"""
+      WITH bindings AS MATERIALIZED (
+        SELECT account_slot, native_environment, native_instrument, native_trade_id, summary, observed_at_ns
+          FROM trading_execution_observations
+         WHERE normalized_kind = 'native_fill_binding'
+           AND account_slot = {account_slot}
+           AND (signal_id = {entry_id} OR command_id = {entry_id})
+      ), native AS MATERIALIZED (
+        SELECT fill.account_slot, fill.native_environment, fill.native_instrument, fill.native_trade_id,
+               fill.summary ->> 'venue_order_id' AS order_id, fill.occurred_at_ns,
+               greatest(fill.observed_at_ns, binding.observed_at_ns, cost.observed_at_ns) AS observed_at_ns,
+               fill.summary || jsonb_build_object('leg', binding.summary ->> 'leg',
+                   'exit_reason', binding.summary ->> 'exit_reason', 'source', 'native_trade_v1')
+                   || coalesce(cost.summary, '{{}}'::jsonb) AS summary
+          FROM bindings binding
+          JOIN trading_execution_observations fill
+            ON fill.account_slot = binding.account_slot AND fill.native_environment = binding.native_environment
+           AND fill.native_instrument = binding.native_instrument AND fill.native_trade_id = binding.native_trade_id
+           AND fill.normalized_kind = 'native_fill'
+          LEFT JOIN trading_execution_observations cost
+            ON cost.account_slot = fill.account_slot AND cost.native_environment = fill.native_environment
+           AND cost.native_instrument = fill.native_instrument AND cost.native_trade_id = fill.native_trade_id
+           AND cost.normalized_kind = 'native_fill_cost'
+      ), complete_orders AS (
+        SELECT native.account_slot, native.native_environment, native.native_instrument, native.order_id,
+               proof.observed_at_ns
+          FROM native
+          JOIN trading_execution_observations proof
+            ON proof.account_slot = native.account_slot AND proof.normalized_kind = 'native_order_result'
+           AND proof.summary ->> 'venue_environment' = native.native_environment
+           AND proof.summary ->> 'native_instrument' = native.native_instrument
+           AND proof.summary ->> 'venue_order_id' = native.order_id
+           AND proof.summary ->> 'source' = 'signed_order_trades_v1'
+         GROUP BY native.account_slot, native.native_environment, native.native_instrument, native.order_id,
+                  proof.observed_at_ns, proof.summary
+        HAVING count(*) = (proof.summary ->> 'trade_count')::integer
+           AND sum((native.summary ->> 'last_quantity')::numeric) = (proof.summary ->> 'executed_quantity')::numeric
+           AND encode(sha256(convert_to(string_agg(native.native_trade_id, E'\\n' ORDER BY native.native_trade_id),
+                                        'UTF8')), 'hex') = proof.summary ->> 'trade_digest'
+      )
+      SELECT native.occurred_at_ns, greatest(native.observed_at_ns, verified.observed_at_ns) AS observed_at_ns,
+             native.summary || jsonb_build_object('order_verified', verified.order_id IS NOT NULL) AS summary
+        FROM native
+        LEFT JOIN complete_orders verified USING (account_slot, native_environment, native_instrument, order_id)
+      UNION ALL
+      SELECT historical.occurred_at_ns, historical.observed_at_ns,
+             historical.summary || jsonb_build_object('source', 'historical_engine_fill') AS summary
+        FROM trading_execution_observations historical
+       WHERE (historical.signal_id = {entry_id} OR historical.command_id = {entry_id})
+         AND ({account_slot} IS NULL OR historical.account_slot = {account_slot})
+         AND historical.normalized_kind = 'fill' AND NOT EXISTS (SELECT 1 FROM bindings)
+    """  # noqa: S608 -- only module-owned SQL expressions are substituted
+
+
+def _native_result_complete(fills: str) -> str:
+    return (
+        f"({fills}.native_evidence AND {fills}.entry_quantity > 0 AND {fills}.entry_quantity = {fills}.exit_quantity)"
+    )
+
+
 # A fill's contribution to realized PnL, in one place for both reads below. A fill carries its own
 # commission since #680; a fill without one, or with one charged in anything but the quote currency,
 # makes that entry's realized result unknown rather than silently gross.
@@ -217,7 +287,14 @@ _FILL_FOLD = """
                     FILTER (WHERE fill.summary ->> 'leg' <> 'entry') AS exit_notional,
                  sum((fill.summary ->> 'commission')::numeric) AS fees,
                  bool_and(fill.summary ->> 'commission_currency' = 'USDT'
-                          AND fill.summary ->> 'commission' IS NOT NULL) AS fees_known
+                          AND fill.summary ->> 'commission' IS NOT NULL) AS fees_known,
+                 bool_and(fill.summary ->> 'source' <> 'native_trade_v1'
+                          OR (fill.summary ->> 'order_verified')::boolean) AS evidence_complete,
+                 bool_and(fill.summary ->> 'source' = 'native_trade_v1'
+                          AND (fill.summary ->> 'order_verified')::boolean) AS native_evidence,
+                 array_agg(DISTINCT fill.summary ->> 'exit_reason')
+                    FILTER (WHERE fill.summary ->> 'leg' <> 'entry') AS exit_reasons,
+                 max(fill.observed_at_ns) AS evidence_observed_at_ns
 """
 
 
@@ -229,7 +306,7 @@ def _realized_pnl(direction: str, fills: str) -> str:
 
     return f"""CASE WHEN {fills}.entry_quantity > 0
                      AND {fills}.exit_quantity = {fills}.entry_quantity
-                     AND {fills}.fees_known
+                     AND {fills}.fees_known AND {fills}.evidence_complete
                 THEN (CASE WHEN {direction} = 'short' THEN -1 ELSE 1 END)
                      * ({fills}.exit_notional - {fills}.entry_notional) - {fills}.fees
            END"""
@@ -289,7 +366,7 @@ _FUNDING_FOLD = """
 
 
 def console_executions_statement(
-    *, since_ns: int, limit: int, case_id: str | None = None
+    *, since_ns: int, limit: int, case_id: str | None = None, entry_id: str | None = None
 ) -> tuple[str, dict[str, Any]]:
     """One row per entry identity: plans supply lifecycle, observations supply what the venue did."""
 
@@ -305,6 +382,7 @@ def console_executions_statement(
             FROM trading_trade_signals
            WHERE (%(case_id)s::text IS NOT NULL OR observed_at_ns >= %(since)s)
              AND (%(case_id)s::text IS NULL OR case_id = %(case_id)s)
+             AND (%(entry_id)s::text IS NULL OR signal_id = %(entry_id)s)
              AND NOT EXISTS (SELECT 1 FROM trading_trade_plans plan WHERE plan.entry_id = signal_id)
            ORDER BY observed_at_ns DESC, signal_id DESC
            LIMIT %(limit)s
@@ -320,6 +398,7 @@ def console_executions_statement(
             FROM trading_operator_intents
            WHERE action = 'manual_entry' AND %(case_id)s::text IS NULL
              AND requested_at_ns >= %(since)s
+             AND (%(entry_id)s::text IS NULL OR command_id = %(entry_id)s)
              AND NOT EXISTS (SELECT 1 FROM trading_trade_plans plan WHERE plan.entry_id = command_id)
            ORDER BY requested_at_ns DESC, command_id DESC
            LIMIT %(limit)s
@@ -331,6 +410,7 @@ def console_executions_statement(
            WHERE (%(case_id)s::text IS NOT NULL OR created_at_ns >= %(since)s
                   OR terminal_at_ns >= %(since)s OR terminal_at_ns IS NULL)
              AND (%(case_id)s::text IS NULL OR case_id = %(case_id)s)
+             AND (%(entry_id)s::text IS NULL OR entry_id = %(entry_id)s)
            ORDER BY created_at_ns DESC, entry_id DESC LIMIT %(limit)s
         ),
         entry_window AS (
@@ -396,7 +476,8 @@ def console_executions_statement(
         SELECT folded.source, folded.entry_id, folded.case_id, folded.market_key, folded.direction,
                folded.observed_at_ns, folded.expires_at_ns, disposition_reason, order_status, order_reject_reason,
                coalesce(fills.entry_filled_at_ns, plan.opened_at_ns) AS entry_filled_at_ns,
-               coalesce(position_closed_at_ns, plan.terminal_at_ns) AS position_closed_at_ns,
+               CASE WHEN {_native_result_complete("fills")} THEN fills.exit_filled_at_ns
+                    ELSE coalesce(position_closed_at_ns, plan.terminal_at_ns) END AS position_closed_at_ns,
                trim_scale(fills.entry_quantity)::text AS fill_quantity,
                trim_scale(fills.entry_notional / NULLIF(fills.entry_quantity, 0))::text AS fill_avg_price,
                stop_trigger_price, take_profit_trigger_price,
@@ -408,7 +489,13 @@ def console_executions_statement(
                CASE WHEN funding.funding_usd IS NOT NULL
                     THEN trim_scale({_realized_pnl("folded.direction", "fills")}
                                     + funding.funding_usd)::text END AS net_pnl_usd,
-               plan.exit_reason,
+               CASE WHEN {_native_result_complete("fills")}
+                    THEN CASE WHEN cardinality(fills.exit_reasons) = 1 THEN fills.exit_reasons[1] ELSE 'mixed_exit' END
+                    ELSE plan.exit_reason END AS exit_reason,
+               plan.exit_reason AS original_exit_reason, plan.terminal_at_ns AS original_terminal_at_ns,
+               CASE WHEN {_native_result_complete("fills")} THEN 'signed_native_trades' END AS result_evidence_source,
+               CASE WHEN {_native_result_complete("fills")} THEN fills.evidence_observed_at_ns
+                    END AS result_verified_at_ns,
                plan.status AS plan_status, plan.stop_distance_bps, plan.exit_policy_id,
                plan.take_profit_bps, plan.max_holding_ns,
                plan.account_slot, plan.instrument_id,
@@ -416,21 +503,20 @@ def console_executions_statement(
                plan.max_leverage_at_creation,
                CASE WHEN coalesce(position_closed_at_ns, plan.terminal_at_ns) IS NOT NULL
                          AND coalesce(fills.entry_filled_at_ns, plan.opened_at_ns) IS NOT NULL
-                    THEN greatest(0, coalesce(position_closed_at_ns, plan.terminal_at_ns)
+                    THEN greatest(0, CASE WHEN {_native_result_complete("fills")} THEN fills.exit_filled_at_ns
+                                          ELSE coalesce(position_closed_at_ns, plan.terminal_at_ns) END
                          - coalesce(fills.entry_filled_at_ns, plan.opened_at_ns)) END AS duration_ns
           FROM folded
           LEFT JOIN trading_trade_plans plan ON plan.entry_id = folded.entry_id
           CROSS JOIN LATERAL (
             SELECT {_FILL_FOLD}
-              FROM trading_execution_observations fill
-             WHERE (fill.signal_id = folded.entry_id OR fill.command_id = folded.entry_id)
-               AND fill.normalized_kind = 'fill'
+              FROM ({_execution_fill_rows("folded.entry_id", "plan.account_slot")}) fill
           ) fills
           {_FUNDING_FOLD}
          ORDER BY folded.observed_at_ns DESC, folded.entry_id DESC
          LIMIT %(limit)s
     """  # noqa: S608 -- module-owned fragments; every value stays bound
-    return sql, {"since": int(since_ns), "limit": int(limit), "case_id": case_id}
+    return sql, {"since": int(since_ns), "limit": int(limit), "case_id": case_id, "entry_id": entry_id}
 
 
 def console_realized_totals_statement(
@@ -440,7 +526,8 @@ def console_realized_totals_statement(
 
     sql = f"""
         WITH closed AS (
-          SELECT plan.terminal_at_ns AS closed_at_ns,
+          SELECT CASE WHEN {_native_result_complete("fills")} THEN fills.exit_filled_at_ns
+                      ELSE plan.terminal_at_ns END AS closed_at_ns,
                  {_realized_pnl("plan.direction", "fills")} AS pnl,
                  CASE WHEN funding.funding_usd IS NOT NULL
                       THEN {_realized_pnl("plan.direction", "fills")}
@@ -448,10 +535,7 @@ def console_realized_totals_statement(
             FROM trading_trade_plans plan
             CROSS JOIN LATERAL (
               SELECT {_FILL_FOLD}
-                FROM trading_execution_observations fill
-               WHERE fill.account_slot = plan.account_slot
-                 AND (fill.signal_id = plan.entry_id OR fill.command_id = plan.entry_id)
-                 AND fill.normalized_kind = 'fill'
+                FROM ({_execution_fill_rows("plan.entry_id", "plan.account_slot")}) fill
             ) fills
             {_FUNDING_FOLD}
            WHERE plan.account_slot = %(slot)s AND plan.terminal_at_ns IS NOT NULL AND plan.opened_at_ns IS NOT NULL
@@ -626,6 +710,111 @@ class QueryStorage:
     def console_executions(self, *, since_ns: int, limit: int, case_id: str | None = None) -> list[dict[str, Any]]:
         sql, params = console_executions_statement(since_ns=since_ns, limit=limit, case_id=case_id)
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+
+    def execution_result(self, *, entry_id: str) -> dict[str, Any] | None:
+        sql, params = console_executions_statement(since_ns=0, limit=1, entry_id=entry_id)
+        row = self.conn.execute(sql, params).fetchone()
+        return None if row is None else dict(row)
+
+    def preview_execution_evidence(self, *, entry_id: str, payload_json: str) -> dict[str, Any] | None:
+        """Read-only overlay using the exact production result SQL, without journal inserts.
+
+        The caller prepares/validates native rows and owns a repeatable-read,
+        read-only transaction. Existing immutable facts win identical replays;
+        contradictions refuse the preview rather than silently choose a source.
+        """
+        conflict = self.conn.execute(
+            """WITH proposed AS MATERIALIZED (
+                 SELECT payload FROM jsonb_array_elements(%s::jsonb) AS offered(payload)
+               ) SELECT 1 FROM proposed offered JOIN trading_execution_observations stored
+                 ON stored.event_id = offered.payload ->> 'event_id'
+                 OR (stored.account_slot = offered.payload ->> 'account_slot'
+                     AND stored.summary ->> 'venue_environment' = offered.payload -> 'summary' ->> 'venue_environment'
+                     AND stored.summary ->> 'native_instrument' = offered.payload -> 'summary' ->> 'native_instrument'
+                     AND ((stored.native_trade_id = offered.payload -> 'summary' ->> 'native_trade_id')
+                       OR (stored.normalized_kind = 'native_order_result'
+                           AND offered.payload ->> 'normalized_kind' = 'native_order_result'
+                           AND stored.summary ->> 'venue_order_id'
+                               = offered.payload -> 'summary' ->> 'venue_order_id')))
+                WHERE CASE WHEN stored.normalized_kind = offered.payload ->> 'normalized_kind'
+                      THEN stored.payload - ARRAY['observed_at_ns','execution_strategy',
+                                                         'event_id','native_identity_references']
+                             <> offered.payload - ARRAY['observed_at_ns','execution_strategy',
+                                                         'event_id','native_identity_references']
+                      ELSE stored.summary ->> 'venue_order_id'
+                           IS DISTINCT FROM offered.payload -> 'summary' ->> 'venue_order_id'
+                           OR stored.occurred_at_ns <> (offered.payload ->> 'occurred_at_ns')::bigint
+                           OR stored.event_id = offered.payload ->> 'event_id' END LIMIT 1""",
+            (payload_json,),
+        ).fetchone()
+        if conflict is not None:
+            raise ValueError("execution_evidence_preview_conflict")
+        sql, params = console_executions_statement(since_ns=0, limit=1, entry_id=entry_id)
+        # Both identifiers are fixed, module-owned relations. The only dynamic
+        # data is bound JSON; no caller-supplied identifier enters the statement.
+        projection = sql.replace("trading_execution_observations", "proposed_execution_observations")
+        preview = SQL(
+            """WITH proposed AS MATERIALIZED (
+            SELECT payload, ordinal FROM jsonb_array_elements(%(evidence)s::jsonb)
+                WITH ORDINALITY AS offered(payload, ordinal)
+          ), proposed_execution_observations AS MATERIALIZED (
+            SELECT seq, account_slot, signal_id, command_id, normalized_kind,
+                   occurred_at_ns, observed_at_ns, summary, native_environment, native_instrument, native_trade_id
+              FROM trading_execution_observations
+             WHERE account_slot = (SELECT account_slot FROM trading_trade_plans WHERE entry_id=%(entry_id)s)
+            UNION ALL
+            SELECT -ordinal, payload ->> 'account_slot', payload ->> 'signal_id', payload ->> 'command_id',
+                   payload ->> 'normalized_kind', (payload ->> 'occurred_at_ns')::bigint,
+                   (payload ->> 'observed_at_ns')::bigint, payload -> 'summary',
+                   payload -> 'summary' ->> 'venue_environment', payload -> 'summary' ->> 'native_instrument',
+                   payload -> 'summary' ->> 'native_trade_id'
+              FROM proposed offered
+             WHERE NOT EXISTS (SELECT 1 FROM trading_execution_observations stored
+               WHERE stored.event_id=offered.payload ->> 'event_id' OR (
+                 stored.account_slot=offered.payload ->> 'account_slot'
+                 AND stored.normalized_kind=offered.payload ->> 'normalized_kind'
+                 AND stored.summary ->> 'venue_environment'=offered.payload -> 'summary' ->> 'venue_environment'
+                 AND stored.summary ->> 'native_instrument'=offered.payload -> 'summary' ->> 'native_instrument'
+                 AND (stored.native_trade_id=offered.payload -> 'summary' ->> 'native_trade_id'
+                      OR (stored.normalized_kind='native_order_result' AND
+                          stored.summary ->> 'venue_order_id'=offered.payload -> 'summary' ->> 'venue_order_id'))))
+          ) SELECT * FROM ({projection}) result"""
+        ).format(projection=SQL(projection))
+        row = self.conn.execute(preview, params | {"evidence": payload_json}).fetchone()
+        return None if row is None else dict(row)
+
+    def recent_stop_exits(self, *, account_slot: str, since_ns: int) -> dict[str, int]:
+        """Cooldown consumes the same verified exit purpose/time as the desk and totals.
+
+        A late historical verification never starts a cooldown at its read time.
+        Original terminal facts remain the answer until native evidence completes.
+        """
+        rows = self.conn.execute(
+            f"""WITH results AS (
+                SELECT plan.market_key,
+                       CASE WHEN {_native_result_complete("fills")} THEN fills.exit_filled_at_ns
+                            ELSE plan.terminal_at_ns END AS terminal_at_ns,
+                       CASE WHEN {_native_result_complete("fills")}
+                            THEN CASE WHEN cardinality(fills.exit_reasons) = 1
+                                      THEN fills.exit_reasons[1] ELSE 'mixed_exit' END
+                            ELSE plan.exit_reason END AS exit_reason
+                  FROM trading_trade_plans plan
+                  CROSS JOIN LATERAL (
+                    SELECT {_FILL_FOLD}
+                      FROM ({_execution_fill_rows("plan.entry_id", "plan.account_slot")}) fill
+                  ) fills
+                 WHERE plan.account_slot = %(slot)s AND plan.terminal_at_ns IS NOT NULL
+                   AND (plan.terminal_at_ns >= %(since)s OR EXISTS (
+                     SELECT 1 FROM trading_execution_observations binding
+                      WHERE binding.account_slot = plan.account_slot
+                        AND binding.normalized_kind = 'native_fill_binding'
+                        AND (binding.signal_id = plan.entry_id OR binding.command_id = plan.entry_id)
+                        AND binding.observed_at_ns >= %(since)s))
+            ) SELECT market_key, max(terminal_at_ns) AS terminal_at_ns FROM results
+               WHERE exit_reason = 'stop_filled' AND terminal_at_ns >= %(since)s GROUP BY market_key""",  # noqa: S608
+            {"slot": account_slot, "since": int(since_ns)},
+        ).fetchall()
+        return {str(row["market_key"]): int(row["terminal_at_ns"]) for row in rows}
 
     def console_realized_totals(self, *, account_slot: str, day_start_ns: int, day_end_ns: int) -> dict[str, Any]:
         sql, params = console_realized_totals_statement(

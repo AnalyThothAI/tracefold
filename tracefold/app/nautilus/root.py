@@ -4,9 +4,9 @@ Nautilus owns execution state (#680): its startup reconciliation rebuilds the Ca
 before the Strategy starts, and its continuous checks keep it converged. This root only supervises.
 It holds the account-slot lock, builds a node generation, reads the venue's positions every 30 s for
 the Strategy's venue-truth invariant (#680 PR-3), publishes what the Strategy reports, and rebuilds
-the generation after a failure it can outlive. The process exits for exactly three reasons:
-a configuration or credential file it cannot use, a database schema it cannot read, and the loss of
-the account-slot lock. A network, venue or database blip is never one of them (#680 RC1).
+the generation after a failure it can outlive. The process exits for configuration or
+credential errors, an unreadable database schema, a lost account-slot lock, or a previous
+generation writer that cannot be stopped safely. A network, venue or database blip is never one of them (#680 RC1).
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, replace
+from importlib.metadata import version
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -41,6 +42,7 @@ from tracefold.app.nautilus.oi_runtime import (
     RUNTIME_HEARTBEAT_INTERVAL_NS,
     OiRuntimeDatabaseBridge,
     RuntimeStateProjector,
+    RuntimeStateWriter,
     load_runtime_inputs,
 )
 from tracefold.app.process import create_probe_app, install_signal_handlers, remove_signal_handlers
@@ -58,17 +60,22 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
 )
 from tracefold.integrations.nautilus.oi_runtime.funding import BinanceFundingIncome, watch_funding
 from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.observations import offer_native_evidence
+from tracefold.integrations.nautilus.oi_runtime.order_evidence import BinanceOrderEvidence
 from tracefold.integrations.nautilus.oi_runtime.risk import account_equity_usd
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy, RuntimeView
+from tracefold.integrations.nautilus.oi_runtime.trade_history import BinanceTradeHistory
 from tracefold.integrations.nautilus.oi_runtime.venue import watch_venue
 from tracefold.platform.config.models import Settings, TradingExitPolicySettings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import postgres_health_check
 from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
+from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading.execution_contracts import EXECUTION_STRATEGY_ID
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
+from tracefold.trading.trade_plan import TradePlan
 
 _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
 _INTERNAL_PORT = 8767
@@ -82,14 +89,14 @@ _REBUILD_BACKOFF_SECONDS = (5.0, 10.0, 20.0, 40.0, 60.0)
 _BINANCE_USDM_ACCOUNT_ID = AccountId("BINANCE-USDT_FUTURES-master")
 
 
-def _recovery_max_holding_ns(configured_ns: int, open_plan_holding_ns: Iterable[int]) -> int:
-    """Keep the configured lookback when there are no plans to recover."""
+def _recovery_max_holding_ns(configured_ns: int, open_plans: Iterable[TradePlan], now_ns: int) -> int:
+    """Cover the oldest PG-open entry, including time spent outside a running generation."""
 
-    return max((configured_ns, *open_plan_holding_ns))
+    return max((configured_ns, *(max(plan.max_holding_ns, now_ns - plan.created_at_ns) for plan in open_plans)))
 
 
 class RuntimeFatal(RuntimeError):
-    """A reason this process must stop rather than rebuild: configuration, credentials or the lock."""
+    """A reason this process must stop rather than rebuild, including an unreleased writer."""
 
 
 class _GenerationFailed(RuntimeError):
@@ -116,6 +123,18 @@ class _ProbeState:
                 "open_orders_count": 0,
                 "protection_status": "not_applicable",
                 "heartbeat_at_ns": 0,
+                "process_started_at_ns": time.time_ns(),
+                "runtime_id": None,
+                "started_at_ns": None,
+                "account_snapshot": None,
+                "account_projection_failure": None,
+                "convergence_checked_at_ns": None,
+                "convergence_failure": None,
+                "venue_read_started_at_ns": None,
+                "venue_read_completed_at_ns": None,
+                "venue_read_failure": None,
+                "recovery_attempted_at_ns": None,
+                "recovery_result": None,
             },
             lock=Lock(),
         )
@@ -224,6 +243,7 @@ async def _run_active_runtime(
         connection=connection_environment(environment).upper(),
         account_slot=execution.account_slot,
     )
+    process_started_at_ns = probe.readiness()["process_started_at_ns"]
     server = _probe_server(probe.readiness)
     installed_signals = install_signal_handlers(loop, stop.set)
     probe_task = asyncio.create_task(server.serve(), name="oi-nautilus-probe")
@@ -240,6 +260,7 @@ async def _run_active_runtime(
                     repos=repos,
                     stop=stop,
                     probe=probe,
+                    process_started_at_ns=process_started_at_ns,
                 )
                 failures = 0
             except RuntimeFatal:
@@ -282,18 +303,21 @@ async def _run_generation(
     repos: RepositorySession,
     stop: asyncio.Event,
     probe: _ProbeState,
+    process_started_at_ns: int,
 ) -> None:
     """One TradingNode, from route discovery to shutdown. Returns only when `stop` was requested."""
 
     execution = settings.trading.execution
     routes = await _discover_routes(environment, credentials, stop_distance_bps=execution.risk.stop_distance_bps)
     profile = _active_profile(settings, routes, namespace=namespace)
-    inputs = load_runtime_inputs(repos, profile, now_ns=time.time_ns())
+    generation_now_ns = time.time_ns()
+    inputs = load_runtime_inputs(repos, profile, now_ns=generation_now_ns)
     profile = replace(
         profile,
         recovery_max_holding_ns=_recovery_max_holding_ns(
             profile.recovery_max_holding_ns,
-            (value.plan.max_holding_ns for value in inputs.open_plans),
+            (value.plan for value in inputs.open_plans),
+            generation_now_ns,
         ),
     )
     signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy=_EXECUTION_STRATEGY)
@@ -317,17 +341,23 @@ async def _run_generation(
         venue_reads=True,
     )
     node = _build_active_node(
+        journal=journal,
         profile=profile,
         credentials=credentials,
         strategy=strategy,
         loop=loop,
         log_directory=settings.log_file.parent,
+        recovery_symbols=frozenset(
+            value.plan.instrument_id.split(".", 1)[0].removesuffix("-PERP") for value in inputs.open_plans
+        ),
     )
     node_task = asyncio.create_task(node.run_async(), name="oi-nautilus-node")
     bridge: OiRuntimeDatabaseBridge | None = None
     projector: RuntimeStateProjector | None = None
+    writer: RuntimeStateWriter | None = None
     venue_task: asyncio.Task[None] | None = None
     funding_task: asyncio.Task[None] | None = None
+    recovery_task: asyncio.Task[bool] | None = None
     try:
         if not await _await_node_started(node=node, node_task=node_task, stop=stop):
             return
@@ -350,12 +380,13 @@ async def _run_generation(
         started_at_ns = time.time_ns()
         state = _runtime_state(
             profile=profile,
-            view=strategy.runtime_view(started_at_ns),
+            view=None,
             now_ns=started_at_ns,
             base=None,
         )
         projector = RuntimeStateProjector(initial=state)
-        projector.start(repos)
+        writer = RuntimeStateWriter(settings=settings, projector=projector)
+        writer.start()
         bridge = OiRuntimeDatabaseBridge(
             settings=settings,
             profile=profile,
@@ -363,7 +394,6 @@ async def _run_generation(
             journal=journal,
             update_day_start=strategy.update_day_start,
             singleton=singleton,
-            projector=projector,
         )
         bridge.start()
         logger.info(
@@ -373,31 +403,74 @@ async def _run_generation(
             len(profile.routes),
             len(inputs.open_plans),
         )
+        binary = runtime_identity()
+        probe_identity = {
+            "image_digest": binary.image_digest,
+            "runtime_revision": binary.runtime_revision,
+            "nautilus_version": version("nautilus_trader"),
+            "migration_head": latest_migration_version(),
+        }
         view_failure: str | None = None
         while not stop.is_set():
             if node_task.done():
                 raise _GenerationFailed("oi_runtime_node_stopped")
-            # The heartbeat that proves the lock's session is alive runs on the bridge thread; this is
-            # the same fail-closed read, taken from memory.
             if not singleton.acquired:
                 raise RuntimeFatal("oi_runtime_account_slot_lost")
             now_ns = time.time_ns()
+            # Liveness advances independently of Cache projection, convergence and journal writes.
+            state = _runtime_state(profile=profile, view=None, now_ns=now_ns, base=state)
             try:
                 view = strategy.runtime_view(now_ns)
                 bridge.set_equity(account_equity_usd(cache=node.cache, account_id=profile.account_id), now_ns)
                 state = _runtime_state(profile=profile, view=view, now_ns=now_ns, base=state)
-                projector.offer(state)
-                probe.publish(_probe_payload(state))
                 view_failure = None
             except Exception as exc:
-                # Reading the Cache for the projection is not a reason to stop trading; the heartbeat
-                # goes stale instead, which is how every reader already decides a Runtime is gone.
                 if view_failure != type(exc).__name__:
                     logger.opt(exception=exc).error("Execution runtime projection failed")
                 view_failure = type(exc).__name__
+                state = replace(state, account_projection_failure=view_failure)
+            if recovery_task is not None and recovery_task.done():
+                try:
+                    recovered = recovery_task.result()
+                    state = replace(state, recovery_result="succeeded" if recovered else "failed")
+                except Exception as exc:
+                    state = replace(state, recovery_result=f"failed_{type(exc).__name__}")
+                    logger.opt(exception=exc).error("OI Runtime native reconciliation failed")
+                recovery_task = None
+            if recovery_task is None and view_failure is None:
+                evidence_at_ns = strategy.take_recovery_request(now_ns)
+                if evidence_at_ns is not None:
+                    state = replace(
+                        state,
+                        recovery_attempted_at_ns=now_ns,
+                        recovery_result="running",
+                    )
+                    recovery_task = asyncio.create_task(
+                        asyncio.wait_for(
+                            node.kernel.exec_engine.reconcile_execution_state(timeout_secs=10.0),
+                            timeout=15.0,
+                        ),
+                        name="oi-native-reconciliation",
+                    )
+            projector.offer(state)
+            probe.publish(
+                _probe_payload(state)
+                | {
+                    "account_projection_failure": view_failure,
+                    "state_writer": writer.diagnostics,
+                    "bridge": bridge.diagnostics,
+                    "journal": journal.diagnostics(),
+                    "binary": probe_identity,
+                    "process_started_at_ns": process_started_at_ns,
+                }
+            )
             with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
     finally:
+        if recovery_task is not None:
+            recovery_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await recovery_task
         if funding_task is not None:
             funding_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
@@ -411,8 +484,8 @@ async def _run_generation(
             node_task=node_task,
             bridge=bridge,
             projector=projector,
+            writer=writer,
             singleton=singleton,
-            repos=repos,
         )
 
 
@@ -422,8 +495,8 @@ async def _shutdown_generation(
     node_task: asyncio.Task[None],
     bridge: OiRuntimeDatabaseBridge | None,
     projector: RuntimeStateProjector | None,
+    writer: RuntimeStateWriter | None,
     singleton: AccountSlotSingleton,
-    repos: RepositorySession,
 ) -> None:
     if projector is not None and singleton.acquired:
         written = projector.current
@@ -438,10 +511,8 @@ async def _shutdown_generation(
                 updated_at_ns=stopped_at_ns,
             )
         )
-        if bridge is None:
-            with suppress(Exception):
-                projector.write_once(repos)
-    # The bridge drains the journal and one last projection write before it closes its session.
+    if writer is not None:
+        writer.stop()
     if bridge is not None:
         bridge.stop()
     if node.is_running():
@@ -449,16 +520,25 @@ async def _shutdown_generation(
             await asyncio.wait_for(node.stop_async(), timeout=_STOP_TIMEOUT_SECONDS)
     with suppress(TimeoutError, Exception):
         await asyncio.wait_for(asyncio.gather(node_task, return_exceptions=True), timeout=_STOP_TIMEOUT_SECONDS)
-    if bridge is not None:
-        bridge.join(_STOP_TIMEOUT_SECONDS)
+    shutdown_failure: str | None = None
+    for component in (bridge, writer):
+        if component is None:
+            continue
+        try:
+            component.join(_STOP_TIMEOUT_SECONDS)
+        except RuntimeError as exc:
+            shutdown_failure = str(exc)
     with suppress(Exception):
         node.dispose()
+    if shutdown_failure is not None:
+        # Do not build another generation while an old database writer may still be running.
+        raise RuntimeFatal(shutdown_failure)
 
 
 def _runtime_state(
     *,
     profile: OiRuntimeProfile,
-    view: RuntimeView,
+    view: RuntimeView | None,
     now_ns: int,
     base: ExecutionRuntimeState | None,
 ) -> ExecutionRuntimeState:
@@ -468,17 +548,26 @@ def _runtime_state(
             connection=connection_environment(profile.environment).upper(),
             runtime_id=uuid4(),
             alive=True,
-            entries_armed=view.entries_armed,
-            unexpected_exposure=view.unexpected_exposure,
-            positions_count=view.positions_count,
-            open_orders_count=view.open_orders_count,
-            protection_status=view.protection_status,
+            entries_armed=False,
+            unexpected_exposure=False,
+            positions_count=0,
+            open_orders_count=0,
+            protection_status="not_applicable",
             heartbeat_at_ns=now_ns,
-            entry_block_reason=view.entry_block_reason,
+            entry_block_reason="account_projection_unavailable",
             started_at_ns=now_ns,
             updated_at_ns=now_ns,
-            account_snapshot=view.account_snapshot,
+            account_snapshot=None,
             routes_count=len(profile.routes),
+        )
+    if view is None:
+        return replace(
+            base,
+            alive=True,
+            entries_armed=False,
+            entry_block_reason="account_projection_unavailable",
+            heartbeat_at_ns=now_ns,
+            updated_at_ns=now_ns,
         )
     return replace(
         base,
@@ -492,6 +581,12 @@ def _runtime_state(
         entry_block_reason=view.entry_block_reason,
         updated_at_ns=now_ns,
         account_snapshot=view.account_snapshot,
+        account_projection_failure=None,
+        convergence_checked_at_ns=view.convergence_checked_at_ns,
+        convergence_failure=view.convergence_failure,
+        venue_read_started_at_ns=view.venue_read_started_at_ns,
+        venue_read_completed_at_ns=view.venue_read_completed_at_ns,
+        venue_read_failure=view.venue_read_failure,
     )
 
 
@@ -533,17 +628,41 @@ def _active_profile(
 
 def _build_active_node(
     *,
+    journal: ExecutionJournal,
     profile: OiRuntimeProfile,
     credentials: BinanceRuntimeCredentials,
     strategy: OiNautilusStrategy,
     loop: asyncio.AbstractEventLoop,
+    recovery_symbols: frozenset[str],
     log_directory: Path | None = None,
 ) -> TradingNode:
     node = TradingNode(config=build_oi_node_config(profile, credentials, log_directory=log_directory), loop=loop)
     node.trader.add_strategy(strategy)
     node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+
     # Nautilus' Binance client, with fill reports that name each venue trade once (#680 PR-3).
-    node.add_exec_client_factory(BINANCE, OiBinanceExecClientFactory)
+    def record_evidence(evidence: BinanceOrderEvidence | BinanceTradeHistory) -> bool:
+        binding = (
+            strategy.order_binding(evidence.request.client_order_id)
+            if isinstance(evidence, BinanceOrderEvidence)
+            else None
+        )
+        return offer_native_evidence(
+            journal,
+            evidence,
+            environment=profile.environment or BinanceEnvironment.LIVE,
+            observed_at_ns=time.time_ns(),
+            binding=binding,
+        )
+
+    node.add_exec_client_factory(
+        BINANCE,
+        OiBinanceExecClientFactory.with_evidence_sink(
+            symbols=recovery_symbols,
+            sink=record_evidence,
+            binding_lookup=strategy.order_binding,
+        ),
+    )
     node.build()
     if len(node.kernel.exec_engine.registered_clients) != 1:
         raise RuntimeFatal("oi_runtime_execution_client_ambiguous")
@@ -624,6 +743,17 @@ def _probe_payload(state: ExecutionRuntimeState) -> dict[str, Any]:
         "open_orders_count": state.open_orders_count,
         "protection_status": state.protection_status,
         "heartbeat_at_ns": state.heartbeat_at_ns,
+        "runtime_id": str(state.runtime_id),
+        "started_at_ns": state.started_at_ns,
+        "account_snapshot": None if state.account_snapshot is None else state.account_snapshot.payload(),
+        "account_projection_failure": state.account_projection_failure,
+        "convergence_checked_at_ns": state.convergence_checked_at_ns,
+        "convergence_failure": state.convergence_failure,
+        "venue_read_started_at_ns": state.venue_read_started_at_ns,
+        "venue_read_completed_at_ns": state.venue_read_completed_at_ns,
+        "venue_read_failure": state.venue_read_failure,
+        "recovery_attempted_at_ns": state.recovery_attempted_at_ns,
+        "recovery_result": state.recovery_result,
     }
 
 

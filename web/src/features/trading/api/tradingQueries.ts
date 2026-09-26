@@ -24,13 +24,21 @@ export const useTradingStatusWithToken = (token: string) =>
   useQuery({
     enabled: Boolean(token),
     queryKey: queryKeys.tradingStatus(),
-    queryFn: async () =>
-      (
-        await getApi<TradingStatus>("/api/trading/status", {
-          etagKey: "trading-status",
-          token,
-        })
-      ).data,
+    queryFn: async () => {
+      const started = performance.now();
+      const status = (await getApi<TradingStatus>("/api/trading/status", { token })).data;
+      const elapsedMs = Math.ceil(performance.now() - started);
+      return {
+        ...status,
+        execution: {
+          ...status.execution,
+          facts_remaining_ms:
+            status.execution.facts_remaining_ms == null
+              ? null
+              : Math.max(0, status.execution.facts_remaining_ms - elapsedMs),
+        },
+      };
+    },
     refetchInterval: TRADING_STATUS_REFETCH_MS,
     staleTime: 0,
     refetchOnWindowFocus: "always",

@@ -8879,9 +8879,26 @@
             ],
             "title": "Equity Usd"
           },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/TradingExecutionFindingData"
+            },
+            "maxItems": 100,
+            "title": "Findings",
+            "type": "array"
+          },
+          "findings_total": {
+            "minimum": 0.0,
+            "title": "Findings Total",
+            "type": "integer"
+          },
           "inflight_orders_count": {
             "minimum": 0.0,
             "title": "Inflight Orders Count",
+            "type": "integer"
+          },
+          "observed_at_ms": {
+            "title": "Observed At Ms",
             "type": "integer"
           },
           "open_orders_count": {
@@ -8897,6 +8914,11 @@
             "title": "Orders",
             "type": "array"
           },
+          "orders_total": {
+            "minimum": 0.0,
+            "title": "Orders Total",
+            "type": "integer"
+          },
           "positions": {
             "items": {
               "$ref": "#/components/schemas/TradingExecutionPositionData"
@@ -8904,14 +8926,94 @@
             "maxItems": 100,
             "title": "Positions",
             "type": "array"
+          },
+          "positions_total": {
+            "minimum": 0.0,
+            "title": "Positions Total",
+            "type": "integer"
           }
         },
         "required": [
+          "observed_at_ms",
+          "positions_total",
+          "orders_total",
+          "findings_total",
           "open_orders_count",
           "inflight_orders_count",
           "complete"
         ],
         "title": "TradingExecutionAccountData",
+        "type": "object"
+      },
+      "TradingExecutionFindingData": {
+        "additionalProperties": false,
+        "properties": {
+          "cache_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Quantity"
+          },
+          "instrument_id": {
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "unclaimed_position",
+              "unexpected_order",
+              "ownership_mismatch",
+              "venue_cache_mismatch",
+              "close_unconfirmed",
+              "ambiguous",
+              "submission_unknown"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "observed_at_ms": {
+            "title": "Observed At Ms",
+            "type": "integer"
+          },
+          "plan_entry_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Entry Id"
+          },
+          "venue_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Quantity"
+          }
+        },
+        "required": [
+          "kind",
+          "object_id",
+          "instrument_id",
+          "observed_at_ms"
+        ],
+        "title": "TradingExecutionFindingData",
         "type": "object"
       },
       "TradingExecutionOrderData": {
@@ -8939,6 +9041,17 @@
           "owned": {
             "title": "Owned",
             "type": "boolean"
+          },
+          "plan_entry_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Entry Id"
           },
           "quantity": {
             "title": "Quantity",
@@ -8984,8 +9097,15 @@
         "additionalProperties": false,
         "properties": {
           "entry_price": {
-            "title": "Entry Price",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Price"
           },
           "instrument_id": {
             "title": "Instrument Id",
@@ -9006,8 +9126,29 @@
             "title": "Owned",
             "type": "boolean"
           },
+          "plan_entry_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Entry Id"
+          },
           "position_id": {
             "title": "Position Id",
+            "type": "string"
+          },
+          "protection_status": {
+            "enum": [
+              "protected",
+              "pending",
+              "unprotected",
+              "unknown"
+            ],
+            "title": "Protection Status",
             "type": "string"
           },
           "quantity": {
@@ -9020,6 +9161,14 @@
               "short"
             ],
             "title": "Side",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "cache",
+              "venue"
+            ],
+            "title": "Source",
             "type": "string"
           },
           "stop_trigger_price": {
@@ -9059,10 +9208,11 @@
         "required": [
           "position_id",
           "instrument_id",
+          "source",
           "side",
           "quantity",
-          "entry_price",
-          "owned"
+          "owned",
+          "protection_status"
         ],
         "title": "TradingExecutionPositionData",
         "type": "object"
@@ -9071,6 +9221,17 @@
         "additionalProperties": false,
         "description": "One field per operator question, and the CLI `tracefold trading status` block is this same dict.\n\n`execution_safe`, `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` answered\nquestions about the Runtime's private account proof, and went with it (#680): Nautilus reconciles\nthe venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.",
         "properties": {
+          "account_projection_failure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Projection Failure"
+          },
           "account_slot": {
             "title": "Account Slot",
             "type": "string"
@@ -9116,6 +9277,28 @@
               }
             ],
             "title": "Connection Observed At Ms"
+          },
+          "convergence_checked_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Convergence Checked At Ms"
+          },
+          "convergence_failure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Convergence Failure"
           },
           "current_account": {
             "anyOf": [
@@ -9163,15 +9346,72 @@
             ],
             "title": "Facts Expire At Ms"
           },
+          "facts_remaining_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Facts Remaining Ms"
+          },
+          "heartbeat_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At Ms"
+          },
           "protection_status": {
             "default": "not_applicable",
             "enum": [
               "not_applicable",
               "protected",
-              "unprotected"
+              "pending",
+              "unprotected",
+              "unknown"
             ],
             "title": "Protection Status",
             "type": "string"
+          },
+          "recovery_attempted_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Attempted At Ms"
+          },
+          "recovery_result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Result"
+          },
+          "reported_entry_block_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported Entry Block Reason"
           },
           "routes_count": {
             "default": 0,
@@ -9183,6 +9423,39 @@
             "default": false,
             "title": "Unexpected Exposure",
             "type": "boolean"
+          },
+          "venue_read_completed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Read Completed At Ms"
+          },
+          "venue_read_failure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Read Failure"
+          },
+          "venue_read_started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Read Started At Ms"
           }
         },
         "required": [
@@ -9420,6 +9693,28 @@
             ],
             "title": "Order Reject Reason"
           },
+          "original_exit_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Exit Reason"
+          },
+          "original_terminal_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Terminal At Ns"
+          },
           "plan_status": {
             "anyOf": [
               {
@@ -9456,6 +9751,29 @@
               }
             ],
             "title": "Realized Pnl Usd"
+          },
+          "result_evidence_source": {
+            "anyOf": [
+              {
+                "const": "signed_native_trades",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Evidence Source"
+          },
+          "result_verified_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Verified At Ns"
           },
           "risk_budget_usd": {
             "anyOf": [

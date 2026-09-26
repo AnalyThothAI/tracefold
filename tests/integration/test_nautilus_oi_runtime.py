@@ -32,6 +32,7 @@ from tests.postgres_test_utils import connect_postgres_test, postgres_settings_s
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
     RuntimeStateProjector,
+    RuntimeStateWriter,
     load_or_record_day_start,
     load_runtime_inputs,
     load_unresolved_operator_intents,
@@ -209,11 +210,10 @@ def test_a_restart_adopts_the_reconciled_position_and_its_orders_and_writes_noth
 
         assert _plan(conn) == plan_before
         assert _rows(conn, "SELECT event_id FROM trading_execution_observations") == observations_before
-        assert sorted(order.client_order_id.value for order in restarted.engine.cache.orders()) == [
-            "RECONCILED-ENTRY",
-            "RECONCILED-STOP",
-            "RECONCILED-TP",
-        ]
+        assert {order.client_order_id.value for order in restarted.engine.cache.orders()} == {
+            deterministic_client_order_id(namespace=oi_profile().namespace, entry_id=_SIGNAL_ID, leg=leg).value
+            for leg in ("entry", "stop", "take_profit")
+        }
     finally:
         conn.close()
 
@@ -352,7 +352,6 @@ def _runtime_bridge(
     signals: ExecutionSignalClient,
     *,
     journal: ExecutionJournal | None = None,
-    projector: RuntimeStateProjector | None = None,
     update_day_start: Callable[[DayStartBaseline], None] = lambda _baseline: None,
 ) -> OiRuntimeDatabaseBridge:
     profile = oi_profile()
@@ -363,7 +362,6 @@ def _runtime_bridge(
         journal=journal or ExecutionJournal(factory=ObservationFactory(profile.account_slot, "oi_nautilus_v1")),
         update_day_start=update_day_start,
         singleton=_bridge_singleton(),
-        projector=projector or RuntimeStateProjector(initial=_runtime_state()),
     )
 
 
@@ -382,6 +380,110 @@ def _wait(predicate: Callable[[], bool], *, timeout_seconds: float = 3.0) -> Non
     while not predicate() and time.monotonic() < deadline:
         time.sleep(0.005)
     assert predicate()
+
+
+def test_journal_table_lock_does_not_starve_the_current_state_writer() -> None:
+    initial = _runtime_state()
+    projector = RuntimeStateProjector(initial=initial)
+    writer = RuntimeStateWriter(
+        settings=Settings(ws_token="699-writer", storage=postgres_settings_storage()),
+        projector=projector,
+        poll_seconds=0.02,
+    )
+    signals = ExecutionSignalClient(account_slot=_ACCOUNT_SLOT, execution_strategy="oi_nautilus_v1")
+    journal = ExecutionJournal(factory=ObservationFactory(_ACCOUNT_SLOT, "oi_nautilus_v1"))
+    bridge = _runtime_bridge(signals, journal=journal)
+    observer = connect_postgres_test(read_only=False)
+    locker = connect_postgres_test(read_only=False)
+    try:
+        writer.start()
+        _wait(lambda: writer.diagnostics["last_written_at_ns"] == NOW_NS)
+        with locker.transaction():
+            locker.execute("LOCK TABLE trading_execution_observations IN ACCESS EXCLUSIVE MODE")
+            journal.offer(
+                journal.factory.create(
+                    normalized_kind="risk",
+                    occurred_at_ns=NOW_NS,
+                    observed_at_ns=NOW_NS,
+                    summary={"risk_fact": "unexpected_exposure", "count": 0, "exposure": ""},
+                    event_identity="locked_journal",
+                )
+            )
+            bridge.start()
+            _wait(
+                lambda: (
+                    observer.execute(
+                        """
+                    SELECT wait_event_type FROM pg_stat_activity
+                     WHERE datname = current_database()
+                       AND application_name = 'tracefold_nautilus_stream'
+                    """
+                    ).fetchone()
+                    == {"wait_event_type": "Lock"}
+                )
+            )
+            next_heartbeat = NOW_NS + SECOND_NS
+            projector.offer(
+                replace(
+                    initial,
+                    heartbeat_at_ns=next_heartbeat,
+                    updated_at_ns=next_heartbeat,
+                    entry_block_reason="entries_paused",
+                )
+            )
+            started = time.perf_counter()
+            _wait(lambda: writer.diagnostics["last_written_at_ns"] == next_heartbeat)
+            assert time.perf_counter() - started < 5.0
+            assert observer.execute(
+                "SELECT heartbeat_at_ns, entry_block_reason FROM trading_execution_runtime_state"
+            ).fetchone() == {"heartbeat_at_ns": next_heartbeat, "entry_block_reason": "entries_paused"}
+        _wait(lambda: journal.backlog() == 0)
+    finally:
+        bridge.stop()
+        writer.stop()
+        bridge.join(3.0)
+        writer.join(3.0)
+        locker.close()
+        observer.close()
+
+
+def test_current_state_lock_preserves_failed_write_verdict_and_recovers() -> None:
+    initial = _runtime_state()
+    projector = RuntimeStateProjector(initial=initial)
+    writer = RuntimeStateWriter(
+        settings=Settings(ws_token="699-writer-recovery", storage=postgres_settings_storage()),
+        projector=projector,
+        poll_seconds=0.02,
+    )
+    observer = connect_postgres_test(read_only=False)
+    locker = connect_postgres_test(read_only=False)
+    try:
+        writer.start()
+        _wait(lambda: writer.diagnostics["last_written_at_ns"] == NOW_NS)
+        next_heartbeat = NOW_NS + SECOND_NS
+        with locker.transaction():
+            locker.execute("LOCK TABLE trading_execution_runtime_state IN ACCESS EXCLUSIVE MODE")
+            projector.offer(
+                replace(
+                    initial,
+                    heartbeat_at_ns=next_heartbeat,
+                    updated_at_ns=next_heartbeat,
+                    entry_block_reason="entries_paused",
+                )
+            )
+            _wait(lambda: writer.diagnostics["failure"] is not None)
+            assert projector.current == initial
+            assert writer.diagnostics["last_written_at_ns"] == NOW_NS
+        _wait(lambda: writer.diagnostics["last_written_at_ns"] == next_heartbeat, timeout_seconds=5.0)
+        assert writer.diagnostics["failure"] is None
+        assert observer.execute(
+            "SELECT heartbeat_at_ns, entry_block_reason FROM trading_execution_runtime_state"
+        ).fetchone() == {"heartbeat_at_ns": next_heartbeat, "entry_block_reason": "entries_paused"}
+    finally:
+        writer.stop()
+        writer.join(3.0)
+        locker.close()
+        observer.close()
 
 
 def test_the_bridge_delivers_within_one_poll_interval_on_one_session_and_survives_its_termination() -> None:
@@ -424,8 +526,9 @@ def test_the_bridge_delivers_within_one_poll_interval_on_one_session_and_survive
         writer.close()
 
 
-def test_a_refused_journal_row_is_dropped_and_the_row_behind_it_is_still_written() -> None:
-    """#680 RC6. One row per transaction: a refusal is that row's answer and nobody else's."""
+@pytest.mark.parametrize("kind", ["fill", "protection"])
+def test_refused_critical_evidence_is_retained_without_blocking_later_rows(kind: str) -> None:
+    """A missing dependency must not lose an economic fill or the original protective leg."""
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -434,13 +537,15 @@ def test_a_refused_journal_row_is_dropped_and_the_row_behind_it_is_still_written
         signals = ExecutionSignalClient(account_slot=_ACCOUNT_SLOT, execution_strategy="oi_nautilus_v1")
         journal = ExecutionJournal(factory=ObservationFactory(_ACCOUNT_SLOT, "oi_nautilus_v1"))
         bridge = _runtime_bridge(signals, journal=journal)
-        # A fill correlated to a Command nobody issued: the foreign key refuses it.
+        # The correlated Signal is not durable yet: the foreign key refuses this evidence.
         refused = journal.factory.create(
-            normalized_kind="fill",
-            command_id="e" * 64,
+            normalized_kind=kind,
+            signal_id="e" * 64,
             occurred_at_ns=NOW_NS,
             observed_at_ns=NOW_NS,
-            summary={"leg": "entry", "last_quantity": "1", "last_price": "1"},
+            summary={"leg": "entry", "last_quantity": "1", "last_price": "1"}
+            if kind == "fill"
+            else {"leg": "stop", "status": "submitted", "binding_version": "plan_order_v1"},
             event_identity="orphan",
         )
         written = journal.factory.create(
@@ -456,7 +561,19 @@ def test_a_refused_journal_row_is_dropped_and_the_row_behind_it_is_still_written
         bridge._cycle(repos)
 
         assert _rows(conn, "SELECT event_id FROM trading_execution_observations") == [{"event_id": written.event_id}]
-        assert journal.backlog() == 0
+        assert journal.backlog() == 1
+        [pending] = journal.due(float("inf"))
+        assert pending.value == refused and pending.attempts == 1
+        _append_signal(repos.trading, suffix="e")
+
+        def retry() -> bool:
+            bridge._cycle(repos)
+            return journal.backlog() == 0
+
+        _wait(retry)
+        assert _rows(
+            conn, "SELECT event_id FROM trading_execution_observations WHERE event_id=%s", refused.event_id
+        ) == [{"event_id": refused.event_id}]
     finally:
         conn.close()
 
@@ -544,7 +661,7 @@ def test_a_failing_day_start_write_never_stops_commands_or_the_projection() -> N
         projector = RuntimeStateProjector(initial=_runtime_state())
         projector.start(repos)
         baselines: list[DayStartBaseline] = []
-        bridge = _runtime_bridge(signals, projector=projector, update_day_start=baselines.append)
+        bridge = _runtime_bridge(signals, update_day_start=baselines.append)
         bridge.set_equity(Decimal("1000"), NOW_NS)
         conn.execute(
             """
@@ -558,6 +675,7 @@ def test_a_failing_day_start_write_never_stops_commands_or_the_projection() -> N
         projector.offer(projected)
 
         bridge._cycle(repos)
+        projector.write_once(repos)
 
         received = signals.next_command_nowait()
         assert received is not None and received.command_id == command.value.command_id

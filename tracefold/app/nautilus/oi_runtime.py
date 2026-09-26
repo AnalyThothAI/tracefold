@@ -1,10 +1,10 @@
-"""The PostgreSQL bridge and read seam for the OI Runtime.
+"""The PostgreSQL bridge and current-state writer for the OI Runtime.
 
-One thread and one connection speak PostgreSQL for a running Runtime. Nothing it does is fatal to the
+The bridge and the current-state writer use separate fixed connections. Nothing they do is fatal to the
 process (#680 RC1): a statement that fails is logged once per cause and retried, a lost session is
-replaced after a bounded backoff, and a journal row the database refuses on integrity grounds is
-dropped and logged rather than replayed. The account-slot lock is the one fact that stops the process,
-and it lives on its own session.
+replaced after a bounded backoff, and critical Plan, native fill, cost and binding writes remain pending after a
+refusal. Noncritical audit rows can be dropped with a logged reason. The account-slot lock is
+the one fact that stops the process, and it lives on its own session.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from tracefold.trading.execution_contracts import (
     OperatorIntentV1,
     TradeSignalV3,
 )
+from tracefold.trading.native_fills import NATIVE_EXECUTION_KINDS
 from tracefold.trading.storage.execution_stream import (
     ExecutionRuntimeState,
     materialize_execution_observation,
@@ -54,7 +55,7 @@ from tracefold.trading.storage.trade_plans import (
     prepare_trade_plan,
     prepare_trade_plan_update,
 )
-from tracefold.trading.trade_plan import TradePlan
+from tracefold.trading.trade_plan import PlanOrderBinding, TradePlan
 
 # How often the current row is rewritten when nothing about it changed. It is well inside the public
 # five-second stale budget, so a Runtime that stops projecting reads as stale rather than as healthy.
@@ -68,7 +69,7 @@ _ROW_REFUSALS = (IntegrityError, DataError, RaiseException, ValueError, RuntimeE
 
 
 class RuntimeStateProjector:
-    """Durable current state: computed on the event loop, written by the bridge thread."""
+    """Newest event-loop candidate and the last state actually committed by its writer."""
 
     def __init__(self, *, initial: ExecutionRuntimeState) -> None:
         self._lock = Lock()
@@ -99,7 +100,6 @@ class RuntimeStateProjector:
 
         with self._lock:
             candidate = self._pending
-            self._pending = None
             current = self._current
         if candidate is None:
             return
@@ -110,11 +110,93 @@ class RuntimeStateProjector:
         with repos.transaction():
             written = repos.trading.update_execution_runtime_state(candidate)
         if not written:
-            # Another generation owns the row. The account-slot lock is what stops two Runtimes;
-            # this generation keeps running on it and simply stops projecting over its successor.
-            logger.error("OI Runtime projection row belongs to another generation ({})", candidate.account_slot)
+            raise RuntimeError(f"oi_runtime_generation_fenced:{candidate.account_slot}")
         with self._lock:
             self._current = candidate
+            if self._pending is candidate:
+                self._pending = None
+
+
+class RuntimeStateWriter:
+    """The only current-state writer; it never reads Nautilus or shares the journal connection."""
+
+    def __init__(self, *, settings: Any, projector: RuntimeStateProjector, poll_seconds: float = 0.2) -> None:
+        self._settings = settings
+        self._projector = projector
+        self._poll_seconds = poll_seconds
+        self._stop = Event()
+        self._thread: Thread | None = None
+        self._lock = Lock()
+        self._initialized = False
+        self._connected = False
+        self._failure: str | None = None
+        self._last_written_at_ns: int | None = None
+
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "connected": self._connected,
+                "failure": self._failure,
+                "last_written_at_ns": self._last_written_at_ns,
+            }
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("oi_runtime_state_writer_already_started")
+        self._thread = Thread(target=self._run, name="tracefold-oi-runtime-state", daemon=False)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def join(self, timeout: float | None = None) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout)
+            if self._thread.is_alive():
+                raise RuntimeError("oi_runtime_state_writer_shutdown_timeout")
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._stop.is_set():
+            try:
+                with open_repositories(
+                    self._settings, application_name="tracefold_nautilus_state", long_lived=True
+                ) as repos:
+                    repos.conn.execute("SET statement_timeout = 1000")
+                    with self._lock:
+                        self._connected = True
+                    if not self._initialized:
+                        self._projector.start(repos)
+                        self._initialized = True
+                        with self._lock:
+                            self._last_written_at_ns = self._projector.current.heartbeat_at_ns
+                            self._failure = None
+                    failures = 0
+                    while not self._stop.is_set():
+                        self._projector.write_once(repos)
+                        with self._lock:
+                            self._last_written_at_ns = self._projector.current.heartbeat_at_ns
+                            self._failure = None
+                        self._stop.wait(self._poll_seconds)
+                    # The root offers its stopped row before asking us to finish.
+                    self._projector.write_once(repos)
+                    break
+            except Exception as exc:
+                reason = type(exc).__name__
+                with self._lock:
+                    changed = self._failure != reason
+                    self._failure = reason
+                    self._connected = False
+                if changed:
+                    logger.opt(exception=exc).error("OI Runtime current-state write failed")
+                if reason == "RuntimeError" and str(exc).startswith("oi_runtime_generation_fenced:"):
+                    break
+                delay = _RECONNECT_BACKOFF_SECONDS[min(failures, len(_RECONNECT_BACKOFF_SECONDS) - 1)]
+                failures += 1
+                self._stop.wait(delay)
+        with self._lock:
+            self._connected = False
 
 
 def _semantic_state(state: ExecutionRuntimeState) -> dict[str, Any]:
@@ -162,6 +244,27 @@ def load_runtime_inputs(
             )
         )
     open_plans = tuple(materialized)
+    bindings: dict[str, PlanOrderBinding] = {}
+    after_seq = 0
+    while open_plans:
+        binding_rows = repos.trading.trade_plan_order_bindings(
+            account_slot=profile.account_slot,
+            entry_ids=tuple(value.plan.entry_id for value in open_plans),
+            after_seq=after_seq,
+            observed_before_ns=now_ns,
+            limit=256,
+        )
+        for binding_row in binding_rows:
+            after_seq = int(binding_row["seq"])
+            binding = PlanOrderBinding.model_validate(
+                {key: value for key, value in binding_row.items() if key != "seq"}
+            )
+            previous = bindings.get(binding.client_order_id)
+            if previous is not None and previous != binding:
+                raise ValueError("plan_order_identity_conflict")
+            bindings[binding.client_order_id] = binding
+        if len(binding_rows) < 256:
+            break
     stop_exits = repos.trading.recent_stop_exits(
         account_slot=profile.account_slot,
         since_ns=now_ns - profile.risk.post_stop_cooldown_ns,
@@ -172,6 +275,7 @@ def load_runtime_inputs(
             emergency_halted=control.emergency_halted,
         ),
         open_plans=open_plans,
+        order_bindings=tuple(bindings.values()),
         stop_exits=stop_exits,
     )
 
@@ -202,15 +306,29 @@ def write_journal_row(repos: RepositorySession, value: ExecutionObservationV1 | 
     if isinstance(value, TradePlan):
         prepared_plan = prepare_trade_plan_update(value)
         with repos.transaction():
-            repos.trading.update_trade_plan(prepared_plan)
+            written = repos.trading.update_trade_plan(prepared_plan)
+            if not written:
+                stored = repos.trading.trade_plan(value.entry_id)
+                if stored is None:
+                    raise ValueError("trade_plan_transition_missing")
+                current = TradePlan.model_validate(stored)
+                if current != value and not (
+                    current.entry_client_order_id == value.entry_client_order_id
+                    and current.updated_at_ns > value.updated_at_ns
+                    and current.status == "closed"
+                    and value.status != "closed"
+                ):
+                    raise ValueError("trade_plan_transition_conflict")
         return
     prepared = prepare_execution_observations((value,))
     with repos.transaction():
-        repos.trading.append_execution_observations(prepared)
+        sequences = repos.trading.append_execution_observations(prepared)
+        if not sequences or len(sequences) != 1 or sequences[0] <= 0:
+            raise ValueError("execution_observation_write_unconfirmed")
 
 
 class OiRuntimeDatabaseBridge:
-    """The one thread and the one connection that speak PostgreSQL for a running Runtime."""
+    """Commands, durable preparation, journal and signals; current-state has its own writer."""
 
     def __init__(
         self,
@@ -221,7 +339,6 @@ class OiRuntimeDatabaseBridge:
         journal: ExecutionJournal,
         update_day_start: Callable[[DayStartBaseline], None],
         singleton: AccountSlotSingleton,
-        projector: RuntimeStateProjector,
         poll_seconds: float = 0.2,
     ) -> None:
         if poll_seconds <= 0:
@@ -232,7 +349,6 @@ class OiRuntimeDatabaseBridge:
         self._journal = journal
         self._update_day_start = update_day_start
         self._singleton = singleton
-        self._projector = projector
         self._poll_seconds = poll_seconds
         self._stop = Event()
         self._thread: Thread | None = None
@@ -241,6 +357,16 @@ class OiRuntimeDatabaseBridge:
         self._equity: tuple[Decimal, int] | None = None
         self._baseline_day: str | None = None
         self._step_failures: dict[str, str] = {}
+        self._step_duration_ms: dict[str, float] = {}
+
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "connected": self._connected,
+                "step_failures": dict(self._step_failures),
+                "step_duration_ms": dict(self._step_duration_ms),
+            }
 
     def set_equity(self, equity_usd: Decimal | None, observed_at_ns: int) -> None:
         if equity_usd is None or equity_usd <= 0 or observed_at_ns <= 0:
@@ -260,6 +386,8 @@ class OiRuntimeDatabaseBridge:
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
             self._thread.join(timeout)
+            if self._thread.is_alive():
+                raise RuntimeError("oi_runtime_database_bridge_shutdown_timeout")
 
     def _run(self) -> None:
         failures = 0
@@ -279,10 +407,7 @@ class OiRuntimeDatabaseBridge:
                         if self._stop.is_set():
                             break
                         self._stop.wait(self._poll_seconds)
-                    # The composition root offers its `stopped` row on the way out; this connection
-                    # is the only one that can still write it, and the journal drains behind it.
                     self._step("journal", lambda: self._flush_journal(repos))
-                    self._step("projection", lambda: self._projector.write_once(repos))
                     break
             except Exception as exc:
                 # A lost session, a failed connect, or anything else the cycle did not contain: the
@@ -323,7 +448,6 @@ class OiRuntimeDatabaseBridge:
                 lambda slot, strategy, limit: load_unresolved_trade_signals(repos, slot, strategy, limit),
             ),
         )
-        self._step("projection", lambda: self._projector.write_once(repos))
         self._step("day_start", lambda: self._refresh_day_start(repos))
 
     def _commit_entry_plan(self, repos: RepositorySession) -> None:
@@ -365,9 +489,12 @@ class OiRuntimeDatabaseBridge:
         )
 
     def _flush_journal(self, repos: RepositorySession) -> None:
-        """Write every due row in its own transaction; one failing row never holds up the next."""
+        """Bound each cycle and retain rejected Plan transitions for a later storage verdict."""
 
-        for row in self._journal.due(time.monotonic()):
+        deadline = time.monotonic() + 0.1
+        for row in self._journal.due(time.monotonic(), limit=32):
+            if time.monotonic() >= deadline:
+                break
             value = row.value
             try:
                 write_journal_row(repos, value)
@@ -375,8 +502,20 @@ class OiRuntimeDatabaseBridge:
                 self._journal.retry_later(row, time.monotonic())
                 raise
             except _ROW_REFUSALS as exc:
+                if (
+                    isinstance(value, TradePlan)
+                    or value.normalized_kind in NATIVE_EXECUTION_KINDS | {"fill"}
+                    or value.summary.get("binding_version") == "plan_order_v1"
+                ):
+                    logger.error(
+                        "OI Runtime critical evidence not durable ({}): {}",
+                        row.key,
+                        type(exc).__name__,
+                    )
+                    self._journal.retry_later(row, time.monotonic())
+                    continue
                 logger.error(
-                    "OI Runtime journal row refused and dropped ({} {}): {}",
+                    "OI Runtime journal observation refused and dropped ({} {}): {}",
                     _row_kind(row),
                     row.key,
                     f"{type(exc).__name__}: {(str(exc).strip().splitlines() or [''])[0][:200]}",
@@ -392,6 +531,8 @@ class OiRuntimeDatabaseBridge:
                 continue
             self._settled(value)
             self._journal.written(row, value)
+            if time.monotonic() >= deadline:
+                break
 
     def _settled(self, value: ExecutionObservationV1 | TradePlan) -> None:
         """A written verdict releases its input from this process's in-flight claim."""
@@ -425,6 +566,7 @@ class OiRuntimeDatabaseBridge:
     def _step(self, name: str, run: Callable[[], object]) -> bool:
         """Run one cycle step, logging a repeating cause once instead of once per cycle."""
 
+        started = time.monotonic()
         try:
             run()
         except (InterfaceError, OperationalError):
@@ -437,6 +579,9 @@ class OiRuntimeDatabaseBridge:
             if changed:
                 logger.exception("OI Runtime database bridge step failed ({})", name)
             return False
+        finally:
+            with self._lock:
+                self._step_duration_ms[name] = round((time.monotonic() - started) * 1000, 3)
         with self._lock:
             recovered = self._step_failures.pop(name, None) is not None
         if recovered:

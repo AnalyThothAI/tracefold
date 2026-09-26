@@ -811,11 +811,14 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,signals,observations,gate,commands,issue} ...
+                         {status,diagnose,verify-execution,cases,signals,observations,gate,commands,issue} ...
 
 positional arguments:
-  {status,cases,signals,observations,gate,commands,issue}
-    status              show Alpha producer and disabled execution readiness
+  {status,diagnose,verify-execution,cases,signals,observations,gate,commands,issue}
+    status              show Alpha producer and execution readiness
+    diagnose            sample bounded read-only execution evidence
+    verify-execution    preview signed evidence for one closed Plan; append
+                        only with --apply
     cases               list Trading cases newest first
     signals             list engine-neutral TradeSignalV3 rows
     observations        list append-only Runtime observations
@@ -836,6 +839,39 @@ usage: tracefold trading status [-h]
 
 options:
   -h, --help  show this help message and exit
+
+```
+
+## `trading diagnose`
+
+```
+usage: tracefold trading diagnose [-h] [--probe-url PROBE_URL]
+                                  [--status-url STATUS_URL]
+
+options:
+  -h, --help            show this help message and exit
+  --probe-url PROBE_URL
+                        optional Runtime /readyz URL
+  --status-url STATUS_URL
+                        optional serve /api/trading/status URL
+
+```
+
+## `trading verify-execution`
+
+```
+usage: tracefold trading verify-execution [-h] --entry-id ENTRY_ID
+                                          --account-slot ACCOUNT_SLOT
+                                          --environment {LIVE,DEMO,TESTNET}
+                                          [--apply]
+
+options:
+  -h, --help            show this help message and exit
+  --entry-id ENTRY_ID   exact historical Plan entry ID
+  --account-slot ACCOUNT_SLOT
+                        must match the configured Binance account slot
+  --environment {LIVE,DEMO,TESTNET}
+  --apply               append verified evidence; default is read-only preview
 
 ```
 
