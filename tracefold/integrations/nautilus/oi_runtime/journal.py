@@ -1,10 +1,10 @@
 """The Runtime's one outbox to PostgreSQL: execution observations and TradePlan transitions.
 
 Nautilus callbacks run on the trading event loop and never touch PostgreSQL. They offer rows here; the
-database bridge thread writes them one row per transaction (#680 RC6). A row the database refuses on
-integrity grounds is dropped and logged, because no retry can change a verdict; a row that fails for
-any other reason waits out a bounded backoff while every row behind it keeps flowing. Nothing here can
-block a later write, and nothing here is fatal.
+database bridge thread writes them one row per transaction (#680 RC6). Plan transitions, fills and
+logical-order bindings remain pending until storage confirms the fact or an identical replay. A
+refused noncritical observation is logged and dropped; critical and transient failures retry with
+bounded backoff while later rows keep flowing. No database call runs on the callback thread.
 
 The one ordering rule is the entry handshake: a plan must be committed before its entry order exists,
 so `prepare` hands the bridge exactly one pending insert and the Strategy submits only on a receipt.
@@ -214,7 +214,20 @@ class ExecutionJournal:
         """Queue one observation. An identical re-offer is already on its way; a full journal refuses."""
 
         with self._lock:
-            if value.event_id in self._index:
+            queued = self._index.get(value.event_id)
+            if queued is not None:
+                current = queued.value
+                if (
+                    isinstance(current, ExecutionObservationV1)
+                    and (
+                        current.normalized_kind == "fill"
+                        or value.normalized_kind == "fill"
+                        or current.summary.get("binding_version") == "plan_order_v1"
+                        or value.summary.get("binding_version") == "plan_order_v1"
+                    )
+                    and current.model_dump(exclude={"observed_at_ns"}) != value.model_dump(exclude={"observed_at_ns"})
+                ):
+                    raise ValueError("execution_observation_pending_identity_conflict")
                 return True
             if len(self._rows) >= self._max_rows:
                 return False

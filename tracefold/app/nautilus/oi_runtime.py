@@ -321,7 +321,9 @@ def write_journal_row(repos: RepositorySession, value: ExecutionObservationV1 | 
         return
     prepared = prepare_execution_observations((value,))
     with repos.transaction():
-        repos.trading.append_execution_observations(prepared)
+        sequences = repos.trading.append_execution_observations(prepared)
+        if not sequences or len(sequences) != 1 or sequences[0] <= 0:
+            raise ValueError("execution_observation_write_unconfirmed")
 
 
 class OiRuntimeDatabaseBridge:

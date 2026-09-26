@@ -597,6 +597,12 @@ class ExecutionStreamStorage:
                   FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS offered(payload, ordinal)
                   JOIN trading_execution_observations existing
                     ON existing.event_id = offered.payload ->> 'event_id'
+                   AND CASE WHEN existing.normalized_kind = 'fill'
+                              OR offered.payload ->> 'normalized_kind' = 'fill'
+                              OR existing.summary ->> 'binding_version' = 'plan_order_v1'
+                              OR offered.payload -> 'summary' ->> 'binding_version' = 'plan_order_v1'
+                            THEN existing.payload - 'observed_at_ns' = offered.payload - 'observed_at_ns'
+                            ELSE TRUE END
                 """,
                 (prepared.payload_json,),
             ).fetchone()

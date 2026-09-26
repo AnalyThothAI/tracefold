@@ -300,7 +300,11 @@ credentials, an older database schema, loss of the account-slot lock, or failure
 stop an old writer before rebuilding a generation. Database-refused Plan transitions,
 fills and order bindings are retained for another durable verdict. Other refused
 observations are logged and dropped. Transient journal failures retry after backoff
-while later rows keep flowing.
+while later rows keep flowing. A critical replay must match the immutable stored
+fact (a later observation timestamp is allowed); a conflicting event ID is refused
+and the batch's other inserts roll back. Missing observation write receipts never
+release a critical row from the journal. The same identity check also applies while
+a fill or binding is still pending in memory.
 
 The Runtime process holds three fixed PostgreSQL connections. The singleton session
 holds the account-slot advisory lock. The bridge reads Commands and flushes the

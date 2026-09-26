@@ -305,3 +305,49 @@ def test_a_lost_session_is_replaced_and_the_bridge_thread_never_dies(monkeypatch
     bridge.join(5.0)
 
     assert len(sessions) == 3
+
+
+@pytest.mark.parametrize("receipt", [False, (), None])
+def test_a_missing_observation_write_receipt_retains_the_critical_fill(
+    monkeypatch: pytest.MonkeyPatch, receipt: Any
+) -> None:
+    bridge, journal, _signals = _bridge()
+    trading = _FakeTrading()
+    value = journal.factory.create(
+        normalized_kind="fill",
+        occurred_at_ns=NOW_NS,
+        observed_at_ns=NOW_NS,
+        summary={"leg": "entry", "last_quantity": "1", "last_price": "2"},
+        event_identity="native-trade:1",
+    )
+    assert journal.offer(value)
+    monkeypatch.setattr(trading, "append_execution_observations", lambda _prepared: receipt)
+    bridge._flush_journal(_FakeRepos(trading))
+    [pending] = journal.due(float("inf"))
+    assert pending.value == value and pending.attempts == 1
+
+    monkeypatch.setattr(trading, "append_execution_observations", lambda _prepared: (42,))
+    pending.not_before = 0
+    bridge._flush_journal(_FakeRepos(trading))
+    assert journal.due(float("inf")) == ()
+
+
+@pytest.mark.parametrize("kind", ["fill", "protection"])
+def test_pending_critical_replay_cannot_hide_a_conflicting_fact(kind: str) -> None:
+    _bridge_value, journal, _signals = _bridge()
+    summary: dict[str, str] = {"leg": "stop"}
+    if kind == "protection":
+        summary["binding_version"] = "plan_order_v1"
+    value = journal.factory.create(
+        normalized_kind=kind,
+        occurred_at_ns=NOW_NS,
+        observed_at_ns=NOW_NS,
+        summary=summary,
+        event_identity="native:1",
+    )
+    assert journal.offer(value)
+    assert journal.offer(value.model_copy(update={"observed_at_ns": NOW_NS + 1}))
+    with pytest.raises(ValueError, match="pending_identity_conflict"):
+        journal.offer(value.model_copy(update={"summary": {**summary, "leg": "take_profit"}}))
+    [pending] = journal.due(float("inf"))
+    assert pending.value == value

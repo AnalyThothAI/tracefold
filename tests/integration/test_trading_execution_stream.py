@@ -173,6 +173,35 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
     assert materialize_operator_intents((command_row,))[0].command_id == command.value.command_id
 
 
+@pytest.mark.parametrize(
+    ("kind", "summary"),
+    [
+        ("fill", {"leg": "entry", "last_quantity": "1", "last_price": "2"}),
+        ("protection", {"binding_version": "plan_order_v1", "leg": "stop", "client_order_id": "original"}),
+    ],
+)
+def test_critical_evidence_replay_requires_the_same_immutable_fact(kind: str, summary: dict[str, str]) -> None:
+    original = _observation(event="f", kind=kind, summary=summary)
+    later_read = original.model_copy(update={"observed_at_ns": 3_000})
+    conflicting = original.model_copy(update={"summary": {**summary, "leg": "take_profit"}})
+    independent = _observation(event="e", kind="risk", summary={"risk_fact": "unrelated"})
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            repo = TradingRepository(conn)
+            [sequence] = repo.append_execution_observations(prepare_execution_observations((original,)))
+            assert repo.append_execution_observations(prepare_execution_observations((later_read,))) == (sequence,)
+            with pytest.raises(RuntimeError, match="execution_stream_identity_conflict"):
+                repo.append_execution_observations(prepare_execution_observations((independent, conflicting)))
+            [stored] = conn.execute("SELECT payload FROM trading_execution_observations ORDER BY seq").fetchall()
+            assert stored["payload"] == original.model_dump(mode="json")
+            # A refused batch rolls back its other insert and its savepoint;
+            # the surrounding transaction remains usable for the next fact.
+            assert repo.append_execution_observations(prepare_execution_observations((independent,)))
+    finally:
+        conn.close()
+
+
 def test_operator_ingress_records_only_the_idempotent_intent_without_interpreting_it() -> None:
     command = _prepare_command(suffix="9", requested_at_ns=2_000, expires_at_ns=10_000)
     conn = connect_postgres_test(read_only=False)
