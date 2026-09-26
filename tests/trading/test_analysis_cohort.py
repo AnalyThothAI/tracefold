@@ -11,7 +11,7 @@ from scripts.export_trading_analysis_cohort import (
     _rule_shadow_receipt,
     _rule_watch_path,
 )
-from scripts.historical_price_confirmation import STRATEGY_VERSION
+from scripts.historical_price_confirmation import STRATEGY_VERSION, build_event_price_candidates
 from scripts.trading_analysis_cohort import (
     PURGE_MS,
     _holdout_comparison,
@@ -665,3 +665,26 @@ def test_model_cost_includes_known_subtotal_with_unknown_physical_calls() -> Non
         },
     ]
     assert _model_cost([root]) == (200, 3)
+
+
+@pytest.mark.parametrize(
+    ("source", "ready"),
+    [
+        ({"kind": "catalyst", "headline": "Archived pre-#706 headline", "why": ""}, True),
+        ({"kind": "catalyst", "headline": " ", "why": None}, False),
+        ({"kind": "catalyst_delta", "text": "[cl:a] Structured public projection"}, True),
+        ({"kind": "catalyst_delta", "text": " ", "headline": "Not a public alias"}, False),
+    ],
+)
+def test_historical_rule_reads_archived_and_current_catalyst_sources(source: dict[str, object], ready: bool) -> None:
+    bars = tuple(
+        {"event_at_ms": (index + 1) * 60_000, "high": "101", "low": "99", "close": "100"} for index in range(16)
+    )
+    candidates = build_event_price_candidates(
+        asset_id="crypto:SOL",
+        instrument_semantics_digest="a" * 64,
+        source_fact=source,
+        source_first_visible_at_ms=1,
+        perp_rows=bars,
+    )
+    assert {candidate.source_gate_ready for candidate in candidates} == {ready}

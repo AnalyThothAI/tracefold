@@ -13,21 +13,33 @@ PROFILE_VERSION = "evidence_profile_v3"
 _BAR_MS = 60_000
 
 
+CATALYST_SOURCE_KIND = "catalyst_delta"
+
+
 def catalyst_text_values(source_fact: dict[str, Any]) -> dict[str, str]:
     """Read the public catalyst text used by both evidence and qualification.
 
-    News maps its internal editorial fields to headline/why in the outbox.
-    Other spellings are not public aliases. Keep the original strings for
-    evidence; strip only to test whether text is present, never to rewrite it.
+    A News catalyst delta carries `text`: the deterministic projection of the
+    changed claims, their fields, citations and source relationships. It is
+    neither a ReaderCard nor a model-written trading summary, and no other key
+    is a public alias. Keep the original string for evidence; strip only to
+    test whether text is present, never to rewrite it.
     """
-    if source_fact.get("kind") != "catalyst":
+    if source_fact.get("kind") != CATALYST_SOURCE_KIND:
         return {}
-    values: dict[str, str] = {}
-    for key in ("headline", "why"):
-        value = source_fact.get(key)
-        if isinstance(value, str) and value.strip():
-            values[key] = value
-    return values
+    value = source_fact.get("text")
+    return {"text": value} if isinstance(value, str) and value.strip() else {}
+
+
+def source_recorded_at_ms(source_fact: dict[str, Any]) -> int | None:
+    """When the producer recorded this public fact; never a later relay or model clock.
+
+    A catalyst delta is recorded when its semantic result completed; its
+    freshness (`first_available_at_ms`) is a separate, earlier clock.
+    """
+    key = "semantic_completed_at_ms" if source_fact.get("kind") == CATALYST_SOURCE_KIND else "source_recorded_at_ms"
+    value = source_fact.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _change_bps(rows: tuple[dict[str, Any], ...], interval_count: int) -> str | None:
@@ -157,8 +169,7 @@ def freeze_features(
         event_at: int | None
         received_at: int | None
         if frame is None:
-            source_event_at = source_fact.get("source_recorded_at_ms")
-            event_at = source_event_at if isinstance(source_event_at, int) else None
+            event_at = source_recorded_at_ms(source_fact)
             received_at = source_first_visible_at_ms
             source_ok = isinstance(event_at, int) and isinstance(received_at, int)
         else:

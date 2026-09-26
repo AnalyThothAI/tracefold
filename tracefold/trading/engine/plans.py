@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from .contracts import Action, ExitPlan, Frozen
-from .features import catalyst_text_values
+from .features import CATALYST_SOURCE_KIND, catalyst_text_values
 from .policy import InvalidAssessment, is_citable_evidence
 
 BAR_MS = 60_000
@@ -107,13 +107,13 @@ def build_entry_plans(
     price_ref: str = "market:perp_bars",
 ) -> tuple[EntryPlan, ...]:
     """Return only plans supported by complete required inputs; missing ATR is no plan."""
-    if source_fact.get("kind") not in ("oi", "catalyst") or source_first_visible_at_ms <= 0:
+    if source_fact.get("kind") not in ("oi", CATALYST_SOURCE_KIND) or source_first_visible_at_ms <= 0:
         return ()
     if source_fact["kind"] == "oi" and not all(
         source_fact.get(key) is not None for key in ("oi_change_bps", "measurement_definition")
     ):
         return ()
-    if source_fact["kind"] == "catalyst" and not catalyst_text_values(source_fact):
+    if source_fact["kind"] == CATALYST_SOURCE_KIND and not catalyst_text_values(source_fact):
         return ()
     if not perp_rows:
         return ()

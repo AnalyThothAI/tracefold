@@ -27,13 +27,50 @@ _OUTCOME_VERSION = "price_path_v2"
 TRADING_TRIGGER_BY_ID_SQL = (
     "SELECT trigger_id,kind,source_fact_key,source_revision,payload_sha256,payload,"
     "asset_id,target_selection,first_visible_at_ms,source_observed_at_ms,"
-    "root_expires_at_ms,supersedes_ref,created_at_ms "
+    "root_expires_at_ms,created_at_ms "
     "FROM trading_triggers WHERE trigger_id=%s"
 )
 TRADING_ANALYSIS_RUNTIME_SQL = (
     "SELECT heartbeat_at_ms,active_policy,model_name,model_configured,"
     "publish_signals,config_digest FROM trading_analysis_runtime WHERE runtime_id=%s"
 )
+
+
+# The claims a catalyst trigger's research cites; its payload is News' public update.
+_ORIGINAL_CLAIMS = "ARRAY(SELECT jsonb_array_elements_text(original.payload->'claim_refs'))"
+
+
+def _superseded_sql(*, created_until_param: bool) -> str:
+    """One supersession rule for settlement, watch continuation and the last entry check.
+
+    Evaluated against a trigger aliased `original`. An OI metric revision supersedes by its
+    frozen producer time. A News catalyst supersedes only research whose claims it names as
+    replaced by a parameter, phase or real-world change; information added to the same Event
+    leaves earlier research valid. A source update (correction or evidence change) is an
+    amendment, never a newer trigger.
+    """
+
+    created = " AND newer.created_at_ms<=%s" if created_until_param else ""
+    return f"""EXISTS (
+          SELECT 1 FROM trading_triggers newer
+           WHERE newer.kind=original.kind AND newer.source_fact_key=original.source_fact_key
+             AND newer.trigger_id<>original.trigger_id{created}
+             AND CASE WHEN original.kind='catalyst'
+                 THEN newer.payload->'superseded_claim_refs' ?| {_ORIGINAL_CLAIMS}
+                 ELSE newer.source_revision<>original.source_revision
+                  AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,newer.first_visible_at_ms)
+                    > COALESCE((original.payload->>'source_recorded_at_ms')::bigint,original.first_visible_at_ms)
+                 END)"""  # noqa: S608 -- module-owned predicate; every value stays bound
+
+
+def _refs(value: object) -> list[str]:
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) > 256
+        or any(not isinstance(item, str) or not item for item in value)
+    ):
+        raise ValueError("analysis_claim_refs_invalid")
+    return sorted(set(value))
 
 
 class AnalysisStorage:
@@ -109,6 +146,14 @@ class AnalysisStorage:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def _trigger_superseded(self, trigger_id: str | None, *, known_at_ms: int) -> bool:
+        row = self.conn.execute(
+            f"SELECT {_superseded_sql(created_until_param=True)} AS superseded "  # noqa: S608 -- module-owned predicate
+            "FROM trading_triggers original WHERE original.trigger_id=%s",
+            (int(known_at_ms), trigger_id),
+        ).fetchone()
+        return row is not None and bool(row["superseded"])
+
     def accept_trigger(
         self,
         *,
@@ -125,22 +170,31 @@ class AnalysisStorage:
 
         Returns (trigger_id, case_id, disposition). A conflicting duplicate
         retains the first fact and records the attempted digest separately.
+        A catalyst's revision is News' content revision, so its update_id is
+        received once; its freshness starts at `first_available_at_ms`, which
+        a model rerun or a new Event member cannot move.
         """
 
         if kind not in ("oi", "catalyst") or root_ttl_ms <= 0:
             raise ValueError("analysis_trigger_invalid")
+        if kind == "catalyst":
+            _refs(payload["claim_refs"])
+            _refs(payload["superseded_claim_refs"])
+            first_available = payload["first_available_at_ms"]
+            completed = payload["semantic_completed_at_ms"]
+            if any(not isinstance(value, int) or isinstance(value, bool) for value in (first_available, completed)):
+                raise ValueError("analysis_trigger_clock_invalid")
+            # The producer's recorded time is when the semantic fact existed; freshness is the
+            # information's first availability, never the later completion or relay clock.
+            source_recorded, source_observed, freshness_from = completed, first_available, first_available
+        else:
+            # The timestamp actually frozen by the producer bounds the age of a
+            # delayed relay; retry cannot refresh it.
+            source_recorded = int(payload.get("source_recorded_at_ms") or now_ms)
+            source_observed = int(payload.get("provider_event_at_ms") or source_recorded)
+            freshness_from = source_recorded
         asset_key = selection.asset_id.key if selection.asset_id is not None else None
-        supersedes_ref = payload.get("supersedes_or_revokes_ref")
         affected = {asset_key} if asset_key is not None else set()
-        if isinstance(supersedes_ref, str) and supersedes_ref:
-            affected.update(
-                str(item["asset_id"])
-                for item in self.conn.execute(
-                    "SELECT asset_id FROM trading_triggers "
-                    "WHERE (trigger_id=%s OR source_fact_key=%s) AND asset_id IS NOT NULL",
-                    (supersedes_ref, supersedes_ref),
-                ).fetchall()
-            )
         affected.update(
             str(item["asset_id"])
             for item in self.conn.execute(
@@ -175,11 +229,7 @@ class AnalysisStorage:
 
         trigger_id = _sha((kind, source_fact_key, source_revision))
         case_id = _sha((trigger_id, "initial", 0))
-        # The timestamp actually frozen by the producer bounds the age of a
-        # delayed relay; retry cannot refresh it.
-        source_recorded = int(payload.get("source_recorded_at_ms") or now_ms)
-        source_observed = int(payload.get("provider_event_at_ms") or source_recorded)
-        root_expires = source_recorded + root_ttl_ms
+        root_expires = freshness_from + root_ttl_ms
         scope = _sha((kind, source_fact_key, asset_key)) if asset_key else None
         selection_json = {
             "reason": selection.reason,
@@ -214,8 +264,8 @@ class AnalysisStorage:
             INSERT INTO trading_triggers
               (trigger_id, kind, source_fact_key, source_revision, payload_sha256, payload,
                asset_id, target_selection, first_visible_at_ms, source_observed_at_ms,
-               root_expires_at_ms, supersedes_ref, created_at_ms)
-            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s,%s,%s,%s)
+               root_expires_at_ms, created_at_ms)
+            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s,%s,%s)
             ON CONFLICT (kind, source_fact_key, source_revision) DO NOTHING
             RETURNING trigger_id
             """,
@@ -231,7 +281,6 @@ class AnalysisStorage:
                 int(now_ms),
                 source_observed,
                 root_expires,
-                supersedes_ref,
                 int(now_ms),
             ),
         ).fetchone()
@@ -305,6 +354,93 @@ class AnalysisStorage:
                 (case_id, int(now_ms), root_expires + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS + 300_000),
             )
         return trigger_id, case_id, "accepted"
+
+    def receive_source_update(
+        self,
+        *,
+        update_id: str,
+        source_fact_key: str,
+        content_revision: str,
+        affected_claim_refs: list[str] | tuple[str, ...],
+        retired_claim_refs: list[str] | tuple[str, ...],
+        payload: dict[str, Any],
+        payload_sha256: str,
+        now_ms: int,
+    ) -> str:
+        """Record one News correction or evidence change against the claims it names, once per update_id.
+
+        An amendment is research context and the input to the last entry check. It creates no
+        trigger or Case, moves no freshness clock, cancels no order and grants no authority.
+        Returns `accepted`, `duplicate`, or `source_conflict` (the first payload is kept).
+        """
+
+        if not update_id or not source_fact_key or not content_revision:
+            raise ValueError("source_amendment_invalid")
+        affected = _refs(affected_claim_refs)
+        retired = _refs(retired_claim_refs)
+        if not affected or not set(retired) <= set(affected):
+            raise ValueError("source_amendment_claims_invalid")
+        inserted = self.conn.execute(
+            """
+            INSERT INTO trading_source_amendments
+              (update_id, source_fact_key, content_revision, affected_claim_refs,
+               retired_claim_refs, payload, payload_sha256, received_at_ms)
+            VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
+            ON CONFLICT (update_id) DO NOTHING
+            RETURNING update_id
+            """,
+            (
+                update_id,
+                source_fact_key,
+                content_revision,
+                json.dumps(affected),
+                json.dumps(retired),
+                json.dumps(payload),
+                payload_sha256,
+                int(now_ms),
+            ),
+        ).fetchone()
+        if inserted is not None:
+            return "accepted"
+        original = self.conn.execute(
+            "SELECT payload_sha256 FROM trading_source_amendments WHERE update_id=%s",
+            (update_id,),
+        ).fetchone()
+        if original is None:
+            raise RuntimeError("source_amendment_conflict_missing")
+        if original["payload_sha256"] == payload_sha256:
+            return "duplicate"
+        self.conn.execute(
+            "INSERT INTO trading_trigger_conflicts "
+            "(kind,source_fact_key,source_revision,attempted_sha256,original_sha256,observed_at_ms) "
+            "VALUES ('source_update',%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            (source_fact_key, content_revision, payload_sha256, original["payload_sha256"], int(now_ms)),
+        )
+        return "source_conflict"
+
+    def source_amendments(self, *, trigger_id: str, known_at_ms: int, limit: int = 8) -> list[dict[str, Any]]:
+        """Recorded amendments to this catalyst trigger's own claims, as known at the cutoff.
+
+        Amendments to other claims of the same Event are not this research's source.
+        """
+
+        if not 1 <= limit <= 8:
+            raise ValueError("analysis_source_amendment_limit_invalid")
+        rows = self.conn.execute(
+            """
+            SELECT amendment.update_id,amendment.content_revision,amendment.affected_claim_refs,
+                   amendment.retired_claim_refs,amendment.payload,amendment.received_at_ms
+              FROM trading_triggers original
+              JOIN trading_source_amendments amendment ON amendment.source_fact_key=original.source_fact_key
+             WHERE original.trigger_id=%s AND original.kind='catalyst'
+               AND amendment.received_at_ms<=%s
+               AND amendment.affected_claim_refs
+                   ?| ARRAY(SELECT jsonb_array_elements_text(original.payload->'claim_refs'))
+             ORDER BY amendment.received_at_ms,amendment.update_id LIMIT %s
+            """,
+            (trigger_id, int(known_at_ms), limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def due_root_research_tapes(self, *, now_ms: int, limit: int = 8) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -485,25 +621,7 @@ class AnalysisStorage:
             if decision.get("decision_version") != "trade_decision_v4":
                 raise ValueError("analysis_decision_version_invalid")
             decision_id = decision_identity(case_id, decision)
-            superseded = (
-                self.conn.execute(
-                    """
-                SELECT 1 FROM trading_triggers newer
-                 JOIN trading_triggers original ON original.trigger_id=%s
-                 WHERE (newer.supersedes_ref IN (original.trigger_id,original.source_fact_key)
-                        OR (newer.kind=original.kind AND newer.source_fact_key=original.source_fact_key
-                            AND newer.source_revision<>original.source_revision
-                            AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,
-                                         newer.first_visible_at_ms)
-                              > COALESCE((original.payload->>'source_recorded_at_ms')::bigint,
-                                         original.first_visible_at_ms)))
-                   AND newer.trigger_id<>original.trigger_id
-                   AND newer.created_at_ms<=%s LIMIT 1
-                """,
-                    (row["trigger_id"], int(now_ms)),
-                ).fetchone()
-                is not None
-            )
+            superseded = self._trigger_superseded(row["trigger_id"], known_at_ms=now_ms)
             publish_status = (
                 "superseded"
                 if superseded
@@ -1039,18 +1157,8 @@ class AnalysisStorage:
             "SELECT 1 FROM trading_trade_plans WHERE entry_scope_id=%s LIMIT 1",
             (parent["entry_scope_id"],),
         ).fetchone()
-        superseded = self.conn.execute(
-            "SELECT 1 FROM trading_triggers newer JOIN trading_triggers original "
-            "ON original.trigger_id=%s WHERE newer.trigger_id<>original.trigger_id "
-            "AND (newer.supersedes_ref IN (original.trigger_id,original.source_fact_key) "
-            "OR (newer.kind=original.kind AND newer.source_fact_key=original.source_fact_key "
-            "AND newer.source_revision<>original.source_revision "
-            "AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,newer.first_visible_at_ms) "
-            "> COALESCE((original.payload->>'source_recorded_at_ms')::bigint,original.first_visible_at_ms))) "
-            "AND newer.created_at_ms<=%s LIMIT 1",
-            (parent["trigger_id"], now_ms),
-        ).fetchone()
-        if used is not None or superseded is not None:
+        superseded = self._trigger_superseded(parent["trigger_id"], known_at_ms=now_ms)
+        if used is not None or superseded:
             final_status = "cancelled"
         elif now_ms >= root_expires or observation_status == "missed":
             final_status = "expired"
@@ -1247,31 +1355,26 @@ class AnalysisStorage:
         if asset is not None and asset["target_asset_id"] is not None:
             self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 683))", (asset["target_asset_id"],))
         row = self.conn.execute(
-            """
+            f"""
             SELECT plan.entry_id,plan.entry_scope_id,plan.account_slot,
                    plan.market_key,plan.direction,
                    plan.terminal_at_ns,signal.payload,signal.seq,
                    case_row.state,case_row.target_asset_id,
                    case_row.mapping_semantics_digest,case_row.root_expires_at_ms,
                    decision.publish_status,decision.decision_id,decision.decision,
-                   EXISTS (
-                     SELECT 1 FROM trading_triggers newer
-                      JOIN trading_triggers original ON original.trigger_id=case_row.trigger_id
-                     WHERE (newer.supersedes_ref IN (original.trigger_id,original.source_fact_key)
-                            OR (newer.kind=original.kind AND newer.source_fact_key=original.source_fact_key
-                                AND newer.source_revision<>original.source_revision
-                                AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,
-                                             newer.first_visible_at_ms)
-                                  > COALESCE((original.payload->>'source_recorded_at_ms')::bigint,
-                                             original.first_visible_at_ms)))
-                       AND newer.trigger_id<>original.trigger_id
-                   ) AS superseded
+                   {_superseded_sql(created_until_param=False)} AS superseded,
+                   (original.kind='catalyst' AND EXISTS (
+                     SELECT 1 FROM trading_source_amendments amendment
+                      WHERE amendment.source_fact_key=original.source_fact_key
+                        AND amendment.retired_claim_refs ?| {_ORIGINAL_CLAIMS}
+                   )) AS corrected
               FROM trading_trade_plans plan
               JOIN trading_trade_signals signal ON signal.signal_id=plan.entry_id
               JOIN trading_cases case_row ON case_row.case_id=signal.case_id
+              LEFT JOIN trading_triggers original ON original.trigger_id=case_row.trigger_id
               JOIN trading_case_decisions decision ON decision.case_id=case_row.case_id
              WHERE plan.entry_id=%s
-            """,
+            """,  # noqa: S608 -- module-owned predicates; the entry id stays bound
             (entry_id,),
         ).fetchone()
         reason = "valid"
@@ -1293,6 +1396,10 @@ class AnalysisStorage:
                 reason = "decision_plan_changed"
             elif row["superseded"]:
                 reason = "source_superseded"
+            elif row["corrected"]:
+                # A News correction retired a claim this entry's research cited. Refuse the
+                # unsubmitted entry; nothing already submitted is cancelled here.
+                reason = "source_corrected"
             elif (
                 row["entry_scope_id"] != signal.entry_scope_id
                 or row["account_slot"] != signal.account_slot
