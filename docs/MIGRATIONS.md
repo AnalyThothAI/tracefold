@@ -6,11 +6,39 @@ processes never execute DDL.
 ## Current baseline
 
 `20260831_0340` is the single Alembic root. The current head is
-`20260926_0403`; a fresh PostgreSQL 18 database applies the baseline and the
+`20260926_0404`; a fresh PostgreSQL 18 database applies the baseline and the
 linear forward-only revisions. The baseline creates
 application tables, sequences, views, indexes, functions, triggers,
 constraints, and only the structural singleton rows required on an empty
 cluster. Extensions remain the empty-PGDATA bootstrap's responsibility.
+
+## News EventUpdate cut (`20260926_0404`)
+
+News adopts exact EventUpdate revisions and notifies claim-scoped intents (#706).
+New News tables hold semantic work per Event (`news_semantic_work`, pending while
+`wanted_revision > done_revision`, at most three attempts per wanted revision),
+insert-only stage checkpoints and observations, insert-only adopted updates with
+one CAS head per Event, the judgment cache (14-day retention), the notification
+marker with its last plan and claim decisions, and later bodies of one provider
+record (`news_item_revisions`). Trading gets `trading_source_amendments`; the
+News outbox admits `source_update` beside `catalyst` and `oi`.
+
+`news_delivery_queue` and `news_deliveries` are now keyed by `intent_id`. Every
+existing row is backfilled with `news_identity('legacy_intent', [event_id, kind])`,
+the same value as the Python `legacy_intent_id`, and a CHECK keeps each legacy
+`first`/`followup` row on exactly that identity. State, card, receipt and history
+are unchanged and nothing is re-sent. An `update` intent carries its content
+revision, claim refs, key flag and the exact frozen body whose digest must equal
+`payload_sha256`; only an `update` row may be `ambiguous`. The review task view
+joins one reader delivery per Event across `first` and `update`. `news_verdicts`
+receives no new writes and keeps its rows.
+
+Stop Workers and serve, keep a verified backup, apply the revision, then start
+the matching image. The backfill rewrites each delivery row once under ACCESS
+EXCLUSIVE (5-second lock, 300-second statement limit); production row counts are
+tens of thousands and the duration at that scale is unmeasured. Failure rolls
+back atomically. Downgrade refuses; restore the verified pre-0404 backup and
+image to go back.
 
 ## Native execution evidence cut (`20260926_0403`)
 

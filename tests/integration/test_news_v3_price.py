@@ -25,6 +25,7 @@ from tracefold.news.market_review.pricing import (
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.reader_card import quote_line, reader_quotes
+from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.triage_rules import DecisionResult, DegradedJudgment
 
 pytestmark = pytest.mark.integration
@@ -215,11 +216,11 @@ def _event(
     if delivered:
         conn.execute(
             """
-            INSERT INTO news_deliveries (event_id, kind, state, card, attempted_at_ms, settled_at_ms,
+            INSERT INTO news_deliveries (intent_id, event_id, kind, state, card, attempted_at_ms, settled_at_ms,
                                          created_at_ms)
-            VALUES (%s, 'first', 'sent', '{}'::jsonb, %s, %s, %s)
+            VALUES (%s, %s, 'first', 'sent', '{}'::jsonb, %s, %s, %s)
             """,
-            (event_id, opened_at_ms, opened_at_ms, opened_at_ms),
+            (legacy_intent_id(event_id, "first"), event_id, opened_at_ms, opened_at_ms, opened_at_ms),
         )
     conn.commit()
 

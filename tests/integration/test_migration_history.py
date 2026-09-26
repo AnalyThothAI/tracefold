@@ -32,6 +32,7 @@ from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.news.smart_money import PARSER_VERSION
 from tracefold.news.smart_money import source_key as smart_money_source_key
 from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
+from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.wallet_snapshots import wallet_snapshot
 from tracefold.news.wallet_contracts import NetBuySnapshot
 from tracefold.platform.postgres.migrations import alembic_config
@@ -50,7 +51,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260926_0403"
+HEAD = "20260926_0404"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -257,6 +258,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260926_0403",
         "20260926_0402",
         "20260925_0401",
         "20260925_0400",
@@ -515,9 +517,13 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="native_fill_identity_forward_only"):
+    with pytest.raises(RuntimeError, match="news_event_updates_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260926_0403")
+    with pytest.raises(RuntimeError, match="native_fill_identity_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260926_0403"
     command.stamp(config, "20260926_0402")
     with pytest.raises(RuntimeError, match="trading_runtime_observation_truth_forward_only"):
         command.downgrade(config, "base")
@@ -3314,5 +3320,74 @@ def test_native_identity_cut_preserves_original_payloads_without_promoting_histo
         ).fetchone()
         assert {key: after[key] for key in before} == before
         assert after["native_environment"] is after["native_instrument"] is after["native_trade_id"] is None
+    finally:
+        conn.close()
+
+
+def test_event_update_cut_keys_every_delivery_by_its_legacy_intent_without_resending() -> None:
+    """0404 backfills the Python legacy intent identity and keeps every row's state and payload."""
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260926_0403")
+    at_ms = 1_790_000_000_000
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            _seed_pre_cut_oi_event(conn, event_id="ev-legacy", leader_item="it-a", member_item="it-b", at_ms=at_ms)
+            conn.execute(
+                """
+                INSERT INTO news_deliveries (event_id, kind, state, card, receipt, attempted_at_ms,
+                                             settled_at_ms, created_at_ms)
+                VALUES ('ev-legacy', 'first', 'sent', '{"header": {"title": {"content": "旧卡"}}}'::jsonb,
+                        '{"provider": "telegram", "message_id": 7}'::jsonb, %s, %s, %s),
+                       ('ev-legacy', 'followup', 'terminal', '{}'::jsonb, NULL, %s, %s, %s)
+                """,
+                (at_ms, at_ms + 1, at_ms, at_ms, at_ms + 2, at_ms),
+            )
+            conn.execute(
+                """
+                INSERT INTO news_delivery_queue (event_id, kind, state, attempts, enqueued_at_ms,
+                                                 next_attempt_at_ms, last_attempt_at_ms, updated_at_ms)
+                VALUES ('ev-legacy', 'followup', 'pending', 1, %s, %s, %s, %s)
+                """,
+                (at_ms, at_ms, at_ms, at_ms),
+            )
+        before = {row["kind"]: row for row in conn.execute("SELECT * FROM news_deliveries ORDER BY kind").fetchall()}
+        command.upgrade(config, HEAD)
+        after = {row["kind"]: row for row in conn.execute("SELECT * FROM news_deliveries").fetchall()}
+        for kind, row in before.items():
+            assert after[kind]["intent_id"] == legacy_intent_id("ev-legacy", kind)
+            assert {key: after[kind][key] for key in row} == row
+            assert after[kind]["body"] is after[kind]["payload_sha256"] is after[kind]["claim_refs"] is None
+        queued = conn.execute("SELECT intent_id, state, attempts FROM news_delivery_queue").fetchone()
+        assert queued["intent_id"] == legacy_intent_id("ev-legacy", "followup")
+        assert (queued["state"], queued["attempts"]) == ("pending", 1)
+
+        # A legacy kind cannot be written under any other identity.
+        with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO news_delivery_queue (intent_id, event_id, kind, state, enqueued_at_ms,
+                                                 next_attempt_at_ms, updated_at_ms)
+                VALUES ('intent:' || repeat('0', 64), 'ev-legacy', 'first', 'pending', 1, 1, 1)
+                """
+            )
+        # An update intent must retain the exact body whose digest it claims.
+        with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO news_deliveries (intent_id, event_id, kind, state, card, attempted_at_ms,
+                                             created_at_ms, content_revision, claim_refs, body,
+                                             payload_sha256, plan_key)
+                VALUES ('intent:' || repeat('1', 64), 'ev-legacy', 'update', 'sending', '{}'::jsonb, 1, 1,
+                        repeat('a', 64), '["cl:x"]'::jsonb, '正文', repeat('b', 64), false)
+                """
+            )
+        kinds = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+            "WHERE conname = 'news_trade_events_kind_check'"
+        ).fetchone()
+        assert "source_update" in kinds["definition"]
     finally:
         conn.close()

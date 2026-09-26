@@ -42,6 +42,15 @@ NEWS_TABLES = {
     # #598 D2: the push Verdict's handoff to Delivery, written in the verdict's own
     # transaction and claimed with `FOR UPDATE SKIP LOCKED`. Work still owed, never a ledger.
     "news_delivery_queue",
+    # #706: EventUpdate adoption, semantic work, notification intents and the item-revision archive.
+    "news_item_revisions",
+    "news_semantic_work",
+    "news_semantic_checkpoints",
+    "news_semantic_observations",
+    "news_event_updates",
+    "news_event_update_heads",
+    "news_judgment_cache",
+    "news_notification_work",
     "news_reviews",
     "news_external_miss_snapshots",
     "news_learning_artifacts",

@@ -127,6 +127,13 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "delete_error_code",
         "delete_attempted_at_ms",
         "delete_settled_at_ms",
+        # #706: the intent identity, and the exact frozen selection/body an update intent sent.
+        "intent_id",
+        "content_revision",
+        "claim_refs",
+        "body",
+        "payload_sha256",
+        "plan_key",
     }
     assert news_ingest_columns == {
         "singleton_key",
@@ -179,7 +186,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260926_0403"
+    assert version == latest_migration_version() == "20260926_0404"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -204,7 +211,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260926_0403"
+    assert version == latest_migration_version() == "20260926_0404"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:
