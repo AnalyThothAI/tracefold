@@ -38,6 +38,8 @@ from tracefold.news.updates.contracts import (
     Extraction,
     FrozenInput,
     ReadTarget,
+    RelationDraft,
+    SupportDraft,
 )
 from tracefold.news.updates.judgment import (
     Answer,
@@ -256,6 +258,32 @@ def test_consecutive_members_extract_only_the_unadopted_material_and_carry_old_c
     assert {item.ref for item in adopted.evidence} == {item.ref for item in first.evidence} | {
         item.ref for item in source.evidence
     }
+
+
+def test_equivalent_new_member_amends_the_source_without_a_new_claim() -> None:
+    clock = Clock(STAMP + 60_000)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
+    seed_event()
+    assert asyncio.run(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    first = asyncio.run(store.head(EVENT))
+    assert first is not None
+
+    add_member_evidence(EVENT, "it-member", "Agency confirms the same tariff order.", now_ms=clock.now_ms)
+    analyzer = StubAnalyzer(
+        lambda source: Extraction(
+            claims=(draft(source.evidence[0]),),
+            relations=(RelationDraft(slot="a", previous_ref=first.claims[0].ref, relation="equivalent"),),
+            supports=(SupportDraft(slot="a", evidence_ref=source.evidence[0].ref, relation="supports"),),
+        )
+    )
+    assert asyncio.run(NewsAgent(store, analyzer, program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    head = asyncio.run(store.head(EVENT))
+    assert head is not None
+    assert [claim.ref for claim in head.claims] == [first.claims[0].ref]
+    assert len(head.evidence) == 2
+    assert len(head.evidence_relations) == 2
+    public = sql("SELECT kind FROM news_trade_events WHERE source_revision = %s", (head.content_revision,))
+    assert [row["kind"] for row in public] == ["source_update"]
 
 
 def test_no_new_source_identity_settles_the_revision_without_reextracting() -> None:
