@@ -1420,6 +1420,499 @@
         "title": "NewsBrokerStatusData",
         "type": "object"
       },
+      "NewsClaimAssetData": {
+        "additionalProperties": false,
+        "properties": {
+          "market_type": {
+            "enum": [
+              "crypto",
+              "equity",
+              "commodity",
+              "index",
+              "forex",
+              "fund",
+              "unknown"
+            ],
+            "title": "Market Type",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "primary",
+              "mentioned"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "market_type",
+          "role"
+        ],
+        "title": "NewsClaimAssetData",
+        "type": "object"
+      },
+      "NewsClaimChangeData": {
+        "additionalProperties": false,
+        "description": "What this revision changed relative to an earlier claim. An unfound earlier claim stays unknown.",
+        "properties": {
+          "current_ref": {
+            "title": "Current Ref",
+            "type": "string"
+          },
+          "current_statement": {
+            "default": "",
+            "title": "Current Statement",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "new_fact",
+              "possible_new",
+              "parameter_change",
+              "phase_change",
+              "scope_change",
+              "correction",
+              "conflict",
+              "evidence_change",
+              "restatement"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "kind_zh": {
+            "default": "",
+            "title": "Kind Zh",
+            "type": "string"
+          },
+          "previous_content_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Content Ref"
+          },
+          "previous_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Event Id"
+          },
+          "previous_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Ref"
+          },
+          "previous_statement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Statement"
+          },
+          "relation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "equivalent",
+                  "adds_information",
+                  "real_world_change",
+                  "corrects",
+                  "conflicts",
+                  "unrelated",
+                  "unresolved"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relation"
+          },
+          "relation_zh": {
+            "default": "",
+            "title": "Relation Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "current_ref"
+        ],
+        "title": "NewsClaimChangeData",
+        "type": "object"
+      },
+      "NewsClaimCitationData": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_ref": {
+            "title": "Evidence Ref",
+            "type": "string"
+          },
+          "quote": {
+            "title": "Quote",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsUpdateSourceData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "evidence_ref",
+          "quote"
+        ],
+        "title": "NewsClaimCitationData",
+        "type": "object"
+      },
+      "NewsClaimData": {
+        "additionalProperties": false,
+        "description": "One adopted claim with its own mode, phase, time, conditions and quantities -- never merged.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "antecedent_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Antecedent Refs",
+            "type": "array"
+          },
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/NewsClaimAssetData"
+            },
+            "title": "Assets",
+            "type": "array"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/NewsClaimCitationData"
+            },
+            "minItems": 1,
+            "title": "Citations",
+            "type": "array"
+          },
+          "conditions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Conditions",
+            "type": "array"
+          },
+          "content_kind": {
+            "enum": [
+              "state_change",
+              "official_measure",
+              "new_quantity",
+              "level_crossed",
+              "period_record",
+              "quantified_flow",
+              "schedule",
+              "other"
+            ],
+            "title": "Content Kind",
+            "type": "string"
+          },
+          "content_kind_zh": {
+            "default": "",
+            "title": "Content Kind Zh",
+            "type": "string"
+          },
+          "disputed": {
+            "default": false,
+            "title": "Disputed",
+            "type": "boolean"
+          },
+          "effective_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective At"
+          },
+          "first_available_at_ms": {
+            "title": "First Available At Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "observation",
+              "decision",
+              "commitment",
+              "conditional_threat",
+              "guidance",
+              "forecast",
+              "commentary",
+              "promotion",
+              "unknown"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "mode_zh": {
+            "default": "",
+            "title": "Mode Zh",
+            "type": "string"
+          },
+          "object": {
+            "default": "",
+            "title": "Object",
+            "type": "string"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "enum": [
+                  "proposed",
+                  "announced",
+                  "ordered",
+                  "effective",
+                  "executing",
+                  "completed",
+                  "cancelled",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "phase_zh": {
+            "default": "",
+            "title": "Phase Zh",
+            "type": "string"
+          },
+          "polarity": {
+            "enum": [
+              "affirmative",
+              "negative",
+              "unknown"
+            ],
+            "title": "Polarity",
+            "type": "string"
+          },
+          "polarity_zh": {
+            "default": "",
+            "title": "Polarity Zh",
+            "type": "string"
+          },
+          "quantities": {
+            "items": {
+              "$ref": "#/components/schemas/NewsClaimQuantityData"
+            },
+            "title": "Quantities",
+            "type": "array"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "relation_counts": {
+            "$ref": "#/components/schemas/NewsRelationCountsData"
+          },
+          "retired": {
+            "default": false,
+            "title": "Retired",
+            "type": "boolean"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speaker"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "statistical_period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistical Period"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "statement",
+          "subject",
+          "action",
+          "polarity",
+          "mode",
+          "content_kind",
+          "citations",
+          "first_available_at_ms",
+          "relation_counts"
+        ],
+        "title": "NewsClaimData",
+        "type": "object"
+      },
+      "NewsClaimDecisionData": {
+        "additionalProperties": false,
+        "properties": {
+          "claim_ref": {
+            "title": "Claim Ref",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "notify",
+              "not_notified",
+              "deferred"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "decision_zh": {
+            "default": "",
+            "title": "Decision Zh",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "watchlist_hit",
+              "large_daily_move",
+              "actionable_content",
+              "retired",
+              "mode_commentary",
+              "mode_promotion",
+              "mode_forecast",
+              "mode_unknown",
+              "content_schedule",
+              "price_report_without_basis",
+              "stale_source",
+              "covered_by_sent_receipt",
+              "send_outcome_unresolved"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "reason_zh": {
+            "default": "",
+            "title": "Reason Zh",
+            "type": "string"
+          },
+          "statement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statement"
+          }
+        },
+        "required": [
+          "claim_ref",
+          "decision",
+          "reason"
+        ],
+        "title": "NewsClaimDecisionData",
+        "type": "object"
+      },
+      "NewsClaimQuantityData": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "unit"
+        ],
+        "title": "NewsClaimQuantityData",
+        "type": "object"
+      },
       "NewsDeliveryData": {
         "additionalProperties": false,
         "properties": {
@@ -1492,6 +1985,10 @@
             ],
             "title": "Error Code"
           },
+          "intent_id": {
+            "title": "Intent Id",
+            "type": "string"
+          },
           "kind": {
             "title": "Kind",
             "type": "string"
@@ -1537,6 +2034,7 @@
           }
         },
         "required": [
+          "intent_id",
           "kind",
           "state",
           "attempted_at_ms"
@@ -1835,6 +2333,7 @@
       },
       "NewsEventDetailData": {
         "additionalProperties": false,
+        "description": "One Event. ``event_update``/``processing`` are the EventUpdate path (#706); ``legacy_verdict``,\n``verdicts``, ``evidence_inputs`` and ``late_evidence`` are the history of an Event judged before it,\nand none of them is merged into the other.",
         "properties": {
           "deliveries": {
             "items": {
@@ -1845,6 +2344,16 @@
           },
           "event": {
             "$ref": "#/components/schemas/NewsEventData"
+          },
+          "event_update": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsEventUpdateData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "evidence_inputs": {
             "items": {
@@ -1867,6 +2376,16 @@
             "title": "Late Evidence",
             "type": "array"
           },
+          "legacy_verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsLegacyVerdictData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "members": {
             "items": {
               "$ref": "#/components/schemas/NewsEventMemberData"
@@ -1883,6 +2402,16 @@
           },
           "outcome": {
             "$ref": "#/components/schemas/NewsOutcomeData"
+          },
+          "processing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsProcessingData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reaction": {
             "anyOf": [
@@ -1913,16 +2442,6 @@
             },
             "title": "Timeline",
             "type": "array"
-          },
-          "triage": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsTriageSummaryData"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "verdicts": {
             "items": {
@@ -2242,6 +2761,132 @@
         "title": "NewsEventReviewSummaryData",
         "type": "object"
       },
+      "NewsEventUpdateData": {
+        "additionalProperties": false,
+        "description": "The Event's adopted EventUpdate head: what happened, what changed, who says so, what is missing.",
+        "properties": {
+          "adopted_at_ms": {
+            "title": "Adopted At Ms",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/NewsClaimChangeData"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/NewsClaimData"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "content_revision": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Revision",
+            "type": "string"
+          },
+          "disputed_claim_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disputed Claim Refs",
+            "type": "array"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "headline_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sent_card",
+                  "claim"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline Source"
+          },
+          "implications": {
+            "items": {
+              "$ref": "#/components/schemas/NewsImplicationData"
+            },
+            "title": "Implications",
+            "type": "array"
+          },
+          "input_revision": {
+            "minimum": 1.0,
+            "title": "Input Revision",
+            "type": "integer"
+          },
+          "open_questions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsOpenQuestionData"
+            },
+            "title": "Open Questions",
+            "type": "array"
+          },
+          "previous_content_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Content Revision"
+          },
+          "retired_claim_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Retired Claim Refs",
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/NewsUpdateEvidenceData"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/NewsTopicData"
+            },
+            "title": "Topics",
+            "type": "array"
+          },
+          "update_ref": {
+            "title": "Update Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "update_ref",
+          "content_revision",
+          "input_revision",
+          "adopted_at_ms",
+          "claims"
+        ],
+        "title": "NewsEventUpdateData",
+        "type": "object"
+      },
       "NewsEvidenceInputData": {
         "additionalProperties": false,
         "properties": {
@@ -2365,6 +3010,47 @@
           "elapsed_ms"
         ],
         "title": "NewsEvidenceInputData",
+        "type": "object"
+      },
+      "NewsEvidenceRelationData": {
+        "additionalProperties": false,
+        "properties": {
+          "claim_ref": {
+            "title": "Claim Ref",
+            "type": "string"
+          },
+          "claim_statement": {
+            "default": "",
+            "title": "Claim Statement",
+            "type": "string"
+          },
+          "evidence_ref": {
+            "title": "Evidence Ref",
+            "type": "string"
+          },
+          "relation": {
+            "enum": [
+              "supports",
+              "refutes",
+              "reports",
+              "not_addressed",
+              "unresolved"
+            ],
+            "title": "Relation",
+            "type": "string"
+          },
+          "relation_zh": {
+            "default": "",
+            "title": "Relation Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_ref",
+          "evidence_ref",
+          "relation"
+        ],
+        "title": "NewsEvidenceRelationData",
         "type": "object"
       },
       "NewsEvidenceSnapshotData": {
@@ -2728,6 +3414,16 @@
             ],
             "title": "Leader Url"
           },
+          "legacy_verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsLegacyVerdictData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "macro_lexicon": {
             "default": false,
             "title": "Macro Lexicon",
@@ -2793,10 +3489,10 @@
             "title": "Storyline Key",
             "type": "string"
           },
-          "triage": {
+          "update": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/NewsTriageSummaryData"
+                "$ref": "#/components/schemas/NewsFeedUpdateData"
               },
               {
                 "type": "null"
@@ -2841,28 +3537,6 @@
             ],
             "title": "Admission"
           },
-          "assertion_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Assertion Status"
-          },
-          "change_state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Change State"
-          },
           "direction": {
             "anyOf": [
               {
@@ -2873,17 +3547,6 @@
               }
             ],
             "title": "Direction"
-          },
-          "event_family": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Event Family"
           },
           "event_kind": {
             "anyOf": [
@@ -3020,6 +3683,59 @@
         "title": "NewsFeedSearchData",
         "type": "object"
       },
+      "NewsFeedUpdateData": {
+        "additionalProperties": false,
+        "description": "The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.\n\n``headline`` is the card headline a reader actually received for this Event's latest sent update, else\nthe first claim the head has not retired. It is ``null`` only when every claim is retired.",
+        "properties": {
+          "adopted_at_ms": {
+            "title": "Adopted At Ms",
+            "type": "integer"
+          },
+          "claim_n": {
+            "minimum": 0.0,
+            "title": "Claim N",
+            "type": "integer"
+          },
+          "content_revision": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Revision",
+            "type": "string"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "headline_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sent_card",
+                  "claim"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline Source"
+          }
+        },
+        "required": [
+          "content_revision",
+          "adopted_at_ms",
+          "claim_n"
+        ],
+        "title": "NewsFeedUpdateData",
+        "type": "object"
+      },
       "NewsFunnelData": {
         "additionalProperties": false,
         "properties": {
@@ -3141,6 +3857,55 @@
           "summary_zh"
         ],
         "title": "NewsHealthItemData",
+        "type": "object"
+      },
+      "NewsImplicationData": {
+        "additionalProperties": false,
+        "description": "An explanatory hypothesis, never a fact, a price call or a corroboration. ``origin`` says whose.",
+        "properties": {
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "claim_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Claim Refs",
+            "type": "array"
+          },
+          "conditions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Conditions",
+            "type": "array"
+          },
+          "explanation": {
+            "title": "Explanation",
+            "type": "string"
+          },
+          "origin": {
+            "enum": [
+              "reported_causality",
+              "system_hypothesis"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
+          "origin_zh": {
+            "default": "",
+            "title": "Origin Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_refs",
+          "channel",
+          "explanation",
+          "origin"
+        ],
+        "title": "NewsImplicationData",
         "type": "object"
       },
       "NewsIncidentData": {
@@ -3422,6 +4187,267 @@
           }
         },
         "title": "NewsLearningRetentionStatusData",
+        "type": "object"
+      },
+      "NewsLegacyTaxonomyData": {
+        "additionalProperties": false,
+        "description": "The four retired taxonomy axes exactly as one legacy verdict stored them (#706).\n\nAudit only. The axes have no current owner or reading, so no vocabulary is applied and nothing is\nvalidated against the retired enums: a stored code is published as stored, a missing one as ``null``.",
+        "properties": {
+          "assertion_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assertion Status"
+          },
+          "change_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change State"
+          },
+          "event_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Family"
+          },
+          "subject_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Subject Codes",
+            "type": "array"
+          }
+        },
+        "title": "NewsLegacyTaxonomyData",
+        "type": "object"
+      },
+      "NewsLegacyVerdictData": {
+        "additionalProperties": false,
+        "description": "The reader-facing view of one legacy Triage verdict: history only since #706.\n\n`news_verdicts` receives no writes. An Event the News Agent processed has no verdict and therefore no\nsummary; its reading is `event_update`. Every `*_zh` is server-owned copy; the raw enum stays beside it\nso the browser can map it to a visual tone without owning a vocabulary table. The retired taxonomy axes\nare not summarized here -- the verdict rows keep their stored values for audit.",
+        "properties": {
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/NewsTriageAssetData"
+            },
+            "title": "Assets",
+            "type": "array"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "decision_zh": {
+            "default": "",
+            "title": "Decision Zh",
+            "type": "string"
+          },
+          "degraded": {
+            "default": false,
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "direction_zh": {
+            "default": "",
+            "title": "Direction Zh",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Ref"
+          },
+          "fact_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "state_change",
+                  "new_quantity",
+                  "level_crossed",
+                  "period_record",
+                  "quantified_flow",
+                  "official_measure",
+                  "statement",
+                  "recap",
+                  "schedule",
+                  "promotion"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Kind"
+          },
+          "fact_kind_zh": {
+            "default": "",
+            "title": "Fact Kind Zh",
+            "type": "string"
+          },
+          "final_decision": {
+            "enum": [
+              "push",
+              "escalate",
+              "drop",
+              "throttled"
+            ],
+            "title": "Final Decision",
+            "type": "string"
+          },
+          "headline_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline Zh"
+          },
+          "novelty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Novelty"
+          },
+          "novelty_zh": {
+            "default": "",
+            "title": "Novelty Zh",
+            "type": "string"
+          },
+          "override_rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Rule"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "scope_zh": {
+            "default": "",
+            "title": "Scope Zh",
+            "type": "string"
+          },
+          "source_authority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "regulatory_filing",
+                  "issuer_first_party",
+                  "reputable_secondary",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Authority"
+          },
+          "source_authority_zh": {
+            "default": "",
+            "title": "Source Authority Zh",
+            "type": "string"
+          },
+          "throttled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Throttled By"
+          },
+          "why_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Zh"
+          }
+        },
+        "required": [
+          "final_decision"
+        ],
+        "title": "NewsLegacyVerdictData",
         "type": "object"
       },
       "NewsMarketData": {
@@ -4364,7 +5390,7 @@
       },
       "NewsModelEditorialData": {
         "additionalProperties": false,
-        "description": "The editorial sibling of one model verdict, in the current `news_editorial_v4` read shape.\n\n``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer\nand is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads\n``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under\n`news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row\nreads as ``available`` with its authority lifted out of the taxonomy object (#651 \u00a75.3), and a\n`news_editorial_v3` row loses the `relevance` object the Program no longer produces (#675 \u00a71).",
+        "description": "The editorial sibling of one legacy model verdict, in the `news_editorial_v4` read shape.\n\n``source_authority`` is code-owned and always present; ``taxonomy`` is the retired taxonomy Predictor's\nstored answer and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads\n``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under\n`news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row\nreads as ``available`` with its authority lifted out of the taxonomy object (#651 \u00a75.3), and a\n`news_editorial_v3` row loses the `relevance` object the Program no longer produces (#675 \u00a71).",
         "properties": {
           "source_authority": {
             "enum": [
@@ -4384,7 +5410,7 @@
           "taxonomy": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/NewsTaxonomyData"
+                "$ref": "#/components/schemas/NewsLegacyTaxonomyData"
               },
               {
                 "type": "null"
@@ -4418,6 +5444,170 @@
         "title": "NewsModelEditorialData",
         "type": "object"
       },
+      "NewsNotificationPlanData": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "notify",
+              "no_notification",
+              "unresolved"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "action_zh": {
+            "default": "",
+            "title": "Action Zh",
+            "type": "string"
+          },
+          "claim_decisions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsClaimDecisionData"
+            },
+            "title": "Claim Decisions",
+            "type": "array"
+          },
+          "key": {
+            "default": false,
+            "title": "Key",
+            "type": "boolean"
+          },
+          "reader_revision": {
+            "title": "Reader Revision",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "uncovered_claims",
+              "send_outcome_unresolved",
+              "no_uncovered_actionable_claims"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "reason_zh": {
+            "default": "",
+            "title": "Reason Zh",
+            "type": "string"
+          },
+          "update_ref": {
+            "title": "Update Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "reason",
+          "update_ref",
+          "reader_revision"
+        ],
+        "title": "NewsNotificationPlanData",
+        "type": "object"
+      },
+      "NewsNotificationWorkData": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "content_revision": {
+            "title": "Content Revision",
+            "type": "string"
+          },
+          "next_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At Ms"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsNotificationPlanData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Error Code"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "done"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "state_zh": {
+            "default": "",
+            "title": "State Zh",
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "content_revision",
+          "updated_at_ms"
+        ],
+        "title": "NewsNotificationWorkData",
+        "type": "object"
+      },
+      "NewsOpenQuestionData": {
+        "additionalProperties": false,
+        "properties": {
+          "claim_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Claim Refs",
+            "type": "array"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "target_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Ref"
+          }
+        },
+        "required": [
+          "question",
+          "claim_refs"
+        ],
+        "title": "NewsOpenQuestionData",
+        "type": "object"
+      },
       "NewsOutcomeData": {
         "additionalProperties": false,
         "description": "One human-readable conclusion per Event; ``kind`` is a stable enum, the texts are Chinese reader copy.",
@@ -4444,7 +5634,14 @@
               "degraded_dropped",
               "pending_delivery",
               "delivered",
-              "delivery_failed"
+              "delivery_failed",
+              "queued_semantic",
+              "semantic_failed",
+              "no_update",
+              "queued_notification",
+              "notification_deferred",
+              "not_notified",
+              "delivery_ambiguous"
             ],
             "title": "Kind",
             "type": "string"
@@ -4871,6 +6068,59 @@
           }
         },
         "title": "NewsPriceStatusData",
+        "type": "object"
+      },
+      "NewsProcessingData": {
+        "additionalProperties": false,
+        "description": "What the EventUpdate path did with this Event, from its durable work rows and receipts (#706).",
+        "properties": {
+          "intents": {
+            "items": {
+              "$ref": "#/components/schemas/NewsUpdateIntentData"
+            },
+            "title": "Intents",
+            "type": "array"
+          },
+          "notification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsNotificationWorkData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observations": {
+            "items": {
+              "$ref": "#/components/schemas/NewsSemanticObservationData"
+            },
+            "title": "Observations",
+            "type": "array"
+          },
+          "semantic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsSemanticWorkData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "update_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Error Code"
+          }
+        },
+        "title": "NewsProcessingData",
         "type": "object"
       },
       "NewsQuoteData": {
@@ -5473,6 +6723,38 @@
         "title": "NewsRecoveryStatusData",
         "type": "object"
       },
+      "NewsRelationCountsData": {
+        "additionalProperties": false,
+        "properties": {
+          "not_addressed": {
+            "default": 0,
+            "title": "Not Addressed",
+            "type": "integer"
+          },
+          "refutes": {
+            "default": 0,
+            "title": "Refutes",
+            "type": "integer"
+          },
+          "reports": {
+            "default": 0,
+            "title": "Reports",
+            "type": "integer"
+          },
+          "supports": {
+            "default": 0,
+            "title": "Supports",
+            "type": "integer"
+          },
+          "unresolved": {
+            "default": 0,
+            "title": "Unresolved",
+            "type": "integer"
+          }
+        },
+        "title": "NewsRelationCountsData",
+        "type": "object"
+      },
       "NewsReviewRatio24hData": {
         "additionalProperties": false,
         "description": "One daily-audit product ratio with the two numbers it was divided from (#675 \u00a74).\n\nThe denominator counts accepted review judgments in the window, not cards, so a day nobody audited\nreads as `null` over zero rather than as a perfect or a catastrophic share.",
@@ -5500,6 +6782,145 @@
           }
         },
         "title": "NewsReviewRatio24hData",
+        "type": "object"
+      },
+      "NewsSemanticObservationData": {
+        "additionalProperties": false,
+        "properties": {
+          "adopted_content_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted Content Revision"
+          },
+          "completed_at_ms": {
+            "title": "Completed At Ms",
+            "type": "integer"
+          },
+          "input_revision": {
+            "title": "Input Revision",
+            "type": "integer"
+          },
+          "program_identity": {
+            "title": "Program Identity",
+            "type": "string"
+          },
+          "result_id": {
+            "title": "Result Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_id",
+          "input_revision",
+          "program_identity",
+          "completed_at_ms"
+        ],
+        "title": "NewsSemanticObservationData",
+        "type": "object"
+      },
+      "NewsSemanticWorkData": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "done_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Done Revision"
+          },
+          "extra_read_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Read State"
+          },
+          "extra_read_state_zh": {
+            "default": "",
+            "title": "Extra Read State Zh",
+            "type": "string"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Outcome"
+          },
+          "next_attempt_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At Ms"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "done",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "state_zh": {
+            "default": "",
+            "title": "State Zh",
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
+          },
+          "wanted_revision": {
+            "title": "Wanted Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "wanted_revision",
+          "updated_at_ms"
+        ],
+        "title": "NewsSemanticWorkData",
         "type": "object"
       },
       "NewsSourceContractStageCountsData": {
@@ -5741,145 +7162,6 @@
         "title": "NewsSymbolNormalizationData",
         "type": "object"
       },
-      "NewsTaxonomyData": {
-        "additionalProperties": false,
-        "description": "The four model-owned classification axes and the codebook they were labelled against.\n\nSource authority left this object in #651: it is code-owned, computed from the evidence, and present\non a judgment whose taxonomy call failed and which therefore has no taxonomy at all. It is published\nbeside this one, on the editorial and the Triage summary.",
-        "properties": {
-          "assertion_status": {
-            "enum": [
-              "confirmed",
-              "claimed",
-              "rumor",
-              "conflicted",
-              "unknown"
-            ],
-            "title": "Assertion Status",
-            "type": "string"
-          },
-          "assertion_status_zh": {
-            "title": "Assertion Status Zh",
-            "type": "string"
-          },
-          "change_state": {
-            "enum": [
-              "announced",
-              "scheduled",
-              "effective",
-              "reported",
-              "updated",
-              "delayed",
-              "cancelled",
-              "recalled",
-              "unknown"
-            ],
-            "title": "Change State",
-            "type": "string"
-          },
-          "change_state_zh": {
-            "title": "Change State Zh",
-            "type": "string"
-          },
-          "codebook_sha256": {
-            "const": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac",
-            "title": "Codebook Sha256",
-            "type": "string"
-          },
-          "event_family": {
-            "enum": [
-              "financial_results",
-              "guidance_outlook",
-              "product_service_change",
-              "corporate_transaction",
-              "financing_capital_allocation",
-              "leadership_governance",
-              "regulatory_legal",
-              "security_operational_incident",
-              "market_access",
-              "market_flow_price",
-              "macro_policy_data",
-              "geopolitical_conflict",
-              "other"
-            ],
-            "title": "Event Family",
-            "type": "string"
-          },
-          "event_family_zh": {
-            "title": "Event Family Zh",
-            "type": "string"
-          },
-          "subject_codes": {
-            "default": [],
-            "items": {
-              "enum": [
-                "medtop:04000000",
-                "medtop:20000174",
-                "medtop:20000175",
-                "medtop:20000177",
-                "medtop:20000178",
-                "medtop:20000180",
-                "medtop:20000183",
-                "medtop:20000186",
-                "medtop:20000187",
-                "medtop:20000189",
-                "medtop:20000190",
-                "medtop:20000192",
-                "medtop:20000195",
-                "medtop:20000196",
-                "medtop:20000197",
-                "medtop:20000199",
-                "medtop:20000200",
-                "medtop:20000204",
-                "medtop:20000205",
-                "medtop:20000207",
-                "medtop:20000208",
-                "medtop:20000344",
-                "medtop:20000346",
-                "medtop:20000350",
-                "medtop:20000359",
-                "medtop:20000365",
-                "medtop:20000370",
-                "medtop:20000371",
-                "medtop:20000373",
-                "medtop:20000379",
-                "medtop:20000384",
-                "medtop:20000385",
-                "medtop:20001164",
-                "medtop:20001279",
-                "medtop:16000000"
-              ],
-              "type": "string"
-            },
-            "maxItems": 3,
-            "title": "Subject Codes",
-            "type": "array"
-          },
-          "subject_labels_zh": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 3,
-            "title": "Subject Labels Zh",
-            "type": "array"
-          },
-          "taxonomy_version": {
-            "const": "news_taxonomy_v1",
-            "title": "Taxonomy Version",
-            "type": "string"
-          }
-        },
-        "required": [
-          "event_family",
-          "change_state",
-          "assertion_status",
-          "taxonomy_version",
-          "codebook_sha256",
-          "event_family_zh",
-          "change_state_zh",
-          "assertion_status_zh"
-        ],
-        "title": "NewsTaxonomyData",
-        "type": "object"
-      },
       "NewsTimelineStepData": {
         "additionalProperties": false,
         "properties": {
@@ -5898,6 +7180,9 @@
               "gate",
               "triage",
               "decide",
+              "evidence",
+              "semantic",
+              "notify",
               "delivery"
             ],
             "title": "Stage",
@@ -5919,6 +7204,25 @@
           "summary_zh"
         ],
         "title": "NewsTimelineStepData",
+        "type": "object"
+      },
+      "NewsTopicData": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "label_zh": {
+            "title": "Label Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "label_zh"
+        ],
+        "title": "NewsTopicData",
         "type": "object"
       },
       "NewsTriageAssetData": {
@@ -5961,39 +7265,69 @@
         "title": "NewsTriageAssetData",
         "type": "object"
       },
-      "NewsTriageSummaryData": {
+      "NewsUpdateEvidenceData": {
         "additionalProperties": false,
-        "description": "The reader-facing view of one Triage verdict. Every `*_zh` is server-owned copy; the raw enum stays\nbeside it so the browser can map it to a visual tone without owning a vocabulary table.",
+        "description": "One cited source and how it bears on each claim; a relation describes the material, not trust.",
         "properties": {
-          "assets": {
+          "evidence_ref": {
+            "title": "Evidence Ref",
+            "type": "string"
+          },
+          "relations": {
             "items": {
-              "$ref": "#/components/schemas/NewsTriageAssetData"
+              "$ref": "#/components/schemas/NewsEvidenceRelationData"
             },
-            "title": "Assets",
+            "title": "Relations",
             "type": "array"
           },
-          "confidence": {
+          "source": {
+            "$ref": "#/components/schemas/NewsUpdateSourceData"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "text_truncated": {
+            "default": false,
+            "title": "Text Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "evidence_ref",
+          "text",
+          "source"
+        ],
+        "title": "NewsUpdateEvidenceData",
+        "type": "object"
+      },
+      "NewsUpdateIntentData": {
+        "additionalProperties": false,
+        "description": "One notification intent: what was selected, what happened to it, and the exact text sent.",
+        "properties": {
+          "attempted_at_ms": {
             "anyOf": [
               {
-                "type": "number"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Confidence"
+            "title": "Attempted At Ms"
           },
-          "decision_zh": {
-            "default": "",
-            "title": "Decision Zh",
-            "type": "string"
+          "attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempts"
           },
-          "degraded": {
-            "default": false,
-            "title": "Degraded",
-            "type": "boolean"
-          },
-          "direction": {
+          "body": {
             "anyOf": [
               {
                 "type": "string"
@@ -6002,12 +7336,36 @@
                 "type": "null"
               }
             ],
-            "title": "Direction"
+            "title": "Body"
           },
-          "direction_zh": {
-            "default": "",
-            "title": "Direction Zh",
-            "type": "string"
+          "claim_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Claim Refs",
+            "type": "array"
+          },
+          "content_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Revision"
+          },
+          "enqueued_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enqueued At Ms"
           },
           "error_code": {
             "anyOf": [
@@ -6020,55 +7378,6 @@
             ],
             "title": "Error Code"
           },
-          "evidence_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Evidence Ref"
-          },
-          "fact_kind": {
-            "anyOf": [
-              {
-                "enum": [
-                  "state_change",
-                  "new_quantity",
-                  "level_crossed",
-                  "period_record",
-                  "quantified_flow",
-                  "official_measure",
-                  "statement",
-                  "recap",
-                  "schedule",
-                  "promotion"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Fact Kind"
-          },
-          "fact_kind_zh": {
-            "default": "",
-            "title": "Fact Kind Zh",
-            "type": "string"
-          },
-          "final_decision": {
-            "enum": [
-              "push",
-              "escalate",
-              "drop",
-              "throttled"
-            ],
-            "title": "Final Decision",
-            "type": "string"
-          },
           "headline_zh": {
             "anyOf": [
               {
@@ -6080,23 +7389,16 @@
             ],
             "title": "Headline Zh"
           },
-          "novelty": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Novelty"
-          },
-          "novelty_zh": {
-            "default": "",
-            "title": "Novelty Zh",
+          "intent_id": {
+            "title": "Intent Id",
             "type": "string"
           },
-          "override_rule": {
+          "key": {
+            "default": false,
+            "title": "Key",
+            "type": "boolean"
+          },
+          "payload_sha256": {
             "anyOf": [
               {
                 "type": "string"
@@ -6105,57 +7407,121 @@
                 "type": "null"
               }
             ],
-            "title": "Override Rule"
+            "title": "Payload Sha256"
           },
-          "scope": {
+          "receipt": {
             "anyOf": [
               {
-                "type": "string"
+                "additionalProperties": true,
+                "type": "object"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Scope"
+            "title": "Receipt"
           },
-          "scope_zh": {
+          "settled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At Ms"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "dead",
+              "sending",
+              "sent",
+              "terminal",
+              "ambiguous"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "state_zh": {
             "default": "",
-            "title": "Scope Zh",
+            "title": "State Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent_id",
+          "state"
+        ],
+        "title": "NewsUpdateIntentData",
+        "type": "object"
+      },
+      "NewsUpdateSourceData": {
+        "additionalProperties": false,
+        "description": "Where one piece of evidence came from, as ingestion knew it; the authority is code-owned.",
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "attribution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attribution"
+          },
+          "first_available_at_ms": {
+            "title": "First Available At Ms",
+            "type": "integer"
+          },
+          "origin_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Id"
+          },
+          "published_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At Ms"
+          },
+          "publisher_id": {
+            "title": "Publisher Id",
             "type": "string"
           },
           "source_authority": {
-            "anyOf": [
-              {
-                "enum": [
-                  "regulatory_filing",
-                  "issuer_first_party",
-                  "reputable_secondary",
-                  "unknown"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "regulatory_filing",
+              "issuer_first_party",
+              "reputable_secondary",
+              "unknown"
             ],
-            "title": "Source Authority"
+            "title": "Source Authority",
+            "type": "string"
           },
           "source_authority_zh": {
             "default": "",
             "title": "Source Authority Zh",
             "type": "string"
           },
-          "taxonomy": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsTaxonomyData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "taxonomy_error_code": {
+          "url": {
             "anyOf": [
               {
                 "type": "string"
@@ -6164,50 +7530,16 @@
                 "type": "null"
               }
             ],
-            "title": "Taxonomy Error Code"
-          },
-          "taxonomy_status": {
-            "anyOf": [
-              {
-                "enum": [
-                  "available",
-                  "unavailable"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Taxonomy Status"
-          },
-          "throttled_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Throttled By"
-          },
-          "why_zh": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Why Zh"
+            "title": "Url"
           }
         },
         "required": [
-          "final_decision"
+          "publisher_id",
+          "artifact_id",
+          "first_available_at_ms",
+          "source_authority"
         ],
-        "title": "NewsTriageSummaryData",
+        "title": "NewsUpdateSourceData",
         "type": "object"
       },
       "NewsVerdictData": {
@@ -10757,39 +12089,6 @@
       "get": {
         "operationId": "get_news_feed_api_news_feed_get",
         "parameters": [
-          {
-            "in": "query",
-            "name": "event_family",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 320,
-              "title": "Event Family",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "change_state",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 128,
-              "title": "Change State",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "assertion_status",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 96,
-              "title": "Assertion Status",
-              "type": "string"
-            }
-          },
           {
             "in": "query",
             "name": "source_authority",

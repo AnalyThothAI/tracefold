@@ -360,8 +360,10 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
         event=_event(grounded_assets=["CL", "XYZ-CL", "BTC"]), members=[], verdicts=[], deliveries=[]
     )
     assert cl_steps[1]["summary_zh"] == "已送审 · 关联 CL BTC"
-    assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 状态变化 / 市场准入"
-    assert steps[2]["facts"]["taxonomy"]["event_family"] == "market_access"
+    # #706: the retired taxonomy axes have no current reading. A legacy verdict's step keeps its headline,
+    # direction and fact kind; its stored axes stay on the verdict row for audit and are not narrated.
+    assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 状态变化"
+    assert "taxonomy" not in steps[2]["facts"]
     assert steps[2]["facts"]["fact_kind"] == "state_change"
     assert steps[3]["summary_zh"] == "推送 · 事实类型：状态变化，推送"
     assert steps[4]["summary_zh"] == "已送达" and steps[4]["at_ms"] == NOW + 9_500

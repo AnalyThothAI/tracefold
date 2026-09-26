@@ -8,6 +8,7 @@ import {
   clockTime,
   directionTone,
   displayAssetRefs,
+  eventHeadline,
   relativeTime,
 } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
@@ -49,8 +50,8 @@ export function NewsEventRow({
   quotes?: Record<string, NewsQuote>;
   searchState?: string;
 }) {
-  const triage = event.triage;
-  const headline = triage?.headline_zh?.trim() || event.leader_title;
+  const legacy = event.legacy_verdict;
+  const headline = eventHeadline(event);
   const showOriginal = headline !== event.leader_title;
   const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
   const sentAt = event.delivery?.state === "sent" ? event.delivery.settled_at_ms : null;
@@ -72,7 +73,7 @@ export function NewsEventRow({
     <article
       className="news-event-row"
       /* The 3px rail is the market call, not the pipeline state — the right column already owns that. */
-      data-direction={directionTone(triage?.direction)}
+      data-direction={directionTone(legacy?.direction)}
       data-event-id={event.event_id}
       data-fresh={fresh || undefined}
       data-outcome={event.outcome.kind}
@@ -95,12 +96,12 @@ export function NewsEventRow({
         {showOriginal ? <p className="news-event-original">{event.leader_title}</p> : null}
         <p className="news-event-meta">
           <span className="news-event-origin">{event.reporting_origin || "未知来源"}</span>
-          {triage ? (
+          {legacy ? (
             <>
               <span aria-hidden className="news-event-divider">
                 ·
               </span>
-              <NewsDirectionChip triage={triage} withStrength={false} />
+              <NewsDirectionChip verdict={legacy} withStrength={false} />
             </>
           ) : null}
           <span aria-hidden className="news-event-divider">

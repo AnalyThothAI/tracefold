@@ -145,10 +145,7 @@ export function NewsFeedPage({ token }: { token: string }) {
                 onClick={() =>
                   updateFeedParams({
                     admission: null,
-                    assertionStatuses: [],
-                    changeStates: [],
                     directions: [],
-                    eventFamilies: [],
                     eventKinds: [],
                     finalDecisions: [],
                     hours: 24,

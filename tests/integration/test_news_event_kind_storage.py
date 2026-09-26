@@ -451,9 +451,6 @@ def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(co
         outcome: str | None = None,
     ) -> dict[str, Any]:
         return news.list_feed(
-            event_family=None,
-            change_state=None,
-            assertion_status=None,
             source_authority=None,
             subject_code=None,
             admission=None,
@@ -514,9 +511,6 @@ def test_terminal_delivery_without_a_verdict_is_held_in_both_row_and_tab_partiti
         )
 
     common = dict(
-        event_family=None,
-        change_state=None,
-        assertion_status=None,
         source_authority=None,
         subject_code=None,
         admission=None,

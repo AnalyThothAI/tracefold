@@ -1081,9 +1081,6 @@ def test_a_crash_between_the_claim_and_the_ledger_row_leaves_the_card_claimable(
     stamp = now_ms()
 
     feed_kwargs = dict(
-        event_family=None,
-        change_state=None,
-        assertion_status=None,
         source_authority=None,
         subject_code=None,
         final_decision=None,
