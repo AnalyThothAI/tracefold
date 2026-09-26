@@ -57,8 +57,10 @@ export function TradingPage({ token }: { token: string }) {
   const status = statusQuery.data;
   const executions = executionsQuery.data?.executions ?? [];
 
-  // Absolute expiry also covers the last successful body retained after a failed refresh.
-  const stale = useTradingFactExpiry(status?.execution.facts_expire_at_ms);
+  const stale = useTradingFactExpiry(
+    status?.execution.facts_expire_at_ms,
+    status?.execution.facts_remaining_ms,
+  );
   const opener = useRef<HTMLElement | null>(null);
 
   const coldStatus = statusQuery.isPending && !status;

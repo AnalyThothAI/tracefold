@@ -14,7 +14,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
 
 from nautilus_trader.backtest.config import BacktestEngineConfig
 from nautilus_trader.backtest.engine import BacktestEngine
@@ -25,7 +24,7 @@ from nautilus_trader.model.objects import Money
 
 from tests.helpers.published_signal_v3 import execution_fixture_profile
 from tests.nautilus_oi_runtime_fixtures import INSTRUMENT, NOW_NS
-from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, RuntimeStateProjector, load_runtime_inputs
+from tracefold.app.nautilus.oi_runtime import OiRuntimeDatabaseBridge, load_runtime_inputs
 from tracefold.app.repository_session import RepositorySession
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
@@ -33,7 +32,6 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
 from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
-from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 
 @dataclass
@@ -53,28 +51,6 @@ def _singleton(account_slot: str) -> AccountSlotSingleton:
     )
     singleton.acquire()
     return singleton
-
-
-def _idle_projector(profile: OiRuntimeProfile) -> RuntimeStateProjector:
-    """A projector nothing offers to: the projection row is not what these runs are about."""
-
-    return RuntimeStateProjector(
-        initial=ExecutionRuntimeState(
-            account_slot=profile.account_slot,
-            connection=profile.environment.value if profile.environment is not None else "LIVE",
-            runtime_id=uuid4(),
-            alive=True,
-            entries_armed=False,
-            unexpected_exposure=False,
-            positions_count=0,
-            open_orders_count=0,
-            protection_status="not_applicable",
-            heartbeat_at_ns=NOW_NS,
-            entry_block_reason="runtime_starting",
-            started_at_ns=NOW_NS,
-            updated_at_ns=NOW_NS,
-        )
-    )
 
 
 def run_runtime_on_postgres(
@@ -127,7 +103,6 @@ def run_runtime_on_postgres(
         journal=journal,
         update_day_start=strategy.update_day_start,
         singleton=_singleton(profile.account_slot),
-        projector=_idle_projector(profile),
     )
     settings_free_cycle()
     engine = BacktestEngine(

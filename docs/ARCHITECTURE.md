@@ -363,7 +363,7 @@ no parallel order or position state machine beside Nautilus:
 
 | Fact | The one owner | How it is kept |
 | --- | --- | --- |
-| Positions, open orders, fills | The venue; the in-process projection is the Nautilus Cache | Startup reconciliation (`reconciliation=True`, a lookback longer than the longest holding time) rebuilds the Cache before the Strategy starts; the 5 s open-order and position checks keep it converged. Reconciliation applies only the venue's own orders and fills: it never generates one to match a position report (`generate_missing_orders=False`), and the Binance client's fill reports name each venue trade once. No Cache database: a restart is the same reconciliation a start is. |
+| Positions, open orders, fills | The venue; the in-process projection is the Nautilus Cache | Startup reconciliation (`reconciliation=True`, a lookback covering the oldest open Plan's creation time) rebuilds the Cache before the Strategy starts; the 5 s open-order and position checks keep it converged. PostgreSQL's open Plans supply a bounded symbol query scope when the Cache and venue are flat. Reconciliation applies only the venue's own orders and fills: it never generates one to match a position report (`generate_missing_orders=False`), and the Binance client's fill reports name each venue trade once. No Cache database: a restart is the same reconciliation a start is. |
 | Whether the Cache agrees with the venue | The venue's own positions, read by the Runtime | Signed `positionRisk` every 30 s. A failed read is unknown, never flat; a disagreement on two reads in a row is unexpected exposure. Detect-only. |
 | Trading intent (a plan) | `trading_trade_plans` | Written when the entry is admitted (before its order exists), when its position opens, and when it ends. Read back only as intent — instrument, direction, distances, maximum holding time — never as order or position state. |
 | Execution event log | `trading_execution_observations` | An append-only journal of verdicts, orders, fills (with the venue's commission) and positions, one row per transaction. |
@@ -392,6 +392,17 @@ flat venue read. Entries need a venue read younger than two minutes that agrees 
 Cache (`venue_unverified` otherwise). `/flatten account` closes, with reduce-only market
 orders, what the Cache holds and what only the venue holds. Inspect the Runtime's
 risk observations and Nautilus' rotated WARN/ERROR logs for exposure incidents.
+
+When Binance triggers a protective Algo order, its regular child order gets a new
+venue ID. The execution client checks the signed parent Algo receipt for that exact
+child ID, then updates Nautilus' cached order ID before replaying the child's real
+trades. An unmatched or incomplete receipt leaves the discrepancy unresolved (#699).
+On restart, the signed receipt also identifies a historical protective child in
+Nautilus' order report before replay. A closed Cache Position settles its open
+Plan with that leg's reason only when the Position's opening order matches the
+Plan entry and its closing order has a real fill.
+More than one distinct closing leg records `mixed_exit`; the final fill alone
+does not claim the entire exit.
 
 The pure Trading engine imports no adapter, database or Nautilus engine and has
 no order authority. The historical OI v5 Signal lane is not scheduled by Workers.

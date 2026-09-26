@@ -6,11 +6,47 @@ processes never execute DDL.
 ## Current baseline
 
 `20260831_0340` is the single Alembic root. The current head is
-`20260925_0401`; a fresh PostgreSQL 18 database applies the baseline and the
+`20260926_0403`; a fresh PostgreSQL 18 database applies the baseline and the
 linear forward-only revisions. The baseline creates
 application tables, sequences, views, indexes, functions, triggers,
 constraints, and only the structural singleton rows required on an empty
 cluster. Extensions remain the empty-PGDATA bootstrap's responsibility.
+
+## Native execution evidence cut (`20260926_0403`)
+
+The existing execution ledger now enforces native trade identity by account slot,
+venue environment, instrument and trade ID. Economic fills, costs and verified
+Plan associations are separate immutable facts; a terminal order receipt fixes
+its complete native trade set. Conflicting quantities, prices, times or order
+identities fail the whole append batch. Historical engine observations and Plan
+terminations are retained without assigning inferred UUIDs a native trade ID.
+
+The read model uses one evidence source per Plan. Once native evidence is
+associated, incomplete native sets stay incomplete; historical aggregate fills
+cannot fill their gaps. Complete evidence supplies actual exit purpose/time to
+the execution list, totals and post-stop cooldown. The original termination and
+verification time remain separately visible. Missing funding remains unknown.
+
+Stop writers and serve, retain a verified backup, apply the forward revision,
+then start matching Runtime, serve and web images together. The nullable columns
+need no row rewrite; the new partial indexes begin empty. This migration does
+not read the venue or apply historical corrections. Rollback requires restoring
+the verified database and matching images as one contract.
+
+## Runtime observation truth cut (`20260926_0402`)
+
+This forward revision adds separate failure and last-success clocks for account
+projection, convergence and venue reads, plus native recovery diagnostics. It
+widens protection to include `pending` and `unknown`. The one-time SQL
+conversion preserves current v2 account rows as v3 snapshots, marks their Plan
+association and protection unknown, and leaves Plans, controls and observations
+untouched. Application readers accept only v3 after the cut.
+
+Record a bounded `tracefold trading diagnose` sample and a verified backup;
+stop the Runtime and serve, apply the migration, then start the matching
+Runtime, serve and web images together. A pre-cut image cannot read the new
+account contract. Roll back only by restoring the verified pre-cut database and
+matching images while the venue account is authoritatively flat.
 
 ## Single Binance connection cut (`20260925_0401`)
 

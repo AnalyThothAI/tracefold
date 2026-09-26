@@ -3548,7 +3548,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "loguru", specifier = ">=0.7.2" },
-    { name = "nautilus-trader", specifier = "==1.231.0" },
+    { name = "nautilus-trader", specifier = ">=1.231.0" },
     { name = "prometheus-client", specifier = ">=0.22.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.0" },
     { name = "pydantic", specifier = ">=2.8.0" },

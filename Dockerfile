@@ -76,7 +76,7 @@ RUN /app/.venv/bin/python -c \
     'from tracefold.news.program.artifact import load_stable_program_state; load_stable_program_state()'
 
 RUN /app/.venv/bin/python -c \
-    'import sys; from importlib.metadata import version; from nautilus_trader.live.node import TradingNode; assert sys.version_info[:2] == (3, 13); assert version("nautilus-trader") == "1.231.0"; assert TradingNode.__module__ == "nautilus_trader.live.node"'
+    'import sys; from nautilus_trader.live.node import TradingNode; assert sys.version_info[:2] == (3, 13); assert TradingNode.__module__ == "nautilus_trader.live.node"'
 
 FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca AS base
 

@@ -1405,38 +1405,21 @@ the schema integration test instead of a duplicated prose allowlist.
 Alpha evidence, a Signal carries the engine-neutral handoff, Observations carry
 Runtime facts, and status carries readiness plus bounded totals.
 
-- `GET /api/trading/status` — `decision` and `execution`, and one field per
-  operator question. #528 deleted the `alpha` block: the frozen policy identity,
-  version, digest and config are on every Case row that was decided under them,
-  which is where a reader can act on them. Decision exposes the lane's last
-  frozen Case as its only durable liveness; execution exposes mode and account
-  slot, independent `alive` and `entries_armed` facts, `entry_block_reason`, the
-  two operator control flags, `unexpected_exposure`, `protection_status`
-  (`not_applicable | protected | unprotected`, counting positions only the
-  latest fresh venue read holds as well as the Cache's), `routes_count`,
-  `facts_expire_at_ms` and `current_account`. #537 PR-4 deleted the six identity
-  fields beside them — `runtime_release`, `config_sha256`, `runtime_revision`,
-  `image_digest`, `credential_fingerprint` and `lifecycle_state` — which named the
-  build rather than what it was doing. #680 deleted `execution_safe`,
-  `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` with the
-  private account proof they described: Nautilus reconciles the venue into its
-  Cache before the Strategy starts and every five seconds after, so a fresh
-  heartbeat is the freshness of `current_account`.
-  **The CLI block is this projection.** `tracefold trading status` renders the
-  same dict from the same `execution_readiness_projection`, so neither surface
-  can grow a field the other does not have. `current_account` is the Runtime's
-  Nautilus Cache, published whole: equity, day-start drawdown, positions with the
-  stop and take-profit trigger resting against each and whether a plan claims
-  them (`owned`), and open/in-flight orders by leg
-  (`entry | stop | take_profit | exit | unknown`). It is neither an append-only
-  audit ledger nor an OMS owner, and an empty one proves flat only while the
-  projection is current. Nautilus `/readyz` means `alive`; it remains green when
-  new entries are paused or otherwise blocked. `routes_count` is how many
-  `market_key`s this Runtime generation can reach, and `facts_expire_at_ms` is
-  the instant this projection stops being current — the heartbeat's five-second
-  freshness budget — so a reader compares one instant against its own clock
-  instead of running a timer per rule. Serve reads no secret file and constructs
-  no provider client.
+- `GET /api/trading/status` publishes decision and execution readiness.
+  Execution separates process heartbeat (`alive`), entry permission
+  (`entries_armed`), account projection success, convergence check and venue
+  read times/failures. `current_account` has its own `observed_at_ms` and
+  bounded Cache and venue-only rows with source, strict Plan association,
+  protection status, typed findings and totals that reveal truncation.
+  A venue-only row keeps unknown entry, mark, PnL and protection. `complete`
+  describes field availability, not venue agreement. `protection_status`
+  is `not_applicable | protected | pending | unprotected | unknown`.
+  The CLI status uses the same projection. `readyz` means process liveness
+  even when entry is blocked. The status response has `Cache-Control:
+  no-store`, no ETag, and a server-computed `facts_remaining_ms`. Browsers
+  spend this budget on a monotonic clock and cannot renew an old response.
+  Serve reads no secret file or venue client.
+
 - `GET /api/trading/cases` defaults to summary-only 24-hour state, reason
   and admission distributions. `case_id` reads one retained frozen Case,
   with unknown identity returning an empty list. `view=list` reads

@@ -528,6 +528,13 @@ forgotten `export`.
 and the one the locked cp313 `nautilus_trader` wheel is built for; `make
 preflight` asserts it.
 
+The Nautilus dependency declares the oldest supported release in `pyproject.toml`.
+`uv.lock` records the resolved release and wheel hashes so builds of the same
+revision use the same trading engine. The image checks that its Python interpreter
+and Nautilus `TradingNode` import work; it does not enforce a second hard-coded
+Nautilus version. Updating the lock to a new major release requires adapting and
+verifying the Runtime against that release before building its image.
+
 The Binance execution runtime is deployed separately, from its own
 `tracefold-runtime:<sha>` image: `make runtime-build` (gated build),
 `make runtime-up` (`stop -t 90` then `up --no-build --force-recreate`),

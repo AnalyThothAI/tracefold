@@ -80,7 +80,9 @@ export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   emergency_halted: "已紧急停止",
   entries_paused: "开仓已暂停",
   singleton_lost: "账户槽位已被他人持有",
-  unexpected_exposure: "出现无计划认领的敞口",
+  unexpected_exposure: "账户检查发现异常",
+  account_projection_unavailable: "账户投影待确认",
+  convergence_unverified: "认领检查待确认",
   venue_unverified: "交易所持仓尚未核实",
 };
 
@@ -162,18 +164,19 @@ export const EXECUTION_SOURCE_ZH: Record<string, string> = {
 };
 
 /**
- * Why a trade plan ended, as `trading_trade_plans.exit_reason` stores it.
+ * Why a trade ended, from verified native evidence or the original Plan termination.
  *
  * `external` is a close this Runtime observed but did not originate (a venue-side close, a liquidation, an
  * order placed on the venue by hand); `venue_unknown` is a plan whose end the Runtime never saw because the
- * account was already flat for it when it looked. The last two are historical: plans closed before #680
- * still carry them, and nothing writes them now.
+ * account was already flat for it when it looked. `mixed_exit` means more than one distinct
+ * closing leg supplied real fills; no single leg explains the full exit.
  */
 export const EXIT_REASON_ZH: Record<string, string> = {
   stop_filled: "止损成交",
   take_profit: "止盈退出",
   time_exit: "持仓到期退出",
   operator_flatten: "操作员平仓",
+  mixed_exit: "多种退出成交共同平仓",
   external: "外部平仓（非本 Runtime 发起）",
   venue_unknown: "未观察到平仓过程",
   not_submitted: "入场被拒，计划终止",

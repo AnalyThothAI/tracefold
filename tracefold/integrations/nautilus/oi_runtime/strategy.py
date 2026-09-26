@@ -44,7 +44,7 @@ from threading import Lock
 from typing import Any, Literal
 
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
+from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, TriggerType
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
@@ -53,15 +53,22 @@ from tracefold.trading.execution_contracts import (
     TradeSignalV3,
     entry_condition_allows,
 )
-from tracefold.trading.storage.execution_stream import ExecutionAccountSnapshot
-from tracefold.trading.trade_plan import ExitReason, TradePlan
+from tracefold.trading.storage.execution_stream import ExecutionAccountSnapshot, ExecutionExposureFinding
+from tracefold.trading.trade_plan import ExitReason, PlanOrderBinding, TradePlan
 
-from .account_projection import OrderLeg, account_snapshot, open_and_inflight_orders, order_leg
+from .account_projection import (
+    OrderLeg,
+    account_snapshot,
+    exposure_findings,
+    open_and_inflight_orders,
+    position_claimed,
+)
 from .config import CONTINUOUS_CHECK_SECONDS, OiInstrumentRoute, OiRiskLimits, OiRuntimeProfile
 from .entry import (
     RuntimeEntryRequest,
     deterministic_client_order_id,
     entry_quantity,
+    initial_plan_order_bindings,
     protective_trigger,
     spread_bps,
 )
@@ -76,11 +83,12 @@ _STRATEGY_ID = "OI-RUNTIME"
 _CALLBACK_BATCH = 16
 _PUMP_INTERVAL_MS = 100
 _CONVERGE_INTERVAL_NS = int(CONTINUOUS_CHECK_SECONDS * 1_000_000_000)
+_RECOVERY_INITIAL_DELAY_NS = 5_000_000_000
+_RECOVERY_MAX_DELAY_NS = 60_000_000_000
 # The venue refusing a protective order because its trigger is already crossed (`-2021 Order would
 # immediately trigger`). The stop or take-profit condition is then already met, so the position is
 # closed at market under that leg's reason instead of retrying a trigger that can never rest.
 _IMMEDIATE_TRIGGER_MARKERS = ("-2021", "immediately trigger")
-_CLOSING_TAGS: tuple[ExitReason, ...] = ("time_exit", "operator_flatten", "stop_filled", "take_profit")
 
 EntryVerdict = Literal["refuse", "defer", "admit"]
 
@@ -120,6 +128,7 @@ class RuntimeInputs:
 
     control: RuntimeControlSnapshot
     open_plans: tuple[OpenPlan, ...] = ()
+    order_bindings: tuple[PlanOrderBinding, ...] = ()
     # market_key -> the latest stop-out inside the cooldown window.
     stop_exits: Mapping[str, int] = field(default_factory=dict)
 
@@ -133,8 +142,20 @@ class RuntimeView:
     unexpected_exposure: bool
     positions_count: int
     open_orders_count: int
-    protection_status: Literal["not_applicable", "protected", "unprotected"]
+    protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]
     account_snapshot: ExecutionAccountSnapshot
+    convergence_checked_at_ns: int | None
+    convergence_failure: str | None
+    venue_read_started_at_ns: int | None
+    venue_read_completed_at_ns: int | None
+    venue_read_failure: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryBackoff:
+    signature: tuple[str, Decimal, Decimal]
+    delay_ns: int
+    next_attempt_ns: int
 
 
 @dataclass(slots=True)
@@ -219,6 +240,12 @@ class OiNautilusStrategy(Strategy):
         self._entries_paused = inputs.control.entries_paused
         self._emergency_halted = inputs.control.emergency_halted
         self._plans: dict[str, TradePlan] = {value.plan.entry_id: value.plan for value in inputs.open_plans}
+        self._order_bindings: dict[str, PlanOrderBinding] = {}
+        for plan in self._plans.values():
+            self._bind_plan_orders(plan)
+        for binding in inputs.order_bindings:
+            self._register_order_binding(binding)
+        self._stopped = False
         self._owed: set[str] = {value.plan.entry_id for value in inputs.open_plans if value.disposition_pending}
         self._stop_exits: dict[str, int] = dict(inputs.stop_exits)
         self._deferred: dict[str, _Deferred] = {}
@@ -237,8 +264,13 @@ class OiNautilusStrategy(Strategy):
             if value.plan.status == "prepared" and value.signal is not None and not value.final_check_started:
                 self._awaiting_final[value.plan.entry_id] = RuntimeEntryRequest.from_signal(value.signal)
         self._unexpected: tuple[str, ...] = ()
+        self._findings: tuple[ExecutionExposureFinding, ...] = ()
         self._subscribed: set[InstrumentId] = set()
         self._converge_due_ns = 0
+        self._convergence_checked_at_ns: int | None = None
+        self._convergence_failure: str | None = None
+        self._recovery_requested_read_ns = 0
+        self._recovery_attempts: dict[str, _RecoveryBackoff] = {}
         self._day_start = day_start
         self._day_start_lock = Lock()
         # Venue truth (#680 PR-3). The latest successful read and the last failure's name; the read the
@@ -273,6 +305,7 @@ class OiNautilusStrategy(Strategy):
         )
 
     def on_stop(self) -> None:
+        self._stopped = True
         if self._timer_name in self.clock.timer_names:
             self.clock.cancel_timer(self._timer_name)
         for instrument_id in tuple(self._subscribed):
@@ -291,6 +324,8 @@ class OiNautilusStrategy(Strategy):
     def _pump(self) -> None:
         """Converge first, so no input is judged against a picture older than the last event."""
 
+        if self._stopped:
+            return
         now_ns = self._now_ns()
         if now_ns >= self._converge_due_ns:
             self._converge_due_ns = now_ns + _CONVERGE_INTERVAL_NS
@@ -323,7 +358,12 @@ class OiNautilusStrategy(Strategy):
         try:
             run()
         except Exception as exc:
+            if step == "converge":
+                self._convergence_failure = type(exc).__name__
             self.log.exception(f"OI Runtime step failed ({step})", exc)
+        else:
+            if step == "converge":
+                self._convergence_failure = None
 
     def _now_ns(self) -> int:
         return int(self.clock.timestamp_ns())
@@ -380,7 +420,7 @@ class OiNautilusStrategy(Strategy):
                 continue
             owned += 1
             self._touch(position.instrument_id)
-            self.close_position(position, tags=["operator_flatten"])
+            self._close_position_with_reason(position, "operator_flatten")
         venue, venue_only, unroutable = self._flatten_venue_only(held, now_ns)
         for plan in self._plans.values():
             entry = self.cache.order(ClientOrderId(plan.entry_client_order_id))
@@ -425,7 +465,7 @@ class OiNautilusStrategy(Strategy):
                 tags=["operator_flatten"],
             )
             self._observations.order(
-                correlation=self._correlation(self._plan_on(instrument.id)),
+                correlation={},
                 client_order_id=order.client_order_id.value,
                 leg="exit",
                 status="submitted",
@@ -489,6 +529,8 @@ class OiNautilusStrategy(Strategy):
             return _Verdict("defer", "singleton_lost")
         if self._unexpected:
             return _Verdict("refuse", "unexpected_exposure")
+        if self._convergence_checked_at_ns is None or self._convergence_failure is not None:
+            return _Verdict("defer", "convergence_unverified")
         if self._venue_unverified(now_ns):
             return _Verdict("defer", "venue_unverified")
         if request.source == "signal":
@@ -616,6 +658,7 @@ class OiNautilusStrategy(Strategy):
                 self._answer(request, receipt.reason or "trade_plan_rejected")
             else:
                 self._plans[plan.entry_id] = plan
+                self._bind_plan_orders(plan)
                 self._owed.add(plan.entry_id)
                 if request.exit_plan is not None:
                     self._awaiting_final[plan.entry_id] = request
@@ -714,14 +757,7 @@ class OiNautilusStrategy(Strategy):
             reduce_only=False,
             client_order_id=ClientOrderId(plan.entry_client_order_id),
         )
-        self._observations.order(
-            correlation=self._correlation(plan),
-            client_order_id=plan.entry_client_order_id,
-            leg="entry",
-            status="submitted",
-            occurred_at_ns=now_ns,
-        )
-        self.submit_order(order)
+        self._submit_plan_order(order, plan, leg="entry")
 
     def _answer(self, request: RuntimeEntryRequest, reason: str, detail: dict[str, str] | None = None) -> None:
         self._observations.dispose_entry(source=request.source, entry_id=request.entry_id, reason=reason, detail=detail)
@@ -733,6 +769,86 @@ class OiNautilusStrategy(Strategy):
             return
         self._owed.discard(plan.entry_id)
         self._observations.dispose_entry(source=plan.source, entry_id=plan.entry_id, reason=reason, detail=detail)
+
+    def _register_order_binding(self, binding: PlanOrderBinding) -> None:
+        if binding.account_slot != self._profile.account_slot:
+            raise ValueError("plan_order_account_mismatch")
+        previous = self._order_bindings.get(binding.client_order_id)
+        if previous is not None and previous != binding:
+            raise ValueError("plan_order_identity_conflict")
+        self._order_bindings[binding.client_order_id] = binding
+
+    def _bind_plan_orders(self, plan: TradePlan) -> None:
+        for binding in initial_plan_order_bindings(plan, namespace=self._profile.namespace):
+            self._register_order_binding(binding)
+
+    def _submit_plan_order(
+        self,
+        order: Any,
+        plan: TradePlan,
+        *,
+        leg: Literal["entry", "stop", "take_profit", "exit"],
+        exit_reason: Literal["stop_filled", "take_profit", "time_exit", "operator_flatten"] | None = None,
+        position_id: Any = None,
+    ) -> None:
+        binding = PlanOrderBinding(
+            account_slot=plan.account_slot,
+            entry_id=plan.entry_id,
+            source=plan.source,
+            instrument_id=plan.instrument_id,
+            client_order_id=order.client_order_id.value,
+            leg=leg,
+            exit_reason="stop_filled" if leg == "stop" else "take_profit" if leg == "take_profit" else exit_reason,
+        )
+        self._register_order_binding(binding)
+        self._observations.order(
+            correlation=self._correlation(binding),
+            client_order_id=binding.client_order_id,
+            leg=leg,
+            status="submitted",
+            occurred_at_ns=self._now_ns(),
+            trigger_price=order.trigger_price if leg in {"stop", "take_profit"} else None,
+            binding=binding,
+        )
+        self.submit_order(order, position_id=position_id)
+
+    def _close_position_with_reason(
+        self,
+        position: Any,
+        reason: Literal["stop_filled", "take_profit", "time_exit", "operator_flatten"],
+    ) -> None:
+        if position.is_closed:
+            return
+        binding, _ = self._order_context(position.opening_order_id, position.instrument_id)
+        plan = None if binding is None else self._plans.get(binding.entry_id)
+        deterministic = (
+            None
+            if plan is None
+            else deterministic_client_order_id(
+                namespace=self._profile.namespace, entry_id=plan.entry_id, leg=f"exit:{reason}"
+            )
+        )
+        order = self.order_factory.market(
+            instrument_id=position.instrument_id,
+            order_side=OrderSide.SELL if position.is_long else OrderSide.BUY,
+            quantity=position.quantity,
+            reduce_only=True,
+            tags=[reason],
+            client_order_id=deterministic
+            if deterministic is not None and self.cache.order(deterministic) is None
+            else None,
+        )
+        if plan is None:
+            self._observations.order(
+                correlation={},
+                client_order_id=order.client_order_id.value,
+                leg="exit",
+                status="submitted",
+                occurred_at_ns=self._now_ns(),
+            )
+            self.submit_order(order, position_id=position.id)
+        else:
+            self._submit_plan_order(order, plan, leg="exit", exit_reason=reason, position_id=position.id)
 
     # -- Nautilus events ---------------------------------------------------------------------------
 
@@ -763,34 +879,42 @@ class OiNautilusStrategy(Strategy):
     def on_position_closed(self, event: Any) -> None:
         self._guard("position_closed", lambda: self._position_closed(event))
 
+    def order_binding(self, client_order_id: str) -> PlanOrderBinding | None:
+        """Immutable exact-order intent, available during startup before callbacks."""
+        return self._order_bindings.get(client_order_id)
+
     def _order_context(
         self, client_order_id: ClientOrderId, instrument_id: InstrumentId
-    ) -> tuple[TradePlan | None, OrderLeg]:
-        plan = self._plan_on(instrument_id)
-        order = self.cache.order(client_order_id)
-        entry = None if plan is None else plan.entry_client_order_id
-        if order is None:
-            return plan, "entry" if entry == client_order_id.value else "unknown"
-        return plan, order_leg(order, entry_client_order_id=entry)
+    ) -> tuple[PlanOrderBinding | None, OrderLeg]:
+        binding = self._order_bindings.get(client_order_id.value)
+        if binding is None or binding.instrument_id != instrument_id.value:
+            return None, "unknown"
+        return binding, binding.leg
 
     def _order_event(self, event: Any, status: str) -> None:
-        plan, leg = self._order_context(event.client_order_id, event.instrument_id)
+        binding, leg = self._order_context(event.client_order_id, event.instrument_id)
+        plan = None if binding is None else self._plans.get(binding.entry_id)
         venue_order_id = getattr(event, "venue_order_id", None)
         self._observations.order(
-            correlation=self._correlation(plan),
+            correlation=self._correlation(binding),
             client_order_id=event.client_order_id.value,
             leg=leg,
             status=status,
             occurred_at_ns=int(event.ts_event),
             venue_order_id=None if venue_order_id is None else venue_order_id.value,
+            binding=binding,
         )
         if plan is not None and leg == "entry" and status == "accepted":
             self._dispose_owed(plan, "accepted")
+        if leg in {"stop", "take_profit"} and status == "accepted":
+            # Retire an old protective leg promptly after its replacement is live.
+            self._converge_due_ns = 0
 
     def _order_filled(self, event: Any) -> None:
-        plan, leg = self._order_context(event.client_order_id, event.instrument_id)
+        binding, leg = self._order_context(event.client_order_id, event.instrument_id)
+        plan = None if binding is None else self._plans.get(binding.entry_id)
         self._touch(event.instrument_id)
-        self._observations.fill(correlation=self._correlation(plan), leg=leg, event=event)
+        self._observations.fill(correlation=self._correlation(binding), leg=leg, event=event)
         if plan is not None and leg == "entry":
             self._dispose_owed(plan, "accepted")
         if plan is not None and leg in {"stop", "take_profit", "exit"}:
@@ -802,15 +926,17 @@ class OiNautilusStrategy(Strategy):
     def _order_refused(self, event: Any, status: str) -> None:
         """A venue or pre-trade refusal. A refused entry ends its plan now, in the venue's own words."""
 
-        plan, leg = self._order_context(event.client_order_id, event.instrument_id)
+        binding, leg = self._order_context(event.client_order_id, event.instrument_id)
+        plan = None if binding is None else self._plans.get(binding.entry_id)
         reason = str(getattr(event, "reason", "") or "")
         self._observations.order(
-            correlation=self._correlation(plan),
+            correlation=self._correlation(binding),
             client_order_id=event.client_order_id.value,
             leg=leg,
             status=status,
             occurred_at_ns=int(event.ts_event),
             reason=reason or None,
+            binding=binding,
         )
         # A refusal waits for the regular five-second convergence: a venue that keeps refusing a
         # replacement is then asked once per interval, never once per pump.
@@ -825,11 +951,17 @@ class OiNautilusStrategy(Strategy):
             self._dispose_owed(plan, "venue_rejected", detail)
             return
         immediate = any(marker in reason.lower() for marker in _IMMEDIATE_TRIGGER_MARKERS)
-        if leg in {"stop", "take_profit"} and immediate and position is not None and position.strategy_id == self.id:
-            self.close_position(position, tags=["stop_filled" if leg == "stop" else "take_profit"])
+        if (
+            leg in {"stop", "take_profit"}
+            and immediate
+            and position is not None
+            and position_claimed(position, plan, self.id)
+        ):
+            self._close_position_with_reason(position, "stop_filled" if leg == "stop" else "take_profit")
 
     def _position_opened(self, event: Any) -> None:
-        plan = self._plan_on(event.instrument_id)
+        binding, _ = self._order_context(event.opening_order_id, event.instrument_id)
+        plan = None if binding is None else self._plans.get(binding.entry_id)
         self._touch(event.instrument_id)
         self._converge_due_ns = 0
         if plan is None:
@@ -867,13 +999,21 @@ class OiNautilusStrategy(Strategy):
         instrument_id = event.instrument_id
         now_ns = self._now_ns()
         self._touch(instrument_id)
-        reason = self._exit_reason(event.closing_order_id)
+        binding, _ = self._order_context(event.opening_order_id, instrument_id)
+        plan = None if binding is None else self._plans.get(binding.entry_id)
+        position = self.cache.position(event.position_id)
+        if position is not None and position.opening_order_id != event.opening_order_id:
+            position = None
+        reason = (
+            self._position_exit_reason(position)
+            if position is not None
+            else self._exit_reason(event.closing_order_id, entry_id=None if binding is None else binding.entry_id)
+        )
         self._converge_due_ns = 0
-        plan = self._plan_on(instrument_id)
         if plan is not None and plan.opened_at_ns is None:
             plan = self._mark_open(plan, int(event.ts_opened))
         self._observations.position(
-            correlation=self._correlation(plan),
+            correlation=self._correlation(binding),
             position_id=event.position_id.value,
             status="closed",
             occurred_at_ns=int(event.ts_closed),
@@ -884,6 +1024,9 @@ class OiNautilusStrategy(Strategy):
         )
         if plan is not None:
             self._dispose_owed(plan, "accepted")
+        else:
+            # A delayed close of a previous lifecycle cannot cancel the current Plan's protection.
+            return
         if reason == "external" and not self._venue_confirms_flat(instrument_id, now_ns):
             self.log.warning(
                 f"OI Runtime position {event.position_id.value} closed by an order none of its legs sent "
@@ -899,19 +1042,30 @@ class OiNautilusStrategy(Strategy):
             return
         self._close_plan(plan, reason, terminal_at_ns=int(event.ts_closed), now_ns=now_ns)
 
-    def _exit_reason(self, closing_order_id: ClientOrderId | None) -> ExitReason:
-        order = None if closing_order_id is None else self.cache.order(closing_order_id)
-        if order is None:
+    def _exit_reason(self, closing_order_id: ClientOrderId | None, *, entry_id: str | None = None) -> ExitReason:
+        binding = None if closing_order_id is None else self._order_bindings.get(closing_order_id.value)
+        if entry_id is not None and binding is not None and binding.entry_id != entry_id:
             return "external"
-        tags = order.tags or []
-        for tag in _CLOSING_TAGS:
-            if tag in tags:
-                return tag
-        if order.order_type == OrderType.STOP_MARKET:
-            return "stop_filled"
-        if order.order_type == OrderType.MARKET_IF_TOUCHED:
-            return "take_profit"
-        return "external"
+        return "external" if binding is None or binding.exit_reason is None else binding.exit_reason
+
+    def _position_exit_reason(self, position: Any) -> ExitReason:
+        """Preserve multiple real closing legs instead of naming only the final fill's leg."""
+
+        events = position.events
+        if not events:
+            return "external"
+        opening, _ = self._order_context(position.opening_order_id, position.instrument_id)
+        if opening is None:
+            return "external"
+        opening_side = events[0].order_side
+        reasons = {
+            self._exit_reason(fill.client_order_id, entry_id=opening.entry_id)
+            for fill in events
+            if fill.order_side != opening_side and fill.last_qty.as_decimal() > 0
+        }
+        if len(reasons) > 1:
+            return "mixed_exit"
+        return next(iter(reasons), "external")
 
     # -- the invariant -----------------------------------------------------------------------------
 
@@ -933,10 +1087,15 @@ class OiNautilusStrategy(Strategy):
             working[order.instrument_id].append(order)
         self._judge_venue(positions)
         unexpected: list[str] = list(self._venue_mismatch.values())
-        planned = {InstrumentId.from_str(plan.instrument_id): plan for plan in self._plans.values()}
-        for instrument_id, plan in planned.items():
+        planned: dict[InstrumentId, list[TradePlan]] = defaultdict(list)
+        for plan in self._plans.values():
+            planned[InstrumentId.from_str(plan.instrument_id)].append(plan)
+        for instrument_id, candidates in planned.items():
+            if len(candidates) != 1:
+                unexpected.append(f"ambiguous:{instrument_id.value}")
+                continue
             self._converge_plan(
-                plan, positions.get(instrument_id, []), working.get(instrument_id, []), now_ns, unexpected
+                candidates[0], positions.get(instrument_id, []), working.get(instrument_id, []), now_ns, unexpected
             )
         for instrument_id, held in positions.items():
             if instrument_id not in planned:
@@ -964,7 +1123,17 @@ class OiNautilusStrategy(Strategy):
                 ):
                     self.cancel_order(order)
             unexpected.extend(f"order:{order.client_order_id.value}" for order in orders if not order.is_pending_cancel)
-        self._set_unexpected(tuple(sorted(set(unexpected))), now_ns)
+        codes = tuple(sorted(set(unexpected)))
+        findings = exposure_findings(
+            codes,
+            positions={position.id.value: position for held in positions.values() for position in held},
+            orders={order.client_order_id.value: order for held in working.values() for order in held},
+            plans={instrument: tuple(values) for instrument, values in planned.items()},
+            venue_instruments=self._venue_instruments(),
+            observed_at_ns=now_ns,
+        )
+        self._set_unexpected(codes, findings, now_ns)
+        self._convergence_checked_at_ns = now_ns
 
     def _converge_plan(
         self,
@@ -980,11 +1149,11 @@ class OiNautilusStrategy(Strategy):
         unexpected.extend(
             f"order:{order.client_order_id.value}"
             for order in orders
-            if not order.is_reduce_only and order.client_order_id.value != plan.entry_client_order_id
+            if (binding := self._order_bindings.get(order.client_order_id.value)) is None
+            or binding.entry_id != plan.entry_id
         )
-        expected_side = PositionSide.LONG if plan.direction == "long" else PositionSide.SHORT
-        own = [position for position in positions if position.strategy_id == self.id and position.side == expected_side]
-        unexpected.extend(f"position:{position.id.value}" for position in positions if position not in own)
+        own = [position for position in positions if position_claimed(position, plan, self.id)]
+        unexpected.extend(f"ownership:{position.id.value}" for position in positions if position not in own)
         if plan.entry_id in self._submission_unknown:
             if entry is None and not own:
                 unexpected.append(f"submission_unknown:{plan.entry_client_order_id}")
@@ -1041,6 +1210,30 @@ class OiNautilusStrategy(Strategy):
             self._dispose_owed(plan, "accepted")
             self._close_plan(plan, "external", terminal_at_ns=max(unattributed[1], opened_at_ns), now_ns=now_ns)
             return
+        # Startup reconciliation completes before the Strategy starts, so its real historical
+        # fills do not produce this Strategy's on_order_filled/on_position_closed callbacks.
+        # Only a unique closed Position opened by this plan's entry can settle it here.
+        historical = [
+            position
+            for position in self.cache.positions_closed(instrument_id=instrument_id, strategy_id=self.id)
+            if position.opening_order_id == ClientOrderId(plan.entry_client_order_id)
+            and int(position.ts_opened) >= plan.created_at_ns
+            and int(position.ts_closed) >= int(position.ts_opened)
+        ]
+        if len(historical) == 1:
+            position = historical[0]
+            order = self.cache.order(position.closing_order_id) if position.closing_order_id is not None else None
+            if order is not None and order.filled_qty.as_decimal() > 0:
+                if plan.opened_at_ns is None:
+                    plan = self._mark_open(plan, int(position.ts_opened))
+                self._dispose_owed(plan, "accepted")
+                self._close_plan(
+                    plan,
+                    self._position_exit_reason(position),
+                    terminal_at_ns=max(int(position.ts_closed), plan.opened_at_ns or plan.created_at_ns),
+                    now_ns=now_ns,
+                )
+                return
         self._end_unobserved(plan, entry, now_ns)
 
     def _end_unobserved(self, plan: TradePlan, entry: Any, now_ns: int) -> None:
@@ -1069,17 +1262,18 @@ class OiNautilusStrategy(Strategy):
         protective = [
             order
             for order in orders
-            if order.strategy_id == self.id and order.is_reduce_only and order.side == closing_side
+            if order.strategy_id == self.id
+            and order.is_reduce_only
+            and order.side == closing_side
+            and (binding := self._order_bindings.get(order.client_order_id.value)) is not None
+            and binding.entry_id == plan.entry_id
         ]
         instrument = self.cache.instrument(position.instrument_id)
         if instrument is None:
             return
         average = decimal_value(position.avg_px_open)
         for leg, order_type in (("stop", OrderType.STOP_MARKET), ("take_profit", OrderType.MARKET_IF_TOUCHED)):
-            existing = next((order for order in protective if order.order_type == order_type), None)
-            if existing is None:
-                self._submit_protection(plan, position, instrument, closing_side, leg, average, now_ns)
-                continue
+            leg_orders = [order for order in protective if order.order_type == order_type]
             trigger = instrument.make_price(
                 protective_trigger(
                     direction=plan.direction,
@@ -1088,12 +1282,32 @@ class OiNautilusStrategy(Strategy):
                     leg=leg,
                 )
             )
-            if (
-                (existing.quantity != position.quantity or existing.trigger_price != trigger)
-                and not existing.is_pending_cancel
-                and not existing.is_pending_update
-            ):
-                self.modify_order(existing, quantity=position.quantity, trigger_price=trigger)
+
+            def matches(order: Any, expected_trigger: Any = trigger) -> bool:
+                return (
+                    order.quantity == position.quantity
+                    and order.trigger_price == expected_trigger
+                    and order.trigger_type == TriggerType.MARK_PRICE
+                )
+
+            accepted = next(
+                (
+                    order
+                    for order in leg_orders
+                    if matches(order) and order.is_open and not order.is_pending_cancel and not order.is_pending_update
+                ),
+                None,
+            )
+            if accepted is not None:
+                # Binance USD-M only modifies LIMIT orders. Keep the old stop/TP live until the
+                # replacement is accepted, then retire it; both are reduce-only while they overlap.
+                for order in leg_orders:
+                    if order is not accepted and order.is_open and not order.is_pending_cancel:
+                        self.cancel_order(order)
+                continue
+            if any(matches(order) and order.is_inflight for order in leg_orders):
+                continue
+            self._submit_protection(plan, position, instrument, closing_side, leg, average, now_ns)
 
     def _submit_protection(
         self,
@@ -1134,15 +1348,7 @@ class OiNautilusStrategy(Strategy):
             reduce_only=True,
             client_order_id=client_order_id,
         )
-        self._observations.order(
-            correlation=self._correlation(plan),
-            client_order_id=order.client_order_id.value,
-            leg=leg,
-            status="submitted",
-            occurred_at_ns=now_ns,
-            trigger_price=trigger,
-        )
-        self.submit_order(order, position_id=position.id)
+        self._submit_plan_order(order, plan, leg=leg, position_id=position.id)
 
     def _time_exit(self, position: Any, orders: list[Any]) -> None:
         if any(
@@ -1150,7 +1356,7 @@ class OiNautilusStrategy(Strategy):
             for order in orders
         ):
             return
-        self.close_position(position, tags=["time_exit"])
+        self._close_position_with_reason(position, "time_exit")
 
     def _cancel_working_orders(self, instrument_id: InstrumentId) -> None:
         pending = [
@@ -1164,13 +1370,18 @@ class OiNautilusStrategy(Strategy):
         if pending:
             self.cancel_all_orders(instrument_id)
 
-    def _set_unexpected(self, unexpected: tuple[str, ...], now_ns: int) -> None:
-        if unexpected == self._unexpected:
-            return
+    def _set_unexpected(
+        self, unexpected: tuple[str, ...], findings: tuple[ExecutionExposureFinding, ...], now_ns: int
+    ) -> None:
+        if len(unexpected) != len(findings):
+            raise ValueError("oi_runtime_findings_incomplete")
+        changed = unexpected != self._unexpected
         self._unexpected = unexpected
-        if unexpected:
-            self.log.warning(f"OI Runtime exposure no plan claims: {', '.join(unexpected)}")
-        self._observations.exposure(unexpected=unexpected, observed_at_ns=now_ns)
+        self._findings = findings
+        if changed:
+            if unexpected:
+                self.log.warning(f"OI Runtime exposure findings: {', '.join(unexpected)}")
+            self._observations.exposure(unexpected=unexpected, observed_at_ns=now_ns)
 
     # -- venue truth (#680 PR-3) -------------------------------------------------------------------
 
@@ -1201,6 +1412,57 @@ class OiNautilusStrategy(Strategy):
         if self._venue is None or reading.started_at_ns >= self._venue.started_at_ns:
             self._venue = reading
             self._converge_due_ns = 0
+
+    def take_recovery_request(self, now_ns: int) -> int | None:
+        """Retry fresh, attributable discrepancies with bounded delay in this generation."""
+
+        reading = self._fresh_venue(now_ns)
+        if (
+            self._stopped
+            or reading is None
+            or self._venue_failure is not None
+            or self._convergence_failure is not None
+            or self._convergence_checked_at_ns is None
+            or reading.completed_at_ns <= self._recovery_requested_read_ns
+        ):
+            return None
+        # Oldest attempted instrument first: a busy first symbol must not
+        # consume every account-wide single-flight recovery opportunity.
+        for symbol in sorted(
+            self._venue_mismatch,
+            key=lambda symbol: (
+                self._recovery_attempts[symbol].next_attempt_ns - self._recovery_attempts[symbol].delay_ns
+                if symbol in self._recovery_attempts
+                else 0
+            ),
+        ):
+            instrument_id = self._venue_instruments().get(symbol)
+            if instrument_id is None:
+                continue
+            candidates = [plan for plan in self._plans.values() if plan.instrument_id == instrument_id.value]
+            if len(candidates) != 1:
+                continue
+            venue_quantity = reading.quantity(symbol)
+            if venue_quantity and (
+                (venue_quantity > 0 and candidates[0].direction != "long")
+                or (venue_quantity < 0 and candidates[0].direction != "short")
+            ):
+                continue
+            cached_positions = self.cache.positions_open(instrument_id=instrument_id)
+            if any(not position_claimed(position, candidates[0], self.id) for position in cached_positions):
+                continue
+            cache_quantity = sum(position.signed_decimal_qty() for position in cached_positions)
+            signature = (candidates[0].entry_id, venue_quantity, cache_quantity)
+            previous = self._recovery_attempts.get(symbol)
+            delay_ns = _RECOVERY_INITIAL_DELAY_NS
+            if previous is not None and previous.signature == signature:
+                if now_ns < previous.next_attempt_ns:
+                    continue
+                delay_ns = min(previous.delay_ns * 2, _RECOVERY_MAX_DELAY_NS)
+            self._recovery_attempts[symbol] = _RecoveryBackoff(signature, delay_ns, now_ns + delay_ns)
+            self._recovery_requested_read_ns = reading.completed_at_ns
+            return reading.completed_at_ns
+        return None
 
     def _touch(self, instrument_id: InstrumentId) -> None:
         self._activity_ns[instrument_id] = self._now_ns()
@@ -1277,6 +1539,9 @@ class OiNautilusStrategy(Strategy):
             else:
                 suspects[symbol] = finding
         self._venue_suspect = suspects
+        self._recovery_attempts = {
+            symbol: attempt for symbol, attempt in self._recovery_attempts.items() if symbol in self._venue_mismatch
+        }
 
     def _venue_symbol(self, instrument_id: InstrumentId) -> str:
         """The venue's spelling of an instrument (`APTUSDT` for `APTUSDT-PERP.BINANCE`)."""
@@ -1288,32 +1553,6 @@ class OiNautilusStrategy(Strategy):
 
     def _venue_instruments(self) -> dict[str, InstrumentId]:
         return {str(instrument.raw_symbol.value): instrument.id for instrument in self.cache.instruments()}
-
-    def _venue_only_positions(self, now_ns: int) -> dict[str, Decimal]:
-        """What the latest fresh venue read holds on symbols the Cache holds no position on."""
-
-        reading = self._fresh_venue(now_ns) if self._venue_reads else None
-        if reading is None or reading.positions is None:
-            return {}
-        held = {self._venue_symbol(position.instrument_id) for position in self.cache.positions_open()}
-        return {symbol: quantity for symbol, quantity in reading.positions.items() if quantity and symbol not in held}
-
-    def _rests_protection(self, symbol: str, quantity: Decimal, instruments: Mapping[str, InstrumentId]) -> bool:
-        """Do a reduce-only stop and a reduce-only take-profit rest against this venue-only position?"""
-
-        instrument_id = instruments.get(symbol)
-        if instrument_id is None:
-            return False
-        closing_side = OrderSide.SELL if quantity > 0 else OrderSide.BUY
-        open_orders, inflight = open_and_inflight_orders(self.cache)
-        resting = [
-            order
-            for order in (*open_orders, *inflight)
-            if order.instrument_id == instrument_id and order.is_reduce_only and order.side == closing_side
-        ]
-        return any(order.order_type == OrderType.STOP_MARKET for order in resting) and any(
-            order.order_type == OrderType.MARKET_IF_TOUCHED for order in resting
-        )
 
     # -- plans -------------------------------------------------------------------------------------
 
@@ -1340,7 +1579,7 @@ class OiNautilusStrategy(Strategy):
         return next(iter(self.cache.positions_open(instrument_id=instrument_id)), None)
 
     @staticmethod
-    def _correlation(plan: TradePlan | None) -> dict[str, str]:
+    def _correlation(plan: TradePlan | PlanOrderBinding | None) -> dict[str, str]:
         return {} if plan is None else RuntimeObservations.correlation(plan.source, plan.entry_id)
 
     def _instrument_busy(self, instrument_id: InstrumentId) -> bool:
@@ -1423,6 +1662,10 @@ class OiNautilusStrategy(Strategy):
             (self._entries_paused, "entries_paused"),
             (not self._singleton_ready(), "singleton_lost"),
             (bool(self._unexpected), "unexpected_exposure"),
+            (
+                self._convergence_checked_at_ns is None or self._convergence_failure is not None,
+                "convergence_unverified",
+            ),
             (self._venue_unverified(at_ns), "venue_unverified"),
         ):
             if blocked:
@@ -1430,48 +1673,55 @@ class OiNautilusStrategy(Strategy):
         return None
 
     def runtime_view(self, now_ns: int) -> RuntimeView:
-        """What the projection and the probe publish: the Cache, plus what only the venue holds.
+        """One bounded account projection, including venue-only positions and named findings."""
 
-        `current_account` is the Cache's picture. `positions_count` and `protection_status` also count
-        every position the latest fresh venue read holds where the Cache holds none, so a position the
-        Cache lost is never reported as a flat account.
-        """
-
+        planned: dict[InstrumentId, list[TradePlan]] = defaultdict(list)
+        for plan in self._plans.values():
+            planned[InstrumentId.from_str(plan.instrument_id)].append(plan)
+        # Keep the last successful venue rows visible even after a later failure or expiry.
+        # Entry and recovery gates still use _fresh_venue; this is historical display evidence.
+        reading = self._venue if self._venue_reads else None
         snapshot = account_snapshot(
             cache=self.cache,
             account_id=self._profile.account_id,
-            plan_entry_orders={
-                InstrumentId.from_str(plan.instrument_id): plan.entry_client_order_id for plan in self._plans.values()
-            },
+            plans={instrument: tuple(values) for instrument, values in planned.items()},
+            strategy_id=self.id,
+            order_bindings=self._order_bindings,
+            venue_positions=None if reading is None else reading.positions,
+            venue_instruments=self._venue_instruments(),
+            findings=self._findings,
             baseline=self._current_day_start(now_ns),
             now_ns=now_ns,
             market_stale_after_ns=self._profile.risk.market_stale_after_ns,
         )
-        venue_only = self._venue_only_positions(now_ns)
-        instruments = self._venue_instruments() if venue_only else {}
-        owned = [position for position in snapshot.positions if position.owned]
-        cache_protected = not snapshot.positions or (
-            bool(owned) and len(owned) == len(snapshot.positions) and all(position.protected for position in owned)
-        )
-        venue_protected = all(
-            self._rests_protection(symbol, quantity, instruments) for symbol, quantity in venue_only.items()
-        )
-        protection: Literal["not_applicable", "protected", "unprotected"] = (
-            "not_applicable"
-            if not snapshot.positions and not venue_only
-            else "protected"
-            if cache_protected and venue_protected
-            else "unprotected"
-        )
+        statuses = {position.protection_status for position in snapshot.positions}
+        protection: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]
+        if not snapshot.positions_total:
+            protection = "not_applicable"
+        elif "unprotected" in statuses:
+            protection = "unprotected"
+        elif snapshot.positions_total > len(snapshot.positions):
+            protection = "unknown"
+        elif "pending" in statuses:
+            protection = "pending"
+        elif statuses == {"protected"}:
+            protection = "protected"
+        else:
+            protection = "unknown"
         reason = self.entry_block_reason(now_ns)
         return RuntimeView(
             entries_armed=reason is None,
             entry_block_reason=reason,
-            unexpected_exposure=bool(self._unexpected),
-            positions_count=len(snapshot.positions) + len(venue_only),
+            unexpected_exposure=bool(snapshot.findings_total),
+            positions_count=snapshot.positions_total,
             open_orders_count=snapshot.open_orders_count,
             protection_status=protection,
             account_snapshot=snapshot,
+            convergence_checked_at_ns=self._convergence_checked_at_ns,
+            convergence_failure=self._convergence_failure,
+            venue_read_started_at_ns=None if self._venue is None else self._venue.started_at_ns,
+            venue_read_completed_at_ns=None if self._venue is None else self._venue.completed_at_ns,
+            venue_read_failure=self._venue_failure,
         )
 
 

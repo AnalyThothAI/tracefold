@@ -102,7 +102,7 @@ describe("execution labels", () => {
       expect(signalDispositionLabel(gone)).toBe(gone);
     }
     // The entry path forwards the readiness gate's own word, so that vocabulary resolves here too.
-    expect(signalDispositionLabel("unexpected_exposure")).toBe("出现无计划认领的敞口");
+    expect(signalDispositionLabel("unexpected_exposure")).toBe("账户检查发现异常");
     expect(signalDispositionLabel("venue_unverified")).toBe("交易所持仓尚未核实");
     expect(signalDispositionLabel("a_refusal_nobody_translated")).toBe(
       "a_refusal_nobody_translated",

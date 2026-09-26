@@ -112,7 +112,7 @@ def test_a_close_no_leg_sent_keeps_protection_and_the_plan_until_the_venue_reads
     assert runtime.strategy.canceled_all == [] and runtime.strategy.closed == []
     view = runtime.strategy.runtime_view(runtime.clock.timestamp_ns())
     # `/readyz` counts the position only the venue holds, and it is protected.
-    assert (view.positions_count, view.protection_status, view.unexpected_exposure) == (1, "protected", True)
+    assert (view.positions_count, view.protection_status, view.unexpected_exposure) == (1, "unknown", True)
 
     # Only a venue read that says flat ends the plan and takes the protection off.
     runtime.venue(FLAT)
@@ -158,19 +158,11 @@ def test_a_read_that_began_before_the_close_does_not_confirm_it() -> None:
 )
 def test_the_runtimes_own_closing_legs_still_cancel_what_is_left_at_once(leg: str, reason: str) -> None:
     runtime, position, stop, take_profit = _protected_plan()
-    closing = (
-        stop
-        if leg == "stop"
-        else take_profit
-        if leg == "take_profit"
-        else runtime.strategy.order_factory.market(
-            instrument_id=INSTRUMENT.id,
-            order_side=OrderSide.SELL,
-            quantity=INSTRUMENT.make_qty(Decimal("0.049")),
-            reduce_only=True,
-            tags=[leg],
-        )
-    )
+    if leg in {"stop", "take_profit"}:
+        closing = stop if leg == "stop" else take_profit
+    else:
+        runtime.strategy._close_position_with_reason(position, leg)
+        [closing] = [order for order in runtime.cache.orders() if order.tags == [leg]]
 
     close_cached_position(runtime, position, closing, price=Decimal(10_000))
 
@@ -256,7 +248,7 @@ def test_a_position_only_the_venue_holds_is_unexpected_exposure_on_the_second_re
     assert _unexpected(runtime) == ["venue:BTCUSDT:venue=0.5:cache=0"]
     assert runtime.dispositions() == [{"disposition": "unexpected_exposure"}]
     view = runtime.strategy.runtime_view(runtime.clock.timestamp_ns())
-    assert (view.unexpected_exposure, view.positions_count, view.protection_status) == (True, 1, "unprotected")
+    assert (view.unexpected_exposure, view.positions_count, view.protection_status) == (True, 1, "unknown")
     # Detect-only: nothing was sent to the venue.
     assert runtime.strategy.submitted == [] and runtime.strategy.canceled_all == [] and runtime.strategy.closed == []
 
@@ -264,6 +256,26 @@ def test_a_position_only_the_venue_holds_is_unexpected_exposure_on_the_second_re
     runtime.venue(FLAT)
     assert _unexpected(runtime) == []
     assert not runtime.strategy.runtime_view(runtime.clock.timestamp_ns()).unexpected_exposure
+
+
+def test_last_venue_only_position_remains_visible_after_failed_and_expired_reads() -> None:
+    runtime = unit_runtime(venue_reads=True)
+    runtime.venue({SYMBOL: "0.5"})
+    runtime.venue({SYMBOL: "0.5"})
+    last_read_ns = runtime.strategy.runtime_view(runtime.clock.timestamp_ns()).venue_read_completed_at_ns
+
+    runtime.venue(None)
+    runtime.advance(VENUE_STALE_AFTER_NS)
+    view = runtime.strategy.runtime_view(runtime.clock.timestamp_ns())
+
+    assert view.venue_read_completed_at_ns == last_read_ns
+    assert view.venue_read_failure == "BinanceClientError:-1021"
+    assert view.entry_block_reason == "unexpected_exposure"
+    assert not view.entries_armed
+    assert view.positions_count == 1
+    [position] = view.account_snapshot.positions
+    assert (position.source, position.quantity, position.protection_status) == ("venue", "0.5", "unknown")
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
 
 
 def test_a_cache_position_the_venue_does_not_hold_is_named_and_never_protected_or_exited_again() -> None:
@@ -374,3 +386,56 @@ def test_flatten_without_a_fresh_venue_read_closes_the_cache_and_says_the_venue_
         OrderType.MARKET_IF_TOUCHED,
     }
     assert runtime.dispositions()[-1]["venue_positions"] == "unknown"
+
+
+def test_native_recovery_keeps_retrying_with_bounded_backoff_in_the_same_generation() -> None:
+    runtime, _position, _stop, _take_profit = _protected_plan()
+    strategy = runtime.strategy
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.venue({SYMBOL: "0.05"})
+    requested: list[int] = []
+    for delay_seconds in (5, 10, 20, 40, 60, 60, 60):
+        now_ns = runtime.clock.timestamp_ns()
+        at_ns = strategy.take_recovery_request(now_ns)
+        assert at_ns is not None
+        requested.append(at_ns)
+        assert strategy.take_recovery_request(now_ns) is None
+        # New identical evidence must not reset the delay; after it expires the
+        # fourth and later attempts still run without replacing the generation.
+        runtime.venue({SYMBOL: "0.05"})
+        retry_ns = now_ns + delay_seconds * SECOND_NS
+        assert strategy.take_recovery_request(retry_ns - 1) is None
+        runtime.clock.set_time(retry_ns)
+        runtime.venue({SYMBOL: "0.05"})
+    assert len(set(requested)) == 7
+
+    # A genuine change in the discrepancy is new work, while agreement clears
+    # the delay so a later recurrence is recoverable immediately.
+    runtime.venue({SYMBOL: "0.06"})
+    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is not None
+    runtime.venue(HELD)
+    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+    runtime.venue({SYMBOL: "0.06"})
+    runtime.venue({SYMBOL: "0.06"})
+    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is not None
+
+
+def test_recovery_waits_for_fresh_successful_evidence_and_stops_with_its_generation() -> None:
+    runtime, _position, _stop, _take_profit = _protected_plan()
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.venue(None)
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.advance(VENUE_STALE_AFTER_NS + SECOND_NS)
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.strategy.on_stop()
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+
+
+def test_unclaimed_venue_position_never_requests_automatic_recovery() -> None:
+    runtime = unit_runtime(venue_reads=True)
+    runtime.venue({SYMBOL: "0.5"})
+    runtime.venue({SYMBOL: "0.5"})
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None

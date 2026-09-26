@@ -774,5 +774,11 @@ Execution rows show venue net only when signed funding is fully covered and uniq
 attributed; they show the fee-adjusted fill result separately while net is
 unknown. The totals show known net sums and missing counts for every connection.
 The fee/funding basis is visible next to the totals. No recovery control center
-or browser command authority is added. Freshness still uses only the server's
+or browser command authority is added. Freshness uses the server's
 `facts_expire_at_ms`, including its independent heartbeat limit.
+The Trading account
+shows typed findings, source and Plan association, venue-only positions,
+truncation and protection status separately from field completeness.
+An account projection or convergence failure keeps the last account and risk
+evidence visible as historical, even while the Runtime heartbeat is fresh;
+protection remains unconfirmed until the relevant check succeeds.

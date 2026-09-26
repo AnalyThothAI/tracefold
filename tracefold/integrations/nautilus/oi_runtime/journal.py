@@ -1,10 +1,10 @@
 """The Runtime's one outbox to PostgreSQL: execution observations and TradePlan transitions.
 
 Nautilus callbacks run on the trading event loop and never touch PostgreSQL. They offer rows here; the
-database bridge thread writes them one row per transaction (#680 RC6). A row the database refuses on
-integrity grounds is dropped and logged, because no retry can change a verdict; a row that fails for
-any other reason waits out a bounded backoff while every row behind it keeps flowing. Nothing here can
-block a later write, and nothing here is fatal.
+database bridge thread writes them one row per transaction (#680 RC6). Plan transitions, fills and
+logical-order bindings remain pending until storage confirms the fact or an identical replay. A
+refused noncritical observation is logged and dropped; critical and transient failures retry with
+bounded backoff while later rows keep flowing. No database call runs on the callback thread.
 
 The one ordering rule is the entry handshake: a plan must be committed before its entry order exists,
 so `prepare` hands the bridge exactly one pending insert and the Strategy submits only on a receipt.
@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import Lock
 
 from tracefold.trading.execution_contracts import ExecutionObservationV1
+from tracefold.trading.native_fills import NATIVE_EXECUTION_KINDS
 from tracefold.trading.trade_plan import TradePlan
 
 from .risk import DayStartBaseline
@@ -183,6 +185,7 @@ class JournalRow:
     value: ExecutionObservationV1 | TradePlan
     attempts: int = 0
     not_before: float = 0.0
+    offered_at_s: float = field(default_factory=time.monotonic)
 
     @property
     def key(self) -> str:
@@ -212,7 +215,29 @@ class ExecutionJournal:
         """Queue one observation. An identical re-offer is already on its way; a full journal refuses."""
 
         with self._lock:
-            if value.event_id in self._index:
+            queued = self._index.get(value.event_id)
+            if queued is not None:
+                current = queued.value
+                if (
+                    isinstance(current, ExecutionObservationV1)
+                    and (
+                        current.normalized_kind in NATIVE_EXECUTION_KINDS | {"fill"}
+                        or value.normalized_kind in NATIVE_EXECUTION_KINDS | {"fill"}
+                        or current.summary.get("binding_version") == "plan_order_v1"
+                        or value.summary.get("binding_version") == "plan_order_v1"
+                    )
+                    and current.model_dump(
+                        exclude={"observed_at_ns", "execution_strategy", "native_identity_references"}
+                        if current.normalized_kind in NATIVE_EXECUTION_KINDS
+                        else {"observed_at_ns"}
+                    )
+                    != value.model_dump(
+                        exclude={"observed_at_ns", "execution_strategy", "native_identity_references"}
+                        if value.normalized_kind in NATIVE_EXECUTION_KINDS
+                        else {"observed_at_ns"}
+                    )
+                ):
+                    raise ValueError("execution_observation_pending_identity_conflict")
                 return True
             if len(self._rows) >= self._max_rows:
                 return False
@@ -293,11 +318,18 @@ class ExecutionJournal:
             self._receipt = receipt
             self._prepare = None
 
-    def due(self, now_s: float) -> tuple[JournalRow, ...]:
-        """Every queued row whose backoff has passed, oldest first."""
+    def due(self, now_s: float, *, limit: int | None = None) -> tuple[JournalRow, ...]:
+        """Bound one bridge cycle; pending Plan transitions precede ordinary observations."""
 
+        if limit is not None and limit <= 0:
+            raise ValueError("oi_runtime_journal_due_limit_invalid")
         with self._lock:
-            return tuple(row for row in self._rows if row.not_before <= now_s)
+            ready = (row for row in self._rows if row.not_before <= now_s)
+            plans: list[JournalRow] = []
+            observations: list[JournalRow] = []
+            for row in ready:
+                (plans if isinstance(row.value, TradePlan) else observations).append(row)
+            return tuple((plans + observations)[:limit]) if limit is not None else tuple(plans + observations)
 
     def written(self, row: JournalRow, value: ExecutionObservationV1 | TradePlan) -> None:
         """`value` is durable (or the database will never take it), so its row leaves the journal.
@@ -326,6 +358,16 @@ class ExecutionJournal:
     def backlog(self) -> int:
         with self._lock:
             return len(self._rows)
+
+    def diagnostics(self) -> dict[str, int | float | None]:
+        with self._lock:
+            return {
+                "backlog": len(self._rows),
+                "pending_plan_transitions": sum(isinstance(row.value, TradePlan) for row in self._rows),
+                "oldest_wait_seconds": (
+                    None if not self._rows else max(0.0, time.monotonic() - min(row.offered_at_s for row in self._rows))
+                ),
+            }
 
 
 __all__ = [
