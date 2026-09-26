@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@tests/e2e/fixtures";
+import { allowBrowserFailure, expect, test, type Page } from "@tests/e2e/fixtures";
 import {
   expectNoDocumentHorizontalOverflow,
   expectNoUnhandledApiRequests,
@@ -134,6 +134,11 @@ test("an observation retains its research context through Case, execution and ha
   baseURL,
 }, testInfo) => {
   const calls = await installResearchScenario(page);
+  allowBrowserFailure(page, {
+    kind: "requestfailed",
+    match: "GET /api/trading/status (net::ERR_ABORTED)",
+    reason: "This case deliberately reloads the page twice; navigation can cancel an in-flight status poll.",
+  });
   await page.goto(origin);
   const row = page.locator(".news-market-row-main").first();
   await row.click();
