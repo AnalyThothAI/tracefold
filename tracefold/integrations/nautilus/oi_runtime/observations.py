@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import Any, Final, Literal
 
 from tracefold.trading.execution_contracts import ExecutionObservationV1, OperatorIntentV1
+from tracefold.trading.trade_plan import PlanOrderBinding
 
 from .account_projection import OrderLeg
 from .funding import FundingCashflow
@@ -195,26 +196,38 @@ class RuntimeObservations:
         reason: str | None = None,
         trigger_price: Any = None,
         venue_order_id: str | None = None,
+        binding: PlanOrderBinding | None = None,
     ) -> None:
         """One order lifecycle step. A stop or take-profit is `protection`; entries and exits are `order`."""
 
         summary: dict[str, str | int | bool] = {"leg": leg, "status": status}
+        if binding is not None:
+            if binding.client_order_id != client_order_id or binding.leg != leg:
+                raise ValueError("plan_order_observation_identity_mismatch")
+            summary.update(
+                {
+                    "binding_version": "plan_order_v1",
+                    "client_order_id": binding.client_order_id,
+                    "instrument_id": binding.instrument_id,
+                }
+            )
+            if binding.exit_reason is not None:
+                summary["exit_reason"] = binding.exit_reason
         if reason:
             summary["reason"] = bounded_text(reason)
         if trigger_price is not None:
             summary["trigger_price"] = _decimal_text(trigger_price)
         references = [client_order_id] if venue_order_id is None else [client_order_id, venue_order_id]
-        self._offer(
-            self._factory.create(
-                normalized_kind="protection" if leg in {"stop", "take_profit"} else "order",
-                **correlation,
-                occurred_at_ns=occurred_at_ns,
-                observed_at_ns=self._timestamp_ns(),
-                native_identity_references=references,
-                summary=summary,
-                event_identity=f"{status}:{client_order_id}",
-            )
+        observation = self._factory.create(
+            normalized_kind="protection" if leg in {"stop", "take_profit"} else "order",
+            **correlation,
+            occurred_at_ns=occurred_at_ns,
+            observed_at_ns=self._timestamp_ns(),
+            native_identity_references=references,
+            summary=summary,
+            event_identity=f"{status}:{client_order_id}",
         )
+        self._offer(observation)
 
     def fill(self, *, correlation: dict[str, str], leg: OrderLeg, event: Any) -> None:
         """One venue fill, with the commission the venue charged for it and the currency it charged in."""

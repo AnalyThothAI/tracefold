@@ -14,7 +14,7 @@ from tracefold.trading.storage.execution_stream import (
     ExecutionAccountSnapshot,
     ExecutionExposureFinding,
 )
-from tracefold.trading.trade_plan import TradePlan
+from tracefold.trading.trade_plan import PlanOrderBinding, TradePlan
 
 from .risk import DayStartBaseline, account_equity_usd, decimal_value, quote_mid
 
@@ -37,18 +37,6 @@ def open_and_inflight_orders(cache: Any) -> tuple[tuple[Any, ...], tuple[Any, ..
     return open_orders, inflight
 
 
-def order_leg(order: Any, *, entry_client_order_id: str | None) -> OrderLeg:
-    if entry_client_order_id is not None and order.client_order_id.value == entry_client_order_id:
-        return "entry"
-    if order.order_type == OrderType.STOP_MARKET and order.is_reduce_only:
-        return "stop"
-    if order.order_type == OrderType.MARKET_IF_TOUCHED and order.is_reduce_only:
-        return "take_profit"
-    if order.is_reduce_only:
-        return "exit"
-    return "unknown"
-
-
 def position_claimed(position: Any, plan: TradePlan, strategy_id: Any) -> bool:
     """The same position identity rule used by convergence and the public account view."""
 
@@ -57,18 +45,19 @@ def position_claimed(position: Any, plan: TradePlan, strategy_id: Any) -> bool:
         position.instrument_id.value == plan.instrument_id
         and position.strategy_id == strategy_id
         and position.side == expected
+        and position.opening_order_id.value == plan.entry_client_order_id
     )
 
 
-def _order_claimed(order: Any, plan: TradePlan, strategy_id: Any) -> bool:
+def _order_claimed(order: Any, plan: TradePlan, strategy_id: Any, binding: PlanOrderBinding | None) -> bool:
     if order.instrument_id.value != plan.instrument_id or order.strategy_id != strategy_id:
+        return False
+    if binding is None or binding.entry_id != plan.entry_id or binding.instrument_id != plan.instrument_id:
         return False
     entry_side = OrderSide.BUY if plan.direction == "long" else OrderSide.SELL
     if order.client_order_id.value == plan.entry_client_order_id:
         return not order.is_reduce_only and order.side == entry_side
-    return (
-        order.is_reduce_only and order.side != entry_side and order_leg(order, entry_client_order_id=None) != "unknown"
-    )
+    return order.is_reduce_only and order.side != entry_side and binding.leg != "entry"
 
 
 def _protection(
@@ -224,6 +213,7 @@ def account_snapshot(
     account_id: Any,
     plans: Mapping[Any, tuple[TradePlan, ...]],
     strategy_id: Any,
+    order_bindings: Mapping[str, PlanOrderBinding],
     venue_positions: Mapping[str, Decimal] | None,
     venue_instruments: Mapping[str, Any],
     findings: tuple[ExecutionExposureFinding, ...],
@@ -319,8 +309,13 @@ def account_snapshot(
     for state, orders in (("open", open_orders), ("inflight", inflight)):
         for order in sorted(orders, key=lambda item: item.client_order_id.value):
             candidates = plans.get(order.instrument_id, ())
-            plan = candidates[0] if len(candidates) == 1 and _order_claimed(order, candidates[0], strategy_id) else None
-            leg = order_leg(order, entry_client_order_id=None if plan is None else plan.entry_client_order_id)
+            binding = order_bindings.get(order.client_order_id.value)
+            plan = (
+                candidates[0]
+                if len(candidates) == 1 and _order_claimed(order, candidates[0], strategy_id, binding)
+                else None
+            )
+            leg: OrderLeg = binding.leg if binding is not None else "unknown"
             trigger = getattr(order, "trigger_price", None)
             order_rows.append(
                 ExecutionAccountOrder(
@@ -368,6 +363,5 @@ __all__ = [
     "account_snapshot",
     "exposure_findings",
     "open_and_inflight_orders",
-    "order_leg",
     "position_claimed",
 ]

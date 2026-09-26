@@ -158,19 +158,11 @@ def test_a_read_that_began_before_the_close_does_not_confirm_it() -> None:
 )
 def test_the_runtimes_own_closing_legs_still_cancel_what_is_left_at_once(leg: str, reason: str) -> None:
     runtime, position, stop, take_profit = _protected_plan()
-    closing = (
-        stop
-        if leg == "stop"
-        else take_profit
-        if leg == "take_profit"
-        else runtime.strategy.order_factory.market(
-            instrument_id=INSTRUMENT.id,
-            order_side=OrderSide.SELL,
-            quantity=INSTRUMENT.make_qty(Decimal("0.049")),
-            reduce_only=True,
-            tags=[leg],
-        )
-    )
+    if leg in {"stop", "take_profit"}:
+        closing = stop if leg == "stop" else take_profit
+    else:
+        runtime.strategy._close_position_with_reason(position, leg)
+        [closing] = [order for order in runtime.cache.orders() if order.tags == [leg]]
 
     close_cached_position(runtime, position, closing, price=Decimal(10_000))
 

@@ -33,6 +33,29 @@ ExitReason = Literal[
 ]
 
 
+class PlanOrderBinding(BaseModel):
+    """The immutable Plan and business purpose of one logical client order."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    account_slot: str = Field(pattern=IDENTITY_PATTERN)
+    entry_id: str = Field(pattern=SHA256_PATTERN)
+    source: Literal["signal", "manual"]
+    instrument_id: str = Field(min_length=1, max_length=128)
+    client_order_id: str = Field(min_length=1, max_length=128)
+    leg: Literal["entry", "stop", "take_profit", "exit"]
+    exit_reason: Literal["stop_filled", "take_profit", "time_exit", "operator_flatten"] | None = None
+
+    @model_validator(mode="after")
+    def validate_purpose(self) -> Self:
+        expected = {"entry": None, "stop": "stop_filled", "take_profit": "take_profit"}
+        if self.leg in expected and self.exit_reason != expected[self.leg]:
+            raise ValueError("plan_order_purpose_invalid")
+        if self.leg == "exit" and self.exit_reason is None:
+            raise ValueError("plan_order_exit_reason_required")
+        return self
+
+
 class TradePlan(BaseModel):
     """One entry identity, committed before its entry order exists and closed once, never reopened."""
 
@@ -100,4 +123,4 @@ class TradePlan(BaseModel):
         )
 
 
-__all__ = ["ExitReason", "TradePlan", "TradePlanStatus"]
+__all__ = ["ExitReason", "PlanOrderBinding", "TradePlan", "TradePlanStatus"]

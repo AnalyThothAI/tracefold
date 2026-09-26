@@ -210,11 +210,10 @@ def test_a_restart_adopts_the_reconciled_position_and_its_orders_and_writes_noth
 
         assert _plan(conn) == plan_before
         assert _rows(conn, "SELECT event_id FROM trading_execution_observations") == observations_before
-        assert sorted(order.client_order_id.value for order in restarted.engine.cache.orders()) == [
-            "RECONCILED-ENTRY",
-            "RECONCILED-STOP",
-            "RECONCILED-TP",
-        ]
+        assert {order.client_order_id.value for order in restarted.engine.cache.orders()} == {
+            deterministic_client_order_id(namespace=oi_profile().namespace, entry_id=_SIGNAL_ID, leg=leg).value
+            for leg in ("entry", "stop", "take_profit")
+        }
     finally:
         conn.close()
 
@@ -527,8 +526,9 @@ def test_the_bridge_delivers_within_one_poll_interval_on_one_session_and_survive
         writer.close()
 
 
-def test_a_refused_journal_row_is_dropped_and_the_row_behind_it_is_still_written() -> None:
-    """#680 RC6. One row per transaction: a refusal is that row's answer and nobody else's."""
+@pytest.mark.parametrize("kind", ["fill", "protection"])
+def test_refused_critical_evidence_is_retained_without_blocking_later_rows(kind: str) -> None:
+    """A missing dependency must not lose an economic fill or the original protective leg."""
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -537,13 +537,15 @@ def test_a_refused_journal_row_is_dropped_and_the_row_behind_it_is_still_written
         signals = ExecutionSignalClient(account_slot=_ACCOUNT_SLOT, execution_strategy="oi_nautilus_v1")
         journal = ExecutionJournal(factory=ObservationFactory(_ACCOUNT_SLOT, "oi_nautilus_v1"))
         bridge = _runtime_bridge(signals, journal=journal)
-        # A fill correlated to a Command nobody issued: the foreign key refuses it.
+        # The correlated Signal is not durable yet: the foreign key refuses this evidence.
         refused = journal.factory.create(
-            normalized_kind="fill",
-            command_id="e" * 64,
+            normalized_kind=kind,
+            signal_id="e" * 64,
             occurred_at_ns=NOW_NS,
             observed_at_ns=NOW_NS,
-            summary={"leg": "entry", "last_quantity": "1", "last_price": "1"},
+            summary={"leg": "entry", "last_quantity": "1", "last_price": "1"}
+            if kind == "fill"
+            else {"leg": "stop", "status": "submitted", "binding_version": "plan_order_v1"},
             event_identity="orphan",
         )
         written = journal.factory.create(
@@ -559,7 +561,19 @@ def test_a_refused_journal_row_is_dropped_and_the_row_behind_it_is_still_written
         bridge._cycle(repos)
 
         assert _rows(conn, "SELECT event_id FROM trading_execution_observations") == [{"event_id": written.event_id}]
-        assert journal.backlog() == 0
+        assert journal.backlog() == 1
+        [pending] = journal.due(float("inf"))
+        assert pending.value == refused and pending.attempts == 1
+        _append_signal(repos.trading, suffix="e")
+
+        def retry() -> bool:
+            bridge._cycle(repos)
+            return journal.backlog() == 0
+
+        _wait(retry)
+        assert _rows(
+            conn, "SELECT event_id FROM trading_execution_observations WHERE event_id=%s", refused.event_id
+        ) == [{"event_id": refused.event_id}]
     finally:
         conn.close()
 

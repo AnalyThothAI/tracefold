@@ -23,7 +23,7 @@ from nautilus_trader.common.component import MessageBus, TestClock
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.currencies import USDT
-from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, TriggerType
+from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, OrderType, TriggerType
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.identifiers import AccountId, ClientOrderId, PositionId, TraderId
 from nautilus_trader.model.objects import AccountBalance, Money
@@ -62,7 +62,7 @@ from tracefold.trading.execution_contracts import (
     SignalExitPlanV1,
     TradeSignalV3,
 )
-from tracefold.trading.trade_plan import TradePlan
+from tracefold.trading.trade_plan import PlanOrderBinding, TradePlan
 
 NOW_NS = 1_900_000_000_000_000_000
 ACCOUNT_ID = AccountId("BINANCE-001")
@@ -342,8 +342,8 @@ def seed_reconciled_position(
     entry_price: Decimal = Decimal(10_000),
     stop: Decimal | None = Decimal(9_800),
     take_profit: Decimal | None = Decimal(10_200),
-    stop_client_order_id: str = "RECONCILED-STOP",
-    take_profit_client_order_id: str = "RECONCILED-TP",
+    stop_client_order_id: str | None = None,
+    take_profit_client_order_id: str | None = None,
 ) -> PositionId:
     """What Nautilus' startup reconciliation leaves in the Cache for a position held across a restart.
 
@@ -356,7 +356,7 @@ def seed_reconciled_position(
         instrument_id=INSTRUMENT.id,
         order_side=OrderSide.BUY,
         quantity=INSTRUMENT.make_qty(quantity),
-        client_order_id=ClientOrderId("RECONCILED-ENTRY"),
+        client_order_id=ClientOrderId(open_plan(profile=strategy._profile).entry_client_order_id),
     )
     engine.cache.add_order(entry)
     entry.apply(TestEventStubs.order_submitted(entry, account_id=ACCOUNT_ID, ts_event=NOW_NS - 2))
@@ -376,8 +376,22 @@ def seed_reconciled_position(
     engine.cache.update_order(entry)
     engine.cache.add_position(Position(INSTRUMENT, fill), OmsType.NETTING)
     for price, client_order_id, create in (
-        (stop, stop_client_order_id, strategy.order_factory.stop_market),
-        (take_profit, take_profit_client_order_id, strategy.order_factory.market_if_touched),
+        (
+            stop,
+            stop_client_order_id
+            or deterministic_client_order_id(
+                namespace=strategy._profile.namespace, entry_id="1" * 64, leg="stop"
+            ).value,
+            strategy.order_factory.stop_market,
+        ),
+        (
+            take_profit,
+            take_profit_client_order_id
+            or deterministic_client_order_id(
+                namespace=strategy._profile.namespace, entry_id="1" * 64, leg="take_profit"
+            ).value,
+            strategy.order_factory.market_if_touched,
+        ),
     ):
         if price is None:
             continue
@@ -420,7 +434,10 @@ class RecordingOiStrategy(OiNautilusStrategy):
 
     def submit_order(self, order: Any, position_id: Any = None, client_id: Any = None, params: Any = None) -> None:
         self.cache.add_order(order, position_id=position_id)
-        self.submitted.append((order, position_id))
+        if order.is_reduce_only and order.order_type == OrderType.MARKET and position_id is not None:
+            self.closed.append((self.cache.position(position_id), order.tags))
+        else:
+            self.submitted.append((order, position_id))
 
     def cancel_order(self, order: Any, client_id: Any = None, params: Any = None) -> None:
         self.canceled.append(order)
@@ -429,9 +446,6 @@ class RecordingOiStrategy(OiNautilusStrategy):
         self, instrument_id: Any, order_side: Any = None, client_id: Any = None, params: Any = None
     ) -> None:
         self.canceled_all.append(instrument_id)
-
-    def close_position(self, position: Any, client_id: Any = None, tags: Any = None, **kwargs: Any) -> None:
-        self.closed.append((position, tags))
 
 
 @dataclass
@@ -519,6 +533,7 @@ def unit_runtime(
     signals: Iterable[TradeSignalV3] = (),
     commands: Iterable[OperatorIntentV1] = (),
     open_plans: Iterable[OpenPlan] = (),
+    order_bindings: Iterable[PlanOrderBinding] = (),
     stop_exits: dict[str, int] | None = None,
     control: RuntimeControlSnapshot = RESUMED,
     profile: OiRuntimeProfile | None = None,
@@ -542,7 +557,12 @@ def unit_runtime(
         profile=profile,
         signals=signal_client,
         journal=journal,
-        inputs=RuntimeInputs(control=control, open_plans=tuple(open_plans), stop_exits=stop_exits or {}),
+        inputs=RuntimeInputs(
+            control=control,
+            open_plans=tuple(open_plans),
+            order_bindings=tuple(order_bindings),
+            stop_exits=stop_exits or {},
+        ),
         # `TestClock` fires timers on the calling thread, so the harness is the callback thread.
         dispatch_pump=lambda pump: pump(),
         singleton_ready=lambda: singleton_state[0],
@@ -576,7 +596,7 @@ def cached_position(
     quantity: Decimal = Decimal("0.049"),
     price: Decimal = Decimal(10_000),
     strategy_id: Any = None,
-    client_order_id: str = "RECONCILED-ENTRY",
+    client_order_id: str | None = None,
 ) -> Position:
     """A position in the Cache, as Nautilus' reconciliation or a live fill leaves it."""
 
@@ -587,7 +607,7 @@ def cached_position(
         instrument_id=INSTRUMENT.id,
         order_side=OrderSide.BUY,
         quantity=INSTRUMENT.make_qty(quantity),
-        client_order_id=ClientOrderId(client_order_id),
+        client_order_id=ClientOrderId(client_order_id or open_plan(profile=runtime.profile).entry_client_order_id),
     )
     runtime.cache.add_order(order)
     order.apply(TestEventStubs.order_submitted(order, account_id=ACCOUNT_ID, ts_event=NOW_NS - 2))
@@ -619,7 +639,8 @@ def close_cached_position(runtime: UnitRuntime, position: Position, order: Any, 
     """
 
     if order.status_string() == "INITIALIZED":
-        runtime.cache.add_order(order)
+        if runtime.cache.order(order.client_order_id) is None:
+            runtime.cache.add_order(order)
         order.apply(TestEventStubs.order_submitted(order, account_id=ACCOUNT_ID, ts_event=runtime.clock.timestamp_ns()))
         runtime.cache.update_order(order)
     fill = TestEventStubs.order_filled(
@@ -660,7 +681,9 @@ def cached_protection(
         trigger_price=INSTRUMENT.make_price(trigger),
         trigger_type=TriggerType.MARK_PRICE,
         reduce_only=True,
-        client_order_id=ClientOrderId(client_order_id or f"RESTING-{leg.upper()}"),
+        client_order_id=ClientOrderId(client_order_id)
+        if client_order_id is not None
+        else deterministic_client_order_id(namespace=runtime.profile.namespace, entry_id="1" * 64, leg=leg),
     )
     runtime.cache.add_order(order)
     order.apply(TestEventStubs.order_submitted(order, account_id=ACCOUNT_ID, ts_event=NOW_NS - 1))

@@ -54,7 +54,7 @@ from tracefold.trading.storage.trade_plans import (
     prepare_trade_plan,
     prepare_trade_plan_update,
 )
-from tracefold.trading.trade_plan import TradePlan
+from tracefold.trading.trade_plan import PlanOrderBinding, TradePlan
 
 # How often the current row is rewritten when nothing about it changed. It is well inside the public
 # five-second stale budget, so a Runtime that stops projecting reads as stale rather than as healthy.
@@ -243,6 +243,27 @@ def load_runtime_inputs(
             )
         )
     open_plans = tuple(materialized)
+    bindings: dict[str, PlanOrderBinding] = {}
+    after_seq = 0
+    while open_plans:
+        binding_rows = repos.trading.trade_plan_order_bindings(
+            account_slot=profile.account_slot,
+            entry_ids=tuple(value.plan.entry_id for value in open_plans),
+            after_seq=after_seq,
+            observed_before_ns=now_ns,
+            limit=256,
+        )
+        for binding_row in binding_rows:
+            after_seq = int(binding_row["seq"])
+            binding = PlanOrderBinding.model_validate(
+                {key: value for key, value in binding_row.items() if key != "seq"}
+            )
+            previous = bindings.get(binding.client_order_id)
+            if previous is not None and previous != binding:
+                raise ValueError("plan_order_identity_conflict")
+            bindings[binding.client_order_id] = binding
+        if len(binding_rows) < 256:
+            break
     stop_exits = repos.trading.recent_stop_exits(
         account_slot=profile.account_slot,
         since_ns=now_ns - profile.risk.post_stop_cooldown_ns,
@@ -253,6 +274,7 @@ def load_runtime_inputs(
             emergency_halted=control.emergency_halted,
         ),
         open_plans=open_plans,
+        order_bindings=tuple(bindings.values()),
         stop_exits=stop_exits,
     )
 
@@ -477,9 +499,13 @@ class OiRuntimeDatabaseBridge:
                 self._journal.retry_later(row, time.monotonic())
                 raise
             except _ROW_REFUSALS as exc:
-                if isinstance(value, TradePlan):
+                if (
+                    isinstance(value, TradePlan)
+                    or value.normalized_kind == "fill"
+                    or value.summary.get("binding_version") == "plan_order_v1"
+                ):
                     logger.error(
-                        "OI Runtime Plan transition not durable ({}): {}",
+                        "OI Runtime critical evidence not durable ({}): {}",
                         row.key,
                         type(exc).__name__,
                     )

@@ -41,8 +41,8 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports
 from nautilus_trader.execution.reports import ExecutionMassStatus, FillReport, PositionStatusReport
 from nautilus_trader.live.factories import LiveExecClientFactory
-from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
-from nautilus_trader.model.objects import Price, Quantity
+from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide
+from nautilus_trader.model.objects import Quantity
 
 from .config import BinanceRuntimeCredentials
 
@@ -149,12 +149,8 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
                 ):
                     self._log.error(f"Signed Algo receipt does not match historical child {report.client_order_id}")
                     return None
-                report.order_type = (
-                    OrderType.STOP_MARKET if algo.orderType == "STOP_MARKET" else OrderType.MARKET_IF_TOUCHED
-                )
-                report.trigger_price = Price.from_str(algo.triggerPrice)
-                report.trigger_type = TriggerType.MARK_PRICE
-                report.ts_triggered = (algo.triggerTime or algo.updateTime or report.ts_last // 1_000_000) * 1_000_000
+                # Preserve the venue's MARKET child report. The immutable logical order binding
+                # supplies its business purpose; changing native order type fabricates evidence.
                 continue
             if order is None or order.venue_order_id == report.venue_order_id:
                 continue

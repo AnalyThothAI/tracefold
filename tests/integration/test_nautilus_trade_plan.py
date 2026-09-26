@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 from contextlib import closing
+from decimal import Decimal
 
 import pytest
 from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
+from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from psycopg.errors import RaiseException, UniqueViolation
 
-from tests.nautilus_oi_runtime_fixtures import NOW_NS, open_plan, trade_signal, unit_runtime
+from tests.helpers.published_signal_v3 import append_published_v3_signal
+from tests.nautilus_oi_runtime_fixtures import (
+    ACCOUNT_ID,
+    INSTRUMENT,
+    NOW_NS,
+    cached_position,
+    cached_protection,
+    open_plan,
+    trade_signal,
+    unit_runtime,
+)
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.nautilus.oi_runtime import (
     OiRuntimeDatabaseBridge,
@@ -18,6 +32,7 @@ from tracefold.app.nautilus.oi_runtime import (
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.journal import EntryValidityReceipt
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
+from tracefold.integrations.nautilus.oi_runtime.strategy import OpenPlan
 from tracefold.trading.storage.trade_plans import prepare_trade_plan, prepare_trade_plan_update
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -116,6 +131,61 @@ def test_open_plans_are_the_restart_input_whatever_their_age_and_connection(age_
             for value in load_runtime_inputs(repos, oi_profile(BinanceEnvironment.LIVE), now_ns=NOW_NS).open_plans
         ] == [(plan, True)]
         assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 0
+
+
+def test_replacement_protection_binding_survives_restart_and_a_native_market_child() -> None:
+    plan = open_plan()
+    runtime = unit_runtime(open_plans=(OpenPlan(plan, disposition_pending=False),))
+    cached_position(runtime)
+    cached_protection(runtime, leg="stop", trigger=Decimal(9_700))
+    cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200))
+    runtime.pump()
+    [(replacement, _position_id)] = runtime.strategy.submitted
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            append_published_v3_signal(
+                repos.trading,
+                signal_id=plan.entry_id,
+                case_id=plan.case_id,
+                observed_at_ns=plan.created_at_ns,
+                expires_at_ns=plan.entry_expires_at_ns,
+            )
+            repos.trading.insert_trade_plan(prepare_trade_plan(plan))
+        _bridge(runtime)._cycle(repos)
+    # A fresh PG connection and a fresh native Cache must not depend on the old Strategy object.
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        inputs = load_runtime_inputs(repositories_for_connection(conn), runtime.profile, now_ns=NOW_NS + 1)
+    [binding] = inputs.order_bindings
+    assert binding.client_order_id == replacement.client_order_id.value
+    assert (binding.entry_id, binding.leg, binding.exit_reason) == (plan.entry_id, "stop", "stop_filled")
+    restarted = unit_runtime(open_plans=inputs.open_plans, order_bindings=inputs.order_bindings)
+    position = cached_position(restarted)
+    child = restarted.strategy.order_factory.market(
+        instrument_id=INSTRUMENT.id,
+        order_side=OrderSide.SELL,
+        quantity=position.quantity,
+        reduce_only=True,
+        client_order_id=ClientOrderId(binding.client_order_id),
+    )
+    fill = TestEventStubs.order_filled(
+        order=child,
+        instrument=INSTRUMENT,
+        strategy_id=restarted.strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position.id,
+        last_qty=position.quantity,
+        last_px=INSTRUMENT.make_price(9_800),
+        ts_event=NOW_NS,
+    )
+    position.apply(fill)
+    restarted.cache.update_position(position)
+    restarted.strategy.on_order_filled(fill)
+    restarted.strategy.on_position_closed(TestEventStubs.position_closed(position))
+    [observation] = restarted.observations("fill")
+    [closed] = restarted.plans()
+    assert (observation.signal_id, observation.summary["leg"]) == (plan.entry_id, "stop")
+    assert closed.exit_reason == "stop_filled"
 
 
 def test_frozen_intent_a_terminal_plan_and_the_open_clock_cannot_be_rewritten() -> None:

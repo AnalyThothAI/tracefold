@@ -104,6 +104,33 @@ class TradePlanStorage:
         ).fetchall()
         return {str(row["market_key"]): int(row["terminal_at_ns"]) for row in rows}
 
+    def trade_plan_order_bindings(
+        self, *, account_slot: str, entry_ids: tuple[str, ...], after_seq: int, observed_before_ns: int, limit: int
+    ) -> tuple[dict[str, Any], ...]:
+        """Page the recorded logical order identities for the generation's active Plans."""
+
+        if not 1 <= limit <= 256 or after_seq < 0 or len(entry_ids) > MAX_OPEN_TRADE_PLANS:
+            raise ValueError("plan_order_binding_read_bounds_invalid")
+        if not entry_ids:
+            return ()
+        rows = self.conn.execute(
+            """
+            SELECT seq, account_slot, coalesce(signal_id, command_id) AS entry_id,
+                   CASE WHEN signal_id IS NOT NULL THEN 'signal' ELSE 'manual' END AS source,
+                   summary ->> 'instrument_id' AS instrument_id,
+                   summary ->> 'client_order_id' AS client_order_id,
+                   summary ->> 'leg' AS leg, summary ->> 'exit_reason' AS exit_reason
+              FROM trading_execution_observations
+             WHERE account_slot = %s AND seq > %s AND observed_at_ns <= %s
+               AND normalized_kind IN ('order', 'protection')
+               AND summary ->> 'binding_version' = 'plan_order_v1'
+               AND (signal_id = ANY(%s) OR command_id = ANY(%s))
+             ORDER BY seq LIMIT %s
+            """,
+            (account_slot, after_seq, observed_before_ns, list(entry_ids), list(entry_ids), limit),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def update_trade_plan(self, values: tuple[Any, ...]) -> bool:
         """Advance one plan; a terminal plan and an older update are both a no-op, not an error."""
 

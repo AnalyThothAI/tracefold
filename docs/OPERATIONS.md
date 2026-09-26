@@ -280,9 +280,10 @@ next pump; the database bridge and current-state writer replace lost sessions af
 bounded backoff. A Nautilus node that fails to start or stops is disposed and a new
 generation is built after 5-60 s. The process exits for unusable configuration or
 credentials, an older database schema, loss of the account-slot lock, or failure to
-stop an old writer before rebuilding a generation. A database-refused observation
-is dropped and logged; a Plan transition is retained for another durable verdict.
-Other journal failures retry rows after backoff while later rows keep flowing.
+stop an old writer before rebuilding a generation. Database-refused Plan transitions,
+fills and order bindings are retained for another durable verdict. Other refused
+observations are logged and dropped. Transient journal failures retry after backoff
+while later rows keep flowing.
 
 The Runtime process holds three fixed PostgreSQL connections. The singleton session
 holds the account-slot advisory lock. The bridge reads Commands and flushes the
@@ -429,13 +430,22 @@ database and HTTP samples before attributing the gap.
 
 A restart while in a position is Nautilus reconciliation: the position and its
 resting stop and take-profit are rebuilt into the Cache from the venue and the
-open plan claims them by instrument, Strategy and direction. Recovery has no age cutoff beyond the
+open plan claims its position by opening order ID, instrument, Strategy and direction.
+Logical order bindings carry the Plan and leg independently of the native order type:
+a triggered Binance child stays a `MARKET` report. Initial leg IDs derive from the
+committed Plan. Replacement bindings are registered before submission and recorded
+asynchronously in the execution journal. PostgreSQL failures retain critical binding and
+fill evidence for retry without delaying risk-reducing protection. Restart pages recorded
+bindings from PostgreSQL. A late order event retains its
+original Plan binding and cannot cancel a newer Plan's protection on the same instrument.
+Recovery has no age cutoff beyond the
 reconciliation lookback, which is always longer than the maximum holding time.
 Config edits affect new plans: existing positions retain the admitted stop
 distance, TP and maximum holding duration.
 
 `unexpected_exposure=true` means a position, or a non-reduce-only order, exists on
-an instrument no open plan of this account slot and mode claims; or the venue and
+an instrument no open plan of this account slot claims; or a working order has no
+binding to that Plan; or the venue and
 the Cache disagree about a position; or a close none of the Runtime's legs sent is
 waiting for the venue to confirm it. The structured `current_account.findings` name each actual object, instrument,
 quantities, Plan association and check time. A `risk` observation is a bounded

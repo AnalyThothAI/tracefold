@@ -727,7 +727,7 @@ def test_generation_restart_replays_a_flat_venues_historical_take_profit(account
 
     assert recovered is True
     assert runtime.venue.user_trade_symbols == ["APTUSDT"]
-    assert runtime.cache.order(TAKE_PROFIT_ID).order_type == OrderType.MARKET_IF_TOUCHED
+    assert runtime.cache.order(TAKE_PROFIT_ID).order_type == OrderType.MARKET
     [closed] = runtime.cache.positions_closed(instrument_id=APT)
     assert closed.opening_order_id == ENTRY_ID
     assert closed.closing_order_id == TAKE_PROFIT_ID
@@ -762,7 +762,7 @@ def test_generation_restart_keeps_partial_child_quantity_open(account: Any, chil
     assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is True
     assert runtime.open_positions() == [(str(runtime.cache.positions_open()[0].id), "588.3")]
     assert runtime.cache.positions_closed(instrument_id=APT) == []
-    assert runtime.cache.order(TAKE_PROFIT_ID).order_type == OrderType.MARKET_IF_TOUCHED
+    assert runtime.cache.order(TAKE_PROFIT_ID).order_type == OrderType.MARKET
 
 
 def test_generation_restart_rejects_a_contradictory_signed_algo_child(account: Any) -> None:

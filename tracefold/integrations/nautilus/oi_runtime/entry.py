@@ -25,7 +25,7 @@ _ENTRY_PRICE_PAD_BPS = Decimal(25)
 
 
 def deterministic_client_order_id(*, namespace: str, entry_id: str, leg: str) -> ClientOrderId:
-    """One venue order id per (account slot, mode, entry, leg); the namespace carries the first two."""
+    """One venue order id per persisted namespace, entry and leg."""
 
     digest = hashlib.sha256(f"{namespace}:{entry_id}:{leg}".encode()).hexdigest()
     return ClientOrderId(f"tf{digest[:30]}")
