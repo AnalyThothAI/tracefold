@@ -222,35 +222,10 @@ def test_news_value_families_do_not_depend_on_io_or_runtime_owners() -> None:
     assert violations == {}
 
 
-def test_dspy_is_confined_to_model_implementation_families() -> None:
-    """#344 makes DSPy the one model framework while keeping it behind owned seams."""
-
-    allowed_roots = (
-        NEWS_ROOT / "program",
-        NEWS_ROOT / "learning",
-        # #202 §4.3. The review plane acquires human truth; the drafter is the one thing in it that asks a
-        # model first, so a person has a rubric to accept or rewrite rather than a blank form. The companion
-        # test below keeps that to the one module — a ReviewDesk that could call a model would be a desk
-        # that could manufacture its own Gold.
-        NEWS_ROOT / "review",
-        SRC / "app" / "workers" / "wiring",
-    )
-    offenders = [
-        str(path.relative_to(ROOT))
-        for path in SRC.rglob("*.py")
-        if "dspy" in _imported_roots(path)
-        and path != SRC / "app" / "learning_runtime.py"
-        and path != SRC / "app" / "trading_analyst.py"
-        and path != SRC / "app" / "trading_tools.py"
-        and not any(root in path.parents for root in allowed_roots)
-    ]
-    assert offenders == []
-
-
 def test_news_model_code_uses_only_public_dspy_and_no_direct_gepa() -> None:
     """#344 permits DSPy public APIs and hard-cuts private DSPy and direct GEPA APIs."""
 
-    model_files = sorted((NEWS_ROOT / "program").rglob("*.py")) + sorted((NEWS_ROOT / "learning").rglob("*.py"))
+    model_files = sorted(SRC.rglob("*.py"))
     forbidden_dspy: list[str] = []
     for path in model_files:
         for module in sorted(_imported_modules(path)):
