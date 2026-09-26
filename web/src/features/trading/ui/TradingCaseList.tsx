@@ -91,7 +91,10 @@ export function TradingCaseList({
           <ActionButton
             size="sm"
             onClick={() => {
-              const next = new URLSearchParams();
+              const next = new URLSearchParams(params);
+              ["state", "asset", "reason", "source_item_id", "cursor", "case"].forEach((key) =>
+                next.delete(key),
+              );
               next.set("tab", "decisions");
               setParams(next);
             }}

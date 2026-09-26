@@ -1,6 +1,9 @@
+import { useMediaQuery } from "@shared/hooks/useMediaQuery";
 import { ActionButton } from "@shared/ui/ActionButton";
+import { Drawer } from "@shared/ui/Drawer";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import * as PageState from "@shared/ui/PageState";
+import { useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import {
@@ -24,19 +27,11 @@ import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
 import { formatPrice } from "../../model/newsPrice";
 import { walletTokenAge } from "../../model/walletFacts";
 
+import { NewsOiTimeline } from "./NewsOiTimeline";
 import { MarketObservationMetrics, OiEvidence } from "./OiEvidence";
-
 import "./newsMarketGroupTable.css";
 
-/**
- * One row per group: a run of consecutive observations of the same subject, collapsed to its newest member.
- *
- * The row carries two answers of equal standing and keeps them apart. `parse_status` / `parse_error` say
- * what the parser could read out of the provider's record. `notification_status` / `notification_reason`
- * say what the notification owner did with it. They are not two views of one verdict — a record can parse
- * cleanly and never be pushed, and one that never parsed is still retained with its raw line — so they
- * never share a column, a colour, or a word.
- */
+/** The list stays anchored while one URL-selected observation is read beside it. */
 export function NewsMarketGroupTable({
   filters,
   groups,
@@ -58,76 +53,118 @@ export function NewsMarketGroupTable({
   scanTruncated: boolean;
   token: string;
 }) {
+  const [params, setParams] = useSearchParams();
+  const selectedItem = params.get("item");
+  const wide = useMediaQuery("(min-width: 1100px)");
+  const opener = useRef<HTMLElement | null>(null);
+  const select = (id: string | null) => {
+    if (id)
+      opener.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const next = new URLSearchParams(params);
+    if (id) next.set("item", id);
+    else next.delete("item");
+    setParams(next, { replace: true });
+  };
   return (
-    <section aria-label="市场观测" className="news-market-panel">
-      <div className="news-market-toolbar">
-        <div aria-label="按市场类型筛选" className="news-market-kinds" role="group">
-          {/*
-           * One meaning per state, the way the feed's own channel chips work: a lit chip is a kind the
-           * reader explicitly selected, and none lit is the absence of a filter rather than an empty
-           * window. Lighting all four when nothing is selected would make the pressed state say two
-           * different things — "I picked this" and "this is visible" — on the same control.
-           */}
-          {NEWS_MARKET_KINDS.map((kind) => (
-            <button
-              aria-pressed={kinds.includes(kind)}
-              className="news-market-kind-filter"
-              data-active={kinds.includes(kind) || undefined}
-              key={kind}
-              onClick={() => onKindsChange(toggleMarketKind(kinds, kind))}
-              title={marketKindTitle(kind)}
-              type="button"
-            >
-              {marketKindLabel(kind)}
-            </button>
-          ))}
+    <div className="news-market-workbench">
+      <section aria-label="市场观测" className="news-market-panel">
+        <header className="news-market-list-heading">
+          <h2>市场观察</h2>
+          <span>来源事实 · 按口径阅读</span>
+        </header>
+        <div className="news-market-toolbar">
+          <div aria-label="按市场类型筛选" className="news-market-kinds" role="group">
+            {NEWS_MARKET_KINDS.map((kind) => (
+              <button
+                aria-pressed={kinds.includes(kind)}
+                className="news-market-kind-filter"
+                data-active={kinds.includes(kind) || undefined}
+                key={kind}
+                onClick={() => onKindsChange(toggleMarketKind(kinds, kind))}
+                title={marketKindTitle(kind)}
+                type="button"
+              >
+                {marketKindLabel(kind)}
+              </button>
+            ))}
+          </div>
         </div>
-        <small title={`${displayTime(filters.from_ms)} → ${displayTime(filters.to_ms)}`}>
-          {kinds.length ? `${kinds.length} / ${NEWS_MARKET_KINDS.length} 类` : "全部类型"} · 窗口{" "}
+        <p className="news-market-window-caption">
+          {kinds.length ? `${kinds.length} / ${NEWS_MARKET_KINDS.length} 类` : "全部类型"} ·{" "}
           {displayTime(filters.from_ms)} → {displayTime(filters.to_ms)}
-        </small>
-      </div>
-
-      {groups.length === 0 ? (
-        <EmptyNote>这个窗口里没有符合当前筛选的市场观测。</EmptyNote>
-      ) : (
-        <div className="news-market-rows">
-          {groups.map((group) => (
-            <GroupRow
-              group={group}
-              key={`${group.group_key}:${group.latest.item_id}`}
-              token={token}
-            />
-          ))}
-        </div>
-      )}
-
-      {/*
-       * The run counts above are what one bounded page could see. When a page fills that bound the
-       * server says so, and a floor is reported as a floor -- the window-wide numbers in the source
-       * summary are not bounded that way and stay exact either way.
-       */}
-      {scanTruncated ? (
-        <p className="news-market-truncated" role="note">
-          本页读取已达单页上限，×N 观测数按下限计；来源汇总仍是整窗口的准确计数。
         </p>
-      ) : null}
-
-      {hasMore ? (
+        {groups.length === 0 ? (
+          <EmptyNote>这个窗口里没有符合当前筛选的市场观测。</EmptyNote>
+        ) : (
+          <div className="news-market-rows">
+            {groups.map((group) => (
+              <GroupRow
+                group={group}
+                key={`${group.group_key}:${group.latest.item_id}`}
+                open={selectedItem === group.latest.item_id}
+                onSelect={() =>
+                  select(selectedItem === group.latest.item_id ? null : group.latest.item_id)
+                }
+              />
+            ))}
+          </div>
+        )}
+        {scanTruncated ? (
+          <p className="news-market-truncated" role="note">
+            本页读取已达单页上限，×N 观测数按下限计；来源汇总仍是整窗口的准确计数。
+          </p>
+        ) : null}
         <div className="news-market-more">
-          <ActionButton disabled={loadingMore} onClick={onLoadMore}>
-            {loadingMore ? "正在加载" : "加载更多观测组"}
-          </ActionButton>
+          {hasMore ? (
+            <ActionButton disabled={loadingMore} onClick={onLoadMore}>
+              {loadingMore ? "正在加载" : "加载更多观测组"}
+            </ActionButton>
+          ) : null}
           <small>已加载 {formatCount(groups.length)} 组；来源汇总描述的是整个窗口</small>
         </div>
-      ) : null}
-    </section>
+      </section>
+      {selectedItem ? (
+        <Drawer
+          title="市场观察依据"
+          open
+          inline={wide}
+          modal={false}
+          flush
+          width={520}
+          restoreFocusTo={opener.current}
+          onOpenChange={(open) => {
+            if (!open) select(null);
+          }}
+          actions={
+            <ActionButton size="sm" onClick={() => select(null)}>
+              关闭依据
+            </ActionButton>
+          }
+        >
+          <GroupDetail itemId={selectedItem} token={token} />
+        </Drawer>
+      ) : (
+        <aside className="news-market-detail-placeholder" aria-label="研究依据">
+          <span>RESEARCH / EVIDENCE</span>
+          <h2>从一条观察开始</h2>
+          <p>选择左侧观察，核对变化、测量口径与原始依据，再查看它对应的策略判定。</p>
+          <small>观察事实与策略结论分别记录。</small>
+        </aside>
+      )}
+    </div>
   );
 }
 
-function GroupRow({ group, token }: { group: NewsMarketGroup; token: string }) {
-  const [params, setParams] = useSearchParams();
-  const open = params.get("item") === group.latest.item_id;
+function GroupRow({
+  group,
+  open,
+  onSelect,
+}: {
+  group: NewsMarketGroup;
+  open: boolean;
+  onSelect: () => void;
+}) {
   const latest = group.latest;
   return (
     <article
@@ -138,37 +175,35 @@ function GroupRow({ group, token }: { group: NewsMarketGroup; token: string }) {
       <button
         aria-expanded={open}
         className="news-market-row-main"
-        onClick={() => {
-          const next = new URLSearchParams(params);
-          if (open) next.delete("item");
-          else next.set("item", latest.item_id);
-          setParams(next, { replace: true });
-        }}
+        onClick={onSelect}
         type="button"
       >
         <span className="news-market-row-head">
-          <span className="news-market-time" title={displayTime(group.last_event_at_ms)}>
-            {clockTime(group.last_event_at_ms)}
-          </span>
+          <b className="news-market-subject">{marketSubject(latest)}</b>
           <span className="news-market-kind" title={marketKindTitle(group.market_kind)}>
             {marketKindLabel(group.market_kind)}
             {latest.wallet_snapshot ? " · 集中净买入" : ""}
           </span>
-          <b className="news-market-subject">{marketSubject(latest)}</b>
-          {/* The run, not a rank: how many consecutive observations this one row stands for. */}
           <span className="news-market-count" title="本组连续观测条数">
             ×{formatCount(group.observation_count)}
           </span>
+          <span className="news-market-spacer" />
+          <span className="news-market-time" title={displayTime(group.last_event_at_ms)}>
+            {clockTime(group.last_event_at_ms)}
+          </span>
+        </span>
+        <MarketObservationMetrics observation={latest} />
+        <span className="news-market-row-foot">
           <span className="news-market-window">
             {clockTime(group.first_event_at_ms)} → {clockTime(group.last_event_at_ms)}
           </span>
-          <span className="news-market-spacer" />
-          <small>{open ? "收起依据" : "查看依据"}</small>
-          {latest.parse_status === "raw" ? <ParseChip observation={latest} /> : null}
+          <small>
+            {open ? "收起依据" : "查看依据"}
+            <span aria-hidden> ↗</span>
+          </small>
         </span>
-        <MarketObservationMetrics observation={latest} />
+        {latest.parse_status === "raw" ? <ParseChip observation={latest} /> : null}
       </button>
-      {open ? <GroupDetail itemId={latest.item_id} token={token} /> : null}
     </article>
   );
 }
@@ -320,7 +355,21 @@ export function GroupDetail({ itemId, token }: { itemId: string; token: string }
   const params = Object.entries(item.provider_params);
   return (
     <div className="news-market-detail">
+      <header className="news-market-evidence-heading">
+        <span>{marketKindLabel(item.observation.market_kind)} · 已存储观察</span>
+        <h2>{marketSubject(item.observation)}</h2>
+        <small>
+          {displayTime(item.observation.event_at_ms)} ·{" "}
+          {item.observation.source_venue ?? "场所未确认"}
+        </small>
+      </header>
       <OiEvidence observation={item.observation} />
+      {item.observation.market_kind !== "oi" ? (
+        <div className="news-market-detail-panel">
+          <MarketObservationMetrics observation={item.observation} />
+        </div>
+      ) : null}
+      <NewsOiTimeline observations={item.timeline} />
       <details className="news-market-raw-evidence">
         <summary>原始记录、解析与通知依据</summary>
         <div className="news-market-detail-panel">
@@ -353,7 +402,7 @@ export function GroupDetail({ itemId, token }: { itemId: string; token: string }
       </details>
       <div className="news-market-detail-panel">
         <small className="news-market-detail-label">
-          本组离散观察 · 最多 200 条 · · {item.timeline.length}
+          本组离散观察 · 最多 200 条 · {item.timeline.length}
         </small>
         <ol className="news-market-timeline">
           {item.timeline.map((observation) => (

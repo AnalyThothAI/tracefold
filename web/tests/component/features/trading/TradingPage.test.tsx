@@ -197,20 +197,26 @@ describe("TradingPage", () => {
     expect(within(row).getByText("已平仓")).toBeVisible();
     expect(within(row).getByText("交易所已受理")).toBeVisible();
     expect(within(row).getByText("0.049")).toBeVisible();
+    fireEvent.click(within(row).getByRole("button", { name: "执行明细" }));
     expect(within(row).getByText("9699.0")).toBeVisible();
-    expect(within(row).getByText("止盈价 10200")).toBeVisible();
+    expect(within(row).getByText("止盈价").nextSibling).toHaveTextContent("10200");
     expect(within(row).getByText("操作员平仓")).toBeVisible();
     // A loss is green and a profit red, exactly as `tokens.css` reads the two market directions.
-    expect(within(row).getByText("−$14.92")).toHaveAttribute("data-tone", "loss");
+    expect(within(row).getByText("−$14.92", { selector: "b" })).toHaveAttribute(
+      "data-tone",
+      "loss",
+    );
     expect(within(row).getByText("持仓 1m33s")).toBeVisible();
     // The realized number is already net of commissions; the fees the fill journal charged sit under it.
-    expect(within(row).getByText("手续费 $0.17")).toBeVisible();
+    expect(within(row).getByText("手续费（已扣除）").nextSibling).toHaveTextContent("$0.17");
 
     const manual = screen.getByText("crypto:perp:ETH:USDT").closest(".trading-ledger-row")!;
     expect(within(manual as HTMLElement).getByText("$1.12")).toHaveAttribute("data-tone", "profit");
     expect(within(manual as HTMLElement).getByText("持仓 57s")).toBeVisible();
     // The manual entry has no Case, so its market cell is a word rather than the button a Signal carries.
-    expect(within(manual as HTMLElement).queryByRole("button")).toBeNull();
+    expect(
+      within(manual as HTMLElement).queryByRole("button", { name: "crypto:perp:ETH:USDT" }),
+    ).toBeNull();
     expect(within(manual as HTMLElement).getByText(/SHORT · 手工/)).toBeVisible();
   });
 
@@ -254,7 +260,7 @@ describe("TradingPage", () => {
       ),
     );
     renderTrading();
-    const tally = await screen.findByRole("heading", { name: "今日战况" });
+    const tally = await screen.findByRole("heading", { name: "账户收益与记录范围" });
     const card = tally.closest("[data-block]") as HTMLElement;
     expect(within(card).getByText("今日已知净收益").nextSibling).toHaveTextContent("—");
     expect(within(card).getAllByText("平仓 3 · 已知 0 · 缺失 3")).toHaveLength(2);
@@ -267,6 +273,8 @@ describe("TradingPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
     expect(await screen.findByText("净收益未知")).toBeVisible();
     expect(screen.queryByText(/^手续费 /)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "执行明细" }));
+    expect(screen.getByText("手续费（已扣除）").nextSibling).toHaveTextContent("未取得");
     expect(screen.getByText("冻结止损 200 bps")).toBeVisible();
     expect(screen.getByText(/风险预算.*10.00.*2×/)).toBeVisible();
     expect(screen.getByText(/止盈 200 bps/)).toBeVisible();
@@ -275,7 +283,7 @@ describe("TradingPage", () => {
   it("says nothing is missing when every closed plan has a result", async () => {
     renderTrading();
 
-    const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest(
+    const tally = (await screen.findByRole("heading", { name: "账户收益与记录范围" })).closest(
       "[data-block]",
     ) as HTMLElement;
     expect(within(tally).getByText("平仓 9 · 已知 9 · 缺失 0")).toBeVisible();
@@ -292,6 +300,8 @@ describe("TradingPage", () => {
     // A plan that ended as `not_submitted` is a rejection, never a closed trade (#680).
     expect(within(refused).getByText("已拒绝")).toBeVisible();
     expect(within(refused).queryByText("已平仓")).toBeNull();
+    fireEvent.click(within(refused).getByRole("button", { name: "执行明细" }));
+    expect(within(refused).queryByText("尚未平仓")).toBeNull();
     expect(within(refused).getByText("入场被拒，计划终止")).toBeVisible();
     // Verbatim: it is the exchange talking, and translating it would put words in the venue's mouth.
     expect(within(refused).getByText("Order would immediately trigger.")).toBeVisible();
@@ -308,7 +318,7 @@ describe("TradingPage", () => {
   it("states the realized totals the server summed, not the rows the desk happens to hold", async () => {
     renderTrading();
 
-    const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest(
+    const tally = (await screen.findByRole("heading", { name: "账户收益与记录范围" })).closest(
       "section",
     ) as HTMLElement;
     expect(within(tally).getByText("今日已知净收益").nextSibling).toHaveTextContent("−$13.80");
@@ -344,13 +354,18 @@ describe("TradingPage", () => {
       ),
     );
     renderTrading();
-    const tally = (await screen.findByRole("heading", { name: "今日战况" })).closest("section")!;
+    const tally = (await screen.findByRole("heading", { name: "账户收益与记录范围" })).closest(
+      "section",
+    )!;
     expect(within(tally as HTMLElement).getByText("今日已知净收益")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "执行记录" }));
     const row = (await screen.findByText("crypto:perp:BTC:USDT")).closest(".trading-ledger-row")!;
-    expect(within(row as HTMLElement).getByText("手续费后 −$14.92")).toBeVisible();
-    expect(within(row as HTMLElement).getByText("资金费 $0.11")).toBeVisible();
-    expect(within(row as HTMLElement).getByText("−$14.81")).toBeVisible();
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "执行明细" }));
+    expect(within(row as HTMLElement).getByText("手续费后已实现").nextSibling).toHaveTextContent(
+      "−$14.92",
+    );
+    expect(within(row as HTMLElement).getByText("资金费").nextSibling).toHaveTextContent("$0.11");
+    expect(within(row as HTMLElement).getByText("−$14.81", { selector: "b" })).toBeVisible();
   });
 
   it("shows Agent outcomes and distinguishes unpublished judgments from published Signals", async () => {

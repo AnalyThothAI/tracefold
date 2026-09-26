@@ -58,7 +58,11 @@ export function caseVerdict(item: TradingCase): string {
       return `${label}${side === "short" ? " · 做空" : side === "long" ? " · 做多" : ""}`;
     }
     if (action === "NO_TRADE") return "主动不交易";
-    if (action === "WATCH") return "等待条件复核";
+    if (action === "WATCH") {
+      if (item.review_mode === "event_wait") return "等待条件复核";
+      if (item.review_mode === "research_note") return "研究备注 · 无自动复核";
+      return "观察判断 · 无自动复核";
+    }
     return caseStateLabel(item);
   }
   if (item.state === "SIGNAL_EMITTED") return "做多 · 已发出入场信号";

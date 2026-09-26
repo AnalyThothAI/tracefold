@@ -1,9 +1,11 @@
+import { fileURLToPath } from "node:url";
+
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { configDefaults, defineConfig } from "vitest/config";
 
-const srcPath = (path: string) => new URL(`./src/${path}`, import.meta.url).pathname;
-const testsPath = (path: string) => new URL(`./tests/${path}`, import.meta.url).pathname;
+const srcPath = (path: string) => fileURLToPath(new URL(`./src/${path}`, import.meta.url));
+const testsPath = (path: string) => fileURLToPath(new URL(`./tests/${path}`, import.meta.url));
 const devApiProxyTarget = process.env.VITE_DEV_API_PROXY_TARGET ?? "http://127.0.0.1:8765";
 
 export default defineConfig({

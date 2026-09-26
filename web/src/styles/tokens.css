@@ -27,9 +27,9 @@
    * Surfaces. The canvas is cool grey so a full-width white panel reads as a raised sheet, and `raised` is
    * the *sunken* block inside a panel (a well, not an elevation).
    */
-  --surface-canvas: #eaedf1;
+  --surface-canvas: #f1f3f5;
   --surface-root: #ffffff;
-  --surface-sidebar: #f8f9fb;
+  --surface-sidebar: #ffffff;
   --surface-panel: #ffffff;
   --surface-raised: #f8f9fb;
   --surface-hover: #f8f9fb;
@@ -45,7 +45,7 @@
    * quiet step for white grounds only and `muted` replaces it inside a #f8f9fb well, where `subtle` would
    * fall under 4.5:1. `faint` draws graphics — dots, rules, disabled glyphs — and never sets text.
    */
-  --text-primary: #0d1117;
+  --text-primary: #1e2733;
   --text-strong: #3d444d;
   --text-secondary: #444c56;
   --text-muted: #5b636e;
@@ -58,7 +58,7 @@
   --border-strong: #c6ccd5;
 
   /* Product accent — the only brand colour, and it only ever marks the pipeline. */
-  --accent-primary: #2a5bd7;
+  --accent-primary: #315ddb;
   --accent-strong: #1e46ad;
   --accent-soft: rgba(42, 91, 215, 0.09);
   --accent-selection: rgba(42, 91, 215, 0.16);
@@ -151,19 +151,19 @@
    * and duration is monospace with tabular numerals, so a number that changes on a poll never re-flows the
    * ones beside it. Tracking is applied at the call site because `font:` shorthand resets it.
    */
-  --font-size-page-title: 19px;
-  --font-size-item-title: 14.5px;
+  --font-size-page-title: 28px;
+  --font-size-item-title: 16px;
   --font-size-body: 0.8125rem;
   --font-size-meta: 12px;
   --font-size-mono-meta: 11px;
-  --font-size-metric: 21px;
-  --font-size-eyebrow: 8.5px;
+  --font-size-metric: 26px;
+  --font-size-eyebrow: 10px;
   --type-page-title: 650 var(--font-size-page-title) / 1.28 var(--font-sans);
   --type-item-title: 640 var(--font-size-item-title) / 1.42 var(--font-sans);
   --type-body: 400 var(--font-size-body) / 1.6 var(--font-sans);
   --type-meta: 400 var(--font-size-meta) / 1.45 var(--font-sans);
   --type-mono-meta: 600 var(--font-size-mono-meta) / 1.5 var(--font-mono);
-  --type-metric: 660 var(--font-size-metric) / 1.15 var(--font-mono);
+  --type-metric: 550 var(--font-size-metric) / 1.15 var(--font-mono);
   --type-eyebrow: 700 var(--font-size-eyebrow) / 1 var(--font-mono);
 
   /* Radix/shadcn integration */

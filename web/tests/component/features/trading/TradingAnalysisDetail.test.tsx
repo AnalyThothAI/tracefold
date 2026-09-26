@@ -81,6 +81,8 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
     </QueryClientProvider>,
   );
   expect(screen.getByText(/相邻 1 分钟收盘首次越过冻结区间/)).toHaveTextContent("101");
+  expect(screen.getByText(/未取得结案权/)).not.toBeVisible();
+  screen.getByText("分析诊断与历史评估").click();
   expect(screen.getByText(/未取得结案权/)).toBeVisible();
   expect(screen.getByText(/尝试开始/)).toHaveTextContent(/\.900.*\.000/);
   expect(screen.getByText(/本地开始/)).toHaveTextContent(/\.925.*\.975/);
