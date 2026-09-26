@@ -1063,6 +1063,30 @@ class OiNautilusStrategy(Strategy):
             self._dispose_owed(plan, "accepted")
             self._close_plan(plan, "external", terminal_at_ns=max(unattributed[1], opened_at_ns), now_ns=now_ns)
             return
+        # Startup reconciliation completes before the Strategy starts, so its real historical
+        # fills do not produce this Strategy's on_order_filled/on_position_closed callbacks.
+        # Only a unique closed Position opened by this plan's entry can settle it here.
+        historical = [
+            position
+            for position in self.cache.positions_closed(instrument_id=instrument_id, strategy_id=self.id)
+            if position.opening_order_id == ClientOrderId(plan.entry_client_order_id)
+            and int(position.ts_opened) >= plan.created_at_ns
+            and int(position.ts_closed) >= int(position.ts_opened)
+        ]
+        if len(historical) == 1:
+            position = historical[0]
+            order = self.cache.order(position.closing_order_id) if position.closing_order_id is not None else None
+            if order is not None and order.filled_qty.as_decimal() > 0:
+                if plan.opened_at_ns is None:
+                    plan = self._mark_open(plan, int(position.ts_opened))
+                self._dispose_owed(plan, "accepted")
+                self._close_plan(
+                    plan,
+                    self._exit_reason(position.closing_order_id),
+                    terminal_at_ns=max(int(position.ts_closed), plan.opened_at_ns or plan.created_at_ns),
+                    now_ns=now_ns,
+                )
+                return
         self._end_unobserved(plan, entry, now_ns)
 
     def _end_unobserved(self, plan: TradePlan, entry: Any, now_ns: int) -> None:

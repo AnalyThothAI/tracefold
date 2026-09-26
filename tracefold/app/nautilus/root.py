@@ -72,6 +72,7 @@ from tracefold.platform.postgres.migrations import alembic_config, latest_migrat
 from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading.execution_contracts import EXECUTION_STRATEGY_ID
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
+from tracefold.trading.trade_plan import TradePlan
 
 _EXECUTION_STRATEGY = EXECUTION_STRATEGY_ID
 _INTERNAL_PORT = 8767
@@ -85,10 +86,10 @@ _REBUILD_BACKOFF_SECONDS = (5.0, 10.0, 20.0, 40.0, 60.0)
 _BINANCE_USDM_ACCOUNT_ID = AccountId("BINANCE-USDT_FUTURES-master")
 
 
-def _recovery_max_holding_ns(configured_ns: int, open_plan_holding_ns: Iterable[int]) -> int:
-    """Keep the configured lookback when there are no plans to recover."""
+def _recovery_max_holding_ns(configured_ns: int, open_plans: Iterable[TradePlan], now_ns: int) -> int:
+    """Cover the oldest PG-open entry, including time spent outside a running generation."""
 
-    return max((configured_ns, *open_plan_holding_ns))
+    return max((configured_ns, *(max(plan.max_holding_ns, now_ns - plan.created_at_ns) for plan in open_plans)))
 
 
 class RuntimeFatal(RuntimeError):
@@ -291,12 +292,14 @@ async def _run_generation(
     execution = settings.trading.execution
     routes = await _discover_routes(mode, credentials, stop_distance_bps=execution.risk.stop_distance_bps)
     profile = _active_profile(settings, mode, routes)
-    inputs = load_runtime_inputs(repos, profile, now_ns=time.time_ns())
+    generation_now_ns = time.time_ns()
+    inputs = load_runtime_inputs(repos, profile, now_ns=generation_now_ns)
     profile = replace(
         profile,
         recovery_max_holding_ns=_recovery_max_holding_ns(
             profile.recovery_max_holding_ns,
-            (value.plan.max_holding_ns for value in inputs.open_plans),
+            (value.plan for value in inputs.open_plans),
+            generation_now_ns,
         ),
     )
     signals = ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy=_EXECUTION_STRATEGY)
@@ -325,6 +328,9 @@ async def _run_generation(
         strategy=strategy,
         loop=loop,
         log_directory=settings.log_file.parent,
+        recovery_symbols=frozenset(
+            value.plan.instrument_id.split(".", 1)[0].removesuffix("-PERP") for value in inputs.open_plans
+        ),
     )
     node_task = asyncio.create_task(node.run_async(), name="oi-nautilus-node")
     bridge: OiRuntimeDatabaseBridge | None = None
@@ -612,12 +618,13 @@ def _build_active_node(
     strategy: OiNautilusStrategy,
     loop: asyncio.AbstractEventLoop,
     log_directory: Path | None = None,
+    recovery_symbols: frozenset[str] = frozenset(),
 ) -> TradingNode:
     node = TradingNode(config=build_oi_node_config(profile, credentials, log_directory=log_directory), loop=loop)
     node.trader.add_strategy(strategy)
     node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
     # Nautilus' Binance client, with fill reports that name each venue trade once (#680 PR-3).
-    node.add_exec_client_factory(BINANCE, OiBinanceExecClientFactory)
+    node.add_exec_client_factory(BINANCE, OiBinanceExecClientFactory.with_recovery_symbols(recovery_symbols))
     node.build()
     if len(node.kernel.exec_engine.registered_clients) != 1:
         raise RuntimeFatal("oi_runtime_execution_client_ambiguous")

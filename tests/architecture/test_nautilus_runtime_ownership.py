@@ -2,9 +2,10 @@
 
 Three rules, each one the shape of a defect this Runtime had:
 
-* no private member of a Nautilus object is read or called anywhere in the Runtime. The deleted
-  private account proof reached into `engine._clients`, `_fetch_algo_orders` and a replayed Cache
-  repair, and an upstream rename would have surfaced as a crash on the start-up path;
+* no private member of a Nautilus object is read or called outside the execution adapter's
+  installed-version active-symbol seam. The deleted private account proof reached into
+  `engine._clients`, `_fetch_algo_orders` and a replayed Cache repair; the narrow adapter seam
+  is exercised by the installed-wheel reconciliation regression;
 * no private helper on the Strategy shadows a Nautilus lifecycle hook. A helper named `_dispose`
   replaced `Component._dispose` and made the node unable to shut down;
 * the machinery the cut removed stays removed: a separate recovery path, the compatibility seam, the
@@ -33,7 +34,7 @@ def _runtime_files() -> list[Path]:
     )
 
 
-def test_the_runtime_reads_no_private_member_of_any_object_but_its_own() -> None:
+def test_the_runtime_confines_private_nautilus_access_to_the_installed_adapter_seam() -> None:
     offenders = []
     for path in _runtime_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -43,6 +44,14 @@ def test_the_runtime_reads_no_private_member_of_any_object_but_its_own() -> None
             if not node.attr.startswith("_") or node.attr.startswith("__"):
                 continue
             if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
+                continue
+            if (
+                path == ROOT / "tracefold/integrations/nautilus/oi_runtime/binance.py"
+                and node.attr == "_get_cache_active_symbols"
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "super"
+            ):
                 continue
             offenders.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{node.attr}")
     assert offenders == []

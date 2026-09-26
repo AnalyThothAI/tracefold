@@ -14,7 +14,7 @@ missing-fill query alike.
 Nautilus HTTP stack and credentials, for the Strategy to compare with the Cache. A read that fails
 raises; it never answers "flat".
 
-Only public Nautilus API is used: the overridden method calls its own `super()`, and the factory builds
+The adapter keeps the installed-version private symbol helper local to this file; the factory builds
 the client from the same public helpers `BinanceLiveExecClientFactory.create` uses.
 """
 
@@ -26,7 +26,7 @@ from decimal import Decimal
 from typing import Any
 
 from nautilus_trader.adapters.binance import BinanceAccountType, BinanceExecClientConfig
-from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment, BinanceKeyType
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment, BinanceErrorCode, BinanceKeyType
 from nautilus_trader.adapters.binance.common.urls import get_ws_base_url
 from nautilus_trader.adapters.binance.factories import (
     get_cached_binance_futures_instrument_provider,
@@ -34,14 +34,15 @@ from nautilus_trader.adapters.binance.factories import (
 )
 from nautilus_trader.adapters.binance.futures.execution import BinanceFuturesExecutionClient
 from nautilus_trader.adapters.binance.futures.http.account import BinanceFuturesAccountHttpAPI
+from nautilus_trader.adapters.binance.http.error import BinanceClientError, get_binance_error_code
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock, MessageBus
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports
 from nautilus_trader.execution.reports import ExecutionMassStatus, FillReport, PositionStatusReport
 from nautilus_trader.live.factories import LiveExecClientFactory
-from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide
-from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
+from nautilus_trader.model.objects import Price, Quantity
 
 from .config import ActiveRuntimeMode, BinanceRuntimeCredentials, binance_environment
 
@@ -72,6 +73,15 @@ def unique_fill_reports(reports: Iterable[FillReport]) -> list[FillReport]:
 class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
     """Nautilus' Binance USD-M execution client, whose fill reports name each venue trade once."""
 
+    def __init__(self, *, recovery_symbols: frozenset[str], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._recovery_symbols = set(recovery_symbols)
+
+    def _get_cache_active_symbols(self) -> set[str]:
+        # A generation starts with an empty Cache. PG-open plans are query scope for historical
+        # venue reports even when both the venue position and its child order are already closed.
+        return super()._get_cache_active_symbols() | self._recovery_symbols
+
     async def generate_mass_status(self, lookback_mins: int | None = None) -> ExecutionMassStatus | None:
         """Join a triggered conditional order to its venue child before replaying real fills.
 
@@ -88,6 +98,64 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
             if report.client_order_id is None or report.venue_order_id is None:
                 continue
             order = self._cache.order(report.client_order_id)
+            instrument = self._cache.instrument(report.instrument_id)
+            if order is None and instrument is not None and instrument.raw_symbol.value in self._recovery_symbols:
+                # A newly rebuilt Cache has no earlier fill to account for a gap
+                # between the cumulative order report and actual native trades.
+                fills = status.fill_reports.get(report.venue_order_id, [])
+                if sum((fill.last_qty.as_decimal() for fill in fills), Decimal()) != report.filled_qty.as_decimal():
+                    self._log.error(f"Historical order lacks complete native trades {report.client_order_id}")
+                    return None
+            if order is None and report.order_type == OrderType.MARKET and report.reduce_only:
+                # At generation start the old Cache is gone. The PG-open plan only widens
+                # the venue query; a signed Algo receipt must prove that this regular
+                # reduce-only order was its triggered protection, never a plain exit.
+                if instrument is None or instrument.raw_symbol.value not in self._recovery_symbols:
+                    continue
+                fills = status.fill_reports.get(report.venue_order_id, [])
+                if report.filled_qty.as_decimal() <= 0:
+                    continue
+                try:
+                    algo = await self._futures_http_account.query_algo_order(
+                        client_algo_id=report.client_order_id.value,
+                    )
+                except BinanceClientError as exc:
+                    if get_binance_error_code(exc) == BinanceErrorCode.NO_SUCH_ORDER:
+                        continue  # A regular reduce-only exit has no Algo parent.
+                    raise
+                if (
+                    algo.clientAlgoId != report.client_order_id.value
+                    or algo.algoId <= 0
+                    or algo.algoType != "CONDITIONAL"
+                    or algo.actualOrderId != report.venue_order_id.value
+                    or algo.symbol != instrument.raw_symbol.value
+                    or algo.side != report.order_side.name
+                    or algo.orderType not in ("STOP_MARKET", "TAKE_PROFIT_MARKET")
+                    or algo.algoStatus not in ("TRIGGERED", "FINISHED")
+                    or algo.positionSide != "BOTH"
+                    or algo.reduceOnly is not True
+                    or algo.workingType != "MARK_PRICE"
+                    or algo.quantity is None
+                    or Decimal(algo.quantity) != report.quantity.as_decimal()
+                    or algo.triggerPrice is None
+                    or sum((fill.last_qty.as_decimal() for fill in fills), Decimal()) != report.filled_qty.as_decimal()
+                    or any(
+                        fill.account_id != report.account_id
+                        or fill.instrument_id != report.instrument_id
+                        or fill.venue_order_id != report.venue_order_id
+                        or fill.order_side != report.order_side
+                        for fill in fills
+                    )
+                ):
+                    self._log.error(f"Signed Algo receipt does not match historical child {report.client_order_id}")
+                    return None
+                report.order_type = (
+                    OrderType.STOP_MARKET if algo.orderType == "STOP_MARKET" else OrderType.MARKET_IF_TOUCHED
+                )
+                report.trigger_price = Price.from_str(algo.triggerPrice)
+                report.trigger_type = TriggerType.MARK_PRICE
+                report.ts_triggered = (algo.triggerTime or algo.updateTime or report.ts_last // 1_000_000) * 1_000_000
+                continue
             if order is None or order.venue_order_id == report.venue_order_id:
                 continue
             if order.order_type not in (OrderType.STOP_MARKET, OrderType.MARKET_IF_TOUCHED):
@@ -210,8 +278,16 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
 class OiBinanceExecClientFactory(LiveExecClientFactory):
     """`BinanceLiveExecClientFactory.create`'s USD-M branch, building `OiBinanceFuturesExecutionClient`."""
 
-    @staticmethod
+    recovery_symbols: frozenset[str] = frozenset()
+
+    @classmethod
+    def with_recovery_symbols(cls, symbols: frozenset[str]) -> type[OiBinanceExecClientFactory]:
+        # TradingNode takes a factory class. Make its immutable query scope local to one generation.
+        return type("OiBinanceRecoveryExecClientFactory", (cls,), {"recovery_symbols": symbols})
+
+    @classmethod
     def create(  # type: ignore[override]
+        cls,
         loop: asyncio.AbstractEventLoop,
         name: str,
         config: BinanceExecClientConfig,
@@ -259,6 +335,7 @@ class OiBinanceExecClientFactory(LiveExecClientFactory):
             environment=environment,
             api_key=config.api_key,
             api_secret=config.api_secret,
+            recovery_symbols=cls.recovery_symbols,
         )
 
 

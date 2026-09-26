@@ -29,8 +29,14 @@ from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
 
 
 def test_recovery_horizon_starts_with_no_open_plans_and_covers_longer_existing_plans() -> None:
-    assert nautilus_root._recovery_max_holding_ns(86_400, ()) == 86_400
-    assert nautilus_root._recovery_max_holding_ns(86_400, (3_600, 172_800)) == 172_800
+    now_ns = 1_000_000
+    assert nautilus_root._recovery_max_holding_ns(86_400, (), now_ns) == 86_400
+    plans = (
+        SimpleNamespace(max_holding_ns=3_600, created_at_ns=now_ns - 172_800),
+        SimpleNamespace(max_holding_ns=200_000, created_at_ns=now_ns - 100),
+    )
+    assert nautilus_root._recovery_max_holding_ns(86_400, plans[:1], now_ns) == 172_800
+    assert nautilus_root._recovery_max_holding_ns(86_400, plans, now_ns) == 200_000
 
 
 def _perpetual(base: str, *, contract_type: str = "PERPETUAL", status: str = "TRADING") -> CryptoPerpetual:

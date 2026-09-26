@@ -122,7 +122,9 @@ class _Venue:
         prior_round_trip: bool = False,
         triggered_take_profit: bool = False,
         wrong_algo_child: bool = False,
+        no_algo_receipt: bool = False,
         missing_child_trade: bool = False,
+        missing_entry_trades: bool = False,
         child_status: str = "FILLED",
         split_child_trades: bool = False,
     ) -> None:
@@ -130,7 +132,9 @@ class _Venue:
         self.prior_round_trip = prior_round_trip
         self.triggered_take_profit = triggered_take_profit
         self.wrong_algo_child = wrong_algo_child
+        self.no_algo_receipt = no_algo_receipt
         self.missing_child_trade = missing_child_trade
+        self.missing_entry_trades = missing_entry_trades
         self.child_status = child_status
         self.split_child_trades = split_child_trades
         self.user_trade_symbols: list[str] = []
@@ -150,7 +154,11 @@ class _Venue:
             return msgspec.json.encode([_position_risk("APTUSDT", self.position_amount)])
         if url_path.endswith("/userTrades"):
             self.user_trade_symbols.append(params["symbol"])
-            trades = [_trade(trade_id, ENTRY_ORDER_ID, "BUY", qty, FILL_MS) for trade_id, qty in ENTRY_TRADES]
+            trades = (
+                []
+                if self.missing_entry_trades
+                else [_trade(trade_id, ENTRY_ORDER_ID, "BUY", qty, FILL_MS) for trade_id, qty in ENTRY_TRADES]
+            )
             if self.prior_round_trip:
                 trades = [
                     _trade(trade_id, order_id, side, "500.0", at_ms, price="0.9000")
@@ -211,7 +219,13 @@ class _Venue:
             if url_path.endswith("/allAlgoOrders"):
                 return msgspec.json.encode([])
             if url_path.endswith("/algoOrder"):
-                assert params["algoId"] == PROTECTION[1][1]
+                if self.no_algo_receipt:
+                    raise BinanceClientError(
+                        status=400,
+                        message={"code": -2013, "msg": "Order does not exist."},
+                        headers={},
+                    )
+                assert params.get("algoId") == PROTECTION[1][1] or params.get("clientAlgoId") == TAKE_PROFIT_ID.value
                 return msgspec.json.encode(
                     {
                         "algoId": PROTECTION[1][1],
@@ -318,7 +332,14 @@ class _Recorder(Strategy):
 class _Account:
     """One real execution engine, Cache and Binance client, holding the 05:01:37 APT state."""
 
-    def __init__(self, *, factory: Any, venue: _Venue, generate_missing_orders: bool | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        factory: Any,
+        venue: _Venue,
+        generate_missing_orders: bool | None = None,
+        seed_existing: bool = True,
+    ) -> None:
         self.loop = asyncio.new_event_loop()
         self.clock = LiveClock()
         self.msgbus = MessageBus(TRADER, self.clock)
@@ -368,7 +389,8 @@ class _Account:
         self.engine.register_external_order_claims(self.strategy)
         self.strategy.start()
         self.venue = venue
-        self._hold_the_apt_long()
+        if seed_existing:
+            self._hold_the_apt_long()
 
     def _hold_the_apt_long(self) -> None:
         """The entry filled in two trades, and its reduce-only stop and take-profit rest on the venue."""
@@ -582,7 +604,11 @@ def _account(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
     built: list[_Account] = []
 
     def build(
-        *, factory: Any = OiBinanceExecClientFactory, generate_missing_orders: bool | None = None, **venue: Any
+        *,
+        factory: Any = OiBinanceExecClientFactory,
+        generate_missing_orders: bool | None = None,
+        seed_existing: bool = True,
+        **venue: Any,
     ) -> _Account:
         answers = _Venue(**venue)
 
@@ -590,7 +616,12 @@ def _account(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
             return await answers.send_request(client, method, url_path, payload, **kwargs)
 
         monkeypatch.setattr(BinanceHttpClient, "send_request", send_request)
-        value = _Account(factory=factory, venue=answers, generate_missing_orders=generate_missing_orders)
+        value = _Account(
+            factory=factory,
+            venue=answers,
+            generate_missing_orders=generate_missing_orders,
+            seed_existing=seed_existing,
+        )
         built.append(value)
         return value
 
@@ -681,6 +712,74 @@ def test_native_reconciliation_connects_a_triggered_algo_child_fill_to_the_cache
     child = runtime.cache.order(TAKE_PROFIT_ID)
     assert child is not None and child.is_closed
     assert child.venue_order_id == VenueOrderId(str(TAKE_PROFIT_CHILD_ORDER_ID))
+
+
+def test_generation_restart_replays_a_flat_venues_historical_take_profit(account: Any) -> None:
+    """A PG-open plan must make its symbol visible even after the old Cache disappeared."""
+    runtime = account(
+        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        triggered_take_profit=True,
+        seed_existing=False,
+    )
+    assert runtime.open_positions() == []
+
+    recovered = runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime))
+
+    assert recovered is True
+    assert runtime.venue.user_trade_symbols == ["APTUSDT"]
+    assert runtime.cache.order(TAKE_PROFIT_ID).order_type == OrderType.MARKET_IF_TOUCHED
+    [closed] = runtime.cache.positions_closed(instrument_id=APT)
+    assert closed.opening_order_id == ENTRY_ID
+    assert closed.closing_order_id == TAKE_PROFIT_ID
+
+
+def test_generation_restart_rejects_a_contradictory_signed_algo_child(account: Any) -> None:
+    runtime = account(
+        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        triggered_take_profit=True,
+        wrong_algo_child=True,
+        seed_existing=False,
+    )
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is False
+    assert runtime.cache.positions_closed(instrument_id=APT) == []
+
+
+def test_generation_restart_does_not_infer_a_missing_child_trade(account: Any) -> None:
+    runtime = account(
+        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        triggered_take_profit=True,
+        missing_child_trade=True,
+        seed_existing=False,
+    )
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is False
+    assert runtime.cache.positions_closed(instrument_id=APT) == []
+
+
+def test_generation_restart_does_not_infer_missing_entry_trades(account: Any) -> None:
+    runtime = account(
+        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        triggered_take_profit=True,
+        missing_entry_trades=True,
+        seed_existing=False,
+    )
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is False
+    assert runtime.cache.positions_closed(instrument_id=APT) == []
+
+
+def test_generation_restart_keeps_a_plain_reduce_only_exit_as_market(account: Any) -> None:
+    runtime = account(
+        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        triggered_take_profit=True,
+        no_algo_receipt=True,
+        seed_existing=False,
+    )
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is True
+    assert runtime.cache.order(TAKE_PROFIT_ID).order_type == OrderType.MARKET
+    assert runtime.cache.positions_closed(instrument_id=APT)
 
 
 def test_triggered_algo_child_replays_each_distinct_venue_trade_once(account: Any) -> None:

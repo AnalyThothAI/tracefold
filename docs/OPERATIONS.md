@@ -134,7 +134,8 @@ Serve and Workers never receive Binance secrets.
 Nautilus owns execution state. The venue is the truth about positions, orders and
 fills, and the Nautilus Cache is the only in-process copy of it: Nautilus'
 startup reconciliation rebuilds the Cache from the venue before the Strategy
-starts, over a lookback longer than the longest holding time, and its 5-second
+starts, over a lookback covering the oldest still-open Plan's creation time
+(including time spent outside a running generation), and its 5-second
 open-order and position checks keep it converged. There is no Cache database; a
 restart is the same reconciliation a start is. PostgreSQL holds intent (the
 TradePlan), the append-only execution journal and the operator's inputs. Realized
@@ -161,10 +162,19 @@ parent's signed `GET /fapi/v1/algoOrder` receipt, including `actualOrderId`, aga
 the child order and its complete venue trades. It then sends Nautilus an
 `OrderUpdated` to move the cached order to the child ID before the engine replays
 those real fills. A partial child fill reduces only the traded quantity; its
-remaining position and Plan stay open for protection and exit. Missing or
-contradictory evidence fails reconciliation; a
+remaining position and Plan stay open for protection and exit. A triggered
+child with missing trades or contradictory signed evidence fails
+reconciliation; a
 matching client order ID by itself never authorizes a close. The original
 strategy order and its Plan retain the stop or take-profit attribution.
+On a generation restart, a flat venue and empty Cache otherwise provide no
+"active" symbol for Nautilus to query. PostgreSQL's open Plans supply only the
+bounded symbol query scope. A signed Algo parent receipt then identifies a
+historical regular child as a stop or take-profit before Nautilus replays its
+actual trades; an ordinary reduce-only exit with no Algo parent remains a market
+exit. After replay, the Strategy may attribute a closed Cache Position to a Plan
+only when its opening order matches that Plan's entry and the closing order has
+real fill quantity. The absence of that proof leaves `venue_unknown`.
 
 On top of the Cache the Strategy runs one invariant every five seconds, and on
 every fill and position event, over the Cache, the plans and the latest read of

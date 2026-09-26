@@ -19,6 +19,7 @@ from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.identifiers import ClientOrderId, StrategyId
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
 from tests.nautilus_oi_runtime_fixtures import (
     ACCOUNT_ID,
@@ -289,6 +290,34 @@ def test_a_restart_with_a_position_and_both_orders_adopts_them_and_sends_nothing
     assert runtime.plans() == []
     assert runtime.observations("risk") == []
     assert runtime.strategy.runtime_view(NOW_NS + 12 * SECOND_NS).protection_status == "protected"
+
+
+def test_a_restart_attributes_a_replayed_historical_take_profit_close_to_its_plan() -> None:
+    """Startup reconciliation populated Cache before the Strategy could receive live callbacks."""
+    plan = open_plan()
+    runtime = unit_runtime(open_plans=(OpenPlan(plan, disposition_pending=False),), venue_reads=True)
+    position = cached_position(runtime, client_order_id=plan.entry_client_order_id)
+    take_profit = cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200))
+    fill = TestEventStubs.order_filled(
+        order=take_profit,
+        instrument=INSTRUMENT,
+        strategy_id=runtime.strategy.id,
+        account_id=ACCOUNT_ID,
+        position_id=position.id,
+        last_qty=position.quantity,
+        last_px=INSTRUMENT.make_price(10_200),
+        ts_event=NOW_NS,
+    )
+    take_profit.apply(fill)
+    runtime.cache.update_order(take_profit)
+    position.apply(fill)
+    runtime.cache.update_position(position)
+    assert runtime.cache.positions_open() == []
+
+    runtime.venue({})
+
+    [closed] = runtime.plans()
+    assert (closed.status, closed.exit_reason, closed.terminal_at_ns) == ("closed", "take_profit", NOW_NS)
 
 
 def test_a_restart_that_finds_the_stop_missing_places_it_again_and_touches_nothing_else() -> None:
