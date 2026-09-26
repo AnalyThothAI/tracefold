@@ -18,7 +18,6 @@ from .artifact import (
     decode_program_state,
     encode_program_state,
 )
-from .runtime import PROGRAM_SCHEMA_VERSION
 
 # Historical images are verified as documents, never loaded through today's graph.
 # A future schema cut must explicitly retain the identity format it can read here.
@@ -57,7 +56,7 @@ def _verify_previous_image(root: Path, identity: str) -> None:
     previous = _read_json_object(root / f"{identity}.json")
     if (
         previous.get("program_sha256") != identity
-        or previous.get("schema_version") not in _HISTORICAL_SCHEMAS | {PROGRAM_SCHEMA_VERSION}
+        or previous.get("schema_version") not in _HISTORICAL_SCHEMAS
     ):
         raise ValueError("news_program_previous_image_identity_invalid")
     try:
