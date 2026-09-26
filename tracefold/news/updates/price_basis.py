@@ -26,6 +26,8 @@ _PRICE_PERIOD_RECORD: Final = (
     r"创[^，。,.]{0,12}?(新高|新低|高位|低位|纪录)"
     r"|(历史|创纪录|阶段性)?(新高|新低)"
     r"|(年内|月内|周内)(新高|新低|高点|低点)"
+    # "为2007年7月17日以来最高" / "逾十年来最低": the period is named before the superlative.
+    r"|(以来|年来|月来)(最高|最低|新高|新低)"
     r"|record\s+(high|low)"
     r"|(highest|lowest)\s+(since|level|price)"
     # "seven-month high" is how the wires write it; a digits-only pattern missed every English one.

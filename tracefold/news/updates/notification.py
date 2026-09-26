@@ -213,7 +213,9 @@ def content_reason(claim: Claim, mode: Mode) -> ClaimReason:
     kind = claim.fields.content_kind
     if kind == "schedule":
         return "content_schedule"
-    if kind not in PRICE_REPORT_KINDS:
+    # The basis rule is about quotes: a market move somebody observed. A decision, commitment or guidance
+    # that carries an amount (a Treasury buyback, a rate path) is an action, not a quote wearing a level.
+    if kind not in PRICE_REPORT_KINDS or mode != "observation":
         return "actionable_content"
     quotes = _cited_text(claim)
     if price_move_basis(quotes):

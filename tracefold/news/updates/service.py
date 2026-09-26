@@ -23,7 +23,13 @@ from .ports import (
 from .public import public_updates
 from .semantics import SemanticAnalyzer, assemble_update
 
-STAGE_SECONDS: Final = 20.0
+# Measured on the production News endpoint (2026-09-26 replay): one extraction is 7-20 s of decode under load,
+# and an Event with related priors asks several judgment batches after it. A 20 s stage timed out before the
+# extraction could be checkpointed, so every retry started over. The stage bounds a whole attempt; one
+# model call is bounded separately so a stalled call still leaves room for the declared fallback.
+SEMANTIC_STAGE_SECONDS: Final = 120.0
+NOTIFICATION_STAGE_SECONDS: Final = 60.0
+GENERATION_CALL_SECONDS: Final = 60.0
 # A CAS collision retries only missing relationships/adoption, not extraction.
 ADOPTION_ATTEMPTS: Final = 2
 
@@ -41,7 +47,7 @@ class NewsAgent:
         program_identity: str,
         source_reader: ExistingSourceReader | None = None,
         clock: Callable[[], int] = clock_ms,
-        stage_seconds: float = STAGE_SECONDS,
+        stage_seconds: float = SEMANTIC_STAGE_SECONDS,
     ) -> None:
         self.store = store
         self.analyzer = analyzer
@@ -225,7 +231,7 @@ class Notifications:
         composer: CardComposer,
         *,
         clock: Callable[[], int] = clock_ms,
-        stage_seconds: float = STAGE_SECONDS,
+        stage_seconds: float = NOTIFICATION_STAGE_SECONDS,
     ) -> None:
         self.store = store
         self.planner = planner

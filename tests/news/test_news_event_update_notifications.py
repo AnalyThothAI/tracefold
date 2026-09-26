@@ -327,13 +327,29 @@ def test_a_market_move_needs_a_stated_basis_or_the_owner_exception(
     kind: str, text: str, market: str, expected: str
 ) -> None:
     asset = Asset.model_validate({"symbol": "X", "market_type": market, "role": "primary"})
-    assert only_reason(run_plan(single(text, kind=kind, assets=(asset,)))) == expected
+    assert only_reason(run_plan(single(text, kind=kind, mode="observation", assets=(asset,)))) == expected
 
 
 def test_the_basis_is_read_from_cited_quotes_not_model_prose() -> None:
     source = evidence("Bitcoin is up 3% today.")
-    draft = claim("a", source, kind="level_crossed", statement="Bitcoin rises above $82,000.")
+    draft = claim("a", source, kind="level_crossed", mode="observation", statement="Bitcoin rises above $82,000.")
     assert only_reason(run_plan(adopted((draft, source)))) == "price_report_without_basis"
+
+
+def test_a_chinese_period_record_names_the_period_before_the_superlative() -> None:
+    text = "美国10年期国债收益率持续走高，升至5.081%，为2007年7月17日以来最高。"
+    assert only_reason(run_plan(single(text, kind="period_record", mode="observation"))) == "actionable_content"
+
+
+@pytest.mark.parametrize("mode", ["decision", "commitment", "guidance"])
+def test_an_action_that_carries_an_amount_is_not_a_quote(mode: str) -> None:
+    # 2026-09-26 replay: "US Treasury says will buy up to $6 bln of 20-30 year debt" was read as a
+    # quantified flow and withheld as a price report. The basis rule is about observed market moves.
+    text = "US Treasury says will buy up to $6 bln of 20-30 year debt in a liquidity buyback."
+    assert only_reason(run_plan(single(text, kind="quantified_flow", mode=mode))) == "actionable_content"
+    assert only_reason(run_plan(single(text, kind="quantified_flow", mode="observation"))) == (
+        "price_report_without_basis"
+    )
 
 
 # ------------------------------------------------------------------ staleness

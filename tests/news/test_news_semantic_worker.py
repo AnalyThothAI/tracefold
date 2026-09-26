@@ -205,6 +205,21 @@ def test_a_stage_deadline_is_a_provider_deferral_with_a_bounded_code() -> None:
     assert store.deferred == [("ev-1", "news_provider_unavailable:TimeoutError")]
 
 
+def test_a_contract_fault_spends_an_attempt_and_only_the_last_attempt_fails() -> None:
+    # 2026-09-26 replay: the production endpoint returned a contract-invalid extraction for a frozen input
+    # that came back valid on re-run. One malformed answer is not a property of the Event.
+    fault = ContractFault("news_generation_output_contract_invalid")
+    store = FakeStore(lease(attempts=1), lease(attempts=3))
+    subject = worker(store, FakeAgent(fault, fault))
+
+    asyncio.run(subject.handle(wake()))
+    assert store.deferred == [("ev-1", "news_generation_output_contract_invalid")]
+    assert store.failed == []
+
+    asyncio.run(subject.handle(wake()))
+    assert store.failed == [("ev-1", "news_generation_output_contract_invalid")]
+
+
 @pytest.mark.parametrize(
     ("error", "code"),
     [
@@ -218,7 +233,8 @@ def test_a_stage_deadline_is_a_provider_deferral_with_a_bounded_code() -> None:
 def test_a_contract_fault_fails_the_revision_with_its_code_and_never_decides_no_news(
     error: Exception, code: str
 ) -> None:
-    store = FakeStore(lease())
+    # On the last attempt every class fails visibly; configuration and input faults fail on any attempt.
+    store = FakeStore(lease(attempts=3))
     subject = worker(store, FakeAgent(error))
 
     asyncio.run(subject.handle(wake()))

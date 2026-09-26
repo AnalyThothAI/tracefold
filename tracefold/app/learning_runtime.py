@@ -18,15 +18,15 @@ import dspy  # type: ignore[import-untyped]
 from tracefold.app.llm import ConfiguredLMEndpoint, StructuredOutputMode, configured_lm_endpoint
 from tracefold.app.news_updates import NewsJudgmentEndpoint, news_program_identity
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.updates.service import STAGE_SECONDS
+from tracefold.news.updates.service import GENERATION_CALL_SECONDS
 from tracefold.platform.config.models import NewsModelAvailability, news_model_availability
 
 # Code-owned generation ceilings per role. A native Jev route has none: it is not a chat model.
 EXTRACTION_MAX_TOKENS: Final = 4_000
 JUDGMENT_MAX_TOKENS: Final = 2_000
 CARD_MAX_TOKENS: Final = 1_200
-# One provider call may use the whole stage; the stage deadline bounds the route, fallback included.
-GENERATION_TIMEOUT_SECONDS: Final = STAGE_SECONDS
+# One provider call; the stage deadline bounds the route, fallback included.
+GENERATION_TIMEOUT_SECONDS: Final = GENERATION_CALL_SECONDS
 
 
 class GenerativeLM(dspy.LM):

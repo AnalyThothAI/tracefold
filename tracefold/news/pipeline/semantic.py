@@ -24,7 +24,8 @@ from .runtime import NewsDatabasePort
 log = logging.getLogger("tracefold.news")
 
 # Longer than one stage (20 s) plus adoption: an expired lease means the turn is gone.
-SEMANTIC_LEASE_MS: Final = 60_000
+# Longer than one semantic stage, so a live attempt is never re-claimed by a second worker.
+SEMANTIC_LEASE_MS: Final = 180_000
 # Revisions that arrive while a turn holds the lease are processed by the same consumer: their own
 # wake was dropped on the held lease. Bounded so one hot Event cannot monopolize a consumer slot.
 TURNS_PER_WAKE: Final = 3
@@ -161,9 +162,20 @@ class SemanticWorker:
             await self.store.defer_semantic_event(lease, reason=error_code(exc, default="news_provider_unavailable"))
             await self._provider_failed()
             return "deferred"
-        except (ContractFault, ConfigurationFault, EventUpdateConflict, LookupError, ValueError) as exc:
-            # The response or the stored input cannot satisfy the contract: visible, not retried until
-            # new evidence, and never recorded as a judgment that the Event has no news value.
+        except ContractFault as exc:
+            # A generated answer that breaks the contract is not a property of the Event: the same frozen
+            # input can come back valid (temperature 0 is not determinism on the production endpoint). It
+            # spends one attempt of the same bounded budget, and only the last one fails visibly.
+            code = error_code(exc, default="news_semantic_contract_fault")
+            if not final_attempt:
+                await self.store.defer_semantic_event(lease, reason=code)
+                return "deferred"
+            log.warning("news semantic turn failed event_id=%s code=%s", lease.event_id, code)
+            await self.store.fail_semantic_event(lease, error_code=code)
+            return "failed"
+        except (ConfigurationFault, EventUpdateConflict, LookupError, ValueError) as exc:
+            # A configuration fault or unusable stored input: visible, not retried until new evidence, and
+            # never recorded as a judgment that the Event has no news value.
             code = error_code(exc, default="news_semantic_contract_fault")
             log.warning("news semantic turn failed event_id=%s code=%s", lease.event_id, code)
             await self.store.fail_semantic_event(lease, error_code=code)

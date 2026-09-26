@@ -42,7 +42,8 @@ NOTIFICATION_RETRY_MS: Final = (30_000, 120_000, 600_000)
 INTENT_ATTEMPTS_MAX: Final = 3
 INTENT_RETRY_MS: Final = (30_000, 120_000, 600_000)
 # Longer than one notification stage (20 s): compose, freeze and send happen under one lease.
-INTENT_LEASE_MS: Final = 60_000
+# Covers one notification stage plus card composition and the send.
+INTENT_LEASE_MS: Final = 120_000
 RECEIPT_RECALL_MAX: Final = 16
 JUDGMENT_CACHE_RETENTION_MS: Final = 14 * 24 * 3_600_000
 PURGE_BATCH_MAX: Final = 1_000
