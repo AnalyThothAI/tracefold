@@ -257,6 +257,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260926_0402",
         "20260925_0401",
         "20260925_0400",
         "20260925_0399",
@@ -514,9 +515,13 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="trading_runtime_observation_truth_forward_only"):
+    with pytest.raises(RuntimeError, match="native_fill_identity_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260926_0402")
+    with pytest.raises(RuntimeError, match="trading_runtime_observation_truth_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260926_0402"
     command.stamp(config, "20260925_0399")
     with pytest.raises(RuntimeError, match="wallet_complete_prefix_forward_only"):
         command.downgrade(config, "base")
