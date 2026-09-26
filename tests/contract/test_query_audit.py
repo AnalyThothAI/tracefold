@@ -308,7 +308,9 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     # #604 T3: the identity read is a primary-key predicate and carries no window at all, and the
     # totals read folds each plan's fills through the two partial correlation indexes (#680).
     assert "case_id = %(case_id)s" in audited[0][0] and "created_at_ms >=" not in audited[0][0]
-    assert "fill.signal_id = plan.entry_id OR fill.command_id = plan.entry_id" in audited[3][0]
+    assert "signal_id = plan.entry_id OR command_id = plan.entry_id" in audited[3][0]
+    assert "historical.signal_id = plan.entry_id OR historical.command_id = plan.entry_id" in audited[3][0]
+    assert "proof.summary ->> 'source' = 'signed_order_trades_v1'" in audited[3][0]
     # #537 PR-5: no keyset predicate anywhere. `/api/trading/cases` published a `next_cursor` no
     # reader ever sent back, and the three routes whose cursors were followed are gone.
     assert all("before_ms" not in sql and "before_ns" not in sql for sql, _ in audited)

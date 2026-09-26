@@ -44,6 +44,21 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     now_ms = _now_ms()
     if command == "issue":
         return _issue_operator_intent(args, settings=settings)
+    if command == "verify-execution":
+        from tracefold.app.nautilus.history import verify_execution_history
+
+        if re.fullmatch(r"[0-9a-f]{64}", str(args.entry_id)) is None:
+            return 2, {"ok": False, "error": "historical_entry_id_invalid"}
+        return 0, {
+            "ok": True,
+            "data": verify_execution_history(
+                settings,
+                entry_id=args.entry_id,
+                account_slot=args.account_slot,
+                environment=args.environment,
+                apply=bool(args.apply),
+            ),
+        }
     if command == "diagnose":
         return _diagnose(args, settings=settings)
     with repositories(settings) as repos:

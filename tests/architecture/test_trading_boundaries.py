@@ -48,6 +48,8 @@ NEWS_NAME_RE = re.compile(r"\bnews_[a-z0-9_]+", re.I)
 WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 _SQL_KEYWORDS = {
+    "proposed",
+    "proposed_execution_observations",
     "identities",
     "bindings",
     "native",

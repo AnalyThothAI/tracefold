@@ -15,7 +15,7 @@ from tracefold.trading.execution_contracts import (
     SignalExitPlanV1,
     TradeSignalV3,
 )
-from tracefold.trading.trade_plan import TradePlan
+from tracefold.trading.trade_plan import PlanOrderBinding, TradePlan
 
 from .risk import decimal_value, fixed_risk_quantity
 
@@ -29,6 +29,42 @@ def deterministic_client_order_id(*, namespace: str, entry_id: str, leg: str) ->
 
     digest = hashlib.sha256(f"{namespace}:{entry_id}:{leg}".encode()).hexdigest()
     return ClientOrderId(f"tf{digest[:30]}")
+
+
+def initial_plan_order_bindings(plan: TradePlan, *, namespace: str) -> tuple[PlanOrderBinding, ...]:
+    """Reconstruct only the deterministic identities authored by this Plan.
+
+    Replacement identities must come from durable bindings. This helper neither
+    selects a current Plan by symbol nor interprets native order types as legs.
+    """
+    return tuple(
+        PlanOrderBinding.model_validate(
+            {
+                "account_slot": plan.account_slot,
+                "entry_id": plan.entry_id,
+                "source": plan.source,
+                "instrument_id": plan.instrument_id,
+                "client_order_id": plan.entry_client_order_id
+                if leg == "entry"
+                else deterministic_client_order_id(
+                    namespace=namespace,
+                    entry_id=plan.entry_id,
+                    leg=f"exit:{reason}" if leg == "exit" else leg,
+                ).value,
+                "leg": leg,
+                "exit_reason": reason,
+            }
+        )
+        for leg, reason in (
+            ("entry", None),
+            ("stop", "stop_filled"),
+            ("take_profit", "take_profit"),
+            ("exit", "time_exit"),
+            ("exit", "operator_flatten"),
+            ("exit", "stop_filled"),
+            ("exit", "take_profit"),
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)

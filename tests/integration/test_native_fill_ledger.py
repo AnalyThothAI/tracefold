@@ -284,6 +284,13 @@ def test_recorded_inj_native_result_corrects_projection_without_rewriting_origin
         assert partial["realized_pnl_usd"] is None
         assert partial["result_evidence_source"] is None
         offer(0)
+        candidate_json = json.dumps([queued.value.model_dump(mode="json") for queued in journal.due(float("inf"))])
+        before_count = conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"]
+        with conn.transaction():
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            preview = repo.preview_execution_evidence(entry_id=plan.entry_id, payload_json=candidate_json)
+        assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == before_count
+        assert Decimal(preview["realized_pnl_usd"]) == Decimal("19.087768")
         drain(omit=("native_order_result", "native_fill_cost"))
         assert projected()["realized_pnl_usd"] is None
         drain(omit=("native_fill_cost",))
@@ -292,6 +299,7 @@ def test_recorded_inj_native_result_corrects_projection_without_rewriting_origin
         assert projected()["realized_pnl_usd"] is None
         drain()
         verified = projected()
+        assert verified == preview
         assert Decimal(verified["fill_quantity"]) == Decimal("121.3")
         assert Decimal(verified["fees_usd"]) == Decimal("0.805432")
         assert Decimal(verified["realized_pnl_usd"]) == Decimal("19.087768")

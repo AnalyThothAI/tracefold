@@ -68,6 +68,7 @@ from .entry import (
     RuntimeEntryRequest,
     deterministic_client_order_id,
     entry_quantity,
+    initial_plan_order_bindings,
     protective_trigger,
     spread_bps,
 )
@@ -778,37 +779,8 @@ class OiNautilusStrategy(Strategy):
         self._order_bindings[binding.client_order_id] = binding
 
     def _bind_plan_orders(self, plan: TradePlan) -> None:
-        for leg, reason in (
-            ("entry", None),
-            ("stop", "stop_filled"),
-            ("take_profit", "take_profit"),
-            ("exit", "time_exit"),
-            ("exit", "operator_flatten"),
-            ("exit", "stop_filled"),
-            ("exit", "take_profit"),
-        ):
-            client_id = (
-                plan.entry_client_order_id
-                if leg == "entry"
-                else deterministic_client_order_id(
-                    namespace=self._profile.namespace,
-                    entry_id=plan.entry_id,
-                    leg=f"exit:{reason}" if leg == "exit" else leg,
-                ).value
-            )
-            self._register_order_binding(
-                PlanOrderBinding.model_validate(
-                    {
-                        "account_slot": plan.account_slot,
-                        "entry_id": plan.entry_id,
-                        "source": plan.source,
-                        "instrument_id": plan.instrument_id,
-                        "client_order_id": client_id,
-                        "leg": leg,
-                        "exit_reason": reason,
-                    }
-                )
-            )
+        for binding in initial_plan_order_bindings(plan, namespace=self._profile.namespace):
+            self._register_order_binding(binding)
 
     def _submit_plan_order(
         self,

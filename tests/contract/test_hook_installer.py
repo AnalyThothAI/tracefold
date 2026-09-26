@@ -16,10 +16,16 @@ ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "scripts" / "install_hooks.py"
 
 
+def _isolated_git_env() -> dict[str, str]:
+    excluded = {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"}
+    return {key: value for key, value in os.environ.items() if key not in excluded}
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
         cwd=repo,
+        env=_isolated_git_env(),
         capture_output=True,
         check=True,
         text=True,
@@ -38,6 +44,7 @@ def _install(repo: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(INSTALLER)],
         cwd=repo,
+        env=_isolated_git_env(),
         capture_output=True,
         check=False,
         text=True,

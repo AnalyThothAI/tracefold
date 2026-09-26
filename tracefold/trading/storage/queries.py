@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from psycopg.sql import SQL
+
 # Keyed on `created_at_ms`: when the Case formed, which is what "the lane produced N cases today"
 # means. The admission ledger's own counts key on `source_observed_at_ms` instead, so a restarted
 # runner re-reading a backlog cannot move yesterday's frames into today's total; a Case is created
@@ -364,7 +366,7 @@ _FUNDING_FOLD = """
 
 
 def console_executions_statement(
-    *, since_ns: int, limit: int, case_id: str | None = None
+    *, since_ns: int, limit: int, case_id: str | None = None, entry_id: str | None = None
 ) -> tuple[str, dict[str, Any]]:
     """One row per entry identity: plans supply lifecycle, observations supply what the venue did."""
 
@@ -380,6 +382,7 @@ def console_executions_statement(
             FROM trading_trade_signals
            WHERE (%(case_id)s::text IS NOT NULL OR observed_at_ns >= %(since)s)
              AND (%(case_id)s::text IS NULL OR case_id = %(case_id)s)
+             AND (%(entry_id)s::text IS NULL OR signal_id = %(entry_id)s)
              AND NOT EXISTS (SELECT 1 FROM trading_trade_plans plan WHERE plan.entry_id = signal_id)
            ORDER BY observed_at_ns DESC, signal_id DESC
            LIMIT %(limit)s
@@ -395,6 +398,7 @@ def console_executions_statement(
             FROM trading_operator_intents
            WHERE action = 'manual_entry' AND %(case_id)s::text IS NULL
              AND requested_at_ns >= %(since)s
+             AND (%(entry_id)s::text IS NULL OR command_id = %(entry_id)s)
              AND NOT EXISTS (SELECT 1 FROM trading_trade_plans plan WHERE plan.entry_id = command_id)
            ORDER BY requested_at_ns DESC, command_id DESC
            LIMIT %(limit)s
@@ -406,6 +410,7 @@ def console_executions_statement(
            WHERE (%(case_id)s::text IS NOT NULL OR created_at_ns >= %(since)s
                   OR terminal_at_ns >= %(since)s OR terminal_at_ns IS NULL)
              AND (%(case_id)s::text IS NULL OR case_id = %(case_id)s)
+             AND (%(entry_id)s::text IS NULL OR entry_id = %(entry_id)s)
            ORDER BY created_at_ns DESC, entry_id DESC LIMIT %(limit)s
         ),
         entry_window AS (
@@ -511,7 +516,7 @@ def console_executions_statement(
          ORDER BY folded.observed_at_ns DESC, folded.entry_id DESC
          LIMIT %(limit)s
     """  # noqa: S608 -- module-owned fragments; every value stays bound
-    return sql, {"since": int(since_ns), "limit": int(limit), "case_id": case_id}
+    return sql, {"since": int(since_ns), "limit": int(limit), "case_id": case_id, "entry_id": entry_id}
 
 
 def console_realized_totals_statement(
@@ -705,6 +710,78 @@ class QueryStorage:
     def console_executions(self, *, since_ns: int, limit: int, case_id: str | None = None) -> list[dict[str, Any]]:
         sql, params = console_executions_statement(since_ns=since_ns, limit=limit, case_id=case_id)
         return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+
+    def execution_result(self, *, entry_id: str) -> dict[str, Any] | None:
+        sql, params = console_executions_statement(since_ns=0, limit=1, entry_id=entry_id)
+        row = self.conn.execute(sql, params).fetchone()
+        return None if row is None else dict(row)
+
+    def preview_execution_evidence(self, *, entry_id: str, payload_json: str) -> dict[str, Any] | None:
+        """Read-only overlay using the exact production result SQL, without journal inserts.
+
+        The caller prepares/validates native rows and owns a repeatable-read,
+        read-only transaction. Existing immutable facts win identical replays;
+        contradictions refuse the preview rather than silently choose a source.
+        """
+        conflict = self.conn.execute(
+            """WITH proposed AS MATERIALIZED (
+                 SELECT payload FROM jsonb_array_elements(%s::jsonb) AS offered(payload)
+               ) SELECT 1 FROM proposed offered JOIN trading_execution_observations stored
+                 ON stored.event_id = offered.payload ->> 'event_id'
+                 OR (stored.account_slot = offered.payload ->> 'account_slot'
+                     AND stored.summary ->> 'venue_environment' = offered.payload -> 'summary' ->> 'venue_environment'
+                     AND stored.summary ->> 'native_instrument' = offered.payload -> 'summary' ->> 'native_instrument'
+                     AND ((stored.native_trade_id = offered.payload -> 'summary' ->> 'native_trade_id')
+                       OR (stored.normalized_kind = 'native_order_result'
+                           AND offered.payload ->> 'normalized_kind' = 'native_order_result'
+                           AND stored.summary ->> 'venue_order_id'
+                               = offered.payload -> 'summary' ->> 'venue_order_id')))
+                WHERE CASE WHEN stored.normalized_kind = offered.payload ->> 'normalized_kind'
+                      THEN stored.payload - ARRAY['observed_at_ns','execution_strategy',
+                                                         'event_id','native_identity_references']
+                             <> offered.payload - ARRAY['observed_at_ns','execution_strategy',
+                                                         'event_id','native_identity_references']
+                      ELSE stored.summary ->> 'venue_order_id'
+                           IS DISTINCT FROM offered.payload -> 'summary' ->> 'venue_order_id'
+                           OR stored.occurred_at_ns <> (offered.payload ->> 'occurred_at_ns')::bigint
+                           OR stored.event_id = offered.payload ->> 'event_id' END LIMIT 1""",
+            (payload_json,),
+        ).fetchone()
+        if conflict is not None:
+            raise ValueError("execution_evidence_preview_conflict")
+        sql, params = console_executions_statement(since_ns=0, limit=1, entry_id=entry_id)
+        # Both identifiers are fixed, module-owned relations. The only dynamic
+        # data is bound JSON; no caller-supplied identifier enters the statement.
+        projection = sql.replace("trading_execution_observations", "proposed_execution_observations")
+        preview = SQL(
+            """WITH proposed AS MATERIALIZED (
+            SELECT payload, ordinal FROM jsonb_array_elements(%(evidence)s::jsonb)
+                WITH ORDINALITY AS offered(payload, ordinal)
+          ), proposed_execution_observations AS MATERIALIZED (
+            SELECT seq, account_slot, signal_id, command_id, normalized_kind,
+                   occurred_at_ns, observed_at_ns, summary, native_environment, native_instrument, native_trade_id
+              FROM trading_execution_observations
+             WHERE account_slot = (SELECT account_slot FROM trading_trade_plans WHERE entry_id=%(entry_id)s)
+            UNION ALL
+            SELECT -ordinal, payload ->> 'account_slot', payload ->> 'signal_id', payload ->> 'command_id',
+                   payload ->> 'normalized_kind', (payload ->> 'occurred_at_ns')::bigint,
+                   (payload ->> 'observed_at_ns')::bigint, payload -> 'summary',
+                   payload -> 'summary' ->> 'venue_environment', payload -> 'summary' ->> 'native_instrument',
+                   payload -> 'summary' ->> 'native_trade_id'
+              FROM proposed offered
+             WHERE NOT EXISTS (SELECT 1 FROM trading_execution_observations stored
+               WHERE stored.event_id=offered.payload ->> 'event_id' OR (
+                 stored.account_slot=offered.payload ->> 'account_slot'
+                 AND stored.normalized_kind=offered.payload ->> 'normalized_kind'
+                 AND stored.summary ->> 'venue_environment'=offered.payload -> 'summary' ->> 'venue_environment'
+                 AND stored.summary ->> 'native_instrument'=offered.payload -> 'summary' ->> 'native_instrument'
+                 AND (stored.native_trade_id=offered.payload -> 'summary' ->> 'native_trade_id'
+                      OR (stored.normalized_kind='native_order_result' AND
+                          stored.summary ->> 'venue_order_id'=offered.payload -> 'summary' ->> 'venue_order_id'))))
+          ) SELECT * FROM ({projection}) result"""
+        ).format(projection=SQL(projection))
+        row = self.conn.execute(preview, params | {"evidence": payload_json}).fetchone()
+        return None if row is None else dict(row)
 
     def recent_stop_exits(self, *, account_slot: str, since_ns: int) -> dict[str, int]:
         """Cooldown consumes the same verified exit purpose/time as the desk and totals.

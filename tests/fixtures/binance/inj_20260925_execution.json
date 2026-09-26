@@ -158,7 +158,8 @@
     "account_slot": "binance_usdm_primary",
     "entry_id": "6314b55d65bd996d1939636c8641f0f9906594219cf40fdebc4c8f82882d06e6",
     "scope": "Two exact INJUSDT order and userTrades reads plus one exact Algo read; credentials and transport metadata omitted. This is a read of historical Demo facts, not a new trade.",
-    "postgres_scope": "Exact original TradePlan and original entry observation seq 11716, read-only on 2026-09-26; no raw row was modified."
+    "postgres_scope": "Exact original TradePlan and original entry observation seq 11716, read-only on 2026-09-26; no raw row was modified.",
+    "namespace_scope": "Read-only exact account-slot control namespace on 2026-09-26; opaque original namespace retained across the single-connection cut."
   },
   "original_plan": {
     "entry_id": "6314b55d65bd996d1939636c8641f0f9906594219cf40fdebc4c8f82882d06e6",
@@ -208,5 +209,6 @@
       "INJUSDT-PERP.BINANCE-OI-RUNTIME-F46",
       "tfe9e61aa4d4d8100ee918f83096b54d"
     ]
-  }
+  },
+  "execution_namespace": "tracefold:binance_usdm_primary:paper"
 }

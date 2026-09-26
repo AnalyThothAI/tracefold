@@ -565,6 +565,32 @@ original termination and the later verification time. The raw Plan and historica
 observations remain auditable. A historical stop uses its actual exit time for
 cooldown, not the time its evidence was appended.
 
+For one closed Plan, use the bounded historical reader in the matching Nautilus
+image (which includes the installed adapter):
+
+```bash
+tracefold trading verify-execution --entry-id ENTRY_SHA256 \
+  --account-slot binance_usdm_primary --environment DEMO
+```
+
+The default preview is SELECT-only and shows the original Plan, exact native
+receipt candidates, individual read failures, before/after result projection and
+impact scope. It closes its database session before signed venue reads. It uses
+the same reader/normalizer and SQL projection as the Runtime/console, with at most
+16 known order chains, a 10-second timeout per chain, eight trade pages per chain
+and 10,000 queued evidence rows. Incomplete reads retain explicit remaining
+cursors; they do not prove zero fills or a complete result. A missing unused stop
+receipt does not invalidate a separately proved complete entry/take-profit set.
+
+Only an explicitly authorized invocation with `--apply` appends these immutable
+evidence rows. This flag never submits/cancels an order, creates a TradingNode,
+reopens a Plan, resets controls or injects an old exit into the current Cache.
+An identical replay is a no-op; contradictory stored/native facts refuse the
+append. Account, environment and terminal lifecycle must match the selected
+scope. The preserved opaque execution namespace reconstructs original initial
+client IDs; replacement IDs require their durable Plan bindings. This procedure
+has not been applied to the incident ledger by the implementation tests.
+
 Known realized PnL is folded from the journal's fills: exit notional minus entry
 notional, signed by side, minus every recorded commission. It is known only when the
 native order sets are complete, exit fills sum to the entry quantity and every commission was charged in the

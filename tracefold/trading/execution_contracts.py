@@ -380,7 +380,7 @@ class ExecutionObservationV1(_FrozenContract):
             if (
                 leg not in {"entry", "stop", "take_profit", "exit"}
                 or (leg in purpose and reason != purpose[leg])
-                or (leg == "exit" and reason not in {"time_exit", "operator_flatten"})
+                or (leg == "exit" and reason not in {"stop_filled", "take_profit", "time_exit", "operator_flatten"})
             ):
                 raise ValueError("execution_native_binding_invalid")
 
