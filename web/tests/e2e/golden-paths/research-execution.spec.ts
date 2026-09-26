@@ -185,6 +185,12 @@ test("positions and recent decisions stay separate, and source identity survives
   await expect(page.locator(".trading-recent")).toContainText("WIF");
   await expectNoDocumentHorizontalOverflow(page);
   await page.screenshot({ path: testInfo.outputPath("execution-positions.png"), fullPage: true });
+  const recent = page.locator(".trading-recent-row").first();
+  await recent.click();
+  await expect(page.getByRole("dialog", { name: "策略判定依据" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "策略判定依据" })).toHaveCount(0);
+  await expect(recent).toBeFocused();
   const from = origin + "&item=different-observation";
   await page.goto(
     `/trading?tab=decisions&case=${decision.case_id}&research_from=${encodeURIComponent(from)}`,

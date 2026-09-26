@@ -276,10 +276,12 @@ export function TradingPage({ token }: { token: string }) {
                 <TradingCaseList token={token} onOpen={selectCase} />
               )}
             </div>
-            {detail ??
-              (tab === "positions" ? (
+            {detail}
+            {tab === "positions" ? (
+              <div hidden={!!selectedCaseId}>
                 <TradingRecentCases token={token} onOpen={selectCase} onBrowse={browseDecisions} />
-              ) : null)}
+              </div>
+            ) : null}
           </div>
           <details className="trading-process-disclosure" open={tab === "decisions" || undefined}>
             <summary>策略运行与统计口径</summary>
