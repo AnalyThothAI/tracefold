@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx2
-from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy, TypeSafeClient
+from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy, TypeSafeAPIError, TypeSafeClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,24 +50,45 @@ def _answers(response: Any) -> dict[str, Any]:
     }
 
 
+def _request_id(raw: dict[str, Any] | None, headers: Mapping[str, str]) -> str | None:
+    # Preserve the gateway generation ID when provided. Direct TypeSafe responses
+    # identify the request in a header, not an OpenAI-shaped response body.
+    for value in (
+        None if raw is None else raw.get("id"),
+        headers.get("x-typesafe-request-id"),
+        headers.get("x-request-id"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _receipt(
     *, endpoint: str, model: str, request: dict[str, Any], response: Any | None, error: BaseException | None
 ) -> SystemOneReceipt:
     raw: dict[str, Any] | None = None
+    headers: Mapping[str, str] = {}
     if response is not None:
         try:
-            decoded = response.raw_http_response.json()
+            http_response = response.raw_http_response
+            headers = http_response.headers
+            decoded = http_response.json()
             raw = decoded if isinstance(decoded, dict) else None
         except (AttributeError, RuntimeError, ValueError):
             raw = None
     if raw is None and response is not None:
         raw = response.model_dump(mode="json")
+    if response is None and isinstance(error, TypeSafeAPIError):
+        # SDK failures still carry the server's request identity. Keep the error
+        # body, but never archive arbitrary headers (which can contain secrets).
+        headers = error.headers or {}
+        raw = error.body if isinstance(error.body, dict) else None
     usage = getattr(response, "usage", None)
     return SystemOneReceipt(
         endpoint=endpoint,
         requested_model=model,
         served_model=None if response is None else response.model,
-        request_id=None if raw is None else raw.get("id"),
+        request_id=_request_id(raw, headers),
         provider=None if raw is None else raw.get("provider"),
         request_payload=request,
         response_payload=raw,
