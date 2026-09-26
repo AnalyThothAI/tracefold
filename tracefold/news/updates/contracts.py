@@ -114,6 +114,11 @@ class Claim(Exact):
     citations: tuple[Citation, ...] = Field(min_length=1)
     first_available_at_ms: int = Field(ge=0)
     known_identity: tuple[IdentityHint, ...] = ()
+    # Code-owned ancestry of this adopted occurrence, not a model-generated ID.
+    # Persist the closure here: head.changes describes only the latest revision,
+    # so a later evidence update must not erase an occurrence's earlier changes.
+    # Roots have no antecedents; these refs remain local to recalled Event claims.
+    antecedent_refs: tuple[str, ...] = ()
 
 
 class PriorClaim(Exact):

@@ -168,7 +168,10 @@ class SemanticAnalyzer:
         support_pairs: dict[str, tuple[str, str]] = {}
         ev = {item.ref: item for item in source.evidence}
         for claim in result.claims:
-            for ref in dict.fromkeys(c.evidence_ref for c in claim.citations):
+            # A source can refute a claim without being that claim's quoted
+            # provenance. Compare missing pairs from the current frozen material,
+            # never every source accumulated in the Event's adopted history.
+            for ref in ev:
                 if (claim.slot, ref) in supports:
                     continue
                 key = identity("support", claim.slot, ref)
@@ -204,15 +207,18 @@ def assemble_update(source: FrozenInput, extraction: Extraction, head: EventUpda
         known_links.setdefault(relation.slot, []).append(relation)
     for draft in extraction.claims:
         equivalent = [r for r in known_links.get(draft.slot, ()) if r.relation == "equivalent" and equivalent_is_possible(draft, previous[r.previous_ref].claim, source.identity_hints)]
-        if any(r.relation == "equivalent" and not equivalent_is_possible(draft, previous[r.previous_ref].claim, source.identity_hints) for r in known_links.get(draft.slot, ())):
-            # A contradicted equivalent is unresolved, never coverage proof. The
-            # remaining additions/changes still remain available for adoption.
-            equivalent = []
-        # Prefer this Event's claim to an equivalent claim recalled from elsewhere.
-        equivalent.sort(key=lambda r: (previous[r.previous_ref].event_id != source.event_id, r.previous_ref))
+        # Reject a contradicted equivalent pair, not other independently valid
+        # pairs. A numerical mismatch with an older claim cannot veto the latest.
         material_relations = tuple(r for r in known_links.get(draft.slot, ()) if r.change_kind is not None)
-        if material_relations:
-            equivalent = []
+        material_previous = {r.previous_ref for r in material_relations}
+        equivalent = [
+            r for r in equivalent
+            if material_previous <= set(previous[r.previous_ref].claim.antecedent_refs)
+        ]
+        # Repeating B can correctly be both equivalent to B and a change from A.
+        # Reuse B only when ALL reported changes are already its antecedents. A
+        # real reversal back to A still has a new predecessor B and remains new.
+        equivalent.sort(key=lambda r: (previous[r.previous_ref].event_id != source.event_id, r.previous_ref))
         same = previous[equivalent[0].previous_ref] if equivalent else None
         material = _claim_material(draft)
         # A new real-world reversal can return to a previously seen numeric state.
@@ -227,8 +233,13 @@ def assemble_update(source: FrozenInput, extraction: Extraction, head: EventUpda
         slot_refs[draft.slot] = ref
         if ref not in claims:
             first = same.claim.first_available_at_ms if same else min(evidence[c.evidence_ref].source.first_available_at_ms for c in draft.citations)
+            antecedents = set(material_previous)
+            for previous_ref in material_previous:
+                antecedents.update(previous[previous_ref].claim.antecedent_refs)
             claims[ref] = Claim(ref=ref, statement=draft.statement, fields=same.claim.fields if same else draft.fields,
-                citations=draft.citations, first_available_at_ms=first, known_identity=_known_identity(draft, source.identity_hints))
+                citations=draft.citations, first_available_at_ms=first,
+                known_identity=_known_identity(draft, source.identity_hints),
+                antecedent_refs=same.claim.antecedent_refs if same else tuple(sorted(antecedents)))
             if same is not None:
                 changes.append(Change(kind="restatement", current_ref=ref, previous_ref=same.claim.ref,
                     previous_content_ref=identity("update", same.event_id, same.content_revision)))
@@ -252,13 +263,17 @@ def assemble_update(source: FrozenInput, extraction: Extraction, head: EventUpda
         # Quote existence is not semantic support. Unresolved is explicit until
         # the single backend supplied a source relationship.
         support = {r.evidence_ref: r.relation for r in extraction.supports if r.slot == draft.slot}
-        for citation in draft.citations:
-            key = (ref, citation.evidence_ref)
-            relationship = support.get(citation.evidence_ref, "unresolved")
+        # Preserve every validated source relationship, including refutations
+        # outside the claim's quote list. A citation without a supplied judgment
+        # remains unresolved; a source relationship does not invent a new quote.
+        evidence_refs = dict.fromkeys([*(c.evidence_ref for c in draft.citations), *support])
+        for evidence_ref in evidence_refs:
+            key = (ref, evidence_ref)
+            relationship = support.get(evidence_ref, "unresolved")
             # A transient unavailable answer cannot degrade an adopted relationship.
             if key in links and relationship == "unresolved":
                 continue
-            new = EvidenceRelation(claim_ref=ref, evidence_ref=citation.evidence_ref, relation=relationship)
+            new = EvidenceRelation(claim_ref=ref, evidence_ref=evidence_ref, relation=relationship)
             old = links.get(key)
             if old == new:
                 continue
