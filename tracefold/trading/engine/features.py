@@ -129,7 +129,6 @@ def freeze_features(
     snapshot_ref: str,
     knowledge_cutoff_ms: int,
     data_environment: str,
-    execution_environment: str | None,
     source_first_visible_at_ms: int,
     source_fact: dict[str, Any],
     results: dict[str, MarketDataResult],
@@ -196,17 +195,11 @@ def freeze_features(
                 feature_version=PROFILE_VERSION,
             )
         )
-    if data_environment not in ("live", "demo") or execution_environment not in (
-        None,
-        "disabled",
-        "paper",
-        "live",
-    ):
+    if data_environment not in ("live", "demo", "testnet"):
         raise ValueError("evidence_environment_invalid")
     return FrozenEvidence(
         snapshot_ref=snapshot_ref,
         knowledge_cutoff_ms=knowledge_cutoff_ms,
-        data_environment=cast(Literal["live", "demo"], data_environment),
-        execution_environment=cast(Literal["disabled", "paper", "live"] | None, execution_environment),
+        data_environment=cast(Literal["live", "demo", "testnet"], data_environment),
         values=tuple(values),
     )

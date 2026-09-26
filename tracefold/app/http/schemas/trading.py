@@ -62,6 +62,7 @@ class TradingExecutionFindingData(ExactApiSchema):
         "venue_cache_mismatch",
         "close_unconfirmed",
         "ambiguous",
+        "submission_unknown",
     ]
     object_id: str
     instrument_id: str
@@ -102,7 +103,9 @@ class TradingExecutionReadinessData(ExactApiSchema):
     the venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.
     """
 
-    mode: Literal["disabled", "paper", "live"]
+    configured_connection: Literal["LIVE", "DEMO", "TESTNET", "SDK_DEFAULT"]
+    connection: Literal["LIVE", "DEMO", "TESTNET", "SDK_DEFAULT"] | None = None
+    connection_observed_at_ms: int | None = None
     account_slot: str
     alive: bool
     entries_armed: bool
@@ -391,7 +394,7 @@ class TradingExecutionRowData(ExactApiSchema):
     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
     `case_id` is absent on those rows rather than invented.
 
-    `realized_pnl_usd` retains the historical fee-adjusted fill fold. PAPER net
+    `realized_pnl_usd` retains the historical fee-adjusted fill fold. Net PnL
     additionally requires complete signed funding-income coverage and unambiguous
     account-slot attribution over the fill-to-fill holding interval.
     """
@@ -417,11 +420,10 @@ class TradingExecutionRowData(ExactApiSchema):
     realized_pnl_usd: str | None = None
     fees_usd: str | None = None
     funding_usd: str | None = None
-    paper_net_pnl_usd: str | None = None
+    net_pnl_usd: str | None = None
     exit_reason: str | None = None
     plan_status: str | None = None
     account_slot: str | None = None
-    runtime_mode_at_creation: Literal["paper", "live"] | None = None
     instrument_id: str | None = None
     entry_client_order_id: str | None = None
     risk_budget_usd: str | None = None
@@ -431,7 +433,7 @@ class TradingExecutionRowData(ExactApiSchema):
     take_profit_bps: int | None = None
     max_holding_ns: int | None = None
     pnl_known: bool
-    paper_net_known: bool
+    net_known: bool
     duration_ns: int | None = None
     stage: ExecutionStage
 
@@ -446,14 +448,12 @@ class TradingRealizedTotalsData(ExactApiSchema):
 
     realized_known_today_usd: str | None
     realized_known_total_usd: str | None
-    paper_net_known_today_usd: str | None
-    paper_net_known_total_usd: str | None
-    paper_net_known_today: int = Field(ge=0)
-    paper_net_known_total: int = Field(ge=0)
-    paper_net_missing_today: int = Field(ge=0)
-    paper_net_missing_total: int = Field(ge=0)
-    paper_closed_today: int = Field(ge=0)
-    paper_closed_total: int = Field(ge=0)
+    net_known_today_usd: str | None
+    net_known_total_usd: str | None
+    net_known_today: int = Field(ge=0)
+    net_known_total: int = Field(ge=0)
+    net_missing_today: int = Field(ge=0)
+    net_missing_total: int = Field(ge=0)
     pnl_known_today: int = Field(ge=0)
     pnl_known_total: int = Field(ge=0)
     pnl_missing_today: int = Field(ge=0)

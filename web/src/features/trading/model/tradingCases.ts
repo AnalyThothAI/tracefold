@@ -45,8 +45,8 @@ export function caseVerdict(item: TradingCase): string {
     if (action === "TRADE") {
       const publication = item.analysis_publish_status ?? item.analysis_decision?.publish_status;
       const label =
-        publication === "shadow"
-          ? "影子判断"
+        publication === "unpublished"
+          ? "未发布判断"
           : publication === "blocked"
             ? "发布被阻断"
             : publication === "superseded"

@@ -259,7 +259,7 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
         )}
       </Card>
 
-      <Card flush title="净值评估" hint="模拟与场所 PAPER 回执分别标记；未知成本不按零计算">
+      <Card flush title="历史净值评估" hint="以下是旧版研究记录；模拟结果不是交易所成交收益">
         {item.analysis_evaluations?.length ? (
           <div className="trading-case-checks">
             {item.analysis_evaluations.map((evaluation) => {
@@ -267,7 +267,7 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
               return (
                 <div key={`${evaluation.source}-${evaluation.evaluation_version}`}>
                   <p>
-                    {evaluation.source === "shadow_simulation" ? "影子模拟" : "场所 PAPER"} ·{" "}
+                    {evaluation.source === "shadow_simulation" ? "历史模拟路径" : "历史场所回执"} ·{" "}
                     {evaluation.status} · {evaluation.evaluation_version}
                   </p>
                   <p>
@@ -306,10 +306,7 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
             {replay.data.status !== "ok" ? <p>回放状态：{replay.data.status}</p> : null}
             <p>来源：{word(source?.headline ?? source?.why ?? source?.kind)}</p>
             <p>证据截止：{caseClock(Number(evidence?.knowledge_cutoff_ms) || null)}</p>
-            <p>
-              行情环境：{word(evidence?.data_environment)} · 执行环境：
-              {word(evidence?.execution_environment)}
-            </p>
+            <p>计划行情来源：Binance USD-M · {word(evidence?.data_environment)}</p>
             <p>
               模型：{word(assessmentReceipt?.model)} · 调用状态：
               {word(assessmentReceipt?.provider_status)} · 校验：

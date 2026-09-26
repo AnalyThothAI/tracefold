@@ -50,11 +50,10 @@ def _selection(symbol: str = "SOL"):
         assets=(SourceAsset(symbol, "crypto", "primary"),),
         registry=registry,
         universe=DEFAULT_UNIVERSE,
-        execution_environment="demo",
     )
 
 
-def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) -> None:
+def test_historical_shadow_export_keeps_recorded_source(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "shadow-quote-db", read_only=False)
     try:
         migrate(conn)
@@ -75,14 +74,13 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
                 now_ms=1_100,
                 root_ttl_ms=10_000,
             )
-            trading.record_shadow_evaluation(
-                case_id=case_id,
-                decision_at_ms=1_500,
-                scheduled_at_ms=2_000,
-                due_at_ms=182_000,
-                decision_quote_ref="decision-ref",
-                planned_quote_ref="planned-ref",
-                initial_result=None,
+            conn.execute(
+                "INSERT INTO trading_case_evaluations "
+                "(case_id,source,evaluation_version,status,decision_at_ms,scheduled_at_ms,"
+                "due_at_ms,next_attempt_at_ms,decision_quote_ref,planned_quote_ref,quote_tape_ref) "
+                "VALUES (%s,'shadow_simulation','shadow_net_v1','pending',1500,2000,182000,182000,"
+                "'decision-ref','planned-ref','tape-1')",
+                (case_id,),
             )
             conn.execute(
                 "INSERT INTO trading_case_decisions "
@@ -111,9 +109,6 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
                 "WHERE case_id=%s AND claim_attempt=1",
                 (case_id,),
             )
-        due_evaluation = trading.due_shadow_evaluations(now_ms=182_000)
-        assert len(due_evaluation) == 1
-        assert due_evaluation[0]["evidence_ref"] == "first-evidence"
         root_due = trading.due_root_research_tapes(now_ms=1_100)
         assert len(root_due) == 1 and root_due[0]["case_id"] == case_id
         with conn.transaction():
@@ -123,25 +118,8 @@ def test_shadow_quote_tape_storage_is_due_and_compare_and_swap_fenced(tmp_path) 
             assert not trading.record_root_research_sample(
                 case_id=case_id, prior_ref=None, tape_ref="stale-root", sampled_at_ms=1_100
             )
-        due_evaluation = trading.due_shadow_evaluations(now_ms=182_000)
-        assert due_evaluation[0]["root_market_tape_ref"] == "root-tape-1"
-        assert due_evaluation[0]["root_case_id"] == case_id
-        assert due_evaluation[0]["root_accepted_at_ms"] == 1_100
-        assert due_evaluation[0]["root_expires_at_ms"] == root_due[0]["root_expires_at_ms"]
         assert trading.due_root_research_tapes(now_ms=61_099) == []
         assert trading.due_root_research_tapes(now_ms=61_100)[0]["tape_ref"] == "root-tape-1"
-        assert trading.due_shadow_quote_samples(now_ms=61_999) == []
-        due = trading.due_shadow_quote_samples(now_ms=62_000)
-        assert len(due) == 1 and due[0]["case_id"] == case_id
-        with conn.transaction():
-            assert trading.record_shadow_quote_sample(
-                case_id=case_id, prior_ref=None, tape_ref="tape-1", sampled_at_ms=62_000
-            )
-            assert not trading.record_shadow_quote_sample(
-                case_id=case_id, prior_ref=None, tape_ref="stale", sampled_at_ms=62_000
-            )
-        assert trading.due_shadow_quote_samples(now_ms=121_999) == []
-        assert trading.due_shadow_quote_samples(now_ms=122_000)[0]["quote_tape_ref"] == "tape-1"
         export, manifest = export_cases(conn, AnalysisFiles(tmp_path / "missing-archive"), start_ms=1_100, end_ms=1_101)
         assert len(export) == 1 and export[0]["root_trigger_id"]
         assert export[0]["decision_policy_version"] == "v4"
@@ -890,27 +868,11 @@ def test_watch_condition_creates_one_child_only_after_adjacent_closed_cross(tmp_
             assert trading.record_root_research_sample(
                 case_id=case_id, prior_ref=None, tape_ref="root-watch-tape", sampled_at_ms=1_141_000
             )
-            conn.execute(
-                "INSERT INTO trading_case_decisions "
-                "(case_id,decision_id,policy_id,policy_version,input_ref,action,decision,"
-                "publish_status,decided_at_ms,valid_until_ms) "
-                "VALUES (%s,'child-shadow-decision','fixture','v4','fixture','TRADE',"
-                '\'{"decision_version":"trade_decision_v4"}\'::jsonb,'
-                "'shadow',1141000,1260000)",
-                (row["child_case_id"],),
-            )
-            trading.record_shadow_evaluation(
-                case_id=row["child_case_id"],
-                decision_at_ms=1_141_000,
-                scheduled_at_ms=1_142_000,
-                due_at_ms=1_143_000,
-                decision_quote_ref="decision-ref",
-                planned_quote_ref="planned-ref",
-                initial_result=None,
-            )
-        due = trading.due_shadow_evaluations(now_ms=1_143_000)
-        assert len(due) == 1 and due[0]["case_id"] == row["child_case_id"]
-        assert due[0]["root_case_id"] == case_id
-        assert due[0]["root_market_tape_ref"] == "root-watch-tape"
+        assert (
+            conn.execute("SELECT tape_ref FROM trading_root_market_tapes WHERE case_id=%s", (case_id,)).fetchone()[
+                "tape_ref"
+            ]
+            == "root-watch-tape"
+        )
     finally:
         conn.close()

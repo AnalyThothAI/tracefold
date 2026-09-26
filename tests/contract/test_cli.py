@@ -434,7 +434,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             trading["execution"],
             {
-                "mode": "disabled",
+                "enabled": False,
+                "binance": {"environment": None},
                 "account_slot": "binance_usdm_primary",
                 "credentials": {
                     "api_key_file": str(home / ".tracefold" / "binance_usdm_api_key"),
@@ -529,7 +530,8 @@ class CliTests(unittest.TestCase):
             {
                 "enabled": False,
                 "execution": {
-                    "mode": "disabled",
+                    "enabled": False,
+                    "binance": {},
                     "account_slot": "binance_usdm_primary",
                     "credentials": {
                         "api_key_file": "binance_usdm_api_key",

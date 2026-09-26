@@ -11,7 +11,7 @@ from tracefold.app.cli.commands import trading
 
 class _Rows:
     def fetchone(self) -> dict[str, str]:
-        return {"version_num": "20260925_0400"}
+        return {"version_num": "20260926_0402"}
 
 
 class _Repos:
@@ -37,9 +37,8 @@ class _Repos:
         return None
 
     def execution_diagnostic_evidence(
-        self, _slot: str, *, mode: str
+        self, _slot: str
     ) -> tuple[tuple[dict[str, int], ...], tuple[dict[str, int], ...]]:
-        assert mode == "paper"
         return tuple({"n": n} for n in range(1001)), ({"seq": 1},)
 
 
@@ -47,7 +46,11 @@ def test_diagnose_has_real_sample_bounds_and_independent_source_clocks(monkeypat
     repos = _Repos()
     monkeypatch.setattr(trading, "repositories", lambda *_args, **_kwargs: repos)
     settings = SimpleNamespace(
-        trading=SimpleNamespace(execution=SimpleNamespace(mode="paper", account_slot="binance_usdm_primary")),
+        trading=SimpleNamespace(
+            execution=SimpleNamespace(
+                enabled=True, account_slot="binance_usdm_primary", binance=SimpleNamespace(environment="DEMO")
+            )
+        ),
         ws_token="secret-do-not-print",
     )
     code, payload = trading._diagnose(SimpleNamespace(probe_url=None, status_url=None), settings=settings)

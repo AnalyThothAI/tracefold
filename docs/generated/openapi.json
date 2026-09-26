@@ -8970,7 +8970,8 @@
               "ownership_mismatch",
               "venue_cache_mismatch",
               "close_unconfirmed",
-              "ambiguous"
+              "ambiguous",
+              "submission_unknown"
             ],
             "title": "Kind",
             "type": "string"
@@ -9239,6 +9240,44 @@
             "title": "Alive",
             "type": "boolean"
           },
+          "configured_connection": {
+            "enum": [
+              "LIVE",
+              "DEMO",
+              "TESTNET",
+              "SDK_DEFAULT"
+            ],
+            "title": "Configured Connection",
+            "type": "string"
+          },
+          "connection": {
+            "anyOf": [
+              {
+                "enum": [
+                  "LIVE",
+                  "DEMO",
+                  "TESTNET",
+                  "SDK_DEFAULT"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection"
+          },
+          "connection_observed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Observed At Ms"
+          },
           "convergence_checked_at_ms": {
             "anyOf": [
               {
@@ -9328,15 +9367,6 @@
               }
             ],
             "title": "Heartbeat At Ms"
-          },
-          "mode": {
-            "enum": [
-              "disabled",
-              "paper",
-              "live"
-            ],
-            "title": "Mode",
-            "type": "string"
           },
           "protection_status": {
             "default": "not_applicable",
@@ -9429,7 +9459,7 @@
           }
         },
         "required": [
-          "mode",
+          "configured_connection",
           "account_slot",
           "alive",
           "entries_armed"
@@ -9439,7 +9469,7 @@
       },
       "TradingExecutionRowData": {
         "additionalProperties": false,
-        "description": "One entry identity's whole execution, folded from its plan and its own observations.\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.\n\n`realized_pnl_usd` retains the historical fee-adjusted fill fold. PAPER net\nadditionally requires complete signed funding-income coverage and unambiguous\naccount-slot attribution over the fill-to-fill holding interval.",
+        "description": "One entry identity's whole execution, folded from its plan and its own observations.\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.\n\n`realized_pnl_usd` retains the historical fee-adjusted fill fold. Net PnL\nadditionally requires complete signed funding-income coverage and unambiguous\naccount-slot attribution over the fill-to-fill holding interval.",
         "properties": {
           "account_slot": {
             "anyOf": [
@@ -9633,6 +9663,21 @@
             ],
             "title": "Max Leverage At Creation"
           },
+          "net_known": {
+            "title": "Net Known",
+            "type": "boolean"
+          },
+          "net_pnl_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Pnl Usd"
+          },
           "observed_at_ns": {
             "title": "Observed At Ns",
             "type": "integer"
@@ -9647,21 +9692,6 @@
               }
             ],
             "title": "Order Reject Reason"
-          },
-          "paper_net_known": {
-            "title": "Paper Net Known",
-            "type": "boolean"
-          },
-          "paper_net_pnl_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Paper Net Pnl Usd"
           },
           "plan_status": {
             "anyOf": [
@@ -9710,21 +9740,6 @@
               }
             ],
             "title": "Risk Budget Usd"
-          },
-          "runtime_mode_at_creation": {
-            "anyOf": [
-              {
-                "enum": [
-                  "paper",
-                  "live"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Runtime Mode At Creation"
           },
           "source": {
             "enum": [
@@ -9799,7 +9814,7 @@
           "direction",
           "observed_at_ns",
           "pnl_known",
-          "paper_net_known",
+          "net_known",
           "stage"
         ],
         "title": "TradingExecutionRowData",
@@ -10073,22 +10088,12 @@
             "title": "Closed Total",
             "type": "integer"
           },
-          "paper_closed_today": {
+          "net_known_today": {
             "minimum": 0.0,
-            "title": "Paper Closed Today",
+            "title": "Net Known Today",
             "type": "integer"
           },
-          "paper_closed_total": {
-            "minimum": 0.0,
-            "title": "Paper Closed Total",
-            "type": "integer"
-          },
-          "paper_net_known_today": {
-            "minimum": 0.0,
-            "title": "Paper Net Known Today",
-            "type": "integer"
-          },
-          "paper_net_known_today_usd": {
+          "net_known_today_usd": {
             "anyOf": [
               {
                 "type": "string"
@@ -10097,14 +10102,14 @@
                 "type": "null"
               }
             ],
-            "title": "Paper Net Known Today Usd"
+            "title": "Net Known Today Usd"
           },
-          "paper_net_known_total": {
+          "net_known_total": {
             "minimum": 0.0,
-            "title": "Paper Net Known Total",
+            "title": "Net Known Total",
             "type": "integer"
           },
-          "paper_net_known_total_usd": {
+          "net_known_total_usd": {
             "anyOf": [
               {
                 "type": "string"
@@ -10113,16 +10118,16 @@
                 "type": "null"
               }
             ],
-            "title": "Paper Net Known Total Usd"
+            "title": "Net Known Total Usd"
           },
-          "paper_net_missing_today": {
+          "net_missing_today": {
             "minimum": 0.0,
-            "title": "Paper Net Missing Today",
+            "title": "Net Missing Today",
             "type": "integer"
           },
-          "paper_net_missing_total": {
+          "net_missing_total": {
             "minimum": 0.0,
-            "title": "Paper Net Missing Total",
+            "title": "Net Missing Total",
             "type": "integer"
           },
           "pnl_known_today": {
@@ -10171,14 +10176,12 @@
         "required": [
           "realized_known_today_usd",
           "realized_known_total_usd",
-          "paper_net_known_today_usd",
-          "paper_net_known_total_usd",
-          "paper_net_known_today",
-          "paper_net_known_total",
-          "paper_net_missing_today",
-          "paper_net_missing_total",
-          "paper_closed_today",
-          "paper_closed_total",
+          "net_known_today_usd",
+          "net_known_total_usd",
+          "net_known_today",
+          "net_known_total",
+          "net_missing_today",
+          "net_missing_total",
           "pnl_known_today",
           "pnl_known_total",
           "pnl_missing_today",

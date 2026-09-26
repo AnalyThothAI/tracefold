@@ -23,7 +23,7 @@ from tracefold.trading.storage.execution_stream import ExecutionRuntimeState, Pr
 def _runtime_state() -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        mode="paper",
+        connection="DEMO",
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
         alive=True,
         entries_armed=False,

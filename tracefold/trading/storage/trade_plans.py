@@ -53,18 +53,17 @@ class TradePlanStorage:
         self,
         *,
         account_slot: str,
-        mode: str,
         entry_scope_id: str,
     ) -> dict[str, Any] | None:
         row = self.conn.execute(
             f"SELECT {_PLAN_COLUMNS} FROM trading_trade_plans "  # noqa: S608
-            "WHERE account_slot=%s AND runtime_mode_at_creation=%s AND entry_scope_id=%s",
-            (account_slot, mode, entry_scope_id),
+            "WHERE account_slot=%s AND entry_scope_id=%s",
+            (account_slot, entry_scope_id),
         ).fetchone()
         return None if row is None else dict(row)
 
-    def open_trade_plans(self, *, account_slot: str, mode: str, limit: int) -> tuple[dict[str, Any], ...]:
-        """Every plan of this slot and mode that has not ended, with whether its input still owes a verdict.
+    def open_trade_plans(self, *, account_slot: str, limit: int) -> tuple[dict[str, Any], ...]:
+        """Every open plan of this connection, with whether its input still owes a verdict.
 
         A Runtime writes a Signal's or manual Command's disposition only once the venue has answered
         its entry order (#680), so a restart between the order and the answer leaves a plan whose
@@ -86,10 +85,10 @@ class TradePlanStorage:
                                   AND disposition.command_id = plan.entry_id))
                        ) AS disposition_pending
                   FROM trading_trade_plans plan
-                 WHERE plan.account_slot = %s AND plan.runtime_mode_at_creation = %s
+                 WHERE plan.account_slot = %s
                    AND plan.terminal_at_ns IS NULL
                  ORDER BY plan.created_at_ns, plan.entry_id LIMIT %s""",  # noqa: S608
-            (account_slot, mode, limit),
+            (account_slot, limit),
         ).fetchall()
         return tuple(dict(row) for row in rows)
 

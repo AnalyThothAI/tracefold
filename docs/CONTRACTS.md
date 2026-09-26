@@ -229,8 +229,8 @@ When push is disabled, both processes still start and a verdict that reaches a
 delivery consumer settles `terminal/delivery_unavailable`.
 
 `trading.*` is `enabled: false` by default. When enabled, a separate Analysis
-process consumes the News trade-event outbox and runs a real model in shadow by
-default. `trading.analysis` accepts `model_name` (or the configured News triage
+process consumes the News trade-event outbox and runs a real model. `trading.analysis`
+accepts `model_name` (or the configured News triage
 model), `active_policy=entry_plan_v1`, `publish_signals=false`,
 `root_ttl_seconds`, `model_timeout_seconds`, `max_active_cases`,
 `max_model_input_bytes` (default 65,536), `max_model_output_tokens`, `max_model_concurrent_calls`,
@@ -238,7 +238,7 @@ model), `active_policy=entry_plan_v1`, `publish_signals=false`,
 in USD per million tokens (defaults 100 input / 500 output; all three are set or
 disabled together). These are conservative admission assumptions supplied by
 the operator, not the provider's reported charge; a returned actual cost over
-the cap blocks publication. Set the price ceilings for the configured route's
+the cap is recorded as a diagnostic. Set the price ceilings for the configured route's
 actual billing model; an inflated ceiling can exhaust the Case cap before a
 request reaches the provider. Input-size refusal has its own
 `model_input_budget_exceeded` code. The market budgets are `market_max_connections`,
@@ -249,8 +249,9 @@ symbol, units per contract and an evidence reference. Unknown multipliers do
 not silently become one-unit routes. Model credentials use the existing `llm`
 endpoint and never enter the brief.
 
-`trading.execution.mode` independently selects `disabled|paper|live`, default
-`disabled`. `execution.account_slot` identifies the one Binance USD-M account
+`trading.execution.enabled` defaults false. `execution.binance.environment`
+selects `LIVE`, `DEMO`, `TESTNET`, or is omitted for the pinned SDK default.
+`execution.account_slot` identifies the one Binance USD-M account
 and deterministic client-order namespace. Operator-owned credential file paths
 belong only to the Runtime. Trading has no Workers alert task or
 `watchdog_enabled` setting; Runtime state and execution observations remain
@@ -263,10 +264,9 @@ only resolved paths and configured booleans.
 
 Secret-file paths are resolved relative to the operator config directory
 unless absolute. Config and status may report only the resolved path or whether
-it is configured; they never expose secret contents. `disabled` constructs no
-TradingNode. `paper` and `live` require secure non-empty files and select the
-same canonical Nautilus owner with Binance `DEMO` and `LIVE` environments,
-respectively.
+it is configured; they never expose secret contents. Disabled execution constructs
+no TradingNode. Enabled execution requires secure non-empty files and selects
+the configured native Binance connection through one Nautilus owner.
 
   The frozen `trade_brief_v4` includes `citable_evidence_ids`, the exact
   evidence keys that pass the compiler's availability rule at the Case cutoff.
@@ -304,24 +304,16 @@ The Case API exposes attempts, validation errors, WATCH state, tool observations
 requested/served model, the final input manifest and the root chain. Replay
 reads their archived refs without a model or market call.
 
-TRADE decisions also start a `shadow_net_v1` evaluation. Archived decision,
-planned and exit bid/ask quotes with displayed size, frozen Binance contract
-filters, mark-price bars, funding history, latency and an explicit fee
-assumption determine a conservative simulated result. Missing filters, quotes,
-costs or complete price/funding coverage produce `unevaluable`, not a zero-cost
-win. The shadow quantity uses a fixed $10 reference risk at the plan's stop
-distance for comparable research paths; it does not size or limit an order.
-A shadow result is never a venue fill or an actual PAPER return.
+Historical `shadow_net_v1` research remains available through the offline
+evaluation script. Its simulated results are never venue fills or realized PnL.
 In the offline rule arm, a verified arrival quote that fails the frozen entry
 structure, price envelope or spread bound produces an archived `refused`
 receipt with zero trading cashflow and an `entry_refused` count. A missing or
 unverified quote remains `unevaluable`; refusal does not count as a simulated
 trade or supply a net entry sample.
-The PAPER evaluator requires reconciled venue fills, commissions, funding and
-protection receipts; the existing execution summary alone does not satisfy
-those inputs. Publication of this strategy requires both `publish_signals` and
-`strategy_publication_enabled` in PAPER mode. The latter defaults false while
-historical replay and held-out net evaluation are pending.
+Venue net PnL requires reconciled fills, commissions, funding and protection
+receipts; the execution summary alone does not satisfy those inputs. Signal
+publication is controlled by `publish_signals`.
 
 `GET /api/trading/status` reports current decision and Runtime projections.
 `GET /api/trading/cases/{case_id}/replay` reads frozen source, evidence and
@@ -329,8 +321,8 @@ assessment references without calling market data or the model. Its optional
 `attempt=<claim_attempt>` selects one failed or late attempt's archive; omitted
 means the latest attempt, while old Cases fall back to their Decision archive. A published
 TRADE commits one `TradeSignalV3` with the Case decision and state in one
-transaction; shadow TRADE and NO_TRADE create no online Signal. SignalV3
-contains account/mode isolation, `entry_scope_id`, native mapping digest,
+transaction; unpublished TRADE and NO_TRADE create no online Signal. SignalV3
+contains account-slot isolation, `entry_scope_id`, native mapping digest,
 versioned exit parameters and a bounded entry-price envelope with explicit
 immediate or activated condition semantics. Nautilus
 rechecks current Trading fact validity after persisting its scoped TradePlan
@@ -1451,7 +1443,7 @@ Runtime facts, and status carries readiness plus bounded totals.
   `complete` and no cursor.
 
   TradePlan supplies lifecycle and frozen intent. Optional plan fields are
-  `plan_status`, `account_slot`, `runtime_mode_at_creation`, `instrument_id`,
+  `plan_status`, `account_slot`, `instrument_id`,
   `entry_client_order_id`, `stop_distance_bps`, `risk_budget_usd`,
   `max_leverage_at_creation`, `exit_policy_id`, `take_profit_bps` and
   `max_holding_ns`; historical entries without a plan leave them absent/null.
@@ -1467,8 +1459,8 @@ Runtime facts, and status carries readiness plus bounded totals.
   notional minus entry notional, signed by direction, minus every commission. They
   and `pnl_known=true` are present only when the exit fills sum to the entry
   quantity and every commission was charged in USDT; funding is not included.
-  For PAPER, `funding_usd` and `paper_net_pnl_usd` add signed venue
-  `FUNDING_FEE` income to that fill fold. `paper_net_known=true` requires
+  `funding_usd` and `net_pnl_usd` add signed venue
+  `FUNDING_FEE` income to that fill fold. `net_known=true` requires
   complete signed income-scan coverage from first entry fill through last exit
   fill, USDT cashflows, and no overlapping plan for the same symbol/account.
   A complete zero-cashflow interval yields `funding_usd="0"`; absent or
@@ -1488,9 +1480,9 @@ Runtime facts, and status carries readiness plus bounded totals.
   the plan's terminal clock; totals have no 24-hour limit. Plans that were never
   opened are not counted as closed positions. `history_complete`, `gap_reason`
   and `pnl_complete_today/total` were removed in #680 without aliases.
-  `paper_net_known_today_usd/total_usd`, `paper_net_known_today/total`,
-  `paper_net_missing_today/total`, and `paper_closed_today/total` count PAPER
-  plans separately. These are known subsets, not an account-equity statement.
+  `net_known_today_usd/total_usd`, `net_known_today/total`, and
+  `net_missing_today/total` cover all connections. These are known subsets,
+  not an account-equity statement.
 
 - The HTTP console is read-only (#624). Operator commands are available through
   the local CLI only. The former browser command route, command request/receipt

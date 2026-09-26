@@ -41,7 +41,6 @@ def test_signed_half_basis_point_and_real_zero_survive_feature_freeze() -> None:
             snapshot_ref="a" * 64,
             knowledge_cutoff_ms=1_000,
             data_environment="live",
-            execution_environment="paper",
             source_first_visible_at_ms=600,
             source_fact=source,
             results=results,

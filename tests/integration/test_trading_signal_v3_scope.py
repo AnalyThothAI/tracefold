@@ -64,7 +64,6 @@ def test_signal_v3_scope_and_pre_submit_check(tmp_path) -> None:
             case_id=case_id,
             decision_id=decision_id,
             account_slot="binance_usdm_primary",
-            runtime_mode="paper",
             entry_scope_id=case["entry_scope_id"],
             asset_id="crypto:SOL",
             market_key=market_key("SOL"),
@@ -99,15 +98,13 @@ def test_signal_v3_scope_and_pre_submit_check(tmp_path) -> None:
             execution_strategy="oi_nautilus_v1",
             now_ns=2_100_000_000,
             limit=10,
-            runtime_mode="paper",
         ) == ((1, signal.model_dump(mode="json", exclude={"seq"})),)
         assert (
             trading.unresolved_trade_signals(
-                account_slot="binance_usdm_primary",
+                account_slot="other_connection",
                 execution_strategy="oi_nautilus_v1",
                 now_ns=2_100_000_000,
                 limit=10,
-                runtime_mode="live",
             )
             == ()
         )
@@ -117,7 +114,6 @@ def test_signal_v3_scope_and_pre_submit_check(tmp_path) -> None:
             source="signal",
             case_id=case_id,
             account_slot=signal.account_slot,
-            runtime_mode_at_creation="paper",
             market_key=signal.market_key,
             instrument_id="SOLUSDT-PERP.BINANCE",
             direction="short",

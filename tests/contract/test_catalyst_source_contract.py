@@ -24,6 +24,8 @@ class _Market:
 
     async def fetch(self, request: MarketDataRequest) -> MarketDataResult:
         rows: tuple[dict[str, Any], ...] = ()
+        if request.dataset == "instrument_rules":
+            rows = ({"native_symbol": request.native_symbol, "trading_status": "TRADING", "event_at_ms": 960_000},)
         if request.dataset == "perp_bars":
             assert request.start_ms is not None and request.end_ms == 960_000
             rows = tuple(
@@ -165,7 +167,6 @@ def test_news_public_catalyst_reaches_citable_evidence_and_final_decision(close,
         and item.kind == ("closed_bar_cross_v1" if side is None else "immediate_entry_v1")
     )
     assessment = AnalysisProposal(
-        action="WATCH" if side is None else "TRADE",
         selected_plan_id=selected.plan_id,
         supporting_evidence=("source", "market:perp_bars"),
         public_rationale="Recorded source and code-owned price condition.",
@@ -177,7 +178,7 @@ def test_news_public_catalyst_reaches_citable_evidence_and_final_decision(close,
         judgment_refs=frozenset(),
         now_ms=1_000_000,
     )
-    assert decision.action == assessment.action
+    assert decision.action == ("WATCH" if side is None else "TRADE")
     assert decision.side == (side or "long")
     assert (decision.watch_condition is not None) == (side is None)
 

@@ -177,7 +177,7 @@ model names, refresh intervals, and historical tasks:
 | OI, liquidation, smart-money notifications | `tracefold/news/market_notifications.py` |
 | Wallet roster, receipts, net-buy detection, price sampling | App chain-tape wiring and its four independently supervised task declarations |
 | News/OI Trigger → Case → assessment → Decision | `tracefold/app/trading_analysis.py` and `tracefold/trading/engine/` |
-| Claim attempt and physical LM receipts, event WATCH, shadow net evaluation | Trading ledgers in `tracefold/trading/storage/analysis.py`; App performs bounded market/model I/O outside transactions |
+| Claim attempt and physical LM receipts, event WATCH, historical simulation records | Trading ledgers in `tracefold/trading/storage/analysis.py`; App performs bounded market/model I/O outside transactions |
 | Account, orders, protection, reconciliation | Nautilus (the Cache, reconciled with the venue), driven by the Runtime Strategy composed in `tracefold/app/nautilus/` |
 
 The code-owned limits still apply. Inspect their definitions and consumer tests when
@@ -314,7 +314,7 @@ classification and reader delivery.
 | Trigger | One accepted News catalyst or OI fact with source identity, revision and target selection. |
 | Case | One fenced work item and its frozen source, target, market evidence, assessment and decision. |
 | Decision | Pure compilation of an Agent assessment and finite candidate menu, including NO_TRADE and WATCH. |
-| SignalV2 | A time-bounded, scoped entry suggestion with side, exit plan and price envelope; not an order or capital grant. |
+| SignalV3 | A time-bounded, account-scoped entry suggestion with side, exit plan and price envelope; not an order or capital grant. |
 | OperatorIntent | An authenticated durable control request, not proof of Runtime acceptance. |
 | ExecutionObservation | A recorded Runtime/venue outcome, not a promised future fill. |
 
@@ -324,13 +324,13 @@ classification and reader delivery.
 News OI fact or editorial verdict -> durable trade-event outbox
   -> App relay -> Trading Trigger + initial Case
   -> per-asset fenced claim -> bounded MarketDataPort reads -> frozen evidence
-  -> one structured Agent call -> pure Decision
-  -> NO_TRADE / WATCH / shadow TRADE, or atomic published TradeSignalV2
+  -> bounded Agent research + one structured selection -> pure Decision
+  -> NO_TRADE / WATCH / unpublished TRADE, or atomic published TradeSignalV3
   -> separate Nautilus Runtime -> final validity check -> scoped TradePlan
   -> venue order / fill / protection / exit observations
 ```
 
-The default Agent policy is shadow only (`publish_signals: false`). Missing model
+The default Agent policy does not publish Signals (`publish_signals: false`). Missing model
 configuration, incomplete evidence, invalid model output and an active NO_TRADE
 have distinct Case statuses. Long and short candidates share the same pure
 compiler. Neither News delivery nor RabbitMQ is an execution queue.
@@ -378,8 +378,8 @@ past its maximum holding time is closed, and when one of the Runtime's own closi
 closes a position the orders left on its instrument are canceled. Exposure no plan
 claims blocks new entries and is recorded; nothing is ever flattened because the picture
 is unclear. App supplies process, database and probe composition and never reads a
-private member of a Nautilus object. Paper and live use the same path with their
-respective account and environment; neither mode turns a local command into a fill.
+private member of a Nautilus object. Every configured Binance connection uses
+the same execution path; a local command never becomes a fill without venue evidence.
 
 The Cache is not trusted alone (#680 PR-3). Nautilus 1.231.0 reconciliation could
 "repair" a disagreement by inventing a fill, and on 2026-09-23 it twice closed an open

@@ -12,7 +12,7 @@ positional arguments:
   {serve,workers,analysis,nautilus,init,config,db,news,trading,ops}
     serve               run the HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
-    analysis            run the shadow-first Trading analysis runtime
+    analysis            run the Trading analysis runtime
     nautilus            run the single OI Nautilus Runtime
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
@@ -64,8 +64,7 @@ usage: tracefold nautilus [-h] {run} ...
 
 positional arguments:
   {run}
-    run       run the configured disabled, Binance Demo, or Binance Live
-              Runtime
+    run       run the configured Binance execution Runtime
 
 options:
   -h, --help  show this help message and exit

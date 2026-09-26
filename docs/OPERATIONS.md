@@ -18,12 +18,12 @@ results; never secret values.
 
 ### Trading Analysis and Binance execution operation (#683)
 
-Execution remains `disabled` by default, so credentials are optional for the
-ordinary deployment. `trading.enabled` starts the separate Analysis process;
-`trading.execution.mode` independently selects `disabled`, Binance USD-M
-`paper` (Demo), or Binance USD-M `live`. Paper and live run the same one-owner
-Nautilus Strategy/Risk/OMS/reconciliation path and differ only by account slot,
-mode, credential namespace, and Binance environment.
+Execution remains disabled by default, so credentials are optional for the
+ordinary deployment. `trading.enabled` starts the separate Analysis process.
+`trading.execution.enabled` starts the one-owner Binance USD-M Nautilus
+Strategy/Risk/OMS/reconciliation path. `trading.execution.binance.environment`
+selects `LIVE`, `DEMO` or `TESTNET`; omission uses the pinned SDK default.
+The configured target and the Runtime's observed connection are shown separately.
 
 Analysis runs `tracefold analysis` beside Serve and Workers. It
 drains News' durable catalyst/OI outbox independently of delivery, claims
@@ -50,12 +50,9 @@ not retain the full bar path, execution prices or costs. These labels establish
 only endpoint gross returns, never a tradable or net result.
 `trading.analysis.publish_signals` is false by default. An unavailable model
 is recorded as unavailable; it never silently activates the retired OI v5
-policy. `entry_plan_v1` also requires
-`trading.analysis.strategy_publication_enabled=true` before it can publish a
-Signal, and that setting accepts PAPER mode only. It defaults false pending
-recorded replay, development/holdout comparison and PAPER receipts. Turning on
-publication requires a separately running Nautilus deployment; changing either
-flag does not start Nautilus or grant order authority.
+policy. `entry_plan_v1` publishes a Signal only when `publish_signals=true`.
+Turning on publication requires a separately running Nautilus deployment;
+this flag does not start Nautilus or grant order authority.
 The Analysis process runs native DSPy 3.4 ReAct with bounded, read-only Case
 tools. Optional `llm.trading_semantics` connects the Jev ClaimSupport tool
 through the TypeSafe System One SDK. The current OpenRouter base is
@@ -64,14 +61,11 @@ base URL/key/model triple. A missing Jev route leaves the other three tools and
 the Agent available. Jev judgments are archived as semantic evidence, never
 as a second trade approval. Each physical generator or Jev call is tied to
 its Case attempt with requested/served model and known or unknown cost.
-`trading.analysis.data_environment` explicitly selects `live` or `demo` for
-new Cases and defaults to `live`, regardless of publication flags. PAPER
-Signal creation requires a Case frozen in `demo`; live execution requires
-`live`. Preserve the frozen identity of already accepted Cases: a live Case
-is refused at PAPER Signal creation
-with `analysis_execution_environment_mismatch`. Capture and export the mainnet
-shadow cohort before switching to the separately authorized PAPER venue check;
-do not count a Demo shadow receipt as mainnet strategy evidence.
+New Cases fetch executable contract rules and market frames from the configured
+Binance connection. Each frozen Case records the actual source environment.
+Changing the configured target does not relabel earlier evidence. A changed
+connection under the same account slot is refused at Runtime startup until the
+existing venue exposure and account identity have been reviewed.
 The root tape retries a bounded recent closed-bar window after a failed market
 read. Recovered bars retain their actual receipt time; a late bar can fill an
 archive gap but cannot retroactively make WATCH timely or make a late mark path
@@ -85,14 +79,12 @@ while `settled=false`; it did not replace the fenced Decision. A WATCH with a
 machine condition shows its frozen side and level, latest closed-bar
 observation, expiry and conditional child Case. The directed crossing consumes
 the opportunity even when found after its 120-second entry window. Shadow
-evaluations show `simulated`, `pending` or
-`unevaluable` with archived quote, mark and funding refs. Fee or spread
-assumptions left unset intentionally make net results `unevaluable`. These
-records cannot be treated as exchange fills. Venue PAPER net values require
-reconciled fills, fees, funding and protection receipts from the PAPER account;
+evaluations are historical research records, with archived quote, mark and
+funding refs. They cannot be treated as exchange fills. Venue net values require
+reconciled fills, fees, funding and protection receipts from the connected account;
 the execution read model exposes signed funding income and scan coverage. A
-missing coverage interval or competing same-symbol plan leaves PAPER net
-unknown. PAPER reconciliation scans Binance USD-M `FUNDING_FEE` income every
+missing coverage interval or competing same-symbol plan leaves net PnL
+unknown. Funding reconciliation scans Binance USD-M `FUNDING_FEE` income every
 30 minutes, overlapping recent windows and reading seven days on startup.
 After a longer outage, recover signed income while Binance still retains it;
 historical periods outside venue retention remain unknown.
@@ -108,7 +100,7 @@ existing operator config before starting the new image. Set
 `trading.analysis.active_policy: entry_plan_v1` when an older config explicitly
 names `event_price_confirmation_v1`.
 
-Run `uv run tracefold config` to inspect only the execution mode, account slot,
+Run `uv run tracefold config` to inspect only the execution setting, account slot,
 risk section and resolved secret-file references. Never print or copy a
 credential. Verify the configured lifecycle with:
 
@@ -125,7 +117,7 @@ Disabled status reports `alive=false` and `entries_armed=false`;
 It does not fail on the readiness payload itself: that is printed, whatever it
 says. An active Runtime additionally requires exactly one current account-slot
 owner, secure non-empty credential files, a fresh heartbeat, and the configured
-account slot and mode. `tracefold trading status` and `/api/trading/status`
+account slot and connection. `tracefold trading status` and `/api/trading/status`
 report what the Runtime is doing and nothing about which build is doing it.
 Serve and Workers never receive Binance secrets.
 
@@ -309,34 +301,34 @@ under `trading.execution.risk` — `risk_fraction_per_trade`,
 `max_leverage`, `stop_distance_bps`, `max_spread_fraction_of_stop`, `post_stop_cooldown_seconds`
 and `market_stale_after_seconds` — and `trading.execution.exit_policy` reach the
 Runtime at start; editing one needs a restart and nothing else, and moves neither
-the account slot, the client order namespace nor the Nautilus instance id, which is
-derived from `account_slot:mode`. Existing plans keep the stop distance, take-profit
+the account slot, the persisted client order namespace nor the Nautilus instance id.
+Existing plans keep the stop distance, take-profit
 and maximum holding time they were admitted with.
 Remove retired `max_risk_per_trade_usd`, `max_positions` and `max_daily_loss_usd`
 entries from `config.yaml` before upgrading; configuration validation rejects them.
 
 **A runtime replacement is a restart, and a product deploy is not one.**
 Changing the runtime image, the release or any `trading.execution.*` value does
-not require a new name or a fresh `/resume`: `account_slot` plus `mode` is the
+not require a new name or a fresh `/resume`: `account_slot` is the
 execution identity, the account-slot advisory lock is what keeps two Runtimes
 apart, and control state lives on the slot. Entries stay exactly as the last
-accepted Command left them. `execution.mode: disabled` is the switch that means
+accepted Command left them. `execution.enabled: false` is the switch that means
 "do not trade". A News, Serve or Workers release does not restart the Runtime at
 all: `make up` never names the service, so the process keeps its position, its
 protective orders, and its `started_at_ns` across a product deploy (#537 D3).
 
 For the first Demo start on a slot, confirm the Binance account is flat, populate
 the configured Binance files as regular mode-`0600` files, set
-`execution.mode: paper`, and run `make up` followed by
+`execution.enabled: true` with `execution.binance.environment: DEMO`, and run `make up` followed by
 `make runtime-build && make runtime-up`. A slot with no Command history starts
 with entries armed. Inspect `make status` and
 `docker compose exec -T workers tracefold trading status` before letting a Signal
 or `/long`/`/short` enter, and use `/pause REASON` if it should not. After the
 bounded Demo exercise, issue `/flatten account TTL_SECONDS`, confirm the plan ended
 as `operator_flatten` and `current_account` holds no position or order, then run
-`make runtime-down` and restore `execution.mode: disabled`. `make runtime-down` is
+`make runtime-down` and restore `execution.enabled: false`. `make runtime-down` is
 what stops trading; restoring the config afterwards is what stops the next
-`make runtime-up`. Demo evidence is not live-money evidence. Never select `live`
+`make runtime-up`. Demo evidence is not live-money evidence. Never select `LIVE`
 or perform a live canary without separate explicit operator authority.
 
 #### Reading the Demo receipt out of the durable facts
@@ -468,16 +460,15 @@ kept stop and take-profit are canceled by that same read. With
 either way the next flat venue read cancels what was kept and ends the plan. Then
 `/resume`.
 
-### TradePlan cutover and paper exit policy (#644)
+### TradePlan exit policy (#644)
 
 `trading.execution.exit_policy` contains `policy_id: oi_fixed_v1`,
-`take_profit_bps` and `max_holding_seconds`. Paper uses explicit engineering defaults
-of 200 bps TP and 14,400 seconds when this object is absent. These are not an Alpha
-result or an optimized claim: the
+`take_profit_bps` and `max_holding_seconds`. All connections use the engineering
+defaults of 200 bps TP and 14,400 seconds when this object is absent. These are
+not an Alpha result or an optimized claim: the
 [OI-chain research](research/oi-chain-backtest-2026-09-03.md) studies four-hour
 outcomes with limited eligible samples and does not establish an optimal TP.
-Live configuration must supply the policy object explicitly; paper defaults never
-silently authorize a live exit policy. Alpha admission is unchanged.
+Alpha admission is unchanged.
 
 ### Nautilus-owned execution cutover (#680)
 
@@ -517,8 +508,8 @@ settlement currency (USDT); otherwise it is absent, never synthesized as zero or
 reconstructed from unrelated account balance changes. Binance
 [account updates](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/adapters/binance/futures/schemas/user.py)
 update balances; they do not allocate funding to a position. The historical
-`realized_pnl_usd` stays fee-adjusted and excludes funding. PAPER
-`paper_net_pnl_usd` adds signed income cashflows only with complete coverage
+`realized_pnl_usd` stays fee-adjusted and excludes funding.
+`net_pnl_usd` adds signed income cashflows only with complete coverage
 and a sole plan for that symbol and account interval. Missing funding remains
 unknown, never zero. This per-plan result is not an account-equity statement.
 
@@ -733,8 +724,8 @@ and the HTML console all pass. The Analysis container healthcheck reads its
 five-second database heartbeat and configured-model state through the Trading
 status projection; a running container with a stalled Analysis loop fails the
 gate. `runtime-status` is read-only and returns
-non-zero when the execution mode is `paper`/`live` and no container is running,
-when the container is unhealthy, or when the mode is `disabled` and a container
+non-zero when execution is enabled and no container is running,
+when the container is unhealthy, or when execution is disabled and a container
 is still running; it prints the running image and the whole readiness payload.
 The runtime's `/readyz` answers 200 with that payload whatever it says, so the
 payload is what an operator gets: `alive`, `entries_armed`,

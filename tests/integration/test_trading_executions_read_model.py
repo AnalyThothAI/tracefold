@@ -312,7 +312,7 @@ def _venue_funding(kind: str, *, at_ns: int, start_ns: int, end_ns: int) -> Exec
     )
 
 
-def test_paper_net_requires_complete_signed_funding_coverage(tmp_path: Path) -> None:
+def test_net_requires_complete_signed_funding_coverage(tmp_path: Path) -> None:
     _seed_signal()
     _run(
         tape=[
@@ -322,8 +322,8 @@ def test_paper_net_requires_complete_signed_funding_coverage(tmp_path: Path) -> 
     )
     initial = _row(tmp_path)
     assert initial["realized_pnl_usd"] is not None
-    assert initial["paper_net_pnl_usd"] is None
-    assert initial["paper_net_known"] is False
+    assert initial["net_pnl_usd"] is None
+    assert initial["net_known"] is False
     start = int(initial["entry_filled_at_ns"])
     end = int(initial["position_closed_at_ns"])
     middle = (start + end) // 2
@@ -341,7 +341,7 @@ def test_paper_net_requires_complete_signed_funding_coverage(tmp_path: Path) -> 
             )
     finally:
         conn.close()
-    assert _row(tmp_path)["paper_net_pnl_usd"] is None
+    assert _row(tmp_path)["net_pnl_usd"] is None
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -355,11 +355,11 @@ def test_paper_net_requires_complete_signed_funding_coverage(tmp_path: Path) -> 
         conn.close()
     final = _row(tmp_path)
     assert Decimal(final["funding_usd"]) == Decimal("0.11")
-    assert Decimal(final["paper_net_pnl_usd"]) == Decimal(final["realized_pnl_usd"]) + Decimal("0.11")
-    assert final["paper_net_known"] is True
+    assert Decimal(final["net_pnl_usd"]) == Decimal(final["realized_pnl_usd"]) + Decimal("0.11")
+    assert final["net_known"] is True
     totals = _executions(tmp_path)["totals"]
-    assert totals["paper_net_known_total"] == 1
-    assert Decimal(totals["paper_net_known_total_usd"]) == Decimal(final["paper_net_pnl_usd"])
+    assert totals["net_known_total"] == 1
+    assert Decimal(totals["net_known_total_usd"]) == Decimal(final["net_pnl_usd"])
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -371,7 +371,7 @@ def test_paper_net_requires_complete_signed_funding_coverage(tmp_path: Path) -> 
         conn.close()
     ambiguous = _row(tmp_path)
     assert ambiguous["funding_usd"] is None
-    assert ambiguous["paper_net_pnl_usd"] is None
+    assert ambiguous["net_pnl_usd"] is None
 
 
 def test_realized_totals_count_a_plan_whose_fills_cannot_yield_a_result_as_missing_never_as_zero(

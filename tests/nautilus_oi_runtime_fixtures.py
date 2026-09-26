@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any
 
 from nautilus_trader.accounting.factory import AccountFactory
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.backtest.config import BacktestEngineConfig
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.cache.cache import Cache
@@ -33,7 +34,6 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
 from tracefold.integrations.nautilus.oi_runtime.config import (
-    ActiveRuntimeMode,
     OiExitPolicy,
     OiInstrumentRoute,
     OiRiskLimits,
@@ -72,7 +72,7 @@ RESUMED = RuntimeControlSnapshot(entries_paused=False, emergency_halted=False)
 INSTRUMENT = TestInstrumentProvider.btcusdt_perp_binance()
 
 
-def oi_profile(mode: ActiveRuntimeMode = "paper", **risk: Any) -> OiRuntimeProfile:
+def oi_profile(environment: BinanceEnvironment = BinanceEnvironment.DEMO, **risk: Any) -> OiRuntimeProfile:
     limits = OiRiskLimits(
         risk_fraction_per_trade=Decimal("0.01"),
         max_leverage=2,
@@ -81,10 +81,10 @@ def oi_profile(mode: ActiveRuntimeMode = "paper", **risk: Any) -> OiRuntimeProfi
         market_stale_after_ns=10 * SECOND_NS,
     )
     return OiRuntimeProfile(
-        mode=mode,
+        environment=environment,
         account_slot="binance_usdm_primary",
         account_id=ACCOUNT_ID,
-        namespace=f"oi-{mode}-identity",
+        namespace=f"oi-{environment.name.lower()}-identity",
         routes=(OiInstrumentRoute(market_key=MARKET, instrument_id=INSTRUMENT.id, stop_distance_bps=200),),
         excluded_asset_ids=frozenset(),
         exit_policy=OiExitPolicy(take_profit_bps=200, max_holding_ns=4 * 3_600 * SECOND_NS),
@@ -110,7 +110,6 @@ def trade_signal(
             "case_id": f"case-{signal_id[:8]}",
             "decision_id": "a" * 64,
             "account_slot": profile.account_slot,
-            "runtime_mode": profile.mode,
             "entry_scope_id": "b" * 64,
             "asset_id": asset_id,
             "market_key": MARKET,
@@ -177,7 +176,6 @@ def open_plan(
         source="signal",
         case_id=f"case-{entry_id[:8]}",
         account_slot=profile.account_slot,
-        runtime_mode_at_creation=profile.mode,
         market_key=MARKET,
         instrument_id=INSTRUMENT.id.value,
         direction="long",

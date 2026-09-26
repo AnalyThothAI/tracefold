@@ -169,6 +169,23 @@ def _finding(
             venue_quantity=None,
             observed_at_ns=observed_at_ns,
         )
+    if prefix == "submission_unknown":
+        matches = (
+            (instrument, plan)
+            for instrument, values in plans.items()
+            for plan in values
+            if plan.entry_client_order_id == identity
+        )
+        instrument, plan = next(matches)
+        return ExecutionExposureFinding(
+            kind="submission_unknown",
+            object_id=identity,
+            instrument_id=instrument.value,
+            plan_entry_id=plan.entry_id,
+            cache_quantity=None,
+            venue_quantity=None,
+            observed_at_ns=observed_at_ns,
+        )
     raise ValueError(f"execution_finding_unknown:{prefix}")
 
 

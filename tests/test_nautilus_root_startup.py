@@ -89,7 +89,7 @@ def _arrange(monkeypatch: pytest.MonkeyPatch, *, migration_version: str | None) 
 
 
 def _paper_settings() -> Settings:
-    return Settings(trading={"execution": {"mode": "paper"}})
+    return Settings(trading={"execution": {"enabled": True, "binance": {"environment": "DEMO"}}})
 
 
 def test_a_database_behind_this_image_stops_the_runtime_before_it_takes_the_account_slot(

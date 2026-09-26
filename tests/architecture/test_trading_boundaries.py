@@ -17,7 +17,6 @@ NEWS = SRC / "news"
 SIGNAL_PATH = (
     "trading/engine/brief.py",
     "trading/engine/contracts.py",
-    "trading/engine/evaluation.py",
     "trading/engine/features.py",
     "trading/engine/marketdata.py",
     "trading/engine/outcomes.py",
@@ -337,7 +336,7 @@ def test_execution_configuration_has_no_alpha_sizing_or_route() -> None:
     from tracefold.platform.config.models import TradingSettings
 
     settings = TradingSettings()
-    assert settings.execution.mode == "disabled"
+    assert settings.execution.enabled is False
     for retired in ("order", "capital", "bindings", "venues", "fixed_notional_usd"):
         with pytest.raises(ValidationError):
             TradingSettings.model_validate({retired: {}})

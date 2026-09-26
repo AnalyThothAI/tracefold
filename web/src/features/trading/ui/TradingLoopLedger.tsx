@@ -34,7 +34,7 @@ import {
  * `order_reject_reason` is printed verbatim under the disposition: it is the venue talking, and
  * translating it would put words in the exchange's mouth.
  *
- * PAPER net includes signed venue funding only after complete income coverage and unique attribution.
+ * Net PnL includes signed venue funding only after complete income coverage and unique attribution.
  * The historical fill fold remains visible below when funding coverage is missing.
  */
 export function TradingLoopLedger({
@@ -73,7 +73,7 @@ export function TradingLoopLedger({
             <span>入场均价</span>
             <span>止损价</span>
             <span>退出</span>
-            <span>已实现 / PAPER 净值</span>
+            <span>已实现 / 净值</span>
           </div>
           {rows.map((row) => (
             <article className="trading-ledger-row" key={row.entry_id}>
@@ -134,27 +134,15 @@ export function TradingLoopLedger({
                   <small>{EXIT_REASON_ZH[row.exit_reason] ?? row.exit_reason}</small>
                 ) : null}
               </span>
-              <span data-label="已实现 / PAPER 净值">
-                <b
-                  data-tone={moneyTone(
-                    row.runtime_mode_at_creation === "paper"
-                      ? row.paper_net_pnl_usd
-                      : row.realized_pnl_usd,
-                  )}
-                >
-                  {row.runtime_mode_at_creation === "paper"
-                    ? row.paper_net_known
-                      ? moneyLabel(row.paper_net_pnl_usd)
-                      : row.stage === "closed"
-                        ? "净收益未知"
-                        : "—"
-                    : row.pnl_known
-                      ? moneyLabel(row.realized_pnl_usd)
-                      : row.stage === "closed"
-                        ? "盈亏未知"
-                        : "—"}
+              <span data-label="已实现净收益">
+                <b data-tone={moneyTone(row.net_pnl_usd)}>
+                  {row.net_known
+                    ? moneyLabel(row.net_pnl_usd)
+                    : row.stage === "closed"
+                      ? "净收益未知"
+                      : "—"}
                 </b>
-                {row.runtime_mode_at_creation === "paper" && row.realized_pnl_usd != null ? (
+                {row.realized_pnl_usd != null ? (
                   <small>手续费后 {moneyLabel(row.realized_pnl_usd)}</small>
                 ) : null}
                 <small>

@@ -6,13 +6,13 @@ processes never execute DDL.
 ## Current baseline
 
 `20260831_0340` is the single Alembic root. The current head is
-`20260925_0400`; a fresh PostgreSQL 18 database applies the baseline and the
+`20260926_0402`; a fresh PostgreSQL 18 database applies the baseline and the
 linear forward-only revisions. The baseline creates
 application tables, sequences, views, indexes, functions, triggers,
 constraints, and only the structural singleton rows required on an empty
 cluster. Extensions remain the empty-PGDATA bootstrap's responsibility.
 
-## Runtime observation truth cut (`20260925_0400`)
+## Runtime observation truth cut (`20260926_0402`)
 
 This forward revision adds separate failure and last-success clocks for account
 projection, convergence and venue reads, plus native recovery diagnostics. It
@@ -26,6 +26,34 @@ stop the Runtime and serve, apply the migration, then start the matching
 Runtime, serve and web images together. A pre-cut image cannot read the new
 account contract. Roll back only by restoring the verified pre-cut database and
 matching images while the venue account is authoritatively flat.
+
+## Single Binance connection cut (`20260925_0401`)
+
+Stop Analysis and Nautilus, reconcile open plans and venue orders, and keep a
+verified backup before upgrading. The migration refuses mixed active execution
+scopes in one account slot. It stores the existing opaque Nautilus namespace in
+the control row, retires unplanned old Signals, and removes mode columns from
+Signal, Plan and Runtime storage. Existing Plan, order and observation identities
+remain unchanged. No runtime reader accepts the old mode fields after this cut.
+
+Edit `config.yaml` before starting the new image: replace
+`trading.execution.mode` with `trading.execution.enabled` and optional
+`trading.execution.binance.environment` (`LIVE`, `DEMO`, `TESTNET`; omission uses
+the pinned SDK default). Remove `trading.analysis.data_environment` and
+`strategy_publication_enabled`. The configuration schema rejects those retired
+keys; there is no compatibility loader. Verify the selected connection and
+account slot with `tracefold config` and `tracefold trading status` before
+starting Nautilus. Do not change a slot's venue target while it has a Runtime
+state row; use a separately reviewed account slot for a different account.
+
+## Retired online shadow paths (`20260925_0400`)
+
+The online simulated fill and PnL producer is removed. Pending historical
+`shadow_simulation` evaluations become `unevaluable` with reason
+`online_shadow_retired`; completed historical rows and their source and archive
+references remain unchanged. This revision does not create a real fill, fee,
+funding, or realized PnL from a simulated result. Stop Analysis writers and
+retain the verified backup before applying the new image.
 
 ## Trading Agent V3 cut (`20260925_0398`)
 

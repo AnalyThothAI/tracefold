@@ -52,7 +52,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             last_case_at_ms = trading.latest_case_created_at_ms()
             execution = settings.trading.execution
             analysis_runtime = trading.analysis_runtime(
-                f"{execution.account_slot}:{execution.mode}",
+                execution.account_slot,
             )
             execution_status = execution_readiness_projection(
                 execution,
@@ -141,7 +141,7 @@ def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
     except PackageNotFoundError:
         nautilus_version = None
     result: dict[str, Any] = {
-        "scope": {"account_slot": execution.account_slot, "mode": execution.mode},
+        "scope": {"account_slot": execution.account_slot},
         "caller_identity": {
             "image_digest": os.environ.get("TRACEFOLD_IMAGE_DIGEST") or None,
             "runtime_revision": os.environ.get("TRACEFOLD_RUNTIME_REVISION") or None,
@@ -158,7 +158,7 @@ def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
                 repos.conn.execute("SET LOCAL statement_timeout = '3s'")
                 db_head = database_migration_version(repos.conn)
                 state = repos.trading.execution_runtime_state(execution.account_slot)
-                plans, risks = repos.trading.execution_diagnostic_evidence(execution.account_slot, mode=execution.mode)
+                plans, risks = repos.trading.execution_diagnostic_evidence(execution.account_slot)
             read_at_ns = time.time_ns()
             result["database"] = {
                 "started_at_ns": db_started,

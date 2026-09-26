@@ -4,8 +4,8 @@ Migration evidence:
 - category: additive current-state diagnostics and one Plan exit-reason constraint extension.
 - why_database_must_change: the existing Runtime row must preserve the last successful
   account and venue times while a new health heartbeat records a failed check.
-- current_source_revision: 20260925_0399
-- minimum_supported_source_revision: 20260925_0399
+- current_source_revision: 20260925_0401
+- minimum_supported_source_revision: 20260925_0401
 - lock_level_and_order: brief ACCESS EXCLUSIVE catalog changes on runtime state and trade plans.
 - statement_timeout: 60s locally; lock_timeout: 5s locally.
 - estimated_rows: one current row per account slot; nullable columns need no backfill.
@@ -19,16 +19,16 @@ Migration evidence:
 - roll_forward_or_verified_backup_restore: restore the verified pre-cut archive
   with the corresponding pre-cut images; do not run an old Runtime on this contract.
 
-Revision ID: 20260925_0400
-Revises: 20260925_0399
+Revision ID: 20260926_0402
+Revises: 20260925_0401
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260925_0400"
-down_revision = "20260925_0399"
+revision = "20260926_0402"
+down_revision = "20260925_0401"
 branch_labels = None
 depends_on = None
 
@@ -114,4 +114,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("trading_runtime_observation_truth_forward_only: restore a verified pre-0400 archive")
+    raise RuntimeError("trading_runtime_observation_truth_forward_only: restore a verified pre-0402 archive")

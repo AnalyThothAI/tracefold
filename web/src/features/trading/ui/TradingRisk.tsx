@@ -302,6 +302,7 @@ function findingLabel(kind: string): string {
     venue_cache_mismatch: "场所与本地数量不符",
     close_unconfirmed: "平仓尚未确认",
     ambiguous: "多个计划可能关联",
+    submission_unknown: "提交结果未知，等待场所订单确认",
   };
   return labels[kind] ?? kind;
 }

@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from nautilus_trader.adapters.binance import BINANCE, BinanceAccountType
@@ -19,10 +19,9 @@ from tests.nautilus_oi_runtime_fixtures import RESUMED, oi_profile
 from tracefold.app.nautilus.root import _build_active_node, _discover_routes
 from tracefold.integrations.nautilus.oi_runtime.binance import OiBinanceFuturesExecutionClient
 from tracefold.integrations.nautilus.oi_runtime.config import (
-    ActiveRuntimeMode,
     BinanceRuntimeCredentials,
-    binance_environment,
     build_oi_node_config,
+    connection_environment,
 )
 from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
@@ -30,23 +29,29 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrate
 
 
 @pytest.mark.parametrize(
-    ("mode", "environment"),
-    [("paper", BinanceEnvironment.DEMO), ("live", BinanceEnvironment.LIVE)],
+    ("environment", "expected"),
+    [
+        (BinanceEnvironment.DEMO, "demo"),
+        (BinanceEnvironment.LIVE, "live"),
+        (BinanceEnvironment.TESTNET, "testnet"),
+        (None, "live"),
+    ],
 )
-def test_paper_and_live_change_only_cold_identity_and_binance_environment(
-    mode: ActiveRuntimeMode,
-    environment: BinanceEnvironment,
+def test_native_binance_environment_is_shared_by_data_and_execution(
+    environment: BinanceEnvironment | None,
+    expected: str,
 ) -> None:
-    profile = oi_profile(mode)
+    profile = replace(oi_profile(), environment=environment)
     config = build_oi_node_config(
         profile,
-        BinanceRuntimeCredentials(api_key=f"{mode}-key", api_secret=f"{mode}-secret"),
+        BinanceRuntimeCredentials(api_key="test-key", api_secret="test-secret"),
     )
 
     assert set(config.data_clients) == set(config.exec_clients) == {BINANCE}
     assert config.data_clients[BINANCE].environment == environment
     execution = config.exec_clients[BINANCE]
     assert execution.environment == environment
+    assert connection_environment(environment) == expected
     assert execution.account_type == BinanceAccountType.USDT_FUTURES
     assert execution.use_reduce_only is True
     assert execution.max_retries is None
@@ -79,7 +84,9 @@ def test_nautilus_warnings_and_errors_are_kept_in_a_bounded_file_under_the_logs_
     """A reconciliation decision must outlive the container that made it (#680 PR-3)."""
 
     config = build_oi_node_config(
-        oi_profile("paper"), BinanceRuntimeCredentials("paper-key", "paper-secret"), log_directory=tmp_path
+        oi_profile(BinanceEnvironment.DEMO),
+        BinanceRuntimeCredentials("paper-key", "paper-secret"),
+        log_directory=tmp_path,
     )
 
     logging = config.logging
@@ -91,37 +98,14 @@ def test_nautilus_warnings_and_errors_are_kept_in_a_bounded_file_under_the_logs_
     assert logging.log_file_max_backup_count == 5
 
 
-def test_disabled_is_not_a_runtime_profile_at_all() -> None:
-    """#589 PR-2 (T-F14). `disabled` is refused where a profile is built, not re-checked downstream.
-
-    #537 PR-4 made a disabled Runtime one branch in `run_nautilus`, which returns before any profile
-    exists. Three more guards then re-proved the same thing on paths a disabled profile could not
-    reach - the mode Literal, the node builder and the strategy constructor - so the mode a profile
-    may hold is exactly the mode that can trade, and the refusal is here.
-    """
-
-    with pytest.raises(ValueError, match="oi_runtime_mode_invalid"):
-        oi_profile(cast(ActiveRuntimeMode, "disabled"))
-
-
-def test_binance_environment_is_the_single_paper_to_demo_decision() -> None:
-    # #537 PR-4. The composition root's catalogue discovery carried a second copy of this ternary;
-    # both callers now read it here, so no path can disagree about which venue it is trading on.
-    assert binance_environment("paper") is BinanceEnvironment.DEMO
-    assert binance_environment("live") is BinanceEnvironment.LIVE
-    root_source = (Path(_discover_routes.__code__.co_filename)).read_text(encoding="utf-8")
-    assert root_source.count("BinanceEnvironment.") == 0
-    assert "environment=binance_environment(mode)" in root_source
-
-
-def test_unknown_mode_fails_closed_instead_of_falling_through_to_live() -> None:
-    with pytest.raises(ValueError, match="oi_runtime_mode_invalid"):
-        replace(oi_profile("paper"), mode=cast(ActiveRuntimeMode, "staging"))
+def test_catalogue_uses_the_selected_native_connection() -> None:
+    root_source = Path(_discover_routes.__code__.co_filename).read_text(encoding="utf-8")
+    assert '"environment": environment' in root_source
 
 
 def test_credentials_never_expose_secrets_in_repr() -> None:
     credentials = BinanceRuntimeCredentials(api_key="visible-key", api_secret="visible-secret")
-    node = build_oi_node_config(oi_profile("paper"), credentials)
+    node = build_oi_node_config(oi_profile(BinanceEnvironment.DEMO), credentials)
 
     assert "visible-key" not in repr(credentials)
     assert "visible-secret" not in repr(credentials)
@@ -129,15 +113,13 @@ def test_credentials_never_expose_secrets_in_repr() -> None:
     assert "visible-secret" not in repr(node)
 
 
-def test_paper_and_live_have_disjoint_profile_namespaces() -> None:
-    paper = oi_profile("paper")
-    live = oi_profile("live")
+def test_historical_opaque_namespaces_keep_disjoint_client_identifiers() -> None:
+    paper = oi_profile(BinanceEnvironment.DEMO)
+    live = oi_profile(BinanceEnvironment.LIVE)
     paper_node = build_oi_node_config(paper, BinanceRuntimeCredentials("paper-key", "paper-secret"))
     live_node = build_oi_node_config(live, BinanceRuntimeCredentials("live-key", "live-secret"))
 
-    # One account slot, two modes: the mode is what keeps paper and live from claiming each other's
-    # orders, because it is the second half of the one namespace the Cache identity and every client
-    # order id are both derived from (#589 PR-2).
+    # The migration retains old opaque namespaces, so existing venue orders keep their identity.
     assert paper.account_slot == live.account_slot
     assert paper.namespace != live.namespace
     assert paper_node.trader_id != live_node.trader_id
@@ -154,7 +136,7 @@ def _real_node() -> Iterator[Any]:
     Nothing here talks to Binance: `_build_active_node` only constructs the graph.
     """
 
-    profile = replace(oi_profile("paper"), account_id=_MASTER_ACCOUNT_ID)
+    profile = replace(oi_profile(BinanceEnvironment.DEMO), account_id=_MASTER_ACCOUNT_ID)
     strategy = OiNautilusStrategy(
         profile=profile,
         signals=ExecutionSignalClient(account_slot=profile.account_slot, execution_strategy="oi_nautilus_v1"),

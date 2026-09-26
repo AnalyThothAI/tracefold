@@ -74,7 +74,9 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
     # chrome no longer has. What is left is the whole of what an operator acts on.
     assert set(data) == {"decision", "execution"}
     assert data["execution"] == {
-        "mode": "disabled",
+        "configured_connection": "LIVE",
+        "connection": None,
+        "connection_observed_at_ms": None,
         "account_slot": "binance_usdm_primary",
         "alive": False,
         "entries_armed": False,

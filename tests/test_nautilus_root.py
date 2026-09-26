@@ -7,7 +7,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -94,7 +94,9 @@ def test_route_discovery_uses_nautilus_own_provider_on_the_selected_venue(monkey
     monkeypatch.setattr(nautilus_root, "BinanceFuturesInstrumentProvider", _Provider)
 
     routes = asyncio.run(
-        _discover_routes("paper", BinanceRuntimeCredentials("demo-key", "demo-secret"), stop_distance_bps=100)
+        _discover_routes(
+            BinanceEnvironment.DEMO, BinanceRuntimeCredentials("demo-key", "demo-secret"), stop_distance_bps=100
+        )
     )
 
     assert captured["loaded"] is True
@@ -116,12 +118,14 @@ def test_an_empty_catalogue_fails_the_generation_not_the_process(monkeypatch: py
     monkeypatch.setattr(nautilus_root, "get_cached_binance_http_client", lambda **kwargs: kwargs)
     monkeypatch.setattr(nautilus_root, "BinanceFuturesInstrumentProvider", _Provider)
     with pytest.raises(RuntimeError, match="oi_runtime_route_catalog_empty") as raised:
-        asyncio.run(_discover_routes("paper", BinanceRuntimeCredentials("k", "s"), stop_distance_bps=100))
+        asyncio.run(
+            _discover_routes(BinanceEnvironment.DEMO, BinanceRuntimeCredentials("k", "s"), stop_distance_bps=100)
+        )
     assert not isinstance(raised.value, RuntimeFatal)
 
 
 def _settings_with_risk(**overrides: Any) -> Settings:
-    return Settings(trading={"execution": {"mode": "paper", "risk": overrides}})
+    return Settings(trading={"execution": {"enabled": True, "binance": {"environment": "DEMO"}, "risk": overrides}})
 
 
 def test_risk_limits_come_from_the_operator_config() -> None:
@@ -169,8 +173,8 @@ def test_the_retired_risk_keys_are_refused_by_name(retired: str) -> None:
 )
 def test_every_risk_value_reaches_the_runtime_policy_without_renaming_the_account(override: dict[str, Any]) -> None:
     routes = oi_profile().routes
-    baseline = nautilus_root._active_profile(Settings(trading={"execution": {"mode": "paper"}}), "paper", routes)
-    edited = nautilus_root._active_profile(_settings_with_risk(**override), "paper", routes)
+    baseline = nautilus_root._active_profile(Settings(), routes)
+    edited = nautilus_root._active_profile(_settings_with_risk(**override), routes)
 
     assert edited.account_slot == baseline.account_slot
     assert edited.namespace == baseline.namespace
@@ -178,7 +182,7 @@ def test_every_risk_value_reaches_the_runtime_policy_without_renaming_the_accoun
         assert edited.risk != baseline.risk
 
 
-# The exact venue-visible identity strings a fixed account slot and mode produce. The deterministic
+# The exact venue-visible identity strings preserved for the historical namespaces. The deterministic
 # entry, stop and take-profit ids are how a restarted Runtime recognizes its own orders on the venue.
 _PINNED_ENTRY_ID = "e" * 64
 _PINNED_IDENTITY = {
@@ -203,10 +207,12 @@ _PINNED_IDENTITY = {
 def test_the_runtime_namespace_produces_exactly_these_venue_visible_identities(mode: str) -> None:
     profile = nautilus_root._active_profile(
         Settings(
-            trading={"execution": {"mode": mode, "exit_policy": {"take_profit_bps": 200, "max_holding_seconds": 14400}}}
+            trading={
+                "execution": {"enabled": True, "exit_policy": {"take_profit_bps": 200, "max_holding_seconds": 14400}}
+            }
         ),
-        cast(Any, mode),
         oi_profile().routes,
+        namespace=f"tracefold:binance_usdm_primary:{mode}",
     )
     expected = _PINNED_IDENTITY[mode]
 
@@ -240,22 +246,21 @@ def test_risk_bounds_refuse_the_values_that_would_make_a_limit_stop_being_one(
         _settings_with_risk(**override)
 
 
-def test_paper_defaults_are_explicit_engineering_values_and_live_requires_values() -> None:
-    paper = nautilus_root._active_profile(Settings(), "paper", oi_profile().routes)
+def test_exit_defaults_are_shared_by_all_connections() -> None:
+    paper = nautilus_root._active_profile(Settings(), oi_profile().routes)
     assert paper.exit_policy.take_profit_bps == 200
     assert paper.exit_policy.max_holding_ns == 14_400_000_000_000
     # Nautilus reconciles at least a day of history, and always more than the longest holding time.
     assert paper.reconciliation_lookback_mins == 1_500
     long_hold = replace(paper, exit_policy=replace(paper.exit_policy, max_holding_ns=72 * 3_600_000_000_000))
     assert long_hold.reconciliation_lookback_mins == 72 * 60 + 60
-    with pytest.raises(ValidationError, match="trading_execution_live_exit_policy_required"):
-        Settings(trading={"execution": {"mode": "live"}})
+    assert nautilus_root._active_profile(Settings(), oi_profile().routes).exit_policy == paper.exit_policy
 
 
 def _runtime_state(*, heartbeat_at_ns: int = 1_000_000_000) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
-        mode="paper",
+        connection="DEMO",
         runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
         alive=True,
         entries_armed=False,
@@ -341,7 +346,7 @@ def test_the_probe_states_what_an_operator_acts_on_and_always_answers_200() -> N
         "alive",
         "entries_armed",
         "entry_block_reason",
-        "mode",
+        "connection",
         "account_slot",
         "unexpected_exposure",
         "positions_count",
@@ -360,7 +365,7 @@ def test_the_probe_states_what_an_operator_acts_on_and_always_answers_200() -> N
         "recovery_attempted_at_ns",
         "recovery_result",
     }
-    starting = nautilus_root._ProbeState.starting(mode="paper", account_slot="binance_usdm_primary").readiness()
+    starting = nautilus_root._ProbeState.starting(connection="DEMO", account_slot="binance_usdm_primary").readiness()
     assert set(starting) == set(payload) | {"process_started_at_ns"}
     assert starting["process_started_at_ns"] > 0
     client = TestClient(nautilus_root._probe_server(lambda: starting).config.app)
@@ -422,8 +427,9 @@ def _supervise(monkeypatch: pytest.MonkeyPatch, outcomes: list[BaseException | N
     monkeypatch.setattr(nautilus_root, "_REBUILD_BACKOFF_SECONDS", (0.0,))
     asyncio.run(
         nautilus_root._run_active_runtime(
-            settings=Settings(trading={"execution": {"mode": "paper"}}),
-            mode="paper",
+            settings=Settings(trading={"execution": {"enabled": True, "binance": {"environment": "DEMO"}}}),
+            environment=BinanceEnvironment.DEMO,
+            namespace="tracefold:binance_usdm_primary:paper",
             credentials=BinanceRuntimeCredentials("k", "s"),
             singleton=SimpleNamespace(acquired=True),  # type: ignore[arg-type]
             repos=SimpleNamespace(),  # type: ignore[arg-type]
@@ -446,10 +452,6 @@ def test_a_transient_failure_rebuilds_the_generation_inside_the_same_process(mon
     assert attempts == [0, 1, 2]
 
 
-def test_losing_the_account_slot_or_a_configuration_error_stops_the_process(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_losing_the_account_slot_stops_the_process(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(RuntimeFatal, match="oi_runtime_account_slot_lost"):
         _supervise(monkeypatch, [RuntimeFatal("oi_runtime_account_slot_lost")])
-    with pytest.raises(RuntimeFatal, match="trading_execution_live_exit_policy_required"):
-        nautilus_root._active_profile(
-            Settings.model_construct(trading=Settings().trading.model_copy()), "live", oi_profile().routes
-        )

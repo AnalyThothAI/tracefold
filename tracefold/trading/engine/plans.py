@@ -193,20 +193,13 @@ def build_entry_plans(
 
 
 class AnalysisProposal(Frozen):
-    assessment_version: Literal["trade_assessment_v4"] = "trade_assessment_v4"
-    action: Action
-    selected_plan_id: str | None = None
+    assessment_version: Literal["trade_assessment_v5"] = "trade_assessment_v5"
+    selected_plan_id: str | None
     supporting_evidence: tuple[str, ...] = ()
     opposing_evidence: tuple[str, ...] = ()
     judgment_refs: tuple[str, ...] = ()
     limitations: str | None = Field(default=None, max_length=2_000)
     public_rationale: str = Field(min_length=1, max_length=2_000)
-
-    @model_validator(mode="after")
-    def check_selection(self) -> AnalysisProposal:
-        if (self.action == "NO_TRADE") != (self.selected_plan_id is None):
-            raise ValueError("proposal_plan_selection_invalid")
-        return self
 
 
 class DirectedWatchCondition(Frozen):
@@ -262,19 +255,16 @@ def compile_proposal(
     if set(proposal.judgment_refs) - judgment_refs:
         raise InvalidAssessment("proposal_judgment_ref_unknown")
     selected = menu.get(proposal.selected_plan_id or "")
-    if proposal.action != "NO_TRADE" and selected is None:
+    if proposal.selected_plan_id is not None and selected is None:
         raise InvalidAssessment("proposal_plan_outside_menu")
+    action: Action = "NO_TRADE" if selected is None else "TRADE" if selected.kind == "immediate_entry_v1" else "WATCH"
     if selected is not None:
         if any(not is_citable_evidence(evidence_catalog.get(ref) or {}) for ref in selected.required_evidence_refs):
             raise InvalidAssessment("proposal_required_evidence_unavailable")
         if now_ms >= selected.expires_at_ms:
             raise InvalidAssessment("proposal_plan_expired")
-        if proposal.action == "TRADE" and selected.kind != "immediate_entry_v1":
-            raise InvalidAssessment("proposal_trade_plan_kind_invalid")
-        if proposal.action == "WATCH" and selected.kind != "closed_bar_cross_v1":
-            raise InvalidAssessment("proposal_watch_plan_kind_invalid")
     watch = None
-    if proposal.action == "WATCH" and selected is not None:
+    if action == "WATCH" and selected is not None:
         if selected.level is None:
             raise InvalidAssessment("proposal_watch_plan_condition_invalid")
         watch = DirectedWatchCondition(
@@ -288,17 +278,13 @@ def compile_proposal(
             expires_at_ms=selected.expires_at_ms,
         )
     return PlanDecision(
-        action=proposal.action,
+        action=action,
         selected_plan_id=None if selected is None else selected.plan_id,
         side=None if selected is None else selected.side,
-        exit_plan=selected.exit_plan if proposal.action == "TRADE" and selected is not None else None,
+        exit_plan=selected.exit_plan if action == "TRADE" and selected is not None else None,
         reason=proposal.public_rationale,
         reason_code=(
-            "model_no_trade"
-            if proposal.action == "NO_TRADE"
-            else "model_watch"
-            if proposal.action == "WATCH"
-            else "immediate_entry"
+            "model_no_trade" if action == "NO_TRADE" else "model_watch" if action == "WATCH" else "immediate_entry"
         ),
         evidence_refs=tuple(sorted(citations)),
         judgment_refs=proposal.judgment_refs,

@@ -36,7 +36,7 @@ type StoredExecutionPayload = tuple[int, dict[str, Any]]
 # The current-projection columns, in the order `_runtime_state_values` binds them.
 _RUNTIME_STATE_FIELDS: Final = (
     "account_slot",
-    "mode",
+    "connection",
     "runtime_id",
     "alive",
     "entries_armed",
@@ -83,11 +83,12 @@ UNRESOLVED_TRADE_SIGNALS_SQL: Final = """
        AND disposition.signal_id = signal.signal_id
        AND disposition.normalized_kind = 'signal_disposition'
       LEFT JOIN trading_trade_plans plan ON plan.entry_id = signal.signal_id
-     WHERE signal.account_slot = %s AND signal.runtime_mode = %s
+      LEFT JOIN trading_signal_retirements retired ON retired.signal_id = signal.signal_id
+     WHERE signal.account_slot = %s
        AND signal.payload ->> 'signal_version' = 'trade_signal_v3'
        AND signal.payload -> 'entry_envelope' ->> 'version' = 'entry_envelope_v3'
        AND signal.expires_at_ns > %s
-       AND disposition.event_id IS NULL AND plan.entry_id IS NULL
+       AND disposition.event_id IS NULL AND plan.entry_id IS NULL AND retired.signal_id IS NULL
      ORDER BY signal.seq LIMIT %s
 """
 
@@ -112,7 +113,6 @@ def execution_stream_query_specs(
     *,
     account_slot: str = "query-audit-disabled",
     execution_strategy: str = EXECUTION_STRATEGY_ID,
-    runtime_mode: str = "paper",
     now_ns: int = 1,
 ) -> tuple[ReadQuerySpec, ...]:
     """The two bridge reads, bound, for the query-plan audit."""
@@ -121,7 +121,7 @@ def execution_stream_query_specs(
         ReadQuerySpec(
             name="trading_unresolved_trade_signals",
             sql=UNRESOLVED_TRADE_SIGNALS_SQL,
-            params=(execution_strategy, account_slot, account_slot, runtime_mode, now_ns, 100),
+            params=(execution_strategy, account_slot, account_slot, now_ns, 100),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
@@ -170,6 +170,7 @@ class ExecutionExposureFinding:
         "venue_cache_mismatch",
         "close_unconfirmed",
         "ambiguous",
+        "submission_unknown",
     ]
     object_id: str
     instrument_id: str
@@ -307,7 +308,7 @@ class ExecutionRuntimeState:
     """
 
     account_slot: str
-    mode: Literal["paper", "live"]
+    connection: str
     runtime_id: UUID
     alive: bool
     entries_armed: bool
@@ -335,8 +336,8 @@ class ExecutionRuntimeState:
     def __post_init__(self) -> None:
         if _IDENTITY.fullmatch(self.account_slot) is None:
             raise ValueError("execution_runtime_identity_invalid")
-        if self.mode not in {"paper", "live"}:
-            raise ValueError("execution_runtime_mode_invalid")
+        if self.connection not in {"LIVE", "DEMO", "TESTNET", "SDK_DEFAULT"}:
+            raise ValueError("execution_runtime_connection_invalid")
         if min(self.heartbeat_at_ns, self.started_at_ns) <= 0:
             raise ValueError("execution_runtime_clock_invalid")
         if self.updated_at_ns < max(self.heartbeat_at_ns, self.started_at_ns):
@@ -380,6 +381,7 @@ class ExecutionRuntimeControlState:
     """One slot-keyed current control projection; history stays append-only."""
 
     account_slot: str
+    execution_namespace: str
     entries_paused: bool
     emergency_halted: bool
     last_command_seq: int
@@ -389,6 +391,8 @@ class ExecutionRuntimeControlState:
     def __post_init__(self) -> None:
         if _IDENTITY.fullmatch(self.account_slot) is None:
             raise ValueError("execution_account_slot_invalid")
+        if _IDENTITY.fullmatch(self.execution_namespace) is None:
+            raise ValueError("execution_namespace_invalid")
         if self.last_command_seq < 0 or self.updated_at_ns <= 0:
             raise ValueError("execution_runtime_control_state_invalid")
         if self.last_command_id is not None and _SHA256.fullmatch(self.last_command_id) is None:
@@ -489,8 +493,8 @@ class ExecutionStreamStorage:
             INSERT INTO trading_trade_signals (
               signal_id, case_id, market_key, direction,
               observed_at_ns, expires_at_ns, payload,
-              account_slot, runtime_mode, entry_scope_id, asset_id, mapping_semantics_digest
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
+              account_slot, entry_scope_id, asset_id, mapping_semantics_digest
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             RETURNING seq, payload
             """,
@@ -503,7 +507,6 @@ class ExecutionStreamStorage:
                 candidate.expires_at_ns,
                 prepared.payload_json,
                 candidate.account_slot,
-                candidate.runtime_mode,
                 candidate.entry_scope_id,
                 candidate.asset_id,
                 candidate.mapping_semantics_digest,
@@ -674,15 +677,12 @@ class ExecutionStreamStorage:
         execution_strategy: str,
         now_ns: int,
         limit: int,
-        runtime_mode: str,
     ) -> tuple[StoredExecutionPayload, ...]:
         self._validate_read_limit(limit)
         self._validate_slot_clock(account_slot, now_ns)
-        if runtime_mode not in ("paper", "live"):
-            raise ValueError("execution_runtime_mode_invalid")
         rows = self.conn.execute(
             UNRESOLVED_TRADE_SIGNALS_SQL,
-            (execution_strategy, account_slot, account_slot, runtime_mode, now_ns, limit),
+            (execution_strategy, account_slot, account_slot, now_ns, limit),
         ).fetchall()
         return tuple((int(row["seq"]), dict(row["payload"])) for row in rows)
 
@@ -712,23 +712,22 @@ class ExecutionStreamStorage:
         return None if row is None else self._materialize_runtime_state(row)
 
     def execution_diagnostic_evidence(
-        self, account_slot: str, *, mode: str
+        self, account_slot: str
     ) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-        """Bounded read-only Plan and risk rows for one account slot and mode."""
-        if _IDENTITY.fullmatch(account_slot) is None or mode not in {"paper", "live", "disabled"}:
+        """Bounded read-only Plan and risk rows for one account slot."""
+        if _IDENTITY.fullmatch(account_slot) is None:
             raise ValueError("execution_diagnostic_scope_invalid")
         plans = self.conn.execute(
             """
-            SELECT entry_id, source, account_slot, runtime_mode_at_creation,
+            SELECT entry_id, source, account_slot,
                    instrument_id, direction, entry_client_order_id, status,
                    created_at_ns, opened_at_ns, terminal_at_ns, exit_reason
               FROM trading_trade_plans
-             WHERE account_slot = %s AND runtime_mode_at_creation = %s
-               AND terminal_at_ns IS NULL
+             WHERE account_slot = %s AND terminal_at_ns IS NULL
              ORDER BY created_at_ns, entry_id
              LIMIT 1001
             """,
-            (account_slot, mode),
+            (account_slot,),
         ).fetchall()
         risks = self.conn.execute(
             """
@@ -803,7 +802,7 @@ class ExecutionStreamStorage:
     def _materialize_runtime_state(row: Any) -> ExecutionRuntimeState:
         return ExecutionRuntimeState(
             account_slot=str(row["account_slot"]),
-            mode=row["mode"],
+            connection=row["connection"],
             runtime_id=UUID(str(row["runtime_id"])),
             alive=bool(row["alive"]),
             entries_armed=bool(row["entries_armed"]),
@@ -839,7 +838,7 @@ class ExecutionStreamStorage:
     def _runtime_state_values(cls, value: ExecutionRuntimeState) -> tuple[Any, ...]:
         return (
             value.account_slot,
-            value.mode,
+            value.connection,
             value.runtime_id,
             value.alive,
             value.entries_armed,
@@ -885,12 +884,12 @@ class ExecutionStreamStorage:
         self.conn.execute(
             """
             INSERT INTO trading_execution_runtime_control_state (
-              account_slot, entries_paused, emergency_halted,
+              account_slot, execution_namespace, entries_paused, emergency_halted,
               last_command_seq, last_command_id, updated_at_ns
-            ) VALUES (%s, FALSE, FALSE, 0, NULL, %s)
+            ) VALUES (%s, %s, FALSE, FALSE, 0, NULL, %s)
             ON CONFLICT (account_slot) DO NOTHING
             """,
-            (account_slot, now_ns),
+            (account_slot, f"tracefold:{account_slot}", now_ns),
         )
         state = self.execution_runtime_control_state(account_slot)
         if state is None:
@@ -907,7 +906,7 @@ class ExecutionStreamStorage:
             raise ValueError("execution_account_slot_invalid")
         row = self.conn.execute(
             """
-            SELECT account_slot, entries_paused, emergency_halted,
+            SELECT account_slot, execution_namespace, entries_paused, emergency_halted,
                    last_command_seq, last_command_id, updated_at_ns
               FROM trading_execution_runtime_control_state
              WHERE account_slot = %s
@@ -918,6 +917,7 @@ class ExecutionStreamStorage:
             return None
         return ExecutionRuntimeControlState(
             account_slot=str(row["account_slot"]),
+            execution_namespace=str(row["execution_namespace"]),
             entries_paused=bool(row["entries_paused"]),
             emergency_halted=bool(row["emergency_halted"]),
             last_command_seq=int(row["last_command_seq"]),

@@ -355,6 +355,21 @@ def test_a_mixed_stop_and_take_profit_is_not_labeled_as_one_leg(startup_replay: 
     assert (closed.status, closed.exit_reason, closed.terminal_at_ns) == ("closed", "mixed_exit", NOW_NS + 1)
 
 
+def test_restart_after_final_check_keeps_unknown_submission_open_without_resending() -> None:
+    plan = open_plan(opened_at_ns=None)
+    runtime = unit_runtime(
+        open_plans=(OpenPlan(plan, disposition_pending=True, signal=trade_signal(), final_check_started=True),),
+        venue_reads=True,
+    )
+    runtime.venue({})
+
+    assert runtime.journal.pending_entry_validity() is None
+    assert runtime.strategy.submitted == []
+    assert runtime.plans() == []
+    assert runtime.dispositions() == []
+    assert runtime.strategy.runtime_view(runtime.clock.timestamp_ns()).unexpected_exposure is True
+
+
 def test_a_restart_that_finds_the_stop_missing_places_it_again_and_touches_nothing_else() -> None:
     plan = open_plan()
 

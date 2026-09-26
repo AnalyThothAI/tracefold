@@ -1,7 +1,7 @@
 from decimal import Decimal
 
+from scripts.historical_shadow_evaluation import evaluate_paper_receipt, evaluate_shadow
 from tracefold.trading.engine.contracts import ExitPlan
-from tracefold.trading.engine.evaluation import evaluate_paper_receipt, evaluate_shadow
 
 
 def _shadow(**overrides: object) -> dict[str, object]:

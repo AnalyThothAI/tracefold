@@ -81,7 +81,7 @@ records a bounded intent and proves only durable recording. The HTTP console
 has no command ingress or mutation authority (#624).
 
 The Nautilus service is excluded from the default Compose model and remains
-absent while execution is disabled. Canonical paper/live deployment enables
+absent while execution is disabled. Canonical deployment with execution enabled uses
 the explicit `execution` profile and requires Nautilus readiness (`alive`,
 independent of whether new entries are armed) — the `ok` field
 of a `/readyz` payload the endpoint now always serves with 200, so an operator

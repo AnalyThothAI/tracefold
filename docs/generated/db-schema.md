@@ -1003,13 +1003,14 @@
 | `last_command_id` | `TEXT` | True | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
 | `account_slot` | `TEXT` | False | `None` |
+| `execution_namespace` | `TEXT` | False | `None` |
 
 ## `trading_execution_runtime_state`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `account_slot` | `TEXT` | False | `None` |
-| `mode` | `TEXT` | False | `None` |
+| `connection` | `TEXT` | False | `None` |
 | `runtime_id` | `UUID` | False | `None` |
 | `alive` | `BOOLEAN` | False | `None` |
 | `unexpected_exposure` | `BOOLEAN` | False | `None` |
@@ -1099,7 +1100,6 @@
 | `source` | `TEXT` | False | `None` |
 | `case_id` | `TEXT` | True | `None` |
 | `account_slot` | `TEXT` | False | `None` |
-| `runtime_mode_at_creation` | `TEXT` | False | `None` |
 | `market_key` | `TEXT` | False | `None` |
 | `instrument_id` | `TEXT` | False | `None` |
 | `direction` | `TEXT` | False | `None` |
@@ -1133,7 +1133,6 @@
 | `expires_at_ns` | `BIGINT` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
 | `account_slot` | `TEXT` | True | `None` |
-| `runtime_mode` | `TEXT` | True | `None` |
 | `entry_scope_id` | `TEXT` | True | `None` |
 | `asset_id` | `TEXT` | True | `None` |
 | `mapping_semantics_digest` | `TEXT` | True | `None` |

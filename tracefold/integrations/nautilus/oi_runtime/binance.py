@@ -44,7 +44,7 @@ from nautilus_trader.live.factories import LiveExecClientFactory
 from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
 from nautilus_trader.model.objects import Price, Quantity
 
-from .config import ActiveRuntimeMode, BinanceRuntimeCredentials, binance_environment
+from .config import BinanceRuntimeCredentials
 
 # How long a signed positionRisk read stays valid at Binance. The venue's default is 5 s, and this
 # host has measured 9-27 s round trips (`-1021`, #680); a read has no side effect a late arrival
@@ -351,7 +351,7 @@ class BinanceVenuePositions:
     def __init__(
         self,
         *,
-        mode: ActiveRuntimeMode,
+        environment: BinanceEnvironment | None,
         credentials: BinanceRuntimeCredentials,
         clock: LiveClock | None = None,
         account: Any = None,
@@ -363,7 +363,7 @@ class BinanceVenuePositions:
                 account_type=BinanceAccountType.USDT_FUTURES,
                 api_key=credentials.api_key,
                 api_secret=credentials.api_secret,
-                environment=binance_environment(mode),
+                **({} if environment is None else {"environment": environment}),
             ),
             clock=live_clock,
             account_type=BinanceAccountType.USDT_FUTURES,

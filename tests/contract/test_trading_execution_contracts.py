@@ -23,7 +23,6 @@ def _signal(**updates: object) -> TradeSignalV3:
         "case_id": "case-btc-long",
         "decision_id": "b" * 64,
         "account_slot": "binance-usdm-demo-v1",
-        "runtime_mode": "paper",
         "entry_scope_id": "c" * 64,
         "asset_id": "crypto:BTC",
         "market_key": "crypto:perp:BTC:USDT",
