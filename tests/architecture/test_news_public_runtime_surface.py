@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import tracefold.news.program as news_agents
 from tracefold import news
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,14 +12,11 @@ SRC = ROOT / "tracefold"
 NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {
-    "ASSERTION_STATUSES",
-    "CHANGE_STATES",
     # #553 PR-2: the two commit phases a send adapter reports. They are exported because the
     # adapters that raise them live under `tracefold.integrations`, outside News, and a phase spelled
     # as a bare string in two packages is the drift this export exists to prevent.
     "COMMIT_PHASE_NOT_SENT",
     "COMMIT_PHASE_UNKNOWN",
-    "EVENT_FAMILIES",
     "EVENT_KINDS",
     # #562 PR-C: the reader card model and the reader-facing formats a channel serializer needs. The
     # two delivery adapters live outside News and now render from the card instead of parsing another
@@ -33,19 +29,15 @@ PUBLIC_NEWS_INTERFACE = {
     "card_clock",
     "quote_line",
     "EventKind",
-    "IPTCCodebookSha",
     "IPTC_SUBJECT_CODES",
     # #651 §6.2: the one market vocabulary News compares assets under. The HTTP asset schema is typed by
-    # it, so the browser contract and the Program contract cannot disagree about what a market is. The
+    # it, so the browser contract and the News contracts cannot disagree about what a market is. The
     # normalizer and the comparison rule that read it stay private.
     "MarketType",
-    # #675 §1: the closed vocabulary EventSemantics answers `fact_kind` from. The HTTP triage summary and
-    # the review submission are both typed by it, so the browser contract, the review contract and the
-    # Program contract cannot disagree about what kinds of fact exist. `decide()`'s own groupings of it
-    # (`PUSH_FACT_KINDS` and the rest) stay private: they are policy, not vocabulary.
+    # #675 §1: the closed `fact_kind` vocabulary legacy verdicts carry. The HTTP legacy triage summary and
+    # the review submission are both typed by it, so the browser and review contracts read one vocabulary.
     "FACT_KINDS",
     "FactKind",
-    "NewsTaxonomyV1",
     "NetBuySnapshot",
     "OI_METRIC_VERSION",
     # #553: the market read surface's own vocabulary and bounds, which the HTTP route validates a
@@ -235,23 +227,24 @@ def test_news_model_code_uses_only_public_dspy_and_no_direct_gepa() -> None:
     assert gepa_users == []
 
 
-def test_news_program_does_not_own_provider_transport() -> None:
-    """DSPy/LiteLLM own HTTP and provider request rendering after the hard cut."""
+def test_news_updates_do_not_own_provider_transport() -> None:
+    """DSPy, LiteLLM and the native SDK own HTTP and provider request rendering; the News core owns none."""
 
     forbidden_roots = {"httpx", "aiohttp", "requests"}
     forbidden_modules = {"tracefold.integrations.chat_completions"}
     violations = [
         str(path.relative_to(ROOT))
-        for path in (NEWS_ROOT / "program").rglob("*.py")
+        for path in (NEWS_ROOT / "updates").rglob("*.py")
         if (_imported_roots(path) & forbidden_roots) or (_imported_modules(path) & forbidden_modules)
     ]
     assert violations == []
 
 
-def test_only_the_drafter_may_call_a_model_inside_the_review_plane() -> None:
+def test_the_review_plane_calls_no_model() -> None:
+    """#706 deleted the drafter, the review plane's only model caller; review is a human's judgment."""
+
     review = NEWS_ROOT / "review"
-    callers = {path.name for path in review.rglob("*.py") if "dspy" in _imported_roots(path)}
-    assert callers == {"drafter.py"}
+    assert {path.name for path in review.rglob("*.py") if "dspy" in _imported_roots(path)} == set()
 
 
 def test_the_semantic_runtime_imports_no_retired_program_or_rule_owner() -> None:
@@ -288,7 +281,22 @@ def test_the_semantic_runtime_imports_no_retired_program_or_rule_owner() -> None
         for path in runtime
     }
     assert {path: modules for path, modules in offenders.items() if modules} == {}
-    assert not any(name.startswith("Program") for name in dir(news_agents) if name in news.__all__)
+
+
+def test_the_retired_program_learning_and_release_planes_are_gone() -> None:
+    """#706 hard cut: no retired package, rule owner or taxonomy axis remains importable or exported."""
+
+    for package in ("program", "release"):
+        assert not list((NEWS_ROOT / package).rglob("*.py")), package
+    for module in ("triage_rules.py", "told_context.py", "review/drafter.py", "storage/learning.py"):
+        assert not (NEWS_ROOT / module).exists(), module
+    assert {path.name for path in (NEWS_ROOT / "learning").glob("*.py")} == {
+        "__init__.py",
+        "judge.py",
+        "judge_calibration.py",
+    }
+    for retired in ("EVENT_FAMILIES", "CHANGE_STATES", "ASSERTION_STATUSES", "NewsTaxonomyV1"):
+        assert retired not in news.__all__
 
 
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:

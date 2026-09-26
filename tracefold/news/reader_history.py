@@ -6,8 +6,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, Literal
 
-from .artifact_identity import canonical_sha
-from .evidence import EVIDENCE_SELECTION_SHA256
 from .models import MarketAsset, base_symbol
 from .similarity import trigram_similarity
 
@@ -24,62 +22,8 @@ RECENT_HISTORY_MAX: Final = 128
 TARGETED_EXACT_MAX: Final = 8
 TARGETED_ASSET_MAX: Final = 24
 # 32, measured on the 143 labelled duplicate pairs of the 2026-09-01 audit: pg_trgm top-16 over 24 h recalls
-# 98, top-32 recalls 110, top-64 117. The 16 rows the Program sees come out of a pool of 128 + 8 + 24 + 32.
+# 98, top-32 recalls 110, top-64 117.
 SIMILAR_TITLE_MAX: Final = 32
-READER_HISTORY_ID: Final = "news_reader_history_v5"
-READER_HISTORY_CONTRACT: Final = {
-    "reader_history": READER_HISTORY_ID,
-    "truth": {
-        "delivery_kind": "first",
-        "delivery_state": "sent",
-        "verdict_stage": "triage",
-        "final_decisions": ["push", "escalate"],
-    },
-    # Bands include the lower window bound and exclude the read clock.
-    # itself (#651 §12): a delivery whose settle stamp is ahead of the stamp this history is read at was
-    # not a card the reader had. In production the two coincide -- the read clock is the wall clock and
-    # nothing settles in the future -- but the evaluator reads the same ledger at a frozen stamp, where
-    # `seed_receipts` bounds both ends and this band used to bound only the lower one. That gap put a
-    # late-settling delivery into the SQL history and not into the replayed one, which is the one thing a
-    # replay may never disagree with production about. The CAS token Triage re-reads under the storyline
-    # lock is deliberately *not* bounded this way, and is not part of this contract: it answers whether the
-    # ledger moved after the snapshot, which is the one question a late-settling card is the answer to.
-    "read_clock": "settled_at_ms < read_clock",
-    "windows": {
-        "recent": {"age": ">0_and<=", "window_ms": RECENT_HISTORY_WINDOW_MS},
-        "targeted": {"age": ">recent_and<=targeted", "window_ms": TARGETED_HISTORY_WINDOW_MS},
-        "similar": {"age": ">0_and<=", "window_ms": SIMILAR_HISTORY_WINDOW_MS},
-    },
-    "caps": {
-        "recent": RECENT_HISTORY_MAX,
-        "exact_fingerprint": TARGETED_EXACT_MAX,
-        "canonical_asset_overlap": TARGETED_ASSET_MAX,
-        "title_similarity": SIMILAR_TITLE_MAX,
-    },
-    "targeted_reasons": {
-        "exact_fingerprint": ["dedupe_family", "comparison_fingerprint"],
-        "canonical_asset_overlap": ["news_event_assets", "news_symbol_aliases.base_symbol"],
-        "title_similarity": ["pg_trgm similarity(comparison_title, candidate.comparison_title) > 0"],
-    },
-    "similarity_primitive": "pg_trgm_word_trigram_jaccard_v1",
-    "projection": [
-        "event_id",
-        "at_ms",
-        "storyline_key",
-        "comparison_title",
-        "comparison_fingerprint",
-        "dedupe_family",
-        "grounded_assets",
-        "assets",
-        "canonical_assets",
-        "direction",
-        "headline_zh",
-        "why_zh",
-    ],
-    "dedup": "event_id_exact_first",
-    "ordering": "reason_then_sent_desc_event_id; title_similarity by similarity_desc_then_sent_desc_event_id",
-}
-READER_HISTORY_SHA256: Final = canonical_sha(READER_HISTORY_CONTRACT)
 
 HistoryScope = Literal["recent", "targeted"]
 HistoryReason = Literal["recent", "exact_fingerprint", "canonical_asset_overlap", "title_similarity"]
@@ -105,18 +49,6 @@ _READER_HISTORY_ROW_FIELDS: Final = frozenset(
 )
 
 
-def news_retrieval_sha256(*, told_selector_sha256: str) -> str:
-    """Compose the retrieval root without making history depend on its selector consumer."""
-
-    return canonical_sha(
-        {
-            "evidence_selection_sha256": EVIDENCE_SELECTION_SHA256,
-            "reader_history_sha256": READER_HISTORY_SHA256,
-            "told_selector_sha256": str(told_selector_sha256),
-        }
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class ReaderHistoryRow:
     event_id: str
@@ -138,35 +70,10 @@ class ReaderHistoryRow:
     scope: HistoryScope = "recent"
     reason: HistoryReason = "recent"
 
-    def as_told_row(self) -> dict[str, Any]:
-        return {
-            "event_id": self.event_id,
-            "provenance_status": self.provenance_status,
-            "at_ms": self.at_ms,
-            "storyline_key": self.storyline_key,
-            "comparison_title": self.comparison_title,
-            "comparison_fingerprint": self.comparison_fingerprint,
-            "dedupe_family": self.dedupe_family,
-            "grounded_assets": list(self.grounded_assets),
-            "assets": [{"symbol": asset.symbol, "market_type": asset.market_type} for asset in self.assets],
-            "canonical_assets": list(self.canonical_assets),
-            "direction": self.direction,
-            "headline_zh": self.headline_zh,
-            "why_zh": self.why_zh,
-            "history_scope": self.scope,
-            "retrieval_reason": self.reason,
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class ReaderHistorySnapshot:
-    """Three disjoint projections of one receipt truth.
-
-    ``recent_seen_rows`` is the only set ``decide()`` measures duplicates against. The other two are semantic
-    evidence for the Program and cannot extend a policy throttle: widening them cannot manufacture a
-    ``storyline:*:seen`` withhold, which is what keeps the 2026-09-01 counterfactual (24 h of bigram matching
-    withholds three countries' PMI prints as one story) out of the mechanical layer.
-    """
+    """Three disjoint bands of one sent-receipt truth: recent, targeted and title-similar deliveries."""
 
     recent_seen_rows: tuple[ReaderHistoryRow, ...] = ()
     targeted_told_rows: tuple[ReaderHistoryRow, ...] = ()
@@ -184,47 +91,6 @@ class ReaderHistorySnapshot:
         return tuple(rows)
 
 
-def build_reader_history(
-    rows: Sequence[Mapping[str, Any] | ReaderHistoryRow],
-    *,
-    now_ms: int,
-    dedupe_family: str = "general",
-    comparison_fingerprint: str,
-    canonical_assets: Sequence[str],
-    comparison_title: str = "",
-    include_targeted: bool = True,
-) -> ReaderHistorySnapshot:
-    """Build the recent policy ledger and the targeted semantic history from bounded receipt rows.
-
-    The pure twin of ``DecisionStorage.reader_history``: CandidateEvaluator replays receipts through this
-    function, production reads the same bands through SQL, and ``assemble_reader_history`` applies one set of
-    boundary, cap, ordering and deduplication rules to both.
-    """
-
-    converted = _deduped_rows(rows, cutoff=now_ms)
-    recent_cutoff, target_cutoff = _history_cutoffs(now_ms)
-    current_assets = frozenset(base_symbol(str(symbol)) for symbol in canonical_assets if symbol)
-    targeted = [row for row in converted if _is_targeted(row, recent_cutoff, target_cutoff)]
-    exact = [
-        row
-        for row in targeted
-        if row.dedupe_family == dedupe_family and row.comparison_fingerprint == comparison_fingerprint
-    ]
-    exact_ids = {row.event_id for row in exact}
-    asset = [
-        row for row in targeted if row.event_id not in exact_ids and current_assets.intersection(row.canonical_assets)
-    ]
-    recent = [row for row in converted if _is_recent(row, recent_cutoff, now_ms)]
-    return assemble_reader_history(
-        recent_rows=recent,
-        exact_rows=exact if include_targeted else (),
-        asset_rows=asset if include_targeted else (),
-        similar_rows=converted if include_targeted else (),
-        comparison_title=comparison_title,
-        now_ms=now_ms,
-    )
-
-
 def assemble_reader_history(
     *,
     recent_rows: Sequence[Mapping[str, Any] | ReaderHistoryRow],
@@ -237,8 +103,8 @@ def assemble_reader_history(
     """Apply the shared boundaries, reason precedence, caps, deduplication, and stable order to query results.
 
     ``similar_rows`` may be any superset of the title-similarity band: the band is recomputed here with the
-    Python twin of pg_trgm, so the SQL ``ORDER BY similarity(...) DESC LIMIT`` and the evaluator's in-memory
-    receipts produce one ordering. Rows already selected by the recent or targeted bands are not spent on it.
+    Python twin of pg_trgm, so it agrees with the SQL ``ORDER BY similarity(...) DESC LIMIT`` that fetched
+    them. Rows already selected by the recent or targeted bands are not spent on it.
     """
 
     recent_cutoff, target_cutoff = _history_cutoffs(now_ms)
@@ -355,9 +221,6 @@ def _newest_first(row: ReaderHistoryRow) -> tuple[int, str]:
 
 
 __all__ = [
-    "READER_HISTORY_CONTRACT",
-    "READER_HISTORY_ID",
-    "READER_HISTORY_SHA256",
     "RECENT_HISTORY_MAX",
     "RECENT_HISTORY_WINDOW_MS",
     "SIMILAR_HISTORY_WINDOW_MS",
@@ -368,6 +231,4 @@ __all__ = [
     "ReaderHistoryRow",
     "ReaderHistorySnapshot",
     "assemble_reader_history",
-    "build_reader_history",
-    "news_retrieval_sha256",
 ]

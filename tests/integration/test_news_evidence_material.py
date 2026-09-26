@@ -7,7 +7,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.evidence import assemble_evidence, query_for, text_sha
+from tracefold.news.evidence import query_for, text_sha
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 
@@ -42,7 +42,7 @@ def admit(repos, text: str, *, record: int = 664, stamp: int = 1000):
     )
 
 
-def test_raw_payload_late_fill_conflict_and_frozen_spans(postgres_clone_dsn):
+def test_raw_payload_late_fill_and_body_revisions(postgres_clone_dsn):
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
         text = (
@@ -51,9 +51,7 @@ def test_raw_payload_late_fill_conflict_and_frozen_spans(postgres_clone_dsn):
             + "Not binding; approval is pending."
         )
         batch = admit(repos, text)
-        event_id = batch.results[0].event_id
         item = repos.news.evidence_material([batch.item_id])[0]
-        card = repos.news.event_card(event_id)
         assert item["provider_params_available_at_ms"] == 1000
         assert item["evidence_text"].endswith("Not binding; approval is pending.")
         assert text_sha(item["evidence_text"]) == item["evidence_text_sha256"]
@@ -69,13 +67,7 @@ def test_raw_payload_late_fill_conflict_and_frozen_spans(postgres_clone_dsn):
         admit(repos, text, stamp=3000)
         item = repos.news.evidence_material([batch.item_id])[0]
         assert item["provider_params_available_at_ms"] == 3000
-        old = assemble_evidence(card, item, query=query_for(card, item, cutoff=2000), candidates=[])
-        assert old.missing == ("legacy_excerpt_only",)
-        assert all("Not binding" not in s.text for s in old.current_evidence)
-        current = assemble_evidence(card, item, query=query_for(card, item, cutoff=3001), candidates=[])
-        assert "approval is pending" in " ".join(s.text for s in current.current_evidence)
-        for span in current.current_evidence:
-            assert item["evidence_text"][span.span_start : span.span_end] == span.text
+        assert item["evidence_text"].endswith("approval is pending.")
         # A changed body of the same provider record is kept as a later revision beside the first; the
         # first body and its clock are unchanged, and redelivering the revision writes nothing new (#706).
         revised = "BTC acquisition agreement announced.<br/>Conflicting executed status."

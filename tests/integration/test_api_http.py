@@ -10,17 +10,20 @@ from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_settings_storage,
 )
-from tests.support.news_judgment import news_taxonomy
+from tests.support.news_legacy import (
+    LEGACY_PROGRAM_VERSION,
+    LEGACY_TRIAGE_POLICY_VERSION,
+    legacy_editorial,
+    legacy_taxonomy,
+)
 from tracefold.app import serve_database as serve_database_module
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
-from tracefold.news.program.contracts import EditorialEnvelope
-from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.platform.config.models import NewsSettings, Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -370,8 +373,8 @@ def test_api_retired_market_routes_and_websocket_are_absent(tmp_path):
 def _historical_v2_editorial(*, source_authority: str) -> dict:
     """One `news_editorial_v2` document, exactly as the worker wrote it before #651 §5.3.
 
-    Written by hand because the Python contract can no longer produce it: `EditorialEnvelope` is v4, it
-    carries no `relevance` block at all, and `NewsTaxonomyV1` has no `source_authority` field. That is
+    Written by hand because the legacy v4 builder cannot produce it: v4 carries no `relevance` block at
+    all, and the v1 taxonomy label has no `source_authority` field. That is
     the point — these rows are audit truth that is never rewritten, and the feed's source-authority
     filter has to keep answering over them.
     """
@@ -388,7 +391,7 @@ def _historical_v2_editorial(*, source_authority: str) -> dict:
             "affected_markets": ["single_asset"],
             "reader_value": "realtime",
         },
-        "taxonomy": news_taxonomy(event_family="market_access", change_state="effective").model_dump(mode="json")
+        "taxonomy": legacy_taxonomy(event_family="market_access", change_state="effective")
         | {"source_authority": source_authority},
     }
     return payload | {"editorial_sha256": canonical_sha(payload)}
@@ -447,7 +450,7 @@ def _write_model_verdict(
             "verdict_sha256": verdict_sha,
             "editorial_sha256": editorial["editorial_sha256"],
             "runtime_manifest_sha": runtime_manifest_sha,
-            "program_version": PROGRAM_VERSION,
+            "program_version": LEGACY_PROGRAM_VERSION,
             "program_sha256": program_sha256,
             "evidence_version": int(evidence["evidence_version"]),
             "evidence_sha256": str(evidence["evidence_sha256"]),
@@ -471,7 +474,7 @@ def _write_model_verdict(
                 judgment_sha256=judgment_sha,
                 runtime_manifest_sha=runtime_manifest_sha,
                 model="test-model",
-                program_version=PROGRAM_VERSION,
+                program_version=LEGACY_PROGRAM_VERSION,
                 program_sha256=program_sha256,
                 degraded=False,
                 error_code=None,
@@ -499,15 +502,14 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
     assert len(event_ids) >= 2
     unavailable_event, historical_event = event_ids[0], event_ids[1]
 
-    unavailable = EditorialEnvelope.issue(
+    unavailable = legacy_editorial(
         source_authority="issuer_first_party",
-        taxonomy=None,
         taxonomy_error_code="news_program_output_truncated",
-    ).model_dump(mode="json")
+    ).document
     _write_model_verdict(
         event_id=unavailable_event,
         editorial=unavailable,
-        policy_version=TRIAGE_POLICY_VERSION,
+        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
         judgment_contract_version="news_judgment_v3",
         override_rule="fact_kind_state_change",
         now_ms=now_ms,
@@ -538,7 +540,7 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
     assert triage["source_authority_zh"]
     assert triage["headline_zh"] == "比特币获得新的市场准入"
     verdict_row = next(row for row in detail.json()["data"]["verdicts"] if row["stage"] == "triage")
-    assert verdict_row["policy_version"] == TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
+    assert verdict_row["policy_version"] == LEGACY_TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
     assert verdict_row["model_editorial"]["taxonomy"] is None
     assert verdict_row["model_editorial"]["taxonomy_status"] == "unavailable"
     assert verdict_row["model_editorial"]["source_authority"] == "issuer_first_party"

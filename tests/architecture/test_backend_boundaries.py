@@ -60,16 +60,13 @@ PLATFORM_TABLES = {
     "workers_runtime",
 }
 # Existing database adapters that legitimately own SQL without being storage modules. Keep this small:
-# App is the composition seam, ReviewDesk/evaluation_history predate the storage package split, and moving
-# them is not part of PostgreSQL governance. New product SQL belongs in its owner's storage family.
+# App is the composition seam, ReviewDesk predates the storage package split, and moving it is not part
+# of PostgreSQL governance. New product SQL belongs in its owner's storage family.
 SQL_LOCATION_EXCEPTIONS = frozenset(
     {
         "tracefold/app/cli/commands/db.py",
-        "tracefold/app/cli/commands/news_learning.py",
-        "tracefold/app/cli/commands/news_learning_runtime.py",
         "tracefold/app/query_audit.py",
         "tracefold/app/workers/runtime.py",
-        "tracefold/news/learning/evaluation_history.py",
         "tracefold/news/review/desk.py",
     }
 )
@@ -159,6 +156,7 @@ def test_retired_taxonomy_lifecycle_has_no_module_or_runtime_wiring() -> None:
         "tracefold.news.learning.taxonomy",
         "tracefold.news.learning.taxonomy_shadow",
         "tracefold.news.learning.taxonomy_evaluation",
+        "tracefold.news.learning.taxonomy_metric",
     ):
         try:
             importlib.import_module(module)
@@ -167,21 +165,14 @@ def test_retired_taxonomy_lifecycle_has_no_module_or_runtime_wiring() -> None:
         else:  # pragma: no cover - the assertion describes the retired public import surface
             raise AssertionError(f"retired taxonomy module remains importable: {module}")
 
-    from tracefold.app.cli.commands.news_learning_composition import NewsProgramRuntimeComposition
     from tracefold.app.learning_runtime import NewsRuntimeModels
-    from tracefold.news.storage.learning import LearningStorage
+    from tracefold.news import taxonomy
 
-    assert not hasattr(NewsProgramRuntimeComposition, "taxonomy_shadow_program")
     # The runtime model composition has no taxonomy or progression slot of any kind (#706).
     assert not [name for name in NewsRuntimeModels.__dataclass_fields__ if "taxonomy" in name or "progression" in name]
-    for retired_storage_read in (
-        "taxonomy_candidate_registration",
-        "taxonomy_active_deployment",
-        "taxonomy_shadow_artifacts",
-        "taxonomy_regression_sources",
-        "taxonomy_gold_sources",
-    ):
-        assert not hasattr(LearningStorage, retired_storage_read)
+    # What stays is the IPTC codebook and source authority; none of the four model-owned axes.
+    for retired in ("ModelTaxonomyV1", "NewsTaxonomyV1", "ReviewTaxonomyV1", "EVENT_FAMILIES", "CHANGE_STATES"):
+        assert not hasattr(taxonomy, retired)
 
 
 def test_delivery_adapters_never_import_the_market_notification_loop() -> None:
@@ -406,40 +397,6 @@ def test_production_sql_lives_in_owned_storage_or_an_explicit_adapter() -> None:
     assert sql_paths, "production SQL location scan must fail closed"
 
     violations = sorted(path for path in sql_paths if not _sql_location_allowed(path))
-    assert violations == []
-
-
-def test_app_composition_does_not_own_news_canary_release_semantics() -> None:
-    """App may pass runtime facts, but News Release owns lineage, reasons, and transitions."""
-
-    durable_reasons = {
-        "selector_version_mismatch",
-        "eligibility_profile_hash_mismatch",
-        "rolling_profile_hash_mismatch",
-        "candidate_manifest_missing_or_invalid",
-        "candidate_bundle_mismatch",
-        "candidate_parent_stale",
-        "candidate_artifact_invalid",
-        "candidate_runtime_invalid",
-        "candidate_runtime_unavailable",
-    }
-    lineage_attributes = {
-        "parent_stable_sha",
-        "program_parent_sha256",
-        "program_candidate_sha256",
-    }
-    violations: list[str] = []
-    for path in _python_files(SRC / "app"):
-        relative = path.relative_to(SRC)
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if node.func.attr == "transition_canary":
-                    violations.append(f"{relative.as_posix()} calls transition_canary")
-            elif isinstance(node, ast.Attribute) and node.attr in lineage_attributes:
-                violations.append(f"{relative.as_posix()} interprets {node.attr}")
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in durable_reasons:
-                violations.append(f"{relative.as_posix()} owns durable reason {node.value}")
     assert violations == []
 
 

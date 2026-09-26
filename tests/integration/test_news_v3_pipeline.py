@@ -11,19 +11,22 @@ import pytest
 from psycopg.errors import CheckViolation, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_judgment import scored_judgment
+from tests.support.news_legacy import (
+    LEGACY_PROGRAM_VERSION,
+    LEGACY_TRIAGE_POLICY_VERSION,
+    legacy_degraded_judgment,
+    legacy_judgment,
+)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import QuoteRequest
-from tracefold.news.models import TRIAGE_POLICY_VERSION, MarketAsset, TriageVerdict
+from tracefold.news.models import MarketAsset, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
-from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.search import compile_news_search
 from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.operations import RECOVERY_BACKLOG_LIMIT
-from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, fallback_verdict, storyline_status
 
 pytestmark = pytest.mark.integration
 
@@ -197,15 +200,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         headline_zh="测试",
         why_zh="",
     )
-    judgment = scored_judgment(verdict)
-    facts = GateFacts(
-        grounded_assets=tuple(row["grounded_assets"] or []),
-        watchlist_symbols=frozenset(),
-        admission=row["admission"],
-    )
-    status0 = storyline_status(row["storyline_key"])
-    first = decide(judgment, facts, status0)
-    assert first.final == "push"
+    judgment = legacy_judgment(verdict)
     evidence = repos.news.latest_evidence_snapshot(row["event_id"])
     assert evidence is not None
     runtime_manifest_sha = "b" * 64
@@ -216,7 +211,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "editorial_sha256": judgment.editorial.editorial_sha256,
         "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_version": LEGACY_PROGRAM_VERSION,
         "program_sha256": "a" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
@@ -228,19 +223,19 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         inserted = repos.news.insert_verdict(
             event_id=row["event_id"],
             stage="triage",
-            policy_version=TRIAGE_POLICY_VERSION,
+            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
             judgment_contract_version=judgment.judgment_contract_version,
             judgment_origin="model",
-            rule_baseline_decision=first.rule_baseline,
-            final_decision=first.final,
-            override_rule=first.override_rule,
+            rule_baseline_decision="push",
+            final_decision="push",
+            override_rule="fact_kind_state_change",
             throttled_by=None,
             verdict=verdict.model_dump(),
-            model_editorial=judgment.editorial.model_dump(mode="json"),
+            model_editorial=judgment.editorial.document,
             judgment_sha256=judgment.scored_judgment_sha256,
             runtime_manifest_sha=runtime_manifest_sha,
             model="test",
-            program_version=SEMANTIC_PROGRAM_VERSION,
+            program_version=LEGACY_PROGRAM_VERSION,
             program_sha256="a" * 64,
             degraded=False,
             error_code=None,
@@ -254,19 +249,19 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         again = repos.news.insert_verdict(
             event_id=row["event_id"],
             stage="triage",
-            policy_version=TRIAGE_POLICY_VERSION,
+            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
             judgment_contract_version=judgment.judgment_contract_version,
             judgment_origin="model",
-            rule_baseline_decision=first.rule_baseline,
-            final_decision=first.final,
-            override_rule=first.override_rule,
+            rule_baseline_decision="push",
+            final_decision="push",
+            override_rule="fact_kind_state_change",
             throttled_by=None,
             verdict=verdict.model_dump(),
-            model_editorial=judgment.editorial.model_dump(mode="json"),
+            model_editorial=judgment.editorial.document,
             judgment_sha256=judgment.scored_judgment_sha256,
             runtime_manifest_sha=runtime_manifest_sha,
             model="test",
-            program_version=SEMANTIC_PROGRAM_VERSION,
+            program_version=LEGACY_PROGRAM_VERSION,
             program_sha256="a" * 64,
             degraded=False,
             error_code=None,
@@ -277,18 +272,6 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             now_ms=now_ms,
         )
         assert again is False
-    status1 = storyline_status(row["storyline_key"])
-    second = decide(judgment, facts, status1, policy=DecidePolicy(similarity_max=0.0))
-    assert second.final == "push" and second.throttled_by is None
-    seen = storyline_status(
-        row["storyline_key"],
-        seen=[{"event_id": row["event_id"], "headline_zh": verdict.headline_zh}],
-    )
-    repeated = decide(judgment, facts, seen)
-    assert repeated.final == "throttled" and repeated.throttled_by.endswith(":seen")
-    distinct_judgment = scored_judgment(verdict.model_copy(update={"headline_zh": "另一件完全不同的事情"}))
-    distinct = decide(distinct_judgment, facts, seen)
-    assert distinct.final == "push" and distinct.override_rule == "fact_kind_state_change"
     # A decision is only a reservation.  With no settled first delivery there
     # is no ReaderReceipt and therefore no semantic told memory.
     assert not repos.news.reader_history(
@@ -342,28 +325,18 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             error_code=None,
             now_ms=now_ms + 20,
         )
-    told = [
-        row.as_told_row()
-        for row in repos.news.reader_history(
-            event_id="candidate-reader-history", now_ms=later, include_targeted=False
-        ).recent_seen_rows
-    ]
-    assert [t["event_id"] for t in told] == [row["event_id"]]
-    assert told[0]["headline_zh"] == "测试" and told[0]["direction"] == "bullish"
-    assert told[0]["storyline_key"] == row["storyline_key"] and told[0]["at_ms"] == now_ms + 20
-    # The projection is the selector's input contract: everything it ranks on comes from this one query.
-    assert told[0]["comparison_title"] and told[0]["dedupe_family"] == "general"
-    assert list(told[0]["grounded_assets"]) == list(row["grounded_assets"])
+    told = repos.news.reader_history(
+        event_id="candidate-reader-history", now_ms=later, include_targeted=False
+    ).recent_seen_rows
+    assert [t.event_id for t in told] == [row["event_id"]]
+    assert told[0].headline_zh == "测试" and told[0].direction == "bullish"
+    assert told[0].storyline_key == row["storyline_key"] and told[0].at_ms == now_ms + 20
+    # The projection is the band's input contract: everything it ranks on comes from this one query.
+    assert told[0].comparison_title and told[0].dedupe_family == "general"
+    assert list(told[0].grounded_assets) == list(row["grounded_assets"])
     with repos.transaction():
         conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
-    # A grounded restatement of that card drops, and the storyline lock is a plain transaction-scoped advisory lock.
-    told_status = storyline_status(
-        row["storyline_key"],
-        told=[{"i": 0, "direction": t["direction"], "headline_zh": t["headline_zh"]} for t in told],
-    )
-    restated_judgment = scored_judgment(verdict.model_copy(update={"novelty": "restatement", "restates": 0}))
-    restated = decide(restated_judgment, facts, told_status)
-    assert restated.final == "drop" and restated.override_rule == "restatement"
+    # The storyline lock is a plain transaction-scoped advisory lock.
     held_sql = (
         "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = %s AND pid = pg_backend_pid()"
     )
@@ -575,14 +548,12 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
     sent_event, ambiguous_event = str(candidates[0]["event_id"]), str(candidates[1]["event_id"])
     evidence = repos.news.latest_evidence_snapshot(sent_event)
     assert evidence is not None
-    degraded_judgment = fallback_verdict(
-        GateFacts(
-            grounded_assets=("BTC",),
-            watchlist_symbols=frozenset({"BTC"}),
-            admission="candidate",
-        ),
-        error_code="news_program_route_deadline",
+    degraded_judgment = legacy_degraded_judgment(
         title="模型占位文字",
+        error_code="news_program_route_deadline",
+        final="push",
+        override_rule="degraded_watchlist_objective",
+        watchlist_hits=("BTC",),
     )
     verdict = degraded_judgment.verdict
     runtime_manifest_sha = "b" * 64
@@ -592,7 +563,7 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         "judgment_sha256": degraded_judgment.judgment_sha256,
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_version": LEGACY_PROGRAM_VERSION,
         "program_sha256": "a" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
@@ -606,7 +577,7 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         assert repos.news.insert_verdict(
             event_id=sent_event,
             stage="triage",
-            policy_version=TRIAGE_POLICY_VERSION,
+            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
             judgment_contract_version=degraded_judgment.judgment_contract_version,
             judgment_origin="degraded",
             rule_baseline_decision=degraded_judgment.decision.rule_baseline,
@@ -618,7 +589,7 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
             judgment_sha256=degraded_judgment.judgment_sha256,
             runtime_manifest_sha=runtime_manifest_sha,
             model=None,
-            program_version=SEMANTIC_PROGRAM_VERSION,
+            program_version=LEGACY_PROGRAM_VERSION,
             program_sha256="a" * 64,
             degraded=True,
             error_code="news_program_route_deadline",
@@ -644,14 +615,14 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         assert repos.news.terminalize_interrupted_deliveries(now_ms=81_001) == 1
 
     told = [
-        row.as_told_row()
+        row
         for row in repos.news.reader_history(
             event_id="candidate-reader-history", now_ms=10_300, include_targeted=False
         ).recent_seen_rows
         if row.event_id in {sent_event, ambiguous_event}
     ]
-    assert told[0]["provenance_status"] == "legacy_receipt_only"
-    assert len(told) == 1 and told[0]["event_id"] == sent_event and told[0]["headline_zh"] == "实际降级卡片"
+    assert told[0].provenance_status == "legacy_receipt_only"
+    assert len(told) == 1 and told[0].event_id == sent_event and told[0].headline_zh == "实际降级卡片"
     sent_detail = repos.news.event_detail(sent_event)
     ambiguous_detail = repos.news.event_detail(ambiguous_event)
     assert sent_detail is not None and sent_detail["reader_receipt"]["state"] == "received"
@@ -869,7 +840,7 @@ def _insert_test_verdict(
         headline_zh="筛选测试",
         why_zh="",
     )
-    judgment = scored_judgment(verdict)
+    judgment = legacy_judgment(verdict)
     evidence = repos.news.latest_evidence_snapshot(event_id)
     assert evidence is not None
     runtime_manifest_sha = "c" * 64
@@ -880,7 +851,7 @@ def _insert_test_verdict(
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "editorial_sha256": judgment.editorial.editorial_sha256,
         "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_version": LEGACY_PROGRAM_VERSION,
         "program_sha256": "d" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
@@ -891,7 +862,7 @@ def _insert_test_verdict(
     assert repos.news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version=TRIAGE_POLICY_VERSION,
+        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
         judgment_contract_version=judgment.judgment_contract_version,
         judgment_origin="model",
         rule_baseline_decision=final_decision,
@@ -899,11 +870,11 @@ def _insert_test_verdict(
         override_rule="fact_kind_state_change" if final_decision == "push" else "fact_kind_statement",
         throttled_by=None,
         verdict=verdict.model_dump(),
-        model_editorial=judgment.editorial.model_dump(mode="json"),
+        model_editorial=judgment.editorial.document,
         judgment_sha256=judgment.scored_judgment_sha256,
         runtime_manifest_sha=runtime_manifest_sha,
         model="test",
-        program_version=SEMANTIC_PROGRAM_VERSION,
+        program_version=LEGACY_PROGRAM_VERSION,
         program_sha256="d" * 64,
         degraded=False,
         error_code=None,
@@ -1934,151 +1905,6 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
     conn.commit()
 
 
-def test_the_third_card_on_one_storyline_inside_an_hour_is_pushed(conn) -> None:
-    """Policy v17 across the real seam: three Events key to one storyline, two are delivered, and the third is
-    measured against the sent ledger PostgreSQL projects and pushed. Under v12-v16 it was withheld as
-    `storyline:<key>:budget`; the owner withdrew #504 D2 on 2026-09-23. The row persists under the v17
-    judgment CHECK, and the same-fact check still withholds a repeat of a delivered card on that key."""
-
-    repos = repositories_for_connection(conn)
-    first, second, third = _admit_test_events(
-        conn,
-        hit_base=1_795_600,
-        titles=(
-            "Iran fires missiles at the US base in Qatar",
-            "Iran says strikes on Gulf states will continue",
-            "Iran closes the Strait of Hormuz to tanker traffic",
-        ),
-        hour=12,
-    )
-    keys = {
-        row["event_id"]: row["storyline_key"]
-        for row in conn.execute(
-            "SELECT event_id, storyline_key FROM news_events WHERE event_id = ANY(%s)", ([first, second, third],)
-        ).fetchall()
-    }
-    assert set(keys.values()) == {"conflict:mideast_2026"}
-    # Far enough from every other test's clock that their sent cards fall outside the 4 h recent ledger.
-    now_ms = 2_050_000_000_000
-    with repos.transaction():
-        for offset, event_id in enumerate((first, second)):
-            _insert_test_verdict(
-                repos,
-                event_id=event_id,
-                direction="bearish",
-                final_decision="push",
-                now_ms=now_ms - 40 * 60_000 + offset,
-            )
-            assert (
-                repos.news.begin_delivery(
-                    event_id=event_id,
-                    kind="first",
-                    card={"event_id": event_id},
-                    now_ms=now_ms - 35 * 60_000 + offset,
-                    history_context_json=json.dumps(
-                        {
-                            "storyline_key": keys[event_id],
-                            **repos.news.latest_verdict(event_id=event_id, stage="triage")["verdict"],
-                        }
-                    ),
-                )
-                == "new"
-            )
-            assert repos.news.settle_delivery(
-                event_id=event_id,
-                kind="first",
-                state="sent",
-                receipt={"ok": True},
-                error_code=None,
-                now_ms=now_ms - 30 * 60_000 + offset,
-            )
-
-    # The ledger `decide()` reads is the real projection: settle time and the card's final key, newest first.
-    seen = [
-        row.as_told_row()
-        for row in repos.news.reader_history(event_id=third, now_ms=now_ms, include_targeted=False).recent_seen_rows
-    ]
-    assert [row["event_id"] for row in seen] == [second, first]
-    assert [row["storyline_key"] for row in seen] == ["conflict:mideast_2026", "conflict:mideast_2026"]
-    assert seen[0]["at_ms"] == now_ms - 30 * 60_000 + 1
-    status = storyline_status("conflict:mideast_2026", seen=seen)
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        assets=[],
-        direction="bearish",
-        scope="macro",
-        fact_kind="state_change",
-        evidence_ref="c1",
-        confidence=0.8,
-        headline_zh="伊朗封锁霍尔木兹海峡，油轮停运",
-        why_zh="",
-    )
-    judgment = scored_judgment(verdict)
-    facts = GateFacts(grounded_assets=(), watchlist_symbols=frozenset(), admission="candidate")
-    decision = decide(judgment, facts, status, now_ms=now_ms)
-    assert decision.final == "push" and decision.throttled_by is None
-    assert decision.override_rule == "fact_kind_state_change" and decision.seen_scope == "all"
-    # The same fact as a delivered card on that key is still the similarity check's to withhold.
-    repeat = scored_judgment(verdict.model_copy(update={"headline_zh": seen[0]["headline_zh"]}))
-    withheld = decide(repeat, facts, status, now_ms=now_ms)
-    assert withheld.final == "throttled" and withheld.throttled_by == "storyline:conflict:mideast_2026:seen"
-
-    evidence = repos.news.latest_evidence_snapshot(third)
-    assert evidence is not None
-    runtime_manifest_sha = "c" * 64
-    trace = {
-        "judgment_contract_version": judgment.judgment_contract_version,
-        "judgment_origin": "model",
-        "judgment_sha256": judgment.scored_judgment_sha256,
-        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
-        "editorial_sha256": judgment.editorial.editorial_sha256,
-        "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": SEMANTIC_PROGRAM_VERSION,
-        "program_sha256": "d" * 64,
-        "evidence_version": int(evidence["evidence_version"]),
-        "evidence_sha256": str(evidence["evidence_sha256"]),
-        "focus_fact_id": str(evidence["focus_fact_id"]),
-        "told": [],
-        "told_count": 0,
-        "seen_scope": decision.seen_scope,
-    }
-    with repos.transaction():
-        assert repos.news.insert_verdict(
-            event_id=third,
-            stage="triage",
-            policy_version=TRIAGE_POLICY_VERSION,
-            judgment_contract_version=judgment.judgment_contract_version,
-            judgment_origin="model",
-            rule_baseline_decision=decision.rule_baseline,
-            final_decision=decision.final,
-            override_rule=decision.override_rule,
-            throttled_by=decision.throttled_by,
-            verdict=verdict.model_dump(),
-            model_editorial=judgment.editorial.model_dump(mode="json"),
-            judgment_sha256=judgment.scored_judgment_sha256,
-            runtime_manifest_sha=runtime_manifest_sha,
-            model="test",
-            program_version=SEMANTIC_PROGRAM_VERSION,
-            program_sha256="d" * 64,
-            degraded=False,
-            error_code=None,
-            trace=trace,
-            evidence_version=int(evidence["evidence_version"]),
-            evidence_sha256=str(evidence["evidence_sha256"]),
-            focus_fact_id=str(evidence["focus_fact_id"]),
-            now_ms=now_ms,
-        )
-    row = conn.execute(
-        "SELECT policy_version, final_decision, throttled_by FROM news_verdicts WHERE event_id = %s", (third,)
-    ).fetchone()
-    assert row is not None and row["policy_version"] == TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
-    assert row["final_decision"] == "push" and row["throttled_by"] is None
-    pipeline = repos.news.status_snapshot(now_ms=now_ms)["pipeline"]
-    assert not any(key.endswith(":budget") for key in pipeline["throttled_by_key"])
-    assert pipeline["duplicates_withheld_24h"]["all"] == 0
-    conn.commit()
-
-
 def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> None:
     """#87/#207 PR-W1: the asset chip renders the collapsed base, so the filter behind it has to match it.
 
@@ -2316,7 +2142,7 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
         headline_zh="Visa 在稳定币卡业务中引入链上信贷",
         why_zh="发卡方以链上借贷提供营运资金。",
     )
-    judgment = scored_judgment(verdict)
+    judgment = legacy_judgment(verdict)
     trace = {
         "judgment_contract_version": judgment.judgment_contract_version,
         "judgment_origin": "model",
@@ -2324,7 +2150,7 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "editorial_sha256": judgment.editorial.editorial_sha256,
         "runtime_manifest_sha": "b" * 64,
-        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_version": LEGACY_PROGRAM_VERSION,
         "program_sha256": "a" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
@@ -2337,7 +2163,7 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
         repos.news.insert_verdict(
             event_id=event_id,
             stage="triage",
-            policy_version=TRIAGE_POLICY_VERSION,
+            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
             judgment_contract_version=judgment.judgment_contract_version,
             judgment_origin="model",
             rule_baseline_decision="push",
@@ -2345,11 +2171,11 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
             override_rule=None,
             throttled_by=None,
             verdict=payload,
-            model_editorial=judgment.editorial.model_dump(mode="json"),
+            model_editorial=judgment.editorial.document,
             judgment_sha256=judgment.scored_judgment_sha256,
             runtime_manifest_sha="b" * 64,
             model="test",
-            program_version=SEMANTIC_PROGRAM_VERSION,
+            program_version=LEGACY_PROGRAM_VERSION,
             program_sha256="a" * 64,
             degraded=False,
             error_code=None,

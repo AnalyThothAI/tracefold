@@ -1,18 +1,16 @@
 from __future__ import annotations
 
+import json
 import uuid
 from argparse import Namespace
 from typing import Any
 
 from tracefold.platform.config.loader import load_settings
 
-from .news_learning_documents import _read_json_or_yaml
-
 
 def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.review.desk import (
-        BlindPairwiseSubmission,
         DeskQuery,
         EventRubricSubmission,
         ExternalMissSubmission,
@@ -30,10 +28,8 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "queue":
             query = DeskQuery(
                 view=args.view,
-                mode=args.mode,
                 cohort=args.cohort,
                 stratum=args.stratum,
-                proposal=args.proposal,
                 task=args.task,
                 event=args.event,
                 status=args.status,
@@ -50,14 +46,7 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
                 data = ReviewDesk(conn).evidence(task, principal=principal, source_only=bool(args.source_only))
             return 0, {"ok": True, "data": data}
 
-        if action == "accept-drafts":
-            return _handle_review_accept_drafts(args, settings, principal)
-
-        if action == "audit-report":
-            return _handle_review_audit_report(args, settings, principal)
-
         payload = _read_json_or_yaml(str(args.file))
-        kind = str(payload.get("kind") or "")
         key = str(args.idempotency_key or uuid.uuid4())
         if action == "submit":
             reviewer = str(args.reviewer or "").strip()
@@ -73,11 +62,7 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
                 submission = ExternalMissSubmission.model_validate(payload)
                 data = desk.submit(None, submission, principal=principal, idempotency_key=key)
             else:
-                submission = (
-                    EventRubricSubmission.model_validate(payload)
-                    if kind == "event_rubric"
-                    else BlindPairwiseSubmission.model_validate(payload)
-                )
+                submission = EventRubricSubmission.model_validate(payload)
                 task = TaskRef(task_id=str(args.task), task_version=str(args.version))
                 data = desk.submit(task, submission, principal=principal, idempotency_key=key)
         return 0, {"ok": True, "data": data}
@@ -85,161 +70,17 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         return 2, {"ok": False, "error": str(exc)}
 
 
-def _handle_review_audit_report(args: Namespace, settings: Any, principal: Any) -> tuple[int, dict[str, Any]]:
-    """Read a draft batch, look up what each task actually got, and print the day's two short lists.
+def _read_json_or_yaml(path: str) -> dict[str, Any]:
+    """JSON first, YAML second: a hand-written review file is allowed to be YAML."""
 
-    The decisions come from the ReviewDesk queue one task at a time — the same read an authorized reviewer
-    opens — rather than from a second SQL statement over the verdict tables. A task the desk cannot resolve
-    is reported as skipped, never assumed.
-    """
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    try:
+        document = json.loads(text)
+    except ValueError:
+        import yaml
 
-    from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.review.audit import audit_report, decision_task_ids, decisions_from_queue, render_table
-    from tracefold.news.review.desk import DeskQuery, ReviewDesk
-
-    batch = _read_json_or_yaml(str(args.file))
-    rows: list[dict[str, Any]] = []
-    with postgres_connection(settings) as conn:
-        desk = ReviewDesk(conn)
-        for task_id in decision_task_ids(batch):
-            queue = desk.open(DeskQuery(view="queue", mode="event", task=task_id, status="all"), principal=principal)
-            rows.extend(dict(row) for row in (queue.get("tasks") or ()))
-    report = audit_report(batch, decisions_from_queue(rows))
-    if not bool(args.json):
-        report = {**report, "table": render_table(report)}
-    return 0, {"ok": True, "data": report}
-
-
-def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any) -> tuple[int, dict[str, Any]]:
-    """Submit model drafts an owner-authorized reviewer inspected, through the ordinary submit path.
-
-    This is deliberately not a shortcut around review. `ReviewDesk.submit` stays the only writer, every row
-    names the actual accepting reviewer, and the rubric's own validators still decide what is acceptable.
-    What it removes is retyping: the drafter turned "compose judgments" into "read and decide", and this turns
-    the second half into one command.
-
-    Measured against 25 Events a human had already judged, the drafter agrees 70-88% on the dimensions it is
-    allowed to emit. That is useful and it is not good enough to accept unread — hence `--dry-run`,
-    `--min-confidence` and the explicit include/exclude lists, and hence the receipt naming exactly what went in.
-    """
-
-    from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.review.desk import EventRubricSubmission, Principal, ReviewDesk, TaskRef
-    from tracefold.news.review.drafter import DRAFT_SCHEMA, DRAFTER_ID, ReviewDraft, submission_payload
-    from tracefold.platform.postgres.client import transaction
-
-    batch = _read_json_or_yaml(str(args.file))
-    if str(batch.get("schema_id") or "") != DRAFT_SCHEMA:
-        raise ValueError("news_review_accept_drafts_schema_invalid")
-    minimum = float(args.min_confidence)
-    only = tuple(part.strip() for part in str(args.only).split(",") if part.strip())
-    exclude = tuple(part.strip() for part in str(args.exclude).split(",") if part.strip())
-    if not args.dry_run and not only:
-        raise ValueError("news_review_accept_drafts_only_required")
-    reviewer = str(args.reviewer or "").strip()
-    if not args.dry_run and not reviewer:
-        raise ValueError("news_review_accept_drafts_reviewer_required")
-    # Dry-run creates no acceptance row, so its placeholder identity never becomes provenance.
-    principal = Principal(subject=reviewer or "preview")
-    explicit_owner = str(getattr(args, "first_bad_owner", "") or "").strip() or None
-    drafter_identity = dict(batch.get("drafter") or {})
-    drafter_contract = str(drafter_identity.get("drafter_id") or DRAFTER_ID).strip()
-    drafter_model = str(drafter_identity.get("model") or "").strip()
-    draft_author = f"{drafter_contract}@{drafter_model}" if drafter_model else drafter_contract
-
-    planned: list[tuple[str, str, dict[str, Any], float]] = []
-    skipped: dict[str, int] = {}
-
-    def skip(reason: str) -> None:
-        skipped[reason] = skipped.get(reason, 0) + 1
-
-    for entry in batch.get("drafts") or ():
-        task_id, event_id = str(entry.get("task_id") or ""), str(entry.get("event_id") or "")
-        if entry.get("error"):
-            skip("drafting_failed")
-            continue
-        if only and not any(task_id.startswith(p) or event_id.startswith(p) for p in only):
-            skip("not_in_only")
-            continue
-        if exclude and any(task_id.startswith(p) or event_id.startswith(p) for p in exclude):
-            skip("excluded")
-            continue
-        # The four taxonomy_* dimensions are recomputed from this entry against the possibly edited
-        # `draft.taxonomy` (#548 PR-B.1). An entry that does not carry Stable's label cannot be compared,
-        # only copied, so it is refused here instead. `null` is a carried answer and passes: Stable never
-        # labelled that Event, and every taxonomy axis is `not_applicable`.
-        if "stable_taxonomy" not in entry:
-            skip("stable_taxonomy_missing")
-            continue
-        draft = ReviewDraft.model_validate(entry.get("draft") or {})
-        if draft.confidence < minimum:
-            skip("below_min_confidence")
-            continue
-        try:
-            payload = submission_payload(
-                draft,
-                stable_taxonomy=entry.get("stable_taxonomy"),
-                draft_author=draft_author,
-            )
-            payload["first_bad_owner"] = explicit_owner
-            EventRubricSubmission.model_validate(payload)
-        except Exception:
-            # The rubric refused it. Better skipped and reported than reshaped into something acceptable.
-            skip("rubric_rejected")
-            continue
-        planned.append((task_id, str(entry.get("task_version") or ""), payload, draft.confidence))
-
-    if bool(args.dry_run):
-        return 0, {
-            "ok": True,
-            "data": {
-                "dry_run": True,
-                "would_submit": len(planned),
-                "skipped": skipped,
-                "batch_sha256": batch.get("batch_sha256"),
-                "selected_task_ids": [task_id for task_id, _version, _payload, _confidence in planned],
-                "explicit_first_bad_owner": explicit_owner,
-                "sample": [
-                    {"task_id": task_id, "confidence": confidence, "dimensions": payload["dimensions"]}
-                    for task_id, _version, payload, confidence in planned[:5]
-                ],
-            },
-        }
-
-    submitted, failures = 0, []
-    with postgres_connection(settings) as conn:
-        for task_id, task_version, payload, _confidence in planned:
-            # One transaction per draft: a rubric one Event disagrees with must not roll back the rest.
-            try:
-                with transaction(conn):
-                    ReviewDesk(conn).submit(
-                        TaskRef(task_id=task_id, task_version=task_version),
-                        EventRubricSubmission.model_validate(payload),
-                        principal=principal,
-                        idempotency_key=_sha_idempotency(batch.get("batch_sha256"), task_id),
-                    )
-                submitted += 1
-            except Exception as exc:
-                failures.append({"task_id": task_id, "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
-    return 0, {
-        "ok": True,
-        "data": {
-            "submitted": submitted,
-            "planned": len(planned),
-            "skipped": skipped,
-            "failed": failures[:20],
-            "failed_n": len(failures),
-            "batch_sha256": batch.get("batch_sha256"),
-            "reviewer": getattr(principal, "subject", None),
-            "selected_task_ids": [task_id for task_id, _version, _payload, _confidence in planned],
-            "explicit_first_bad_owner": explicit_owner,
-        },
-    }
-
-
-def _sha_idempotency(batch_sha: Any, task_id: str) -> str:
-    """Stable per (batch, task), so re-running an interrupted accept does not double-write."""
-
-    from tracefold.news.artifact_identity import canonical_sha
-
-    return canonical_sha({"batch": str(batch_sha or ""), "task_id": task_id})
+        document = yaml.safe_load(text)
+    if not isinstance(document, dict):
+        raise ValueError(f"news_document_not_a_mapping:{path}")
+    return document

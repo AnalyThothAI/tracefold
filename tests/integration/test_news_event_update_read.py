@@ -26,10 +26,10 @@ from tests.support.news_event_updates import (
     settle_intent,
     silent_plan,
 )
-from tests.support.news_judgment import scored_judgment
+from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.models import TriageVerdict
 from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft, SupportDraft
 from tracefold.news.updates.semantics import assemble_update
 
@@ -111,7 +111,7 @@ def _legacy_verdict(news: Any, event_id: str, *, now_ms: int) -> None:
     """One `news_judgment_v3` Triage verdict, the history an Event judged before #706 keeps."""
 
     evidence = news.latest_evidence_snapshot(event_id)
-    judgment = scored_judgment(
+    judgment = legacy_judgment(
         TriageVerdict(
             novelty="new_fact",
             assets=[],
@@ -127,7 +127,7 @@ def _legacy_verdict(news: Any, event_id: str, *, now_ms: int) -> None:
     news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version=TRIAGE_POLICY_VERSION,
+        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
         judgment_contract_version=judgment.judgment_contract_version,
         judgment_origin="model",
         rule_baseline_decision="drop",
@@ -135,7 +135,7 @@ def _legacy_verdict(news: Any, event_id: str, *, now_ms: int) -> None:
         override_rule=None,
         throttled_by=None,
         verdict=judgment.verdict.model_dump(mode="json"),
-        model_editorial=judgment.editorial.model_dump(mode="json"),
+        model_editorial=judgment.editorial.document,
         judgment_sha256=judgment.scored_judgment_sha256,
         runtime_manifest_sha="b" * 64,
         model="test",

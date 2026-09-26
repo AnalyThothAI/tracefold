@@ -21,13 +21,13 @@ from pydantic import ValidationError
 from tests.postgres_test_utils import connect_postgres_test, prepare_test_migration_database
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
+from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.journal import (
     ObservationFactory,
     day_start_baseline_from_observation,
 )
 from tracefold.news.events.facts import extract_fact_units
-from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.news.smart_money import PARSER_VERSION
 from tracefold.news.smart_money import source_key as smart_money_source_key
@@ -2766,7 +2766,7 @@ def _persist_pre_v3_verdict(
 
     A migration test's seed has to be what the ledger actually held before the cut, and after #675 §1
     that is a verdict carrying `magnitude` and `audience` inside a `news_editorial_v3` envelope carrying
-    `relevance`. `tests.support.news_judgment` builds the current contract and nothing else, so the two
+    `relevance`. `tests.support.news_legacy` builds the v3 contract and nothing else, so the two
     canonical digests the CHECK recomputes are built here from the same `canonical_sha` the worker used.
     """
 
@@ -2960,7 +2960,7 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
         # itself admitted; the v15 row is the one that matters here.
         assert {str(row["policy_version"]) for row in rows} == {
             "news_triage_policy_v15",
-            TRIAGE_POLICY_VERSION,
+            LEGACY_TRIAGE_POLICY_VERSION,
         }
         # And each shape stays bound to the contract that wrote it: a v3 row states a kind and no
         # magnitude, a v2 row the other way round, and `news_current_verdict_contract_shape_valid` is
@@ -3332,7 +3332,7 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
             "news_triage_policy_v16",
             "news_triage_policy_v17",
         ]
-        assert TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
+        assert LEGACY_TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
 
 
 def test_native_identity_cut_preserves_original_payloads_without_promoting_historical_ids():

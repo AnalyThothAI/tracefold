@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 
-from tracefold.app.cli.parsers.common import _nonnegative_int, _positive_int
+from tracefold.app.cli.parsers.common import _positive_int
 
 
 def add_news_commands(
     subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    news = subcommands.add_parser("news", help="News V3 broker, ReviewDesk, and learning commands")
+    news = subcommands.add_parser("news", help="News V3 broker, ReviewDesk, and judge calibration commands")
     news_subcommands = news.add_subparsers(dest="news_command", required=True)
     news_subcommands.add_parser(
         "bus-check",
@@ -30,11 +30,9 @@ def add_news_commands(
     news_review = news_subcommands.add_parser("review", help="ReviewDesk queue, evidence, and append-only judgments")
     review_subcommands = news_review.add_subparsers(dest="review_command", required=True)
     review_queue = review_subcommands.add_parser("queue", help="open the deterministic operator review queue")
-    review_queue.add_argument("--view", choices=("queue", "coverage", "proposals", "market"), default="queue")
-    review_queue.add_argument("--mode", choices=("event", "pairwise"), default="event")
+    review_queue.add_argument("--view", choices=("queue", "coverage", "market"), default="queue")
     review_queue.add_argument("--cohort", default="")
     review_queue.add_argument("--stratum", default="")
-    review_queue.add_argument("--proposal", default="")
     review_queue.add_argument("--task", default="")
     review_queue.add_argument("--event", default="")
     review_queue.add_argument("--status", choices=("pending", "accepted", "all"), default="pending")
@@ -47,297 +45,32 @@ def add_news_commands(
     review_evidence.add_argument(
         "--source-only",
         action="store_true",
-        help="show only the pinned TaskRef and source evidence, excluding Stable, drafts, and reviews",
+        help="show only the pinned TaskRef and source evidence, excluding the agent answer and reviews",
     )
-    review_submit = review_subcommands.add_parser("submit", help="append and accept one rubric or pairwise judgment")
+    review_submit = review_subcommands.add_parser("submit", help="append and accept one event rubric judgment")
     review_submit.add_argument("task")
     review_submit.add_argument("--version", required=True)
     review_submit.add_argument("--file", required=True)
     review_submit.add_argument("--reviewer", required=True, help="actual reviewer principal persisted on the review")
     review_submit.add_argument("--idempotency-key", default="")
-    review_accept = review_subcommands.add_parser(
-        "accept-drafts",
-        help="submit reviewed model drafts through ReviewDesk under the named reviewer's identity",
-    )
-    review_accept.add_argument("--file", required=True, help="draft batch produced by `learning draft-reviews`")
-    review_accept.add_argument(
-        "--min-confidence",
-        type=float,
-        default=0.0,
-        help="skip drafts the model was less sure of than this (0.0-1.0)",
-    )
-    review_accept.add_argument(
-        "--only",
-        default="",
-        help=(
-            "required for writes: comma-separated event_id or task_id prefixes explicitly approved; "
-            "an empty value is allowed only with --dry-run"
-        ),
-    )
-    review_accept.add_argument(
-        "--exclude",
-        default="",
-        help="comma-separated event_id or task_id prefixes to skip after you have read them",
-    )
-    review_accept.add_argument(
-        "--reviewer",
-        default="",
-        help=(
-            "required for writes: actual accepting reviewer recorded on each row, including an identified AI "
-            "adjudicator; an empty value is allowed only with --dry-run"
-        ),
-    )
-    review_accept.add_argument(
-        "--first-bad-owner",
-        default="",
-        help="explicit owner written into every selected review, for example taxonomy; omitted keeps null",
-    )
-    review_accept.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="report exactly what would be submitted, and write nothing",
-    )
-    # #675 §4. The step between drafting and accepting: it reads a batch and the decisions those tasks
-    # actually got, and prints only the tasks worth a person's minute. Writes nothing.
-    review_audit = review_subcommands.add_parser(
-        "audit-report",
-        help=(
-            "compare a draft batch with the shipped decisions; prints disagreements, "
-            "a one-in-ten agreement sample and two ratios"
-        ),
-    )
-    review_audit.add_argument("--file", required=True, help="draft batch produced by `learning draft-reviews`")
-    review_audit.add_argument(
-        "--json",
-        action="store_true",
-        help="omit the rendered table from the payload, leaving only the machine report",
-    )
     review_external = review_subcommands.add_parser("external-miss", help="append an external miss and its rubric")
     review_external.add_argument("--file", required=True)
     review_external.add_argument("--idempotency-key", default="")
     news_learning = news_subcommands.add_parser(
-        "learning", help="freeze reviewed datasets and evaluate one-variable Agent candidates"
+        "learning", help="measure the News card judge against its fixed calibration corpus"
     )
     learning_subcommands = news_learning.add_subparsers(dest="learning_command", required=True)
-    # #199 P0. The formal zero-call answer to what the one `run` command would optimize.
-    learning_readiness = learning_subcommands.add_parser(
-        "readiness",
-        help="explain the Objective Plan for a frozen development dataset; 0 model calls, 0 writes",
-    )
-    learning_readiness.add_argument("--development", required=True, help="development dataset artifact SHA")
-    # Readiness answers for one target, because "is this corpus ready" has no answer until someone says
-    # ready for what (#651 §9). The report still publishes every target's counts, so an operator who
-    # asked the wrong question can see which one to ask instead.
-    learning_readiness.add_argument(
-        "--target",
-        choices=("classification", "understanding", "explanation"),
-        default="classification",
-        help="which Predictor to answer for: taxonomy, event_semantics or reader_card",
-    )
-    learning_readiness.add_argument(
-        "--out", default="", help="write the readiness report JSON (per-case dispositions live only here)"
-    )
-    learning_baseline = learning_subcommands.add_parser(
-        "baseline",
-        help="score a moving-window Program baseline (no sandbox, tariff, or writes)",
-    )
-    # Baseline is discovery over a moving population. The frozen corpus belongs only to `readiness` and
-    # `run`, so there is no second candidate-generating or dataset-baseline route.
-    learning_baseline.add_argument("--from-ms", type=_nonnegative_int, required=True)
-    learning_baseline.add_argument("--to-ms", type=_positive_int, required=True)
-    # `live` is gone, not aliased. It answered two different questions under one name: the graph GEPA
-    # optimizes, and the production route's reliability. Keeping an alias would keep the ambiguity alive.
-    learning_baseline.add_argument(
-        "--mode",
-        choices=("recorded", "compile_live", "runtime_live"),
-        default="recorded",
-        help=(
-            "recorded: no model call; score persisted action for the moving window; "
-            "compile_live: the graph GEPA optimizes, one task endpoint, no route fallback/deadline/circuit; "
-            "per-call timeout and JSON format fallback remain; "
-            "runtime_live: the configured four-slot production Program route (excludes consumer transaction, "
-            "advisory lock, stale re-ask, degraded wire card, broker and delivery)"
-        ),
-    )
-    learning_baseline.add_argument(
-        "--action-source",
-        choices=("recorded", "policy"),
-        default="",
-        help=(
-            "recorded: the action that shipped, valid only with --mode recorded; policy: re-run decide(), "
-            "required by the live modes. Defaults to the only valid value for the chosen mode"
-        ),
-    )
-    learning_baseline.add_argument(
-        "--max-model-cases",
-        type=int,
-        default=0,
-        help=(
-            "required by --mode compile_live and runtime_live: the most cases allowed to reach a provider. "
-            "runtime_live spends 2-8 real calls per case, sequentially, on the endpoints that also serve "
-            "production Triage"
-        ),
-    )
-    learning_baseline.add_argument(
-        "--semantic-judge",
-        default="",
-        metavar="MODEL",
-        help=(
-            "score free-text retention anchors by meaning instead of byte equality, using this model "
-            "(e.g. deepseek-v4-pro). Enum dimensions stay exact. Moving-window recorded costs nothing "
-            "because persisted texts already match"
-        ),
-    )
-    learning_baseline.add_argument("--limit", type=_positive_int, default=500)
-    learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
-    # #651 §7.3: the explanation ruler's score is a model's opinion, so there has to be a command that
+    # #651 §7.3: the card judge's answers are a model's opinion, so there has to be a command that
     # measures whether that opinion tracks the perturbation it is supposed to catch. Fourteen synthetic
-    # pairs, no database, no dataset, and a receipt the metric receipt can point at.
+    # pairs, no database, and a receipt.
     learning_calibration = learning_subcommands.add_parser(
         "judge-calibration",
-        help="score the metric judge against the fixed perturbation corpus; writes a receipt, no DB",
+        help="score the card judge against the fixed perturbation corpus; writes a receipt, no DB",
     )
     learning_calibration.add_argument(
         "--model", required=True, metavar="MODEL", help="the judge model to measure, e.g. deepseek-v4-pro"
     )
     learning_calibration.add_argument("--out", default="", help="write the calibration receipt JSON")
-    learning_draft = learning_subcommands.add_parser(
-        "draft-reviews",
-        help="propose news_review_v8 rubrics with optional taxonomy Gold (writes a file, never the DB)",
-    )
-    # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
-    # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an
-    # absolute range and silently drafted today's Events whatever was passed.
-    learning_draft.add_argument(
-        "--hours", type=_positive_int, default=24, help="look back this many hours from now (max 720)"
-    )
-    learning_draft.add_argument(
-        "--rubric-model", required=True, help="rubric drafting model, e.g. deepseek-v4-pro or qwen3.8-27b:thinking"
-    )
-    # #534: both blind taxonomy drafters come from the routes this machine already has — qwen3.8-27b:thinking,
-    # deepseek-v4-pro, deepseek-v4-flash — and only their two names must differ. The non-thinking qwen3.8-27b
-    # is the Stable taxonomy route itself, so readiness already reports that agreement. That is an operating
-    # rule recorded in the batch receipt, not a code check.
-    learning_draft.add_argument(
-        "--taxonomy-models",
-        required=True,
-        help="two comma-separated blind taxonomy drafting models, A,B; the draft takes A on disagreement",
-    )
-    learning_draft.add_argument("--limit", type=_positive_int, default=50)
-    learning_draft.add_argument("--stratum", default="", help="restrict the existing ReviewDesk sampler stratum")
-    learning_draft.add_argument(
-        "--include-reviewed",
-        action="store_true",
-        help="also draft Events that already carry an accepted review (default: only unjudged ones)",
-    )
-    # #675 §4: three sequential calls per task is 5-14 hours for a daily 300-task batch on the local route.
-    learning_draft.add_argument(
-        "--concurrency",
-        type=_positive_int,
-        default=4,
-        help="how many tasks may be drafted at once (1 = the serial loop); each task still fails on its own",
-    )
-    learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for authorized review")
-    # #453. The only candidate-generating entry point: zero-call readiness followed by exactly one stock
-    # GEPA compile over the frozen development corpus. It owns no release authority.
-    learning_run = learning_subcommands.add_parser(
-        "run",
-        help="the one bounded candidate path: readiness -> stock GEPA, into a new empty directory",
-    )
-    learning_run.add_argument("--development", required=True, help="development dataset artifact SHA")
-    learning_run.add_argument("--out", required=True, help="run directory for every artifact this run writes")
-    # Exactly one budget form, mirroring `dspy.GEPA` (#501 D6): DSPy's own `auto` preset or an explicit
-    # metric-call count. Neither is floored or pre-checked here.
-    learning_budget = learning_run.add_mutually_exclusive_group(required=True)
-    learning_budget.add_argument("--auto", choices=("light", "medium", "heavy"), default=None)
-    learning_budget.add_argument("--max-metric-calls", type=_positive_int, default=None)
-    learning_run.add_argument("--max-task-model-calls", type=_positive_int, required=True)
-    learning_run.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
-    learning_run.add_argument("--max-metric-judge-model-calls", type=int, default=0)
-    learning_run.add_argument("--explanation-protocol", choices=("semantic", "proxy"), default="semantic")
-    learning_run.add_argument("--judge-calibration-receipt-sha256", default="")
-    learning_run.add_argument("--max-cost-microusd", type=_positive_int, required=True)
-    learning_run.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)
-    learning_run.add_argument("--max-wall-clock-seconds", type=_positive_int, default=14_400)
-    learning_run.add_argument("--seed", type=_nonnegative_int, default=129)
-    # Which Predictor this run optimizes (#651). One target per run: GEPA selects on one Pareto front, so
-    # two Predictors moving under one selection score would make the receipt unreadable.
-    learning_run.add_argument(
-        "--target",
-        choices=("classification", "understanding", "explanation"),
-        default="classification",
-        help="classification optimizes taxonomy, understanding event_semantics, explanation reader_card",
-    )
-    # #202 §11 PR-E. Two command groups, because there are two lifecycles. `news learning` freezes a
-    # corpus, explains what GEPA may optimize, scores moving windows and runs the one optimization —
-    # none of which can ship anything. `news release` admits a candidate, gathers release evidence and
-    # moves the canary. An operator reading `--help` sees the boundary the packages have.
-    news_release = news_subcommands.add_parser(
-        "release", help="register a Prompt candidate, gather release evidence, and control the canary"
-    )
-    release_subcommands = news_release.add_subparsers(dest="release_command", required=True)
-
-    # One registration, whatever wrote the Program state (#202 §7). A GEPA candidate and a state a person
-    # wrote enter here on identical terms: the parent must be the active stable, the dataset must be the
-    # frozen development corpus, the Objective Plan is re-derived here rather than trusted, and what comes
-    # out is a proposal — never a promotion.
-    learning_register = release_subcommands.add_parser(
-        "register", help="bind a Prompt candidate to the active stable and a frozen dataset"
-    )
-    learning_register.add_argument("--development", required=True, help="development dataset artifact SHA")
-    learning_register.add_argument("--candidate", required=True, help="news_prompt_candidate_v3 JSON/YAML")
-    learning_register.add_argument(
-        "--artifact-root", required=True, help="write the candidate <program-sha>.json artifact document"
-    )
-    learning_register.add_argument("--hypothesis", default="", help="what this candidate is expected to repair")
-    learning_register.add_argument("--out", required=True, help="write the sealed candidate manifest")
-    learning_freeze = learning_subcommands.add_parser("freeze", help="freeze accepted reviews into a dataset")
-    learning_freeze.add_argument(
-        "--evaluation-protocol",
-        choices=("historical_selected_context", "counterfactual_sequence"),
-        default="historical_selected_context",
-    )
-    learning_freeze.add_argument("--role", choices=("development", "validation"), required=True)
-    learning_freeze.add_argument("--from-ms", type=_nonnegative_int, required=True)
-    learning_freeze.add_argument("--to-ms", type=_positive_int, required=True)
-    learning_freeze.add_argument("--candidate", default="", help="candidate manifest; required for validation")
-    learning_freeze.add_argument("--out", required=True, help="write the dataset manifest")
-    # One evaluation verb and three stages (#651 removed `shadow`). Shadow cold-ran a candidate over a
-    # closed validation window to observe a distribution nobody acted on, and its only consumer was the
-    # canary eligibility check — which now reads the holdout pass directly.
-    learning_eval = release_subcommands.add_parser("evaluate", help="run the evaluate release-evidence gate")
-    learning_eval.add_argument("--development", required=True, help="development dataset artifact SHA")
-    learning_eval.add_argument("--validation", default="", help="validation dataset SHA")
-    learning_eval.add_argument("--candidate", required=True, help="candidate manifest JSON/YAML")
-    execution_mode = learning_eval.add_mutually_exclusive_group()
-    learning_eval.add_argument(
-        "--stage",
-        choices=("offline", "holdout", "canary"),
-        default="offline",
-        help="evaluation evidence stage",
-    )
-    execution_mode.add_argument(
-        "--live-program",
-        action="store_true",
-        help="run the assigned Program live and append per-Predictor recordings",
-    )
-    learning_eval.add_argument(
-        "--observation-manifest",
-        default="",
-        help="optional sealed canary observation artifact SHA",
-    )
-    learning_eval.add_argument("--out", required=True, help="write the sealed evaluation report")
-    learning_canary = release_subcommands.add_parser(
-        "canary", help="arm, inspect, or stop the durable one-arm production canary"
-    )
-    canary_subcommands = learning_canary.add_subparsers(dest="canary_command", required=True)
-    canary_arm = canary_subcommands.add_parser("arm", help="arm the image-carried candidate at code-owned exposure")
-    canary_arm.add_argument("--candidate", required=True, help="sealed CandidateManifest SHA carried by this image")
-    canary_subcommands.add_parser("status", help="show activation, revision, and assignment counts")
-    for transition in ("hold", "resume", "trip", "close"):
-        canary_transition = canary_subcommands.add_parser(transition, help=f"{transition} one activation")
-        canary_transition.add_argument("--activation", required=True)
-        canary_transition.add_argument("--reason", required=True)
     news_replay = news_subcommands.add_parser(
         "replay", help="replay a JSON file of provider hits through Deduper+Gate (no model, no broker)"
     )

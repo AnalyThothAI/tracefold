@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from tracefold.news.similarity import (
     character_bigrams,
-    max_similarity,
     similarity,
     trigram_similarity,
     word_trigrams,
@@ -39,14 +38,6 @@ def test_two_different_contracts_in_one_template_stay_below_it() -> None:
     They must stay releasable, which is why the threshold is 0.25 and not 0.6."""
 
     assert similarity("Bybit 将下架 HFTUSDT 永续合约", "Bybit 将下架 VINEUSDT 永续合约") < 0.62
-
-
-def test_max_similarity_names_which_card_it_matched() -> None:
-    ledger = ["美联储纪要显示官员分歧", "怀俄明州稳定币转用 Chainlink CCIP", "油价连涨四日"]
-    score, index = max_similarity("怀俄明州稳定币迁移至 Chainlink CCIP", ledger)
-    assert index == 1 and score > 0.6
-    assert max_similarity("完全无关的一条新闻", []) == (0.0, -1)
-    assert max_similarity("", ledger) == (0.0, -1)
 
 
 def test_word_trigrams_are_pg_trgm_show_trgm() -> None:

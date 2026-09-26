@@ -11,7 +11,12 @@ from decimal import Decimal
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_judgment import scored_judgment
+from tests.support.news_legacy import (
+    LEGACY_PROGRAM_VERSION,
+    LegacyDecision,
+    LegacyDegradedJudgment,
+    legacy_judgment,
+)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
@@ -23,10 +28,8 @@ from tracefold.news.market_review.pricing import (
     QuoteRequest,
 )
 from tracefold.news.models import TriageVerdict
-from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.reader_card import quote_line, reader_quotes
 from tracefold.news.storage.decisions import legacy_intent_id
-from tracefold.news.triage_rules import DecisionResult, DegradedJudgment
 
 pytestmark = pytest.mark.integration
 
@@ -145,14 +148,14 @@ def _event(
         confidence=1.0,
         headline_zh="价格复盘测试",
     )
-    decision_result = DecisionResult(
+    decision_result = LegacyDecision(
         final=decision,
         override_rule="recorded_fixture",
         throttled_by=None,
         rule_baseline=decision,
     )
     if degraded:
-        judgment = DegradedJudgment(
+        judgment = LegacyDegradedJudgment(
             verdict=verdict,
             decision=decision_result,
             error_code="news_semantic_program_unconfigured",
@@ -164,10 +167,10 @@ def _event(
         error_code = judgment.error_code
         trace_extra = {"judgment": judgment.judgment_atom}
     else:
-        judgment = scored_judgment(verdict)
+        judgment = legacy_judgment(verdict)
         origin = "model"
         judgment_sha256 = judgment.scored_judgment_sha256
-        model_editorial = judgment.editorial.model_dump(mode="json")
+        model_editorial = judgment.editorial.document
         model = "test"
         error_code = None
         trace_extra = {"editorial_sha256": judgment.editorial.editorial_sha256}
@@ -183,7 +186,7 @@ def _event(
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
         "focus_fact_id": str(evidence["focus_fact_id"]),
-        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_version": LEGACY_PROGRAM_VERSION,
         "program_sha256": program_sha256,
         "told": [],
         "told_count": 0,
@@ -203,7 +206,7 @@ def _event(
         judgment_sha256=judgment_sha256,
         runtime_manifest_sha=runtime_manifest_sha,
         model=model,
-        program_version=SEMANTIC_PROGRAM_VERSION,
+        program_version=LEGACY_PROGRAM_VERSION,
         program_sha256=program_sha256,
         degraded=degraded,
         error_code=error_code,

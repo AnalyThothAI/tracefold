@@ -56,8 +56,8 @@ from pathlib import Path
 import tracefold
 import tracefold.trading
 from tracefold.app.cli.main import main as cli_main
+from tracefold.app.news_updates import news_program_identity
 from tracefold.news.events.storyline import load_storyline_registry
-from tracefold.news.program.artifact import load_stable_program_state
 
 package_root = Path(tracefold.__file__).resolve().parent
 alembic_root = package_root / "platform" / "postgres" / "alembic"
@@ -69,7 +69,9 @@ print(
             "sys_path": [str(entry) for entry in sys.path],
             "cwd": str(Path.cwd()),
             "cli_main_module": cli_main.__module__,
-            "program_sha256": load_stable_program_state().program_sha256,
+            "news_program_identity": news_program_identity(
+                extraction_model_identity="probe", judgment_model_identity="probe", card_model_identity="probe"
+            ),
             "storyline_registry_entries": len(load_storyline_registry().entries),
             "trading_root": str(Path(tracefold.trading.__file__).resolve().parent),
             "alembic_env_py": (alembic_root / "env.py").is_file(),
@@ -228,7 +230,6 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
         )
         == _tracked_migration_filenames()
     )
-    assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
     # #509: the storyline registry is package data the Gate and Triage read on every Event, so a wheel
     # that dropped it would fail at the first key rather than at import.
     assert f"{DISTRIBUTION_NAME}/news/events/storyline_registry.json" in members
@@ -265,11 +266,14 @@ def test_the_checkout_is_absent_from_the_isolated_interpreter(isolated_probe: di
     assert not [entry for entry in entries if entry == ROOT or ROOT.is_relative_to(entry)]
 
 
-def test_installed_distribution_reads_its_own_program_artifact(isolated_probe: dict[str, object]) -> None:
+def test_installed_distribution_reads_its_own_news_program_identity(isolated_probe: dict[str, object]) -> None:
+    from tracefold.app.news_updates import news_program_identity
     from tracefold.news.events.storyline import load_storyline_registry
-    from tracefold.news.program.artifact import load_stable_program_state
 
-    assert isolated_probe["program_sha256"] == load_stable_program_state().program_sha256
+    # The identity digests the News core's own packaged sources, so a wheel missing one would disagree.
+    assert isolated_probe["news_program_identity"] == news_program_identity(
+        extraction_model_identity="probe", judgment_model_identity="probe", card_model_identity="probe"
+    )
     # #509: the installed wheel loads and validates the storyline registry from its own package data.
     assert isolated_probe["storyline_registry_entries"] == len(load_storyline_registry().entries)
 

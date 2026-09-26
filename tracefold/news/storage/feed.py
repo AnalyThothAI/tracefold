@@ -564,7 +564,7 @@ class FeedStorage:
                 degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
         # Both current Review shapes of "the reader should have got this": an accepted Event judgment and an
         # accepted ExternalMissSnapshot. The latter is the only observed upper bound on upstream recall.
-        # Release eligibility and the active epoch are material facts; genesis removed old review contracts.
+        # Release eligibility is a material fact of the review; genesis removed old review contracts.
         missed = self.conn.execute(
             STATUS_FUNNEL_REVIEWS_SQL,
             (day_ago,),

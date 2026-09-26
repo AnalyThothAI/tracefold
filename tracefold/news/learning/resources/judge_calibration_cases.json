@@ -1,6 +1,6 @@
 {
-  "schema": "tracefold.news.judge_calibration_cases.v1",
-  "note": "#651 §7.3. Fourteen synthetic (evidence, card) pairs, two per perturbation class. Every card is well-formed Chinese copy that passes the deterministic lint, so the only thing separating a supported pair from an unsupported one is the claim itself. `faithful_paraphrase` and `supported_strong_conclusion` must pass: a judge that catches every perturbation by rejecting everything is useless in the opposite direction, and these are the only cases that see it.",
+  "schema": "tracefold.news.judge_calibration_cases.v2",
+  "note": "#651 §7.3. Fourteen synthetic (evidence, card) pairs, two per perturbation class. Every card is the frozen reader shape (a headline and one line per selected claim) in well-formed Chinese, so the only thing separating a supported pair from an unsupported one is the claim itself. `faithful_paraphrase` and `supported_strong_conclusion` must pass: a judge that catches every perturbation by rejecting everything is useless in the opposite direction, and these are the only cases that see it. v2 (#706): cards use the frozen reader shape and the forbidden-claim questions, which no measurement read, are gone.",
   "cases": [
     {
       "case_id": "entity_swap_01",
@@ -13,13 +13,20 @@
       },
       "card": {
         "headline_zh": "Visa增发240万股A类股",
-        "why_zh": "增发扩大流通盘，短期对Visa股价形成稀释压力。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "增发扩大流通盘，短期对Visa股价形成稀释压力。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["Circle增发240万股A类股"],
-      "expected_key_facts_covered": [false],
-      "forbidden_claims": ["Visa发行了新股"],
-      "expected_forbidden_asserted": [true]
+      "key_facts": [
+        "Circle增发240万股A类股"
+      ],
+      "expected_key_facts_covered": [
+        false
+      ]
     },
     {
       "case_id": "entity_swap_02",
@@ -32,13 +39,20 @@
       },
       "card": {
         "headline_zh": "Sei基金会9月12日上线SEI永续合约",
-        "why_zh": "项目方自行开合约意味着流动性由其自控，风险敞口集中在发行方。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "项目方自行开合约意味着流动性由其自控，风险敞口集中在发行方。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["币安将于9月12日上线SEIUSDT永续合约"],
-      "expected_key_facts_covered": [false],
-      "forbidden_claims": [],
-      "expected_forbidden_asserted": []
+      "key_facts": [
+        "币安将于9月12日上线SEIUSDT永续合约"
+      ],
+      "expected_key_facts_covered": [
+        false
+      ]
     },
     {
       "case_id": "number_unit_swap_01",
@@ -51,13 +65,20 @@
       },
       "card": {
         "headline_zh": "该协议质押日收益率达18%",
-        "why_zh": "日化18%的回报远高于同类协议，会迅速吸引套利资金流入。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "日化18%的回报远高于同类协议，会迅速吸引套利资金流入。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["质押年化收益率为18%"],
-      "expected_key_facts_covered": [false],
-      "forbidden_claims": ["日收益率为18%"],
-      "expected_forbidden_asserted": [true]
+      "key_facts": [
+        "质押年化收益率为18%"
+      ],
+      "expected_key_facts_covered": [
+        false
+      ]
     },
     {
       "case_id": "number_unit_swap_02",
@@ -70,13 +91,20 @@
       },
       "card": {
         "headline_zh": "公司宣布2.5亿元人民币回购计划",
-        "why_zh": "回购规模约占流通市值的一小部分，对每股收益的提振有限。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "回购规模约占流通市值的一小部分，对每股收益的提振有限。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["回购上限为2.5亿美元"],
-      "expected_key_facts_covered": [false],
-      "forbidden_claims": [],
-      "expected_forbidden_asserted": []
+      "key_facts": [
+        "回购上限为2.5亿美元"
+      ],
+      "expected_key_facts_covered": [
+        false
+      ]
     },
     {
       "case_id": "condition_removed_01",
@@ -89,13 +117,20 @@
       },
       "card": {
         "headline_zh": "监管批准该并购交易",
-        "why_zh": "审批落地移除了交易的最后一道障碍，合并进度不再受阻。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "审批落地移除了交易的最后一道障碍，合并进度不再受阻。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["批准以九个月内剥离支付业务为条件"],
-      "expected_key_facts_covered": [false],
-      "forbidden_claims": ["该并购已获无条件批准"],
-      "expected_forbidden_asserted": [true]
+      "key_facts": [
+        "批准以九个月内剥离支付业务为条件"
+      ],
+      "expected_key_facts_covered": [
+        false
+      ]
     },
     {
       "case_id": "condition_removed_02",
@@ -108,13 +143,20 @@
       },
       "card": {
         "headline_zh": "该代币确认上线交易所",
-        "why_zh": "上线带来新增买盘，二级市场深度将立即改善。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "上线带来新增买盘，二级市场深度将立即改善。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["该代币仅进入有条件上市审核"],
-      "expected_key_facts_covered": [false],
-      "forbidden_claims": [],
-      "expected_forbidden_asserted": []
+      "key_facts": [
+        "该代币仅进入有条件上市审核"
+      ],
+      "expected_key_facts_covered": [
+        false
+      ]
     },
     {
       "case_id": "plan_to_executed_01",
@@ -127,13 +169,20 @@
       },
       "card": {
         "headline_zh": "该公司已买入5000枚比特币",
-        "why_zh": "实际买入使流通供给减少，对现货价格构成直接支撑。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "实际买入使流通供给减少，对现货价格构成直接支撑。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["董事会授权未来十二个月内最多买入5000枚比特币"],
-      "expected_key_facts_covered": [false],
-      "forbidden_claims": ["买入已经完成"],
-      "expected_forbidden_asserted": [true]
+      "key_facts": [
+        "董事会授权未来十二个月内最多买入5000枚比特币"
+      ],
+      "expected_key_facts_covered": [
+        false
+      ]
     },
     {
       "case_id": "plan_to_executed_02",
@@ -146,13 +195,20 @@
       },
       "card": {
         "headline_zh": "双方完成合资公司交割",
-        "why_zh": "交割完成后收入将并表，本年度业绩指引存在上修空间。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "交割完成后收入将并表，本年度业绩指引存在上修空间。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["双方仅签署无约束力意向书"],
-      "expected_key_facts_covered": [false],
-      "forbidden_claims": [],
-      "expected_forbidden_asserted": []
+      "key_facts": [
+        "双方仅签署无约束力意向书"
+      ],
+      "expected_key_facts_covered": [
+        false
+      ]
     },
     {
       "case_id": "unsupported_cause_added_01",
@@ -165,13 +221,20 @@
       },
       "card": {
         "headline_zh": "该代币六小时内下跌12%",
-        "why_zh": "美联储推迟降息触发风险资产集体回撤，该代币因此承压。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "美联储推迟降息触发风险资产集体回撤，该代币因此承压。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["该代币六小时内下跌12%"],
-      "expected_key_facts_covered": [true],
-      "forbidden_claims": ["下跌由美联储推迟降息引起"],
-      "expected_forbidden_asserted": [true]
+      "key_facts": [
+        "该代币六小时内下跌12%"
+      ],
+      "expected_key_facts_covered": [
+        true
+      ]
     },
     {
       "case_id": "unsupported_cause_added_02",
@@ -184,13 +247,20 @@
       },
       "card": {
         "headline_zh": "基金会钱包余额升至4000万枚代币",
-        "why_zh": "基金会在二级市场回购推高余额，流通量因此收缩。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "基金会在二级市场回购推高余额，流通量因此收缩。"
+          }
+        ]
       },
       "expected_supported": false,
-      "key_facts": ["基金会地址持仓从2500万枚升至4000万枚"],
-      "expected_key_facts_covered": [true],
-      "forbidden_claims": ["余额上升源于二级市场回购"],
-      "expected_forbidden_asserted": [true]
+      "key_facts": [
+        "基金会地址持仓从2500万枚升至4000万枚"
+      ],
+      "expected_key_facts_covered": [
+        true
+      ]
     },
     {
       "case_id": "faithful_paraphrase_01",
@@ -203,13 +273,22 @@
       },
       "card": {
         "headline_zh": "交易所将SOL永续维持保证金上调至6%",
-        "why_zh": "维持保证金从4%升至6%后，同等仓位需要更多占用资金，高杠杆多头的清算线被抬高。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "维持保证金从4%升至6%后，同等仓位需要更多占用资金，高杠杆多头的清算线被抬高。"
+          }
+        ]
       },
       "expected_supported": true,
-      "key_facts": ["维持保证金由4%上调至6%", "调整立即生效"],
-      "expected_key_facts_covered": [true, true],
-      "forbidden_claims": [],
-      "expected_forbidden_asserted": []
+      "key_facts": [
+        "维持保证金由4%上调至6%",
+        "调整立即生效"
+      ],
+      "expected_key_facts_covered": [
+        true,
+        true
+      ]
     },
     {
       "case_id": "faithful_paraphrase_02",
@@ -222,13 +301,22 @@
       },
       "card": {
         "headline_zh": "发行方确认季度营收约12亿美元",
-        "why_zh": "公司自行披露的12.03亿美元高于11.5亿美元的市场一致预期，收入端超预期。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "公司自行披露的12.03亿美元高于11.5亿美元的市场一致预期，收入端超预期。"
+          }
+        ]
       },
       "expected_supported": true,
-      "key_facts": ["季度营收12.03亿美元", "高于11.5亿美元的一致预期"],
-      "expected_key_facts_covered": [true, true],
-      "forbidden_claims": [],
-      "expected_forbidden_asserted": []
+      "key_facts": [
+        "季度营收12.03亿美元",
+        "高于11.5亿美元的一致预期"
+      ],
+      "expected_key_facts_covered": [
+        true,
+        true
+      ]
     },
     {
       "case_id": "supported_strong_conclusion_01",
@@ -241,13 +329,22 @@
       },
       "card": {
         "headline_zh": "协议在流动性池被抽空92%后暂停提现",
-        "why_zh": "池子只剩8%而提现已暂停，仍在池内的存款人短期内无法退出，损失已经锁定。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "池子只剩8%而提现已暂停，仍在池内的存款人短期内无法退出，损失已经锁定。"
+          }
+        ]
       },
       "expected_supported": true,
-      "key_facts": ["流动性池被抽走92%", "提现已暂停"],
-      "expected_key_facts_covered": [true, true],
-      "forbidden_claims": [],
-      "expected_forbidden_asserted": []
+      "key_facts": [
+        "流动性池被抽走92%",
+        "提现已暂停"
+      ],
+      "expected_key_facts_covered": [
+        true,
+        true
+      ]
     },
     {
       "case_id": "supported_strong_conclusion_02",
@@ -260,13 +357,22 @@
       },
       "card": {
         "headline_zh": "监管机构对该交易所启动正式程序",
-        "why_zh": "正式程序意味着调查进入可处罚阶段，但处罚金额尚未确定，交易所目前仍在正常运营。"
+        "lines": [
+          {
+            "claim_ref": "claim_1",
+            "text_zh": "正式程序意味着调查进入可处罚阶段，但处罚金额尚未确定，交易所目前仍在正常运营。"
+          }
+        ]
       },
       "expected_supported": true,
-      "key_facts": ["监管机构就未注册证券发行启动正式程序", "尚未确定处罚"],
-      "expected_key_facts_covered": [true, true],
-      "forbidden_claims": ["交易所已被罚款"],
-      "expected_forbidden_asserted": [false]
+      "key_facts": [
+        "监管机构就未注册证券发行启动正式程序",
+        "尚未确定处罚"
+      ],
+      "expected_key_facts_covered": [
+        true,
+        true
+      ]
     }
   ]
 }

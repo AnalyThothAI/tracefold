@@ -15,12 +15,12 @@ from tests.postgres_test_utils import (
     postgres_migration_test_dsn,
     reset_postgres_schema,
 )
+from tests.support.scripted_lm import ScriptedLM
 from tests.trading.news_public_updates import first_report
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.llm import ConfiguredLMEndpoint
 from tracefold.app.trading_analysis import AnalysisRunner, FrameReader
 from tracefold.app.trading_analyst import AnalystCallReceipt, TradeAnalyst
-from tracefold.news.program.lm import ScriptedLM
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.config.models import PostgresConfig, Settings
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult

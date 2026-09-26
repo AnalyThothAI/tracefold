@@ -10,7 +10,6 @@ from .event_updates import EventUpdateStorage
 from .events import EventStorage
 from .evidence import EvidenceStorage
 from .feed import FeedStorage
-from .learning import LearningStorage
 from .market import MarketStorage
 from .operations import OperationsStorage
 from .trade_projection import TradeProjectionStorage
@@ -29,7 +28,6 @@ class NewsRepository(
     WalletEventStorage,
     WalletDiagnosticsStorage,
     TradeProjectionStorage,
-    LearningStorage,
     FeedStorage,
 ):
     def __init__(self, conn: Any) -> None:

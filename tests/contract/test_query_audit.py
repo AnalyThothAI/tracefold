@@ -98,11 +98,6 @@ _NEWS_QUERY_NAMES = (
     "news_review_task_evidence_version",
     "news_review_active_agent",
     "news_review_coverage_source",
-    "news_review_pairwise_queue",
-    "news_review_proposal_candidates",
-    "news_review_proposal_releases",
-    "news_review_proposal_reports",
-    "news_review_proposal_activations",
     "news_review_market",
 )
 

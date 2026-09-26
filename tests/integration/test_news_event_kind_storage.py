@@ -7,14 +7,13 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_judgment import scored_judgment
+from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.liquidations import parse_liquidation
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.models import TriageVerdict
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.news.oi_signals import OiSignal, measurement_definition, oi_source_contract
-from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.source_contracts import (
     EVENT_KINDS,
     MARKET_PROVIDER,
@@ -110,7 +109,7 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
     """
 
     evidence = news.latest_evidence_snapshot(event_id)
-    judgment = scored_judgment(
+    judgment = legacy_judgment(
         TriageVerdict(
             novelty="new_fact",
             assets=[],
@@ -131,7 +130,7 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
         "judgment_sha256": judgment.scored_judgment_sha256,
         "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
         "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_version": LEGACY_PROGRAM_VERSION,
         "program_sha256": program_sha256,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
@@ -142,7 +141,7 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
     news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version=TRIAGE_POLICY_VERSION,
+        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
         judgment_contract_version=judgment.judgment_contract_version,
         judgment_origin="model",
         rule_baseline_decision="drop",
@@ -150,11 +149,11 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
         override_rule=None,
         throttled_by=None,
         verdict=judgment.verdict.model_dump(mode="json"),
-        model_editorial=judgment.editorial.model_dump(mode="json"),
+        model_editorial=judgment.editorial.document,
         judgment_sha256=judgment.scored_judgment_sha256,
         runtime_manifest_sha=runtime_manifest_sha,
         model="test",
-        program_version=SEMANTIC_PROGRAM_VERSION,
+        program_version=LEGACY_PROGRAM_VERSION,
         program_sha256=program_sha256,
         degraded=False,
         error_code=error_code,

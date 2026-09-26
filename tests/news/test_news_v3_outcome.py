@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from tracefold.news.health import status_health
+from tracefold.news.models import FACT_KINDS
 from tracefold.news.outcome import (
     OUTCOME_GROUP,
     OVERRIDE_RULE_ZH,
@@ -16,7 +17,6 @@ from tracefold.news.outcome import (
     throttled_by_zh,
 )
 from tracefold.news.timeline import event_timeline
-from tracefold.news.triage_rules import DECISION_TABLE_RULES
 
 NOW = 1_800_000_000_000
 
@@ -274,9 +274,15 @@ def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_c
         "trade_relevance_inconsistent",
         "trade_relevance_realtime",
         "watchlist_objective_guard",
-        # #675 §3: the policy-v15 decision table's three rows. They are ordinary `drop` rules, so they
-        # appear in `dropped_by_rule` beside `restatement` and owe the reader the same named reason.
-        *DECISION_TABLE_RULES,
+        # #675 §3: the legacy decision table's rows. Legacy verdicts carry them as override rules, so the
+        # historical outcome still owes the reader the same named reason.
+        "fact_kind_unavailable",
+        "escalate_corroborated",
+        "escalate_uncorroborated",
+        "price_report_without_basis",
+        "conflict_claim_uncorroborated",
+        "conflict_running_storyline",
+        *(f"fact_kind_{kind}" for kind in FACT_KINDS),
     }
     missing = sorted(rule for rule in current_rules if rule not in OVERRIDE_RULE_ZH)
     assert missing == []

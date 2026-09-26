@@ -201,20 +201,13 @@ class LlmConfig(BaseModel):
     base_url: str | None = Field(default=None, repr=False)
     news_triage_model: str | None = None
     request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
-    # Four optional endpoints with one shape. Only the triage fallback names its own incomplete-
-    # configuration code, because `llm_fallback_without_primary` reads next to it; the other three
+    # Three optional endpoints with one shape. Only the triage fallback names its own incomplete-
+    # configuration code, because `llm_fallback_without_primary` reads next to it; the other two
     # say `llm_endpoint_configuration_incomplete` and the field path in the error names which one
     # (#589 P-F12).
     news_reader_card: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     news_reader_card_fallback: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
-    # The GEPA reflection endpoint -- deliberately not the task endpoint (#143). DSPy's own guidance
-    # is that "when optimizing smaller models, it's worthwhile to use a larger model as the
-    # `reflection_lm`", and the compiler used to pass the task endpoint object for both. That made
-    # the local 27B student its own teacher, gave the reflection call the task route's 1,200-token
-    # ceiling (it has to emit a whole new instruction) and its 20 s route deadline, and pointed a
-    # multi-hour optimization run at the same single-slot GPU production Triage runs on.
-    news_compiler_reflection: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
     trading_semantics: TradingSemanticsConfig = Field(default_factory=TradingSemanticsConfig)
     news_judgment: NewsJudgmentConfig = Field(default_factory=NewsJudgmentConfig)
 
@@ -357,31 +350,6 @@ class NewsTriageSettings(BaseModel):
     def validate_bounds(self) -> NewsTriageSettings:
         if not 1 <= self.concurrency <= 32:
             raise ValueError("news_triage_concurrency_invalid")
-        return self
-
-
-class NewsPolicySettings(BaseModel):
-    """The four operator-owned duplicate/safety knobs used by ``decide()``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    restatement_drop: bool = True
-    # This is duplicate evidence, not a reader quota. Zero disables the
-    # deterministic similarity check.
-    similarity_max: float = 0.25
-    # Exchange listing/delisting frames share one wire template but name different instruments, so
-    # they are exempt from the restatement drop and the similarity throttle.
-    listing_exempt_from_duplicate: bool = True
-    # #154: an artifact already this old when the provider pushed it is a replay, not news. Only
-    # x/twitter frames carry their own publication time; everything else is unaffected. Zero disables.
-    stale_source_max_age_s: int = 12 * 60 * 60
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> NewsPolicySettings:
-        if not 0.0 <= float(self.similarity_max) <= 1.0:
-            raise ValueError("news_policy_similarity_max_invalid")
-        if int(self.stale_source_max_age_s) < 0:
-            raise ValueError("news_policy_stale_source_max_age_s_invalid")
         return self
 
 
@@ -540,7 +508,6 @@ class NewsSettings(BaseModel):
     broker: NewsBrokerSettings = Field(default_factory=NewsBrokerSettings)
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
-    policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
     retention: NewsRetentionSettings = Field(default_factory=NewsRetentionSettings)
     venues: NewsVenuesSettings = Field(default_factory=NewsVenuesSettings)
     chain_tape: NewsChainTapeSettings = Field(default_factory=NewsChainTapeSettings)

@@ -13,8 +13,8 @@ pytestmark = pytest.mark.contract
 @pytest.mark.parametrize(
     "imports",
     [
-        "import tracefold.news.program.lm; import fastapi",
-        "import tracefold.app.http.responses; import tracefold.news.program.lm",
+        "import tracefold.news.updates.dspy_backend; import fastapi",
+        "import tracefold.app.http.responses; import tracefold.news.updates.dspy_backend",
     ],
 )
 def test_dspy_and_fastapi_import_order_is_safe(imports: str) -> None:

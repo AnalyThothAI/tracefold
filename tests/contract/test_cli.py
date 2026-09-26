@@ -360,23 +360,14 @@ class CliTests(unittest.TestCase):
                 "models",
                 "triage",
                 "watchlist",
-                "policy",
                 "retention",
                 "push",
                 "chain_tape",
             },
         )
         self.assertEqual(set(news["broker"]), {"url_configured", "name_prefix"})
-        self.assertEqual(
-            news["policy"],
-            {
-                "listing_exempt_from_duplicate": True,
-                "restatement_drop": True,
-                "similarity_max": 0.25,
-                "stale_source_max_age_s": 43_200,
-            },
-        )
-        self.assertIs(news["policy"]["restatement_drop"], True)
+        # #706: `news.policy` was the retired decision table's knobs and is gone with it.
+        self.assertNotIn("policy", news)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
         # Public sources, roster scope and the three current net-buy parameters.
         self.assertEqual(

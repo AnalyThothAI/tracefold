@@ -101,12 +101,9 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         # The optional News Jev route; unset means generative judgments.
                         "news_judgment_configured": settings.llm.news_judgment.configured,
                         "news_judgment_model": model_availability.news_judgment_model,
-                        "compiler_reflection_configured": settings.llm.news_compiler_reflection.configured,
-                        "compiler_reflection_model": settings.llm.news_compiler_reflection.model,
                     },
                     "triage": settings.news.triage.model_dump(),
                     "watchlist": sorted(settings.news.watchlist_symbols),
-                    "policy": settings.news.policy.model_dump(),
                     "retention": settings.news.retention.model_dump(),
                     # Two public unauthenticated endpoints and four list rules. Nothing here is a
                     # secret, and an operator reading a week of tape counts needs to see exactly which

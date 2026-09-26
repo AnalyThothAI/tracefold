@@ -23,25 +23,12 @@ from .oi_contracts import OI_METRIC_VERSION
 from .opennews import OpenNewsExpectedError
 from .reader_card import UNTRADEABLE_NOTICE_ZH, ReaderCard, quote_line
 from .source_contracts import EVENT_KINDS, MARKET_KINDS, EventKind
-from .taxonomy import (
-    ASSERTION_STATUSES,
-    CHANGE_STATES,
-    EVENT_FAMILIES,
-    IPTC_SUBJECT_CODES,
-    SOURCE_AUTHORITIES,
-    IPTCCodebookSha,
-    NewsTaxonomyV1,
-    SourceAuthority,
-    source_authority_from_evidence,
-)
+from .taxonomy import IPTC_SUBJECT_CODES, SOURCE_AUTHORITIES, SourceAuthority, source_authority_from_evidence
 from .wallet_contracts import NetBuySnapshot
 
 __all__ = [
-    "ASSERTION_STATUSES",
-    "CHANGE_STATES",
     "COMMIT_PHASE_NOT_SENT",
     "COMMIT_PHASE_UNKNOWN",
-    "EVENT_FAMILIES",
     "EVENT_KINDS",
     "FACT_KINDS",
     "IPTC_SUBJECT_CODES",
@@ -55,10 +42,8 @@ __all__ = [
     "UNTRADEABLE_NOTICE_ZH",
     "EventKind",
     "FactKind",
-    "IPTCCodebookSha",
     "MarketType",
     "NetBuySnapshot",
-    "NewsTaxonomyV1",
     "OpenNewsExpectedError",
     "ReaderCard",
     "ReaderDeliveryPresentation",

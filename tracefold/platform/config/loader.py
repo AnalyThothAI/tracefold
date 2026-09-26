@@ -130,11 +130,6 @@ news:
     # back by `tracefold config`, which says only whether one is configured.
     telegram_proxy_url:
     min_interval_seconds: 0.6
-  policy:
-    restatement_drop: true
-    similarity_max: 0.25
-    listing_exempt_from_duplicate: true
-    stale_source_max_age_s: 43200  # #154: an x/twitter artifact older than this on arrival is a replay
   retention:
     raw_days: 30
     judged_days: 365

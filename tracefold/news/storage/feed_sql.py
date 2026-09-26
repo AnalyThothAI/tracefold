@@ -293,14 +293,9 @@ STATUS_FUNNEL_VERDICTS_SQL: Final = f"""
      GROUP BY 1, 2, 3, 4, 5
 """  # noqa: S608
 
+# No epoch clamp since #706: the Agent epoch was release identity, and the release plane and its epoch
+# writer are gone, so a clamp would pin this counter to the last legacy epoch forever.
 STATUS_FUNNEL_REVIEWS_SQL: Final = """
-    WITH current_epoch AS (
-      SELECT epoch.starts_at_ms
-        FROM news_review_active_agent_v1 active
-        JOIN news_learning_epochs epoch ON epoch.bundle_sha = active.stable_sha
-       ORDER BY active.created_at_ms DESC
-       LIMIT 1
-    )
     SELECT count(*) FILTER (WHERE j.should_push IN ('must_push', 'should_push')) AS n,
            count(*) FILTER (
              WHERE j.subject_kind = 'external_miss'
@@ -308,17 +303,14 @@ STATUS_FUNNEL_REVIEWS_SQL: Final = """
            ) AS external
       FROM news_review_records_v1 acceptance
       JOIN news_review_records_v1 j ON j.review_id = acceptance.accepts_review_id
-      JOIN current_epoch ON true
      WHERE acceptance.review_kind = 'acceptance'
        AND acceptance.release_eligible AND j.release_eligible
-       AND acceptance.created_at_ms >= greatest(%s, current_epoch.starts_at_ms)
-       AND j.created_at_ms >= current_epoch.starts_at_ms
+       AND acceptance.created_at_ms >= %s
 """
 
 # #675 §4. The two product ratios of the daily audit loop, from the same accepted judgments the corpus is
-# made of. Deliberately not the statement above: that one is release evidence and is clamped to the active
-# epoch and to release-eligible rows, and clamping these would reset the product reading on every deploy —
-# "did the reader want what we sent" is a question about the last 24 h of reviews, not about one bundle.
+# made of. Deliberately not the statement above: that one counts only release-eligible rows, while "did the
+# reader want what we sent" is a question about every accepted judgment of the last 24 h.
 # The denominator is accepted judgments, not cards, and `uncertain` is in it without being in the numerator.
 # `selection` is projected on the judgment row only, which is where the sampler recorded the stratum.
 STATUS_FUNNEL_REVIEW_RATIOS_SQL: Final = """

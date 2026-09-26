@@ -70,19 +70,6 @@ _READER_HISTORY_PROJECTION = """
 """
 
 
-def delivered_history_rows(conn: Any, *, cutoff_at_ms: int) -> tuple[dict[str, Any], ...]:
-    """The evaluator consumes the same bound receipt projection as online retrieval."""
-    rows = conn.execute(
-        _READER_HISTORY_PROJECTION
-        + """
-        WHERE d.settled_at_ms >= %s AND d.settled_at_ms < %s
-        ORDER BY d.settled_at_ms, d.event_id
-        """,
-        (cutoff_at_ms - TARGETED_HISTORY_WINDOW_MS, cutoff_at_ms),
-    ).fetchall()
-    return tuple(dict(row) for row in rows)
-
-
 # #582 §3.3. The News an OI card's instrument already has, in the two numbers that card prints. Here
 # rather than beside the market statements because this is the *delivered-card* ledger -- the same
 # rows, the same `first` / `sent` / not-deleted predicate and the same headline the reader-history
@@ -170,13 +157,8 @@ class DecisionStorage:
     def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
         """Reader receipt truth split into the 4 h policy ledger and the bounded semantic candidate bands.
 
-        Every band is closed at both ends against ``now_ms`` (#651 §12). The exact and asset bands always
-        were, because the band split is their upper bound; the recent and similar bands were open above,
-        which is invisible in production -- ``now_ms`` is the wall clock there and nothing settles ahead of
-        it -- and wrong for the evaluator, which reads this same ledger at a frozen stamp. There
-        ``learning/evaluation_history.seed_receipts`` bounds the look-back at both ends, so a delivery that
-        settled after the frozen stamp entered the SQL history and not the replayed one, and the two
-        histories are supposed to be the same ledger read two ways.
+        Every band is closed at both ends against ``now_ms`` (#651 §12): a snapshot read at a stamp contains
+        only cards the reader had at that stamp, even when a delivery settled after it.
 
         ``reader_history_revision`` above stays open, and the asymmetry is the point: a snapshot may only
         contain cards the reader had at this stamp, while the CAS token beside it has to notice the card
