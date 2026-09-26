@@ -320,6 +320,41 @@ def test_a_restart_attributes_a_replayed_historical_take_profit_close_to_its_pla
     assert (closed.status, closed.exit_reason, closed.terminal_at_ns) == ("closed", "take_profit", NOW_NS)
 
 
+@pytest.mark.parametrize("startup_replay", [True, False])
+def test_a_mixed_stop_and_take_profit_is_not_labeled_as_one_leg(startup_replay: bool) -> None:
+    plan = open_plan()
+    runtime = unit_runtime(open_plans=(OpenPlan(plan, disposition_pending=False),), venue_reads=True)
+    position = cached_position(runtime, client_order_id=plan.entry_client_order_id)
+    legs = (
+        (cached_protection(runtime, leg="take_profit", trigger=Decimal(10_200)), Decimal("0.02"), 10_200),
+        (cached_protection(runtime, leg="stop", trigger=Decimal(9_800)), Decimal("0.029"), 9_800),
+    )
+    for index, (order, quantity, price) in enumerate(legs):
+        fill = TestEventStubs.order_filled(
+            order=order,
+            instrument=INSTRUMENT,
+            strategy_id=runtime.strategy.id,
+            account_id=ACCOUNT_ID,
+            position_id=position.id,
+            last_qty=INSTRUMENT.make_qty(quantity),
+            last_px=INSTRUMENT.make_price(price),
+            ts_event=NOW_NS + index,
+        )
+        order.apply(fill)
+        runtime.cache.update_order(order)
+        position.apply(fill)
+        runtime.cache.update_position(position)
+    assert runtime.cache.positions_open() == []
+
+    if startup_replay:
+        runtime.venue({})
+    else:
+        runtime.strategy.on_position_closed(TestEventStubs.position_closed(position))
+
+    [closed] = runtime.plans()
+    assert (closed.status, closed.exit_reason, closed.terminal_at_ns) == ("closed", "mixed_exit", NOW_NS + 1)
+
+
 def test_a_restart_that_finds_the_stop_missing_places_it_again_and_touches_nothing_else() -> None:
     plan = open_plan()
 

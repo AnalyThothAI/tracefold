@@ -170,6 +170,7 @@ def _real_node() -> Iterator[Any]:
         credentials=BinanceRuntimeCredentials("paper-key", "paper-secret"),
         strategy=strategy,
         loop=loop,
+        recovery_symbols=frozenset(),
     )
     try:
         yield node

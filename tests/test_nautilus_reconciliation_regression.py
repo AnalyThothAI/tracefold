@@ -733,6 +733,38 @@ def test_generation_restart_replays_a_flat_venues_historical_take_profit(account
     assert closed.closing_order_id == TAKE_PROFIT_ID
 
 
+def test_generation_restart_replays_each_split_child_trade_once(account: Any) -> None:
+    runtime = account(
+        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        triggered_take_profit=True,
+        split_child_trades=True,
+        seed_existing=False,
+    )
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is True
+    [closed] = runtime.cache.positions_closed(instrument_id=APT)
+    assert closed.closing_order_id == TAKE_PROFIT_ID
+    assert [event.trade_id.value for event in closed.events if event.client_order_id == TAKE_PROFIT_ID] == [
+        str(TAKE_PROFIT_CHILD_TRADE_ID),
+        str(TAKE_PROFIT_CHILD_TRADE_ID + 1),
+    ]
+
+
+@pytest.mark.parametrize("child_status", ["PARTIALLY_FILLED", "EXPIRED", "CANCELED"])
+def test_generation_restart_keeps_partial_child_quantity_open(account: Any, child_status: str) -> None:
+    runtime = account(
+        factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),
+        triggered_take_profit=True,
+        child_status=child_status,
+        seed_existing=False,
+    )
+
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is True
+    assert runtime.open_positions() == [(str(runtime.cache.positions_open()[0].id), "588.3")]
+    assert runtime.cache.positions_closed(instrument_id=APT) == []
+    assert runtime.cache.order(TAKE_PROFIT_ID).order_type == OrderType.MARKET_IF_TOUCHED
+
+
 def test_generation_restart_rejects_a_contradictory_signed_algo_child(account: Any) -> None:
     runtime = account(
         factory=OiBinanceExecClientFactory.with_recovery_symbols(frozenset({"APTUSDT"})),

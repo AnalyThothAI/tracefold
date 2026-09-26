@@ -617,8 +617,8 @@ def _build_active_node(
     credentials: BinanceRuntimeCredentials,
     strategy: OiNautilusStrategy,
     loop: asyncio.AbstractEventLoop,
+    recovery_symbols: frozenset[str],
     log_directory: Path | None = None,
-    recovery_symbols: frozenset[str] = frozenset(),
 ) -> TradingNode:
     node = TradingNode(config=build_oi_node_config(profile, credentials, log_directory=log_directory), loop=loop)
     node.trader.add_strategy(strategy)

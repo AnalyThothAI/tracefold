@@ -3099,6 +3099,11 @@ def test_the_nautilus_ownership_cut_deletes_only_the_proofs_ledger_and_keeps_eve
         plan = conn.execute("SELECT * FROM trading_trade_plans").fetchone()
         assert plan["exit_reason"] == "recovery_safety_flatten" and "history_gap_reason" not in plan
         assert plan["entry_scope_id"] == "legacy:" + "1" * 64
+        reason_constraint = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+            "WHERE conname = 'trading_trade_plans_exit_reason_check'"
+        ).fetchone()["definition"]
+        assert "mixed_exit" in reason_constraint
         with pytest.raises(psycopg.errors.RaiseException, match="trade_plan_terminal_immutable"):
             conn.execute("UPDATE trading_trade_plans SET exit_reason = 'external'")
         conn.rollback()

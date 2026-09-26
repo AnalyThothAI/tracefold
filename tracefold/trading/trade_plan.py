@@ -26,6 +26,7 @@ ExitReason = Literal[
     "take_profit",
     "time_exit",
     "operator_flatten",
+    "mixed_exit",
     "external",
     "venue_unknown",
     "not_submitted",

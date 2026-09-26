@@ -401,6 +401,8 @@ On restart, the signed receipt also identifies a historical protective child in
 Nautilus' order report before replay. A closed Cache Position settles its open
 Plan with that leg's reason only when the Position's opening order matches the
 Plan entry and its closing order has a real fill.
+More than one distinct closing leg records `mixed_exit`; the final fill alone
+does not claim the entire exit.
 
 The pure Trading engine imports no adapter, database or Nautilus engine and has
 no order authority. The historical OI v5 Signal lane is not scheduled by Workers.

@@ -1,12 +1,12 @@
 """Keep runtime health separate from account, convergence and venue evidence (#699).
 
 Migration evidence:
-- category: additive current-state diagnostics, no ledger or Plan rewrite.
+- category: additive current-state diagnostics and one Plan exit-reason constraint extension.
 - why_database_must_change: the existing Runtime row must preserve the last successful
   account and venue times while a new health heartbeat records a failed check.
 - current_source_revision: 20260925_0399
 - minimum_supported_source_revision: 20260925_0399
-- lock_level_and_order: one brief ACCESS EXCLUSIVE catalog change on runtime state.
+- lock_level_and_order: brief ACCESS EXCLUSIVE catalog changes on runtime state and trade plans.
 - statement_timeout: 60s locally; lock_timeout: 5s locally.
 - estimated_rows: one current row per account slot; nullable columns need no backfill.
 - estimated_bytes: catalog addition, no index or table rewrite.
@@ -36,6 +36,14 @@ depends_on = None
 def upgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("SET LOCAL statement_timeout = '60s'")
+    op.execute("ALTER TABLE public.trading_trade_plans DROP CONSTRAINT trading_trade_plans_exit_reason_check")
+    op.execute(
+        "ALTER TABLE public.trading_trade_plans "
+        "ADD CONSTRAINT trading_trade_plans_exit_reason_check "
+        "CHECK (exit_reason IN ('stop_filled', 'take_profit', 'time_exit', 'operator_flatten', "
+        "'mixed_exit', 'external', 'venue_unknown', 'not_submitted', "
+        "'protection_failure', 'recovery_safety_flatten'))"
+    )
     op.execute(
         "ALTER TABLE public.trading_execution_runtime_state DROP CONSTRAINT trading_execution_runtime_protection_check"
     )

@@ -152,3 +152,14 @@ def test_frozen_intent_a_terminal_plan_and_the_open_clock_cannot_be_rewritten() 
             plan.market_key: NOW_NS + 10
         }
         assert repos.trading.recent_stop_exits(account_slot=plan.account_slot, since_ns=NOW_NS + 11) == {}
+
+
+def test_mixed_exit_is_durable() -> None:
+    plan = open_plan()
+    closed = plan.closed(reason="mixed_exit", terminal_at_ns=NOW_NS + 10, now_ns=NOW_NS + 10)
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            assert repos.trading.insert_trade_plan(prepare_trade_plan(plan))
+            assert repos.trading.update_trade_plan(prepare_trade_plan_update(closed))
+        assert repos.trading.trade_plan(plan.entry_id)["exit_reason"] == "mixed_exit"

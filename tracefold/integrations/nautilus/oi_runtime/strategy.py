@@ -880,7 +880,10 @@ class OiNautilusStrategy(Strategy):
         instrument_id = event.instrument_id
         now_ns = self._now_ns()
         self._touch(instrument_id)
-        reason = self._exit_reason(event.closing_order_id)
+        position = self.cache.position(event.position_id)
+        reason = (
+            self._position_exit_reason(position) if position is not None else self._exit_reason(event.closing_order_id)
+        )
         self._converge_due_ns = 0
         plan = self._plan_on(instrument_id)
         if plan is not None and plan.opened_at_ns is None:
@@ -925,6 +928,22 @@ class OiNautilusStrategy(Strategy):
         if order.order_type == OrderType.MARKET_IF_TOUCHED:
             return "take_profit"
         return "external"
+
+    def _position_exit_reason(self, position: Any) -> ExitReason:
+        """Preserve multiple real closing legs instead of naming only the final fill's leg."""
+
+        events = position.events
+        if not events:
+            return "external"
+        opening_side = events[0].order_side
+        reasons = {
+            self._exit_reason(fill.client_order_id)
+            for fill in events
+            if fill.order_side != opening_side and fill.last_qty.as_decimal() > 0
+        }
+        if len(reasons) > 1:
+            return "mixed_exit"
+        return next(iter(reasons), "external")
 
     # -- the invariant -----------------------------------------------------------------------------
 
@@ -1082,7 +1101,7 @@ class OiNautilusStrategy(Strategy):
                 self._dispose_owed(plan, "accepted")
                 self._close_plan(
                     plan,
-                    self._exit_reason(position.closing_order_id),
+                    self._position_exit_reason(position),
                     terminal_at_ns=max(int(position.ts_closed), plan.opened_at_ns or plan.created_at_ns),
                     now_ns=now_ns,
                 )
