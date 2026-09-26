@@ -11,16 +11,26 @@ permissions:
 jobs:
   source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Archive tracked source only
-        run: git archive --format=tar HEAD > /tmp/issue-706-source.tar
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: "0.11.7"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install repository-locked dependencies
+        run: uv sync --locked
+      - name: Archive offline dependency environment
+        run: tar -czf /tmp/issue-706-dependencies.tar.gz -C .venv lib/python3.13/site-packages bin/ruff
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: issue-706-source-${{ github.sha }}
-          path: /tmp/issue-706-source.tar
+          name: issue-706-dependencies-${{ github.sha }}
+          path: /tmp/issue-706-dependencies.tar.gz
           retention-days: 1
           if-no-files-found: error
