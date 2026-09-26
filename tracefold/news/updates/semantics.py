@@ -22,6 +22,7 @@ from .contracts import (
     RelationDraft,
     SupportDraft,
     content_material,
+    content_revision_for,
 )
 from .identity import canonical_json, digest, identity
 from .judgment import (
@@ -480,14 +481,16 @@ def assemble_update(
                         retired.add(relation.previous_ref)
                 changes.extend(_occurrence_changes(draft, ref, relations, material_relations, previous, source))
         changes.extend(_link_evidence(draft, ref, extraction, links, head, head_refs))
-    revision = digest(content_material(source.event_id, claims, retired, links.values()))
-    if head is not None and revision == head.content_revision:
+    content_sha = digest(content_material(source.event_id, claims, retired, links.values()))
+    if head is not None and content_sha == head.content_sha:
         return None
+    previous_revision = None if head is None else head.content_revision
     return EventUpdate(
         event_id=source.event_id,
         input_revision=source.revision,
-        content_revision=revision,
-        previous_content_revision=None if head is None else head.content_revision,
+        content_sha=content_sha,
+        content_revision=content_revision_for(content_sha, previous_revision),
+        previous_content_revision=previous_revision,
         adopted_at_ms=adopted_at_ms,
         topics=tuple(sorted(set(extraction.topics))),
         claims=tuple(claims.values()),

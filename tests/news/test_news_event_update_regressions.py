@@ -408,3 +408,43 @@ def test_analyzer_does_not_rejudge_already_supplied_source_relations() -> None:
         assert backend.calls == []
 
     asyncio.run(run())
+
+
+def test_content_that_returns_to_an_earlier_state_is_a_new_adoption() -> None:
+    report = evidence("Issuer announces 25 MW.", 1)
+    operator = evidence("Operator comments on the reported 25 MW capacity.", 2, publisher="operator")
+
+    def reading(value: str) -> tuple[SupportDraft, SupportDraft]:
+        return (
+            SupportDraft(slot="capacity", evidence_ref=report.ref, relation="reports"),
+            SupportDraft.model_validate({"slot": "capacity", "evidence_ref": operator.ref, "relation": value}),
+        )
+
+    first = assemble_update(
+        frozen((report, operator), 1),
+        Extraction(claims=(draft(report),), supports=reading("refutes")),
+        None,
+        adopted_at_ms=STAMP + 10,
+    )
+    assert first is not None
+    heads = [first]
+    for revision, value in ((2, "supports"), (3, "refutes")):
+        head = heads[-1]
+        update = assemble_update(
+            frozen((report, operator), revision, head),
+            Extraction(
+                claims=(draft(report),),
+                relations=(relation(head.claims[0], "equivalent"),),
+                supports=reading(value),
+            ),
+            head,
+            adopted_at_ms=STAMP + 10 * revision,
+        )
+        assert update is not None
+        assert update.previous_content_revision == head.content_revision
+        heads.append(update)
+
+    # A→B→A: the material is the first state again, but the adoption is a distinct, chained revision.
+    assert heads[2].content_sha == heads[0].content_sha
+    assert len({update.content_revision for update in heads}) == 3
+    assert EventUpdate.model_validate_json(heads[2].model_dump_json()) == heads[2]

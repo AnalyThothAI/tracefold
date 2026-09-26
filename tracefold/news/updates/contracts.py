@@ -318,10 +318,22 @@ def content_material(
     }
 
 
+def content_revision_for(content_sha: str, previous_content_revision: str | None) -> str:
+    """The identity of one adoption: its material chained to the revision it replaced.
+
+    Material alone cannot name an adoption, because an Event's content can legitimately return to an
+    earlier state (a support relationship that flips and flips back). Chaining keeps every adopted
+    revision distinct while `content_sha` still answers "did the business material change".
+    """
+
+    return digest({"content_sha": content_sha, "previous": previous_content_revision})
+
+
 class EventUpdate(Exact):
     schema_version: Literal["news_event_update_v1"] = "news_event_update_v1"
     event_id: str
     input_revision: int = Field(ge=1)
+    content_sha: str
     content_revision: str
     previous_content_revision: str | None
     adopted_at_ms: int = Field(ge=0)
@@ -352,7 +364,9 @@ class EventUpdate(Exact):
         evidence = {item.ref for item in self.evidence}
         if len(claims) != len(self.claims) or len(evidence) != len(self.evidence):
             raise ValueError("news_update_duplicate_reference")
-        if self.content_revision != digest(self.content_material()):
+        if self.content_sha != digest(self.content_material()):
+            raise ValueError("news_content_sha_mismatch")
+        if self.content_revision != content_revision_for(self.content_sha, self.previous_content_revision):
             raise ValueError("news_content_revision_mismatch")
         if not set(self.retired_claim_refs) <= claims:
             raise ValueError("news_retired_claim_missing")
