@@ -137,7 +137,8 @@ test("an observation retains its research context through Case, execution and ha
   allowBrowserFailure(page, {
     kind: "requestfailed",
     match: "GET /api/trading/status (net::ERR_ABORTED)",
-    reason: "This case deliberately reloads the page twice; navigation can cancel an in-flight status poll.",
+    reason:
+      "This case deliberately reloads the page twice; navigation can cancel an in-flight status poll.",
   });
   await page.goto(origin);
   const row = page.locator(".news-market-row-main").first();
