@@ -50,7 +50,7 @@ export function TradingDecisionSummary({
     <section className="trading-journey" aria-labelledby="trading-journey-title">
       <div className="trading-journey-heading">
         <div>
-          <span className="trading-eyebrow">DECISION PIPELINE · 最近 24 小时</span>
+          <span className="trading-process-eyebrow">DECISION PIPELINE · 最近 24 小时</span>
           <h2 id="trading-journey-title">一条市场线索，如何走到交易</h2>
           <p>
             先筛选来源，再冻结 Case，由 DSPy Agent 给出判断；只有发布的交易判断才会形成 Signal。

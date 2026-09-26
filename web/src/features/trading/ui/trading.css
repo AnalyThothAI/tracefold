@@ -6,44 +6,6 @@
     min-width: 0;
   }
 
-  .trading-page-header {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    min-height: 29px;
-  }
-
-  .trading-heading-copy {
-    flex-wrap: wrap;
-    align-items: baseline;
-    min-width: 0;
-  }
-
-  .trading-heading-copy h1 {
-    margin: 0;
-    color: var(--text-primary);
-    font: var(--type-page-title);
-    letter-spacing: -0.025em;
-  }
-
-  .trading-heading-copy p {
-    margin: 0;
-    color: var(--text-subtle);
-  }
-
-  .trading-heading-aside {
-    flex-wrap: wrap;
-    align-items: baseline;
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .trading-heading-aside small {
-    color: var(--text-subtle);
-    font-size: inherit;
-  }
-
   .trading-shell [data-tone="caution"] {
     color: var(--signal-caution);
   }
@@ -420,10 +382,6 @@
       grid-auto-flow: row;
     }
 
-    .trading-heading-aside {
-      width: 100%;
-    }
-
     .trading-position-row {
       grid-template-columns: minmax(0, 1fr);
     }
@@ -545,31 +503,6 @@
 }
 
 @layer app.features {
-  .trading-shell .trading-body {
-    gap: 18px;
-  }
-
-  .trading-page-header {
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .trading-heading-copy h1 {
-    font-size: var(--font-size-metric);
-    line-height: 1.15;
-  }
-
-  .trading-heading-copy p {
-    max-width: 650px;
-    font-size: var(--font-size-body);
-  }
-
-  .trading-heading-aside {
-    display: grid;
-    gap: 3px;
-    padding-left: 16px;
-    border-left: 2px solid var(--accent-border);
-  }
-
   .trading-safety-grid {
     border: 1px solid var(--border-subtle);
     box-shadow: none;
@@ -805,35 +738,10 @@
 }
 
 @layer app.features {
-  .trading-shell {
-    max-width: 1440px;
-    gap: 20px;
-    padding: 30px 28px 48px;
-  }
-  .trading-page-header {
-    align-items: end;
-    gap: 18px;
-    padding: 6px 0 12px;
-  }
-  .trading-heading-copy {
-    display: grid;
-    gap: 9px;
-  }
-  .trading-eyebrow {
+  .trading-process-eyebrow {
     font: var(--type-eyebrow);
     letter-spacing: 0.13em;
     color: var(--text-muted);
-  }
-  .trading-heading-copy p {
-    line-height: 1.8;
-  }
-  .trading-heading-aside {
-    max-width: 460px;
-    line-height: 1.8;
-    text-align: right;
-  }
-  .trading-body {
-    gap: 20px;
   }
   .trading-risk {
     gap: 8px;
@@ -1368,19 +1276,11 @@
     .trading-workbench[data-split] {
       grid-template-columns: minmax(0, 1fr);
     }
-    .trading-heading-aside {
-      max-width: none;
-      text-align: left;
-    }
     .trading-recent {
       margin-top: 0;
     }
   }
   @media (max-width: 767px) {
-    .trading-shell {
-      gap: 16px;
-      padding: 20px 12px calc(16px + env(safe-area-inset-bottom, 0px));
-    }
     .trading-exposure > .trading-fact-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -1401,9 +1301,6 @@
     .trading-entry-detail {
       grid-template-columns: minmax(0, 1fr);
       padding: 16px;
-    }
-    .trading-page-header {
-      display: grid;
     }
     .trading-safety-grid {
       gap: 14px;
@@ -1438,5 +1335,14 @@
     .trading-analysis-disclosure > summary {
       min-height: var(--tap-target);
     }
+  }
+}
+
+@layer app.features {
+  .trading-connection-summary {
+    margin: 0;
+    color: var(--text-subtle);
+    font: var(--type-mono-meta);
+    overflow-wrap: anywhere;
   }
 }

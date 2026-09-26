@@ -68,6 +68,12 @@ test("missing PnL stays explicit in the existing desk", async ({ page }, testInf
       fees_usd: null,
       net_known: false,
       net_pnl_usd: null,
+      exit_reason: "take_profit",
+      original_exit_reason: "venue_unknown",
+      original_terminal_at_ns: 1790345174088448789,
+      position_closed_at_ns: 1790338365075000000,
+      result_evidence_source: "signed_native_trades",
+      result_verified_at_ns: 1790380800000000000,
     }),
   ];
   await page.route("**/api/trading/executions*", (route) =>
@@ -84,6 +90,11 @@ test("missing PnL stays explicit in the existing desk", async ({ page }, testInf
   await page.getByRole("button", { name: "执行记录", exact: true }).click();
   await expect(page.getByText("净收益未知")).toBeVisible();
   await expect(page.getByText(/^手续费 /)).toHaveCount(0);
+  await page.getByRole("button", { name: "执行明细", exact: true }).click();
+  await expect(page.getByText("交易所原生成交已核验")).toBeVisible();
+  await expect(page.getByText("原始终结记录").locator("..")).toContainText("未观察到平仓过程");
+  await expect(page.getByText("实际退出时间")).toBeVisible();
+  await expect(page.getByText("核验时间")).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await page.screenshot({
     path: testInfo.outputPath("trade-plan-missing-pnl.png"),

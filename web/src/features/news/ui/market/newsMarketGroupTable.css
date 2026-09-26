@@ -471,36 +471,6 @@
 }
 
 @layer app.features {
-  .news-market-shell {
-    max-width: 1440px;
-    gap: 20px;
-    padding: 30px 28px 48px;
-  }
-  .news-market-page-heading {
-    display: grid;
-    gap: 8px;
-    padding: 6px 0 12px;
-  }
-  .news-market-page-heading > span {
-    color: var(--text-muted);
-    font: var(--type-eyebrow);
-    letter-spacing: 0.13em;
-  }
-  .news-market-page-heading h1 {
-    margin: 0;
-    color: var(--text-primary);
-    font: var(--type-page-title);
-    letter-spacing: -0.03em;
-  }
-  .news-market-page-heading p {
-    margin: 0;
-    color: var(--text-muted);
-    font: var(--type-meta);
-    line-height: 1.8;
-  }
-  .news-market-body {
-    gap: 18px;
-  }
   .news-market-workbench {
     display: grid;
     grid-template-columns: minmax(0, 1.35fr) minmax(340px, 1fr);
@@ -841,12 +811,6 @@
     }
     .news-market-detail-placeholder {
       display: none;
-    }
-  }
-  @media (max-width: 767px) {
-    .news-market-shell {
-      gap: 16px;
-      padding: 20px 12px calc(16px + env(safe-area-inset-bottom, 0px));
     }
   }
   @media (max-width: 599px) {
