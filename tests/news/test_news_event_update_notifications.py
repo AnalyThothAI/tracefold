@@ -110,12 +110,20 @@ def claim(
     kind: str = "state_change",
     assets: tuple[Asset, ...] = (),
     statement: str | None = None,
+    quantities: tuple[dict[str, str], ...] = (),
 ) -> DraftClaim:
     return DraftClaim(
         slot=slot,
         statement=statement or source.text,
         fields=ClaimFields.model_validate(
-            {"subject": "Agency", "action": slot, "mode": mode, "content_kind": kind, "assets": assets}
+            {
+                "subject": "Agency",
+                "action": slot,
+                "mode": mode,
+                "content_kind": kind,
+                "assets": assets,
+                "quantities": quantities,
+            }
         ),
         citations=(Citation(evidence_ref=source.ref, quote=source.text),),
     )
@@ -308,48 +316,69 @@ def test_a_schedule_is_not_notified() -> None:
     )
 
 
+def _move(
+    market: str, *, percent: str | None = None, kind: str = "level_crossed", mode: str = "observation"
+) -> EventUpdate:
+    asset = Asset.model_validate({"symbol": "X", "market_type": market, "role": "primary"})
+    quantities = () if percent is None else ({"name": "change", "value": percent, "unit": "%"},)
+    return single("A market moved.", kind=kind, mode=mode, assets=(asset,), quantities=quantities)
+
+
 @pytest.mark.parametrize(
-    ("kind", "text", "market", "expected"),
+    ("basis", "market", "percent", "expected"),
     [
-        ("level_crossed", "Bitcoin rises above $82,000.", "crypto", "actionable_content"),
-        ("level_crossed", "Bitcoin is up 3% today.", "crypto", "price_report_without_basis"),
-        ("period_record", "WTI hits a seven-month high.", "commodity", "actionable_content"),
-        ("period_record", "WTI is trading at $81.", "commodity", "price_report_without_basis"),
-        ("quantified_flow", "Whale withdraws 10,000 ETH from Binance.", "crypto", "actionable_content"),
-        ("quantified_flow", "Outflows continue at exchanges.", "crypto", "price_report_without_basis"),
-        ("level_crossed", "WTI settles 6% higher on the day.", "commodity", "large_daily_move"),
-        ("level_crossed", "The Nasdaq 100 drops 5.2% in one session.", "index", "large_daily_move"),
-        ("level_crossed", "Tencent shares rose 7% intraday.", "equity", "price_report_without_basis"),
-        ("level_crossed", "WTI settles 3% higher on the day.", "commodity", "price_report_without_basis"),
+        ("level_crossed", "crypto", None, "actionable_content"),
+        ("period_record", "commodity", None, "actionable_content"),
+        ("depeg_or_physical", "crypto", None, "actionable_content"),
+        ("quantified_flow", "crypto", None, "actionable_content"),
+        ("quote_only", "crypto", "3", "price_report_without_basis"),
+        ("quote_only", "commodity", "6", "large_daily_move"),
+        ("quote_only", "index", "-5.2", "large_daily_move"),
+        ("quote_only", "equity", "7", "price_report_without_basis"),
+        ("quote_only", "commodity", "2.66", "price_report_without_basis"),
     ],
 )
-def test_a_market_move_needs_a_stated_basis_or_the_owner_exception(
-    kind: str, text: str, market: str, expected: str
+def test_an_observed_market_move_needs_a_judged_basis_or_the_owner_exception(
+    basis: str, market: str, percent: str | None, expected: str
 ) -> None:
-    asset = Asset.model_validate({"symbol": "X", "market_type": market, "role": "primary"})
-    assert only_reason(run_plan(single(text, kind=kind, mode="observation", assets=(asset,)))) == expected
+    backend = TaskBackend({"market_basis": basis})
+    assert only_reason(run_plan(_move(market, percent=percent), generated=backend)) == expected
+    assert [task for task, _items in backend.calls] == ["market_basis"]
 
 
-def test_the_basis_is_read_from_cited_quotes_not_model_prose() -> None:
-    source = evidence("Bitcoin is up 3% today.")
-    draft = claim("a", source, kind="level_crossed", mode="observation", statement="Bitcoin rises above $82,000.")
-    assert only_reason(run_plan(adopted((draft, source)))) == "price_report_without_basis"
+def test_the_basis_is_judged_by_the_native_backend_when_it_is_configured() -> None:
+    native, generated = TaskBackend({"market_basis": "quote_only"}, identity="native"), TaskBackend()
+    assert only_reason(run_plan(_move("crypto"), native=native, generated=generated)) == "price_report_without_basis"
+    assert [task for task, _items in native.calls] == ["market_basis"]
+    assert generated.calls == []
 
 
-def test_a_chinese_period_record_names_the_period_before_the_superlative() -> None:
-    text = "美国10年期国债收益率持续走高，升至5.081%，为2007年7月17日以来最高。"
-    assert only_reason(run_plan(single(text, kind="period_record", mode="observation"))) == "actionable_content"
+def test_an_unresolved_basis_is_reasked_once_and_then_does_not_withhold_the_claim() -> None:
+    generated = TaskBackend({"market_basis": "unresolved"})
+    assert only_reason(run_plan(_move("crypto"), generated=generated)) == "actionable_content"
+    assert [task for task, _items in generated.calls] == ["market_basis", "market_basis"]
+
+
+def test_the_exception_reads_the_structured_percentage_not_the_prose() -> None:
+    backend = TaskBackend({"market_basis": "quote_only"})
+    # The quote says "6%", but no structured quantity carries it: code computes only on extracted numbers.
+    update = single(
+        "WTI settles 6% higher on the day.",
+        kind="level_crossed",
+        mode="observation",
+        assets=(Asset.model_validate({"symbol": "CL", "market_type": "commodity", "role": "primary"}),),
+    )
+    assert only_reason(run_plan(update, generated=backend)) == "price_report_without_basis"
 
 
 @pytest.mark.parametrize("mode", ["decision", "commitment", "guidance"])
-def test_an_action_that_carries_an_amount_is_not_a_quote(mode: str) -> None:
+def test_an_action_that_carries_an_amount_is_not_asked_about_a_market_basis(mode: str) -> None:
     # 2026-09-26 replay: "US Treasury says will buy up to $6 bln of 20-30 year debt" was read as a
-    # quantified flow and withheld as a price report. The basis rule is about observed market moves.
-    text = "US Treasury says will buy up to $6 bln of 20-30 year debt in a liquidity buyback."
-    assert only_reason(run_plan(single(text, kind="quantified_flow", mode=mode))) == "actionable_content"
-    assert only_reason(run_plan(single(text, kind="quantified_flow", mode="observation"))) == (
-        "price_report_without_basis"
-    )
+    # quantified flow and withheld as a price report. The basis question is about observed market moves.
+    backend = TaskBackend()
+    update = single("US Treasury will buy up to $6 bln of 20-30 year debt.", kind="quantified_flow", mode=mode)
+    assert only_reason(run_plan(update, generated=backend)) == "actionable_content"
+    assert backend.calls == []
 
 
 # ------------------------------------------------------------------ staleness

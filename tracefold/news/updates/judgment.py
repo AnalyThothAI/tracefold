@@ -20,8 +20,9 @@ Task = Literal[
     "topic",
     "next_read",
     "impact_channel",
+    "market_basis",
 ]
-QUESTION_VERSION: Final = "news_questions_v2"
+QUESTION_VERSION: Final = "news_questions_v3"
 # The per-claim readings the native backend owns when it is configured.
 CLAIM_READING_TASKS: Final[tuple[Task, ...]] = ("mode", "phase", "content_kind")
 
@@ -37,6 +38,7 @@ TASK_QUESTIONS: Final[dict[Task, str]] = {
     "topic": "Does this navigation topic apply to at least one of the shared claims?",
     "next_read": "Would reading this supplied target resolve the stated gap?",
     "impact_channel": "Do the cited claims support this proposed mechanism as a conditional implication?",
+    "market_basis": "Beyond the number itself, what does the cited text state about this observed market move?",
 }
 
 OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
@@ -153,6 +155,16 @@ OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
         ("applicable", "The supplied mechanism is supported as a conditional implication by the cited claims."),
         ("not_applicable", "The proposed mechanism is not supported by these claims."),
         ("unresolved", "Applicability is not established."),
+    ),
+    # Replaces the retired keyword vocabulary of #675's price-report rule: whether an observed market move
+    # states a fact the reader can use beyond the number. A bare quote is the class that rule withheld.
+    "market_basis": (
+        ("level_crossed", "The text names a threshold or level the price or rate crossed, reclaimed or lost."),
+        ("period_record", "The text says it is the highest, lowest, largest or first of a named period."),
+        ("depeg_or_physical", "A pegged asset left its peg, or the figure is a physical-supply price such as freight."),
+        ("quantified_flow", "The text quantifies an amount that moved: liquidated, deposited, withdrawn, net flow."),
+        ("quote_only", "Only a price or percentage change, with no threshold, record, peg or quantified flow."),
+        ("unresolved", "The cited text does not establish which of these it is."),
     ),
 }
 

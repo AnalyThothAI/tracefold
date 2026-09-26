@@ -9,6 +9,7 @@ overlapping send whose outcome is not settled.
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Final, Literal, Protocol
 
 from pydantic import Field, model_validator
@@ -16,7 +17,6 @@ from pydantic import Field, model_validator
 from .contracts import Claim, ContentKind, EventUpdate, Exact, Mode
 from .identity import canonical_json, digest, identity
 from .judgment import Budget, NewsJudgments, Question
-from .price_basis import PRICE_MOVE_EXCEPTION_MARKETS, price_move_basis, states_large_daily_move
 from .topics import KEY_TOPIC_CODES
 
 SOURCE_MAX_AGE_MS: Final = 12 * 60 * 60_000
@@ -73,8 +73,13 @@ _KNOWN_MODES: Final[dict[str, Mode]] = {
     "commentary": "commentary",
     "promotion": "promotion",
 }
-# The kinds whose whole claim is a market move. The cited text must state a basis beyond the number.
+# The kinds whose whole claim is a market move. An observed one must state a basis beyond the number.
 PRICE_REPORT_KINDS: Final[frozenset[ContentKind]] = frozenset({"level_crossed", "period_record", "quantified_flow"})
+# The owner's one exception (#675 §7): a same-day move this large is itself the fact, but only where a whole
+# market moved. A single stock is excluded by its market, never by the size of the move.
+PRICE_MOVE_EXCEPTION_PERCENT: Final = Decimal(5)
+PRICE_MOVE_EXCEPTION_MARKETS: Final[frozenset[str]] = frozenset({"commodity", "index"})
+_PERCENT_UNITS: Final[frozenset[str]] = frozenset({"%", "pct", "percent"})
 # A key update is a state change or an authority's measure in a key topic family, corroborated.
 KEY_CONTENT_KINDS: Final[frozenset[ContentKind]] = frozenset({"state_change", "official_measure"})
 KEY_MIN_INDEPENDENT_ORIGINS: Final = 2
@@ -195,35 +200,57 @@ class CardComposer(Protocol):
         ...
 
 
-def _cited_text(claim: Claim) -> str:
-    return "\n".join(citation.quote for citation in claim.citations)
+def market_move(claim: Claim, mode: Mode) -> bool:
+    """An observed market move: the class whose basis the planner asks about.
+
+    A decision, commitment or guidance that carries an amount (a Treasury buyback, a rate path) is an
+    action, not a quote wearing a level.
+    """
+
+    return mode == "observation" and claim.fields.content_kind in PRICE_REPORT_KINDS
 
 
 def content_reason(claim: Claim, mode: Mode) -> ClaimReason:
-    """The admission reason for a claim of a known mode, or the named reason it is not notified.
+    """The admission reason for a claim of a known mode that is not a market move, or why it is not notified.
 
-    Rules in order: a commentary, promotion or forecast mode; a schedule; then a market move whose cited
-    text states no basis beyond the number. The owner's exception admits a stated same-day move of at
-    least 5% whose primary asset trades as a commodity or an index.
+    Rules in order: a commentary, promotion or forecast mode; a schedule. A market move is decided by
+    `market_reason` from its judged basis.
     """
 
     reason = _MODE_REASONS.get(mode)
     if reason is not None:
         return reason
-    kind = claim.fields.content_kind
-    if kind == "schedule":
+    if claim.fields.content_kind == "schedule":
         return "content_schedule"
-    # The basis rule is about quotes: a market move somebody observed. A decision, commitment or guidance
-    # that carries an amount (a Treasury buyback, a rate path) is an action, not a quote wearing a level.
-    if kind not in PRICE_REPORT_KINDS or mode != "observation":
-        return "actionable_content"
-    quotes = _cited_text(claim)
-    if price_move_basis(quotes):
-        return "actionable_content"
+    return "actionable_content"
+
+
+def large_daily_move(claim: Claim) -> bool:
+    """A structured percentage move of at least the exception size on a commodity or index primary."""
+
     markets = {asset.market_type for asset in claim.fields.assets if asset.role == "primary"}
-    if states_large_daily_move(quotes) and markets & PRICE_MOVE_EXCEPTION_MARKETS:
-        return "large_daily_move"
-    return "price_report_without_basis"
+    if not markets & PRICE_MOVE_EXCEPTION_MARKETS:
+        return False
+    for quantity in claim.fields.quantities:
+        if quantity.unit.strip().casefold() not in _PERCENT_UNITS:
+            continue
+        try:
+            if abs(Decimal(quantity.value)) >= PRICE_MOVE_EXCEPTION_PERCENT:
+                return True
+        except InvalidOperation:
+            continue
+    return False
+
+
+def market_reason(claim: Claim, basis: str | None) -> ClaimReason:
+    """A market move with a stated basis is notified; a bare quote only under the owner's exception.
+
+    An unresolved basis is content uncertainty, not a verdict: it does not withhold the claim.
+    """
+
+    if basis == "quote_only":
+        return "large_daily_move" if large_daily_move(claim) else "price_report_without_basis"
+    return "actionable_content"
 
 
 def watchlist_hit(claim: Claim, watch_symbols: frozenset[str]) -> bool:
@@ -293,6 +320,7 @@ class NotificationPlanner:
             return self.source_max_age_ms > 0 and too_old and claim.ref not in corrections
 
         unknown_mode: list[Claim] = []
+        market: list[Claim] = []
         for claim in update.claims:
             if claim.ref in retired:
                 decisions[claim.ref] = "retired"
@@ -305,13 +333,23 @@ class NotificationPlanner:
                 decisions[claim.ref] = "stale_source"
             elif claim.fields.mode == "unknown":
                 unknown_mode.append(claim)
+            elif market_move(claim, claim.fields.mode):
+                market.append(claim)
             else:
                 self._admit(claim, content_reason(claim, claim.fields.mode), decisions, admitted)
         for claim, mode in await self._reask_modes(update, tuple(unknown_mode), budget):
             if mode == "unknown":
                 decisions[claim.ref] = "mode_unknown"
+            elif market_move(claim, mode):
+                market.append(claim)
             else:
                 self._admit(claim, content_reason(claim, mode), decisions, admitted)
+        bases = await self._market_bases(update, tuple(claim for claim in market if not stale(claim)), budget)
+        for claim in market:
+            if stale(claim):
+                decisions[claim.ref] = "stale_source"
+            else:
+                self._admit(claim, market_reason(claim, bases.get(claim.ref)), decisions, admitted)
 
         by_ref = {claim.ref: claim for claim in update.claims}
         blocked = set(reader.blocked_claim_refs)
@@ -371,6 +409,51 @@ class NotificationPlanner:
         else:
             decisions[claim.ref] = reason
 
+    def _cited_questions(self, update: EventUpdate, claims: tuple[Claim, ...]) -> tuple[Question, ...]:
+        evidence = {item.ref: item for item in update.evidence}
+        return tuple(
+            Question(
+                item_id=claim.ref,
+                payload_json=canonical_json(
+                    {
+                        "claim": claim,
+                        "evidence": [evidence[citation.evidence_ref] for citation in claim.citations],
+                    }
+                ),
+            )
+            for claim in claims
+        )
+
+    async def _market_bases(
+        self,
+        update: EventUpdate,
+        claims: tuple[Claim, ...],
+        budget: Budget,
+    ) -> dict[str, str | None]:
+        """What each observed market move states beyond its number, asked once for all of them.
+
+        The configured judgment backend answers (a native Choice when Jev is configured). An unresolved or
+        unavailable answer gets one targeted generated re-ask; what stays unresolved is `None`.
+        """
+
+        if not claims:
+            return {}
+        questions = self._cited_questions(update, claims)
+        answers = {row.item_id: row for row in await self.judgments.judge("market_basis", questions, budget)}
+
+        def settled(ref: str) -> str | None:
+            row = answers.get(ref)
+            if row is None or row.status != "available" or row.value in {None, "unresolved"}:
+                return None
+            return str(row.value)
+
+        bases = {claim.ref: settled(claim.ref) for claim in claims}
+        pending = tuple(question for question in questions if bases[question.item_id] is None)
+        if pending:
+            answers = {row.item_id: row for row in await self.judgments.reask("market_basis", pending, budget)}
+            bases.update({question.item_id: settled(question.item_id) for question in pending})
+        return bases
+
     async def _reask_modes(
         self,
         update: EventUpdate,
@@ -385,20 +468,7 @@ class NotificationPlanner:
 
         if not claims:
             return []
-        evidence = {item.ref: item for item in update.evidence}
-        questions = tuple(
-            Question(
-                item_id=claim.ref,
-                payload_json=canonical_json(
-                    {
-                        "claim": claim,
-                        "evidence": [evidence[citation.evidence_ref] for citation in claim.citations],
-                    }
-                ),
-            )
-            for claim in claims
-        )
-        answers = await self.judgments.reask("mode", questions, budget)
+        answers = await self.judgments.reask("mode", self._cited_questions(update, claims), budget)
         modes: list[tuple[Claim, Mode]] = []
         for claim, answer in zip(claims, answers, strict=True):
             mode: Mode = "unknown"

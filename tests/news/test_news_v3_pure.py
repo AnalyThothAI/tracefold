@@ -54,7 +54,6 @@ from tracefold.news.outcome import storyline_key_zh
 from tracefold.news.pipeline.admission import _event_identity
 from tracefold.news.reader_card import quote_line, reader_quotes
 from tracefold.news.updates.notification import freeze_card
-from tracefold.news.updates.price_basis import price_move_basis
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 
@@ -889,47 +888,6 @@ def test_source_artifact_identity_survives_the_provider_url_spellings() -> None:
 
     for other in ("https://www.zerohedge.com/markets/story", "https://x.com/soon_svm", "", "not a url"):
         assert source_artifact_identity(other) == ("", None)
-
-
-_NOW = 1_800_000_000_000
-
-
-def test_price_move_basis_reads_both_languages_of_every_shape_the_audit_named() -> None:
-    """#675 §3. The first cut of this vocabulary was Chinese-only and wrongly dropped 11 of 14 English or
-    variant cards, so the shapes are asserted on the exact strings the 24 h audit produced."""
-
-    for admissible in (
-        "比特币站上 85000 美元",
-        "美国原油跌回每桶 100 美元下方",
-        "英伟达失守 100 美元关口",
-        "Bitcoin rises above $82,000",
-        "Gold reclaims $4,000 an ounce",
-        "Silver falls below $50",
-        "黄金创三个月以来最大单日涨幅",
-        "创 7 月 30 日以来最大盘中涨幅",
-        "Meta shares hit a seven-month high",
-        "Copper at its highest since January",
-        "S&P 500 posts its biggest daily gain of the year",
-        "四小时内超 10 亿美元空头被清算",
-        "增持 7400 万美元 ETH",
-        "提取 10,000 枚 ETH",
-        "SOL 持仓升至 816 万枚",
-        "Bitcoin ETFs saw $999 million of inflows",
-        "USDe 跌至 0.92 美元",
-        "Tether depegs to $0.97",
-        "VLCC 日租金升至 103.5 万美元",
-    ):
-        assert price_move_basis(admissible), admissible
-
-    for quote_only in (
-        "Spot Palladium Rises Nearly 3% to $1,328.68/Oz",
-        "Shares of Samsung Electronics Rise Over 3%",
-        "Meta 股价涨幅扩大，最新上涨 10.4%",
-        "腾讯港股盘中涨超 7%",
-        "费城半导体指数涨幅扩大至 4%",
-    ):
-        assert not price_move_basis(quote_only), quote_only
-    assert not price_move_basis("")
 
 
 _NOW = 1_800_000_000_000
