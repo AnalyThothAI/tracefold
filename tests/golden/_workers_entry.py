@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 from pathlib import Path
 
@@ -35,12 +36,15 @@ def main() -> int:
     parser.add_argument("--management-url", default=None)
     args = parser.parse_args()
 
-    from tests.golden._scripted_news_lm import scripted_generative_lm
     from tracefold.app import learning_runtime
     from tracefold.app.workers import root as workers_root
     from tracefold.app.workers import run_workers
     from tracefold.app.workers.wiring import news as news_wiring
     from tracefold.platform.config.models import Settings
+
+    # Loaded after the Workers root, in production's import order: DSPy's lazy import hooks must not
+    # run before FastAPI/anyio finish importing.
+    scripted_generative_lm = importlib.import_module("tests.golden._scripted_news_lm").scripted_generative_lm
 
     settings = Settings(
         ws_token="golden-token",

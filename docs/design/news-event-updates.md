@@ -95,7 +95,7 @@ App relay（`AnalysisRunner.relay_once`，唯一的 News→Trading 中继）在�
 
 已采用语义先提交。仅当存在影响理解的缺口与合法既有读取目标时，才选择额外读取。预算归属持久 lineage，最多一次，重试或补读的新 revision 不复位。不允许模型生成任意 URL 或工具。
 
-返回材料形成针对受影响命题的窄输入；无材料或预算耗尽保留已采用内容。Repair 只将持久 pending 交给现有调度回调，不新增守护进程或消息队列：Janitor 重新唤醒 wake 超过 15 s 的 pending 语义工作，通知 pending 交给通知阶段提供的 wake 回调。
+返回材料形成针对受影响命题的窄输入；无材料或预算耗尽保留已采用内容。Repair 只将持久 pending 交给现有调度回调，不新增守护进程或消息队列：Janitor 重新唤醒 wake 超过 15 s 的 pending 语义工作；通知 pending 由 Deliverer 自行轮询。
 
 ## 持久化与副作用合同：无迁移、无 DDL
 
