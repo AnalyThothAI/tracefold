@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "22"
       - name: Install locked frontend dependencies
@@ -31,7 +31,7 @@ jobs:
             set -eu
             mkdir /bundle
             cp -a --parents /usr/lib/postgresql/18 /usr/share/postgresql/18 /bundle
-            ldd /usr/lib/postgresql/18/bin/* /usr/lib/postgresql/18/lib/*.so 2>/dev/null | awk '\''/=> \/|^\// {for(i=1;i<=NF;i++) if ($i ~ /^\//) print $i}'\'' | sort -u > /tmp/libraries
+            ldd /usr/lib/postgresql/18/bin/* /usr/lib/postgresql/18/lib/*.so 2>/dev/null | awk '\''/=>/ {if ($3 ~ /^\//) print $3}'\'' | sort -u > /tmp/libraries
             while read -r library; do cp -aL --parents "$library" /bundle; done < /tmp/libraries
             tar -czf /out/issue-706-postgres.tar.gz -C /bundle .
           '
