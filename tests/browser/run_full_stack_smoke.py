@@ -48,8 +48,6 @@ def main() -> int:
     options = parser.parse_args()
     dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_DSN)
     amqp_url = declared_amqp_url()
-    if not amqp_url:
-        raise SystemExit(f"browser smoke: {UNDECLARED_MESSAGE}")
     _require_resources(dsn, amqp_url)
     _reset_postgres(dsn)
     seed_research(dsn)
@@ -154,6 +152,8 @@ def _require_resources(dsn: str, amqp_url: str) -> None:
             pass
     except Exception as exc:
         raise SystemExit(f"browser smoke PostgreSQL unavailable: {type(exc).__name__}") from exc
+    if not amqp_url:
+        raise SystemExit(f"browser smoke: {UNDECLARED_MESSAGE}")
     parsed = urlsplit(amqp_url)
     try:
         with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 5672), timeout=2):
