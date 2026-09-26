@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import type { TradingExecutionReadiness } from "../api/tradingQueries";
 import {
   bpsPercent,
+  caseClock,
   entryBlockReasonLabel,
   moneyLabel,
   orderLegLabel,
@@ -34,6 +35,9 @@ export function TradingSafetyStrip({
   execution: TradingExecutionReadiness;
   stale: boolean;
 }) {
+  const connectionSummary = execution.connection
+    ? `Binance USD-M · ${execution.connection} · ${execution.account_slot} · 最后报告 ${caseClock(execution.connection_observed_at_ms)}${stale || execution.entry_block_reason === "runtime_heartbeat_stale" ? " · 状态过期，连接状态未知" : ""}${execution.configured_connection !== execution.connection ? ` · 配置待重启：${execution.configured_connection}` : ""}`
+    : `已配置连接：Binance USD-M · ${execution.configured_connection} · ${execution.account_slot}；尚未连接`;
   return (
     <div className="trading-risk" data-block="safety">
       {/*
@@ -71,6 +75,7 @@ export function TradingSafetyStrip({
           状态待确认：未取得有效期内的新状态，无法确认当前运行状态；下方保留上次读取的仓位与订单。
         </p>
       ) : null}
+      <p className="trading-connection-summary">{connectionSummary}</p>
       <p className="trading-routes-line">
         可执行市场 {execution.routes_count} 个 · 账户槽位 <code>{execution.account_slot}</code>
       </p>

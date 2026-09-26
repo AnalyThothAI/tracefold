@@ -18,6 +18,7 @@ const jsonOutput =
  */
 const specs = (...names: string[]) => names.map((name) => `**/${name}`);
 const everyViewport = [
+  "page-layout.spec.ts",
   "research-execution.spec.ts",
   "event-feed-controls.spec.ts",
   "price-plane.spec.ts",

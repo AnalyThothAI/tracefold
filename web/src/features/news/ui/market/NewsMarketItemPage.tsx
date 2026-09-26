@@ -1,8 +1,7 @@
 import { researchReturnPath } from "@shared/routing/researchContext";
-import { PageShell } from "@shared/ui/PageShell";
+import { PageHeader } from "@shared/ui/PageHeader";
+import { PageReadingContent, PageShell } from "@shared/ui/PageShell";
 import { Link, useSearchParams } from "react-router-dom";
-
-import { NewsPageHeader } from "../chrome/NewsChrome";
 
 import { GroupDetail } from "./NewsMarketGroupTable";
 import "./newsMarket.css";
@@ -13,11 +12,13 @@ export function NewsMarketItemPage({ token, itemId }: { token: string; itemId: s
   return (
     <PageShell archetype="case" label="市场观察依据">
       <Link to={from ?? "/news/market"}>返回研究列表</Link>
-      <NewsPageHeader
+      <PageHeader
         title="市场观察依据"
         subtitle="一条原始观察、它的离散观测过程，以及通知与策略入口。"
       />
-      <GroupDetail token={token} itemId={itemId} />
+      <PageReadingContent>
+        <GroupDetail token={token} itemId={itemId} />
+      </PageReadingContent>
     </PageShell>
   );
 }

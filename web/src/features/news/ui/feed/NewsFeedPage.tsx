@@ -1,6 +1,7 @@
 import { useMediaQuery } from "@shared/hooks/useMediaQuery";
 import { newsFeedIdentity } from "@shared/query/queryKeys";
 import { ActionButton } from "@shared/ui/ActionButton";
+import { PageHeader } from "@shared/ui/PageHeader";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { useEffect, useRef, useState } from "react";
@@ -23,7 +24,7 @@ import {
 import { newsFeedGroups } from "../../model/feedGroups";
 import { absoluteTime, formatCount, hoursLabel, outcomeTabLabel } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
-import { NewsPageHeader, NewsPageStamp } from "../chrome/NewsChrome";
+import { NewsPageStamp } from "../chrome/NewsChrome";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 import { NewsEventDrawer } from "../detail/NewsEventDrawer";
 
@@ -107,13 +108,13 @@ export function NewsFeedPage({ token }: { token: string }) {
        * successful health read because it is also the status-page door. Two health controls on one screen
        * saying the same thing is one of them the reader learns to skip.
        */}
-      <NewsPageHeader subtitle="每条新闻的判定与去向；符号可点进代币页" title="新闻事件流">
+      <PageHeader subtitle="每条新闻的判定与去向；符号可点进代币页" title="新闻事件流">
         {statusQuery.data ? (
           <NewsPageStamp>
             更新于 {absoluteTime(statusQuery.data.measured_at_ms).slice(11)}
           </NewsPageStamp>
         ) : null}
-      </NewsPageHeader>
+      </PageHeader>
 
       {statusQuery.data ? (
         <NewsFunnelCard status={statusQuery.data} />

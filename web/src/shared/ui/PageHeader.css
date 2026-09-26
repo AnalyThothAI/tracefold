@@ -1,0 +1,40 @@
+@layer app.primitives {
+  .page-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+
+  .page-header-copy {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
+    min-width: 0;
+  }
+
+  .page-header-copy h1 {
+    margin: 0;
+    color: var(--text-primary);
+    font: var(--type-page-title);
+    font-weight: 660;
+    line-height: 1.5;
+    letter-spacing: -0.025em;
+  }
+
+  .page-header-copy p {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: var(--font-size-meta);
+  }
+
+  .page-header-aside {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    min-width: 0;
+  }
+}

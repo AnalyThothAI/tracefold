@@ -1,4 +1,5 @@
 import { routeReferrerFromState } from "@shared/routing/routeReferrer";
+import { PageHeader } from "@shared/ui/PageHeader";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
@@ -14,7 +15,6 @@ import {
   type NewsFeedFilters,
 } from "../../api/newsQueries";
 import { parseSymbolLane } from "../../model/symbolLanes";
-import { NewsPageHeader } from "../chrome/NewsChrome";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsSymbolEvents } from "./NewsSymbolEvents";
@@ -112,7 +112,7 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
       {/* No count stamp here: 24H 事件 and 已推送 are two of the identity band's three tiles below, which
           is where the artifact puts them. Printing them in the header too showed a reader the same two
           numbers twice on one screen and made the band look like a restatement rather than the place. */}
-      <NewsPageHeader subtitle="这个名字最近发生了什么，以及它到底是什么。" title={normalized} />
+      <PageHeader subtitle="这个名字最近发生了什么，以及它到底是什么。" title={normalized} />
 
       {symbolQuery.isError && !symbolQuery.data ? (
         <PageState.Error error={symbolQuery.error} onRetry={() => void symbolQuery.refetch()} />
