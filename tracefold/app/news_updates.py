@@ -12,7 +12,7 @@ from tracefold.news.updates.dspy_backend import DspyCardComposer, DspyExtractor,
 from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import NATIVE_OPERATION_SECONDS, JudgmentCache, NewsJudgments
 from tracefold.news.updates.notification import NotificationPlanner
-from tracefold.news.updates.ports import ExistingSourceReader, NewsStore, Sender
+from tracefold.news.updates.ports import ExistingSourceReader, NewsStore
 from tracefold.news.updates.semantics import SemanticAnalyzer
 from tracefold.news.updates.service import NewsAgent, Notifications
 from tracefold.news.updates.topics import CODEBOOK, CODEBOOK_SHA256
@@ -35,9 +35,7 @@ class NewsJudgmentEndpoint:
 class NewsUpdateRuntime:
     agent: NewsAgent
     judgments: NewsJudgments
-    # None when this process has no push sender: semantic adoption still runs, and the pending
-    # notification markers it writes stay durable for a process that can send.
-    notifications: Notifications | None
+    notifications: Notifications
     program_identity: str
     judgment_connection: SystemOneConnection | None
 
@@ -151,7 +149,6 @@ def compose_news_updates(
     card_model_identity: str,
     judgment_model_identity: str,
     news_judgment: NewsJudgmentEndpoint | None = None,
-    sender: Sender | None = None,
     after_native_call: Callable[[SystemOneReceipt], Awaitable[None]] | None = None,
     source_reader: ExistingSourceReader | None = None,
 ) -> NewsUpdateRuntime:
@@ -192,15 +189,11 @@ def compose_news_updates(
         native_factory=native_factory,
     )
     program_identity = _program_identity(analyzer, card_model_identity)
-    notifications = (
-        None
-        if sender is None
-        else Notifications(store, NotificationPlanner(analyzer.judgments), DspyCardComposer(card_lm_factory), sender)
-    )
     return NewsUpdateRuntime(
         agent=NewsAgent(store, analyzer, program_identity=program_identity, source_reader=source_reader),
         judgments=analyzer.judgments,
-        notifications=notifications,
+        # The Deliverer owns the provider side and hands its sender to each notification turn.
+        notifications=Notifications(store, NotificationPlanner(analyzer.judgments), DspyCardComposer(card_lm_factory)),
         program_identity=program_identity,
         judgment_connection=connection,
     )

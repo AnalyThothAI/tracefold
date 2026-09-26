@@ -8,6 +8,7 @@ overlapping send whose outcome is not settled.
 
 from __future__ import annotations
 
+import re
 from typing import Final, Literal, Protocol
 
 from pydantic import Field, model_validator
@@ -440,6 +441,16 @@ def _has_han(text: str) -> bool:
     return any("㐀" <= char <= "鿿" for char in text)
 
 
+# Reader copy is plain text that every channel shows exactly as frozen. A link or a control character
+# in model copy is not something a channel may strip afterwards, so such copy is refused, not cleaned.
+_COPY_LINK_RE: Final = re.compile(r"https?://|www\.", re.IGNORECASE)
+_COPY_CONTROL_RE: Final = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _unsafe_copy(text: str) -> bool:
+    return bool(_COPY_LINK_RE.search(text) or _COPY_CONTROL_RE.search(text))
+
+
 def freeze_card(plan: NotificationPlan, update: EventUpdate, copy: CardCopy) -> FrozenCard:
     """Freeze actual reader copy; selected IDs are not proof of full coverage.
 
@@ -455,6 +466,8 @@ def freeze_card(plan: NotificationPlan, update: EventUpdate, copy: CardCopy) -> 
     lines = {line.claim_ref: line.text_zh for line in copy.lines}
     if not _has_han(copy.headline_zh) or any(not _has_han(text) for text in lines.values()):
         raise ValueError("news_card_chinese_copy_required")
+    if "\n" in copy.headline_zh or any(_unsafe_copy(text) for text in (copy.headline_zh, *lines.values())):
+        raise ValueError("news_card_copy_unsafe")
     body = "\n\n".join([copy.headline_zh, *(lines[ref] for ref in refs)])
     return FrozenCard(
         intent_id=plan.intent_id,

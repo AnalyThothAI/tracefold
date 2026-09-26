@@ -35,6 +35,8 @@ def main() -> int:
     parser.add_argument("--management-url", default=None)
     args = parser.parse_args()
 
+    from tests.golden._scripted_news_lm import scripted_generative_lm
+    from tracefold.app import learning_runtime
     from tracefold.app.workers import root as workers_root
     from tracefold.app.workers import run_workers
     from tracefold.app.workers.wiring import news as news_wiring
@@ -43,6 +45,8 @@ def main() -> int:
     settings = Settings(
         ws_token="golden-token",
         storage={"postgres": {"dsn": args.dsn, "password_file": None}},
+        # A configured News route, so the production semantic worker, planner and card composer run.
+        llm={"api_key": "golden-key", "base_url": "https://golden-llm.invalid/v1", "news_triage_model": "golden-model"},
         news={
             "enabled": True,
             "broker": {
@@ -60,9 +64,11 @@ def main() -> int:
         trading={"enabled": False},
     )
     settings.set_config_dir(Path(args.app_home))
-    # The provider side of the production delivery port is deterministic; broker routing, Workers
-    # composition, transactions, card rendering, durable delivery and HTTP projection remain real.
+    # The provider sides are deterministic: the push provider, and the generative model provider below
+    # the production DSPy adapter. Broker routing, Workers composition, the News Agent, adoption,
+    # notification planning, transactions, card rendering, durable delivery and HTTP stay real.
     news_wiring._news_push_sender = lambda _settings: news_wiring._ComposedPushSender(sender=_scripted_push_sender())
+    learning_runtime.generative_lm = scripted_generative_lm
     workers_root._WORKER_INTERNAL_PORT = args.probe_port
     asyncio.run(run_workers(settings))
     return 0

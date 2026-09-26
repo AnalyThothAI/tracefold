@@ -9,7 +9,7 @@ No port method takes a timeout: callers bound external calls with asyncio.timeou
 
 from __future__ import annotations
 
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import Field
 
@@ -49,7 +49,11 @@ class IntentLease(Exact):
 class SendOutcome(Exact):
     state: Literal["sent", "not_sent", "ambiguous"]
     payload_sha256: str
+    # The provider's own message identity. A channel that answers with none (a Feishu webhook) says so
+    # with None rather than a made-up value.
     message_id: str | None = None
+    # The provider's own receipt as the adapter returned it, e.g. what a later in-place edit is fenced by.
+    receipt: dict[str, Any] | None = None
     error_code: str | None = None
     retryable: bool = False
     retry_after_ms: int | None = Field(default=None, ge=0)
@@ -62,8 +66,15 @@ class ExistingSourceReader(Protocol):
 
 
 class Sender(Protocol):
-    async def send(self, card: FrozenCard, *, channel: str) -> SendOutcome:
-        """Send the frozen body unchanged and report the actual outcome."""
+    async def send(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome:
+        """Send the frozen body unchanged on `plan.channel` and report the actual outcome.
+
+        `plan` and `update` are the adopted content the frozen card was selected from; an adapter may add
+        code-owned facts around the body (assets, quotes, the key marker, the change label) but never
+        rewrite, clip or re-generate it. The adapter bounds its own provider call. A provider answer it
+        can prove never reached a reader is `not_sent`; anything it cannot account for is raised or
+        reported `ambiguous`, never guessed as not sent.
+        """
         ...
 
 
@@ -163,6 +174,13 @@ class NewsStore(Protocol):
         ...
 
     async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None: ...
+
+    async def defer_notification(self, event_id: str, channel: str) -> None:
+        """A planning turn failed before a plan was recorded: spend one bounded attempt and back off.
+
+        Semantics, the public outbox and any reserved intent are untouched; the caller reports the error.
+        """
+        ...
 
     async def reserve_extra_read(self, lineage_id: str, target_ref: str) -> bool:
         """Atomic one-read budget for the entire lineage, durable across retries."""

@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, Literal, cast
 
 from ..bus import (
@@ -18,7 +18,7 @@ from ..bus import (
     now_ms,
 )
 from ..storage.event_update_store import PgNewsStore
-from ..storage.event_updates import NEWS_CHANNEL, PURGE_BATCH_MAX
+from ..storage.event_updates import PURGE_BATCH_MAX
 from ..telemetry import (
     NewsDurableEventTelemetryPort,
     NewsExternalDataSource,
@@ -34,9 +34,6 @@ from .runtime import NewsDatabasePort, _sleep_or_stop
 
 log = logging.getLogger("tracefold.news")
 
-# The notification stage's wake seam: `(event_id, channel)`. The notification consumer supplies it;
-# without one, pending notification markers stay durable for the process that can deliver.
-NotificationWake = Callable[[str, str], Awaitable[object]]
 _REPAIR_LIMIT = 64
 _JANITOR_PERIOD_SECONDS = 60.0
 _DAY_MS = 24 * 3600_000
@@ -223,7 +220,6 @@ class JanitorLoop:
         retention_chain_tape_days: int = 90,
         chain_tape_enabled: bool = False,
         telemetry: NewsDurableEventTelemetryPort | None = None,
-        notification_wake: NotificationWake | None = None,
     ) -> None:
         # Two ports, because the retention sweep is a measured heavy transaction and the outbox catch-up is
         # not. Which physical lane each one lands on is the composition root's answer, never the Janitor's.
@@ -241,7 +237,6 @@ class JanitorLoop:
         # rows arriving and nothing to expire, so its sweep is not scheduled at all.
         self.retention_chain_tape_ms = int(retention_chain_tape_days) * _DAY_MS
         self.chain_tape_enabled = bool(chain_tape_enabled)
-        self.notification_wake = notification_wake
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -489,11 +484,12 @@ class JanitorLoop:
             )
 
     async def repair_semantic_wakes(self) -> int:
-        """Re-wake pending semantic work whose wake is stale (>15 s), and pending notification work.
+        """Re-wake pending semantic work whose wake is stale (>15 s).
 
         Semantic work is durable in PostgreSQL; a wake lost to a broker failure, a crash between
         commit and publish, a held lease or an open provider breaker is only latency. Work that has
         spent its attempts is visible as failed and is not woken again until new evidence arrives.
+        Pending notification work needs no wake: the Deliverer polls it on its own turn.
         """
 
         stamp = now_ms()
@@ -515,6 +511,5 @@ class JanitorLoop:
             self._record_handoff_repair("event", outcome)
             woken += 1
 
-        repair = Repair(PgNewsStore(self.db), wake_semantic=wake, wake_notification=self.notification_wake)
-        await repair.advance(NEWS_CHANNEL, limit=_REPAIR_LIMIT)
+        await Repair(PgNewsStore(self.db), wake_semantic=wake).advance(limit=_REPAIR_LIMIT)
         return woken

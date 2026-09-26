@@ -24,11 +24,10 @@ PUBLIC_NEWS_INTERFACE = {
     "EVENT_KINDS",
     # #562 PR-C: the reader card model and the reader-facing formats a channel serializer needs. The
     # two delivery adapters live outside News and now render from the card instead of parsing another
-    # channel's JSON, so the value object, the vocabulary a reviewed novelty is named in, the clock a
-    # card writes a time with and the ticker grammar a trade action is built from are the surface they
-    # are given. The renderers themselves (`render_first_card`, `feishu_card`) stay private.
+    # channel's JSON, so the value object, the clock a card writes a time with and the ticker grammar a
+    # trade action is built from are the surface they are given. The renderers themselves
+    # (`news_update_card`, `feishu_card`) stay private.
     "LINKABLE_TICKER_RE",
-    "NOVELTY_ZH",
     "ReaderCard",
     "UNTRADEABLE_NOTICE_ZH",
     "card_clock",
@@ -58,9 +57,7 @@ PUBLIC_NEWS_INTERFACE = {
     "MARKET_WINDOW_DEFAULT_MS",
     "MARKET_WINDOW_MAX_MS",
     "OpenNewsExpectedError",
-    "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "SOURCE_AUTHORITIES",
-    "ProgressionVerifier",
     "ReaderDeliveryPresentation",
     "ReaderMarketMovement",
     "ReaderTradeTarget",

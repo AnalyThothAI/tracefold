@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from .events.storyline import NO_STORYLINE_KEY, storyline_entry
-from .models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS, STALE_SOURCE_KEY
+from .models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
+from .update_view import claim_reasons_zh, semantic_state
 
 OUTCOME_VERSION: Final = "news_outcome_v1"
 
@@ -30,6 +31,15 @@ OutcomeKind = Literal[
     "pending_delivery",
     "delivered",
     "delivery_failed",
+    # #706: the EventUpdate path. Semantic work, the adopted head and the notification plan replace the
+    # Triage verdict for every Event whose evidence reached the News Agent.
+    "queued_semantic",
+    "semantic_failed",
+    "no_update",
+    "queued_notification",
+    "notification_deferred",
+    "not_notified",
+    "delivery_ambiguous",
 ]
 
 # Grouping the console uses for the task tabs: 已推送 / 被拦截 / 处理中. Kept here so CLI and HTTP agree.
@@ -46,6 +56,13 @@ OUTCOME_GROUP: Final[dict[str, str]] = {
     "pending_delivery": "pending",
     "delivered": "pushed",
     "delivery_failed": "held",
+    "queued_semantic": "pending",
+    "semantic_failed": "held",
+    "no_update": "held",
+    "queued_notification": "pending",
+    "notification_deferred": "pending",
+    "not_notified": "held",
+    "delivery_ambiguous": "held",
 }
 
 
@@ -192,7 +209,8 @@ _SEEN_SUFFIX: Final = ":seen"
 # rule and no current decision writes the key, but the v12-v16 rows that carry it stay in the ledger.
 _BUDGET_SUFFIX: Final = ":budget"
 # #154. Constant rather than per-age so the top-10 `throttled_by_key` map keeps one bucket for the rule.
-_STALE_ARTIFACT_KEY: Final = STALE_SOURCE_KEY
+# History only since #706: the legacy verdicts that carry it stay readable, no current decision writes it.
+_STALE_ARTIFACT_KEY: Final = "artifact:stale"
 
 
 def admission_zh(admission: str | None) -> str:
@@ -300,32 +318,51 @@ def event_outcome(
     delivery_queue: Mapping[str, Any] | None = None,
     opened_at_ms: int | None = None,
     now_ms: int | None = None,
+    semantic: Mapping[str, Any] | None = None,
+    adopted: bool = False,
+    notification: Mapping[str, Any] | None = None,
 ) -> Outcome:
-    """The one place that turns admission + latest triage verdict + first-card delivery into a conclusion.
+    """The one place that turns an Event's processing rows into a conclusion.
 
-    ``triage`` needs ``final_decision``, ``override_rule``, ``throttled_by``, ``degraded``, ``error_code``,
-    ``created_at_ms`` and ``published_at_ms``;
-    ``delivery`` and ``delivery_queue`` need ``state`` and ``error_code``. The queue supplies a
-    terminal outcome only before a real delivery row exists. Missing rows are ``None``.
+    ``delivery`` is the Event's representative reader delivery (its latest sent card, else its latest
+    ledger row) and needs ``state``, ``error_code`` and, for a sent update intent, ``plan_key``;
+    ``delivery_queue`` is its latest owed intent without a ledger row (``state``, ``error_code``). The
+    outbound ledger outranks everything else.
+
+    An Event with ``semantic`` work (#706: ``wanted_revision``, ``done_revision``, ``last_outcome``,
+    ``last_error_code``) is on the EventUpdate path: ``adopted`` says whether it has a head, and
+    ``notification`` is its notification work (``state`` plus the stored plan's ``action`` and
+    ``claim_decisions``). Otherwise ``triage`` is the legacy verdict (``final_decision``,
+    ``override_rule``, ``throttled_by``, ``degraded``, ``error_code``, ``created_at_ms``,
+    ``published_at_ms``), read exactly as before. Missing rows are ``None``.
+
+    `storage.feed_sql.OUTCOME_GROUP_SQL` states the same precedence in SQL for the feed's tabs.
     """
 
     state = str((delivery or {}).get("state") or "")
-    if state in {"sent", "terminal", "sending"}:
+    queue_state = str((delivery_queue or {}).get("state") or "")
+    if state in {"sent", "terminal", "sending", "ambiguous"}:
         # The outbound ledger is a material fact and outranks a later routing hard cut. This also covers
         # repaired/replayed data whose immutable verdict is absent.
         final = str((triage or {}).get("final_decision") or "")
         degraded = bool((triage or {}).get("degraded"))
         error_zh = error_code_zh((triage or {}).get("error_code")) if degraded else ""
-        rule_zh = override_rule_zh((triage or {}).get("override_rule"))
-        if degraded:
+        rule_zh = override_rule_zh((triage or {}).get("override_rule")) if semantic is None else ""
+        if degraded and semantic is None:
             rule_zh = "模型不可用，按规则兜底推送" + (f"：{error_zh}" if error_zh else "")
         if state == "sent":
-            return _outcome("delivered", "已推送（重点）" if final == "escalate" else "已推送", rule_zh)
-        if state == "terminal":
-            return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery or {}).get("error_code")))
-        return _outcome("pending_delivery", "推送中", rule_zh)
+            key = final == "escalate" if semantic is None else bool((delivery or {}).get("plan_key"))
+            return _outcome("delivered", "已推送（重点）" if key else "已推送", rule_zh)
+        if state == "sending":
+            return _outcome("pending_delivery", "推送中", rule_zh)
+        if queue_state == "pending":
+            # A later intent is owed after an earlier one ended without a card: the Event is not done.
+            return _outcome("pending_delivery", "待推送", "上一张卡未送达，新的通知待发送")
+        if state == "ambiguous":
+            return _outcome("delivery_ambiguous", "发送结果不确定", "发送后未能确认是否送达，不重发，等待对账")
+        return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery or {}).get("error_code")))
 
-    if (delivery_queue or {}).get("state") == "dead":
+    if queue_state == "dead":
         return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery_queue or {}).get("error_code")))
 
     admission_text = str(admission or "")
@@ -333,6 +370,8 @@ def event_outcome(
         return _outcome("held_recovery", "补抄件，不推送", ADMISSION_ZH["recovery"])
     if admission_text not in ADMITTED_ADMISSIONS:
         return _outcome("held_gate", "未送审", admission_zh(admission_text))
+    if semantic is not None:
+        return _update_outcome(semantic, adopted=adopted, notification=notification)
     if triage is None:
         if published_at_ms is None:
             if _handoff_expired(started_at_ms=opened_at_ms, now_ms=now_ms):
@@ -381,6 +420,35 @@ def event_outcome(
             "判定后 30 分钟内未完成投递交接，已停止补发",
         )
     return _outcome("pending_delivery", "待推送（重点）" if important else "待推送", rule_zh)
+
+
+def _update_outcome(semantic: Mapping[str, Any], *, adopted: bool, notification: Mapping[str, Any] | None) -> Outcome:
+    """The EventUpdate path after the ledger and the Gate: semantic work, the head, then the plan."""
+
+    semantic_now = semantic_state(semantic)
+    if semantic_now == "pending":
+        return _outcome("queued_semantic", "理解中", "等待语义处理新的材料版本")
+    if not adopted:
+        if semantic_now == "failed":
+            return _outcome(
+                "semantic_failed",
+                "语义处理失败",
+                error_code_zh(semantic.get("last_error_code")) or "语义处理多次失败，等待新的材料版本",
+            )
+        return _outcome("no_update", "无可采用内容", "语义处理完成，未形成可采用的事件更新")
+    notification_state = str((notification or {}).get("state") or "")
+    action = str((notification or {}).get("action") or "")
+    if action == "unresolved":
+        return _outcome("notification_deferred", "等待前序发送", "重叠的通知发送结果尚未确定")
+    if notification is None or notification_state == "pending":
+        return _outcome("queued_notification", "待决定通知", "已采用事件更新，等待通知选择")
+    if action == "notify":
+        return _outcome("pending_delivery", "待推送", "通知已选择，等待发送")
+    return _outcome(
+        "not_notified",
+        "未通知",
+        claim_reasons_zh((notification or {}).get("claim_decisions")) or "没有未覆盖且可通知的命题",
+    )
 
 
 def _handoff_expired(*, started_at_ms: Any, now_ms: int | None) -> bool:

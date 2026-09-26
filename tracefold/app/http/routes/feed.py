@@ -6,14 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
-from tracefold.news import (
-    ASSERTION_STATUSES,
-    CHANGE_STATES,
-    EVENT_FAMILIES,
-    EVENT_KINDS,
-    IPTC_SUBJECT_CODES,
-    SOURCE_AUTHORITIES,
-)
+from tracefold.news import EVENT_KINDS, IPTC_SUBJECT_CODES, SOURCE_AUTHORITIES
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -39,9 +32,6 @@ _DIRECTIONS = ("bullish", "bearish", "neutral")
 @router.get("/news/feed", response_model=_FeedEnvelope)
 def get_news_feed(
     request: Request,
-    event_family: Annotated[str, Query(max_length=320)] = "",
-    change_state: Annotated[str, Query(max_length=128)] = "",
-    assertion_status: Annotated[str, Query(max_length=96)] = "",
     source_authority: Annotated[str, Query(max_length=128)] = "",
     subject_code: Annotated[str, Query(max_length=768)] = "",
     final_decision: Annotated[str, Query(max_length=64)] = "",
@@ -60,9 +50,6 @@ def get_news_feed(
     _validate_query_params(
         request,
         supported={
-            "event_family",
-            "change_state",
-            "assertion_status",
             "source_authority",
             "subject_code",
             "final_decision",
@@ -80,24 +67,6 @@ def get_news_feed(
     )
     if admission and admission not in _ADMISSIONS:
         raise ApiBadRequest("news_feed_admission_invalid", field="admission")
-    event_families = _parse_csv_filter(
-        event_family,
-        allowed=EVENT_FAMILIES,
-        error="news_feed_event_family_invalid",
-        field="event_family",
-    )
-    change_states = _parse_csv_filter(
-        change_state,
-        allowed=CHANGE_STATES,
-        error="news_feed_change_state_invalid",
-        field="change_state",
-    )
-    assertion_statuses = _parse_csv_filter(
-        assertion_status,
-        allowed=ASSERTION_STATUSES,
-        error="news_feed_assertion_status_invalid",
-        field="assertion_status",
-    )
     source_authorities = _parse_csv_filter(
         source_authority,
         allowed=SOURCE_AUTHORITIES,
@@ -133,9 +102,6 @@ def get_news_feed(
         search = repos.compile_news_search(q=q or None, symbol=symbol or None)
         try:
             data = repos.news.list_feed(
-                event_family=event_families,
-                change_state=change_states,
-                assertion_status=assertion_statuses,
                 source_authority=source_authorities,
                 subject_code=subject_codes,
                 final_decision=final_decisions,

@@ -31,6 +31,8 @@ from tracefold.news.bus import (
 from tracefold.news.market_review.instrument_storage import InstrumentsRepository
 from tracefold.news.models import ADMITTED_ADMISSIONS
 from tracefold.news.pipeline.admission import DeduperConsumer
+from tracefold.news.pipeline.delivery import DelivererLoop
+from tracefold.news.storage.decisions import legacy_intent_id
 
 pytestmark = pytest.mark.integration
 
@@ -153,6 +155,15 @@ def _raw_messages() -> list[BusMessage]:
 
 def _deduper(conn: Any, bus: FakeBus) -> DeduperConsumer:
     return DeduperConsumer(bus=bus, db=FakeWorkerDatabase(conn), watchlist_symbols=WATCHLIST)
+
+
+def _deliverer(conn: Any) -> DelivererLoop:
+    return DelivererLoop(
+        db=FakeWorkerDatabase(conn),
+        sender=None,
+        finite_operations=InlineFiniteOperations(),
+        min_interval_seconds=0.0,
+    )
 
 
 def test_empty_instrument_catalog_is_cached_until_refresh(conn, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -471,3 +482,49 @@ def test_a_market_frame_that_matched_no_template_is_stored_raw_and_calls_no_mode
     sources = {row["market_kind"]: row for row in news.market_sources(from_ms=observed, to_ms=observed + 1)}
     assert sources["oi"]["received"] >= 1
     assert sources["oi"]["raw"] >= 1
+
+
+def test_a_deliverer_retires_legacy_intents_and_without_a_sender_plans_nothing(conn) -> None:
+    """#706: a pending legacy `first` intent is dead-lettered with its reason and never sent.
+
+    The verdict path that owed those cards is gone; its queue rows are not sent through it after the
+    cutover. With no sender configured nothing is planned either: notification work stays visible.
+    """
+
+    row = conn.execute("SELECT event_id FROM news_events WHERE admission = 'candidate' LIMIT 1").fetchone()
+    assert row is not None
+    event_id = str(row["event_id"])
+    conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (event_id,))
+    conn.execute("DELETE FROM news_delivery_queue WHERE event_id = %s", (event_id,))
+    # A card the retired verdict path owed before the cutover, exactly as that path queued it.
+    stamp = now_ms()
+    conn.execute(
+        """
+        INSERT INTO news_delivery_queue (
+          intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms, updated_at_ms
+        ) VALUES (%s, %s, 'first', 'pending', 0, %s, %s, %s)
+        """,
+        (legacy_intent_id(event_id, "first"), event_id, stamp, stamp, stamp),
+    )
+    conn.commit()
+    deliverer = _deliverer(conn)
+    stop = asyncio.Event()
+
+    async def scenario() -> int:
+        task = asyncio.create_task(deliverer.run(stop_event=stop))
+        await asyncio.sleep(0.05)
+        stop.set()
+        await task
+        return await deliverer.advance()
+
+    assert asyncio.run(scenario()) == 0
+    conn.commit()
+
+    queued = conn.execute(
+        "SELECT kind, state, error_code FROM news_delivery_queue WHERE event_id = %s", (event_id,)
+    ).fetchall()
+    assert [dict(item) for item in queued] == [
+        {"kind": "first", "state": "dead", "error_code": "legacy_intent_retired"}
+    ]
+    deliveries = conn.execute("SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,))
+    assert deliveries.fetchone()["n"] == 0

@@ -297,9 +297,10 @@ def test_a_sender_that_cannot_be_constructed_leaves_the_fact_chain_composed_and_
     # Reception, admission and retention are all still declared; only the send is missing.
     assert {name for name, _ in pipeline.runners()} >= {"news-deduper", "news-janitor", "news-deliverer"}
 
-    # The Deliverer task still runs -- it settles those Events `delivery_unavailable` rather than
-    # dropping them -- so "a task exists" must not be read back as "the capability works". Declaring
-    # the task must leave the composition's `unavailable` exactly where composition put it.
+    # The Deliverer task still runs -- it reconciles the ledger and leaves notification work pending
+    # and visible rather than planning sends it cannot make -- so "a task exists" must not be read back
+    # as "the capability works". Declaring the task must leave the composition's `unavailable` exactly
+    # where composition put it.
     tasks = worker_business_tasks(news_pipeline=pipeline)
     assert ("news-deliverer", NEWS_DELIVERY) in {(task.name, task.capability) for task in tasks}
     assert capabilities.payload()[NEWS_DELIVERY]["state"] == "unavailable"

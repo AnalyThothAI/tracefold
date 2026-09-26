@@ -29,10 +29,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const baseFilters: NewsFeedFilters = {
   admission: null,
-  assertionStatuses: [],
-  changeStates: [],
   directions: [],
-  eventFamilies: [],
   eventKinds: [],
   finalDecisions: [],
   hours: null,

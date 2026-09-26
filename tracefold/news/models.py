@@ -41,7 +41,10 @@ GATE_POLICY_VERSION = "news_gate_v7"
 # `storyline_budget_max`. Every other row, guard and duplicate check is byte-identical to v16; the v12-v16
 # `:budget` rows stay in the ledger as history and `outcome.py` still renders them.
 TRIAGE_POLICY_VERSION = "news_triage_policy_v17"
-DELIVERY_CARD_VERSION = "news_delivery_card_v11"
+# v12 (#706): a News card is one EventUpdate intent's frozen Chinese copy -- its headline and one line per
+# selected claim -- plus code-owned facts: the selected claims' primary assets and quotes, the key marker
+# and the change label (新增/更新/更正). No model direction, novelty or fact kind, and no progression review.
+DELIVERY_CARD_VERSION = "news_delivery_card_v12"
 
 # What the editorial Gate can decide about one Event. Three market admissions left this vocabulary
 # with the Events they described (#553): a market observation is stored with its typed fact at
@@ -60,9 +63,6 @@ Admission = Literal[
 # the Gate and the queue (#72: 19 events, 0 verdicts, 0 deliveries since launch). One constant, so it cannot
 # drift again.
 ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset({"candidate", "listing_deterministic"})
-# The withhold key a legacy verdict recorded for a stale source artifact; the outcome projection
-# renders it for those rows.
-STALE_SOURCE_KEY: Final = "artifact:stale"
 # How long the Janitor keeps trying to rescue an Event that was created but never reached the Triage queue
 # (commit-then-crash, or a publish failure). Measured event -> delivery latency is p50 4.2 s / p95 16.8 s, so this
 # is ~100x the p95: it can only fire on a genuinely stranded Event, never on a slow one. Past it the Event is not
@@ -156,8 +156,6 @@ class ReaderTradeTarget:
 
 ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
 ReaderMarketDataState = Literal["pending", "ready"]
-ReaderMarketScope = Literal["macro", "sector", "single_name"]
-ProgressionReviewState = Literal["pending", "confirmed", "rejected", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,15 +176,7 @@ class ReaderDeliveryPresentation:
     trade_targets: tuple[ReaderTradeTarget, ...] = ()
     market_movements: tuple[ReaderMarketMovement, ...] = ()
     news_at_ms: int | None = None
-    observed_at_ms: int | None = None
     market_data_state: ReaderMarketDataState = "ready"
-    market_scope: ReaderMarketScope | None = None
-    novelty: Novelty | None = None
-    progression_from_headline: str | None = None
-    progression_review_state: ProgressionReviewState | None = None
-    progression_review_reason: str | None = None
-    progression_review_parent_age_minutes: int | None = None
-    progression_review_parent_message_id: int | None = None
 
 
 class ExactNewsModel(BaseModel):

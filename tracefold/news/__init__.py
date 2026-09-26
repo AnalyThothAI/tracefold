@@ -21,8 +21,7 @@ from .models import (
 )
 from .oi_contracts import OI_METRIC_VERSION
 from .opennews import OpenNewsExpectedError
-from .progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionVerifier
-from .reader_card import NOVELTY_ZH, UNTRADEABLE_NOTICE_ZH, ReaderCard, quote_line
+from .reader_card import UNTRADEABLE_NOTICE_ZH, ReaderCard, quote_line
 from .source_contracts import EVENT_KINDS, MARKET_KINDS, EventKind
 from .taxonomy import (
     ASSERTION_STATUSES,
@@ -51,9 +50,7 @@ __all__ = [
     "MARKET_PAGE_MAX",
     "MARKET_WINDOW_DEFAULT_MS",
     "MARKET_WINDOW_MAX_MS",
-    "NOVELTY_ZH",
     "OI_METRIC_VERSION",
-    "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "SOURCE_AUTHORITIES",
     "UNTRADEABLE_NOTICE_ZH",
     "EventKind",
@@ -63,7 +60,6 @@ __all__ = [
     "NetBuySnapshot",
     "NewsTaxonomyV1",
     "OpenNewsExpectedError",
-    "ProgressionVerifier",
     "ReaderCard",
     "ReaderDeliveryPresentation",
     "ReaderMarketMovement",

@@ -252,8 +252,8 @@ describe("news route", () => {
               ],
               grounded_assets: ["BTC", "SKHX"],
             },
-            triage: {
-              ...detail.triage!,
+            legacy_verdict: {
+              ...detail.legacy_verdict!,
               assets: [
                 { role: "mentioned", symbol: "BTC" },
                 { role: "primary", symbol: "SKHX" },

@@ -53,6 +53,7 @@ from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.semantic import SemanticWorker
 from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore, PgSourceReader
+from tracefold.news.updates.service import Notifications
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
@@ -182,6 +183,7 @@ async def _wire_news_pipeline(
         receiver=receiver,
         recovery=recovery,
         telemetry=telemetry,
+        notifications=None if news_updates is None else news_updates.notifications,
     )
     # Reception and admission are the entry this whole PR exists to keep running; their tasks are
     # foundational and never fault this capability. The bounded market-review loops are optional, and
@@ -320,8 +322,9 @@ def _push_sender_or_fault(
     """Construct the push sender, or mark delivery unavailable and keep the fact chain running.
 
     A missing webhook, an unreadable secret file or a malformed token is a configuration fact, not a
-    delivery: the Deliverer settles those Events `delivery_unavailable` rather than presenting them as
-    sent. Recovery is a corrected config plus a restart; there is no hot reload console (#553 PR-3).
+    delivery: with no sender the Deliverer plans nothing, so notification work stays pending and visible
+    rather than being presented as sent. Recovery is a corrected config plus a restart; there is no hot
+    reload console (#553 PR-3, #706).
     """
 
     composed = _news_push_sender(settings)
@@ -454,7 +457,14 @@ def _compose_news_pipeline(
     receiver: OpenNewsReceiver | None,
     recovery: RecoveryRunner | None,
     telemetry: TelemetryRegistry | None,
+    notifications: Notifications | None = None,
 ) -> NewsPipeline:
+    """Compose the News pipeline. `notifications` is the EventUpdate notification service (#706).
+
+    The Deliverer is its channel side: it plans each pending head, and sends the frozen card through the
+    one configured sender. Without it, or without a sender, notification work stays pending and visible.
+    """
+
     watchlist_symbols = settings.news.watchlist_symbols
     return NewsPipeline(
         receiver=receiver,
@@ -480,7 +490,7 @@ def _compose_news_pipeline(
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
             price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
-            progression_verifier=None,
+            notifications=notifications,
             tradability_verifier=(
                 VenueCatalogTradabilityVerifier()
                 if settings.news.venues.enabled

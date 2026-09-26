@@ -28,6 +28,7 @@ from .feed_sql import (
     EDITORIAL_EVENT_CARD_SQL,
     EVENT_MEMBERS_SQL,
     EVENT_VERDICTS_SQL,
+    SOURCE_AUTHORITY_PREDICATE,
     STATUS_DELIVERY_SQL,
     STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
@@ -38,6 +39,7 @@ from .feed_sql import (
     STATUS_LEARNING_RETENTION_SQL,
     STATUS_PIPELINE_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
+    SUBJECT_CODE_PREDICATE,
     TEXT_SEARCH_PREDICATE,
     feed_counts_sql,
     feed_page_sql,
@@ -57,6 +59,16 @@ from .operations import (
     RAW_RETENTION_CANDIDATE_SQL,
     RECOVERY_BACKLOG_LIMIT,
     pending_recovery_incidents_statement,
+)
+from .update_reads import (
+    EVENT_DELIVERIES_SQL,
+    EVENT_DELIVERY_QUEUE_SQL,
+    EVENT_NOTIFICATION_WORK_SQL,
+    EVENT_SEMANTIC_OBSERVATIONS_SQL,
+    EVENT_SEMANTIC_WORK_SQL,
+    EVENT_UPDATE_HEAD_SQL,
+    EVENT_UPDATE_PREVIOUS_CLAIMS_SQL,
+    EVENT_UPDATE_REVISIONS_SQL,
 )
 from .wallet_events import (
     NET_BUY_WINDOW_SQL,
@@ -88,6 +100,26 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=feed_page_sql("e.ingest_mode IN ('live', 'recovery')"),
             params=(now_ms, 51),
             max_read_return_amplification=32.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        # #706: the two feed filters that survived the taxonomy cut, over the adopted head's topics and
+        # cited sources and, for an Event without one, the legacy editorial document.
+        ReadQuerySpec(
+            name="news_feed_filtered",
+            sql=feed_page_sql(
+                f"e.ingest_mode IN ('live', 'recovery') AND {SOURCE_AUTHORITY_PREDICATE} AND {SUBJECT_CODE_PREDICATE}"
+            ),
+            params=(now_ms, ["issuer_first_party"], ["issuer_first_party"], ["medtop:20000379"], 51),
+            max_read_return_amplification=32.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_feed_filtered_counts",
+            sql=feed_counts_sql(
+                f"e.ingest_mode IN ('live', 'recovery') AND {SOURCE_AUTHORITY_PREDICATE} AND {SUBJECT_CODE_PREDICATE}"
+            ),
+            params=(now_ms, ["issuer_first_party"], ["issuer_first_party"], ["medtop:20000379"]),
+            max_read_return_amplification=2.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
@@ -206,6 +238,65 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=EVENT_VERDICTS_SQL,
             params=("event",),
             max_read_return_amplification=8.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        # #706: the Event detail's EventUpdate plane and its delivery ledger/queue, each by primary key or
+        # the `(event_id, ...)` index of its table. The queue has no Event index; it holds only work still
+        # owed, which a sent card leaves.
+        ReadQuerySpec(
+            name="news_event_update_head",
+            sql=EVENT_UPDATE_HEAD_SQL,
+            params=("event",),
+            max_read_return_amplification=8.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_update_revisions",
+            sql=EVENT_UPDATE_REVISIONS_SQL,
+            params=("event",),
+            max_read_return_amplification=8.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_update_previous_claims",
+            sql=EVENT_UPDATE_PREVIOUS_CLAIMS_SQL,
+            params=("event", ["update:" + "0" * 64], ["update:" + "0" * 64], "event"),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_semantic_work",
+            sql=EVENT_SEMANTIC_WORK_SQL,
+            params=("event",),
+            max_read_return_amplification=4.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_semantic_observations",
+            sql=EVENT_SEMANTIC_OBSERVATIONS_SQL,
+            params=("event",),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_notification_work",
+            sql=EVENT_NOTIFICATION_WORK_SQL,
+            params=("event",),
+            max_read_return_amplification=4.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_deliveries",
+            sql=EVENT_DELIVERIES_SQL,
+            params=("event",),
+            max_read_return_amplification=8.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_delivery_queue",
+            sql=EVENT_DELIVERY_QUEUE_SQL,
+            params=("event",),
+            max_read_return_amplification=20.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(

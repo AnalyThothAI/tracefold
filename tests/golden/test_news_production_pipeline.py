@@ -10,14 +10,14 @@ import psycopg
 from psycopg.rows import dict_row
 
 
-def test_opennews_frame_crosses_production_workers_into_durable_semantic_work(golden_runtime: Any) -> None:
-    """RabbitMQ, production Workers wiring and PostgreSQL must all participate in this result.
+def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden_runtime: Any) -> None:
+    """RabbitMQ, production Workers wiring and PostgreSQL must all participate in this result (#706).
 
     The frame is an exchange listing announcement: `listing_deterministic` is admitted like a candidate.
-    Admission commits the Event's evidence and its semantic work together and wakes the semantic
-    worker on `news.triage` (#706). The golden runtime configures no News model, so the worker
-    acknowledges the wake and leaves the work durably pending: there is no rule fallback that would
-    judge or push the frame without a model, and nothing is left in any queue.
+    Admission commits its evidence and semantic work together and wakes the semantic worker on
+    `news.triage`; the News Agent adopts an EventUpdate; the Deliverer plans it, composes the card for
+    the selected claim only, freezes it and sends it through the push provider. Only the model provider
+    and the push provider are scripted; every contract, transaction and projection is production code.
     """
 
     title = "Binance will list ACMEUSDT perpetual futures on 2026-09-08"
@@ -40,19 +40,16 @@ def test_opennews_frame_crosses_production_workers_into_durable_semantic_work(go
     )
 
     event = _wait_for_event(golden_runtime, title=title)
-    work = _wait_for_semantic_wake(golden_runtime, event_id=str(event["event_id"]))
+    data = _wait_for_sent_update(golden_runtime, event_id=str(event["event_id"]))
 
-    assert event["admission"] == "listing_deterministic"
-    assert event["published_at_ms"] is not None
-    assert (work["wanted_revision"], work["done_revision"], work["attempts"]) == (1, None, 0)
-    detail = _event_detail(golden_runtime, event_id=str(event["event_id"]))
-    assert detail["members"] and detail["members"][0]["reporting_origin"] == "binance"
-    assert detail["verdicts"] == [] and detail["deliveries"] == []
+    assert data["event"]["admission"] == "listing_deterministic"
+    assert data["event"]["published_at_ms"] is not None
+    assert data["members"] and data["members"][0]["reporting_origin"] == "binance"
+    _assert_one_sent_update(data, title=title)
+    # The legacy verdict path is gone: no verdict, no `first` card.
+    assert data["verdicts"] == [] and data["legacy_verdict"] is None
     readiness = golden_runtime.workers_readiness()
-    assert readiness["capabilities"]["news_editorial"] == {
-        "state": "disabled",
-        "reason": "news_models_not_configured",
-    }
+    assert readiness["capabilities"]["news_editorial"] == {"state": "running", "reason": None}
     # Two business queues and the dead-letter queue, all drained: the wake was consumed.
     golden_runtime.wait_for_queue_depth("news.triage", 0, timeout=30.0)
     assert golden_runtime.queue_depths() == {
@@ -60,6 +57,12 @@ def test_opennews_frame_crosses_production_workers_into_durable_semantic_work(go
         "news.triage": 0,
         "news.dead": 0,
     }
+    with psycopg.connect(golden_runtime.postgres_dsn, row_factory=dict_row) as conn:
+        owed = conn.execute(
+            "SELECT count(*) AS n FROM news_notification_work WHERE event_id = %s AND state = 'pending'",
+            (str(event["event_id"]),),
+        ).fetchone()
+    assert int(owed["n"]) == 0, "a delivered update is no longer owed"
 
 
 def test_an_unroutable_semantic_wake_is_repaired_without_restarting_workers(golden_runtime: Any) -> None:
@@ -67,7 +70,8 @@ def test_an_unroutable_semantic_wake_is_repaired_without_restarting_workers(gold
 
     The broker-crossing handoff is the semantic wake. With its route unbound the confirmed publish
     fails, the Workers root does not restart, a message on another lane still reaches its own terminal
-    settlement, and the Janitor re-wakes the durable pending work once the route is back.
+    settlement, and the Janitor re-wakes the durable pending work once the route is back -- after which
+    the adoption, the plan, the intent and the card the Deliverer sends all follow.
     """
 
     # Deliberately unlike the first frame in both ticker and wording. `listing` is an editorial kind
@@ -124,15 +128,52 @@ def test_an_unroutable_semantic_wake_is_repaired_without_restarting_workers(gold
     dead = golden_runtime.dead_letters(limit=5)
     assert {row["message_id"] for row in dead} == {"raw:broker-handler-peer"}
 
-    # The Janitor re-wakes the pending work once the route is back; the Event's first handoff is recorded.
-    work = _wait_for_semantic_wake(golden_runtime, event_id=str(event["event_id"]), timeout=150.0)
-    assert (work["wanted_revision"], work["done_revision"]) == (1, None)
+    # The Janitor re-wakes the pending work once the route is back, and the rest of the path follows.
+    data = _wait_for_sent_update(golden_runtime, event_id=str(event["event_id"]), timeout=150.0)
+    _assert_one_sent_update(data, title=title)
     assert _wait_for_event(golden_runtime, title=title)["published_at_ms"] is not None
-    golden_runtime.wait_for_queue_depth("news.triage", 0, timeout=30.0)
 
     after_janitor = golden_runtime.workers_readiness()
     assert after_janitor["runtime_id"] == initial_readiness["runtime_id"]
     assert after_janitor["process_id"] == initial_readiness["process_id"]
+
+
+def _assert_one_sent_update(data: dict[str, Any], *, title: str) -> None:
+    update = data["event_update"]
+    assert update is not None
+    assert [claim["statement"] for claim in update["claims"]] == [title]
+    processing = data["processing"]
+    assert processing["semantic"]["state"] == "done"
+    assert processing["semantic"]["last_outcome"] == "adopted"
+    assert len(processing["observations"]) == 1 and processing["observations"][0]["program_identity"]
+    plan = processing["notification"]["plan"]
+    assert (plan["action"], plan["update_ref"]) == ("notify", update["update_ref"])
+    assert [row["decision"] for row in plan["claim_decisions"]] == ["notify"]
+    (intent,) = processing["intents"]
+    assert intent["state"] == "sent"
+    assert intent["claim_refs"] == [claim["ref"] for claim in update["claims"]]
+    assert intent["headline_zh"] == "交易所宣布上线新的永续合约"
+    assert intent["body"].startswith("交易所宣布上线新的永续合约")
+    assert intent["receipt"] is not None
+
+
+def _wait_for_sent_update(golden_runtime: Any, *, event_id: str, timeout: float = 60.0) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last_body = ""
+    while time.monotonic() < deadline:
+        response = httpx.get(
+            f"{golden_runtime.base_url}/api/news/events/{event_id}",
+            headers=golden_runtime.headers,
+            timeout=5.0,
+        )
+        last_body = response.text
+        if response.status_code == 200:
+            data = response.json()["data"]
+            intents = (data.get("processing") or {}).get("intents") or []
+            if any(intent["state"] in {"sent", "terminal", "dead", "ambiguous"} for intent in intents):
+                return dict(data)
+        time.sleep(0.2)
+    raise AssertionError(f"golden Event never reached a settled update intent: {last_body}")
 
 
 def _wait_for_event(golden_runtime: Any, *, title: str) -> dict[str, Any]:
@@ -151,33 +192,6 @@ def _wait_for_event(golden_runtime: Any, *, title: str) -> dict[str, Any]:
                     return dict(event)
         time.sleep(0.1)
     raise AssertionError(f"golden Event never reached the HTTP feed: {last_body}")
-
-
-def _event_detail(golden_runtime: Any, *, event_id: str) -> dict[str, Any]:
-    response = httpx.get(
-        f"{golden_runtime.base_url}/api/news/events/{event_id}",
-        headers=golden_runtime.headers,
-        timeout=5.0,
-    )
-    assert response.status_code == 200, response.text
-    return dict(response.json()["data"])
-
-
-def _wait_for_semantic_wake(golden_runtime: Any, *, event_id: str, timeout: float = 30.0) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
-    last: dict[str, Any] | None = None
-    while time.monotonic() < deadline:
-        with psycopg.connect(golden_runtime.postgres_dsn, row_factory=dict_row) as conn:
-            row = conn.execute(
-                "SELECT wanted_revision, done_revision, attempts, published_at_ms FROM news_semantic_work"
-                " WHERE event_id = %s",
-                (event_id,),
-            ).fetchone()
-        last = dict(row) if row is not None else None
-        if last is not None and last["published_at_ms"] is not None:
-            return last
-        time.sleep(0.1)
-    raise AssertionError(f"semantic work was never woken: {last}")
 
 
 def test_an_oi_frame_crosses_production_workers_and_reaches_the_market_read(golden_runtime: Any) -> None:

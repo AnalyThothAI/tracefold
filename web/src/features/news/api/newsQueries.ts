@@ -25,7 +25,21 @@ export type NewsEventMember = NewsSchemas["NewsEventMemberData"];
 export type NewsVerdict = NewsSchemas["NewsVerdictData"];
 export type NewsDelivery = NewsSchemas["NewsDeliveryData"];
 export type NewsDeliverySummary = NewsSchemas["NewsDeliverySummaryData"];
-export type NewsTriageSummary = NewsSchemas["NewsTriageSummaryData"];
+/** History only (#706): the Triage verdict of an Event judged before the News Agent. */
+export type NewsLegacyVerdict = NewsSchemas["NewsLegacyVerdictData"];
+export type NewsFeedUpdate = NewsSchemas["NewsFeedUpdateData"];
+export type NewsEventUpdate = NewsSchemas["NewsEventUpdateData"];
+export type NewsClaim = NewsSchemas["NewsClaimData"];
+export type NewsClaimChange = NewsSchemas["NewsClaimChangeData"];
+export type NewsUpdateEvidence = NewsSchemas["NewsUpdateEvidenceData"];
+export type NewsUpdateSource = NewsSchemas["NewsUpdateSourceData"];
+export type NewsImplication = NewsSchemas["NewsImplicationData"];
+export type NewsOpenQuestion = NewsSchemas["NewsOpenQuestionData"];
+export type NewsProcessing = NewsSchemas["NewsProcessingData"];
+export type NewsSemanticWork = NewsSchemas["NewsSemanticWorkData"];
+export type NewsNotificationWork = NewsSchemas["NewsNotificationWorkData"];
+export type NewsNotificationPlan = NewsSchemas["NewsNotificationPlanData"];
+export type NewsUpdateIntent = NewsSchemas["NewsUpdateIntentData"];
 export type NewsStatus = NewsSchemas["NewsStatusData"];
 export type NewsIncident = NewsSchemas["NewsIncidentData"];
 export type NewsOutcome = NewsSchemas["NewsOutcomeData"];
@@ -102,9 +116,6 @@ export const NEWS_QUOTES_SYMBOL_MAX = 100;
 
 export type NewsFeedFilters = {
   admission: string | null;
-  eventFamilies: string[];
-  changeStates: string[];
-  assertionStatuses: string[];
   sourceAuthorities: string[];
   subjectCodes: string[];
   finalDecisions: NewsFeedFinalDecision[];
@@ -155,11 +166,8 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
       etagKey: `news-feed:${JSON.stringify([...newsFeedIdentity(filters), cursor ?? "first"])}`,
       params: {
         admission: filters.admission,
-        assertion_status: filters.assertionStatuses.join(",") || null,
-        change_state: filters.changeStates.join(",") || null,
         cursor,
         direction: filters.directions.join(",") || null,
-        event_family: filters.eventFamilies.join(",") || null,
         event_kind: filters.eventKinds.join(",") || null,
         final_decision: filters.finalDecisions.join(",") || null,
         hours: filters.hours ?? undefined,

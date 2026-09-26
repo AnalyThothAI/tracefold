@@ -44,56 +44,10 @@ def legacy_intent_id(event_id: str, kind: str) -> str:
     return identity("legacy_intent", event_id, kind)
 
 
-# The claim, and the whole of it. `FOR UPDATE SKIP LOCKED` inside the CTE is what lets two claimers
-# read disjoint sets instead of queueing behind each other, and the `UPDATE` beside it is the lease:
-# a claimed row's next due time moves out by one retry delay, so a process that dies between the
-# claim and `begin_delivery` leaves a row the next claimer picks up when that lease expires, with no
-# sweep and no reconciliation pass. `news_deliveries`'s own `ON CONFLICT (intent_id)` stays the
-# anti-duplicate authority: a lost race here costs a wasted read, never a second card.
-#
-# Due time, then arrival, then the intent key: one order, and the tie-breakers are what make it the same
-# order under two claimers. Only the legacy `first`/`followup` intents are this claim's: an `update`
-# intent is reserved and fenced by the EventUpdate notification store (#706).
-#
-# There is no priority column. An escalate rode `news.deliver` at AMQP
-# priority 5, and at this lane's measured volume -- 7 messages in the worst minute ever recorded --
-# every due card drains inside one turn, so the priority chose between cards that were going out
-# in the same second anyway.
-CLAIM_DUE_DELIVERIES_SQL = """
-    WITH due AS (
-      SELECT intent_id FROM news_delivery_queue
-       WHERE state = 'pending'
-         AND kind IN ('first', 'followup')
-         AND next_attempt_at_ms <= %s
-       ORDER BY next_attempt_at_ms, enqueued_at_ms, intent_id
-       LIMIT %s
-       FOR UPDATE SKIP LOCKED
-    )
-    UPDATE news_delivery_queue q
-       SET attempts = q.attempts + 1,
-           next_attempt_at_ms = %s,
-           last_attempt_at_ms = %s,
-           updated_at_ms = %s
-      FROM due
-     WHERE q.intent_id = due.intent_id
-    RETURNING q.event_id, q.kind, q.attempts, q.enqueued_at_ms
-"""
-
-# The attempt nobody finished. A process that died mid-attempt spent one, and its row comes back due
-# with the budget already gone; without this it would be `pending` for ever and invisible, because
-# the claim above refuses to increment past the column's own bound. Run in the claim transaction, on
-# the same partial index, ahead of the claim.
-EXPIRE_DELIVERY_CLAIMS_SQL = """
-    UPDATE news_delivery_queue
-       SET state = 'dead',
-           error_code = COALESCE(error_code, 'news_delivery_attempts_exhausted'),
-           settled_at_ms = %s,
-           updated_at_ms = %s
-     WHERE state = 'pending'
-       AND kind IN ('first', 'followup')
-       AND attempts >= %s
-       AND next_attempt_at_ms <= %s
-"""
+# The legacy `first`/`followup` intents are retired at the #706 cutover. A pending one is never sent
+# through the old verdict path: it is marked dead with this reason, in place, where an operator can read
+# it. Settled legacy rows stay the ledger they are and keep their edit reconciliation by intent id.
+LEGACY_INTENT_RETIRED: Final = "legacy_intent_retired"
 
 _READER_HISTORY_PROJECTION = """
     SELECT d.event_id, d.settled_at_ms AS at_ms,
@@ -751,90 +705,18 @@ class DecisionStorage:
         )
         return bool(cursor.rowcount)
 
-    def enqueue_delivery(self, *, event_id: str, kind: str, now_ms: int) -> bool:
-        """Record that this Event owes a reader a card. Written in the Verdict's own transaction.
-
-        `ON CONFLICT DO NOTHING` on the natural key, so a re-decided Event never queues a second card
-        and no caller has to read before writing. Due immediately: the wait a retry earns is set when
-        an attempt fails, never before the first one.
-        """
-
-        cursor = self.conn.execute(
-            """
-            INSERT INTO news_delivery_queue (
-              intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, 'pending', 0, %s, %s, %s)
-            ON CONFLICT (intent_id) DO NOTHING
-            """,
-            (legacy_intent_id(event_id, kind), event_id, kind, int(now_ms), int(now_ms), int(now_ms)),
-        )
-        return bool(cursor.rowcount)
-
-    def claim_due_deliveries(
-        self, *, now_ms: int, next_attempt_at_ms: int, attempts_max: int, limit: int
-    ) -> list[dict[str, Any]]:
-        """Take up to `limit` due cards, spending one attempt each and leasing them until their next due.
-
-        The expiry pass runs first and in the same transaction: an attempt no process finished has
-        already been spent, and its row would otherwise come back due with a budget the claim cannot
-        increment past.
-        """
-
-        self.conn.execute(
-            EXPIRE_DELIVERY_CLAIMS_SQL,
-            (int(now_ms), int(now_ms), int(attempts_max), int(now_ms)),
-        )
-        rows = self.conn.execute(
-            CLAIM_DUE_DELIVERIES_SQL,
-            (int(now_ms), int(limit), int(next_attempt_at_ms), int(now_ms), int(now_ms)),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def finish_delivery_claim(self, *, event_id: str, kind: str) -> bool:
-        """The card is no longer owed: `news_deliveries` has the row, and it is the only ledger."""
-
-        cursor = self.conn.execute(
-            "DELETE FROM news_delivery_queue WHERE intent_id = %s",
-            (legacy_intent_id(event_id, kind),),
-        )
-        return bool(cursor.rowcount)
-
-    def defer_delivery_claim(
-        self, *, event_id: str, kind: str, error_code: str, next_attempt_at_ms: int, now_ms: int
-    ) -> bool:
-        """Record why this attempt did not finish, and never bring its retry closer than the lease.
-
-        The claim already leased this row until one retry delay from now, and that lease is the wait.
-        `GREATEST` is what makes the caller's number advice rather than a schedule: a provider that
-        answered a rate limit with "not for another two minutes" moves the row later, and every other
-        deferral -- which passes the current stamp -- leaves the lease exactly where the claim put it
-        (#604 N3).
-        """
-
-        cursor = self.conn.execute(
-            """
-            UPDATE news_delivery_queue
-               SET error_code = %s,
-                   next_attempt_at_ms = GREATEST(next_attempt_at_ms, %s),
-                   updated_at_ms = %s
-             WHERE intent_id = %s AND state = 'pending'
-            """,
-            (error_code, int(next_attempt_at_ms), int(now_ms), legacy_intent_id(event_id, kind)),
-        )
-        return bool(cursor.rowcount)
-
-    def abandon_delivery_claim(self, *, event_id: str, kind: str, error_code: str, now_ms: int) -> bool:
-        """The budget is spent or the intent can never succeed. This lane's `news.dead`, kept in place."""
+    def retire_legacy_delivery_intents(self, *, now_ms: int) -> int:
+        """Dead-letter every still-pending legacy intent with an explicit reason; nothing is sent for them."""
 
         cursor = self.conn.execute(
             """
             UPDATE news_delivery_queue
                SET state = 'dead', error_code = %s, settled_at_ms = %s, updated_at_ms = %s
-             WHERE intent_id = %s AND state = 'pending'
+             WHERE state = 'pending' AND kind IN ('first', 'followup')
             """,
-            (error_code, int(now_ms), int(now_ms), legacy_intent_id(event_id, kind)),
+            (LEGACY_INTENT_RETIRED, int(now_ms), int(now_ms)),
         )
-        return bool(cursor.rowcount)
+        return int(cursor.rowcount or 0)
 
     def delivery_claim(self, *, event_id: str, kind: str) -> dict[str, Any] | None:
         row = self.conn.execute(
@@ -883,27 +765,6 @@ class DecisionStorage:
         existing = self.conn.execute("SELECT state FROM news_deliveries WHERE intent_id = %s", (intent_id,)).fetchone()
         return str(existing["state"]) if existing else "new"
 
-    def release_delivery(self, *, event_id: str, kind: str) -> bool:
-        """Give back a send this process owns and provably never made, so the next attempt can own it.
-
-        Only a `sending` row is releasable, and only by the attempt that just wrote it: the adapter
-        answered `not_sent`, so this row is not evidence that a reader saw anything -- it is a claim
-        on the identity, and the only thing `news_deliveries` has to say about a card nobody sent is
-        nothing. Holding it would make the retry read `sending` and settle the Event
-        `ambiguous_after_crash`, which is how a transient rate limit used to cost a reader the card.
-
-        `sent` and `terminal` rows are the ledger and the `state` predicate is what keeps them out of
-        reach: a receipted card and a settled failure are never released by anyone. A release that
-        does not commit leaves the `sending` row, and the next attempt reads it as the ambiguity it
-        is -- the same answer a process that died here has always earned (#604 N1).
-        """
-
-        cursor = self.conn.execute(
-            "DELETE FROM news_deliveries WHERE intent_id = %s AND state = 'sending'",
-            (legacy_intent_id(event_id, kind),),
-        )
-        return bool(cursor.rowcount)
-
     def settle_delivery(
         self,
         *,
@@ -932,13 +793,16 @@ class DecisionStorage:
     def begin_delivery_edit(
         self,
         *,
-        event_id: str,
-        kind: str,
+        intent_id: str,
         card: Mapping[str, Any],
         receipt: Mapping[str, Any],
         now_ms: int,
     ) -> bool:
-        """Persist the desired replacement before mutating one provider message."""
+        """Persist the desired replacement before mutating one provider message.
+
+        Keyed by the delivery intent, legacy `first` rows and `update` intents alike. The body of an
+        update intent is its frozen payload and is never touched by an edit.
+        """
 
         parsed = _telegram_receipt(receipt)
         if parsed is None:
@@ -958,7 +822,7 @@ class DecisionStorage:
             (
                 _dumps(dict(card)),
                 int(now_ms),
-                legacy_intent_id(event_id, kind),
+                intent_id,
                 parsed.provider,
                 str(parsed.message_id),
                 str(parsed.pushed_at_ms),
@@ -970,12 +834,18 @@ class DecisionStorage:
     def settle_delivery_edit(
         self,
         *,
-        event_id: str,
-        kind: str,
+        intent_id: str,
         receipt: Mapping[str, Any],
         now_ms: int,
     ) -> bool:
-        """CAS a confirmed provider edit over its already-durable desired card."""
+        """CAS a confirmed provider edit over its already-durable desired card.
+
+        The provider's edited receipt is merged over the stored one, so the fields an update intent's
+        settlement recorded beside it (channel, payload digest, message id) survive the edit. A legacy
+        row's `card` becomes the edited rendering; an update intent's `card` is its frozen card (the
+        headline, claim refs, body and digest the reader was sent) and an edit never replaces it -- the
+        enrichment is display around that copy, not a new payload.
+        """
 
         parsed = _telegram_receipt(receipt, require_edited=True)
         if parsed is None:
@@ -983,7 +853,8 @@ class DecisionStorage:
         cursor = self.conn.execute(
             """
             UPDATE news_deliveries
-               SET card = pending_card, pending_card = NULL, receipt = %s::jsonb,
+               SET card = CASE WHEN kind = 'update' THEN card ELSE pending_card END,
+                   pending_card = NULL, receipt = receipt || %s::jsonb,
                    edit_state = 'edited', edit_error_code = NULL, edit_settled_at_ms = %s
              WHERE intent_id = %s AND state = 'sent' AND edit_state = 'editing'
                AND receipt ->> 'provider' = %s
@@ -994,7 +865,7 @@ class DecisionStorage:
             (
                 _dumps(parsed.canonical()),
                 int(now_ms),
-                legacy_intent_id(event_id, kind),
+                intent_id,
                 parsed.provider,
                 str(parsed.message_id),
                 str(parsed.pushed_at_ms),
@@ -1006,8 +877,7 @@ class DecisionStorage:
     def mark_delivery_edit_ambiguous(
         self,
         *,
-        event_id: str,
-        kind: str,
+        intent_id: str,
         receipt: Mapping[str, Any],
         error_code: str,
         now_ms: int,
@@ -1031,7 +901,7 @@ class DecisionStorage:
             (
                 normalized_error,
                 int(now_ms),
-                legacy_intent_id(event_id, kind),
+                intent_id,
                 parsed.provider,
                 str(parsed.message_id),
                 str(parsed.pushed_at_ms),

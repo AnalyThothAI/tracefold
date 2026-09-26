@@ -21,10 +21,10 @@ import httpx
 import psycopg
 
 from tests.browser.research_seed import seed_research
+from tests.support.rabbitmq import UNDECLARED_MESSAGE, declared_amqp_url, rabbitmq_management_url
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
-DEFAULT_AMQP_URL = "amqp://tracefold:tracefold@127.0.0.1:5672/"
 WS_TOKEN = "browser-smoke-token"
 # A liquidation frame, not an open-interest one. This smoke's subject is a fact reaching the
 # console's default view, and that view is the 已推送 tab; #458 stopped the OI lane pushing, so it
@@ -47,7 +47,9 @@ def main() -> int:
     parser.add_argument("--playwright-json", required=True, type=Path)
     options = parser.parse_args()
     dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_DSN)
-    amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", DEFAULT_AMQP_URL)
+    amqp_url = declared_amqp_url()
+    if not amqp_url:
+        raise SystemExit(f"browser smoke: {UNDECLARED_MESSAGE}")
     _require_resources(dsn, amqp_url)
     _reset_postgres(dsn)
     seed_research(dsn)
@@ -347,10 +349,7 @@ def _terminate(
 
 
 def _management_url(amqp_url: str) -> str:
-    return os.environ.get(
-        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-        f"http://{urlsplit(amqp_url).hostname or '127.0.0.1'}:15672",
-    ).rstrip("/")
+    return rabbitmq_management_url(amqp_url)
 
 
 async def _apply_policies(amqp_url: str, management_url: str, name_prefix: str) -> None:

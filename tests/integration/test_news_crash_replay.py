@@ -23,7 +23,6 @@ broker does once that contract holds.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -107,13 +106,6 @@ class FaultInjectingDatabase:
     async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
         del operation_timeout_seconds, name
         return fn(*args, **kwargs)
-
-
-class InlineFiniteOperations:
-    async def run(self, _name: str, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
-        kwargs.pop("timeout_seconds", None)
-        kwargs.pop("allow_shutdown", None)
-        return await fn(*args, **kwargs) if inspect.iscoroutinefunction(fn) else fn(*args, **kwargs)
 
 
 @pytest.fixture(scope="module")
