@@ -330,6 +330,7 @@ async def adopt_next(
         program_identity="program-test",
         completed_at_ms=STAMP + 100,
         understanding=extracted,
+        evidence_refs=tuple(item.ref for item in source.evidence),
     )
     await pg.save_observation(observation)
     # Adoption happens after the semantic completion it adopts; the two clocks stay distinct.
@@ -440,6 +441,7 @@ def test_checkpoints_and_observations_are_insert_only() -> None:
         program_identity="program-test",
         completed_at_ms=STAMP + 10,
         understanding=first,
+        evidence_refs=tuple(item.ref for item in source.evidence),
     )
     assert asyncio.run(pg.save_observation(observation)) == observation
     replay = observation.model_copy(update={"completed_at_ms": STAMP + 999})
@@ -717,7 +719,7 @@ def test_two_planners_reserve_one_intent_without_resetting_it() -> None:
     ]
     # The marker stays pending while the reserved intent is in flight, due only after its lease.
     work = sql("SELECT state, next_attempt_at_ms FROM news_notification_work")[0]
-    assert work == {"state": "pending", "next_attempt_at_ms": clock.now_ms + 60_000}
+    assert work == {"state": "pending", "next_attempt_at_ms": clock.now_ms + 120_000}
     assert asyncio.run(pg.pending_notification_events("news", 10)) == ()
 
 
@@ -728,7 +730,7 @@ def test_a_turn_that_dies_after_reserving_is_reclaimed_after_its_lease() -> None
     assert snapshot is not None
     orphan = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision)))
     assert orphan is not None
-    clock.now_ms += 60_001
+    clock.now_ms += 120_001
     assert asyncio.run(pg.pending_notification_events("news", 10)) == (EVENT,)
     sender = Sender("sent")
     assert asyncio.run(notifications(pg, clock, sender).process(EVENT, "news")) == "sent"

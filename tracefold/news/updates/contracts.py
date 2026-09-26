@@ -388,7 +388,9 @@ class FrozenInput(Exact):
     revision: int = Field(ge=1)
     # All revisions produced by a single optional read retain this lineage ID.
     lineage_id: str = Field(min_length=1)
-    evidence: tuple[Evidence, ...] = Field(min_length=1)
+    # A later observed snapshot can add no model-visible source identity. The Agent records a
+    # no-op observation and settles that revision without calling the extractor.
+    evidence: tuple[Evidence, ...]
     prior: tuple[PriorClaim, ...] = ()
     read_targets: tuple[ReadTarget, ...] = ()
     focus_claim_refs: tuple[str, ...] = ()

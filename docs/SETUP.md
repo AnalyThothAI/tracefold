@@ -103,10 +103,10 @@ The regex above is indentation-blind, so check the diff before `make up` if your
 file sets both.
 
 `news.triage.deadline_seconds` is retired in #129. Remove that line from an
-existing `news.triage` mapping before `make up` and the next `make runtime-up`; keep `concurrency` and the
-optional whole-chain `circuit_failures` / `circuit_open_seconds`. The Program
-artifact now owns its primary and fallback route deadline, so carrying the old
-key fails `extra="forbid"` rather than silently overriding the artifact.
+existing `news.triage` mapping before `make up` and the next `make runtime-up`;
+keep `concurrency` and the optional whole-chain `circuit_failures` /
+`circuit_open_seconds`. The News Agent stage and model call budgets are
+code-owned; carrying the old key fails `extra="forbid"`.
 
 ### Initialization semantics
 
@@ -156,8 +156,9 @@ head before the #449 stopped-writer cutover.
 The credentials a live deployment can hold are exactly: the OpenNews token
 (`news.opennews_token`), the direct model triple (`llm.api_key`,
 `llm.base_url`, `llm.news_triage_model`, plus the optional
-`llm.news_reader_card`, `llm.news_triage_fallback`, and
-`llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`),
+`llm.news_reader_card`, `llm.news_triage_fallback`,
+`llm.news_reader_card_fallback`, and `llm.news_judgment` triples), the
+RabbitMQ URL (`news.broker.url`),
 the one push provider's configuration (`news.push.*`), the Binance execution
 pair, and the single PostgreSQL application password file. #528 deleted the
 Telegram control webhook and its secret; a config that still carries a
@@ -172,10 +173,9 @@ lanes report explicit degradation or unavailable evidence:
 - absent or unreachable `news.broker.url` makes Workers fail startup while News
   is enabled (the broker is the News transport plane);
 - an absent direct model triple (`llm.api_key`, `llm.base_url`,
-  `llm.news_triage_model`) leaves the semantic Program unconfigured and makes
-  Triage fall back to fail-closed rules
-  (`triage_degraded_24h` grows); a degraded verdict carries no Chinese text, so
-  the feed and card fall back to the original title;
+  `llm.news_triage_model`) leaves the semantic Agent unconfigured. Admission
+  remains durable, but semantic work stays pending until a configured Workers
+  process can run it; no negative verdict or delivery is fabricated;
 - News push remains off until `news.push.enabled: true` and exactly one provider
   is complete: either a supported `news.push.feishu_webhook_url`, or a secure
   Telegram bot-token file plus one private channel ID (`-100...`).
@@ -191,8 +191,7 @@ the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
 configured booleans. Feishu delivery has no model-credential dependency; the
-card header is the Triage verdict's `headline_zh` (the original title when
-Triage is degraded) and the body is `why_zh` plus the code-owned facts line.
+card is composed only after a notification plan selects adopted claims.
 Telegram delivery reads `news.push.telegram_bot_token_file` under the same
 regular-file, no-symlink, mode-`0600` policy as other provider files. The
 configured `telegram_chat_id` is either a channel Bot API ID beginning with
@@ -243,7 +242,7 @@ llm:
     temperature: 0
     structured_output: "json_object"
     extra_body: {}
-  # Optional: omit this complete triple to run ReaderCard on the Triage endpoint.
+  # Optional: omit this complete triple to compose selected cards on the Triage endpoint.
   news_reader_card:
     api_key: "<reader model secret>"
     base_url: "https://reader.example/v1"
@@ -262,12 +261,6 @@ llm:
     api_key: "<reader fallback secret>"
     base_url: "https://reader-fallback.example/v1"
     model: "reader-fallback-model"
-  # Required only for `news learning run`. Reflection uses this endpoint with
-  # code-owned 32k/300s/temperature-1. The optimizer has no judge role.
-  news_compiler_reflection:
-    api_key: "<compiler reflection secret>"
-    base_url: "https://reflection.example/v1"
-    model: "reflection-model"
   # Optional, Trading-only Jev semantic tool. Supply all three or omit all.
   # Current OpenRouter System One protocol; a direct Jev route uses the same
   # fields with its own base_url, api_key and model when available.
@@ -298,14 +291,9 @@ news:
     # Alternative provider (do not configure both):
     # feishu_webhook_url: "<Feishu v2 webhook>"
     # feishu_signing_secret:
-  policy:                     # policy-v17 duplicate/safety knobs (all optional; these are the defaults)
-    restatement_drop: true      # a restatement of a card the reader already received never pushes, either direction
-    similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
-    listing_exempt_from_duplicate: true  # exchange listing frames are duplicates only per instrument
-    stale_source_max_age_s: 43200  # an x/twitter artifact already older than 12 h on arrival is a replay
   retention:
     raw_days: 30                # an Item nobody judged is storage
-    judged_days: 365            # an Item behind a verdict or accepted review is retained as learning evidence
+    judged_days: 365            # historical verdict/review evidence retention
   venues:                       # instrument-universe snapshot; public catalogues, no credentials
     enabled: true
     binance: true
@@ -335,80 +323,24 @@ cannot reuse the same evidence cohort. A directly callable `qwen*:thinking` alia
 is sent unchanged without the ordinary Qwen disable override and uses
 `prompt_json`; no operator-side thinking flag is required.
 
-Gate admission is code-owned with no `news.gate` section (the
-low-signal switch was deleted in #504) and `news.policy` exposes the
-duplicate/safety/budget knobs; trade-relevance action eligibility is code-owned.
-The Gate admits nearly every Item (only recovery replays, law-firm templates
-and unscored or under-80 market frames skip Program execution; exchange
-listing/delisting frames are admitted and judged like any candidate), Triage is
-the semantic filter, and
-`decide()` applies policy v14 to one `ScoredJudgment`. Semantic generation is
-the code-owned `EventSemantics.v2 -> deterministic
-_normalize_and_validate_semantics -> ReaderCard.v2 -> deterministic _assemble`
-Program; `TradeRelevanceV1` is nested
-inside EventSemantics.v2. It remains behind
-`SemanticJudge.judge(TriageContext)`. A normal judgment makes three serial
-provider calls (EventSemantics, taxonomy, ReaderCard since #501); the Program
-factory owns the route deadline and retry/call
-budget in code, so `deadline_seconds` is not an operator setting.
-The model-visible projection excludes queue priority, provider score, Gate
-macro lexicon, queue lag and watchlist; ReaderCard receives only its reduced
-semantic view and never ToldContext or reader intent. Queue priority remains a
-broker scheduling/audit fact and is absent from reader HTTP/OpenAPI/React.
+Gate admission and semantic processing are code-owned. Editorial items open
+Events, and each new evidence revision creates durable semantic work on the
+existing `news.triage` queue. The News Agent extracts claims, uses generated
+judgments or the optional News Jev endpoint, and adopts an EventUpdate before
+notification planning. The planner reads actual sent bodies and selects
+claim-level content; only a selected notification composes a card. Trading
+receives the adopted public update independently of card delivery. Recovery
+Items and typed market facts retain their separate paths. See
+[News EventUpdate](design/news-event-updates.md) for the current contracts.
 
-A change is one candidate kind — a `news_program_state_v1` document that moves
-exactly one Predictor's native state: record accepted cases with
-`tracefold news review`, freeze development and
-future validation windows with `tracefold news learning freeze`, then run the
-offline, holdout and canary gates under `tracefold news learning`.
-The optional GEPA workflow reads the frozen development corpus once, runs
-bounded GEPA with no database write, broker, delivery, canary or promotion
-credential, and emits at most one state document carrying the target
-Predictor's optimized `dump_state()` beside the other two unchanged. It requires explicit metric/task/reflection/metric-judge call
-limits, a total and a per-call cost limit and a seed; it cannot register,
-accept, deploy or promote. `tracefold news learning run` is the only candidate
-entry: it writes zero-call readiness and invokes stock GEPA exactly once over
-that corpus into a new empty directory. Candidate zero supplies the sole
-optimization baseline. Migration
-`0292` records the initial `program_v1`
-epoch; migration `0293` preserves it and starts the corrected `program_v2`
-epoch; migration `0294` preserves both prior rows and starts the expert-quality
-`program_v3` epoch; migration `0295` preserves v1-v3 and starts `program_v4`;
-migration `0298` preserves v1-v4 and starts `program_v5`; migration `0301`
-preserves history and starts `program_v6` for
-factory/executable v4, policy v10, review/metric v4 and compiler protocol v3.
-Migration `0303` preserves history and starts `program_v7` for
-factory/executable v5 after the Program/Learning package split. Every earlier
-cohort remains audit-only, and quality evidence restarts from zero at the
-`program_v7` deployment. The hard cut itself does not prove a cross-generation
-quality uplift; v7 evidence starts from zero
-and the normal graph was exactly two serial Predictor calls until #501 added
-the taxonomy Predictor.
-Migration `0304` carries the #193 strategy-artifact cut: it trips every open
-canary activation and receipts itself, but does not re-open the epoch, so the
-reviews accepted under the rubric of the day stayed eligible. Migration `0305`
-carries the same issue's compile-record cut: it admits the `compile_record` learning
-artifact kind, keeps `compile_receipt` readable as audit history, and trips
-open activations again, because a candidate registered against the retired
-receipt chain can no longer be evaluated. It does not re-open the epoch either.
-Migration `0315` carries #288's exact source route and factory-v7 cut. It trips
-open activations and records the cut without rewriting or appending the
-`program_v7` epoch row. Accepted review labels remain immutable truth, but
-prior-factory judgments are audit-only under exact current-bundle eligibility,
-so the factory-v7 cohort starts at zero.
-The production image has one loader only: the content-addressed
-`news_program_state_v1` document executed as
-`news_semantic_program_v13` under `news_triage_policy_v17`. Prior roots remain
-immutable audit history and are not executable by the current image. Rollback
-uses the recorded previous same-schema runtime image, never an alternate
-registry entry or runtime switch.
-`tracefold config` prints the effective values. Policy v17 keeps policy v7's
-removal of every 1 h/2 h/4 h reader-count veto and deletes the #504 per-storyline
-budget that v12-v16 added (`storyline_budget_window_s` and `storyline_budget_max`
-are no longer keys; a config file that still sets either fails at startup): every
-distinct fact that passes the semantic contract moves to delivery; the sent-reader
-ledger remains for same-fact suppression and for the two conflict rows of the
-decision table.
+The former three-Predictor Program, GEPA/learning/release/canary commands, and
+`news.policy` settings are removed. Remove `llm.news_compiler_reflection` and
+the entire `news.policy` mapping from an existing config before starting the
+new image. `tracefold config` will reject either retired key. The historical
+Program epochs, verdicts and learning data remain audit records; they do not
+execute or supply a fallback runtime. A model-route change changes the current
+News program identity, while a semantic failure stays visible as unfinished
+work rather than a fabricated drop.
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. With `news.push.enabled: false`,
@@ -457,7 +389,8 @@ notifications and Tracefold publishes each accepted frame to RabbitMQ. A
 disconnect, broker backpressure, or process outage creates a typed incident;
 reconnect restores current WSS health and the official Strategy list/hits
 endpoints perform bounded idempotent recovery (recovered Items never deliver).
-Deduper, Triage, and Deliverer are broker consumers; see `docs/ARCHITECTURE.md`
+Deduper and the semantic worker are broker consumers; Deliverer polls durable
+notification work and delivery intents. See `docs/ARCHITECTURE.md`
 and `docs/OPERATIONS.md` for the pipeline and diagnosis.
 
 Use `uv run tracefold config` to inspect the active config path and redacted

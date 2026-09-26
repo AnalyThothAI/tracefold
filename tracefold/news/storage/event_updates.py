@@ -318,11 +318,12 @@ def _related_prior(documents: Sequence[Mapping[str, Any]], own: set[str]) -> tup
 def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     """Assemble the frozen semantic input from one consistent read.
 
-    Evidence is the latest observed snapshot's leader and member Items, each with the later body
-    revisions that snapshot froze; or, for a revision produced by an optional read, only the attached
-    material with its focus claims. Prior claims are this Event's adopted head claims plus a bounded
-    set of related Events' head claims recalled by the existing candidate retrieval. Read targets are
-    related Events' stored leader Items; identity hints are Gate-grounded cashtags.
+    Evidence is only material absent from the adopted head: newly joined members, later bodies of
+    an existing Item, or a bounded optional read. The complete snapshot is still read consistently
+    to identify that delta. Prior claims are this Event's adopted head claims plus a bounded set of
+    related Events' head claims recalled by existing candidate retrieval. Assembly carries unaffected
+    head claims, citations and relationships forward. Read targets are related Events' stored leader
+    Items; identity hints are Gate-grounded cashtags in the new material.
     """
 
     work: Mapping[str, Any] | None = material.get("work")
@@ -354,6 +355,16 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     if not evidence:
         raise LookupError("news_event_input_missing")
     unique = tuple({row.ref: row for row in evidence}.values())
+    if head_document is not None:
+        # The head's evidence refs are the material already analyzed and adopted. Ref identity
+        # includes the publisher, artifact, body revision, attribution and text, so a genuine
+        # source/body correction remains new even when it belongs to the same Item.
+        adopted_refs = {row.ref for row in EventUpdate.model_validate(head_document).evidence}
+        adopted_refs.update(str(ref) for ref in (work or {}).get("processed_evidence_refs") or ())
+        unique = tuple(row for row in unique if row.ref not in adopted_refs)
+    elif work is not None:
+        processed_refs = set(work.get("processed_evidence_refs") or ())
+        unique = tuple(row for row in unique if row.ref not in processed_refs)
     prior: tuple[PriorClaim, ...] = ()
     if head_document is not None:
         head = EventUpdate.model_validate(head_document)
@@ -519,13 +530,16 @@ class EventUpdateStorage:
         return bool(cursor.rowcount)
 
     def finish_semantic_work(self, *, work_id: str, reason: str, now_ms: int) -> bool:
-        """Mark the work's observed input revision done; newer wanted revisions stay pending."""
+        """Mark the observed revision done and remember its analyzed evidence atomically."""
 
         observed = self._observed_work(work_id)
         cursor = self.conn.execute(
             """
             UPDATE news_semantic_work
                SET done_revision = LEAST(wanted_revision, GREATEST(COALESCE(done_revision, 0), %s)),
+                   processed_evidence_refs = ARRAY(
+                       SELECT DISTINCT ref FROM unnest(processed_evidence_refs || %s::text[]) AS ref
+                   ),
                    attempts = CASE WHEN %s >= wanted_revision THEN 0 ELSE attempts END,
                    lease_token = NULL, leased_until_ms = NULL,
                    last_outcome = %s, last_error_code = NULL,
@@ -534,6 +548,7 @@ class EventUpdateStorage:
             """,
             (
                 observed["input_revision"],
+                list(observed["evidence_refs"]),
                 observed["input_revision"],
                 reason,
                 int(now_ms),
@@ -552,17 +567,20 @@ class EventUpdateStorage:
     def _observed_work(self, work_id: str) -> Mapping[str, Any]:
         # The port addresses work by its code-owned identity; its Event and input revision are the ones
         # the observation of that work recorded. Every service path saves one before finishing.
-        row = self.conn.execute(
+        rows = self.conn.execute(
             """
-            SELECT event_id, max(input_revision) AS input_revision
+            SELECT event_id, input_revision, evidence_refs
               FROM news_semantic_observations WHERE work_id = %s
-             GROUP BY event_id
             """,
             (work_id,),
         ).fetchall()
-        if len(row) != 1:
+        if not rows or len({str(row["event_id"]) for row in rows}) != 1:
             raise LookupError("news_semantic_work_unknown")
-        return cast(Mapping[str, Any], row[0])
+        return {
+            "event_id": str(rows[0]["event_id"]),
+            "input_revision": max(int(row["input_revision"]) for row in rows),
+            "evidence_refs": tuple({ref for row in rows for ref in row["evidence_refs"]}),
+        }
 
     def pending_semantic_event_ids(self, *, now_ms: int, limit: int) -> list[str]:
         rows = self.conn.execute(
@@ -588,7 +606,7 @@ class EventUpdateStorage:
     def semantic_input_material(self, event_id: str, *, now_ms: int) -> dict[str, Any]:
         work = self.conn.execute(
             """
-            SELECT wanted_revision, lineage_id, attached_evidence, focus_claim_refs
+            SELECT wanted_revision, lineage_id, attached_evidence, focus_claim_refs, processed_evidence_refs
               FROM news_semantic_work WHERE event_id = %s
             """,
             (event_id,),
@@ -809,6 +827,7 @@ class EventUpdateStorage:
         program_identity: str,
         completed_at_ms: int,
         understanding_json: str,
+        evidence_refs: Sequence[str],
     ) -> dict[str, Any]:
         """Insert-only by result id; the stored row, with its original completion clock, is returned."""
 
@@ -816,8 +835,8 @@ class EventUpdateStorage:
             """
             INSERT INTO news_semantic_observations (
               result_id, work_id, event_id, input_revision, input_sha256, program_identity,
-              completed_at_ms, understanding
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+              completed_at_ms, understanding, evidence_refs
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
             ON CONFLICT (result_id) DO NOTHING
             """,
             (
@@ -829,6 +848,7 @@ class EventUpdateStorage:
                 program_identity,
                 int(completed_at_ms),
                 understanding_json,
+                list(evidence_refs),
             ),
         )
         row = self.conn.execute(

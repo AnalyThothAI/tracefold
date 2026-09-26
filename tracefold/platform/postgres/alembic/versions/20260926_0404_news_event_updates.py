@@ -233,6 +233,7 @@ def _semantic_tables() -> None:
             event_id text NOT NULL,
             wanted_revision integer NOT NULL,
             done_revision integer,
+            processed_evidence_refs text[] DEFAULT '{}'::text[] NOT NULL,
             lineage_id text NOT NULL,
             attempts integer DEFAULT 0 NOT NULL,
             next_attempt_at_ms bigint NOT NULL,
@@ -305,6 +306,7 @@ def _semantic_tables() -> None:
             program_identity text NOT NULL,
             completed_at_ms bigint NOT NULL,
             understanding jsonb NOT NULL,
+            evidence_refs text[] DEFAULT '{{}}'::text[] NOT NULL,
             CONSTRAINT news_semantic_observations_pkey PRIMARY KEY (result_id),
             CONSTRAINT news_semantic_observations_event_fkey
                 FOREIGN KEY (event_id) REFERENCES public.news_events(event_id) ON DELETE CASCADE,

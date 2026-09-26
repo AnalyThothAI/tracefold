@@ -840,6 +840,7 @@
 | `program_identity` | `TEXT` | False | `None` |
 | `completed_at_ms` | `BIGINT` | False | `None` |
 | `understanding` | `JSONB` | False | `None` |
+| `evidence_refs` | `ARRAY` | False | `'{}'::text[]` |
 
 ## `news_semantic_work`
 
@@ -848,6 +849,7 @@
 | `event_id` | `TEXT` | False | `None` |
 | `wanted_revision` | `INTEGER` | False | `None` |
 | `done_revision` | `INTEGER` | True | `None` |
+| `processed_evidence_refs` | `ARRAY` | False | `'{}'::text[]` |
 | `lineage_id` | `TEXT` | False | `None` |
 | `attempts` | `INTEGER` | False | `0` |
 | `next_attempt_at_ms` | `BIGINT` | False | `None` |

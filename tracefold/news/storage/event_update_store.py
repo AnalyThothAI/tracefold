@@ -117,6 +117,7 @@ class PgNewsStore:
                 program_identity=observation.program_identity,
                 completed_at_ms=observation.completed_at_ms,
                 understanding_json=understanding,
+                evidence_refs=observation.evidence_refs,
             ),
         )
         stored = SemanticObservation(
@@ -128,6 +129,7 @@ class PgNewsStore:
             program_identity=str(row["program_identity"]),
             completed_at_ms=int(row["completed_at_ms"]),
             understanding=Extraction.model_validate(row["understanding"]),
+            evidence_refs=tuple(row["evidence_refs"]),
         )
         # The completion clock is the stored winner's; every other field must be the same fact.
         if stored.model_copy(update={"completed_at_ms": observation.completed_at_ms}) != observation:

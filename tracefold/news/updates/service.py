@@ -79,6 +79,14 @@ class NewsAgent:
             self.program_identity,
             self.analyzer.identity,
         )
+        if not source.evidence:
+            # A snapshot can advance for metadata or for an already adopted source identity.
+            # It still needs a durable observation so finish_semantic_work can settle exactly
+            # this input revision, but it must not re-extract the Event's old members.
+            observation = self._observation(work_id, source, Extraction(claims=()), self.clock())
+            await self.store.save_observation(observation)
+            await self.store.finish_semantic_work(work_id, reason="no_new_evidence")
+            return "unchanged"
         saved = await self.store.checkpoint(work_id)
         extracted = None if saved is None else saved.extraction
         if extracted is None:
@@ -149,6 +157,7 @@ class NewsAgent:
             program_identity=self.program_identity,
             completed_at_ms=completed_at_ms,
             understanding=understood,
+            evidence_refs=tuple(item.ref for item in source.evidence),
         )
 
     async def _extra_read(self, source: FrozenInput, update: EventUpdate, budget: Budget) -> None:

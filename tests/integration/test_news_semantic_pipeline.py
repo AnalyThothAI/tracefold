@@ -18,6 +18,7 @@ from tests.integration.test_news_event_update_store import (
     Clock,
     StubAnalyzer,
     ThreadedDb,
+    draft,
     seed_event,
     sql,
 )
@@ -135,6 +136,10 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     assert [row["evidence_version"] for row in snapshots(event_id)] == [1]
     assert work(event_id)["wanted_revision"] == 1 and len(bus.wakes()) == 1
     assert sql("SELECT count(*) AS n FROM news_item_revisions")[0]["n"] == 0
+    store = PgNewsStore(ThreadedDb(), clock=Clock(STAMP + 6_000))
+    assert asyncio.run(NewsAgent(store, StubAnalyzer(), program_identity="p").process(event_id)) == "adopted"
+    original = asyncio.run(store.head(event_id))
+    assert original is not None and original.input_revision == 1
 
     # The same record with a changed body keeps both bodies and is new evidence for its Event.
     revised = f"{TITLE}<br/>Officials say pharmaceutical imports are exempt."
@@ -153,11 +158,12 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     source = asyncio.run(PgNewsStore(ThreadedDb(), clock=Clock(STAMP + 20_000)).input_for(event_id))
     assert source.revision == 2
     texts = {evidence.text: evidence.source for evidence in source.evidence}
-    assert set(texts) == {item["evidence_text"], revision[0]["evidence_text"]}
+    assert set(texts) == {revision[0]["evidence_text"]}
+    assert {row.claim.ref for row in source.prior} >= {claim.ref for claim in original.claims}
     revised_source = texts[revision[0]["evidence_text"]]
     assert revised_source.artifact_revision == revision[0]["body_sha256"]
     assert revised_source.first_available_at_ms == STAMP + 10_000
-    assert texts[item["evidence_text"]].first_available_at_ms == item["observed_at_ms"]
+    assert original.evidence[0].source.first_available_at_ms == item["observed_at_ms"]
 
     # Redelivering the revised body is exact again.
     asyncio.run(deduper.handle(raw(7001, revised, stamp=STAMP + 30_000)))
@@ -176,6 +182,88 @@ def test_a_near_match_joins_as_a_member_and_wakes_semantics_instead_of_settling(
     assert event_of(7102) == event_id
     assert work(event_id)["wanted_revision"] == 2
     assert bus.wakes() == [f"event:{event_id}:1", f"event:{event_id}:2"]
+
+
+def test_consecutive_members_extract_only_the_unadopted_material_and_carry_old_claims() -> None:
+    clock = Clock(STAMP + 60_000)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
+    seed_event()
+    first_analyzer = StubAnalyzer()
+    assert asyncio.run(NewsAgent(store, first_analyzer, program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    first = asyncio.run(store.head(EVENT))
+    assert first is not None
+    original = first.claims[0]
+
+    add_member_evidence(EVENT, "it-member-a", "Agency announces a medicine exemption.", now_ms=clock.now_ms)
+    add_member_evidence(EVENT, "it-member-b", "Agency confirms the start date.", now_ms=clock.now_ms + 1)
+    source = asyncio.run(store.input_for(EVENT))
+    assert source.revision == 3
+    assert {item.text for item in source.evidence} == {
+        "Agency announces a medicine exemption.",
+        "Agency confirms the start date.",
+    }
+    assert original.ref in {row.claim.ref for row in source.prior}
+
+    analyzer = StubAnalyzer(
+        lambda current: Extraction(
+            claims=tuple(
+                draft(item, slot=f"s{index}", action=f"new action {index}")
+                for index, item in enumerate(current.evidence)
+            )
+        )
+    )
+    assert asyncio.run(NewsAgent(store, analyzer, program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    adopted = asyncio.run(store.head(EVENT))
+    assert adopted is not None and adopted.input_revision == 3
+    assert analyzer.extract_calls == 1
+    assert len(adopted.claims) == 3
+    assert adopted.claims[0] == original
+    assert {item.ref for item in adopted.evidence} == {item.ref for item in first.evidence} | {
+        item.ref for item in source.evidence
+    }
+
+
+def test_no_new_source_identity_settles_the_revision_without_reextracting() -> None:
+    clock = Clock(STAMP + 60_000)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
+    seed_event()
+    analyzer = StubAnalyzer()
+    agent = NewsAgent(store, analyzer, program_identity="p", clock=clock)
+    assert asyncio.run(agent.process(EVENT)) == "adopted"
+    first = asyncio.run(store.head(EVENT))
+    assert first is not None
+    # A work revision can be requested for metadata whose source identity is already adopted.
+    sql("UPDATE news_semantic_work SET wanted_revision = 2 WHERE event_id = %s", (EVENT,))
+    source = asyncio.run(store.input_for(EVENT))
+    assert source.evidence == ()
+    assert asyncio.run(agent.process(EVENT)) == "unchanged"
+    assert analyzer.extract_calls == 1
+    assert work(EVENT)["done_revision"] == 2
+
+
+def test_analyzed_material_without_a_claim_is_not_reextracted_on_the_next_revision() -> None:
+    clock = Clock(STAMP + 60_000)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
+    seed_event()
+    first_agent = NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock)
+    assert asyncio.run(first_agent.process(EVENT)) == "adopted"
+    first = asyncio.run(store.head(EVENT))
+    assert first is not None
+
+    add_member_evidence(EVENT, "it-member-a", "Agency repeats background context.", now_ms=clock.now_ms)
+    analyzer = StubAnalyzer(lambda _source: Extraction(claims=()))
+    agent = NewsAgent(store, analyzer, program_identity="p", clock=clock)
+    assert asyncio.run(agent.process(EVENT)) == "unchanged"
+    assert work(EVENT)["done_revision"] == 2
+    assert asyncio.run(store.head(EVENT)) == first
+
+    add_member_evidence(EVENT, "it-member-b", "Agency adds a pharmaceutical exemption.", now_ms=clock.now_ms)
+    source = asyncio.run(store.input_for(EVENT))
+    assert [row.text for row in source.evidence] == ["Agency adds a pharmaceutical exemption."]
+    assert asyncio.run(agent.process(EVENT)) == "unchanged"
+    assert analyzer.extract_calls == 2
+    assert work(EVENT)["done_revision"] == 3
+    assert asyncio.run(store.head(EVENT)) == first
 
 
 def test_recovery_evidence_joins_its_event_but_never_wakes_semantics() -> None:
@@ -324,10 +412,10 @@ def test_provider_failures_defer_and_only_the_last_attempt_adopts_an_unresolved_
     assert head is not None and head.input_revision == 2
     new_claims = [change for change in head.changes if change.kind == "possible_new"]
     assert new_claims and all(change.relation == "unresolved" for change in new_claims)
-    # `possible_new` is adopted content but never a public catalyst. The new member's support for the
-    # already adopted claim is a genuine source update of that claim.
+    # `possible_new` is adopted content but never a public catalyst. This turn extracted only the
+    # new member, and its unresolved comparison did not establish support for the old claim.
     public = sql("SELECT kind FROM news_trade_events WHERE source_revision = %s", (head.content_revision,))
-    assert [row["kind"] for row in public] == ["source_update"]
+    assert public == []
     assert sql("SELECT count(*) AS n FROM news_semantic_observations WHERE event_id = %s", (EVENT,))[0]["n"] == 2
 
 

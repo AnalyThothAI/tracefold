@@ -32,6 +32,7 @@ class SemanticObservation(Exact):
     program_identity: str
     completed_at_ms: int
     understanding: Extraction
+    evidence_refs: tuple[str, ...]
 
 
 class NotificationSnapshot(Exact):

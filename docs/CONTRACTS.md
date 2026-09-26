@@ -61,70 +61,33 @@ Issue #160 also retires every policy-v9 action/priority knob:
 `noise_veto_respects_gate_priority`, and `contested_push_min_magnitude`.
 Remove them before deployment; the strict settings schema provides no alias.
 
-Issue #129 also retires `news.triage.deadline_seconds`; the route deadline is
-code-owned by the Program factory. Existing configs must remove the key
-before startup.
+Issue #129 retired `news.triage.deadline_seconds`; the News Agent
+stage and provider-call budgets are code-owned. #706 also retires
+`llm.news_compiler_reflection` and the entire `news.policy` mapping.
+`LlmConfig` and News settings forbid unknown fields, so remove these
+keys from existing operator YAML before the matching image starts.
 
-`llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
-OpenAI-compatible configuration (DeepSeek, or a LAN llama.cpp / vLLM server).
-They are all absent or all present; a partial triple fails validation, and
-Tracefold never supplies an implicit endpoint or model. Every primary, Reader,
-fallback, and compiler endpoint also accepts a provider-neutral `request` block:
-`send_temperature` (`true|false|null`), `temperature`, `structured_output`
-(`auto|json_schema|json_object|prompt_json`), and bounded `extra_body` fields.
-Transport-owned fields cannot be overridden. `auto` keeps known provider defaults;
-there is no URL-specific or Kimi-for-Coding compatibility branch. Ordinary `qwen*`
-models are called with `chat_template_kwargs.enable_thinking=false` (code-owned):
-Qwen3 otherwise spends the Triage token budget on reasoning before the tool call.
-A directly configured `qwen*:thinking` model alias is preserved without that
-override and uses prompt-only JSON plus local schema validation because its
-endpoint does not support response-schema grammar.
-`llm.news_reader_card` (`api_key`, `base_url`, `model`; all-or-nothing and only
-valid next to a complete primary triple) optionally binds ReaderCard to a
-different direct endpoint. When absent, ReaderCard inherits the Triage endpoint.
-EventSemantics and ReaderCard still receive separate Adapters and their own
-code-owned `max_tokens` (1,200 and 600); changing this endpoint changes only the
-secret-free `reader_card.primary` runtime binding identity, not Program
-identity.
-`llm.news_compiler_tariff` is gone (#202 `6.2). It was the trusted worst-case
-rate table the proxy sidecar reserved against, and the sidecar went with the
-compiler platform; the optimization leg of `learning run` charges an unpriced provider call at the
-operator's declared `--max-call-cost-microusd` instead. `LlmConfig` forbids
-unknown keys, so an operator YAML still carrying the block fails to load with
-the key named — remove it before deploying this revision. Each optimizer role —
-task and reflection — is one `ModelExecutionIdentity` holding
-the complete secret-free execution contract; its only digest is
-`endpoint_fingerprint` over the canonical endpoint URL, which is fingerprinted
-rather than stored because it names the host a credential is presented to.
-Reflection has an exact 32k-token ceiling. The optimizer has no judge role of
-any kind, whichever `--target` it runs; the diagnostic baseline and release
-evaluator retain their separate judge contract.
-`llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
-only valid next to a complete primary triple; issue #65) is a second direct
-endpoint used only when the primary Triage call fails — timeout, transport
-error, truncated or invalid output — or while the code-owned primary-route
-breaker is open. `llm.news_reader_card_fallback` is an optional complete
-ReaderCard endpoint for that same fallback route and is valid only when
-`news_triage_fallback` is complete. When it is absent, the Reader fallback slot
-is an explicit alias of the EventSemantics fallback slot; when it is present but
-invalid, the whole fallback route is unavailable rather than silently using a
-different backend. The Program factory owns that breaker plus each
-route's deadline and retry/call budget; `deadline_seconds` is not a
-configuration field. The separate `news.triage.circuit_failures` /
-`circuit_open_seconds` settings govern the consumer's whole-chain breaker after
-both routes fail retryably. `news_verdicts.model` records the runtime model that
-answered and the trace carries `model_fallback_from` (the primary's error code
-or `primary_circuit_open`) or, when both routes failed, `primary_error`.
-`/api/news/status.pipeline` and `tracefold config` report `triage_model`, the
-effective `reader_card_model`, whether it is dedicated, and
-`triage_fallback_model` plus the effective Reader fallback model/dedicated flag.
-Internal `ReaderCard` outputs only `headline_zh`
-and `why_zh`; no other model or provider produces copy. `headline_zh` is the
-only Verdict/feed reader title; when no current judgment exists the Web falls
-back to the Event's original `leader_title`. Model execution policy,
-timeouts, token budgets,
-cadence, retries, and reservations are code-owned. Environment variables are
-not a credential contract.
+`llm.api_key`, `llm.base_url` and `llm.news_triage_model` form one
+all-or-none direct generative route. A partial triple fails validation.
+`llm.news_reader_card` may provide a separate complete card endpoint;
+otherwise selected cards use the Triage route. The optional complete
+`llm.news_triage_fallback` route supplies generated extraction and
+judgment fallback; `llm.news_reader_card_fallback` may provide a
+separate card fallback and otherwise aliases the Triage fallback.
+Each endpoint's `request` block controls temperature, structured-output
+mode and bounded `extra_body`; transport-owned or credential-shaped keys
+are refused. The route's secret-free identity includes its endpoint,
+requested model and request semantics, while keys never enter the digest.
+
+`llm.news_judgment` is an optional, independent all-or-none
+`api_key`/`base_url`/`model` System One route for News Jev judgments.
+It neither reads `llm.trading_semantics` nor becomes a chat generator.
+Without it, the same domain judgment contract runs on the generative
+News route. `tracefold config` and `/api/news/status` report redacted
+availability, model names and the current News program identity; they
+never expose API keys or provider URLs. The absence of a complete
+generative route leaves semantic work durable and pending, not a
+fabricated no-news verdict.
 
 `news.opennews_token` is the operator-owned secret for the production News
 source, and it is the whole News source configuration. Which Strategies feed the
@@ -164,69 +127,20 @@ closed on the capability they describe: Serve remains credential-free, and an
 explicitly enabled invalid provider configuration leaves Workers running with
 `news_delivery` reported `unavailable` and its reason, while reception,
 admission, triage and the market loop carry on.
-On Telegram, a reader ticker is clickable only when an official venue catalogue proves an exact contract.
-Destinations are built from typed Binance, Hyperliquid, OKX, Lighter, or Bitget identities; untyped URLs and
-inconsistent metadata remain plain text. A pushed `single_name` card with exactly one candidate ticker, or no
-grounded ticker but a confident code-like title identity, is checked after the initial send against fresh catalogues
-from all five venue families. Any exact match keeps the message and
-is added through one in-place edit; its delivery prices use trade-first anchors and closed one-minute candles as
-fallback. An absent result that all five catalogues answered successfully, on a candidate specific enough to be an
-exchange identifier, leads the same in-place edit with `未找到可交易标的`. Nothing is deleted: #562 `5 row 5 removed
-the `deleteMessage` path, because taking a card the reader has already read out of their channel on an LLM-derived
-candidate list plus a title heuristic cost more than saying what the catalogues answered. A timeout, blocked
-endpoint, malformed catalogue, incomplete issuer identity, or any other partial result states nothing about
-tradability. `news_deliveries` keeps its `delete_*` columns as the audit of the deliveries that were removed while
-that path existed; no writer reaches them. The
-Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
-`新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
-line between them. Both adapters serialize the same reader card value object, so the assets, direction, magnitude,
-novelty, origin, report count and event time a block is built from are read as card fields: an unclear verdict
-renders `方向待定`, and no value is recovered from another channel's rendered text. A market notification card
-(open interest, liquidation, smart money, provider raw) carries no asset block and no market movement plane at
-all; it keeps its family mark, its own body lines and its observation event time. An authoritative five-venue
-absence sets the card's own `未找到可交易标的`, which leads the card in both channels. The novelty badge sits directly
-below the title: `🆕 新事实`, or `🔄 新进展`. With a post-delivery verifier configured, an initial progression also
-shows an indented one-line `关联确认中` child block and never waits for another model call; with none configured no
-review is coming, so no badge is shown and no prior headline is named (#562 `5 rows 3 and 6). The same message is later
-edited to a compact child block: `✅ 已确认关联`, a clickable `此前：<parent headline>` quote bound to the
-previous sent Telegram receipt, and its receipt-to-receipt age. A rejected, unavailable, or otherwise non-confirmed
-final result changes the same message's novelty badge to `🆕 新事实` and removes the complete association child
-block; the verifier's result and reason remain in the durable desired-card audit rather than appearing to readers.
-A model confirmation without a sent, same-target parent receipt follows the same `🆕 新事实` rule; it
-never renders an unlinked parent or candidate/event-time age. The verifier considers at most eight already-delivered told-ledger candidates and its
-structured result plus content-addressed verifier identity enters the durable desired card. A broad macro or sector
-verdict with no code-verified ticker shows its scope and `暂无直接标的` instead of silently removing the target area
-or inventing a trade. Telegram delivery is progressive: once the code-owned decision and provider pacing allow a
-send, the first `sendMessage` contains the complete news facts immediately and labels all three market values
-`计算中`; it performs no public price read first. The returned message ID and original send timestamp are settled
-as `sent` before a background enrichment reads prices and, for a progression, verifies the claimed historical
-relationship. Those operations run concurrently. That enrichment replaces the same Telegram message with
-`editMessageText`; it never sends a second card. Before that provider mutation, PostgreSQL stores the desired card
-as `pending_card` with `edit_state=editing`, bound to the same provider, message ID, original push timestamp, and
-target digest. A confirmed edit promotes that card and canonical receipt under `edit_state=edited`. A crash,
-timeout, invalid receipt, or settlement conflict after intent is recorded becomes `edit_state=ambiguous`; the
-original `sent` outcome is never retracted or retried, and the ledger does not pretend to know which version TG
-currently shows. Startup converts every inherited `editing` intent to the same explicit ambiguity. Feishu has no editable
-capability and retains its single enriched send. Startup reconciliation must succeed before the delivery consumer
-starts; while running, a 30-second sweep converts any edit still unsettled after 60 seconds to ambiguity and retries
-after transient database failures.
-Current-vs-anchor, fixed 1 h, and fixed 24 h returns come only from the
-same request-time venue and contract: Binance is tried first, Hyperliquid second and OKX third. At each news,
-push-minus-1H, push-minus-24H, and push anchor, the latest trade no later than the millisecond timestamp is used only when it is
-at most 60 seconds old; otherwise the adapter falls back to the last closed one-minute candle within 90 seconds.
-The calculation never mixes venues or contracts, needs no continuously collected tick history, and does not
-write these presentation returns into `reaction_v2`. The 24 h value is calculated from the current and
-push-minus-24H anchors on that same contract; a fresh same-contract `rolling_24h` snapshot is only a fallback when
-the on-demand point path is unavailable. An unavailable value is labelled rather than replaced with another window.
-Direction renders polarity and impact together on one line, such as `🧭 方向 利空 · 影响明显`; novelty remains
-its own line. The footer has no time heading: it lists the card's own event time (news publication time, or a
-market observation's stamp), the send-start time, and then the normalized source words carrying the original
-HTTPS link, with no separate source button. A market card's link is its console detail button on its own footer
-line rather than a source label. Times use the reader card's one whole-minute UTC+8 clock; any missing
-input is displayed as `暂无` without hiding known timestamps. The persisted reader card and Feishu payload are
-unchanged; these values travel only in an ephemeral typed delivery presentation.
-When push is disabled, both processes still start and a verdict that reaches a
-delivery consumer settles `terminal/delivery_unavailable`.
+The editorial sender transmits the frozen body for one selected
+EventUpdate intent. A successful initial send records the actual provider
+message and body before optional presentation enrichment. On Telegram,
+typed venue-catalogue evidence may enrich a ticker link, tradeability
+and anchored price context through an in-place edit of that same message.
+Incomplete catalogue reads do not claim an asset is untradeable. The
+desired edit and its outcome are persisted; a crash or uncertain edit
+becomes `edit_state=ambiguous` without retracting or resending the
+initial `sent` receipt. Feishu has no editable capability. Typed market
+notifications keep their own card path.
+
+When push is disabled, Workers still accepts and analyzes News; delivery
+availability is reported separately. It cannot turn an unavailable
+sender into a sent receipt or a reader-known claim.
 
 `trading.*` is `enabled: false` by default. When enabled, a separate Analysis
 process consumes the News trade-event outbox and runs a real model. `trading.analysis`
@@ -576,14 +490,13 @@ every Event this code can open.
   The Event-to-Triage handoff uses a code-owned 30-minute relevance ceiling. A
   marker-null handoff is pending at exactly the boundary and expired only when
   strictly older; a non-null marker remains published regardless of age.
-  `expired_triage_handoff` and `expired_delivery_handoff` are `held`, never
-  `pending`. Page rows, outcome filtering, and first-page counts share one
+  `expired_triage_handoff` and `expired_delivery_handoff` are historical `held`
+  outcomes, never `pending`. Page rows, outcome filtering, and first-page counts share one
   request `as_of_ms`, so a row cannot be expired in the response but pending in
   its counts. `expired_delivery_handoff` can no longer be reached: the
-  push-Verdict handoff is a `news_delivery_queue` row written in the verdict's
-  own transaction, so `news_verdicts.published_at_ms` is never absent on a
-  Verdict whose card is owed (#598 D2). The outcome branch stays until the
-  column it reads is dropped.
+  historical verdict-to-card handoff was a `news_delivery_queue` row written
+  with the verdict (#598 D2). Current EventUpdate notification work is read
+  from its own durable marker and intents. The old branch stays for old rows.
 
   The feed is the editorial plane only: the query filters
   `e.event_kind IN ('news','listing')`, so a market observation is never a feed
@@ -947,10 +860,10 @@ Trading admission is recorded in `news_trade_events`, `trading_triggers` and
 `trading_cases`. `tracefold trading gate` reads only historical OI v5 answers.
 
 The Chinese vocabulary behind `outcome`, `*_zh`, and `label_zh` lives in
-`tracefold.news.outcome` (admissions, `decide()` rules, throttle keys, error
-codes, delivery errors, event types, directions, magnitudes, storyline
-themes); a new rule or error code lands there in the same change, so no
-surface renders a bare key.
+`tracefold.news.outcome` for admission, processing, delivery and historical
+verdict terms; claim-level notification reasons are projected from their
+current plan. A new surfaced rule or error code lands with its label so the
+console does not render a bare key.
 
 `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`,
 `/api/news/market/{item_id}`, `/api/news/wallets` and
@@ -972,358 +885,72 @@ general 12 h). Only post-genesis Events enter exact, artifact, or near-match
 candidate sets; current drift and success cohorts never cross.
 Fingerprints of at most two tokens never share an Event.
 
-Verdict identity is `(event_id, stage, policy_version)`. Current rows also carry
-`judgment_contract_version=news_judgment_v3` and an exact
-`judgment_origin=model|oi|liquidation|degraded`. `TriageVerdict` is a
-presentation-only atom: `novelty`, `restates`, `assets`, `direction`, `scope`,
-`fact_kind`, `evidence_ref`, `confidence`, `headline_zh`, and `why_zh`.
-The model has no delivery intent to own any more (#675 §1): `magnitude`,
-`audience` and the whole `TradeRelevanceV1` object are deleted, and the final
-action has exactly one owner in the origin-matched `DecisionResult`.
+Editorial EventUpdate identity is separate from the historical verdict key.
+A new evidence revision causes durable semantic work. The semantic result
+binds its frozen input, program identity, actual model route and judgment
+answers. The adopted EventUpdate has one CAS head per Event and an insert-only
+content revision. A repeated or differently worded computation with no
+substantive content change does not create a fresh business update. A content
+reversal can be adopted again because the revision links to its predecessor.
 
-Rows written under `news_judgment_v2` carry `magnitude 0..3` and `audience`
-instead of `fact_kind`/`evidence_ref`, are audit truth addressed by
-`scored_judgment_sha256`, and are never rewritten.
-`news_current_verdict_contract_shape_valid` binds each shape to the contract
-version that wrote it, `TriageVerdict` reads both, and the feed projection
-publishes `fact_kind: null` for a v2 row rather than inventing one.
+Each adopted update carries `topics`, claims with typed assets, mode, phase,
+time and cited spans, evidence relations, changes with prior/current refs,
+optional conditional implications and open questions. The stable claim refs
+belong to the Event, not to a model response index or a global graph. A
+source relation can support, refute, report or leave a claim unaddressed; the
+cited publisher's code-owned authority does not turn its allegation into a
+verified world fact. An unresolved supplied prior is `possible_new`, not a
+new Trading catalyst. Current topic codes are the pinned IPTC subset in
+`tracefold.news.updates.topics`; the old four-axis taxonomy and its model
+Predictor are retired. [News topics](NEWS_TAXONOMY.md) owns their scope.
 
-Each `assets[]` entry is `{symbol, market_type, role}`, and `market_type` is
-required over the instrument-class vocabulary
-`crypto|equity|commodity|index|fx|pre_ipo|unknown` (#651 §6.2). A bare symbol is
-not an instrument identity — `SEI` is a Binance token and a NYSE-listed insurer,
-`ATOM` is Atomera — so the storyline key, the told overlap, the quote target and
-the Gold comparison all compare `(market_type, base_symbol, role)`. Two *known*
-and different markets contradict; `unknown` on either side cannot, which is the
-one rule that keeps every verdict written before #651 comparing exactly as it
-did. Those rows carry `null` or a provider-tag word (`token`, `cex`,
-`equity_or_commod`) in that position; every reader normalizes anything outside
-the vocabulary to `unknown` rather than guessing, and the durable rows are never
-rewritten. The v10 branch of `news_verdicts_current_judgment_check` enforces the
-vocabulary in PostgreSQL for new rows only, for the same reason. A non-listed
-institution is a text subject and never gets an invented ticker.
+The optional `llm.news_judgment` System One endpoint uses native Jev
+Choice/Noul batches for narrow judgments. The generated backend is complete
+without Jev and provides matching task fallback when an eligible native batch
+fails. Results are cached by explicit task/input/model identity; successful
+native answers are not voted on again by the generator. Extraction and
+judgment share the configured News Triage generative route; selected cards use
+the Reader route or its explicit alias. Model and stage budgets, including
+bounded fallback, are code-owned.
 
-`fact_kind` is the model's observation of what kind of new thing one Event's
-text states, over the closed code-owned vocabulary
-`state_change|new_quantity|level_crossed|period_record|quantified_flow|official_measure|statement|recap|schedule|promotion`
-(#675 §1). It describes the words on the page, never the reader: six of the
-kinds state a new fact about the world and four restate, schedule or sell one,
-and which of those two groups a card is in is the whole of the push/drop split
-`decide()` makes. `evidence_ref` is the `ref_id` of the current or related
-evidence span the kind was read off, validated against the spans the Program
-actually showed the model, exactly as `ReaderCard.source_refs` is.
+NotificationPlanner reads the adopted content and the reader's actual sent
+bodies, not the Event's observation history. It records one named decision
+per claim: `notify`, `not_notified` or `deferred`. Content rules handle
+commentary, promotion, forecast, schedules, unsupported price reports,
+12-hour stale sources, watchlist interest and full sent-body coverage.
+An unknown mode gets one bounded re-ask and then `mode_unknown`; an
+overlapping in-flight or ambiguous send defers only affected claims.
+`key` (⚡) is presentation for a corroborated state change or official
+measure in a key topic family, not independent source verification.
 
-It replaces the seven `TradeRelevanceV1` codes and `magnitude`. Seven days of
-8950 judgments collapsed all eight into one bit — `magnitude 2` matched
-`reader_value realtime` on 3002 of 3759 — and the seed had to teach a threshold
-("at least 5% on the day") to make them answerable at all. Both the threshold
-and the answer are `decide()`'s, where they can be replayed and versioned.
+A selected claim set and update revision define a stable `intent_id`.
+CardComposer sees only selected claims and makes a frozen Chinese body;
+the send path rechecks the head, reader revision and overlapping sends.
+The ledger stores exact body, digest, provider message ID and result. A
+proved `not_sent` retries the same intent and payload; an unknown outcome
+is `ambiguous` and is not blindly retried. The queue and delivery ledger
+are keyed by `intent_id`, not `(event_id, kind)`. Migration 0404 assigns
+historical `first`/`followup` rows deterministic legacy IDs without
+resending them. Telegram's later quote/tradeability edit stays bound to the
+original message.
 
-The sibling `news_taxonomy_v1` is a fact projection, not delivery intent:
+Adoption commits notification work and a public outbox independently.
+`catalyst_delta` exposes structured claims, changes, citations and
+deterministic text under `news_public_update_v1`; Trading starts its
+freshness at the claim's first availability, not model completion. A
+`source_update` names earlier content and affected claims. App dispatches
+it before target selection; Trading stores an idempotent source amendment,
+does not create a Trigger/Case or extend TTL, and can reject a still
+unsubmitted entry whose cited proposition was corrected. The old
+headline/why-only catalyst shape is rejected on the new path. OI and other
+typed market facts keep their separate contract and do not enter the
+editorial semantic/notification rules.
 
-- `subject_codes`: zero to three qcodes from the 35-node IPTC Media Topics
-  subset pinned at upstream version `2026-01-05` and codebook SHA
-  `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`;
-- `event_family`: one of the 13 event families defined in
-  [`docs/NEWS_TAXONOMY.md`](NEWS_TAXONOMY.md);
-- `change_state`: `announced|scheduled|effective|reported|updated|delayed|cancelled|recalled|unknown`;
-- `assertion_status`: `confirmed|claimed|rumor|conflicted|unknown`.
-
-Source authority is not one of its axes. It is code-owned, derived from
-structured source/provenance, absent from model output, and since
-`news_editorial_v3` (#651) it lives on the editorial envelope beside the
-taxonomy rather than inside it — so a judgment whose taxonomy Predictor failed
-still carries it.
-
-`other` and `unknown` are valid abstentions. Unknown qcodes, more than three
-qcodes, and a pinned parent together with one of its pinned descendants fail
-schema validation. `NewsTaxonomyV1` is the only model semantic classification.
-
-The ordinary policy reads `fact_kind`, the four taxonomy axes,
-`source_authority`, the count of independent member texts, the told ledger and
-the verdict's own scope, and issues one `DecisionResult`; no action copy is
-stored in the Verdict.
-
-`SemanticJudgment` atomically carries verdict, an `EditorialEnvelope`, trace,
-usage and runtime identities. The envelope is
-`{editorial_contract_version=news_editorial_v4, editorial_origin=model,
-source_authority, taxonomy, taxonomy_status, taxonomy_error_code,
-editorial_sha256}` and exists only for model origin. v4 (#675 §1) drops
-`relevance`: the envelope is where a *code* fact about the evidence is persisted
-beside the verdict, and the seven model-owned codes were not that. `source_authority` is a
-code fact and is always present. `taxonomy` is the taxonomy Predictor's answer
-and is `null` when that one call failed while the other two answered, in which
-case `taxonomy_status` is `unavailable` and `taxonomy_error_code` names the
-`news_program_*` code; the route is not restarted for it, because the verdict,
-the card and the authority are all there. `news_editorial_v2` nested the
-authority inside the taxonomy and required it; those rows are audit truth, are
-never rewritten, and are converted to the v3 shape once, at the storage read
-boundary (`tracefold.news.storage.decisions.editorial_read_shape` and its SQL
-sibling `EDITORIAL_SOURCE_AUTHORITY_SQL`), so the feed's source-authority filter
-and the Event detail answer over the whole retention window.
-An admitted listing still runs the normal Program and uses `model` origin;
-listing admission is an objective policy fact, not synthetic relevance.
-`ScoredJudgment` is the model projection accepted by policy, baseline, compiler,
-CandidateEvaluator and recording/replay. OI, liquidation and degraded lanes use
-their own typed judgments. `news_verdicts` stores the current marker/origin,
-verdict, model editorial when applicable, judgment hash, exact `runtime_manifest_sha`,
-`rule_baseline_decision`, `final_decision`, `override_rule`,
-`throttled_by`, `degraded`, `error_code`, and trace in one transaction. Rows
-without the current marker cannot exist after the `0336` genesis, and every
-ordinary reader requires the current marker.
-
-The trace binds `verdict_sha256`, `editorial_sha256`, Program version/SHA,
-runtime manifest/provider/model identity, every frozen `DecidePolicy` value,
-input/told/seen/storyline hashes and snapshots, every initial/re-ask execution,
-and per-Predictor request/input/upstream/output,
-finish reason, latency, token and cost identity, plus `envelope_sha256`: the
-computed identity of everything the code decided about the call. What the model
-was sent is the artifact's instruction unchanged, so the Program SHA already
-commits to it and the call trace no longer repeats a signature, instruction or
-demo digest. A told-only re-ask may restore
-the complete `first_judgment`; evidence-changing re-asks may not reuse it.
-`triage` is the only current stage. Current versions are
-`news_title_norm_v2`, `news_gate_v7`, `news_storyline_registry_v1`,
-`news_event_evidence_v3`, `news_judgment_v3`,
-`news_semantic_program_v13`,
-`news_triage_policy_v17`, `news_delivery_card_v12`, artifact schema
-`news_program_state_v1`, and source classifier
-`opennews_source_classifier_v2`. `news_oi_signal_v3` and
-`news_liquidation_fact_v2` are retired program versions: the deterministic
-structured lanes wrote them, and market frames no longer produce a verdict at
-all (#553), so they survive only on historical `news_verdicts` rows and in the
-judgment CHECK that validates those rows. The epoch is the running bundle's
-(`bundle_<sha8>`) and is not a declared version. The exact Program identity is
-its content SHA plus `envelope_sha256`, not the display version alone; see
-`docs/ARCHITECTURE.md` for the identity model.
-
-Issue #668 uses `news_evidence_input_v2` in the single online graph. Preparation fixes
-one availability cutoff before reading local persisted material. EventSemantics sees
-current/related/told; Taxonomy sees current; ReaderCard sees current/related and
-accepted semantics, never told. ReaderCard retains its three output fields. Visible
-refs must exist; legal refs attest only citation linkage, not semantic truth. Empty
-refs remain visible as `empty_source_refs` diagnostics and do not force rejection.
-
-The exact Event snapshot supplies frozen member item/fact identities. Stable ordering
-keeps the leader and caps member candidates at 16. One metadata batch uses available
-body hashes to deduplicate, then one batch loads at most four selected bodies. Same
-URL, source or fact summary does not equate different complete bodies. Missing or
-late body text falls back to frozen fact text with an explicit gap; no past availability
-is fabricated. Source authority, Event identity, admission and delivery policy do not
-change with member count. Late membership belongs to the next normal evidence round.
-
-All current members share 6,000 characters and 12 spans; related material shares
-2,400 characters, four materials and 24 spans. Focus sentences and local event
-qualifications precede boilerplate. Exact sentence duplicates do not consume budgets;
-negation, numbers, units, attribution and conflicting states remain intact. Numbered
-facts expose only the matching fact and shared preamble, or the frozen fact if it cannot
-be located. Every span retains source, hash, text space and exact Unicode offsets.
-Related materials consume actual lengths rather than fixed 600-character quotas.
-
-Historical retrieval uses explicit source, entity/event-term and trigram channels.
-All channels have a 30-day half-open time window, first cap raw identities at 64,
-then deduplicate and cap at 8/24/32; the merged candidate cap remains 64. This bounds
-returned intermediates, not the number of rows PostgreSQL may inspect. Known typed
-identity conflicts are checked at merge, including explicit-source and similarity
-candidates; unknown provider tags do not erase known conflicts. Shared subjects or
-generic announcement words alone are insufficient. Only the final shortlist bodies
-are loaded. Earlier unsent background never becomes sent-only told.
-
-News evidence preparation has no webpage reader, cache query, HTTP/DNS request or
-operator enable switch. URLs remain local identifiers and display links. Provider
-intake/recovery, model calls and delivery retain their existing network behavior.
-Migration 0384 and its append-only webpage table remain historical archives; no new
-execution reads or writes that table. Detail pages render old document receipts and
-spans directly from frozen executions. The late-material read consults local Items only.
-
-The frozen execution carries refs, cutoff, selector/query identity, candidate/member
-counts, missing reasons, exclusions and elapsed time. Native `envelope.v7` retains the
-131,072-token conservative UTF-8 byte upper bound including instructions, schema,
-demos, input and output reserve; there is no final silent slicing. Archived v11 inputs
-remain unchanged. Learning reanalysis explicitly adapts frozen previews and labels
-`archived_excerpt_adaptation`; it neither claims exact replay nor loads today's text.
-Review/Gold labels remain unchanged. Migration 0385 admits v12 under the existing
-stored-judgment constraint without changing the historical rows.
-
-New deliveries freeze history facts, typed assets and canonical aliases from
-the actual send attempt in `news_deliveries.history_context`. Later Event,
-alias or verdict changes do not rewrite that receipt. Unbound legacy receipts
-are marked `legacy_receipt_only`, with unknown judgment provenance instead of
-a guessed latest verdict. Online and learning use the same projection. Evidence
-rows at/after a history cutoff are excluded before deduplication; the separate
-reader-history CAS revision intentionally still sees later writes.
-
-Liquidations are a market family, not a composed admission (#553). Strategy
-`2000` and Strategy `2083` both route to `liquidation_v1` on their id alone, and
-the frame is stored as a market Item plus one `news_market_liquidations` row —
-no Gate composition, no admission, no policy, no verdict. Its current identities
-are `liquidation_parser_v1`, `opennews_liquidation_source_v2` and
-`opennews_source_classifier_v2`; the `_v1` source contract was bumped because
-the venue allowlist that refused every venue but `binance` and `hyperliquid` is
-deleted and the row now records `source_strategy_id`, `raw_instrument` and the
-provider's own venue string as sent. The fact still records provider-record and
-unresolved contract identity, position side, quantity/notional/price semantics,
-completeness and throttle assumptions. Its current `complete=false` is a
-material fact.
-
-`NewsProgramStateV1` is the only executable semantic configuration, and it is
-one canonical JSON document — `schema_version`, `evidence_input_version`, `dspy_version`, the `predictors`
-in execution order, the native `state` DSPy's own `dump_state()` produced, and
-the `program_sha256` over all of it except the `lm` routes, which are operator
-configuration and never image state (#651 §6.1). Everything an optimizer can
-write — each Predictor's instruction and demos — is inside `state`; everything
-code owns is outside it and hashed by `envelope_sha256`. The document is carried
-in the application image as `<program_sha256>.json`, selected by the code-owned
-registry, and loaded through DSPy's own `load_state`; there is exactly one such
-file. Each instruction is the complete prompt for its Predictor rather than an
-advisory appended to a rendered stack, and the reviewed seed text lives in
-`tracefold/news/program/seed.py`; #314 removed the `factory_id` field, since
-code identity is computed rather than declared. The stable root is pinned by
-`tests/contract/test_program_release_identity.py` as `NEWS_STABLE_PROGRAM_SHA256`
-rather than restated here, so one value moves in one place.
-That SHA is behavior identity only: it holds no parent lineage, optimization
-cost, trajectory or teacher endpoint, so two runs that reach the same three
-Predictor documents produce the same Program. Lineage belongs to the candidate's
-`ProposalReceipt`, and since #202 it is *derived* at registration by comparing
-the candidate's state document with the running stable's rather than declared by
-the candidate.
-The graph, schemas, normalizer, assembler, model route and execution budget are
-code, and `envelope_sha256` is computed over what that code renders; a semantic
-change to any of them moves that hash by construction, which one contract test
-pins. See `docs/ARCHITECTURE.md` for the identity model. Rendered instructions are derived bytes, never a
-second editable truth, and they contain no identity hash and no demo section.
-Loading fails closed on an unknown hash or schema version, non-canonical or
-duplicate-keyed JSON, a non-finite number, a path or symlink violation, a file
-name that is not its own root, or unsafe or secret-bearing state.
-The optimizer can emit only a `news_program_state_v1` document whose Predictor
-documents differ from the running stable's in exactly the target Predictor;
-`with_predictor_document` performs that one merge, so "which bytes moved" is a
-property of the document rather than a claim in a receipt. The trusted side
-reads the state through the one loader, which refuses any `lm` route. Pickle, cloudpickle,
-dynamic Python/classes, endpoints and credentials are not artifact formats.
-One canonical DSPy `lm15.Request` reaches the stock LiteLLM engine per physical
-News call, with no client cache or provider retry. JSONAdapter may make one additional
-format call per Predictor, and every physical invocation appears in the trace.
-There is no legacy Prompt runtime, dual stack, compatibility Adapter or
-production operator-selected artifact path. Nullable Prompt-era fields remain
-audit-only.
-The current execution contract is `EventSemantics.v2 -> deterministic
-_normalize_and_validate_semantics -> Taxonomy -> ReaderCard.v2 -> deterministic
-_assemble`:
-normally three serial calls because the normalizer and assembler make no
-provider request; JSONAdapter may make one format fallback per Predictor, so at
-most six calls per route; fallback restarts the full Program, so primary plus
-fallback is at most twelve. The taxonomy Predictor reads evidence and Gate
-facts only and answers the typed `ModelTaxonomyV1` schema, whose four enum axes
-reach the provider inside `response_format`. The code-owned 20-second
-deadline covers one whole route. One Event still persists one final
-SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
-ledger re-ask is a separate execution with the same ceiling (normally another
-three calls), and both executions remain in the verdict audit.
-The `EventSemantics.v2` model-visible projection excludes queue priority,
-provider score, Gate macro lexicon, queue lag and watchlist. ReaderCard receives
-only the explicit `ReaderCardSemanticView` — typed assets, direction,
-`fact_kind`, novelty, `restates` and scope — and it cannot read ToldContext.
-There is no `news.oi` section. Its four keys — `window_ms`,
-`max_rank_in_window`, `whale_oi_ratio_above_bps` and `oi_change_at_least_bps` —
-were the deterministic open-interest lane's notification thresholds (#137) and
-were removed with the rule in #458; `extra="forbid"` means a config file that
-still carries the section fails at startup. `/api/news/status` publishes no OI
-figure at all since #553: the `telemetry_received_24h`,
-`telemetry_parsed_24h`, `telemetry_parse_failed_24h` and `telemetry_events_24h`
-counters counted Events, and an OI frame opens none. `/api/news/market`
-reports what the OI Strategy actually did.
-`news.policy` has exactly four keys: `restatement_drop` (true),
-`similarity_max` (0.25), `listing_exempt_from_duplicate` (true) and
-`stale_source_max_age_s` (43200 = 12 h; #154: an x/twitter artifact already older
-than this when the provider pushed it is a replay, withheld as
-`stale_source_artifact`; `escalate` is exempt and 0 disables the rule).
-`storyline_budget_window_s` and `storyline_budget_max` are gone with the #504 D2
-per-storyline budget, which policy v17 deletes (owner decision 2026-09-23,
-reversing #675 §6); `extra="forbid"` means a config file that still sets either
-fails at startup. Verdicts written under v12-v16 keep their
-`storyline:<key>:budget` throttle key as history; no v17 decision writes it.
-The decision table and objective-guard ordering are code-owned, not operator
-thresholds. The grounded-restatement guard drops a `restatement` that cites a
-told entry the model was shown, whatever the two directions are (#651: the
-model's `direction` is its reading of a fact, not a fact, so it cannot decide
-whether the reader already has it; a real reversal arrives as `progression` or
-`new_fact`, which the same-fact reversal exemption still covers). After that
-guard the order (v16, unchanged by v17) is: deterministic listing/telemetry —
-which since v13 (#523) does not cover a frame whose text is not a new fact, and
-states that in v16 as
-`fact_kind` in `statement|recap|schedule|promotion`, leaving it to that kind's
-own drop row — grounded watchlist, the decision table, then
-`single_name_without_instrument` (a table push on a `single_name` verdict with
-no primary asset drops); the retained stale-source and same-fact checks run
-after action selection. There is no reader-global quota and, since v17, no
-per-storyline delivery budget.
-
-The v16 decision table (#675 §1) is the whole of the model-judgment decision.
-Every input is a fact the code produced and stored, or an observation of the
-text the code can check; every row has a name that is a constant, is rendered in
-Chinese by `outcome.OVERRIDE_RULE_ZH`, and is stored in `override_rule`. Rows
-that need a classification are silent when `editorial.taxonomy_status` is
-`unavailable`, and the `fact_kind` rows still apply. In order:
-
-1. `fact_kind_statement` / `fact_kind_recap` / `fact_kind_schedule` /
-   `fact_kind_promotion` drop, before and independently of any classification.
-2. On taxonomy `market_flow_price` + `reported`, a same-day move of >= 5% on a
-   primary asset whose `market_type` is `commodity` or `index` is admitted as
-   `fact_kind_new_quantity` (the owner's one exception, #675 §7) -- unless the
-   model's own kind is `recap`, `schedule` or `promotion`, which say the text is
-   about something other than the move it mentions; a `statement` stays eligible,
-   because the move is usually the thing being stated. Otherwise a
-   claimed `level_crossed`, `period_record` or `quantified_flow` whose own title
-   and `headline_zh` state no level crossed, period record, quantified flow,
-   stablecoin depeg or freight rate in either language becomes a `statement` and
-   drops under `price_report_without_basis`.
-3. `conflict_claim_uncorroborated`: `geopolitical_conflict` +
-   `source_authority = unknown` + `assertion_status` in `claimed`/`rumor` + at
-   most one independent member text, unless `fact_kind` is `state_change` or
-   `official_measure` and the told ledger holds fewer than two entries on this
-   storyline key inside 4 h.
-4. `conflict_running_storyline`: `geopolitical_conflict` on a `conflict:` key
-   with at least one told entry on that key inside 4 h and a `fact_kind` that is
-   neither `state_change` nor `official_measure`.
-5. `escalate_corroborated`: `fact_kind` in `state_change|official_measure` and
-   `event_family` in
-   `geopolitical_conflict|macro_policy_data|security_operational_incident|market_access`,
-   with `source_authority != unknown` or at least two independent member texts;
-   an uncorroborated one is a `push` under `escalate_uncorroborated`.
-6. Otherwise `fact_kind_<kind>` pushes.
-
-A judgment that states no `fact_kind` at all -- only a replay of an archived
-`news_judgment_v2` verdict can be one -- drops under its own
-`fact_kind_unavailable`, never folded into `fact_kind_statement`: the ledger does
-not record an observation the model never made.
-
-The corroboration input is the count of distinct `evidence_text_sha256` values
-across the Event's frozen members, carried on the verdict trace as
-`independent_text_count`. It replaced the Deduper's arrival count outright, and
-`GateFacts.member_count` is gone with it: two arrivals of one wire line are one
-party, which is the #675 card that opened the Issue. `member_count` remains on
-the Event and on the evidence snapshot, where it counts arrivals and nothing
-reads it as corroboration. Retired quota and v9
-action/priority keys
-are rejected as unknown configuration instead of being silently carried
-forward. `news.retention` keys are `raw_days` (30) and
-`judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
-verdict or accepted review is evidence and outlives the raw tier.
-No market Strategy enters that order at all: an OI, liquidation, smart-money or
-`unknown_market` frame is admitted straight to `news_items` with its typed fact
-and never reaches an action policy (#553). A market Item is retained on the
-`judged_days` tier whatever its parse status, because it can never carry a
-verdict or review for the evidence predicate to find.
-
-Delivery identity is `(event_id, kind)`; `first` is the only kind written —
-one Event gets one card — and the retired lane's `followup` rows survive as
-history. States are `sending`, `sent`, `terminal`. Telegram target/permission
-preflight completes before `sending`; after that row there is exactly one
-initial delivery HTTP attempt. A successful Telegram initial attempt may be followed by a durable-intent in-place
-edit of that same receipt-bound message; an edit is neither a second delivery nor permission to retry the
-initial send. A delivery without a configured sender or whose
-preflight fails settles `terminal` immediately instead of holding the message.
+Historical `news_verdicts`, reviews, old taxonomy and learning tables
+remain audit data. Current Event detail projects them as `legacy_verdict`
+rather than translating them into claims. Current EventUpdate, processing
+status, claim decisions and actual deliveries are distinct read fields;
+the generated OpenAPI and TypeScript declarations own exact JSON shapes.
 
 Broker contract: topic exchange `news`, dead-letter exchange `news.dlx`, two
 quorum business queues — `news.raw` (`raw.#`; single-active) and `news.triage`
@@ -1349,16 +976,12 @@ delivers `delivery-limit + 1` times, so three total handler attempts),
 `tracefold news bus-policy apply|verify` is the only writer; Workers verifies
 the effective policy at startup and refuses to consume on a mismatch.
 
-The push Verdict handoff is not on this broker at all. Triage inserts a
-`news_delivery_queue (event_id, kind, next_attempt_at_ms, attempts, state)` row
-in the same transaction as the verdict, and the Deliverer claims a due row with
-`FOR UPDATE SKIP LOCKED`, spends one attempt, and leases the row until it is due
-again. The retry contract is the one the `news.deliver` policy gave it, carried
-over unchanged: three attempts 30 s apart, then `state = 'dead'` with the reason
-recorded on the row — this lane's `news.dead`, kept where a `SELECT` can read it.
-The external-delivery fence was never the queue's either: `begin_delivery`
-returns `new` exactly once per `(event_id, kind)`, and a re-claim settles
-`ambiguous_after_crash` instead of sending a second card.
+Notification work is not on this broker. Adoption writes a persistent
+notification marker; the Deliverer polls it and plans an intent keyed by
+`intent_id`. A selected card is frozen before sending. Queue and ledger state
+retain bounded attempts and an explicit dead reason. A send with uncertain
+provider outcome becomes `ambiguous` and is held rather than retried under a
+new identity.
 
 Message bodies are `news_bus_v1` JSON envelopes (`schema_version`, `kind`,
 `message_id`, `trace_id`, `occurred_at_ms`, `payload`) with AMQP priority 0 or 5
@@ -1373,8 +996,8 @@ handler-side `BrokerUnavailable` / `BrokerBackpressure` uses the same counted
 `PermanentError` or a decode failure is `reject(requeue=false)`; an
 unclassified handler exception settles nothing and fails the consumer. There is
 no operator control plane: pause and mute were removed with
-`news_control_state`, which had never withheld a card, so the only things that
-can withhold one are `decide()` and duplicate evidence.
+`news_control_state`. Current claim-level planner decisions, actual sent-body
+coverage, in-flight sends and provider availability determine notification work.
 
 Schema history is not an HTTP contract: [`MIGRATIONS.md`](MIGRATIONS.md) owns
 the baseline, the head, and each revision's evidence. Two rules about migrations
@@ -1545,7 +1168,7 @@ Runtime facts, and status carries readiness plus bounded totals.
 
 - service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
-- News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
+- News: `news bus-check|bus-policy|instruments|review|learning judge-calibration|replay|wallets|why|dlq`;
 - Trading: `trading status|cases|signals|observations|gate|commands|issue`;
 - maintenance: `ops validate-projections`.
 
@@ -1584,441 +1207,29 @@ login. Append-only triggers and business constraints reject review rewrites;
 the public Serve HTTP pool remains read-only. The sole Trading Command POST
 opens its own bounded short application transaction outside that pool.
 
-`news learning baseline --from-ms N --to-ms N
-[--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]
-[--max-model-cases N] [--semantic-judge MODEL] [--limit N] [--out FILE]`
-is a moving-window diagnostic. It is read-only: no Dataset write, optimizer,
-candidate, sandbox, tariff, container or table write. The population changes
-with the clock and the receipt says `cohort_scope: current`, so it is discovery
-and never candidate-selection or release evidence. The former `--dataset`
-branches were deleted in #453; a frozen Dataset enters only through `readiness`
-and `run`.
+The current `news learning` family has only
+`judge-calibration --model MODEL [--out FILE]`. It scores the retained
+card judge against its fixed perturbation corpus and can write a receipt;
+it does not write the database or choose a release. The former baseline,
+freeze, readiness, GEPA run, candidate, evaluate, program-artifact and
+canary commands are removed. They are not aliases or dormant runtime
+paths. Historical learning rows remain audit material.
 
-Mode names the moving-window question; none are interchangeable (#150
-removed the single ambiguous `live`, with no alias):
+`news review queue|evidence|submit|external-miss` is the ReviewDesk
+surface. It presents a versioned task and evidence, and an accepted
+review is append-only under an explicit reviewer and idempotency key.
+The current queue reviews EventUpdate notification intent rather than
+the retired taxonomy Gold, pairwise or proposal contract.
 
-| Mode | Executes | Question |
-| --- | --- | --- |
-| moving-window `recorded` | the persisted `ScoredJudgment` against the complete `DecisionResult` that shipped | is Program metric wiring reproducible over history? |
-| `compile_live` | the production native DSPy Program on one task endpoint, no fallback slot | how does the cold graph answer this moving window? |
-| `runtime_live` | the configured four-slot native DSPy Program | does the production Program route answer these cases? |
-
-`compile_live` is exactly the native Program GEPA maximizes and deliberately has
-no fallback route. It disables the production whole-route deadline and
-cross-case primary breaker that GEPA does not run, while retaining the task
-endpoint's per-call timeout and DSPy JSONAdapter's single format fallback per
-Predictor, so its failure rate is not the reader's. `runtime_live` is built by the same seam
-the Workers use — a dedicated ReaderCard binding is honoured rather than
-silently aliased to the EventSemantics primary — and runs cases sequentially in
-`(opened_at_ms, case_id)` order so circuit state is a property of the run rather
-than of scheduling. It is a **Program-route** replay only: `execution_scope`
-names what it still excludes (the consumer transaction, the advisory lock,
-stale-evidence re-ask, the degraded wire-card fallback, the broker and
-delivery).
-
-Both live modes verify every example's frozen policy *before the first provider
-call* and refuse the whole run with
-`news_program_baseline_policy_unusable:<case>:<reason>` — a corpus that cannot
-verify its own policy is a pure function of the input, and discovering it after
-three Predictor calls per case turns it into "the route did not answer".
-
-Every mode is current-cohort only. The moving-window repository requires the
-exact current judgment contract and active epoch; there is no flag that widens
-it to retired rows. A live mode generates a verdict with the current Program
-and scores it under the current policy. `--mode recorded --action-source
-policy` remains invalid because recorded mode measures the action that actually
-shipped, not a replay under another action source.
-
-`--action-source` has exactly one valid value per mode and the handler rejects
-the other: `recorded` outside `--mode recorded` short-circuits the policy replay,
-so a live mode would generate a fresh verdict and score it against the action a
-*different* verdict shipped, silently emptying the metric's heaviest component.
-`--max-model-cases N` is required by both live modes and caps the corpus read —
-`runtime_live` spends two to eight sequential provider calls per case on the
-endpoints that also serve production Triage, and every other model-spending
-command in this plane makes its budget mandatory.
-
-The report has no single ambiguous `score`. A provider failure is an outcome,
-not an absence, so it is published twice: `scores.case_macro_answered` is
-quality given an answer and `scores.case_macro_failure_as_zero` is the
-end-to-end lower bound, with the same pair at connected-fact-cluster grain
-(one cluster, one vote) plus a deterministic bootstrap interval on the release
-evaluator's seed/replicate convention. `population` carries
-requested/answered/failure counts, `failures.by_code` keeps each error code
-separate — a raise inside the metric is a `metric_error:*` code and never a
-provider failure, because one is a defect in the ruler and the other is route
-availability — and `action_confusion` splits agreement by `must_push`,
-`should_push`, `must_hold` and `should_hold`. `hard_gates.by_gate` names which
-gate zeroed each case (`must_push_miss`, `must_hold_send`,
-`background_realtime_send`, `factual_contradiction_unchanged`,
-`ungrounded_primary_asset`, `schema_invalid`, `taxonomy_unavailable`,
-`relevance_inconsistent`, `known_duplicate_leak`, `advisory_rejected`,
-`card_lint_url`, `card_lint_self_description`). `taxonomy_unavailable` is a case
-whose accepted Gold names all four axes and whose prediction carries none
-because that Predictor failed on its own (#651): production publishes the card,
-and the ruler scores the classification task zero and keeps it in the
-denominator — a separate gate from `schema_invalid`, because no instruction
-produced it and no instruction repairs it. A gated case keeps its resolved action and its per-dimension
-outcomes: the zero enters every denominator rather than leaving it, or a
-candidate with more hard failures could publish a higher per-dimension hit rate.
-Metric `tracefold.news.production_action_fact_kind_v12` weights 45% exact
-final production action, 35% exact TradeRelevance dimensions, 10% existing
-semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
-ReaderCard copy lint, normalized over the components a case carries. The four
-model-owned taxonomy axes contribute one subscore inside semantics/novelty:
-subject-code set F1 plus exact event family, change state and assertion status.
-`source_authority` remains code-derived and is absent from target, score and
-feedback. The lint
-publishes eight scored checks (`headline_language`, `headline_length`,
-`headline_number_count`, `banned_filler`, `meta_opening`, `why_length`,
-`why_single_sentence`, `no_emoji`) and its two gates in the metric receipt under
-`card_lint`, tables included. `headline_number_count` compares how many
-decision-relevant numbers the headline carries against how many the source
-stated, never which: a faithful rendering restates `$1.5B` as `15亿美元` and
-`5.50%` as `5.5%`, so a literal-identity test would fail exactly the conversions
-the card contract asks for and teach the optimizer to copy ASCII digits instead. Reports expose each component's effective
-denominator, effective weight mass, gold coverage and field count. The score is
-identical with or without `pred_name`; that argument filters feedback only. EventSemantics receives relevance, semantics, novelty and its owned action
-feedback; ReaderCard receives headline/why/factual feedback and action feedback
-only for a headline-caused duplicate. Reviewer correction prose reaches a
-Predictor only when it has an owned failed dimension; it is not broadcast
-unconditionally. Listing/telemetry are outside the relevance denominator, and a grounded-
-watchlist objective guard is policy evidence rather than action feedback for a
-Predictor.
-A run where nothing answered publishes a null `case_macro_answered` and the full
-failure breakdown rather than refusing — "the route answered nothing" is a
-result, and it used to be the only one that produced no receipt at all. `review_label_distribution` is
-corpus metadata (what reviewers labelled) over every requested case, grouped by
-the stage each label describes — `event_semantics`, `reader_card`, `delivery`
-(where `timeliness` lives, scored by nobody because the verdict has no such
-field) and `not_scored` for a rubric dimension nobody has placed yet. That grouping is deliberately not called "owner":
-`review._OWNER_BY_DIMENSION` owns that word for a different question (who is to
-blame), under which `asset_grounding` is a Gate defect. `prediction_dimensions`
-is what this candidate did — exact-gold hit/miss, accepted-retention hit/miss
-including #148 semantic-equivalence decisions, and not-scored-without-gold — and
-moves when predictions move. `runtime_live` adds `route` (primary/fallback,
-`unanswered_n`, `retry_count`, call and physical-call counts, input/output
-tokens, known provider cost and `cost_unknown_n` rather than a fabricated zero)
-and `latency_ms` p50/p95/max over answered cases, with `p95_with_failures` /
-`max_with_failures` beside them — a route that exhausts the chain is the slowest
-case there is, and hiding it would understate the tail an operator bounds the
-run against. A case that failed still reports what it spent, read
-from the `SemanticJudgeError` partial trace: a route that exhausts the chain
-can cost eight calls, and counting zero made the receipt least accurate exactly where
-the route was worst.
-`report_sha256` covers the measurement with wall-clock latency excluded, so two
-runs with identical predictions publish the same address; `latency_sha256`
-addresses the timings separately. `identity.case_root_sha256` answers "the same
-cases?" and `identity.corpus_sha256` answers "the same inputs?" — hashing ids
-alone let one address describe two corpora, because any evidence edit that kept
-the ids left the receipt untouched.
-Both live modes report the same route and latency facts and execute the same
-native Module. What separates them is both the endpoint binding and availability
-controls: `compile_live` disables the whole-route deadline and cross-case breaker
-that only `runtime_live` runs. `execution_scope` says so. Neither receipt contains a
-credential or an endpoint URL.
-
-Policy is frozen into each scored example rather than read from process-global
-state: `policy_metric` carries the exact `policy_values` and `policy_sha256` of
-the arm, the shared pure/version-bound `production_decision()` builds
-`DecidePolicy(**policy_values)`, validates one `ScoredJudgment`, and returns the
-complete `DecisionResult` (action, rule and throttle key). A missing or mismatched policy fails closed instead of
-falling back to `DEFAULT_POLICY`. A report spanning two policies is refused
-rather than labelled with one of them. `recorded` returns before policy replay,
-so its `identity.policy_sha256` is an explicit `null` —
-naming a policy the number does not depend on would be the same ambient-state
-confusion in a different place. `identity.policy_source` says where the replayed
-values came from: `active_arm_manifest` is the configured current arm, and only
-current-cohort episodes are eligible. An episode with no
-complete recorded `DecisionResult` is refused in `recorded` mode rather than quietly falling through
-to a policy replay. The sealed compile projection is
-`tracefold.news.development_compile_episode.v6`. The projection is recomputed
-from `news_reviews` on every read, so a *dataset* is never stale; what the field
-refuses is a **compile record** written under an older projection — v2 carried no
-policy and would have raised inside every metric call, v3 could not say
-whether a human wrote `first_bad_owner` or ReviewDesk derived it, which is
-exactly the difference between a Prompt-owned target and somebody else's defect,
-v4 did not address accepted taxonomy in the projection root, and v5 did not bind the explicit taxonomy
-ownership now required for an optimizer target.
-A record naming an older projection fails
-`news_learning_program_compile_record_invalid` rather than being re-read under
-rules it was not produced under.
-
-`--mode recorded` makes no provider call and reads only exact current-contract
-episodes from the active epoch. Its moving-window form remains the Program
-metric; its Dataset form is the taxonomy report above.
-`--semantic-judge MODEL` scores free-text retention anchors by meaning instead of
-byte equality (#148) through the same `CardEquivalenceJudge` contract that the
-the diagnostic baseline wires through its separate `metric_judge` role. The optimizer has no judge role.
-Judge failure is explicit unavailable, enters the affected
-free-text dimension as zero, and is counted/costed with no byte-equality fallback,
-hidden retry or cache. Magnitude, direction, assets, novelty and every
-TradeRelevance field stay exact; the strict byte-equality mean is reported
-alongside as `scores.case_macro_answered_byte_equality`.
-A review is replayable against the exact evidence version its verdict judged,
-which is the identity `_load_case` pins and, since #548 PR-B.2, the one
-`news_review_task_source_v1` projects: a later member join appends a snapshot
-without re-running triage and does not retract the judgment already made.
-Evidence that changed *under* the reviewed version — a different
-`evidence_sha256` or focus fact for that version — is still not replayable and is
-excluded.
-
-The `0336` genesis removed the retired replay fixture. Current metric evidence
-comes only from exact `news_judgment_v3` rows created in the post-genesis active
-epoch; no repository fixture provides a legacy recorded-mode input.
-
-Reviews are accepted under `news_review_v8`, which is task-level: a submission
-must carry a non-empty `dimensions` map and may leave every other field out, so
-a reviewer answers what this Event poses instead of inventing a taxonomy, a
-novelty judgment and a push verdict to record one defect. A stated taxonomy is
-the four model axes and must come with all four `taxonomy_*` dimensions; a
-submission with neither is a complete review of everything else it judged. The
-optional `explanation` block — verbatim `source_spans` of the frozen evidence
-(checked at submit), `key_facts`, `forbidden_claims`, `error_types` and a
-non-gold `reference_why_zh` — is the supervision a `why_support` failure needs
-to be trainable; without it the row is stored and flagged
-`explanation_supervision: "pending"`. The `taxonomy_source_authority` dimension
-is deleted: source authority is a code fact derived from the reporting source.
-Its optional `expected` block covers exactly the three semantic dimensions a
-reviewer can fail: `direction`, `assets` and `fact_kind` (#675 §1). `magnitude`
-and the seven TradeRelevance fields left with the Program output they corrected
-— an accepted label for a field the Program does not produce is Gold for
-nothing. Accepted `novelty` and `should_push` are already their own typed truth
-rather than duplicate `expected` fields. Every failed scored dimension must have
-expected gold; otherwise it is not scored, with no any-change fallback.
-Historical v2-v7 rows remain readable audit history but cannot enter current
-metric/GEPA/release evidence. Listing/telemetry do not enter gold;
-grounded-watchlist cases are separated as policy evidence. `gold_coverage`
-reports how much of each component is actually scored.
-
-One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient ordinary taxonomy Gold.
-Development readiness asks for no calibration set, no second primary reviewer and no adjudicator: #501
-deleted the 50-cluster calibration gate and #651 §9 deleted the corpus-size quotas that remained, leaving
-κ as a published freeze-time diagnostic and the holdout as the gate. Model drafts still cannot
-self-accept. `news review accept-drafts --dry-run` may preview an empty
-selection, while every non-dry-run requires a non-empty explicit `--only` list
-and `--reviewer` identity. An entry that carries no `stable_taxonomy` is skipped
-as `stable_taxonomy_missing`; a reviewer's taxonomy edit is otherwise submitted
-beside dimensions that compare a label it replaced. An AI adjudicator is
-recorded as AI, never as human.
-
-`news learning snapshot|compare` was deleted in #343. #453 also deletes the
-standalone `news learning optimize` route and `news learning baseline
---dataset`; there is one candidate-generating entry:
-
-`news learning run --development SHA --out NEW_EMPTY_DIR (--auto light|medium|heavy | --max-metric-calls N)
---max-task-model-calls N --max-reflection-model-calls N
---max-cost-microusd N
---max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]`.
-
-`run` writes zero-call readiness for its own `--target`, requires
-`objective.compilable`, then invokes exactly one `dspy.GEPA.compile(trainset, valset)` over the single
-native `NativeNewsProgram.taxonomy` Predict in a learning-only wrapper. Exactly one of `--auto` and
-`--max-metric-calls` is passed through to `dspy.GEPA` unchanged; the receipt records the metric-call count
-DSPy resolves for `auto`. That wrapper converts a receipted task-output truncation or typed
-`ModelTaxonomyV1` validation failure into an aligned failed Prediction scored at the native `failure_score`
-`0`, without a retry or a second evaluator.
-Reflection truncation, provider/transport failure and budget refusal terminate
-the run. Production keeps its existing fail-closed truncation contract. The compile uses `instruction_proposer=None`,
-`add_format_failure_as_feedback=False` and a code-owned six-example reflection minibatch. The latter uses
-GEPA's public knob without adding retries or a custom proposer. There is no component selector,
-EventSemantics or ReaderCard execution, composite case metric or judge. Candidate zero in that same compile
-is the sole optimization baseline. The admitted candidate is GEPA's own `best_idx` when its aggregate is
-strictly above candidate zero's, its instruction differs from the seed and passes the instruction bounds;
-otherwise the run is `NO_OP`. Selection performs no per-control replay, per-objective check or growth
-budget: offline and holdout evaluation own those.
-
-The command reads the frozen development corpus once through the shared
-application login and then holds task/reflection model endpoints and the existing typed
-budget. It has no database writer, broker, delivery, canary or promotion
-authority. Every terminal state writes
-`optimization/optimization_report.json` (`news_optimization_run_report_v4`):
-
-| Outcome | Meaning | Candidate | Exit |
-| --- | --- | --- | --- |
-| `NO_OP` | GEPA's best candidate is the seed or not strictly above it | none | 1 |
-| `REJECTED` | Objective, quality, safety or budget refusal | none | 1 |
-| `ADVANCE` | one target Predictor's state, with no production authority | `optimization/prompt_candidate.json` | 0 |
-
-`--out` must name a missing or empty directory; existing contents are refused
-before readiness or provider work. The directory contains `readiness.json`,
-official GEPA log/state under `optimization/gepa/`, the optimization report,
-and an optional PromptCandidate. The report records native public GEPA candidate parents, aggregate scores,
-per-example subscores, per-objective aggregate scores, GEPA best index, whether it was admitted and total
-metric calls without inventing a private checkpoint state. Selection receipt v3 records candidate zero's
-five objectives and overall, `gepa_best_index`, GEPA best's objectives, whether its instruction is valid,
-`admitted` and the delta. `ADVANCE` still enters the existing `release register`
-and evaluator/release gates; this command never performs those actions.
-
-Usage schema `tracefold.news.optimization_usage.v3` keeps task/reflection physical calls, tokens and costs
-exact in every terminal state. `metric_calls` is the public `DspyGEPAResult.total_metric_calls` when GEPA
-returns that result, `0` for a zero-call preflight refusal, and `null` when an interrupted compile cannot
-publish an exact count. It never guesses from model calls or parses private GEPA state.
-
-`news learning draft-reviews --rubric-model MODEL --taxonomy-models A,B --out FILE
-[--hours N] [--limit N] [--include-reviewed]` proposes `news_review_v8` rubrics
-for an owner-authorized reviewer to accept and writes a file, never a review.
-The two taxonomy models label each Event blind — from the Program's own
-bounded taxonomy input through the taxonomy Predictor's Signature and seed,
-never from the card, Stable's label, the told ledger or a review — and the
-rubric model never labels taxonomy. Agreement is the draft; on disagreement the
-draft takes A and the entry is marked `taxonomy_disagreement`. The batch
-(`review_draft_batch.v6`) names both blind drafters, their agreement rate, each
-one's agreement with Stable and the disagreeing task ids; each accepted review's
-`taxonomy_review.drafts` keeps both labels. Every entry also carries
-`stable_taxonomy`, Stable's own persisted label (`null` when Stable never
-labelled the Event), because the four code-written `taxonomy_*` dimensions are
-recomputed from it against the possibly edited `taxonomy` when the draft is
-accepted, never copied from drafting time. A `v5` file has no such field and is
-refused by `accept-drafts` rather than accepted with a stale comparison. It
-drafts from the ReviewDesk queue over the `--hours` look-back window — the `--events-from` form
-that drafted the Events a #193 experiment run had frozen went with that loop in
-#343. A batch refuses duplicate task identities before its first model call
-and reports `tasks` beside `unique_tasks`; one ReviewDesk task can therefore
-consume at most one drafting call.
-
-`news learning readiness --development SHA [--target classification|understanding|explanation] [--out FILE]`
-explains one frozen development dataset before any provider call. It re-projects the sealed corpus and
-builds Objective Plan v5 **for that target**. A case is **included** when the frozen case's
-`applicable_targets` names the target — the reviewer labelled something that target scores — and the
-target's example can be built from the episode; owner columns are audit metadata and grant no authority.
-All meaningfully distinct labelled cases enter the time-ordered, cluster-disjoint train/selection split.
-A split group prevents leakage; it does not declare Events interchangeable. Duplicate alternatives must
-be explicitly accepted in `novelty.equivalent_targets`. Taxonomy summaries give each group equal weight
-after averaging its cases, with per-axis case/group denominators and a group bootstrap interval.
-
-The v6 readiness report has no top-level outcome. `objective.compilable` and its blockers describe whether
-this target's population can be optimized, and the blocker vocabulary is exactly `train_empty`,
-`selection_empty`, `input_contract_invalid` and `cluster_leak` — #651 §9 deleted the corpus-size quotas
-that used to sit beside it in `development_profile`, because they measured quantity in a unit that did not
-match the question. `targets` publishes every target's case and cluster counts beside this one's, plus
-`rubric_ineligible_n` (accepted reviews the window holds under an older rubric contract) and
-`explanation_supervision_pending_n`, so a thin answer says which kind of evidence is missing.
-`taxonomy_gold` reports `stable_exact_n` and `stable_mismatch_n` as diagnostics, and the frozen dataset's
-`counts.calibration` (`dataset_calibration_receipt.v2`) reports Cohen's κ on family/state/assertion and
-mean subject set-F1 over every cluster whose accepted review carries two blind drafts; none of it gates.
-
-Readiness makes no task/reflection/judge call and writes nothing except the operator-requested report file.
-Its call envelope names the ceiling of two physical task calls per metric call on the target's own
-Predictor — the primary JSONAdapter attempt plus its one format fallback — and one reflection call per
-proposal round. Semantic explanation can ask support, coverage and forbidden-claim questions, each with
-at most two physical attempts; successful identical questions share the judge cache. The run budget
-counts task, reflection and metric_judge physical calls, tokens and reserved cost.
-`--explanation-protocol semantic` requires a configured judge and a positive
-`--max-metric-judge-model-calls`; `--explanation-protocol proxy` explicitly requests literal/lint scoring.
-A judge outage, missing numeric score or budget failure terminates optimization without ADVANCE.
-Unknown billed cost is null, with observed cost and conservative budget estimates reported separately.
-`news learning run` rebuilds
-the same report before constructing endpoints and refuses unless `objective.compilable` is true.
-CandidateEvaluator re-projects the same plan at registration/evaluation, for the target the candidate's
-own `optimization_objective_summary` declares.
-
-Optimizer candidates publish `optimization_objective_summary.v5`, including the target, the episode
-projection root, plan schema, retained population identity, target dimensions and split roots.
-Registration re-derives and compares every field. The current corpus contract is
-`news_learning_dataset_v5`, the current candidate is `news_prompt_candidate_v3`, and historical artifacts
-remain audit-only.
-
-`news learning freeze` seals accepted reviews into a content-addressed
-development or future temporal validation dataset. A corpus is made of evidence
-and accepted labels (#651 §9): a case needs a frozen, release-eligible observed
-evidence snapshot inside the window and an accepted `news_review_v8` review of
-it, whichever arm answered the Event. The answering arm is recorded on the case
-as `provenance` and the sealing arm beside the corpus; neither admits or refuses
-a case. A `v5` dataset seals no learning epoch, names the `targets` its cases
-can explain, and counts `rubric_ineligible_n` rather than hiding the accepted
-reviews it could not read. `news_review_v6` rows stay readable audit history and
-are ineligible for a new dataset, because a v6 row means "every dimension below
-was answered" and a v7 row does not.
-The v5 seal references content-addressed `dataset_case` artifacts containing the actual selected
-execution context, original judgment, accepted supervision and policy projection. Export only hydrates
-these artifacts; it never refreshes aliases, catalogue, receipts or reviews. A missing historical context
-is explicitly reconstructed and cannot supply exact historical novelty supervision. The policy projection
-names the declared arm at freeze; it does not claim to recover an unavailable historical policy.
-`freeze --evaluation-protocol historical_selected_context` is the default. The optional
-`counterfactual_sequence` seals every triage input in the window, including unreviewed Events, plus
-pre-window sent receipts. Each arm evolves its own history under `simulated_immediate_success` delivery.
-An unjudged/missing-context input or unmatched reviewed judgment makes the stream incomplete and prevents
-sequence evaluation; post-Event coverage is not acquisition recall.
-
-`learning/supervision.py` owns accepted labels and masks. A pass binds the reviewed original value;
-a fail requires the explicit correction. Unreviewed predictions and should-push labels do not become
-component Gold. Partial `ReviewTaxonomyV1` scores only supplied axes; online `ModelTaxonomyV1` stays complete.
-New expected assets require a valid explicit market enum, including explicit `unknown`. Historical reads
-remain tolerant of absent market metadata. `explanation_supervision` describes correction-block presence;
-only the projected mask determines trainability, so error names alone are diagnostic.
-
-The CLI is two groups, because there are two lifecycles (#202 `11 PR-E). `news
-learning` freezes a corpus, explains what GEPA may optimize, scores the stable
-Program, measures the metric judge and runs the one optimization — `readiness`,
-`baseline`, `judge-calibration`, `draft-reviews`, `run`, `freeze` — and none of
-them can ship anything.
-There is no per-target registration or separate evaluation command.
-Gold is scored directly by that target's ruler during the one `run`; moving-window
-`baseline` is diagnostic only. `news release` admits a
-candidate and moves it: `register`,
-`evaluate`, `canary`. The split is what an operator reads off
-`--help`, and it is the same boundary the packages carry: `news.learning`
-never imports `news.release`.
-
-`release register --development SHA --candidate FILE --artifact-root DIR
-[--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v3` to
-the active stable Program and a frozen development dataset. Whatever supplied
-the candidate's state document — `learning run`, which moves exactly the
-Predictor its `--target` names and copies the other two byte-identically, or a
-person — enters here on identical terms, because the generator is audit, not
-permission. The command reads the candidate's Program identity off that document
-and derives which Predictors it rewrites by comparing it with the running
-stable, re-projects the corpus and re-derives the #199 Objective Plan
-rather than trusting the candidate's own `objective_summary`, and refuses a
-candidate whose declared projection root, Objective Plan schema, representative
-optimizer population identity, or split disagrees. These checks run before any
-candidate artifact is written. It stores the
-candidate under kind `prompt_candidate` keyed by its own `candidate_sha256`, and
-the `ProposalReceipt` carries that root plus
-`development_episode_projection_root_sha256` — the registrar's own projection,
-which is what makes a review edited between generation and evaluation visible.
-
-There is one candidate kind. `CandidateManifest.target` (`program | policy`) is
-gone: a policy change is a configuration release with its own gradual-rollout
-capability, and dressing it as a learning candidate gave it an Objective Plan, a
-development dataset and a blind pairwise stage for a change no optimizer
-proposed and no metric scored. Rows registered under the old contract stay in
-`news_learning_artifacts` as append-only audit and no longer parse, so they
-cannot be re-armed (migration `20260825_0307` trips anything still open).
-
-`release evaluate` runs the
-development/offline or validation/holdout release gate; validation calls both
-arms sequentially and `--live-program` can append exact per-Predictor
-recordings. Those recordings persist in `news_model_recordings` as
-content-addressed forensic evidence, and without `--live-program` the gate
-replays each arm from them; a missing recording produces an `incomplete`
-evaluation with no live fallback. The separate strict re-execution verification
-pass (`--verify-recordings`) was deleted in #343.
-`release canary arm|status|hold|resume|trip|close` owns the durable one-arm
-rollout. A candidate may advance only when the prior
-stage has a sealed PASS; a tool or optimizer may propose but cannot accept,
-deploy or promote. Canary selector `news_canary_selector_v2` includes queue-high Events, is live-only,
-excludes the three admissions `recovery`, `listing_deterministic` and
-`telemetry_deterministic` (the last of which no current frame can take, since
-#553 opens no Event for a market Strategy), and validates selector, eligibility profile,
-rolling profile and runtime-manifest identity at startup, resume and assignment;
-drift trips the activation. `news replay <hits.json>` runs
-Deduper+Gate over saved provider hits without broker or model and lists every
-Event with admission, grounded assets, and preliminary storyline. `news why
-<event_id>` prints the Event's chain (item, gate, triage, decide, delivery)
-and a one-line `outcome`. A model verdict's trace carries a `grounding` block
-beside it: per named asset, how this Event carries the symbol (`cashtag`,
-`text`, `alias`, `provider_tag`, `unsupported`), whether the instrument
-catalogue holds it, and whether the catalogue row the model was shown proves a
-different market than the one it claimed. It is recorded evidence about the
-judgment; the decision policy reads none of it. `news dlq inspect|replay|purge [--limit]`
-peeks, republishes, or purges `news.dead`. `replay` verifies the effective
-policy and the topology first and exits non-zero without reading a message if
-either is unknown or drifted; a dead letter it cannot decode is returned to the
-queue and ends the batch with a non-zero exit naming the message, the decode
-code and the number already replayed. `purge` is the only command that removes
-evidence.
+`news replay <hits.json>` runs local provider-hit admission without
+model, broker or outbound notification. It does not measure the
+EventUpdate model. `news why <event_id>` reads one persisted Event's
+chain. `news dlq inspect|replay|purge [--limit]` handles the durable
+dead-letter queue; purge removes evidence and replay first verifies
+the effective topology and policy. `news bus-check` and
+`news bus-policy apply|verify` inspect and manage the declared broker
+policy. The exact flags and output are in
+[generated CLI help](generated/cli-help.md).
 
 The `trading` family has no direct provider-execution command. `trading status`
 renders exactly the `decision` and `execution` blocks
@@ -2043,11 +1254,14 @@ through Runtime risk/OMS without fabricating Signal/Case/Alpha facts; success sa
 `intent_recorded_not_order_or_fill`. There is no blacklist,
 capability, replay, evidence, quantity, leverage, venue, or direct order command.
 
-Trading consumes one public News projection: the deterministic OI ledger joined
-to its source Item for `first_ingest_mode` only. Editorial News and liquidation
-do not cross this seam, and no News judgment, Program, policy or cohort identity
-is on the candidate. OI rows freeze `ingest_mode`, so Item retention cannot
-erase live/recovery provenance; a recovery row is not an eligible trigger.
+Trading consumes News public projections through App mapping. OI remains the
+deterministic typed ledger joined to its source Item for `first_ingest_mode`;
+the row freezes `ingest_mode`, so Item retention cannot erase live/recovery
+provenance and a recovery row is not an eligible trigger. Editorial News now
+also emits `news_public_update_v1` catalyst deltas and separate source
+amendments. Trading never reads News private tables or a reader card, and no
+News model judgment grants order authority. A source amendment updates cited
+research rather than opening a new Case.
 
 `trading_manifest_v11` freezes one `primary_trigger`, point-in-time `contexts`,
 a venue-neutral `market_key`, and the policy id, version, exact typed
