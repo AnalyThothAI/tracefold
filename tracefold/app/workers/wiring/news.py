@@ -3,20 +3,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-import tracefold.news.program.resources.candidates as candidate_programs
-from tracefold.app.learning_runtime import (
-    NewsProgramRuntimeComposition,
-    active_arm_manifest,
-    compose_news_program_runtime,
-    runtime_manifest_sha,
-)
+from tracefold.app.learning_runtime import NewsModelRoute, compose_news_models, news_runtime_manifest_sha
+from tracefold.app.news_updates import NewsUpdateRuntime, compose_news_updates
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.runtime import (
@@ -46,9 +40,7 @@ from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.integrations.telegram import TelegramNewsPushSender
 from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
-from tracefold.news import ProgressionVerifier
 from tracefold.news.chain_tape.rules import WalletRules
-from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
 from tracefold.news.market_review.pricing import QuoteRequest
@@ -59,21 +51,8 @@ from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
-from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.news.program.artifact import (
-    NewsProgramStateV1,
-    load_stable_program_state,
-)
-from tracefold.news.program.contracts import SemanticJudge
-from tracefold.news.program.runtime import PROGRAM_VERSION
-from tracefold.news.release.canary import CanaryRuntimeArm
-from tracefold.news.release.runtime import (
-    CandidateArtifactUnavailable,
-    CandidateRuntimeFact,
-    candidate_program_artifact,
-    reconcile_canary_startup,
-)
-from tracefold.news.triage_rules import DecidePolicy
+from tracefold.news.pipeline.semantic import SemanticWorker
+from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore, PgSourceReader
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
@@ -118,34 +97,25 @@ class _MarketNotificationDatabase:
 
 
 @dataclass(frozen=True, slots=True)
-class _ProgramArms:
-    """What one Workers process may execute this deployment: the stable arm, plus any runnable candidate."""
+class NewsWiring:
+    """What News composition hands the Workers root."""
 
-    judge: SemanticJudge | None
-    progression_verifier: ProgressionVerifier | None
-    stable_artifact: NewsProgramStateV1
-    stable_bundle_sha: str
-    canary_arms: dict[str, CanaryRuntimeArm]
-    runtime_manifest: dict[str, Any]
+    bus: RabbitMQBus
+    pipeline: NewsPipeline
+    market_notifications: MarketNotificationLoop
+    # The composed EventUpdate runtime, owned by the root for its shutdown (the optional Jev
+    # connection), or None when the editorial capability is not running.
+    news_updates: NewsUpdateRuntime | None
+    # The manifest Workers reports on /readyz; None when the configured program could not be composed.
+    runtime_manifest_sha: str | None
 
 
-def configured_runtime_manifest_sha(
-    settings: Settings,
-    *,
-    runtime_composition: NewsProgramRuntimeComposition | None = None,
-    stable_arm: ArmManifest | None = None,
-    candidate_shas: list[str] | None = None,
-    identity: Any = None,
-) -> str:
-    """Hash the exact image/config Program set Workers will register."""
+def configured_runtime_manifest_sha(settings: Settings, *, identity: Any = None) -> str:
+    """The runtime manifest this image and configuration will report, computed without composing it."""
 
-    composition = runtime_composition or compose_news_program_runtime(settings)
-    stable = stable_arm or active_arm_manifest(settings, runtime_composition=composition)
-    candidates = sorted(_compiled_candidate_manifests()) if candidate_shas is None else sorted(candidate_shas)
     process_identity = identity or runtime_identity()
-    return runtime_manifest_sha(
-        stable_bundle_sha=stable.bundle_sha,
-        candidate_shas=candidates,
+    return news_runtime_manifest_sha(
+        settings,
         image_digest=process_identity.image_digest,
         runtime_revision=process_identity.runtime_revision,
     )
@@ -163,12 +133,12 @@ async def _wire_news_pipeline(
     finite: FiniteOperations,
     capabilities: CapabilityStates,
     telemetry: TelemetryRegistry | None = None,
-) -> tuple[RabbitMQBus, NewsPipeline, MarketNotificationLoop]:
+) -> NewsWiring:
     """Broker-driven News V3: one RabbitMQ bus + consumers; models/providers are optional capabilities.
 
     The bus is foundational for News here: reception, admission and delivery all publish through it, so
     a broker that will not connect still refuses the process. What is *not* foundational is the
-    editorial Program and the push sender -- either can fail on its own and leave reception, fact
+    semantic runtime and the push sender -- either can fail on its own and leave reception, fact
     writes and reads running (#553 PR-3).
     """
 
@@ -198,7 +168,7 @@ async def _wire_news_pipeline(
         else None
     )
 
-    arms = await _program_arms_or_fault(settings, db=db, capabilities=capabilities)
+    news_updates = _news_updates_or_fault(settings, news_db=news_db, capabilities=capabilities)
     pipeline = _compose_news_pipeline(
         settings,
         bus=bus,
@@ -207,7 +177,7 @@ async def _wire_news_pipeline(
         quote_db=quote_db,
         reaction_db=reaction_db,
         finite=finite,
-        arms=arms,
+        news_updates=news_updates,
         sender=_push_sender_or_fault(settings, capabilities=capabilities),
         receiver=receiver,
         recovery=recovery,
@@ -247,7 +217,18 @@ async def _wire_news_pipeline(
         ),
     )
     capabilities.running(MARKET_NOTIFICATIONS)
-    return bus, pipeline, market_notifications
+    manifest = (
+        configured_runtime_manifest_sha(settings)
+        if news_updates is not None or compose_news_models(settings) is None
+        else None
+    )
+    return NewsWiring(
+        bus=bus,
+        pipeline=pipeline,
+        market_notifications=market_notifications,
+        news_updates=news_updates,
+        runtime_manifest_sha=manifest,
+    )
 
 
 async def run_market_notifications(
@@ -284,34 +265,51 @@ async def run_market_notifications(
             await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(poll_seconds)))
 
 
-async def _program_arms_or_fault(
+def _route_factory(route: NewsModelRoute) -> Callable[[], Any]:
+    """One role's configured generative route, built once and borrowed by every call."""
+
+    lms = route.lms()
+    return lambda: lms
+
+
+def _news_updates_or_fault(
     settings: Settings,
     *,
-    db: WorkerDatabase,
+    news_db: NewsDatabasePort,
     capabilities: CapabilityStates,
-) -> _ProgramArms | None:
-    """Assemble the editorial Programs, or fault only the editorial capability.
+) -> NewsUpdateRuntime | None:
+    """Compose the EventUpdate runtime, or confine the failure to the editorial capability.
 
-    The version check is unchanged and still refuses to run an unproven Program: what changes is the
-    blast radius. A mismatch, a missing artifact or a failed canary reconciliation now leaves the
-    Triage consumer unwired instead of killing reception, market facts and market notifications with
-    it (#553 PR-3). Model-unconfigured and model-request behavior is untouched: those already produce
-    a composed pipeline with no judge. A PostgreSQL failure is not confined -- see the `except` below.
+    Unconfigured News models leave no semantic worker: admitted evidence keeps committing its
+    semantic work, which waits durably for a configured process. Construction performs no I/O, so
+    a failure here is a configuration or program fact about this capability only (#553 PR-3).
     """
 
     try:
-        arms = await _compose_program_arms(settings, db=db)
+        models = compose_news_models(settings)
+        if models is None:
+            capabilities.disabled(NEWS_EDITORIAL, "news_models_not_configured")
+            return None
+        runtime = compose_news_updates(
+            store=PgNewsStore(news_db, watch_symbols=settings.news.watchlist_symbols),
+            relation_cache=PgJudgmentCache(news_db),
+            extraction_lm_factory=_route_factory(models.extraction),
+            card_lm_factory=_route_factory(models.card),
+            judgment_lm_factory=_route_factory(models.judgment),
+            extraction_model_identity=models.extraction.identity,
+            card_model_identity=models.card.identity,
+            judgment_model_identity=models.judgment.identity,
+            news_judgment=models.news_judgment,
+            source_reader=PgSourceReader(news_db),
+        )
     except SHARED_RESOURCE_FAILURES:
-        # The canary reconciliation this performs is a control write. A pool timeout or a dropped
-        # connection there says PostgreSQL failed, not that the Program is wrong, and recording it as
-        # an editorial fault would hide a shared fault behind a green readiness.
         raise
     except Exception as exc:
-        logger.opt(exception=exc).error("News Program assembly failed; editorial capability faulted")
+        logger.opt(exception=exc).error("News semantic runtime assembly failed; editorial capability faulted")
         capabilities.faulted(NEWS_EDITORIAL, f"{NEWS_EDITORIAL}_assembly_failed:{type(exc).__name__}")
         return None
     capabilities.running(NEWS_EDITORIAL)
-    return arms
+    return runtime
 
 
 def _push_sender_or_fault(
@@ -386,157 +384,6 @@ async def _connect_news_bus(
     return bus
 
 
-async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _ProgramArms:
-    """Resolve every Program this image can actually run, then fail closed on any armed candidate it cannot."""
-
-    runtime_composition = compose_news_program_runtime(settings)
-    identity = runtime_identity()
-    stable_arm = active_arm_manifest(settings, runtime_composition=runtime_composition)
-    compiled_candidates = _compiled_candidate_manifests()
-    stable_artifact = load_stable_program_state()
-    if stable_arm.program_version != PROGRAM_VERSION or stable_artifact.program_sha256 != stable_arm.program_sha256:
-        raise RuntimeError("news_stable_program_manifest_mismatch")
-    semantic_judge = runtime_composition.semantic_judge(stable_artifact)
-    progression_verifier = runtime_composition.progression_verifier()
-    canary_arms: dict[str, CanaryRuntimeArm] = {}
-    candidate_facts = {
-        candidate_sha: CandidateRuntimeFact(
-            candidate_manifest_sha=candidate_sha,
-            compiled_bundle_sha=candidate.candidate_arm.bundle_sha,
-            runnable_bundle_sha=None,
-            failure_kind="runtime_unavailable",
-        )
-        for candidate_sha, candidate in compiled_candidates.items()
-    }
-    if semantic_judge is not None:
-        canary_arms, candidate_facts = _candidate_runtime_arms(
-            compiled_candidates,
-            runtime_composition=runtime_composition,
-            stable_artifact=stable_artifact,
-            stable_arm=stable_arm,
-        )
-    await db.run_news(
-        "news_canary_startup_validation",
-        _reconcile_news_canary_startup,
-        db,
-        candidate_facts,
-        operation_timeout_seconds=3.0,
-    )
-    return _ProgramArms(
-        judge=semantic_judge,
-        progression_verifier=progression_verifier,
-        stable_artifact=stable_artifact,
-        stable_bundle_sha=stable_arm.bundle_sha,
-        canary_arms=canary_arms,
-        runtime_manifest={
-            "manifest_sha": configured_runtime_manifest_sha(
-                settings,
-                runtime_composition=runtime_composition,
-                stable_arm=stable_arm,
-                candidate_shas=list(compiled_candidates),
-                identity=identity,
-            ),
-            "stable_bundle_sha": stable_arm.bundle_sha,
-            # What this bundle *is*, carried down so the startup barrier can open its evidence epoch
-            # without re-deriving an identity the composition root already holds (#314).
-            "envelope_sha256": stable_arm.envelope_sha256,
-            "artifact_schema_version": stable_artifact.schema_version,
-            "program_version": stable_arm.program_version,
-            "program_sha256": stable_arm.program_sha256,
-            "candidate_shas": sorted(compiled_candidates),
-            "image_digest": identity.image_digest,
-            "runtime_revision": identity.runtime_revision,
-            "now_ms": int(time.time() * 1000),
-        },
-    )
-
-
-def _compiled_candidate_manifests() -> dict[str, CandidateManifest]:
-    """Image-carried candidate documents, keyed by candidate SHA. A malformed one is logged, never fatal."""
-
-    compiled: dict[str, CandidateManifest] = {}
-    for index, document in enumerate(candidate_programs.COMPILED_CANDIDATE_DOCUMENTS):
-        try:
-            candidate = CandidateManifest.model_validate(document)
-        except (TypeError, ValueError) as exc:
-            logger.error(
-                "candidate manifest rejected index={} error={}",
-                index,
-                type(exc).__name__,
-            )
-            continue
-        compiled[candidate.candidate_sha] = candidate
-    return compiled
-
-
-def _candidate_runtime_arms(
-    compiled_candidates: dict[str, CandidateManifest],
-    *,
-    runtime_composition: NewsProgramRuntimeComposition,
-    stable_artifact: NewsProgramStateV1,
-    stable_arm: ArmManifest,
-) -> tuple[dict[str, CanaryRuntimeArm], dict[str, CandidateRuntimeFact]]:
-    """Compose candidate Programs and report neutral runtime-stage facts."""
-
-    canary_arms: dict[str, CanaryRuntimeArm] = {}
-    candidate_facts: dict[str, CandidateRuntimeFact] = {}
-    for candidate in compiled_candidates.values():
-        arm = candidate.candidate_arm
-        try:
-            candidate_artifact = candidate_program_artifact(
-                candidate,
-                stable_arm,
-                stable_artifact=stable_artifact,
-            )
-        except CandidateArtifactUnavailable as exc:
-            candidate_facts[candidate.candidate_sha] = CandidateRuntimeFact(
-                candidate_manifest_sha=candidate.candidate_sha,
-                compiled_bundle_sha=arm.bundle_sha,
-                runnable_bundle_sha=None,
-                failure_kind=exc.failure_kind,
-            )
-            logger.warning(
-                "candidate Program artifact unavailable candidate={} stage={} error={}",
-                candidate.candidate_sha,
-                exc.failure_kind,
-                exc,
-            )
-            continue
-        try:
-            candidate_program = runtime_composition.semantic_judge(candidate_artifact)
-        except (TypeError, ValueError) as exc:
-            candidate_facts[candidate.candidate_sha] = CandidateRuntimeFact(
-                candidate_manifest_sha=candidate.candidate_sha,
-                compiled_bundle_sha=arm.bundle_sha,
-                runnable_bundle_sha=None,
-                failure_kind="runtime_invalid",
-            )
-            logger.error("candidate Program composition rejected program={} error={}", arm.program_sha256, exc)
-            continue
-        if candidate_program is None:
-            candidate_facts[candidate.candidate_sha] = CandidateRuntimeFact(
-                candidate_manifest_sha=candidate.candidate_sha,
-                compiled_bundle_sha=arm.bundle_sha,
-                runnable_bundle_sha=None,
-                failure_kind="runtime_unavailable",
-            )
-            continue
-        canary_arms[arm.bundle_sha] = CanaryRuntimeArm(
-            bundle_sha=arm.bundle_sha,
-            program=candidate_program,
-            policy=DecidePolicy(**arm.policy),
-            program_version=arm.program_version,
-            program_sha256=arm.program_sha256,
-        )
-        candidate_facts[candidate.candidate_sha] = CandidateRuntimeFact(
-            candidate_manifest_sha=candidate.candidate_sha,
-            compiled_bundle_sha=arm.bundle_sha,
-            runnable_bundle_sha=arm.bundle_sha,
-            failure_kind=None,
-        )
-    return canary_arms, candidate_facts
-
-
 @dataclass(frozen=True, slots=True)
 class _ComposedPushSender:
     """The sender the configuration describes, or the reason there is none. Never both."""
@@ -602,7 +449,7 @@ def _compose_news_pipeline(
     quote_db: QuoteDatabasePort,
     reaction_db: ReactionDatabasePort,
     finite: FiniteOperations,
-    arms: _ProgramArms | None,
+    news_updates: NewsUpdateRuntime | None,
     sender: FeishuNewsPushSender | TelegramNewsPushSender | None,
     receiver: OpenNewsReceiver | None,
     recovery: RecoveryRunner | None,
@@ -617,24 +464,18 @@ def _compose_news_pipeline(
             db=news_db,
             watchlist_symbols=watchlist_symbols,
         ),
-        triage=(
+        semantic=(
             None
-            if arms is None
-            else TriageConsumer(
+            if news_updates is None
+            else SemanticWorker(
                 bus=bus,
                 db=news_db,
-                judge=arms.judge,
-                program_version=PROGRAM_VERSION,
-                program_sha256=arms.stable_artifact.program_sha256,
-                watchlist_symbols=watchlist_symbols,
-                watchlist=sorted(watchlist_symbols),
+                store=PgNewsStore(news_db, watch_symbols=watchlist_symbols),
+                agent=news_updates.agent,
                 concurrency=settings.news.triage.concurrency,
                 circuit_failures=settings.news.triage.circuit_failures,
                 circuit_open_seconds=settings.news.triage.circuit_open_seconds,
-                policy=DecidePolicy(**settings.news.policy.model_dump()),
-                stable_bundle_sha=arms.stable_bundle_sha,
-                canary_arms=arms.canary_arms,
-                runtime_manifest=arms.runtime_manifest,
+                program_identity=news_updates.program_identity,
             )
         ),
         deliverer=DelivererLoop(
@@ -643,7 +484,7 @@ def _compose_news_pipeline(
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
             price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
-            progression_verifier=None if arms is None else arms.progression_verifier,
+            progression_verifier=None,
             tradability_verifier=(
                 VenueCatalogTradabilityVerifier()
                 if settings.news.venues.enabled
@@ -674,21 +515,3 @@ def _compose_news_pipeline(
         ),
         reactions=_event_reaction_loop(settings, db=reaction_db, telemetry=telemetry),
     )
-
-
-def _reconcile_news_canary_startup(
-    db: WorkerDatabase,
-    candidate_facts: dict[str, CandidateRuntimeFact],
-) -> bool:
-    """Run the News-owned startup use case inside the one Worker transaction."""
-
-    with db.worker_session("news_canary_startup_validation", 3.0) as repos:
-        return reconcile_canary_startup(
-            repos.news,
-            candidate_facts=candidate_facts,
-            now_ms=_now_ms(),
-        )
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1_000)

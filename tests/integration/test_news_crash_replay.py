@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,7 +33,6 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_judgment import semantic_judgment, triage_verdict
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.bus import (
@@ -45,7 +43,6 @@ from tracefold.news.bus import (
     new_trace_id,
     now_ms,
 )
-from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.opennews import (
     _SNOWFLAKE_SHIFT,
     _X_SNOWFLAKE_EPOCH_MS,
@@ -53,19 +50,14 @@ from tracefold.news.opennews import (
     source_artifact_identity,
 )
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.pipeline.delivery import DELIVERY_ATTEMPTS_MAX, DELIVERY_RETRY_DELAY_MS, DelivererLoop
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
-from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.news.program.artifact import load_stable_program_state
-from tracefold.news.program.runtime import PROGRAM_VERSION
 
 pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
-PROGRAM_SHA256 = load_stable_program_state().program_sha256
 
 
 class RecordingBus:
@@ -202,22 +194,6 @@ def _raw_message(hit: dict[str, Any], *, ingest_mode: str = "live") -> BusMessag
 
 def _deduper(db: FaultInjectingDatabase, bus: RecordingBus) -> DeduperConsumer:
     return DeduperConsumer(bus=bus, db=db, watchlist_symbols=WATCHLIST)
-
-
-def _triage(db: FaultInjectingDatabase, bus: RecordingBus, *, judge: Any = None) -> TriageConsumer:
-    return TriageConsumer(
-        bus=bus,
-        db=db,
-        judge=judge,
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        watchlist_symbols=WATCHLIST,
-        watchlist=sorted(WATCHLIST),
-        concurrency=1,
-        circuit_failures=3,
-        circuit_open_seconds=60.0,
-        runtime_manifest={"manifest_sha": "e" * 64},
-    )
 
 
 def _events(conn: Any) -> list[dict[str, Any]]:
@@ -604,19 +580,65 @@ def test_a_predecessor_whose_clock_ran_ahead_cannot_open_an_outage_in_the_future
 # ------------------------------------------------------- Deduper: published to the broker, unmarked in the row
 
 
-def test_a_mark_failure_after_a_successful_event_publish_leaves_one_event_and_one_verdict(conn) -> None:
-    """Event publish success -> post-publish mark failure -> janitor redelivery -> one current Verdict.
+class _OneClaimAnalyzer:
+    """The analyzer boundary with one grounded claim per input; no model."""
 
-    `publish_event` is a commit-then-publish outbox step and it suppresses the mark's own failure on
-    purpose, because the Event has already reached Triage and raising would only re-run the whole
-    admission. The cost of that choice is a row that says `published_at_ms IS NULL` when the message
-    is already in flight, so the janitor will send it a second time — and the durable answer must
-    still be exactly one Event and exactly one current Verdict.
+    identity = "crash-replay-analyzer-v1"
+    judgments: Any = None
+
+    async def extract(self, source: Any, budget: Any) -> Any:
+        from tracefold.news.updates.contracts import Citation, ClaimFields, DraftClaim, Extraction
+
+        evidence = source.evidence[0]
+        quote = evidence.text.splitlines()[0]
+        return Extraction(
+            claims=(
+                DraftClaim(
+                    slot="a",
+                    statement=quote,
+                    fields=ClaimFields(subject="source", action="reports", mode="observation"),
+                    citations=(Citation(evidence_ref=evidence.ref, quote=quote),),
+                ),
+            )
+        )
+
+    async def understand(
+        self, source: Any, extracted: Any, budget: Any, *, rebase_only: bool = False, final_attempt: bool = True
+    ) -> Any:
+        return extracted
+
+
+def _semantic_worker(db: FaultInjectingDatabase, bus: RecordingBus) -> Any:
+    from tracefold.news.pipeline.semantic import SemanticWorker
+    from tracefold.news.storage.event_update_store import PgNewsStore
+    from tracefold.news.updates.service import NewsAgent
+
+    store = PgNewsStore(db, watch_symbols=WATCHLIST)
+    agent = NewsAgent(store, _OneClaimAnalyzer(), program_identity="crash-replay-program")  # type: ignore[arg-type]
+    return SemanticWorker(
+        bus=bus,
+        db=db,
+        store=store,
+        agent=agent,
+        concurrency=1,
+        circuit_failures=3,
+        circuit_open_seconds=60.0,
+        program_identity="crash-replay-program",
+    )
+
+
+def test_a_mark_failure_after_a_successful_wake_is_re_woken_and_adopted_exactly_once(conn) -> None:
+    """Wake publish success -> post-publish mark failure -> janitor re-wake -> one adopted EventUpdate.
+
+    `publish_semantic_wake` is a commit-then-publish step and it suppresses the mark's own failure on
+    purpose: the semantic work is already durable, and raising would only re-run the whole admission.
+    The cost is a work row whose wake looks unrecorded while the message is in flight, so the janitor
+    wakes it a second time -- and the durable answer must still be one Event and one adoption.
     """
 
     bus = RecordingBus()
     db = FaultInjectingDatabase(conn)
-    db.fail_operations = {"news_event_mark_published"}
+    db.fail_operations = {"news_semantic_wake_mark"}
 
     asyncio.run(_deduper(db, bus).handle(_raw_message(_one_hit())))
     conn.commit()
@@ -625,840 +647,27 @@ def test_a_mark_failure_after_a_successful_event_publish_leaves_one_event_and_on
     assert len(events) == 1
     event_id = str(events[0]["event_id"])
     assert events[0]["published_at_ms"] is None, "the mark is exactly what the injected fault stopped"
-    assert [message.payload["event_id"] for message in bus.of_kind("event")] == [event_id]
+    work = conn.execute("SELECT * FROM news_semantic_work WHERE event_id = %s", (event_id,)).fetchone()
+    assert work["wanted_revision"] == 1 and work["published_at_ms"] is None
+    assert [message.message_id for message in bus.of_kind("event")] == [f"event:{event_id}:1"]
 
-    # The janitor re-publishes anything the outbox still believes never left.
     db.fail_operations = set()
-    conn.execute(
-        "UPDATE news_events SET opened_at_ms = opened_at_ms - 60000, created_at_ms = created_at_ms - 60000"
-        " WHERE event_id = %s",
-        (event_id,),
-    )
-    conn.commit()
-    janitor = JanitorLoop(db=db, cold_db=db, bus=bus)
-    republished = asyncio.run(janitor.repair_event_handoffs())
+    woken = asyncio.run(JanitorLoop(db=db, cold_db=db, bus=bus).repair_semantic_wakes())
     conn.commit()
 
-    assert republished == 1
-    assert [message.payload["event_id"] for message in bus.of_kind("event")] == [event_id, event_id]
+    assert woken == 1
+    assert [message.message_id for message in bus.of_kind("event")] == [f"event:{event_id}:1"] * 2
     assert dict(_events(conn)[0])["published_at_ms"] is not None
 
-    # Both copies reach Triage. The second must find the settled verdict rather than judge again.
-    triage = _triage(db, bus)
+    # Both wakes reach the semantic worker. The second finds the revision done and runs no turn.
+    worker = _semantic_worker(db, bus)
     for message in bus.of_kind("event"):
-        asyncio.run(triage.handle(message))
+        asyncio.run(worker.handle(message))
     conn.commit()
 
-    verdicts = conn.execute(
-        "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = 'triage' AND policy_version = %s",
-        (event_id, TRIAGE_POLICY_VERSION),
-    ).fetchall()
-    assert len(verdicts) == 1
-    assert len(_events(conn)) == 1
-
-
-# ------------------------------------------------------------------- Deliverer: begin, send, settle
-
-
-class _RecordingSender:
-    """A push sender that can fail, and that always records what it was asked to send."""
-
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
-        self.fail_send = False
-
-    def prepare(self) -> None:
-        return None
-
-    def send_card(self, card: Any, *, channel_payload: Mapping[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        del card
-        self.sent.append(dict(channel_payload))
-        if self.fail_send:
-            raise RuntimeError("provider refused the send")
-        return {"provider": "test", "message_id": len(self.sent), "pushed_at_ms": now_ms()}
-
-    def close(self) -> None:
-        return None
-
-
-def _pushable_event(conn: Any, db: FaultInjectingDatabase, bus: RecordingBus) -> str:
-    """Drive a real frame through admission and the current model/policy path to one delivering verdict.
-
-    Everything the Deliverer reads — the Event card, its admission routing, the delivery timing, the
-    latest triage verdict and its DecisionResult — is written by the production consumers here.
-    """
-
-    deduper = _deduper(db, bus)
-    asyncio.run(deduper.handle(_raw_message(_one_hit())))
-    conn.commit()
-    event_id = str(_events(conn)[0]["event_id"])
-    judge = _EvidenceMovingJudge(deduper, [])
-    for message in bus.of_kind("event"):
-        asyncio.run(_triage(db, bus, judge=judge).handle(message))
-    conn.commit()
-    verdict = conn.execute(
-        "SELECT final_decision FROM news_verdicts WHERE event_id = %s AND stage = 'triage'",
-        (event_id,),
-    ).fetchone()
-    assert verdict is not None and verdict["final_decision"] == "push"
-    return event_id
-
-
-def test_a_crash_between_begin_and_settle_is_durably_ambiguous_and_never_resends(conn) -> None:
-    """Begin-send-settle: a known-unsent card may retry; an unknown remote outcome may not.
-
-    These are different facts and the reader is on the other side of the difference. A send that
-    never happened costs nothing to retry. A send whose outcome the process never learned may
-    already be on someone's screen, so the only safe answer is a durable `terminal` marked
-    ambiguous — never a second initial send.
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    sender = _RecordingSender()
-    event_id = _pushable_event(conn, db, bus)
-    repos = repositories_for_connection(conn)
-
-    # Known unsent: `begin_delivery` claimed the row, nothing was sent, and the process died.
-    with repos.transaction():
-        assert repos.news.begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=now_ms()) == "new"
-    conn.commit()
-    assert sender.sent == []
-
-    deliverer = DelivererLoop(
-        db=db,
-        sender=sender,
-        finite_operations=InlineFiniteOperations(),
-        min_interval_seconds=0.0,
-    )
-    asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
-    conn.commit()
-
-    delivery = repos.news.delivery(event_id=event_id, kind="first")
-    assert delivery is not None
-    assert (delivery["state"], delivery["error_code"]) == ("terminal", "ambiguous_after_crash")
-    assert sender.sent == [], "an interrupted delivery is never re-sent, because its outcome is unknown"
-
-    rows = conn.execute("SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)).fetchone()
-    assert int(rows["n"]) == 1
-
-
-def test_a_settlement_failure_after_a_successful_send_never_produces_a_second_send(conn) -> None:
-    """Verdict delivered, settlement lost: the redelivery must not put a second card on the screen."""
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    sender = _RecordingSender()
-    event_id = _pushable_event(conn, db, bus)
-    deliverer = DelivererLoop(
-        db=db,
-        sender=sender,
-        finite_operations=InlineFiniteOperations(),
-        min_interval_seconds=0.0,
-    )
-
-    db.fail_operations = {"news_delivery_settle"}
-    with pytest.raises(RuntimeError, match="news_delivery_settlement_unavailable"):
-        asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
-    conn.commit()
-
-    assert len(sender.sent) == 1, "the card really did reach the provider"
-    repos = repositories_for_connection(conn)
-    stranded = repos.news.delivery(event_id=event_id, kind="first")
-    assert stranded is not None and stranded["state"] == "sending"
-
-    # Re-claim: the row still says `sending`, so this is the unknown-outcome case, not a retry.
-    db.fail_operations = set()
-    asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
-    conn.commit()
-
-    settled = repos.news.delivery(event_id=event_id, kind="first")
-    assert settled is not None
-    assert (settled["state"], settled["error_code"]) == ("terminal", "ambiguous_after_crash")
-    assert len(sender.sent) == 1
-    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 1
-
-
-# ------------------------------------------------------- Triage: evidence that moves while the model thinks
-
-
-class _EvidenceMovingJudge:
-    """A model seam that lets a stronger member land while it is thinking, on every ask.
-
-    This is the production cause, not a synthetic one: a second outlet reporting the same fact joins
-    the Event as a new member, which appends a new immutable evidence version. Doing it from inside
-    `judge()` puts the change exactly where the race is — after the model read the evidence and
-    before the persist step re-reads it.
-    """
-
-    def __init__(self, deduper: DeduperConsumer, frames: list[dict[str, Any]]) -> None:
-        self.deduper = deduper
-        self.frames = list(frames)
-        self.asks = 0
-
-    async def judge(self, _context: Any) -> Any:
-        self.asks += 1
-        if self.frames:
-            await self.deduper.handle(_raw_message(self.frames.pop(0)))
-        return semantic_judgment(triage_verdict(), program_version=PROGRAM_VERSION, program_sha256=PROGRAM_SHA256)
-
-
-def test_a_second_evidence_change_refuses_to_bind_the_stale_judgment(conn) -> None:
-    """Evidence change -> one re-ask -> a second change: no judgment is written over evidence it never read.
-
-    One re-ask is deliberate and bounded. A judgment produced against evidence v1 may be discarded
-    and asked again against v2, because nothing durable has been written yet. What may not happen is
-    the second one: a judgment produced against v2, landing on v3, would be a verdict whose stated
-    inputs are not the inputs it saw. The pipeline's answer is to write nothing and raise a
-    `TransientError`, which returns the message to the durable retry lane instead.
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    first = _one_hit()
-    stronger = [
-        {**first, "id": int(first["id"]) + offset, "source": outlet, "link": f"https://x.com/{outlet}/status/{offset}"}
-        for offset, outlet in ((1, "SecondOutlet"), (2, "ThirdOutlet"))
-    ]
-
-    asyncio.run(_deduper(db, bus).handle(_raw_message(first)))
-    conn.commit()
-    event_id = str(_events(conn)[0]["event_id"])
-    assert _evidence_versions(conn, event_id) == [1]
-
-    judge = _EvidenceMovingJudge(_deduper(db, bus), stronger)
-    triage = _triage(db, bus, judge=judge)
-
-    with pytest.raises(TransientError, match="news_event_evidence_changed"):
-        asyncio.run(triage.handle(bus.of_kind("event")[0]))
-    conn.commit()
-
-    assert judge.asks == 2, "exactly one re-ask: the first change is retried, the second is not"
-    assert _evidence_versions(conn, event_id) == [1, 2, 3]
+    assert _count(conn, "SELECT count(*) AS n FROM news_event_updates WHERE event_id = %s", (event_id,)) == 1
+    assert _count(conn, "SELECT count(*) AS n FROM news_semantic_observations WHERE event_id = %s", (event_id,)) == 1
+    work = conn.execute("SELECT * FROM news_semantic_work WHERE event_id = %s", (event_id,)).fetchone()
+    assert work["done_revision"] == 1 and work["last_outcome"] == "adopted"
     assert _count(conn, "SELECT count(*) AS n FROM news_verdicts WHERE event_id = %s", (event_id,)) == 0
-    assert bus.of_kind("verdict") == []
-
-    # The retry lane hands the same message back once the evidence has settled. Now it is judged.
-    settled_judge = _EvidenceMovingJudge(_deduper(db, bus), [])
-    asyncio.run(_triage(db, bus, judge=settled_judge).handle(bus.of_kind("event")[0]))
-    conn.commit()
-
-    assert settled_judge.asks == 1
-    verdicts = conn.execute(
-        "SELECT final_decision, evidence_version FROM news_verdicts WHERE event_id = %s AND stage = 'triage'",
-        (event_id,),
-    ).fetchall()
-    assert len(verdicts) == 1
-    assert int(verdicts[0]["evidence_version"]) == 3, "the verdict names the evidence it actually read"
-
-
-def _second_admissible_hit() -> dict[str, Any]:
-    """A second scored, grounded frame whose text is unrelated to `_one_hit()`, so it opens its own Event."""
-
-    first_id = str(_one_hit()["id"])
-    stamp = now_ms()
-    for hit in _hits():
-        if str(hit["id"]) == first_id:
-            continue
-        rating = hit.get("aiRating") or {}
-        if float(rating.get("score") or 0) >= 70 and (hit.get("coins") or []):
-            return {**hit, "ts": datetime.now(UTC).isoformat(), "link": _fresh_status_url(stamp)}
-    raise AssertionError("fixture no longer contains a second admissible frame")
-
-
-class _CardLandingDatabase(FaultInjectingDatabase):
-    """Another process settles a card on its own connection, after the refresh and before the lock.
-
-    The window this reproduces is narrower than the one a re-read can see: Triage refreshes the
-    reader ledger outside any transaction, and only then opens the persist transaction and takes the
-    storyline lock. A card that commits between those two moments is invisible to the refresh and
-    visible inside the lock, which is exactly why the locked step re-reads the ledger revision
-    instead of trusting the snapshot it arrived with.
-    """
-
-    def __init__(self, conn: Any, *, delivered_event_id: str) -> None:
-        super().__init__(conn)
-        self.delivered_event_id = delivered_event_id
-        self.armed = True
-
-    async def tx(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
-        if name == "news_triage_persist" and self.armed:
-            self.armed = False
-            self._settle_on_another_connection()
-        return await super().tx(name, fn, timeout_seconds=timeout_seconds)
-
-    def _settle_on_another_connection(self) -> None:
-        other = connect_postgres_test(read_only=False)
-        try:
-            repos = repositories_for_connection(other)
-            stamp = now_ms()
-            with repos.transaction():
-                assert (
-                    repos.news.begin_delivery(
-                        event_id=self.delivered_event_id,
-                        kind="first",
-                        card={"headline_zh": "另一条已推送的卡片"},
-                        now_ms=stamp,
-                    )
-                    == "new"
-                )
-                assert repos.news.settle_delivery(
-                    event_id=self.delivered_event_id,
-                    kind="first",
-                    state="sent",
-                    receipt={"provider": "test", "message_id": 1, "pushed_at_ms": stamp},
-                    error_code=None,
-                    now_ms=stamp,
-                )
-            other.commit()
-        finally:
-            other.close()
-
-
-def test_a_card_that_lands_after_the_refresh_is_seen_inside_the_storyline_lock(conn) -> None:
-    """A push committed between the ledger refresh and the lock must not be judged around.
-
-    The evidence race above has a sibling on the other input the model is shown: the cards the
-    reader already received. `reader_history_revision` is a compare-and-swap token over the settled
-    deliveries, re-read inside the persist transaction under `lock_storyline`, and the writer that
-    moves it here is a genuinely separate connection whose commit PostgreSQL — not a script — makes
-    visible. Losing that CAS costs one bounded re-ask, and the verdict that lands names the ledger it
-    actually read.
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    delivered_event_id = _pushable_event(conn, db, bus)
-
-    asyncio.run(_deduper(db, bus).handle(_raw_message(_second_admissible_hit())))
-    conn.commit()
-    judged = [message for message in bus.of_kind("event") if message.payload["event_id"] != delivered_event_id]
-    assert len(judged) == 1, "the second frame has to open its own Event, not join the first"
-    event_id = str(judged[0].payload["event_id"])
-
-    racing_db = _CardLandingDatabase(conn, delivered_event_id=delivered_event_id)
-    judge = _EvidenceMovingJudge(_deduper(racing_db, bus), [])
-    asyncio.run(_triage(racing_db, bus, judge=judge).handle(judged[0]))
-    conn.commit()
-
-    assert racing_db.armed is False, "the card has to land while the judgment is being persisted"
-    assert judge.asks == 2, "the lost CAS buys exactly one re-ask"
-    verdicts = conn.execute(
-        "SELECT trace FROM news_verdicts WHERE event_id = %s AND stage = 'triage'", (event_id,)
-    ).fetchall()
-    assert len(verdicts) == 1, "the stale round writes nothing"
-    assert verdicts[0]["trace"]["reasked_after_told_change"] is True
-    settled = _count(
-        conn,
-        "SELECT count(*) AS n FROM news_deliveries WHERE kind = 'first' AND state = 'sent'",
-    )
-    assert settled == 1, "the racing card is a durable row, not a scripted return value"
-
-
-def test_a_redelivered_triage_message_owes_one_card_and_the_loop_sends_it_once(conn) -> None:
-    """Verdict and queue row commit together, so a redelivered Event adds no second card.
-
-    This is the window `publish_verdict` could not close: it committed the verdict in one transaction
-    and published the handoff in another, and the mark that recorded the publish could fail on its
-    own, leaving a settled verdict the row still called unpublished. A redelivered Event then
-    republished the decision and two identical messages reached the Deliverer. The handoff is now a
-    `news_delivery_queue` row inside the verdict's own transaction: there is no second write to fail,
-    the redelivery finds the verdict and stops, and the loop claims exactly one intent (#598 D2).
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    sender = _RecordingSender()
-
-    asyncio.run(_deduper(db, bus).handle(_raw_message(_one_hit())))
-    conn.commit()
-    event_id = str(_events(conn)[0]["event_id"])
-    event_message = bus.of_kind("event")[0]
-
-    judge = _EvidenceMovingJudge(_deduper(db, bus), [])
-    asyncio.run(_triage(db, bus, judge=judge).handle(event_message))
-    conn.commit()
-
-    verdict_row = conn.execute(
-        "SELECT final_decision, published_at_ms FROM news_verdicts WHERE event_id = %s AND stage = 'triage'",
-        (event_id,),
-    ).fetchone()
-    assert verdict_row["final_decision"] in {"push", "escalate"}
-    assert verdict_row["published_at_ms"] is not None, "the marker is written in the verdict's own transaction"
-    assert bus.of_kind("verdict") == [], "the handoff is a row, not a message"
-    assert _queue_rows(conn, event_id) == [{"kind": "first", "state": "pending", "attempts": 0, "error_code": None}]
-
-    # Redelivery of the Event: the verdict is already settled, so nothing at all happens.
-    asyncio.run(_triage(db, bus, judge=judge).handle(event_message))
-    conn.commit()
-
-    assert judge.asks == 1, "the second pass must not ask the model again"
-    assert _count(conn, "SELECT count(*) AS n FROM news_verdicts WHERE event_id = %s", (event_id,)) == 1
-    assert _queue_rows(conn, event_id) == [{"kind": "first", "state": "pending", "attempts": 0, "error_code": None}]
-
-    deliverer = DelivererLoop(
-        db=db,
-        sender=sender,
-        finite_operations=InlineFiniteOperations(),
-        min_interval_seconds=0.0,
-    )
-    asyncio.run(deliverer.advance())
-    asyncio.run(deliverer.advance())
-    conn.commit()
-
-    assert len(sender.sent) == 1, "one intent, one card on the reader's screen"
-    assert _queue_rows(conn, event_id) == [], "a delivered card is no longer owed"
-    deliveries = [
-        dict(row)
-        for row in conn.execute(
-            "SELECT kind, state, error_code FROM news_deliveries WHERE event_id = %s", (event_id,)
-        ).fetchall()
-    ]
-    assert deliveries == [{"kind": "first", "state": "sent", "error_code": None}]
-
-
-def test_two_delivery_loops_claim_disjoint_intents_and_the_reader_gets_one_card(conn) -> None:
-    """Two claimers over one due intent: `SKIP LOCKED` gives it to one of them and no card is doubled.
-
-    The old lane rented this from RabbitMQ's `x-single-active-consumer`. It is now the claim's own
-    property, and `news_deliveries`'s `ON CONFLICT (event_id, kind)` is still the authority underneath
-    it: even a claimer that somehow held the same row could not write a second ledger row (#598 D2).
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    sender = _RecordingSender()
-    event_id = _pushable_event(conn, db, bus)
-    repos = repositories_for_connection(conn)
-    stamp = now_ms()
-
-    # A second connection is what makes this a race rather than two calls in one session.
-    other = connect_postgres_test(read_only=False)
-    try:
-        first = repos.news.claim_due_deliveries(
-            now_ms=stamp,
-            next_attempt_at_ms=stamp + DELIVERY_RETRY_DELAY_MS,
-            attempts_max=DELIVERY_ATTEMPTS_MAX,
-            limit=5,
-        )
-        with other.transaction():
-            second = repositories_for_connection(other).news.claim_due_deliveries(
-                now_ms=stamp,
-                next_attempt_at_ms=stamp + DELIVERY_RETRY_DELAY_MS,
-                attempts_max=DELIVERY_ATTEMPTS_MAX,
-                limit=5,
-            )
-        conn.commit()
-    finally:
-        other.close()
-
-    assert [row["event_id"] for row in first] == [event_id]
-    assert second == [], "the row the first claimer holds is skipped, never waited on"
-
-    deliverer = DelivererLoop(
-        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
-    )
-    asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
-    asyncio.run(deliverer.deliver(event_id=event_id, kind="first"))
-    conn.commit()
-
-    assert len(sender.sent) == 1
-    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 1
-
-
-def test_a_crash_between_the_claim_and_the_ledger_row_leaves_the_card_claimable(conn) -> None:
-    """A claimed intent nobody finished comes back when its lease expires, and gives up after three.
-
-    The broker used to redeliver an unacked message and dead-letter it once `delivery-limit` was
-    spent. Those are the same two numbers here -- three attempts, 30 s apart -- and they are now due
-    times and an attempt count in PostgreSQL, so the process that died is not part of the mechanism.
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    event_id = _pushable_event(conn, db, bus)
-    repos = repositories_for_connection(conn)
-    stamp = now_ms()
-
-    feed_kwargs = dict(
-        event_family=None,
-        change_state=None,
-        assertion_status=None,
-        source_authority=None,
-        subject_code=None,
-        final_decision=None,
-        event_kind=None,
-        admission=None,
-        search=None,
-        limit=100,
-        cursor=None,
-        now_ms=stamp + 3 * DELIVERY_RETRY_DELAY_MS,
-    )
-    # Only the first-card queue row describes the Event's reader outcome. A historical followup
-    # intent must neither duplicate the Event in a feed join nor overrule its pending first card.
-    repos.news.enqueue_delivery(event_id=event_id, kind="followup", now_ms=stamp)
-    repos.news.abandon_delivery_claim(event_id=event_id, kind="followup", error_code="old_followup", now_ms=stamp)
-    conn.commit()
-    pending = repos.news.list_feed(**feed_kwargs)
-    assert pending["counts"] == {"total": 1, "pushed": 0, "held": 0, "pending": 1}
-    assert pending["events"][0]["outcome"]["kind"] == "pending_delivery"
-
-    def _claim(at_ms: int) -> list[dict[str, Any]]:
-        claimed = repos.news.claim_due_deliveries(
-            now_ms=at_ms,
-            next_attempt_at_ms=at_ms + DELIVERY_RETRY_DELAY_MS,
-            attempts_max=DELIVERY_ATTEMPTS_MAX,
-            limit=5,
-        )
-        conn.commit()
-        return claimed
-
-    # First attempt: claimed, then the process dies before `begin_delivery`. No ledger row exists.
-    assert [row["attempts"] for row in _claim(stamp)] == [1]
-    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 0
-
-    assert _claim(stamp + DELIVERY_RETRY_DELAY_MS - 1) == [], "the lease is the wait, and it has not run out"
-
-    # Second and third attempts arrive when the lease does, and the third is the last.
-    assert [row["attempts"] for row in _claim(stamp + DELIVERY_RETRY_DELAY_MS)] == [2]
-    assert [row["attempts"] for row in _claim(stamp + 2 * DELIVERY_RETRY_DELAY_MS)] == [DELIVERY_ATTEMPTS_MAX]
-
-    # A fourth is not granted: the intent becomes this lane's dead letter, kept where it can be read.
-    assert _claim(stamp + 3 * DELIVERY_RETRY_DELAY_MS) == []
-    assert [row for row in _queue_rows(conn, event_id) if row["kind"] == "first"] == [
-        {
-            "kind": "first",
-            "state": "dead",
-            "attempts": DELIVERY_ATTEMPTS_MAX,
-            "error_code": "news_delivery_attempts_exhausted",
-        }
-    ]
-    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 0
-
-    # A dead intent that never reached begin_delivery is still a terminal outcome. The reader and
-    # operator projections must not keep calling it pending just because no send ledger row exists.
-    projected_at = stamp + 3 * DELIVERY_RETRY_DELAY_MS
-    page = repos.news.list_feed(**feed_kwargs)
-    assert page["counts"] == {"total": 1, "pushed": 0, "held": 1, "pending": 0}
-    assert page["events"][0]["outcome"]["kind"] == "delivery_failed"
-    assert page["events"][0]["delivery"] is None, "an exhausted intent is not a fabricated send receipt"
-    assert repos.news.list_feed(outcome="pending", **feed_kwargs)["events"] == []
-    assert [row["event_id"] for row in repos.news.list_feed(outcome="held", **feed_kwargs)["events"]] == [event_id]
-    detail = repos.news.event_detail(event_id)
-    assert detail["outcome"]["kind"] == "delivery_failed"
-    assert detail["deliveries"] == []
-    status = repos.news.status_snapshot(now_ms=projected_at)["delivery"]
-    assert status["terminal_24h"] == 2, "status counts both failed cards; the Event feed describes its first card"
-    assert status["last_error_code"] == "news_delivery_attempts_exhausted"
-
-    # A late successful settlement is authoritative even when the exhausted claim still exists.
-    sender = _RecordingSender()
-    deliverer = DelivererLoop(
-        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
-    )
-    asyncio.run(deliverer.deliver(event_id=event_id))
-    conn.commit()
-    delivered = repos.news.list_feed(**feed_kwargs)
-    assert delivered["counts"] == {"total": 1, "pushed": 1, "held": 0, "pending": 0}
-    assert delivered["events"][0]["outcome"]["kind"] == "delivered"
-    assert repos.news.event_detail(event_id)["outcome"]["kind"] == "delivered"
-    status = repos.news.status_snapshot(now_ms=projected_at)["delivery"]
-    assert (status["sent_24h"], status["terminal_24h"], status["last_error_code"]) == (1, 1, "old_followup")
-
-
-def test_a_deferred_delivery_keeps_its_intent_and_gives_up_with_the_reason_recorded(conn) -> None:
-    """A News lane that cannot admit the read spends an attempt, records why, and retries on the lease."""
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    sender = _RecordingSender()
-    event_id = _pushable_event(conn, db, bus)
-    deliverer = DelivererLoop(
-        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
-    )
-
-    db.fail_operations = {"news_delivery_begin"}
-    for _ in range(DELIVERY_ATTEMPTS_MAX):
-        asyncio.run(deliverer.advance())
-        conn.commit()
-        # Each turn claims at most one attempt: the lease holds the row until it is due again.
-        conn.execute("UPDATE news_delivery_queue SET next_attempt_at_ms = 0 WHERE state = 'pending'")
-        conn.commit()
-
-    assert sender.sent == []
-    assert _queue_rows(conn, event_id) == [
-        {
-            "kind": "first",
-            "state": "dead",
-            "attempts": DELIVERY_ATTEMPTS_MAX,
-            "error_code": "news_delivery_deferred:TransientError",
-        }
-    ]
-
-    db.fail_operations = set()
-    asyncio.run(deliverer.advance())
-    conn.commit()
-    assert sender.sent == [], "a dead intent is never claimed again"
-
-
-class _ClassifiedFailureSender:
-    """A provider that fails the way a real adapter fails: saying what its failure proved.
-
-    `commit_phase` and `retryable` are the two attributes `FeishuDeliveryError` and
-    `TelegramDeliveryError` already carry, and they are the entire input to the Deliverer's decision.
-    Nothing else about this double matters -- the seam under test is the PostgreSQL queue state
-    machine, not an HTTP client, so the provider is in memory and the rows are real.
-    """
-
-    def __init__(self, *, code: str, commit_phase: str, retryable: bool) -> None:
-        self.sent: list[dict[str, Any]] = []
-        self.attempts = 0
-        self.recovered = False
-        self._code = code
-        self._commit_phase = commit_phase
-        self._retryable = retryable
-
-    def prepare(self) -> None:
-        return None
-
-    def send_card(self, card: Any, *, channel_payload: Mapping[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        del card
-        self.attempts += 1
-        if self.recovered:
-            self.sent.append(dict(channel_payload))
-            return {"provider": "test", "message_id": len(self.sent), "pushed_at_ms": now_ms()}
-        error = RuntimeError(self._code)
-        error.code = self._code
-        error.commit_phase = self._commit_phase
-        error.retryable = self._retryable
-        raise error
-
-    def close(self) -> None:
-        return None
-
-
-def _make_due(conn: Any) -> None:
-    """Bring the lease forward. Real time is the only thing this test is not willing to spend."""
-
-    conn.execute("UPDATE news_delivery_queue SET next_attempt_at_ms = 0 WHERE state = 'pending'")
-    conn.commit()
-
-
-def test_a_rate_limited_card_keeps_its_intent_and_reaches_the_reader_when_the_provider_recovers(conn) -> None:
-    """#604 N1. A failure the adapter proved never left costs the intent one attempt, not the card.
-
-    Live evidence for the shape of this: two Feishu cards were lost in six days, one to
-    `news_delivery_feishu_business_rate_limited` and one to `news_delivery_feishu_http_failed`. Both
-    were settled `terminal` on the spot and their queue rows deleted behind them, so the three
-    attempts `news_delivery_queue` exists to spend were never spent on the failure it was built for.
-
-    What the row must show between the two attempts is the whole fix: `pending`, one attempt gone,
-    due again a delay later, and *no* `news_deliveries` row at all -- the `sending` row this attempt
-    wrote is given back, because the retry has to be able to own that identity again.
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    sender = _ClassifiedFailureSender(
-        code="news_delivery_feishu_business_rate_limited", commit_phase="not_sent", retryable=True
-    )
-    event_id = _pushable_event(conn, db, bus)
-    deliverer = DelivererLoop(
-        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
-    )
-    stamp = now_ms()
-
-    asyncio.run(deliverer.advance())
-    conn.commit()
-
-    assert sender.attempts == 1 and sender.sent == []
-    assert _queue_rows(conn, event_id) == [
-        {
-            "kind": "first",
-            "state": "pending",
-            "attempts": 1,
-            "error_code": "news_delivery_feishu_business_rate_limited",
-        }
-    ]
-    due_at = conn.execute(
-        "SELECT next_attempt_at_ms FROM news_delivery_queue WHERE event_id = %s AND kind = 'first'",
-        (event_id,),
-    ).fetchone()["next_attempt_at_ms"]
-    assert due_at >= stamp + DELIVERY_RETRY_DELAY_MS, "the claim's lease is the retry's wait"
-    assert _count(conn, "SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,)) == 0
-
-    # The lease is the only thing between the reader and the card, and nothing else was needed.
-    sender.recovered = True
-    _make_due(conn)
-    asyncio.run(deliverer.advance())
-    conn.commit()
-
-    assert len(sender.sent) == 1, "the card the old code lost"
-    assert _queue_rows(conn, event_id) == []
-    deliveries = [
-        dict(row)
-        for row in conn.execute(
-            "SELECT kind, state, error_code FROM news_deliveries WHERE event_id = %s", (event_id,)
-        ).fetchall()
-    ]
-    assert deliveries == [{"kind": "first", "state": "sent", "error_code": None}]
-
-
-def test_a_provider_that_stays_broken_spends_three_attempts_and_leaves_both_rows_readable(conn) -> None:
-    """#604 N1. The budget ends the card, and the two rows say different halves of why.
-
-    `news_deliveries` is the reader-facing ledger and takes the provider's last word. The intent
-    becomes this lane's dead letter under the same code an attempt no process finished earns, which
-    is what an operator greps for when a channel has been refusing everything.
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    sender = _ClassifiedFailureSender(code="news_delivery_feishu_http_failed", commit_phase="not_sent", retryable=True)
-    event_id = _pushable_event(conn, db, bus)
-    deliverer = DelivererLoop(
-        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
-    )
-
-    for _ in range(DELIVERY_ATTEMPTS_MAX):
-        asyncio.run(deliverer.advance())
-        conn.commit()
-        _make_due(conn)
-
-    assert sender.attempts == DELIVERY_ATTEMPTS_MAX and sender.sent == []
-    assert _queue_rows(conn, event_id) == [
-        {
-            "kind": "first",
-            "state": "dead",
-            "attempts": DELIVERY_ATTEMPTS_MAX,
-            "error_code": "news_delivery_attempts_exhausted",
-        }
-    ]
-    delivery = repositories_for_connection(conn).news.delivery(event_id=event_id, kind="first")
-    assert delivery is not None
-    assert (delivery["state"], delivery["error_code"]) == ("terminal", "news_delivery_feishu_http_failed")
-    status = repositories_for_connection(conn).news.status_snapshot(now_ms=now_ms())["delivery"]
-    assert status["terminal_24h"] == 1, "the dead intent and terminal ledger are one failed card"
-    assert status["last_error_code"] == "news_delivery_feishu_http_failed"
-
-    asyncio.run(deliverer.advance())
-    conn.commit()
-    assert sender.attempts == DELIVERY_ATTEMPTS_MAX, "a dead intent is never claimed again"
-
-
-def test_a_send_whose_outcome_the_provider_never_reported_is_terminal_after_one_attempt(conn) -> None:
-    """#604 N1. A read timeout may already be on a reader's screen, so the budget is not for it.
-
-    This is the line the retry must not cross, and it is the reason the classification is the
-    adapter's own evidence rather than "did it raise": one more attempt here would put a second card
-    in front of a reader who already has the first.
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    sender = _ClassifiedFailureSender(
-        code="news_delivery_feishu_transport_unreadable", commit_phase="unknown", retryable=True
-    )
-    event_id = _pushable_event(conn, db, bus)
-    deliverer = DelivererLoop(
-        db=db, sender=sender, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0
-    )
-
-    asyncio.run(deliverer.advance())
-    conn.commit()
-    _make_due(conn)
-    asyncio.run(deliverer.advance())
-    conn.commit()
-
-    assert sender.attempts == 1, "the intent was finished on its first attempt, not retried"
-    assert _queue_rows(conn, event_id) == [], "a settled delivery is no longer owed"
-    delivery = repositories_for_connection(conn).news.delivery(event_id=event_id, kind="first")
-    assert delivery is not None
-    assert (delivery["state"], delivery["error_code"]) == ("terminal", "news_delivery_feishu_transport_unreadable")
-
-
-def _queue_rows(conn: Any, event_id: str) -> list[dict[str, Any]]:
-    return [
-        dict(row)
-        for row in conn.execute(
-            "SELECT kind, state, attempts, error_code FROM news_delivery_queue WHERE event_id = %s ORDER BY kind",
-            (event_id,),
-        ).fetchall()
-    ]
-
-
-def test_a_providers_retry_after_moves_a_deferred_claim_later_and_never_sooner(conn) -> None:
-    """#604 N3: `retry_after` is advice this lane may take, and `GREATEST` is why it can only add.
-
-    The claim leases the row until one retry delay from now, and that lease is this lane's wait. A
-    provider that answered a rate limit with a number of its own -- Telegram's `parameters.retry_after`
-    or Feishu's `Retry-After` -- is obeyed when it asks for longer, because returning at 30 s against a
-    two-minute limit earns another refusal and spends an attempt on nothing. Every other deferral
-    passes the current stamp, and the row keeps exactly the due time the claim gave it.
-    """
-
-    bus = RecordingBus()
-    db = FaultInjectingDatabase(conn)
-    event_id = _pushable_event(conn, db, bus)
-    repos = repositories_for_connection(conn)
-    stamp = now_ms()
-
-    def _due_at() -> int:
-        row = conn.execute(
-            "SELECT next_attempt_at_ms FROM news_delivery_queue WHERE event_id = %s AND kind = 'first'",
-            (event_id,),
-        ).fetchone()
-        return int(dict(row)["next_attempt_at_ms"])
-
-    repos.news.claim_due_deliveries(
-        now_ms=stamp,
-        next_attempt_at_ms=stamp + DELIVERY_RETRY_DELAY_MS,
-        attempts_max=DELIVERY_ATTEMPTS_MAX,
-        limit=1,
-    )
-    conn.commit()
-    lease = _due_at()
-    assert lease == stamp + DELIVERY_RETRY_DELAY_MS
-
-    # A deferral that asks for nothing -- every failure but a rate limit -- leaves the lease standing.
-    repos.news.defer_delivery_claim(
-        event_id=event_id,
-        kind="first",
-        error_code="news_delivery_deferred:TransientError",
-        next_attempt_at_ms=stamp,
-        now_ms=stamp,
-    )
-    conn.commit()
-    assert _due_at() == lease, "a lane's own wait is never shortened by a deferral"
-
-    # A provider that named a longer wait moves the row, and the claim honours it: not due at the
-    # lease, due at the number the provider asked for.
-    repos.news.defer_delivery_claim(
-        event_id=event_id,
-        kind="first",
-        error_code="news_delivery_feishu_business_rate_limited",
-        next_attempt_at_ms=stamp + 120_000,
-        now_ms=stamp,
-    )
-    conn.commit()
-    assert _due_at() == stamp + 120_000
-    assert (
-        repos.news.claim_due_deliveries(
-            now_ms=lease,
-            next_attempt_at_ms=lease + DELIVERY_RETRY_DELAY_MS,
-            attempts_max=DELIVERY_ATTEMPTS_MAX,
-            limit=1,
-        )
-        == []
-    ), "the row is not due while the provider's wait is still running"
-    conn.commit()
-    assert [
-        row["attempts"]
-        for row in repos.news.claim_due_deliveries(
-            now_ms=stamp + 120_000,
-            next_attempt_at_ms=stamp + 120_000 + DELIVERY_RETRY_DELAY_MS,
-            attempts_max=DELIVERY_ATTEMPTS_MAX,
-            limit=1,
-        )
-    ] == [2]
-    conn.commit()
+    assert len(_events(conn)) == 1

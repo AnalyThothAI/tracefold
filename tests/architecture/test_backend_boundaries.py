@@ -167,10 +167,13 @@ def test_retired_taxonomy_lifecycle_has_no_module_or_runtime_wiring() -> None:
         else:  # pragma: no cover - the assertion describes the retired public import surface
             raise AssertionError(f"retired taxonomy module remains importable: {module}")
 
-    from tracefold.app.learning_runtime import NewsProgramRuntimeComposition
+    from tracefold.app.cli.commands.news_learning_composition import NewsProgramRuntimeComposition
+    from tracefold.app.learning_runtime import NewsRuntimeModels
     from tracefold.news.storage.learning import LearningStorage
 
     assert not hasattr(NewsProgramRuntimeComposition, "taxonomy_shadow_program")
+    # The runtime model composition has no taxonomy or progression slot of any kind (#706).
+    assert not [name for name in NewsRuntimeModels.__dataclass_fields__ if "taxonomy" in name or "progression" in name]
     for retired_storage_read in (
         "taxonomy_candidate_registration",
         "taxonomy_active_deployment",

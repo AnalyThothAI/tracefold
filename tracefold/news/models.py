@@ -60,6 +60,9 @@ Admission = Literal[
 # the Gate and the queue (#72: 19 events, 0 verdicts, 0 deliveries since launch). One constant, so it cannot
 # drift again.
 ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset({"candidate", "listing_deterministic"})
+# The withhold key a legacy verdict recorded for a stale source artifact; the outcome projection
+# renders it for those rows.
+STALE_SOURCE_KEY: Final = "artifact:stale"
 # How long the Janitor keeps trying to rescue an Event that was created but never reached the Triage queue
 # (commit-then-crash, or a publish failure). Measured event -> delivery latency is p50 4.2 s / p95 16.8 s, so this
 # is ~100x the p95: it can only fire on a genuinely stranded Event, never on a slow one. Past it the Event is not

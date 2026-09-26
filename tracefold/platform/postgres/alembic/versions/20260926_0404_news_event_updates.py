@@ -11,7 +11,8 @@ Migration evidence:
   `tracefold.news.updates.identity.identity("legacy_intent", event_id, kind)`.
 - current_source_revision: 20260926_0403
 - minimum_supported_source_revision: 20260926_0403
-- lock_level_and_order: ACCESS EXCLUSIVE on news_delivery_queue, then news_deliveries (column adds,
+- lock_level_and_order: ACCESS EXCLUSIVE on news_items (two marker column drops, metadata only), then
+  news_delivery_queue, then news_deliveries (column adds,
   backfill, primary key swap, checks), then news_trade_events (CHECK swap) and the review view;
   SHARE ROW EXCLUSIVE on news_events/news_items for the new foreign keys.
 - statement_timeout: 300s set locally; lock_timeout: 5s set locally.
@@ -25,7 +26,8 @@ Migration evidence:
   writes `(event_id, kind)` conflicts that no longer exist and must not run against this schema.
 - archive_current_compatibility: every existing delivery keeps state, card, receipt and history;
   nothing is re-sent. `news_verdicts` receives no new writes and is not changed. The
-  `news_items.provider_params_conflict_*` columns are retained by this revision.
+  `news_items.provider_params_conflict_*` marker columns are dropped: they recorded that a provider
+  record changed without keeping the changed body, and `news_item_revisions` now keeps the body.
 - role_and_grant_impact: none; the single `tracefold` login owns the new objects.
 - failure_state: transactional DDL rolls back completely.
 - roll_forward_or_verified_backup_restore: forward-only; restore the verified pre-0404 backup and
@@ -55,6 +57,7 @@ def upgrade() -> None:
     op.execute("SET LOCAL statement_timeout = '300s'")
     _identity_functions()
     _item_revisions()
+    _evidence_snapshot_revisions()
     _semantic_tables()
     _event_update_tables()
     _notification_work()
@@ -110,6 +113,106 @@ def _item_revisions() -> None:
                 AND received_at_ms >= 0)
         )
         """
+    )
+
+
+def _evidence_snapshot_revisions() -> None:
+    """An evidence snapshot names the later body revisions of each member it freezes.
+
+    The member key is optional: a snapshot of Items with no later revision keeps its exact bytes and
+    digest, so no existing Event observes a new evidence version merely because the rule changed.
+    CREATE OR REPLACE only relaxes the member check; stored rows remain valid and are not re-checked.
+    """
+
+    op.execute(
+        """
+        ALTER TABLE public.news_items
+            DROP COLUMN provider_params_conflict_sha256,
+            DROP COLUMN provider_params_conflict_at_ms
+        """
+    )
+    op.execute(
+        f"""
+        CREATE OR REPLACE FUNCTION public.news_current_evidence_snapshot_valid(
+            value jsonb, expected_event_id text, expected_focus_fact_id text
+        ) RETURNS boolean
+            LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+            AS $$
+          SELECT news_jsonb_exact_keys(value, ARRAY[
+                   'schema_version','event_id','focus_fact','card','members','provenance'
+                 ])
+             AND value ->> 'schema_version' = 'news_event_evidence_v3'
+             AND value ->> 'event_id' = expected_event_id
+             AND value ->> 'provenance' = 'observed'
+             AND news_jsonb_exact_keys(value -> 'focus_fact', ARRAY[
+                   'fact_id','text','context','method','span_start','span_end'
+                 ])
+             AND value #>> '{{focus_fact,fact_id}}' = expected_focus_fact_id
+             AND jsonb_typeof(value #> '{{focus_fact,text}}') = 'string'
+             AND value #>> '{{focus_fact,text}}' <> ''
+             AND jsonb_typeof(value #> '{{focus_fact,context}}') = 'string'
+             AND value #>> '{{focus_fact,method}}' IN ('whole_item','explicit_numbered')
+             AND news_jsonb_int64_valid(value #> '{{focus_fact,span_start}}')
+             AND news_jsonb_int64_valid(value #> '{{focus_fact,span_end}}')
+             AND (value #>> '{{focus_fact,span_start}}')::numeric >= 0
+             AND (value #>> '{{focus_fact,span_end}}')::numeric >=
+                   (value #>> '{{focus_fact,span_start}}')::numeric
+             AND news_jsonb_required_optional_keys(value -> 'card', ARRAY[
+                   'event_id','leader_item_id','dedupe_family','event_kind','source_contract_reason',
+                   'comparison_fingerprint','comparison_title','opened_at_ms','last_member_at_ms',
+                   'expires_at_ms','member_count','admission','queue_priority','provider_score_max',
+                   'engine_type','asset_class','grounded_assets','watchlist_hits','macro_lexicon',
+                   'storyline_key','ingest_mode','trace_id','leader_url','reporting_origin',
+                   'provider_metadata','provenance','leader_published_at_ms','raw_first_line',
+                   'leader_title','leader_description','focus_fact_id'
+                 ], ARRAY['source_age_s'])
+             AND value #>> '{{card,event_id}}' = expected_event_id
+             AND value #>> '{{card,focus_fact_id}}' = expected_focus_fact_id
+             AND value #>> '{{card,dedupe_family}}' IN ('market_telemetry','filing','disaster','general')
+             AND value #>> '{{card,event_kind}}' IN ('news','listing','oi','liquidation','unsupported_market')
+             AND jsonb_typeof(value #> '{{card,leader_item_id}}') = 'string'
+             AND value #>> '{{card,leader_item_id}}' <> ''
+             AND jsonb_typeof(value #> '{{card,leader_title}}') = 'string'
+             AND value #>> '{{card,leader_title}}' <> ''
+             AND jsonb_typeof(value #> '{{card,leader_description}}') = 'string'
+             AND jsonb_typeof(value #> '{{card,grounded_assets}}') = 'array'
+             AND jsonb_typeof(value #> '{{card,watchlist_hits}}') = 'array'
+             AND jsonb_typeof(value #> '{{card,provider_metadata}}') = 'object'
+             AND jsonb_typeof(value #> '{{card,provenance}}') = 'array'
+             AND jsonb_typeof(value -> 'members') = 'array'
+             AND NOT EXISTS (
+                   SELECT 1 FROM jsonb_array_elements(value -> 'members') member
+                    WHERE NOT (
+                      news_jsonb_required_optional_keys(member, ARRAY[
+                        'item_id','fact_id','fact_text','joined_at_ms','match_kind','jaccard_estimate',
+                        'reporting_origin','canonical_url','provider_metadata','provenance'
+                      ], ARRAY['body_revisions'])
+                      AND jsonb_typeof(member -> 'item_id') = 'string' AND member ->> 'item_id' <> ''
+                      AND jsonb_typeof(member -> 'fact_id') = 'string' AND member ->> 'fact_id' <> ''
+                      AND jsonb_typeof(member -> 'fact_text') = 'string'
+                      AND news_jsonb_int64_valid(member -> 'joined_at_ms')
+                      AND member ->> 'match_kind' IN ('leader','exact','near')
+                      AND (jsonb_typeof(member -> 'jaccard_estimate') = 'null' OR (
+                            jsonb_typeof(member -> 'jaccard_estimate') = 'number'
+                            AND (member ->> 'jaccard_estimate')::numeric BETWEEN 0 AND 1
+                          ))
+                      AND jsonb_typeof(member -> 'reporting_origin') = 'string'
+                      AND jsonb_typeof(member -> 'canonical_url') IN ('string','null')
+                      AND jsonb_typeof(member -> 'provider_metadata') = 'object'
+                      AND jsonb_typeof(member -> 'provenance') = 'array'
+                      AND (NOT member ? 'body_revisions' OR (
+                            jsonb_typeof(member -> 'body_revisions') = 'array'
+                            AND jsonb_array_length(member -> 'body_revisions') > 0
+                            AND NOT EXISTS (
+                                  SELECT 1 FROM jsonb_array_elements(member -> 'body_revisions') revision
+                                   WHERE jsonb_typeof(revision) <> 'string'
+                                      OR NOT (revision #>> '{{}}') ~ {_HEX64}
+                                )
+                          ))
+                    )
+                 )
+        $$
+        """  # noqa: S608 - the only interpolation is the code-owned hex pattern
     )
 
 
@@ -212,6 +315,14 @@ def _semantic_tables() -> None:
         """
     )
     op.execute("CREATE INDEX ix_news_semantic_observations_work ON public.news_semantic_observations (work_id)")
+    # Status reads the last 24 h of completed turns and of visibly failed work.
+    op.execute(
+        "CREATE INDEX ix_news_semantic_observations_completed ON public.news_semantic_observations (completed_at_ms)"
+    )
+    op.execute(
+        "CREATE INDEX ix_news_semantic_work_failed ON public.news_semantic_work (updated_at_ms)"
+        " WHERE last_outcome = 'failed'"
+    )
     op.execute(
         "CREATE INDEX ix_news_semantic_observations_event "
         "ON public.news_semantic_observations (event_id, input_revision)"
@@ -269,6 +380,7 @@ def _event_update_tables() -> None:
         """
     )
     op.execute("CREATE INDEX ix_news_event_updates_observation ON public.news_event_updates (observation_result_id)")
+    op.execute("CREATE INDEX ix_news_event_updates_adopted ON public.news_event_updates (adopted_at_ms)")
     op.execute(
         """
         CREATE TABLE public.news_event_update_heads (

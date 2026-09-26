@@ -215,7 +215,7 @@ def _learning_program_arm_artifacts(
 
 
 def _configured_program_judge(settings: Any, artifact: Any) -> Any:
-    from tracefold.app.learning_runtime import compose_news_program_runtime
+    from tracefold.app.cli.commands.news_learning_composition import compose_news_program_runtime
 
     program = compose_news_program_runtime(settings).semantic_judge(artifact)
     if program is None:

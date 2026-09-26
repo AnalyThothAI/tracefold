@@ -28,6 +28,7 @@ from .models import (
     FACT_KINDS,
     MATERIAL_FACT_KINDS,
     PUSH_FACT_KINDS,
+    STALE_SOURCE_KEY,
     Decision,
     FactKind,
     TriageVerdict,
@@ -35,9 +36,6 @@ from .models import (
 )
 from .program.contracts import JUDGMENT_CONTRACT_VERSION, ScoredJudgment
 from .similarity import max_similarity
-
-# One owner for the withhold key: `outcome` renders it, `repository` counts it.
-STALE_SOURCE_KEY: Final = "artifact:stale"
 
 _DIRECTIONAL = frozenset({"bullish", "bearish"})
 

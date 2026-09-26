@@ -1925,6 +1925,20 @@ export interface components {
              */
             candidates_24h: number;
             /**
+             * Card Dedicated
+             * @default false
+             */
+            card_dedicated: boolean;
+            /**
+             * Card Fallback Dedicated
+             * @default false
+             */
+            card_fallback_dedicated: boolean;
+            /** Card Fallback Model */
+            card_fallback_model?: string | null;
+            /** Card Model */
+            card_model?: string | null;
+            /**
              * Decided Push 24H
              * @default 0
              */
@@ -1944,6 +1958,10 @@ export interface components {
              * @default 0
              */
             events_24h: number;
+            /** Extraction Fallback Model */
+            extraction_fallback_model?: string | null;
+            /** Extraction Model */
+            extraction_model?: string | null;
             /**
              * Funnel Admitted 24H
              * @default 0
@@ -1969,6 +1987,10 @@ export interface components {
              * @default 0
              */
             grounded_24h: number;
+            /** Judgment Backend */
+            judgment_backend?: ("native" | "generated") | null;
+            /** Judgment Model */
+            judgment_model?: string | null;
             keep_ratio_sent_24h?: components["schemas"]["NewsReviewRatio24hData"];
             missed_ratio_dropped_24h?: components["schemas"]["NewsReviewRatio24hData"];
             /**
@@ -1976,26 +1998,19 @@ export interface components {
              * @default 0
              */
             model_triage_24h: number;
+            /**
+             * News Judgment Configured
+             * @default false
+             */
+            news_judgment_configured: boolean;
+            /** News Program Identity */
+            news_program_identity?: string | null;
             /** Pushed By Rule */
             pushed_by_rule?: {
                 [key: string]: number;
             };
             /** Queue Lag P95 Ms */
             queue_lag_p95_ms?: number | null;
-            /**
-             * Reader Card Dedicated
-             * @default false
-             */
-            reader_card_dedicated: boolean;
-            /**
-             * Reader Card Fallback Dedicated
-             * @default false
-             */
-            reader_card_fallback_dedicated: boolean;
-            /** Reader Card Fallback Model */
-            reader_card_fallback_model?: string | null;
-            /** Reader Card Model */
-            reader_card_model?: string | null;
             /**
              * Reasked 24H
              * @default 0
@@ -2011,6 +2026,30 @@ export interface components {
              * @default 0
              */
             reviewed_should_push_24h: number;
+            /**
+             * Semantic Adopted 24H
+             * @default 0
+             */
+            semantic_adopted_24h: number;
+            /**
+             * Semantic Failed 24H
+             * @default 0
+             */
+            semantic_failed_24h: number;
+            /** Semantic Failed By Code 24H */
+            semantic_failed_by_code_24h?: {
+                [key: string]: number;
+            };
+            /**
+             * Semantic Observations 24H
+             * @default 0
+             */
+            semantic_observations_24h: number;
+            /**
+             * Semantic Pending
+             * @default 0
+             */
+            semantic_pending: number;
             /**
              * Source Classifier Version
              * @default
@@ -2049,10 +2088,6 @@ export interface components {
             triage_degraded_by_code_24h?: {
                 [key: string]: number;
             };
-            /** Triage Fallback Model */
-            triage_fallback_model?: string | null;
-            /** Triage Model */
-            triage_model?: string | null;
             /** Triage P50 Ms */
             triage_p50_ms?: number | null;
             /** Triage P95 Ms */

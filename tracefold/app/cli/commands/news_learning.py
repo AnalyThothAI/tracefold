@@ -38,7 +38,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
 
     settings = load_settings(require_ws_token=False)
     action = str(getattr(args, "learning_command", "") or getattr(args, "release_command", ""))
-    from tracefold.app.learning_runtime import active_arm_manifest
+    from tracefold.app.cli.commands.news_learning_composition import active_arm_manifest
 
     try:
         if action == "canary":

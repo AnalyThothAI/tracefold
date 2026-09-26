@@ -471,6 +471,9 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "throttled_by_key": {"storyline:asset:BTC:seen": 12},
             "pushed_by_rule": {"trade_relevance_realtime": 18, "trade_relevance_escalate": 2},
             "triage_degraded_by_code_24h": {"news_program_route_deadline": 3},
+            "semantic_observations_24h": 147,
+            "semantic_failed_24h": 3,
+            "semantic_failed_by_code_24h": {"news_provider_unavailable:TimeoutError": 3},
             "tagged_24h": 150,
             "grounded_24h": 144,
             "ungrounded_by_symbol_24h": {"SPOT": 38, "NEAR": 9},
@@ -678,7 +681,7 @@ def test_status_health_does_not_fall_back_to_throughput_counts() -> None:
     }
     out = status_health(**inputs)  # type: ignore[arg-type]
 
-    assert out["health"]["model"]["summary_zh"] == "24 小时内没有送审事件"
+    assert out["health"]["model"]["summary_zh"] == "24 小时内没有语义处理"
     assert {stage: out["funnel_24h"][stage] for stage in ("received", "admitted", "triaged", "delivered")} == {
         "received": 0,
         "admitted": 0,
@@ -688,11 +691,15 @@ def test_status_health_does_not_fall_back_to_throughput_counts() -> None:
 
 
 def test_status_health_thresholds_turn_amber_and_red() -> None:
-    degraded = status_health(**_status_inputs(pipeline={**_status_inputs()["pipeline"], "triage_degraded_24h": 30}))  # type: ignore[arg-type]
+    degraded = status_health(
+        **_status_inputs(
+            pipeline={**_status_inputs()["pipeline"], "semantic_observations_24h": 120, "semantic_failed_24h": 30}
+        )
+    )  # type: ignore[arg-type]
     assert degraded["health"]["model"]["level"] == "bad" and "20%" in degraded["health"]["model"]["summary_zh"]
     assert degraded["health"]["overall"] == "bad"
 
-    amber = status_health(**_status_inputs(pipeline={**_status_inputs()["pipeline"], "triage_degraded_24h": 8}))  # type: ignore[arg-type]
+    amber = status_health(**_status_inputs(pipeline={**_status_inputs()["pipeline"], "semantic_failed_24h": 8}))  # type: ignore[arg-type]
     assert amber["health"]["model"]["level"] == "warn"
 
     stale = status_health(**_status_inputs(ingest={"connected": True, "last_frame_at_ms": NOW - 40 * 60_000}))  # type: ignore[arg-type]

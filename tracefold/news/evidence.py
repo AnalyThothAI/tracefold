@@ -521,9 +521,6 @@ def assemble_evidence(
         current.extend([s.model_copy(update={"ref_id": f"c{len(current) + i + 1}"}) for i, s in enumerate(spans)])
         if not spans and index:
             missing.add("member_duplicate_or_budget_omitted")
-        conflict_at = row.get("provider_params_conflict_at_ms")
-        if conflict_at is not None and int(conflict_at) <= query.cutoff_at_ms:
-            missing.add("provider_payload_conflict")
     related: list[EvidenceSpan] = []
     origins: set[tuple[str, str]] = set()
     excluded = list(exclusions)

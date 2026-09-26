@@ -13,8 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from .events.storyline import NO_STORYLINE_KEY, storyline_entry
-from .models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
-from .triage_rules import STALE_SOURCE_KEY
+from .models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS, STALE_SOURCE_KEY
 
 OUTCOME_VERSION: Final = "news_outcome_v1"
 

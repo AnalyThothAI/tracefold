@@ -20,6 +20,7 @@ from ..bus import (
     DeferError,
     PermanentError,
     TransientError,
+    new_trace_id,
     now_ms,
 )
 from ..events.facts import FactUnit, extract_fact_units
@@ -33,6 +34,7 @@ from ..evidence import normalized_provider_text, text_sha
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
 from ..source_contracts import (
+    EVENT_KINDS,
     MARKET_PROVIDER,
     UNKNOWN_MARKET_SOURCE,
     EventKind,
@@ -46,6 +48,7 @@ from ..source_contracts import (
 )
 from ..storage.events import prepare_evidence_snapshot
 from ..telemetry import NewsWorkSemantics
+from ..updates.identity import identity as content_identity
 from ..wallet_contracts import WALLET_PROVIDER, WALLET_SOURCE_ID, WalletEvent
 from .runtime import NewsDatabasePort
 
@@ -81,6 +84,9 @@ class AdmitResult:
     comparison_fingerprint: str
     title: str
     evidence_focus_changed: bool = False
+    # A later, different body of an already stored provider record: new evidence for every Event the
+    # Item belongs to, not only the one this FactUnit was assigned to.
+    body_revised: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -841,6 +847,13 @@ def admit_item(
         evidence_text=prepared.evidence_text,
         evidence_text_sha256=prepared.evidence_text_sha256,
     )
+    body_revised = news.record_item_revision(
+        item_id=item_id,
+        evidence_text=prepared.evidence_text,
+        evidence_text_sha256=prepared.evidence_text_sha256,
+        provider_params_json=prepared.provider_params_json,
+        received_at_ms=int(observed_at_ms),
+    )
     existing_membership = news.fact_membership(
         item_id=item_id,
         fact_id=fact.fact_id,
@@ -861,6 +874,7 @@ def admit_item(
             storyline_key=str(ev["storyline_key"]) if ev else "",
             comparison_fingerprint=fingerprint,
             title=title,
+            body_revised=body_revised,
         )
 
     exact = (
@@ -914,14 +928,10 @@ def admit_item(
             grounded_assets_json=prepared.grounded_assets_json,
             watchlist_hits_json=prepared.watchlist_hits_json,
             now_ms=now_ms,
+            body_revised=body_revised,
         )
         if append_evidence:
-            news.append_evidence_snapshot(
-                event_id=result.event_id,
-                now_ms=now_ms,
-                focus_item_id=item_id if result.evidence_focus_changed else None,
-                focus_fact=fact if result.evidence_focus_changed else None,
-            )
+            _append_inline(repos, result, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
         return result
 
     if shareable:
@@ -968,14 +978,10 @@ def admit_item(
                 grounded_assets_json=prepared.grounded_assets_json,
                 watchlist_hits_json=prepared.watchlist_hits_json,
                 now_ms=now_ms,
+                body_revised=body_revised,
             )
             if append_evidence:
-                news.append_evidence_snapshot(
-                    event_id=result.event_id,
-                    now_ms=now_ms,
-                    focus_item_id=item_id if result.evidence_focus_changed else None,
-                    focus_fact=fact if result.evidence_focus_changed else None,
-                )
+                _append_inline(repos, result, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
             return result
     news.insert_event(
         event_id=event_id,
@@ -1010,9 +1016,7 @@ def admit_item(
         band_keys=keys if shareable else (),
         now_ms=now_ms,
     )
-    if append_evidence:
-        news.append_evidence_snapshot(event_id=event_id, now_ms=now_ms)
-    return AdmitResult(
+    created = AdmitResult(
         item_id=item_id,
         item_inserted=inserted,
         event_id=event_id,
@@ -1025,7 +1029,59 @@ def admit_item(
         storyline_key=storyline,
         comparison_fingerprint=fingerprint,
         title=title,
+        body_revised=body_revised,
     )
+    if append_evidence:
+        _append_inline(repos, created, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
+    return created
+
+
+def _append_inline(
+    repos: Any, result: AdmitResult, *, item_id: str, fact: FactUnit, ingest_mode: str, now_ms: int
+) -> dict[str, Any] | None:
+    """The synchronous admission path's evidence append, under the same rule as the consumer's."""
+
+    focused = result.evidence_focus_changed
+    material = repos.news.evidence_snapshot_material(
+        event_id=result.event_id, focus_item_id=item_id if focused else None
+    )
+    snapshot = prepare_evidence_snapshot(
+        material, event_id=result.event_id, now_ms=now_ms, focus_fact=fact if focused else None
+    )
+    return append_admission_evidence(repos, snapshot, ingest_mode=ingest_mode, now_ms=now_ms)
+
+
+def append_admission_evidence(
+    repos: Any, snapshot: Mapping[str, Any], *, ingest_mode: str, now_ms: int
+) -> dict[str, Any] | None:
+    """Append one evidence snapshot and, when it is new evidence of an admitted live Event, want its semantics.
+
+    Runs inside the caller's single admission transaction, so evidence and the semantic work it asks
+    for commit together. Returns the wake route to publish after commit, or None. Recovery ingest and a
+    suppressed Event record evidence without waking semantics; an unchanged snapshot wakes nothing.
+    A near or exact match is evidence like any other member: it is recalled into the Event and the
+    Event is understood again, never settled by the match.
+    """
+
+    news = repos.news
+    appended = news.append_prepared_evidence_snapshot(snapshot)
+    if ingest_mode == "recovery" or snapshot.get("previous_sha256") == snapshot["evidence_sha256"]:
+        return None
+    event_id = str(snapshot["event_id"])
+    event = news.event_admission(event_id)
+    if event is None or str(event["admission"]) not in ADMITTED_ADMISSIONS:
+        return None
+    if str(event["event_kind"]) not in EVENT_KINDS:
+        return None
+    news.request_semantic_revision(
+        event_id=event_id,
+        # A new organic revision starts a new lineage: its attempts and one-read budget are its own.
+        lineage_id=content_identity(
+            "news_lineage", event_id, int(appended["evidence_version"]), str(appended["evidence_sha256"])
+        ),
+        now_ms=now_ms,
+    )
+    return cast(dict[str, Any] | None, news.semantic_wake_route(event_id))
 
 
 def _member_result(
@@ -1044,6 +1100,7 @@ def _member_result(
     grounded_assets_json: str,
     watchlist_hits_json: str,
     now_ms: int,
+    body_revised: bool = False,
 ) -> AdmitResult:
     """Attach a member and, when the member is stronger evidence than the leader, re-gate a suppressed Event."""
 
@@ -1092,6 +1149,7 @@ def _member_result(
         comparison_fingerprint=fingerprint,
         title=title,
         evidence_focus_changed=stronger,
+        body_revised=body_revised,
     )
 
 
@@ -1112,40 +1170,49 @@ def _reconstruct_text(event: OpenNewsEvent) -> str:
     return "<br/>".join(p for p in parts if p)
 
 
-async def publish_event(
+async def publish_semantic_wake(
     bus: Any,
     db: NewsDatabasePort,
+    route: Mapping[str, Any],
     *,
-    event_id: str,
-    dedupe_family: str,
-    queue_priority: str,
-    trace_id: str,
+    trace_id: str | None = None,
     occurred_at_ms: int | None = None,
 ) -> Literal["marker_pending", "published"]:
-    """Publish one candidate Event to Triage and mark it published (commit-then-publish outbox step)."""
+    """Wake the semantic worker for one wanted revision, then record the wake (commit-then-publish).
 
+    The message kind, queue and routing are the existing `event` handoff; its identity names the
+    revision. The pending work is already durable, so a lost wake is only latency: the repair turn
+    re-wakes work whose wake is stale.
+    """
+
+    event_id = str(route["event_id"])
+    revision = int(route["wanted_revision"])
     stamp = now_ms()
     await bus.publish(
         BusMessage(
             kind="event",
-            message_id=f"event:{event_id}",
-            routing_key=RK_EVENT.format(dedupe_family=dedupe_family, queue_priority=queue_priority),
-            payload={"event_id": event_id},
-            trace_id=trace_id,
+            message_id=f"event:{event_id}:{revision}",
+            routing_key=RK_EVENT.format(
+                dedupe_family=str(route["dedupe_family"]), queue_priority=str(route["queue_priority"])
+            ),
+            payload={"event_id": event_id, "revision": revision},
+            trace_id=trace_id or str(route.get("trace_id") or "") or new_trace_id(),
             occurred_at_ms=stamp if occurred_at_ms is None else int(occurred_at_ms),
-            priority=5 if queue_priority == "high" else 0,
+            priority=5 if str(route["queue_priority"]) == "high" else 0,
         )
     )
+
+    def _mark(repos: Any) -> None:
+        repos.news.mark_semantic_work_published(event_id=event_id, revision=revision, now_ms=stamp)
+        # The Event's first handoff time; later wakes keep it.
+        repos.news.mark_event_published(event_id=event_id, now_ms=stamp)
+
     try:
-        await db.tx(
-            "news_event_mark_published",
-            lambda repos: repos.news.mark_event_published(event_id=event_id, now_ms=stamp),
-            timeout_seconds=1.0,
-        )
+        await db.tx("news_semantic_wake_mark", _mark, timeout_seconds=1.0)
         return "published"
     except (TransientError, DeferError) as exc:
         log.warning(
-            "news Event handoff confirmed but marker remains pending event_id=%s error=%s",
+            "news semantic wake confirmed but marker remains pending event_id=%s error=%s",
             event_id,
             type(exc).__name__,
         )
@@ -1276,19 +1343,35 @@ class DeduperConsumer:
             item_inserted=any(result.item_inserted for result in admitted),
             results=tuple(admitted),
         )
-        for result, prepared in zip(batch.results, prepared_frame.admissions, strict=True):
-            focus_changed = bool(getattr(result, "evidence_focus_changed", False))
-            focus_item_id = prepared.item_id if focus_changed else None
+        targets: list[tuple[str, str | None, FactUnit | None]] = [
+            (
+                result.event_id,
+                prepared.item_id if result.evidence_focus_changed else None,
+                prepared.fact if result.evidence_focus_changed else None,
+            )
+            for result, prepared in zip(batch.results, prepared_frame.admissions, strict=True)
+        ]
+        if any(result.body_revised for result in batch.results):
+            # A revised body is new evidence for every Event the Item already belongs to.
+            revised = await self.db.read(
+                "news_item_revision_events",
+                lambda repos: repos.news.item_event_ids(prepared_frame.item_id),
+                timeout_seconds=2.0,
+            )
+            covered = {event_id for event_id, _, _ in targets}
+            targets.extend((str(event_id), None, None) for event_id in revised if event_id not in covered)
+        wakes: dict[str, dict[str, Any]] = {}
+        for event_id, focus_item_id, focus_fact in targets:
 
             def _load_evidence(
                 repos: Any,
-                event_id: str = result.event_id,
+                target: str = event_id,
                 focused_item: str | None = focus_item_id,
             ) -> dict[str, Any]:
                 return cast(
                     dict[str, Any],
                     repos.news.evidence_snapshot_material(
-                        event_id=event_id,
+                        event_id=target,
                         focus_item_id=focused_item,
                     ),
                 )
@@ -1300,28 +1383,23 @@ class DeduperConsumer:
             )
             prepared_snapshot = prepare_evidence_snapshot(
                 material,
-                event_id=result.event_id,
+                event_id=event_id,
                 now_ms=stamp,
-                focus_fact=prepared.fact if focus_changed else None,
+                focus_fact=focus_fact,
             )
 
-            def _append_evidence(repos: Any, snapshot: dict[str, Any] = prepared_snapshot) -> Any:
-                return repos.news.append_prepared_evidence_snapshot(snapshot)
+            def _append_evidence(repos: Any, snapshot: dict[str, Any] = prepared_snapshot) -> dict[str, Any] | None:
+                return append_admission_evidence(repos, snapshot, ingest_mode=ingest_mode, now_ms=stamp)
 
-            await self.db.tx(
+            route = await self.db.tx(
                 "news_evidence_snapshot_append",
                 _append_evidence,
                 timeout_seconds=2.0,
             )
-            if result.event_created and result.admission in ADMITTED_ADMISSIONS:
-                await publish_event(
-                    self.bus,
-                    self.db,
-                    event_id=result.event_id,
-                    dedupe_family=result.dedupe_family,
-                    queue_priority=result.gate.queue_priority if result.gate else "normal",
-                    trace_id=message.trace_id,
-                )
+            if route is not None:
+                wakes[event_id] = route
+        for route in wakes.values():
+            await publish_semantic_wake(self.bus, self.db, route, trace_id=message.trace_id)
 
 
 __all__ = [
@@ -1334,10 +1412,11 @@ __all__ = [
     "admit_frame",
     "admit_item",
     "admit_market_item",
+    "append_admission_evidence",
     "engine_type",
     "item_identity",
     "prepare_wallet_observation",
-    "publish_event",
+    "publish_semantic_wake",
     "select_near_duplicate",
     "strong_facts",
     "wallet_item_id",

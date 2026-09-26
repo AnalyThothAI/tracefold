@@ -102,6 +102,14 @@ llm:
     api_key:
     base_url:
     model:
+  news_judgment:
+    # Optional News Jev judgments, all three or none. Unset: generative judgments on the
+    # News endpoints above. Configuring trading_semantics never enables this route.
+    # OpenRouter: https://openrouter.ai/api with jev-1.13; direct: https://api.typesafe.ai
+    # with jev-1.13.0. The SDK appends /v1/systemone; do not repeat it here.
+    api_key:
+    base_url:
+    model:
 
 news:
   enabled: true

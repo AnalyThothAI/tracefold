@@ -2155,59 +2155,6 @@ def test_told_selector_trusts_upstream_bounds_and_drops_duplicate_and_self_rows_
     assert snapshot.source_count == 2
 
 
-def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fact() -> None:
-    from tracefold.news.pipeline.triage_audit import _told_from_context, _told_trace
-    from tracefold.news.program.contracts import TriageContext
-
-    targeted = _told_row(
-        "overnight-exact",
-        _NOW - 24 * 3_600_000,
-        history_scope="targeted",
-        retrieval_reason="exact_fingerprint",
-    )
-    recent = _told_row("recent", _NOW - 60_000, storyline_key="topic:rates")
-
-    snapshot = _select([recent, targeted])
-
-    assert [entry.event_id for entry in snapshot.entries] == ["overnight-exact", "recent"]
-    assert snapshot.entries[0].tier == "exact_fact"
-    assert snapshot.entries[0].history_scope == "targeted"
-    assert snapshot.entries[0].retrieval_reason == "exact_fingerprint"
-    visible = {
-        "i",
-        "ago_min",
-        "assets",
-        "provenance_status",
-        "storyline_key",
-        "comparison_title",
-        "symbols",
-        "direction",
-        "headline_zh",
-        "why_zh",
-    }
-    context = TriageContext.from_card(
-        {
-            "event_id": "self",
-            "evidence_version": 3,
-            "evidence_sha256": "e" * 64,
-            "focus_fact_id": "fact",
-            "leader_title": "current",
-            "opened_at_ms": _NOW,
-            "storyline_key": "topic:rates",
-            "dedupe_family": "general",
-        },
-        watchlist=(),
-        told_rows=[recent, targeted],
-        now_ms=_NOW,
-        queue_lag_ms=0,
-    )
-    assert set(context.event_semantics_payload()["event_status"]["told"][0]) == visible
-    audit_told = _told_from_context(context)
-    assert audit_told == [entry.model_dump(mode="json") for entry in context.told.entries]
-    assert _told_trace(audit_told) == audit_told
-    assert audit_told[0]["ago_min"] == 1_440
-
-
 def test_told_source_contract_rejects_unowned_taxonomy() -> None:
     from tracefold.news.program.contracts import TriageContext
 

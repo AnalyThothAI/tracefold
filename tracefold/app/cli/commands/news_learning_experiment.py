@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
-from tracefold.app.learning_runtime import compose_news_program_runtime
+from tracefold.app.cli.commands.news_learning_composition import compose_news_program_runtime
 from tracefold.app.llm import configured_lm_endpoint
 
 
@@ -57,7 +57,7 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
     from tracefold.platform.config.models import news_model_availability
 
     availability = news_model_availability(settings)
-    if not availability.program_configured or not availability.triage_model:
+    if not availability.configured or not availability.extraction_model:
         raise ValueError("news_learning_optimize_model_not_configured")
     parent = load_stable_program_state()
     if parent.program_sha256 != stable.program_sha256:

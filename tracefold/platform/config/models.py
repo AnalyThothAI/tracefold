@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, ClassVar, Final, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
@@ -149,10 +149,11 @@ class LlmFallbackConfig(_LlmEndpointConfig):
         return "llm_fallback_configuration_incomplete"
 
 
-class TradingSemanticsConfig(BaseModel):
-    """An optional, complete System One route independent of News models."""
+class _SystemOneRouteConfig(BaseModel):
+    """One optional, complete System One route: all three fields or none, and an HTTP(S) base URL."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    error_prefix: ClassVar[str]
 
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
@@ -165,17 +166,32 @@ class TradingSemanticsConfig(BaseModel):
         return normalized.rstrip("/") or None
 
     @model_validator(mode="after")
-    def complete_group(self) -> TradingSemanticsConfig:
+    def complete_group(self) -> Self:
         fields = (self.api_key, self.base_url, self.model)
         if any(fields) and not all(fields):
-            raise ValueError("trading_semantics_configuration_incomplete")
+            raise ValueError(f"{self.error_prefix}_configuration_incomplete")
         if self.base_url is not None and not _is_http_base_url(self.base_url):
-            raise ValueError("trading_semantics_base_url_invalid")
+            raise ValueError(f"{self.error_prefix}_base_url_invalid")
         return self
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key and self.base_url and self.model)
+
+
+class TradingSemanticsConfig(_SystemOneRouteConfig):
+    """An optional, complete System One route independent of News models."""
+
+    error_prefix: ClassVar[str] = "trading_semantics"
+
+
+class NewsJudgmentConfig(_SystemOneRouteConfig):
+    """The optional News Jev judgment route (#706). It is never inferred from `trading_semantics`.
+
+    Unset, every News judgment runs on the generative News endpoints.
+    """
+
+    error_prefix: ClassVar[str] = "news_judgment"
 
 
 class LlmConfig(BaseModel):
@@ -200,6 +216,7 @@ class LlmConfig(BaseModel):
     # multi-hour optimization run at the same single-slot GPU production Triage runs on.
     news_compiler_reflection: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
     trading_semantics: TradingSemanticsConfig = Field(default_factory=TradingSemanticsConfig)
+    news_judgment: NewsJudgmentConfig = Field(default_factory=NewsJudgmentConfig)
 
     @field_validator("api_key", "news_triage_model", mode="before")
     @classmethod
@@ -867,17 +884,24 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
 
 @dataclass(frozen=True, slots=True)
 class NewsModelAvailability:
-    triage_configured: bool
-    triage_model: str | None
-    reader_card_model: str | None
-    reader_card_dedicated: bool
-    triage_fallback_model: str | None = None
-    reader_card_fallback_model: str | None = None
-    reader_card_fallback_dedicated: bool = False
+    """The News model routes a valid configuration describes, secret-free.
+
+    Extraction and the generative judgments run on the `news_triage_model` endpoint (and its fallback);
+    cards run on `news_reader_card`, or on the extraction endpoint when no dedicated one is configured.
+    `news_judgment_model` is the optional Jev route; `None` means generative judgments.
+    """
+
+    extraction_model: str | None
+    card_model: str | None
+    card_dedicated: bool
+    extraction_fallback_model: str | None = None
+    card_fallback_model: str | None = None
+    card_fallback_dedicated: bool = False
+    news_judgment_model: str | None = None
 
     @property
-    def program_configured(self) -> bool:
-        return bool(self.triage_configured and self.triage_model and self.reader_card_model)
+    def configured(self) -> bool:
+        return bool(self.extraction_model and self.card_model)
 
 
 def news_model_availability(settings: Settings) -> NewsModelAvailability:
@@ -889,22 +913,23 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
     fallback_ok = triage and fallback.configured and _is_http_base_url(fallback.base_url)
     reader_fallback = settings.llm.news_reader_card_fallback
     reader_fallback_ok = fallback_ok and reader_fallback.configured and _is_http_base_url(reader_fallback.base_url)
+    judgment = settings.llm.news_judgment
     return NewsModelAvailability(
-        triage_configured=triage,
-        triage_model=settings.llm.news_triage_model if triage else None,
-        reader_card_model=(
+        extraction_model=settings.llm.news_triage_model if triage else None,
+        card_model=(
             reader.model if reader_ok else settings.llm.news_triage_model if triage and not reader.configured else None
         ),
-        reader_card_dedicated=bool(reader_ok),
-        triage_fallback_model=fallback.model if fallback_ok else None,
-        reader_card_fallback_model=(
+        card_dedicated=bool(reader_ok),
+        extraction_fallback_model=fallback.model if fallback_ok else None,
+        card_fallback_model=(
             reader_fallback.model
             if reader_fallback_ok
             else fallback.model
             if fallback_ok and not reader_fallback.configured
             else None
         ),
-        reader_card_fallback_dedicated=bool(reader_fallback_ok),
+        card_fallback_dedicated=bool(reader_fallback_ok),
+        news_judgment_model=judgment.model if judgment.configured else None,
     )
 
 

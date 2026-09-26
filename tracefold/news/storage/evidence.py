@@ -8,8 +8,7 @@ from typing import Any
 from ..evidence import CANDIDATE_MAX, ENTITY_MAX, RELATION_MAX, SIMILAR_MAX, EvidenceQuery
 
 ITEM_MATERIAL_COLUMNS = """item_id, source_artifact_id, canonical_url, reporting_origin, published_at_ms,
-    provider_params_available_at_ms, provider_params_sha256, evidence_text, evidence_text_sha256,
-    provider_params_conflict_sha256, provider_params_conflict_at_ms"""
+    provider_params_available_at_ms, provider_params_sha256, evidence_text, evidence_text_sha256"""
 
 # Each channel first returns lightweight identities. Text is loaded only for the
 # final source/fact-deduplicated shortlist. These statements also serve EXPLAIN audits.

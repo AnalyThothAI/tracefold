@@ -12,7 +12,7 @@ from .delivery import DelivererLoop
 from .maintenance import InstrumentSnapshotLoop, JanitorLoop
 from .receiver import OpenNewsReceiver
 from .recovery import RecoveryRunner
-from .triage import TriageConsumer
+from .semantic import SemanticWorker
 
 
 @dataclass
@@ -22,9 +22,10 @@ class NewsPipeline:
     receiver: OpenNewsReceiver | None
     recovery: RecoveryRunner | None
     deduper: DeduperConsumer
-    # Editorial is one capability among several: a Program that cannot be assembled or registered
-    # leaves no Triage consumer, and reception, admission and retention run on without it (#553 PR-3).
-    triage: TriageConsumer | None
+    # Editorial is one capability among several: models that are not configured or cannot be
+    # composed leave no semantic worker, and reception, admission and retention run on without it.
+    # Admitted evidence still commits its semantic work, which waits durably (#553 PR-3, #706).
+    semantic: SemanticWorker | None
     deliverer: DelivererLoop
     janitor: JanitorLoop
     instruments: InstrumentSnapshotLoop | None = None
@@ -32,19 +33,6 @@ class NewsPipeline:
     # and every one of them may be absent without the pipeline changing shape.
     quotes: QuoteSnapshotLoop | None = None
     reactions: EventReactionLoop | None = None
-
-    @property
-    def runtime_manifest_sha(self) -> str | None:
-        return None if self.triage is None else self.triage.runtime_manifest_sha
-
-    async def register_runtime_manifest(self) -> None:
-        if self.triage is not None:
-            await self.triage.register_runtime_manifest()
-
-    def disable_editorial(self) -> None:
-        """Drop the Triage consumer after its Program failed to assemble or register."""
-
-        self.triage = None
 
     def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Awaitable[None]]]]:
         """Ordered task declarations. The optional stages are bound to a local so the absent ones are
@@ -56,10 +44,10 @@ class NewsPipeline:
             out.append(("news-receiver", lambda stop: receiver.run(stop_event=stop)))
         if recovery is not None:
             out.append(("news-recovery", lambda stop: recovery.run(stop_event=stop)))
-        deduper, triage, deliverer, janitor = self.deduper, self.triage, self.deliverer, self.janitor
+        deduper, semantic, deliverer, janitor = self.deduper, self.semantic, self.deliverer, self.janitor
         out.append(("news-deduper", lambda stop: deduper.run(stop_event=stop)))
-        if triage is not None:
-            out.append(("news-triage", lambda stop: triage.run(stop_event=stop)))
+        if semantic is not None:
+            out.append(("news-semantic", lambda stop: semantic.run(stop_event=stop)))
         out.extend(
             [
                 ("news-deliverer", lambda stop: deliverer.run(stop_event=stop)),

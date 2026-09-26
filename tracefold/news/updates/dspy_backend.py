@@ -113,16 +113,29 @@ class GeneratedJudgmentSignature(dspy.Signature):  # type: ignore[misc]
 _GENERATION_TRANSIENT = (dspy.LMRateLimitError, dspy.LMServerError, dspy.LMTimeoutError, dspy.LMTransportError)
 
 
-async def _generate(signature: Any, lm: Any, **inputs: Any) -> Any:
-    try:
-        # This is the normal generative signature, not a Jev probability signature
-        # temporarily bound to a chat model. No global dspy.configure mutation.
-        with dspy.context(adapter=dspy.JSONAdapter()):
-            return await dspy.Predict(signature).acall(lm=lm, **inputs)
-    except _GENERATION_TRANSIENT as exc:
-        raise ProviderUnavailable(f"news_generation_{type(exc).__name__}") from exc
-    except dspy.AdapterParseError as exc:
-        raise ContractFault("news_generation_output_contract_invalid") from exc
+async def _generate(signature: Any, route: Any, **inputs: Any) -> Any:
+    """Ask one generative signature on a configured route: the primary LM, then its declared fallback.
+
+    A factory returns one LM or an ordered route of them. Only a transient provider failure moves to
+    the next endpoint, which answers the same signature once; it is never a second vote. The caller's
+    stage deadline bounds the whole route.
+    """
+
+    lms = tuple(route) if isinstance(route, (tuple, list)) else (route,)
+    if not lms:
+        raise ConfigurationFault("news_generation_route_empty")
+    for index, lm in enumerate(lms):
+        try:
+            # This is the normal generative signature, not a Jev probability signature
+            # temporarily bound to a chat model. No global dspy.configure mutation.
+            with dspy.context(adapter=dspy.JSONAdapter()):
+                return await dspy.Predict(signature).acall(lm=lm, **inputs)
+        except _GENERATION_TRANSIENT as exc:
+            if index + 1 == len(lms):
+                raise ProviderUnavailable(f"news_generation_{type(exc).__name__}") from exc
+        except dspy.AdapterParseError as exc:
+            raise ContractFault("news_generation_output_contract_invalid") from exc
+    raise ProviderUnavailable("news_generation_route_exhausted")
 
 
 def _items(items: tuple[Question, ...]) -> list[dict[str, Any]]:

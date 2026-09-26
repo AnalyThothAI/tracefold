@@ -17,7 +17,6 @@ from .ports import (
     SemanticObservation,
     Sender,
     SendOutcome,
-    TradingReceiver,
 )
 from .public import public_updates
 from .semantics import SemanticAnalyzer, assemble_update
@@ -49,14 +48,20 @@ class NewsAgent:
         self.clock = clock
         self.stage_seconds = stage_seconds
 
-    async def process(self, event_id: str) -> str:
-        """One semantic turn. Every model call, retry and optional read shares one stage deadline."""
+    async def process(self, event_id: str, *, final_attempt: bool = True) -> str:
+        """One semantic turn. Every model call, retry and optional read shares one stage deadline.
+
+        `final_attempt` is the worker's retry policy, not a content rule: before the last attempt of a
+        wanted revision, a relation or source answer the provider could not give raises
+        ProviderUnavailable so the turn is retried; on the last attempt it is adopted as unresolved
+        (`possible_new`), never as "no news value".
+        """
 
         budget = Budget.start(self.stage_seconds)
         async with asyncio.timeout(self.stage_seconds):
-            return await self._process(event_id, budget)
+            return await self._process(event_id, budget, final_attempt=final_attempt)
 
-    async def _process(self, event_id: str, budget: Budget) -> str:
+    async def _process(self, event_id: str, budget: Budget, *, final_attempt: bool) -> str:
         source = await self.store.input_for(event_id)
         work_id = identity(
             "semantic_work",
@@ -73,7 +78,7 @@ class NewsAgent:
             extracted = await self.store.save_extraction(work_id, extracted)
         understood = None if saved is None else saved.understanding
         if understood is None:
-            understood = await self.analyzer.understand(source, extracted, budget)
+            understood = await self.analyzer.understand(source, extracted, budget, final_attempt=final_attempt)
             understood = await self.store.save_understanding(work_id, understood)
 
         completed_at_ms = self.clock()
@@ -95,7 +100,9 @@ class NewsAgent:
                         event_id=head.event_id, content_revision=head.content_revision, claim=claim
                     )
                 source = FrozenInput.model_validate({**dict(source), "prior": tuple(priors.values())})
-                understood = await self.analyzer.understand(source, understood, budget, rebase_only=True)
+                understood = await self.analyzer.understand(
+                    source, understood, budget, rebase_only=True, final_attempt=final_attempt
+                )
             observation = self._observation(work_id, source, understood, completed_at_ms)
             observation = await self.store.save_observation(observation)
             update = assemble_update(source, understood, head, adopted_at_ms=self.clock())
@@ -252,25 +259,6 @@ class Notifications:
         return outcome.state
 
 
-class PublicRelay:
-    def __init__(self, store: NewsStore, receiver: TradingReceiver) -> None:
-        self.store = store
-        self.receiver = receiver
-
-    async def advance(self, *, limit: int = 64) -> int:
-        rows = await self.store.pending_public_updates(limit)
-        for update in rows:
-            # Source corrections never even reach target selection/accept-trigger.
-            if update.kind == "source_update":
-                await self.receiver.receive_source_update(update)
-            else:
-                await self.receiver.receive_catalyst(update)
-            # A receiver commits update_id idempotently. A crash before this ack
-            # replays the same ID, not a new trigger/Case or refreshed freshness.
-            await self.store.acknowledge_public_update(update.update_id)
-        return len(rows)
-
-
 class Repair:
     """A callable maintenance turn, scheduled by the existing worker, not a daemon."""
 
@@ -279,14 +267,18 @@ class Repair:
         store: NewsStore,
         *,
         wake_semantic: Callable[[str], Awaitable[object]],
-        wake_notification: Callable[[str, str], Awaitable[object]],
+        wake_notification: Callable[[str, str], Awaitable[object]] | None = None,
     ) -> None:
         self.store = store
         self.wake_semantic = wake_semantic
+        # None when this process composes no notification consumer: its pending markers stay durable
+        # for the process that does, rather than being woken into nothing.
         self.wake_notification = wake_notification
 
     async def advance(self, channel: str, *, limit: int = 64) -> None:
         for event_id in await self.store.pending_semantic_events(limit):
             await self.wake_semantic(event_id)
+        if self.wake_notification is None:
+            return
         for event_id in await self.store.pending_notification_events(channel, limit):
             await self.wake_notification(event_id, channel)

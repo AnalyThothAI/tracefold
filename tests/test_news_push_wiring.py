@@ -233,7 +233,9 @@ def test_a_push_target_declared_against_disabled_news_is_a_capability_fault_not_
 def test_wallet_notification_setting_reaches_the_market_loop(tmp_path: Path, enabled: bool) -> None:
     settings = _settings(tmp_path)
     settings.news.chain_tape.notifications_enabled = enabled
-    _, _, market = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=CapabilityStates()))
+    market = asyncio.run(
+        _wire_news_pipeline_with_stub_bus(settings=settings, capabilities=CapabilityStates())
+    ).market_notifications
     assert market.wallet_notifications_enabled is enabled
 
 
@@ -241,14 +243,13 @@ def _composed_pipeline(settings: Settings, capabilities: CapabilityStates) -> An
     """Compose the real News pipeline against a bus stub.
 
     The broker is not the mechanism under test here and stays foundational: what these tests prove is
-    that a sender that cannot be built, or a Program that cannot be assembled, leaves the reception
-    and admission tasks composed and running (#553 PR-3).
+    that a sender that cannot be built, or a semantic runtime that cannot be assembled, leaves the
+    reception and admission tasks composed and running (#553 PR-3).
     """
 
     # #553 PR-2 added the market notification loop to the wiring seam. It is composed here too --
     # it shares the Deliverer's send entry -- but the subject of these tests is the pipeline.
-    _, pipeline, _ = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities))
-    return pipeline
+    return asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities)).pipeline
 
 
 class _UnusedDatabase:
@@ -304,28 +305,24 @@ def test_a_sender_that_cannot_be_constructed_leaves_the_fact_chain_composed_and_
     assert capabilities.payload()[NEWS_DELIVERY]["state"] == "unavailable"
 
 
-def test_a_postgresql_failure_during_program_assembly_is_not_an_editorial_fault(
+def test_a_postgresql_failure_during_semantic_assembly_is_not_an_editorial_fault(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#553 PR-3. A shared PostgreSQL fault must not be reported as one capability's program error.
-
-    `_compose_program_arms` runs the canary startup reconciliation, which is a control write. A pool
-    timeout there says the database failed; confining it would leave a green readiness beside it.
-    """
+    """#553 PR-3. A shared PostgreSQL fault must not be reported as one capability's program error."""
 
     token_file = tmp_path / "telegram_bot_token"
     token_file.write_text(BOT_TOKEN, encoding="utf-8")
     token_file.chmod(0o600)
 
-    async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+    def refuse(**_kwargs: Any) -> Any:
         raise PoolTimeout("couldn't get a connection after 1.0 sec")
 
-    monkeypatch.setattr(news_wiring, "_compose_program_arms", refuse)
+    monkeypatch.setattr(news_wiring, "compose_news_updates", refuse)
     capabilities = CapabilityStates()
 
     with pytest.raises(PoolTimeout):
-        _composed_pipeline(_settings(tmp_path), capabilities)
+        _composed_pipeline(_with_models(tmp_path), capabilities)
     assert NEWS_EDITORIAL not in capabilities.payload()
 
 
@@ -338,9 +335,9 @@ def test_the_market_loop_is_composed_with_the_console_origin_the_operator_named(
     settings = _settings(tmp_path)
     settings.api.public_url = "https://tracefold.example.com"
 
-    _, _, market_loop = asyncio.run(
+    market_loop = asyncio.run(
         _wire_news_pipeline_with_stub_bus(settings=settings, capabilities=CapabilityStates())
-    )
+    ).market_notifications
 
     assert market_loop.console_base_url == "https://tracefold.example.com"
 
@@ -354,38 +351,122 @@ def test_a_deployment_that_named_no_console_composes_the_market_loop_without_one
     settings = _settings(tmp_path)
     assert settings.api.public_url is None
 
-    _, _, market_loop = asyncio.run(
+    market_loop = asyncio.run(
         _wire_news_pipeline_with_stub_bus(settings=settings, capabilities=CapabilityStates())
-    )
+    ).market_notifications
 
     assert market_loop.console_base_url is None
 
 
-def test_a_program_that_cannot_be_assembled_faults_editorial_and_leaves_the_rest_composed(
+def _with_models(tmp_path: Path, **llm: Any) -> Settings:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "news-key",
+                "base_url": "https://news-llm.test/v1",
+                "news_triage_model": "news-model",
+                **llm,
+            },
+            "news": {
+                "enabled": True,
+                "push": {
+                    "enabled": True,
+                    "telegram_bot_token_file": "telegram_bot_token",
+                    "telegram_chat_id": CHANNEL_ID,
+                },
+            },
+        }
+    )
+    settings.set_config_dir(tmp_path)
+    return settings
+
+
+def test_a_semantic_runtime_that_cannot_be_assembled_faults_editorial_and_leaves_the_rest_composed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#553 PR-3 acceptance 3. The version check still refuses; it just no longer takes News with it."""
+    """#553 PR-3 acceptance 3, for the #706 semantic worker: the fault is confined to editorial."""
 
     token_file = tmp_path / "telegram_bot_token"
     token_file.write_text(BOT_TOKEN, encoding="utf-8")
     token_file.chmod(0o600)
 
-    async def refuse(*_args: Any, **_kwargs: Any) -> Any:
-        raise RuntimeError("news_stable_program_manifest_mismatch")
+    def refuse(**_kwargs: Any) -> Any:
+        raise RuntimeError("news_semantic_runtime_invalid")
 
-    monkeypatch.setattr(news_wiring, "_compose_program_arms", refuse)
+    monkeypatch.setattr(news_wiring, "compose_news_updates", refuse)
     capabilities = CapabilityStates()
 
-    pipeline = _composed_pipeline(_settings(tmp_path), capabilities)
+    wiring = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=_with_models(tmp_path), capabilities=capabilities))
 
-    assert pipeline.triage is None
-    assert pipeline.runtime_manifest_sha is None
+    assert wiring.pipeline.semantic is None and wiring.news_updates is None
+    # Workers cannot claim the configured program it does not run: the deployment check sees that.
+    assert wiring.runtime_manifest_sha is None
     assert capabilities.payload()[NEWS_EDITORIAL] == {
         "state": "faulted",
         "reason": "news_editorial_assembly_failed:RuntimeError",
     }
     assert capabilities.payload()[NEWS_INGESTION] == {"state": "running", "reason": None}
-    task_names = {name for name, _ in pipeline.runners()}
-    assert "news-triage" not in task_names
+    task_names = {name for name, _ in wiring.pipeline.runners()}
+    assert "news-semantic" not in task_names
     assert {"news-deduper", "news-deliverer", "news-janitor"} <= task_names
+
+
+def test_unconfigured_news_models_leave_no_semantic_worker_and_a_disabled_editorial_capability(
+    tmp_path: Path,
+) -> None:
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    capabilities = CapabilityStates()
+    settings = _settings(tmp_path)
+
+    wiring = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities))
+
+    assert wiring.pipeline.semantic is None
+    assert capabilities.payload()[NEWS_EDITORIAL] == {"state": "disabled", "reason": "news_models_not_configured"}
+    # Admission still commits semantic work; the manifest names the configuration Workers actually runs.
+    assert wiring.runtime_manifest_sha == news_wiring.configured_runtime_manifest_sha(settings)
+
+
+def test_configured_models_compose_the_semantic_worker_as_a_confined_editorial_task(tmp_path: Path) -> None:
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    capabilities = CapabilityStates()
+    settings = _with_models(
+        tmp_path,
+        trading_semantics={"api_key": "trading-key", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"},
+    )
+
+    wiring = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities))
+
+    assert wiring.pipeline.semantic is not None and wiring.news_updates is not None
+    assert wiring.pipeline.semantic.program_identity == wiring.news_updates.program_identity
+    # Trading's System One route never enables News Jev.
+    assert wiring.news_updates.judgment_connection is None
+    assert capabilities.payload()[NEWS_EDITORIAL] == {"state": "running", "reason": None}
+    assert wiring.runtime_manifest_sha == news_wiring.configured_runtime_manifest_sha(settings)
+    tasks = {task.name: task for task in worker_business_tasks(news_pipeline=wiring.pipeline)}
+    assert tasks["news-semantic"].capability == NEWS_EDITORIAL
+    assert tasks["news-semantic"].foundational is False
+
+
+def test_a_configured_news_judgment_route_opens_its_own_connection_and_changes_the_program(tmp_path: Path) -> None:
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    generated = _with_models(tmp_path)
+    native = _with_models(
+        tmp_path,
+        news_judgment={"api_key": "news-jev-key", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"},
+    )
+
+    plain = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=generated, capabilities=CapabilityStates()))
+    judged = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=native, capabilities=CapabilityStates()))
+
+    assert plain.news_updates is not None and judged.news_updates is not None
+    assert plain.news_updates.judgment_connection is None
+    assert judged.news_updates.judgment_connection is not None
+    assert judged.news_updates.program_identity != plain.news_updates.program_identity
+    asyncio.run(judged.news_updates.aclose())

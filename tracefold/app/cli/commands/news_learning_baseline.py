@@ -34,7 +34,8 @@ def _baseline_model_route(mode: BaselineMode, *, settings: Any, artifact: Any) -
     and therefore build different things — see the comments in each branch.
     """
 
-    from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
+    from tracefold.app.cli.commands.news_learning_composition import compose_news_program_runtime
+    from tracefold.app.learning_runtime import _endpoint_model_sha256
 
     semantic_judge: Any = None
     runtime_identity: dict[str, Any] = {}
@@ -89,7 +90,8 @@ def _readiness_model_targets(settings: Any) -> dict[str, Any]:
     compile into `news_experiment_reflection_not_configured` after the corpus work is already done.
     """
 
-    from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
+    from tracefold.app.cli.commands.news_learning_composition import compose_news_program_runtime
+    from tracefold.app.learning_runtime import _endpoint_model_sha256
 
     composition = compose_news_program_runtime(settings)
     task: dict[str, Any] | None = None

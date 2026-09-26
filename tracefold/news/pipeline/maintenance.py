@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ClassVar, Literal, cast
 
 from ..bus import (
@@ -15,10 +15,10 @@ from ..bus import (
     BrokerUnavailable,
     DeferError,
     TransientError,
-    new_trace_id,
     now_ms,
 )
-from ..models import OUTBOX_MAX_AGE_MS
+from ..storage.event_update_store import PgNewsStore
+from ..storage.event_updates import NEWS_CHANNEL, PURGE_BATCH_MAX
 from ..telemetry import (
     NewsDurableEventTelemetryPort,
     NewsExternalDataSource,
@@ -28,12 +28,16 @@ from ..telemetry import (
     NewsOpenNewsIncidentCause,
     NewsWorkSemantics,
 )
-from .admission import publish_event
+from ..updates.service import Repair
+from .admission import publish_semantic_wake
 from .runtime import NewsDatabasePort, _sleep_or_stop
 
 log = logging.getLogger("tracefold.news")
 
-_OUTBOX_MIN_AGE_MS = 15_000
+# The notification stage's wake seam: `(event_id, channel)`. The notification consumer supplies it;
+# without one, pending notification markers stay durable for the process that can deliver.
+NotificationWake = Callable[[str, str], Awaitable[object]]
+_REPAIR_LIMIT = 64
 _JANITOR_PERIOD_SECONDS = 60.0
 _DAY_MS = 24 * 3600_000
 _RAW_RETENTION_BATCH_SIZE = 500
@@ -219,6 +223,7 @@ class JanitorLoop:
         retention_chain_tape_days: int = 90,
         chain_tape_enabled: bool = False,
         telemetry: NewsDurableEventTelemetryPort | None = None,
+        notification_wake: NotificationWake | None = None,
     ) -> None:
         # Two ports, because the retention sweep is a measured heavy transaction and the outbox catch-up is
         # not. Which physical lane each one lands on is the composition root's answer, never the Janitor's.
@@ -236,6 +241,7 @@ class JanitorLoop:
         # rows arriving and nothing to expire, so its sweep is not scheduled at all.
         self.retention_chain_tape_ms = int(retention_chain_tape_days) * _DAY_MS
         self.chain_tape_enabled = bool(chain_tape_enabled)
+        self.notification_wake = notification_wake
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -246,10 +252,10 @@ class JanitorLoop:
         stamp = now_ms()
         if self.bus is not None:
             try:
-                await self.repair_event_handoffs()
+                await self.repair_semantic_wakes()
             except (BrokerBackpressure, BrokerUnavailable, TransientError, DeferError) as exc:
                 self._record_handoff_repair("event", "transient")
-                log.warning("news Event handoff repair deferred error=%s", type(exc).__name__)
+                log.warning("news semantic wake repair deferred error=%s", type(exc).__name__)
         if self.telemetry is not None:
             try:
                 await self._refresh_incident_telemetry(stamp)
@@ -271,6 +277,20 @@ class JanitorLoop:
             await self._purge_chain_tape_retention(stamp)
         except Exception as exc:
             log.warning("news chain tape retention failed code=chain_tape_retention_failed:%s", type(exc).__name__)
+        # Judgment answers and stage checkpoints are reusable for 14 days; older rows are dropped in
+        # one bounded batch per pass.
+        try:
+            purged = await self.cold_db.tx(
+                "news_semantic_cache_retention",
+                lambda repos: repos.news.purge_semantic_caches(now_ms=stamp, limit=PURGE_BATCH_MAX),
+                timeout_seconds=3.0,
+            )
+            if purged:
+                log.info("news semantic cache retention deleted=%d", int(purged))
+        except Exception as exc:
+            log.warning(
+                "news semantic cache retention failed code=semantic_cache_retention_failed:%s", type(exc).__name__
+            )
         try:
             retention = await self.cold_db.tx(
                 "news_learning_retention",
@@ -468,35 +488,33 @@ class JanitorLoop:
                 oldest_age_seconds=max(0.0, (stamp - oldest) / 1000.0) if oldest is not None else 0.0,
             )
 
-    async def repair_event_handoffs(self) -> int:
-        """Repair confirmed Event-to-Triage handoffs inside the relevance window."""
+    async def repair_semantic_wakes(self) -> int:
+        """Re-wake pending semantic work whose wake is stale (>15 s), and pending notification work.
+
+        Semantic work is durable in PostgreSQL; a wake lost to a broker failure, a crash between
+        commit and publish, a held lease or an open provider breaker is only latency. Work that has
+        spent its attempts is visible as failed and is not woken again until new evidence arrives.
+        """
 
         stamp = now_ms()
-        floor_ms, ceiling_ms = stamp - _OUTBOX_MIN_AGE_MS, stamp - OUTBOX_MAX_AGE_MS
-
-        def _scan(repos: Any) -> Any:
-            return repos.news.event_handoff_scan(older_than_ms=floor_ms, newer_than_ms=ceiling_ms)
-
-        rows, state = await self.db.read("news_event_handoff_scan", _scan)
+        state = await self.db.read("news_semantic_wake_state", lambda repos: repos.news.semantic_wake_state())
         self._record_handoff_state("event", state, stamp)
         expired = int(state.get("expired") or 0)
         if expired:
-            log.warning(
-                "news Event handoff expired for %d row(s) older than %d min",
-                expired,
-                OUTBOX_MAX_AGE_MS // 60_000,
+            log.warning("news semantic work exhausted its attempts for %d Event(s)", expired)
+        woken = 0
+
+        async def wake(event_id: str) -> None:
+            nonlocal woken
+            route = await self.db.read(
+                "news_semantic_wake_route", lambda repos: repos.news.semantic_wake_route(event_id)
             )
-        republished = 0
-        for row in rows:
-            outcome = await publish_event(
-                self.bus,
-                self.db,
-                event_id=str(row["event_id"]),
-                dedupe_family=str(row["dedupe_family"]),
-                queue_priority=str(row["queue_priority"]),
-                trace_id=str(row.get("trace_id") or new_trace_id()),
-                occurred_at_ms=int(row["opened_at_ms"]),
-            )
+            if route is None:
+                return
+            outcome = await publish_semantic_wake(self.bus, self.db, route)
             self._record_handoff_repair("event", outcome)
-            republished += 1
-        return republished
+            woken += 1
+
+        repair = Repair(PgNewsStore(self.db), wake_semantic=wake, wake_notification=self.notification_wake)
+        await repair.advance(NEWS_CHANNEL, limit=_REPAIR_LIMIT)
+        return woken

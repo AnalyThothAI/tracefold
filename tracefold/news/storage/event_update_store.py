@@ -23,6 +23,8 @@ from .event_updates import (
     EventUpdateConflict,
     SemanticLease,
     frozen_input,
+    item_evidence,
+    read_target_item_id,
     select_receipts,
 )
 from .sql_values import _dumps
@@ -61,7 +63,10 @@ class PgNewsStore:
 
     # ------------------------------------------------------------------ semantic input and results
     async def input_for(self, event_id: str) -> FrozenInput:
-        material = await self.db.read("news_update_input", lambda repos: repos.news.semantic_input_material(event_id))
+        now_ms = self.clock()
+        material = await self.db.read(
+            "news_update_input", lambda repos: repos.news.semantic_input_material(event_id, now_ms=now_ms)
+        )
         return frozen_input(event_id, material)
 
     async def head(self, event_id: str) -> EventUpdate | None:
@@ -326,7 +331,7 @@ class PgNewsStore:
             lambda repos: repos.news.record_read_outcome(lineage_id=lineage_id, outcome=outcome, now_ms=now_ms),
         )
 
-    # ------------------------------------------------------------------ repair and public relay
+    # ------------------------------------------------------------------ repair
     async def pending_semantic_events(self, limit: int) -> tuple[str, ...]:
         now_ms = self.clock()
         return tuple(
@@ -345,20 +350,7 @@ class PgNewsStore:
             )
         )
 
-    async def pending_public_updates(self, limit: int) -> tuple[PublicUpdate, ...]:
-        payloads = await self.db.read(
-            "news_update_pending_public", lambda repos: repos.news.pending_public_update_payloads(limit=limit)
-        )
-        return tuple(PublicUpdate.model_validate(payload) for payload in payloads)
-
-    async def acknowledge_public_update(self, update_id: str) -> None:
-        now_ms = self.clock()
-        await self.db.tx(
-            "news_update_ack_public",
-            lambda repos: repos.news.acknowledge_public_update(update_id=update_id, now_ms=now_ms),
-        )
-
-    # ------------------------------------------------------------------ semantic worker lease (U2)
+    # ------------------------------------------------------------------ semantic worker lease
     async def claim_semantic_work(self, event_id: str, *, lease_ms: int) -> SemanticLease | None:
         token = self.lease_token()
         now_ms = self.clock()
@@ -391,13 +383,6 @@ class PgNewsStore:
             ),
         )
 
-    async def mark_semantic_work_published(self, event_id: str) -> None:
-        now_ms = self.clock()
-        await self.db.tx(
-            "news_update_mark_published",
-            lambda repos: repos.news.mark_semantic_work_published(event_id=event_id, now_ms=now_ms),
-        )
-
     async def purge_semantic_caches(self, *, limit: int) -> int:
         now_ms = self.clock()
         return int(
@@ -406,6 +391,25 @@ class PgNewsStore:
                 lambda repos: repos.news.purge_semantic_caches(now_ms=now_ms, limit=limit),
             )
         )
+
+
+class PgSourceReader:
+    """`tracefold.news.updates.ports.ExistingSourceReader` over stored News Items only.
+
+    A target is one a store prepared (`news_item:<item_id>`), never a model-generated URL or tool; the
+    read returns that Item's stored text with its code-owned provenance, or nothing.
+    """
+
+    def __init__(self, db: NewsDatabasePort) -> None:
+        self.db = db
+
+    async def read(self, target: ReadTarget) -> tuple[Evidence, ...]:
+        item_id = read_target_item_id(target.ref)
+        if item_id is None:
+            return ()
+        item = await self.db.read("news_update_read_target", lambda repos: repos.news.read_target_item(item_id))
+        value = None if item is None else item_evidence(item)
+        return () if value is None else (value,)
 
 
 class PgJudgmentCache:
@@ -428,4 +432,4 @@ class PgJudgmentCache:
         )
 
 
-__all__ = ["PgJudgmentCache", "PgNewsStore"]
+__all__ = ["PgJudgmentCache", "PgNewsStore", "PgSourceReader"]
