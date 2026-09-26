@@ -13,7 +13,9 @@ from tracefold.news.program import artifact_tool
 from tracefold.news.program.artifact import build_code_owned_program_state, encode_program_state
 
 
-def _historical_root(root: Path) -> tuple[str, str]:
+def _historical_root(
+    root: Path, *, schema_version: str = "news_program_state_v1"
+) -> tuple[str, str]:
     # An old graph cannot be decoded with today's Predictor set. Its declared
     # content identity can still be verified without executing it.
     state: dict[str, Any] = {
@@ -26,7 +28,7 @@ def _historical_root(root: Path) -> tuple[str, str]:
         }
     }
     material = {
-        "schema_version": "news_program_state_v1",
+        "schema_version": schema_version,
         "evidence_input_version": "news_evidence_input_v2",
         "dspy_version": "3.4.0",
         "predictors": ["retired_predictor"],
@@ -121,14 +123,11 @@ def test_regenerating_the_same_program_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_unknown_historical_identity_format_does_not_publish_a_new_registry(tmp_path: Path) -> None:
-    previous, _ = _historical_root(tmp_path)
+    previous, original = _historical_root(tmp_path, schema_version="news_program_state_unknown")
     registry = (tmp_path / "registry.json").read_bytes()
-    path = tmp_path / f"{previous}.json"
-    raw = json.loads(path.read_text())
-    raw["schema_version"] = "news_program_state_unknown"
-    path.write_text(json.dumps(raw))
 
     with pytest.raises(ValueError, match="news_program_previous_image_identity_invalid"):
         artifact_tool.regenerate_stable_program_state(programs_root=tmp_path)
     assert (tmp_path / "registry.json").read_bytes() == registry
+    assert (tmp_path / f"{previous}.json").read_text() == original
     assert sorted(path.name for path in tmp_path.iterdir()) == sorted([f"{previous}.json", "registry.json"])
