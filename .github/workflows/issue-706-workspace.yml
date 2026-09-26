@@ -11,17 +11,25 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           ref: 1500112328cdbf7c5b501cde853b91e2c5c586c6
-      - name: Archive tracked source at the issue baseline
-        run: git archive --format=tar.gz --output=tracefold-source.tar.gz HEAD
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Prepare public test dependencies for the offline workspace
+        run: |
+          python -m pip download --dest wheelhouse \
+            'dspy[typesafe]==3.4.0' 'typesafe-sdk==0.7.1' \
+            'psycopg[binary,pool]>=3.2.0' 'ruff>=0.8.6' 'mypy==1.17.1' \
+            'hypothesis==6.165.10' 'aio-pika>=9.5,<10' \
+            'alembic>=1.18.0' 'pyyaml>=6.0.3' 'regex==2026.5.9'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: issue-706-source
-          path: tracefold-source.tar.gz
+          name: issue-706-test-wheelhouse
+          path: wheelhouse
           retention-days: 1
           if-no-files-found: error
