@@ -1,7 +1,4 @@
 @layer app.features {
-  .news-wallets-shell {
-    max-width: 1240px;
-  }
   .news-wallets-panel {
     min-width: 0;
     margin-bottom: 12px;

@@ -4,6 +4,7 @@ import { Bar } from "@shared/ui/Bar";
 import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
+import { PageHeader } from "@shared/ui/PageHeader";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { Link } from "react-router-dom";
@@ -29,7 +30,7 @@ import {
   reasonStageLabel,
   reasonStageTone,
 } from "../../model/newsLabels";
-import { NewsPageHeader, NewsTechnical } from "../chrome/NewsChrome";
+import { NewsTechnical } from "../chrome/NewsChrome";
 import { NewsOverallPill } from "../chrome/NewsHealthPill";
 import { NewsToneDot } from "../chrome/NewsTone";
 
@@ -52,12 +53,12 @@ export function NewsStatusPage({ token }: { token: string }) {
   const status = query.data;
   return (
     <PageShell archetype="scan" className="news-status-shell" label="新闻流水线状态">
-      <NewsPageHeader
+      <PageHeader
         subtitle="四个环节的健康度、过去 24 小时的去向，以及当前控制状态。"
         title="流水线状态"
       >
         {status?.health ? <NewsOverallPill status={status} /> : null}
-      </NewsPageHeader>
+      </PageHeader>
 
       {query.isLoading && !status ? (
         <PageState.Loading label="正在读取流水线状态" layout="panel" rows={4} />

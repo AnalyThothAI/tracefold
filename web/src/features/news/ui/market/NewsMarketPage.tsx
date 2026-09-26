@@ -1,3 +1,4 @@
+import { PageHeader } from "@shared/ui/PageHeader";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { SourceLine } from "@shared/ui/SourceLine";
@@ -100,11 +101,10 @@ export function NewsMarketPage({ token }: { token: string }) {
 
   return (
     <PageShell archetype="scan" className="news-market-shell" label="市场研究">
-      <header className="news-market-page-heading">
-        <span>RESEARCH / MARKET OBSERVATIONS</span>
-        <h1>市场研究</h1>
-        <p>从异动开始，沿证据展开。先核对变化和测量口径，再查看策略判定。</p>
-      </header>
+      <PageHeader
+        title="市场研究"
+        subtitle="从异动开始，沿证据展开。先核对变化和测量口径，再查看策略判定。"
+      />
 
       {marketQuery.isLoading && !firstPage ? (
         <div className="news-market-body">

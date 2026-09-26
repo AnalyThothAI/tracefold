@@ -1,45 +1,10 @@
 @layer app.features {
   /*
-   * Chrome every News route wears: its heading block and the folded technical disclosure. The measure the
-   * route sits in is `@shared/ui/PageShell` and the "nothing here" note is `@shared/ui/EmptyNote` (#589
-   * PR-5). Surface-specific layout lives beside its own route (`ui/feed`, `ui/detail`, `ui/status`,
+   * News timestamps and folded technical disclosure. Shared PageShell and PageHeader own the route frame
+   * and title; EmptyNote owns the "nothing here" note. Surface-specific layout lives beside its route
+   * (`ui/feed`, `ui/detail`, `ui/status`,
    * `ui/market`, `ui/symbol`, `ui/wallets`).
    */
-  .news-page-header {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 20px;
-    align-items: baseline;
-    justify-content: space-between;
-  }
-
-  .news-heading-copy {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 12px;
-    align-items: baseline;
-    min-width: 0;
-  }
-
-  .news-heading-copy h1 {
-    margin: 0;
-    color: var(--text-primary);
-    font: var(--type-page-title);
-    letter-spacing: -0.025em;
-  }
-
-  .news-heading-copy p {
-    margin: 0;
-    color: var(--text-subtle);
-    font-size: var(--font-size-meta);
-  }
-
-  .news-heading-aside {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 12px;
-    align-items: center;
-  }
 
   .news-page-stamp {
     color: var(--text-subtle);
@@ -107,21 +72,5 @@
     background: var(--surface-raised);
     color: var(--text-secondary);
     font: var(--font-size-mono-meta)/1.5 var(--font-mono);
-  }
-
-  @media (max-width: 767px) {
-    /* The subtitle is context, not the reason the page was opened; dropping it lifts the first Event up. */
-    .news-heading-copy p {
-      display: none;
-    }
-
-    .news-heading-copy h1 {
-      font-size: var(--font-size-page-title);
-    }
-
-    .news-page-header {
-      align-items: baseline;
-      justify-content: space-between;
-    }
   }
 }

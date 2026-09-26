@@ -1,5 +1,6 @@
 import { ActionButton } from "@shared/ui/ActionButton";
 import { EmptyNote } from "@shared/ui/EmptyNote";
+import { PageHeader } from "@shared/ui/PageHeader";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { Link, useSearchParams } from "react-router-dom";
@@ -14,7 +15,6 @@ import {
   walletReason,
   walletTokenAge,
 } from "../../model/walletFacts";
-import { NewsPageHeader } from "../chrome/NewsChrome";
 
 import { WalletEventDetail } from "./WalletEventDetail";
 import { WalletStatusBlock } from "./WalletStatusBlock";
@@ -34,7 +34,7 @@ export function NewsWalletsPage({ token }: { token: string }) {
 
   return (
     <PageShell archetype="scan" className="news-wallets-shell" label="聪明钱警报">
-      <NewsPageHeader title="聪明钱警报" subtitle="Robinhood Chain · 多钱包集中净买入" />
+      <PageHeader title="聪明钱警报" subtitle="Robinhood Chain · 多钱包集中净买入" />
       <WalletStatusBlock token={token} />
       {episodeId ? <WalletEventDetail token={token} episodeId={episodeId} /> : null}
       <section className="news-wallets-panel" aria-label="集中净买入事件">

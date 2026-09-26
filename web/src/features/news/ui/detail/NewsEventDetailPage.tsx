@@ -4,7 +4,7 @@ import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import { FactGrid } from "@shared/ui/FactGrid";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
-import { PageShell } from "@shared/ui/PageShell";
+import { PageReadingContent, PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
 import { ArrowRight, ExternalLink } from "lucide-react";
@@ -70,17 +70,19 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
         />
         <NewsEventPager eventId={eventId} feedSearch={feedSearch} token={token} />
       </header>
-      {query.isLoading && !detail ? (
-        <PageState.Loading label="正在读取事件详情" layout="panel" rows={5} />
-      ) : null}
-      {query.isError && !detail ? (
-        <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
-      ) : null}
-      {detail ? (
-        <NewsQuoteReadState query={quotesQuery}>
-          <EventDocument detail={detail} quotes={quotes} />
-        </NewsQuoteReadState>
-      ) : null}
+      <PageReadingContent>
+        {query.isLoading && !detail ? (
+          <PageState.Loading label="正在读取事件详情" layout="panel" rows={5} />
+        ) : null}
+        {query.isError && !detail ? (
+          <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
+        {detail ? (
+          <NewsQuoteReadState query={quotesQuery}>
+            <EventDocument detail={detail} quotes={quotes} />
+          </NewsQuoteReadState>
+        ) : null}
+      </PageReadingContent>
     </PageShell>
   );
 }
