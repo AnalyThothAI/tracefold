@@ -1,0 +1,47 @@
+name: Issue 706 integration workspace resources
+
+on:
+  push:
+    branches: [codex/issue-706-event-updates]
+    paths: [.github/workflows/issue-706-workspace.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  resources:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: f9ba95ed133f9f425f21780f6b15b476374bd0e3
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: '0.11.7'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Archive exact integration source and locked Python dependencies
+        run: |
+          mkdir -p workspace-resources
+          git archive --format=tar.gz --output=workspace-resources/source-f9ba95e.tar.gz HEAD
+          git diff 1500112328cdbf7c5b501cde853b91e2c5c586c6 HEAD --binary > workspace-resources/main-update.patch
+          uv sync --locked
+          tar -czf workspace-resources/python-locked-site-packages.tar.gz -C .venv/lib/python3.13/site-packages .
+          cp .venv/bin/ruff workspace-resources/ruff
+      - name: Archive pinned PostgreSQL test runtime
+        run: |
+          docker create --name issue-706-pg postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+          docker export issue-706-pg | gzip -1 > workspace-resources/postgres-18-bookworm-rootfs.tar.gz
+          docker rm issue-706-pg
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: issue-706-integration-resources
+          path: workspace-resources
+          retention-days: 1
+          if-no-files-found: error
