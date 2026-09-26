@@ -12,7 +12,7 @@ from tracefold.news.updates.dspy_backend import DspyCardComposer, DspyExtractor,
 from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import NATIVE_OPERATION_SECONDS, JudgmentCache, NewsJudgments
 from tracefold.news.updates.notification import NotificationPlanner
-from tracefold.news.updates.ports import ExistingSourceReader, NewsStore, Sender, TradingReceiver
+from tracefold.news.updates.ports import ExistingSourceReader, NewsStore, TradingReceiver
 from tracefold.news.updates.semantics import SemanticAnalyzer
 from tracefold.news.updates.service import NewsAgent, Notifications, PublicRelay
 from tracefold.news.updates.topics import CODEBOOK, CODEBOOK_SHA256
@@ -52,7 +52,6 @@ def compose_news_updates(
     *,
     store: NewsStore,
     relation_cache: JudgmentCache,
-    sender: Sender,
     trading_receiver: TradingReceiver,
     extraction_lm_factory: Callable[[], Any],
     card_lm_factory: Callable[[], Any],
@@ -105,7 +104,8 @@ def compose_news_updates(
     )
     return NewsUpdateRuntime(
         agent=NewsAgent(store, analyzer, program_identity=program_identity, source_reader=source_reader),
-        notifications=Notifications(store, NotificationPlanner(judgments), DspyCardComposer(card_lm_factory), sender),
+        # The Deliverer owns the provider side and hands its sender to each notification turn.
+        notifications=Notifications(store, NotificationPlanner(judgments), DspyCardComposer(card_lm_factory)),
         public_relay=PublicRelay(store, trading_receiver),
         judgment_connection=connection,
     )

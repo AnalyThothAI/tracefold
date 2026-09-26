@@ -236,7 +236,8 @@ class Sender:
         self.outcomes = list(outcomes) or ["sent"]
         self.cards: list[FrozenCard] = []
 
-    async def send(self, card: FrozenCard, *, channel: str) -> SendOutcome:
+    async def send(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome:
+        assert plan.intent_id == card.intent_id and update.ref == plan.update_ref
         self.cards.append(card)
         outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
         if outcome == "raise":
@@ -245,7 +246,18 @@ class Sender:
             return SendOutcome(
                 state="not_sent", payload_sha256=card.payload_sha256, error_code="rate_limited", retryable=True
             )
-        return SendOutcome(state="sent", payload_sha256=card.payload_sha256, message_id=str(40 + len(self.cards)))
+        message_id = 40 + len(self.cards)
+        return SendOutcome(
+            state="sent",
+            payload_sha256=card.payload_sha256,
+            message_id=str(message_id),
+            receipt={
+                "provider": "telegram",
+                "message_id": message_id,
+                "pushed_at_ms": STAMP,
+                "target_sha256": "a" * 64,
+            },
+        )
 
 
 def store(clock: Clock | None = None, **kwargs: Any) -> tuple[PgNewsStore, ThreadedDb, Clock]:
@@ -258,9 +270,20 @@ def agent(pg: PgNewsStore, clock: Clock, analyzer: StubAnalyzer | None = None) -
     return NewsAgent(pg, analyzer or StubAnalyzer(), program_identity="program-test", clock=clock)  # type: ignore[arg-type]
 
 
-def notifications(pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> Notifications:
-    judgments = NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db))
-    return Notifications(pg, NotificationPlanner(judgments), composer or Composer(), sender, clock=clock)
+class Turns:
+    """One notification service and the sender its turns hand the frozen card to, as the Deliverer does."""
+
+    def __init__(self, pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> None:
+        judgments = NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db))
+        self.service = Notifications(pg, NotificationPlanner(judgments), composer or Composer(), clock=clock)
+        self.sender = sender
+
+    async def process(self, event_id: str, channel: str) -> str:
+        return (await self.service.process(event_id, channel, self.sender)).status
+
+
+def notifications(pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> Turns:
+    return Turns(pg, clock, sender, composer)
 
 
 def adopted_head(pg: PgNewsStore, clock: Clock) -> EventUpdate:
@@ -612,6 +635,10 @@ def test_a_notification_turn_sends_once_and_keeps_the_exact_receipt() -> None:
     assert ledger["payload_sha256"] == card.payload_sha256 == digest(card.body)
     assert ledger["claim_refs"] == [head.claims[0].ref] and ledger["content_revision"] == head.content_revision
     assert ledger["receipt"]["provider_message_id"] == "41"
+    # The provider's own receipt is kept beside it: what the Telegram enrichment edit is fenced by.
+    assert (ledger["receipt"]["message_id"], ledger["receipt"]["target_sha256"]) == (41, "a" * 64)
+    # The ledger's `card` is the frozen card itself, headline at the top level for the read side.
+    assert FrozenCard.model_validate(ledger["card"]) == card and ledger["card"]["headline_zh"] == card.headline_zh
     assert ledger["history_context"]["headline_zh"] == card.headline_zh
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
     work = sql("SELECT state, plan FROM news_notification_work")[0]

@@ -1086,7 +1086,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_title_norm_v2`, `news_gate_v7`, `news_storyline_registry_v1`,
 `news_event_evidence_v3`, `news_judgment_v3`,
 `news_semantic_program_v13`,
-`news_triage_policy_v17`, `news_delivery_card_v11`, artifact schema
+`news_triage_policy_v17`, `news_delivery_card_v12`, artifact schema
 `news_program_state_v1`, and source classifier
 `opennews_source_classifier_v2`. `news_oi_signal_v3` and
 `news_liquidation_fact_v2` are retired program versions: the deterministic

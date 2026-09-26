@@ -46,7 +46,6 @@ from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.integrations.telegram import TelegramNewsPushSender
 from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
-from tracefold.news import ProgressionVerifier
 from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
@@ -74,6 +73,7 @@ from tracefold.news.release.runtime import (
     reconcile_canary_startup,
 )
 from tracefold.news.triage_rules import DecidePolicy
+from tracefold.news.updates.service import Notifications
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
@@ -122,7 +122,6 @@ class _ProgramArms:
     """What one Workers process may execute this deployment: the stable arm, plus any runnable candidate."""
 
     judge: SemanticJudge | None
-    progression_verifier: ProgressionVerifier | None
     stable_artifact: NewsProgramStateV1
     stable_bundle_sha: str
     canary_arms: dict[str, CanaryRuntimeArm]
@@ -322,8 +321,9 @@ def _push_sender_or_fault(
     """Construct the push sender, or mark delivery unavailable and keep the fact chain running.
 
     A missing webhook, an unreadable secret file or a malformed token is a configuration fact, not a
-    delivery: the Deliverer settles those Events `delivery_unavailable` rather than presenting them as
-    sent. Recovery is a corrected config plus a restart; there is no hot reload console (#553 PR-3).
+    delivery: with no sender the Deliverer plans nothing, so notification work stays pending and visible
+    rather than being presented as sent. Recovery is a corrected config plus a restart; there is no hot
+    reload console (#553 PR-3, #706).
     """
 
     composed = _news_push_sender(settings)
@@ -397,7 +397,6 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
     if stable_arm.program_version != PROGRAM_VERSION or stable_artifact.program_sha256 != stable_arm.program_sha256:
         raise RuntimeError("news_stable_program_manifest_mismatch")
     semantic_judge = runtime_composition.semantic_judge(stable_artifact)
-    progression_verifier = runtime_composition.progression_verifier()
     canary_arms: dict[str, CanaryRuntimeArm] = {}
     candidate_facts = {
         candidate_sha: CandidateRuntimeFact(
@@ -424,7 +423,6 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
     )
     return _ProgramArms(
         judge=semantic_judge,
-        progression_verifier=progression_verifier,
         stable_artifact=stable_artifact,
         stable_bundle_sha=stable_arm.bundle_sha,
         canary_arms=canary_arms,
@@ -607,7 +605,14 @@ def _compose_news_pipeline(
     receiver: OpenNewsReceiver | None,
     recovery: RecoveryRunner | None,
     telemetry: TelemetryRegistry | None,
+    notifications: Notifications | None = None,
 ) -> NewsPipeline:
+    """Compose the News pipeline. `notifications` is the EventUpdate notification service (#706).
+
+    The Deliverer is its channel side: it plans each pending head, and sends the frozen card through the
+    one configured sender. Without it, or without a sender, notification work stays pending and visible.
+    """
+
     watchlist_symbols = settings.news.watchlist_symbols
     return NewsPipeline(
         receiver=receiver,
@@ -643,7 +648,7 @@ def _compose_news_pipeline(
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
             price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
-            progression_verifier=None if arms is None else arms.progression_verifier,
+            notifications=notifications,
             tradability_verifier=(
                 VenueCatalogTradabilityVerifier()
                 if settings.news.venues.enabled

@@ -20,7 +20,8 @@ from typing import Any
 
 import pytest
 
-from tracefold.news.delivery import card_assets
+from tests.support.news_update_cards import adopted, draft, source
+from tracefold.news.delivery import update_card_assets
 from tracefold.news.events.storyline import (
     final_storyline_key,
     same_storyline_key,
@@ -37,6 +38,7 @@ from tracefold.news.market_review.pricing import QuoteRequest
 from tracefold.news.models import MarketAsset, TriageVerdict, market_type_of
 from tracefold.news.program.contracts import TriageContext, unambiguous_catalog_class
 from tracefold.news.told_context import ToldLedgerSnapshot
+from tracefold.news.updates.contracts import Asset
 
 _FIXTURE = Path(__file__).parents[1] / "fixtures/news/issue_651_raw_cases.json"
 _CASES = json.loads(_FIXTURE.read_text(encoding="utf-8"))["cases"]
@@ -144,11 +146,7 @@ def test_a_commodity_primary_never_takes_an_equity_card_and_is_reported_as_a_wro
 
     # The card prints this judgment's own subject, and `XPT` is not it — even though the commodity tag is
     # exactly what the provider grounded.
-    shown = card_assets(
-        {"assets": [_asset("INGM", "equity")]},
-        ["XPT"],
-        catalog_candidates=_CATALOG,
-    )
+    shown = _card_assets(_asset("INGM", "equity"))
     assert shown == [MarketAsset("INGM", "equity")]
 
 
@@ -159,13 +157,10 @@ def test_the_visa_card_names_visa_and_not_the_only_tag_the_provider_sent() -> No
     card = _snapshot_card("visa_restated")
     assert card["grounded_assets"] == ["CRCL", "XYZ-CRCL"]
 
-    shown = card_assets(
-        {"assets": [_asset("V", "equity"), _asset("CRCL", "equity", "mentioned")]},
-        list(card["grounded_assets"]),
-        catalog_candidates=_CATALOG,
-    )
+    shown = _card_assets(_asset("V", "equity"), _asset("CRCL", "equity", "mentioned"))
 
-    assert shown == [MarketAsset("V", "equity"), MarketAsset("CRCL", "equity")]
+    # The card names the claim's own primary subject; a mention and a provider tag are not its subject.
+    assert shown == [MarketAsset("V", "equity")]
     # And the quote target the card carries is the typed question, so `V` can only be answered by an
     # equity contract. The pre-#651 question was `V` alone, which a crypto venue also lists.
     assert QuoteRequest(shown[0].symbol, shown[0].market_type) == QuoteRequest("V", "equity")
@@ -227,19 +222,25 @@ def test_an_untagged_subject_still_produces_a_typed_quote_target() -> None:
     assert card["grounded_assets"] == []
     assert _CASES["cp_upbit_first"]["event_assets"] == []
 
-    shown = card_assets({"assets": [_asset("CP", "crypto")]}, [], catalog_candidates=_CATALOG)
+    shown = _card_assets(_asset("CP", "crypto"))
 
     assert shown == [MarketAsset("CP", "crypto")]
     assert QuoteRequest(shown[0].symbol, shown[0].market_type).accepts("crypto")
     assert not QuoteRequest(shown[0].symbol, shown[0].market_type).accepts("equity")
 
 
-def test_a_degraded_judgment_shows_only_what_the_catalogue_can_prove() -> None:
-    """No model asset at all: a tag the catalogue holds under one class, and nothing else."""
+def test_an_untyped_subject_is_never_shown_as_a_guessed_market() -> None:
+    """`SEI` is a token and an insurer: a claim that did not type it names no card asset and no quote."""
 
-    assert card_assets({"assets": []}, ["CP", "SEI"], catalog_candidates=_CATALOG) == [MarketAsset("CP", "crypto")]
-    assert card_assets({"assets": []}, ["SEI"], catalog_candidates=_CATALOG) == []
-    assert card_assets({"assets": []}, ["CP"]) == []
+    assert _card_assets(_asset("SEI", "unknown")) == []
+
+
+def _card_assets(*assets: dict[str, Any]) -> list[MarketAsset]:
+    """The card assets of one adopted claim carrying these asset readings."""
+
+    item = source("Company announces a listing.")
+    update = adopted((draft("a", item, assets=tuple(Asset.model_validate(row) for row in assets)), item))
+    return update_card_assets(update, [update.claims[0].ref])
 
 
 # --------------------------------------------------- (e) storyline and told: two SEIs are two stories

@@ -9,7 +9,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 import dspy  # type: ignore[import-untyped]
 
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
-from tracefold.news import NEWS_RETRIEVAL_SHA256, PROGRESSION_REVIEW_TIMEOUT_SECONDS
+from tracefold.news import NEWS_RETRIEVAL_SHA256
 from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
 from tracefold.news.learning.contracts import ArmManifest
 from tracefold.news.program.artifact import (
@@ -20,10 +20,6 @@ from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity
 from tracefold.news.program.module import NativeNewsProgram
-from tracefold.news.program.progression_review import (
-    PROGRESSION_REVIEW_MAX_TOKENS,
-    ProgressionReviewProgram,
-)
 from tracefold.news.program.routing import RoutedSemanticJudge, RouteLMs
 from tracefold.news.program.runtime import PROGRAM_ROUTE_DEADLINE_SECONDS, PROGRAM_VERSION
 from tracefold.platform.config.models import news_model_availability
@@ -232,27 +228,6 @@ class NewsProgramRuntimeComposition:
             route_deadline_seconds=None,
             primary_breaker_enabled=False,
         )
-
-    def progression_verifier(
-        self,
-        *,
-        lm_type: Any = dspy.LM,
-    ) -> ProgressionReviewProgram | None:
-        """Bind the post-delivery relationship check to the primary event-semantics endpoint."""
-
-        if not self.program_configured:
-            return None
-        endpoint = self.event_semantics_primary
-        lm = _configured_program_lm(
-            endpoint,
-            timeout=PROGRESSION_REVIEW_TIMEOUT_SECONDS,
-            max_tokens=PROGRESSION_REVIEW_MAX_TOKENS,
-            predictor="progression_review",
-            route="primary",
-            model_binding="progression_review.primary",
-            lm_type=lm_type,
-        )
-        return ProgressionReviewProgram(lm)
 
 
 def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition:

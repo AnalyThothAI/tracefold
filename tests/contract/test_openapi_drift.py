@@ -607,7 +607,7 @@ _RETIRED_NEWS_IDENTITIES = frozenset(
     {f"news_semantic_program_v{version}" for version in range(1, 8)}
     | {f"news_program_v{version}" for version in range(1, 8)}
     | {f"news_triage_policy_v{version}" for version in range(1, 11)}
-    | {f"news_delivery_card_v{version}" for version in range(1, 11)}
+    | {f"news_delivery_card_v{version}" for version in range(1, 12)}
     | {f"news_review_v{version}" for version in range(1, 6)}
     | {
         "news_liquidation_fact_v1",

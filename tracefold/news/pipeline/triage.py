@@ -38,7 +38,6 @@ from ..triage_rules import (
     grounded_restatement,
     storyline_status,
 )
-from .delivery import DELIVERY_KIND_FIRST
 from .runtime import NewsDatabasePort
 from .triage_audit import (
     _program_execution,
@@ -895,7 +894,7 @@ class TriageConsumer:
             # now commit or roll back together, so there is no window in which a card is owed and
             # nothing says so -- which is what the broker publish, the `published_at_ms` marker and
             # the Janitor's repair scan existed to paper over (#598 D2).
-            repos.news.enqueue_delivery(event_id=s.event_id, kind=DELIVERY_KIND_FIRST, now_ms=s.stamp)
+            repos.news.enqueue_delivery(event_id=s.event_id, kind="first", now_ms=s.stamp)
             # Written here rather than after a confirmed publish, because the handoff *is* this
             # transaction. The column keeps every meaning its readers give it -- the console's verdict
             # panel and the review task source read it, and `event_outcome` asks only whether it is

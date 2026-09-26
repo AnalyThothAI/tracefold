@@ -13,14 +13,16 @@ from typing import Any
 import pytest
 
 from tests.support.news_judgment import news_taxonomy, scored_judgment
+from tests.support.news_update_cards import adopted, asset, copy_for, draft, frozen_card, nvda_update, plan_for
+from tests.support.news_update_cards import source as update_source
 from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
 from tracefold.news.card_format import CHANGE_BASIS_LABEL
 from tracefold.news.delivery import (
-    card_assets,
+    news_update_card,
     reader_market_movements,
     reader_trade_targets,
-    render_first_card,
-    sanitize_ai_text,
+    update_card_assets,
+    update_change_label,
 )
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.events.facts import FactUnit, extract_fact_units
@@ -40,6 +42,7 @@ from tracefold.news.events.storyline import (
 )
 from tracefold.news.events.titles import extract_title
 from tracefold.news.events.tokens import comparison_tokens, jaccard
+from tracefold.news.feishu_card import feishu_card
 from tracefold.news.market_review.pricing import CHANGE_BASIS_ZH
 from tracefold.news.models import (
     FACT_KINDS,
@@ -77,6 +80,7 @@ from tracefold.news.triage_rules import (
 from tracefold.news.triage_rules import (
     decide as production_decide,
 )
+from tracefold.news.updates.notification import freeze_card
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 
@@ -2376,41 +2380,24 @@ def test_fallback_is_not_silent() -> None:
 
 
 # ---------------------------------------------------------------- delivery / bus
+def _update_card(update: Any = None, *, key: bool = False, **kwargs: Any) -> dict[str, Any]:
+    update = update or nvda_update()
+    plan = plan_for(update, key=key)
+    return feishu_card(news_update_card(frozen_card(plan, update), plan=plan, update=update, **kwargs))
+
+
+def _body(card: dict[str, Any]) -> str:
+    return str(card["elements"][0]["text"]["content"])
+
+
 def test_card_is_the_reader_contract() -> None:
-    assert sanitize_ai_text("看 https://evil.example 这里", limit=60, fallback="原标题") == "原标题"
-    assert sanitize_ai_text("**加粗** @user 文本\x00", limit=60) == "加粗 文本"
-    card = render_first_card(
-        event={
-            "event_id": "e1",
-            "leader_title": "Nvidia to invest $100bn",
-            "leader_url": "https://ft.com/x",
-            "reporting_origin": "ft",
-            "member_count": 3,
-            "provider_score_max": 80,
-            "leader_published_at_ms": 1787064000000,  # 2026-08-18 14:40 UTC -> 22:40 in the reader's zone
-        },
-        verdict={
-            "direction": "bullish",
-            "fact_kind": "state_change",
-            "headline_zh": "英伟达千亿美元投资 OpenAI 数据中心",
-            "why_zh": "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
-            "scope": "single_name",
-            "assets": [
-                {"symbol": "NVDA", "market_type": "equity", "role": "primary"},
-                # A company with no ticker is a text subject, never an invented one: it carries no
-                # market and therefore never reaches the card or a quote target (#651 §6.2).
-                {"symbol": "OPENAI", "market_type": "unknown", "role": "mentioned"},
-            ],
-        },
-        decision="push",
-        grounded_assets=["NVDA", "XYZ-NVDA"],
-    )
-    # header = the model's factual headline; body = why sentence + facts in words; nothing else.
-    assert card["header"]["title"]["content"] == "英伟达千亿美元投资 OpenAI 数据中心"
-    assert card["elements"][0]["content"].splitlines() == [
-        "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
-        "利多 · 状态变化 · NVDA · ft（3 条报道） · 22:40",
-    ]
+    card = _update_card()
+    # header = the frozen headline; body = the frozen claim lines + the code-owned facts line; nothing else.
+    assert card["header"]["title"]["content"] == "英伟达向数据中心投资千亿美元"
+    assert card["header"]["template"] == "grey"
+    # The frozen copy is shown literally, never as Feishu markdown.
+    assert card["elements"][0]["tag"] == "div" and card["elements"][0]["text"]["tag"] == "plain_text"
+    assert _body(card).splitlines() == ["第1条：英伟达宣布投资", "新增 · NVDA · Reuters · 22:40"]
     text = json.dumps(card, ensure_ascii=False)
     for machine_word in (
         "AI 初判",
@@ -2419,88 +2406,60 @@ def test_card_is_the_reader_contract() -> None:
         "成员：",
         "Provider",
         "single_name",
-        "原标题",
-        "个别标的",
+        "利多",
+        "新进展",
+        "状态变化",
     ):
         assert machine_word not in text
     assert "Nvidia to invest $100bn" not in text
     assert "打开来源" in text and "news_delivery_card" not in text
-    escalated = render_first_card(
-        event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
-        verdict={"direction": "bullish", "fact_kind": "official_measure", "headline_zh": "x https://x.y"},
-        decision="escalate",
-        grounded_assets=[],
-    )
-    assert escalated["header"]["title"]["content"] == "⚡ Nvidia to invest $100bn"  # URL in AI copy -> code fallback
-    assert escalated["elements"][0]["content"] == "利多 · 官方措施 · -"
-    # A verdict written under `news_judgment_v2` has a direction and a novelty and no kind at all, and
-    # the review desk, the fidelity corpus and the console detail all re-render those rows. The facts
-    # line is gated on the direction, so the card keeps 利多 and 新进展 and simply omits the third word
-    # instead of losing all three to a field the writer never had (#679 review 6).
-    archived = render_first_card(
-        event={"event_id": "e3", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
-        verdict={"direction": "bullish", "novelty": "progression", "headline_zh": "英伟达加码投资"},
-        decision="push",
-        grounded_assets=[],
-    )
-    assert archived["elements"][0]["content"].splitlines()[-1] == "利多 · 新进展 · -"
-    # Degraded (model chain failed, rule baseline pushes): the wire text itself, no verdict words the model never gave.
-    degraded = render_first_card(
-        event={
-            "event_id": "e2",
-            "leader_title": "BREAKING: SEC approves spot **ETH** ETF options https://x.y/z",
-            "leader_description": "The SEC approved options on spot ether ETFs on Thursday.\nMore to follow.",
-            "leader_url": "https://x.y/z",
-            "reporting_origin": "wire",
-            "member_count": 1,
-            "leader_published_at_ms": 1787064000000,
-        },
-        verdict={
-            "direction": "neutral",
-            "fact_kind": "state_change",
-            "headline_zh": "BREAKING: SEC approves spot ETH ETF options",
-        },
-        decision="escalate",
-        grounded_assets=["ETH"],
-        # Degraded: no model answered, so the card may print only what the catalogue proves on its own
-        # (#651 §6.2). `ETH` is held under one class, so it is provable; an ambiguous tag would not be.
-        catalog_candidates={"ETH": ("crypto",)},
-        degraded=True,
-    )
-    assert degraded["header"]["title"]["content"] == "⚡ BREAKING: SEC approves spot ETH ETF options"
-    assert degraded["header"]["template"] == "grey"
-    assert degraded["elements"][0]["content"].splitlines() == [
-        "The SEC approved options on spot ether ETFs on Thursday. More to follow.",
-        "ETH · wire · 22:40",
+    # The key marker is the plan's, printed as the header qualifier.
+    assert _update_card(key=True)["header"]["title"]["content"] == "⚡ 英伟达向数据中心投资千亿美元"
+    # Card assets are the selected claims' own typed primaries: a mention or an untyped name is not shown.
+    assert update_card_assets(nvda_update(), [claim.ref for claim in nvda_update().claims]) == [
+        MarketAsset("NVDA", "equity")
     ]
-    assert "模型" not in json.dumps(degraded, ensure_ascii=False) and "中性" not in json.dumps(
-        degraded, ensure_ascii=False
+    untyped = update_source("SEI launches a staking product.")
+    sei = adopted((draft("a", untyped, assets=(asset("SEI", "unknown"),)), untyped))
+    assert update_card_assets(sei, [sei.claims[0].ref]) == []
+    many = update_source("Five tokens listed.")
+    listed = adopted(
+        (draft("a", many, assets=tuple(asset(f"T{index}", "crypto") for index in range(6))), many),
     )
-    # Card assets are this judgment's own typed assets, primaries first, capped at four (#651 §6.2).
-    # The provider tag is no longer a source of tickers for a judgment that answered: sorting the Gate's
-    # grounded set is what printed `CRCL` beside a headline about Visa.
-    assert card_assets({"assets": [{"symbol": "CC", "market_type": "crypto", "role": "primary"}]}, ["CC"]) == [
-        MarketAsset("CC", "crypto")
-    ]
-    # A primary the provider never tagged is still the subject, and is shown.
-    assert card_assets({"assets": [{"symbol": "V", "market_type": "equity", "role": "primary"}]}, ["CRCL"]) == [
-        MarketAsset("V", "equity")
-    ]
-    # Mentions fill the remaining slots after the primaries, in the judgment's own order.
-    assert card_assets(
-        {
-            "assets": [{"symbol": f"M{index}", "market_type": "crypto", "role": "mentioned"} for index in range(5)]
-            + [{"symbol": "P", "market_type": "crypto", "role": "primary"}]
-        },
-        [],
-    ) == [MarketAsset("P", "crypto"), *(MarketAsset(f"M{index}", "crypto") for index in range(3))]
-    # Degraded, with no model asset at all: only a tag the catalogue holds under exactly one class.
-    assert card_assets(
-        {"assets": []}, ["A", "B"], catalog_candidates={"A": ("crypto",), "B": ("crypto", "equity")}
-    ) == [MarketAsset("A", "crypto")]
-    # An untyped asset the catalogue cannot resolve to one market is not shown: the ticker on the card is
-    # also the quote target beside it, and neither may be guessed.
-    assert card_assets({"assets": [{"symbol": "SEI", "role": "primary"}]}, ["SEI"]) == []
+    assert [shown.symbol for shown in update_card_assets(listed, [listed.claims[0].ref])] == ["T0", "T1", "T2", "T3"]
+
+
+def test_card_names_the_change_label_from_the_updates_own_change_kinds() -> None:
+    first = nvda_update()
+    assert update_change_label(first, [first.claims[0].ref]) == "new"
+    for kind, label, word in (
+        ("parameter_change", "update", "更新"),
+        ("phase_change", "update", "更新"),
+        ("correction", "correction", "更正"),
+        ("new_fact", "new", "新增"),
+    ):
+        update = nvda_update(changes=(("a", kind),))
+        assert update_change_label(update, [update.claims[0].ref]) == label
+        assert _body(_update_card(update)).splitlines()[-1].startswith(f"{word} · NVDA")
+    # A correction among the selected claims outranks an update beside it.
+    one, two = update_source("First claim."), update_source("Second claim.")
+    both = adopted((draft("a", one), one), (draft("b", two), two), changes=(("a", "phase_change"), ("b", "correction")))
+    assert update_change_label(both, [claim.ref for claim in both.claims]) == "correction"
+
+
+def test_the_frozen_body_reaches_the_card_whole_and_unsafe_copy_is_refused_before_freezing() -> None:
+    update = nvda_update()
+    plan = plan_for(update)
+    card = frozen_card(plan, update)
+    rendered = news_update_card(card, plan=plan, update=update)
+    assert f"{rendered.header.subject}\n\n{rendered.lead}" == card.body
+    # Model copy carrying a link or a control character is refused, not cleaned: a channel may never
+    # strip what the ledger records as sent.
+    for unsafe in ("看 https://evil.example", "看 www.evil.example", "标题\x00", "两行\n标题"):
+        with pytest.raises(ValueError, match="news_card_copy_unsafe"):
+            frozen_card(plan, update, headline=unsafe)
+    long_copy = copy_for(plan, "英伟达投资", **{update.claims[0].ref: "长" * 3_000})
+    assert len(freeze_card(plan, update, long_copy).body) > 3_000
 
 
 def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
@@ -2523,23 +2482,17 @@ def _quote(symbol: str, price: str, change: float | None, **overrides: Any) -> d
 
 
 def _market_lines(**overrides: Any) -> list[str]:
-    card = render_first_card(
-        event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
-        verdict={"direction": "bearish", "fact_kind": "official_measure", "headline_zh": "标题"},
-        decision="push",
-        grounded_assets=["CL"],
-        # This verdict names no asset, so the only ticker the card may print is one the catalogue proves
-        # unambiguously (#651 §6.2): `CL` is the WTI contract and nothing else.
-        catalog_candidates={"CL": ("commodity",)},
-        **overrides,
+    item = update_source(
+        "WTI crude futures rise on the export ban.", origin="jin10", published_at_ms=None, available_at_ms=0
     )
-    return card["elements"][0]["content"].splitlines()
+    update = adopted((draft("a", item, assets=(asset("CL", "commodity"),), kind="official_measure"), item))
+    return _body(_update_card(update, **overrides)).splitlines()[1:]
 
 
 def test_card_market_line_is_display_only() -> None:
     # The market's own number, on its own line, for the assets the facts line already named (#113).
     assert _market_lines(quotes=[_quote("CL", "86.43", 2.296, instrument_class="commodity")]) == [
-        "利空 · 官方措施 · CL · jin10",
+        "新增 · CL · jin10",
         "行情 CL $86.43 24h +2.30%（永续）",
     ]
     # Formatting is the console's `formatPrice`/`formatChangePct` character for character: thousands and two
@@ -2561,7 +2514,7 @@ def test_card_market_line_is_display_only() -> None:
     # Only `fresh` renders. Everything else leaves no line at all — never a placeholder, never a zero.
     for absent in ("stale", "unavailable", "unlisted"):
         assert _quote_line([_quote("BTC", "74757.60", 7.914, state=absent)]) == ""
-        assert _market_lines(quotes=[_quote("CL", "86.43", 2.3, state=absent)]) == ["利空 · 官方措施 · CL · jin10"]
+        assert _market_lines(quotes=[_quote("CL", "86.43", 2.3, state=absent)]) == ["新增 · CL · jin10"]
     assert _quote_line([_quote("X", "0", 1.0)]) == "" and _quote_line([_quote("X", "not-a-price", 1.0)]) == ""
     # `parse_price` bounds a price to finite-and-positive, not to a magnitude, and quantizing 1e40 raises.
     # `_quote_line` runs in the renderer, outside the consumer's guard, so it must lose the entry, not the card.
@@ -2569,7 +2522,7 @@ def test_card_market_line_is_display_only() -> None:
     assert (
         _quote_line([_quote("HUGE", "1e40", 1.0), _quote("BTC", "74757.60", 7.914)]) == "行情 BTC $74,757.60 24h +7.91%"
     )
-    assert _quote_line([]) == "" and _market_lines() == ["利空 · 官方措施 · CL · jin10"]
+    assert _quote_line([]) == "" and _market_lines() == ["新增 · CL · jin10"]
     # The mark is attached per asset, never once for the line: a trailing mark on a mixed line cannot say
     # whether it covers the last asset or all of them.
     equities = [
@@ -2590,17 +2543,6 @@ def test_card_market_line_is_display_only() -> None:
     )
     assert mixed == "行情 BTC $74,757.60 24h +7.91% · SAMSUNG $201.7 24h +3.92%（永续）"
     assert _quote_line([*equities, _quote("BTC", "1", 1.0)]) == _quote_line(equities)  # bounded at four
-    # A degraded card keeps its price: it is our fact, not the model's. The facts line still names no judgment.
-    degraded = render_first_card(
-        event={"event_id": "e2", "leader_title": "wire", "reporting_origin": "wire", "member_count": 1},
-        verdict={"direction": "neutral", "fact_kind": "state_change", "novelty": "progression", "headline_zh": "x"},
-        decision="push",
-        grounded_assets=["ETH"],
-        degraded=True,
-        quotes=[_quote("ETH", "2348.14", 4.252)],
-    )
-    assert degraded["elements"][0]["content"].splitlines()[-1] == "行情 ETH $2,348.14 24h +4.25%"
-    assert "新进展" not in json.dumps(degraded, ensure_ascii=False)
 
 
 def test_reader_market_movements_require_fresh_push_price_and_selected_anchors() -> None:
@@ -2692,7 +2634,7 @@ def test_reader_trade_targets_bind_ticker_to_exact_binance_contracts_without_cha
         ),
     )
     assert _market_lines(quotes=[perpetual_quote], assets=["LRCX"]) == [
-        "利空 · 官方措施 · LRCX · jin10",
+        "新增 · LRCX · jin10",
         "行情 LRCX $317.53 24h +1.12%（永续）",
     ]
 
@@ -2786,33 +2728,6 @@ def test_card_change_basis_labels_cover_the_price_domain() -> None:
     """A basis `pricing` knows and the card cannot name would drop that venue's percentage in silence."""
 
     assert set(CHANGE_BASIS_LABEL) == set(CHANGE_BASIS_ZH)
-
-
-def test_card_marks_a_progression() -> None:
-    # 28.8% of a week's cards advanced a story the reader already had one for and the card said nothing (#113).
-    card = render_first_card(
-        event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
-        verdict={
-            "direction": "bearish",
-            "fact_kind": "official_measure",
-            "novelty": "progression",
-            "headline_zh": "标题",
-        },
-        decision="push",
-        grounded_assets=["CL"],
-        catalog_candidates={"CL": ("commodity",)},
-    )
-    assert card["elements"][0]["content"].splitlines() == ["利空 · 新进展 · 官方措施 · CL · jin10"]
-    for quiet in ("new_fact", "restatement", "", None):
-        verdict = {"direction": "bearish", "fact_kind": "official_measure", "novelty": quiet, "headline_zh": "标题"}
-        card = render_first_card(
-            event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
-            verdict=verdict,
-            decision="push",
-            grounded_assets=["CL"],
-            catalog_candidates={"CL": ("commodity",)},
-        )
-        assert card["elements"][0]["content"].splitlines() == ["利空 · 官方措施 · CL · jin10"]
 
 
 def test_bus_envelope_roundtrip() -> None:
@@ -3133,20 +3048,3 @@ def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
         )
         == NO_STORYLINE_KEY
     )
-
-
-def test_invalid_model_headline_falls_back_to_the_wire_title() -> None:
-    card = render_first_card(
-        event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "reporting_origin": "ft"},
-        verdict={
-            "direction": "bullish",
-            "fact_kind": "state_change",
-            "headline_zh": "看 https://evil.example",
-            "why_zh": "算力供给链再加码",
-            "assets": [],
-        },
-        decision="push",
-        grounded_assets=[],
-    )
-
-    assert card["header"]["title"]["content"] == "Nvidia to invest $100bn"

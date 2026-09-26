@@ -1,20 +1,42 @@
-"""At-most-once reader-card delivery with best-effort in-place enrichment."""
+"""At-most-once News update delivery: plan, freeze, send once, then enrich the receipt in place (#706).
+
+One turn per pending `news_notification_work` marker: the core `Notifications` plans the adopted head
+against what the reader actually received, reserves one stable intent, composes and freezes that
+intent's Chinese card only then, rechecks it before the send and hands it to this loop, which is the
+channel side -- the preflight, the paced provider call, the provider's own receipt, and the Telegram
+enrichment edit that fills quotes and tradability into the message already sent. A card failure costs
+that intent's card attempt and nothing else; an outcome the provider did not report is held ambiguous
+and never sent again.
+
+Legacy `first`/`followup` intents are not sent any more: a pending one is dead-lettered at startup
+with `legacy_intent_retired`, and the settled ledger rows keep their edit reconciliation by intent id.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import functools
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Final, Protocol, runtime_checkable
 
-from ..artifact_identity import canonical_json, canonical_sha
-from ..bus import DeferError, PermanentError, TransientError, now_ms
-from ..delivery import card_assets, news_reader_card, reader_market_movements, reader_trade_targets
-from ..delivery_contracts import DELIVERY_FAILURE_RETRIABLE, classify_delivery_failure, retry_after_ms
+from ..bus import DeferError, TransientError, now_ms
+from ..delivery import (
+    news_update_card,
+    reader_market_movements,
+    reader_trade_targets,
+    update_card_assets,
+    update_news_at_ms,
+    update_primary_symbols,
+)
+from ..delivery_contracts import (
+    DELIVERY_FAILURE_RETRIABLE,
+    DELIVERY_FAILURE_UNKNOWN,
+    classify_delivery_failure,
+    retry_after_ms,
+)
 from ..feishu_card import feishu_card
 from ..market_review.pricing import (
     QUOTE_READ_TIMEOUT_SECONDS,
@@ -27,24 +49,25 @@ from ..market_review.pricing import (
 )
 from ..models import (
     MarketAsset,
-    Novelty,
     ReaderDeliveryPresentation,
-    ReaderMarketScope,
     TelegramDeliveryReceipt,
     base_symbol,
     market_type_of,
 )
-from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview, ProgressionVerifier
 from ..reader_card import ReaderCard
-from ..source_contracts import EVENT_KINDS
+from ..storage.event_updates import IntentLeaseLost
 from ..telemetry import NewsWorkSemantics
 from ..tradability import (
     TRADABILITY_REVIEW_TIMEOUT_SECONDS,
     TradabilityMatch,
     TradabilityReview,
     TradabilityVerifier,
-    tradability_candidates,
 )
+from ..updates.contracts import EventUpdate
+from ..updates.judgment import ContractFault, ProviderUnavailable
+from ..updates.notification import FrozenCard, NotificationPlan
+from ..updates.ports import SendOutcome
+from ..updates.service import Notifications, NotificationTurn
 from .runtime import NewsDatabasePort, _sleep_or_stop
 
 _DELIVERY_CANDLE_TIMEOUT_SECONDS = 2.0
@@ -54,57 +77,22 @@ _ONE_HOUR_MS = 3_600_000
 _DELIVERY_EDIT_TIMEOUT_SECONDS = 8.0
 _DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
 _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS = 0.25
-_PROGRESSION_REVIEW_CANDIDATE_MAX = 8
+_DELIVERY_PREPARE_TIMEOUT_SECONDS = 8.0
 
-# One Event, one card; there is no follow-up lane. The queue row and its ledger row are the same
-# intent at two moments, so they are keyed the same way.
-DELIVERY_KIND_FIRST: Final = "first"
-# The retry contract this lane used to rent from RabbitMQ, now held in PostgreSQL. The `news.deliver`
-# policy said `delivery-limit: 2`, which a quorum queue delivers three times because the first
-# delivery carries no `x-delivery-count`, and `delayed-retry-min/max: 30000`, a flat 30 s wait. Both
-# numbers are carried over unchanged: this change replaces the mechanism, not the observable timing,
-# exactly as #400 carried them over from the TTL lane before it. A graduated backoff would be a third
-# schedule for the same failure and nobody asked for one.
-DELIVERY_ATTEMPTS_MAX: Final = 3
-DELIVERY_RETRY_DELAY_MS: Final = 30_000
-# The claim's lease is that same wait: a claimed row is due again one retry later, so a process that
-# dies mid-attempt costs exactly the delay a failed attempt costs and needs no sweep to say so.
-# The loop takes one card per claim rather than a batch, because the work between the claim and the
-# settle -- a provider preparation, a quote read and the send itself -- is bounded well inside one
-# lease only when it is one card's worth.
-_DELIVERY_CLAIM_LIMIT = 1
-# How many cards one turn may send before the loop goes back to the top. A burst drains in one turn
-# instead of one per poll; an empty claim ends the turn immediately.
-_DELIVERY_SENDS_PER_TURN = 20
-# Idle poll. Shorter than the market loop's 2 s tick because this is a reader's first card and the
-# broker used to deliver it the instant Triage committed; one second is the whole latency the cut
-# costs, against a Triage stage that spends seconds in the model.
+# The one logical reader channel News notifies (#706). The configured provider is how it is reached.
+NEWS_CHANNEL: Final = "news"
+# How many pending notification markers one turn takes before the loop goes back to the top. A burst
+# drains in one turn instead of one per poll; an empty turn ends immediately.
+_NOTIFICATIONS_PER_TURN = 20
+# Idle poll. The semantic worker commits notification work in the adoption transaction; one second is
+# the whole latency polling costs against a semantic stage that spends seconds in the model.
 _DELIVERY_POLL_SECONDS = 1.0
+# What one notification turn may fail with after the core has already recorded it -- a deferred plan
+# or a spent card attempt -- and the loop survives. Anything else is unclassified and faults
+# `news_delivery`, with the attempt recorded first.
+_RECORDED_TURN_FAILURES: Final = (TimeoutError, ProviderUnavailable, ContractFault, ValueError, IntentLeaseLost)
 
 logger = logging.getLogger(__name__)
-
-
-class _ProviderNotSent(TransientError):
-    """A provider failure the adapter proved never reached a reader, carried back to the claim.
-
-    Transient is exactly what it is: the queue row keeps its lease, spends one of its three attempts
-    and comes back due one `DELIVERY_RETRY_DELAY_MS` later. It is its own type only so the claim can
-    record the provider's own code on the row instead of the name of this class -- an operator
-    reading a pending intent sees `news_delivery_feishu_business_rate_limited`, not that something
-    deferred it.
-    """
-
-
-def _claim_due(repos: Any, *, now_ms: int) -> list[dict[str, Any]]:
-    """The claim, as one statement over the repositories: the database ports take a plain callable."""
-
-    claims: list[dict[str, Any]] = repos.news.claim_due_deliveries(
-        now_ms=now_ms,
-        next_attempt_at_ms=now_ms + DELIVERY_RETRY_DELAY_MS,
-        attempts_max=DELIVERY_ATTEMPTS_MAX,
-        limit=_DELIVERY_CLAIM_LIMIT,
-    )
-    return claims
 
 
 async def read_display_quotes(
@@ -185,92 +173,6 @@ DeliveryPriceFetcher = Callable[[str, Sequence[int]], Awaitable[Mapping[int, Pri
 DeliveryPriceFetcherFor = Callable[[str], DeliveryPriceFetcher | None]
 
 
-def _reader_market_scope(verdict: Mapping[str, Any]) -> ReaderMarketScope | None:
-    value = str(verdict.get("scope") or "")
-    if value == "macro":
-        return "macro"
-    if value == "sector":
-        return "sector"
-    if value == "single_name":
-        return "single_name"
-    return None
-
-
-def _reader_novelty(verdict: Mapping[str, Any]) -> Novelty | None:
-    value = str(verdict.get("novelty") or "")
-    if value == "new_fact":
-        return "new_fact"
-    if value == "progression":
-        return "progression"
-    if value == "restatement":
-        return "restatement"
-    return None
-
-
-def _progression_review_candidates(
-    triage_row: Mapping[str, Any], verdict: Mapping[str, Any]
-) -> tuple[dict[str, Any], ...]:
-    if verdict.get("novelty") != "progression":
-        return ()
-    trace = triage_row.get("trace")
-    told = trace.get("told") if isinstance(trace, Mapping) else None
-    if not isinstance(told, Sequence) or isinstance(told, str | bytes):
-        return ()
-    candidates: list[dict[str, Any]] = []
-    # Every field this builder reads is named below, one at a time, with its own type check and its own
-    # bound. A key it does not read cannot change a candidate, so a told entry carrying one is not a
-    # reason to refuse anything: the rejected shape used to stop *every* progression card on the Event,
-    # and the only thing an added upstream field proves is that the ledger grew a column (#562 §5 row 4).
-    for fallback_i, entry in enumerate(told):
-        if not isinstance(entry, Mapping):
-            continue
-        headline = str(entry.get("headline_zh") or "").strip()
-        if not headline:
-            continue
-        raw_i = entry.get("i", fallback_i)
-        candidate_i = raw_i if isinstance(raw_i, int) and not isinstance(raw_i, bool) and raw_i >= 0 else fallback_i
-        raw_similarity = entry.get("similarity")
-        similarity = (
-            min(1.0, max(0.0, float(raw_similarity)))
-            if isinstance(raw_similarity, int | float) and not isinstance(raw_similarity, bool)
-            else 0.0
-        )
-        candidates.append(
-            {
-                "i": candidate_i,
-                "event_id": str(entry.get("event_id") or "")[:128],
-                "storyline_key": str(entry.get("storyline_key") or "")[:160],
-                "comparison_title": str(entry.get("comparison_title") or "")[:600],
-                "comparison_fingerprint": str(entry.get("comparison_fingerprint") or "")[:128],
-                "headline_zh": headline[:120],
-                "why_zh": str(entry.get("why_zh") or "")[:320],
-                "tier": str(entry.get("tier") or "recency")[:32],
-                "similarity": similarity,
-                "ago_min": (
-                    max(0, int(entry["ago_min"]))
-                    if isinstance(entry.get("ago_min"), int) and not isinstance(entry.get("ago_min"), bool)
-                    else None
-                ),
-                "at_ms": (
-                    int(entry["at_ms"])
-                    if isinstance(entry.get("at_ms"), int) and not isinstance(entry.get("at_ms"), bool)
-                    else None
-                ),
-                "symbols": [str(value)[:32] for value in entry.get("symbols") or ()][:6],
-                "direction": str(entry.get("direction") or "")[:32],
-            }
-        )
-        if len(candidates) >= _PROGRESSION_REVIEW_CANDIDATE_MAX:
-            break
-    return tuple(candidates)
-
-
-@dataclass(frozen=True, slots=True)
-class _ProgressionParentReference:
-    message_id: int | None = None
-    age_minutes: int | None = None
-
-
 class NewsPushSender(Protocol):
     """Synchronous provider boundary executed by the finite-operation runner."""
 
@@ -305,18 +207,19 @@ class EditableNewsPushSender(Protocol):
 class _EnrichmentEditContext:
     """What the enrichment task needs. Not the sender: the shared entry owns the one it may edit."""
 
+    intent_id: str
     event_id: str
-    kind: str
-    event: Mapping[str, Any]
-    verdict: Mapping[str, Any]
-    decision: str
-    grounded_assets: tuple[str, ...]
+    card: FrozenCard
+    plan: NotificationPlan
+    update: EventUpdate
     shown: tuple[MarketAsset, ...]
-    degraded: bool
     receipt: TelegramDeliveryReceipt
     presentation: ReaderDeliveryPresentation
-    progression_candidates: tuple[dict[str, Any], ...]
-    tradability_pending: bool
+    tradability_symbols: tuple[str, ...]
+
+
+def _error_code(exc: BaseException) -> str:
+    return str(getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}")[:160]
 
 
 # The initial-send deadline, unchanged, named once now that two owners share the entry.
@@ -468,13 +371,12 @@ class InitialSendEntry:
 
 
 class DelivererLoop:
-    """One initial send per identity, claimed from PostgreSQL; editable providers enrich that receipt.
+    """The channel side of News notifications: one frozen send per intent, then its enrichment edit.
 
-    The to-do list is `news_delivery_queue`, written by Triage inside the transaction that writes the
-    verdict. This loop claims a due row with `FOR UPDATE SKIP LOCKED`, spends one attempt on it, and
-    then does exactly what the `news.deliver` consumer did: `begin_delivery`, render, send, settle.
-    `news_deliveries` is untouched and remains the only ledger of what a reader was sent -- the queue
-    row is deleted the moment that ledger row exists (#598 D2).
+    Every turn walks the due `news_notification_work` markers and runs one core `Notifications` turn for
+    each, with this loop as its `Sender`. The durable to-do list is PostgreSQL's: the marker, the intent
+    row in `news_delivery_queue` and the `news_deliveries` ledger. `news_deliveries` is the only ledger of
+    what a reader was sent, and an update row there keeps the exact frozen body and provider receipt.
     """
 
     work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
@@ -486,25 +388,23 @@ class DelivererLoop:
         sender: NewsPushSender | None,
         finite_operations: Any,
         min_interval_seconds: float,
+        notifications: Notifications | None = None,
         candle_fetcher_for: DeliveryCandleFetcherFor | None = None,
         price_fetcher_for: DeliveryPriceFetcherFor | None = None,
-        progression_verifier: ProgressionVerifier | None = None,
         tradability_verifier: TradabilityVerifier | None = None,
     ) -> None:
         self.db = db
         self.sender = sender
         self.finite = finite_operations
+        self.notifications = notifications
         # The Deliverer owns the entry and composition hands the same object to the market loop, so
         # there is one pacer for the process rather than one per caller who remembered to share it.
-        # The enrichment edit goes through it too: this loop used to keep a second lock and a second
-        # stamp of its own, and on Telegram -- where every News card is edited once -- that made the
-        # provider see twice the rate the operator configured (#604 N3).
+        # The enrichment edit goes through it too (#604 N3).
         self.send_entry = InitialSendEntry(
             sender=sender, finite_operations=finite_operations, min_interval_seconds=min_interval_seconds
         )
         self._candle_fetcher_for = candle_fetcher_for
         self._price_fetcher_for = price_fetcher_for
-        self._progression_verifier = progression_verifier
         self._tradability_verifier = tradability_verifier
         self._edit_tasks: set[asyncio.Task[None]] = set()
 
@@ -514,8 +414,13 @@ class DelivererLoop:
                 "news_delivery_reconcile", lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms())
             )
         # Unlike an initial-send ambiguity, an inherited edit intent cannot be left in a pretend in-flight state:
-        # this process owns no edit task yet. Refuse to claim until PostgreSQL records that truth.
+        # this process owns no edit task yet. Refuse to claim until PostgreSQL records that truth. The legacy
+        # intents are retired the same way: a pending one is dead-lettered with its reason, never sent.
         startup_reconciliations = (
+            (
+                "news_delivery_retire_legacy",
+                lambda repos: repos.news.retire_legacy_delivery_intents(now_ms=now_ms()),
+            ),
             (
                 "news_delivery_edit_reconcile",
                 lambda repos: repos.news.terminalize_interrupted_delivery_edits(now_ms=now_ms()),
@@ -566,11 +471,11 @@ class DelivererLoop:
         )
 
     async def _claim_loop(self, *, stop_event: asyncio.Event) -> None:
-        """Claim what is due, send it, and sleep only when nothing was owed.
+        """Run what is due, and sleep only when nothing was owed.
 
-        Every business outcome of a send is already a durable `news_deliveries` row and never reaches
-        here; what reaches here is the claim transaction failing, and a database that cannot answer
-        this second is answered by waiting one poll rather than by faulting a capability.
+        Every business outcome of a turn is already durable and never reaches here; what reaches here
+        is a database that cannot answer this second, and that is answered by waiting one poll rather
+        than by faulting a capability.
         """
 
         while not stop_event.is_set():
@@ -582,378 +487,166 @@ class DelivererLoop:
                 await _sleep_or_stop(stop_event, _DELIVERY_POLL_SECONDS)
 
     async def advance(self) -> int:
-        """One turn, and this loop's one business action: up to `_DELIVERY_SENDS_PER_TURN` claims.
+        """One turn, and this loop's one business action: up to `_NOTIFICATIONS_PER_TURN` markers.
 
-        Each claim is its own transaction, and the work between two of them holds no database
-        session: a provider preparation, a quote read and the send itself all happen with the
-        connection released, exactly as they did under the consumer.
+        Nothing is planned without a channel to send on: with no sender configured the markers stay
+        pending and visible, and a corrected configuration picks them up (stale content is then refused
+        by the planner's own source-age rule, not by this loop). Each marker is its own set of short
+        transactions; the model calls and the send between them hold no database session.
         """
 
+        notifications = self.notifications
+        if notifications is None or self.sender is None:
+            return 0
+        event_ids = await notifications.store.pending_notification_events(NEWS_CHANNEL, _NOTIFICATIONS_PER_TURN)
         worked = 0
-        for _ in range(_DELIVERY_SENDS_PER_TURN):
-            stamp = now_ms()
-            claims = await self.db.tx("news_delivery_claim", functools.partial(_claim_due, now_ms=stamp))
-            if not claims:
-                return worked
-            for claim in claims:
-                await self._deliver_claim(
-                    event_id=str(claim["event_id"]),
-                    kind=str(claim["kind"]),
-                    attempts=int(claim["attempts"]),
-                )
+        for event_id in event_ids:
+            status = await self._notify(notifications, event_id)
+            if status != "no_work":
                 worked += 1
         return worked
 
-    async def _deliver_claim(self, *, event_id: str, kind: str, attempts: int) -> None:
-        """Run one attempt and settle the queue row on its outcome.
-
-        Three outcomes and no fourth. The intent is finished -- a ledger row exists, or this Event was
-        never owed a card -- and the row is deleted. The intent can never succeed, and the row becomes
-        `dead`: this lane's `news.dead`, kept in place instead of in a broker. Or the attempt did not
-        finish, and the row keeps the lease the claim gave it, until the budget the broker policy used
-        to enforce is spent.
-
-        The attempt the claim just spent is what `deliver` is told, so a provider failure the adapter
-        proved was never sent can choose between the second and the third of those (#604 N1).
-        """
+    async def _notify(self, notifications: Notifications, event_id: str) -> str:
+        """One notification turn for one Event, and the enrichment edit a sent Telegram card earns."""
 
         try:
-            await self.deliver(event_id=event_id, kind=kind, attempts=attempts)
-        except PermanentError as exc:
-            # The broker rejected these without requeue and they became dead letters. The row becomes
-            # `dead` in place instead, which is the same answer with the evidence left where an
-            # operator can read it.
-            await self._abandon_claim(event_id, kind, str(exc) or "news_delivery_refused")
-            return
-        except _ProviderNotSent as exc:
-            # The provider's own code rather than this lane's, because that is the whole diagnosis:
-            # a rate limit and a dead channel are the same row state and different operator actions.
-            # The adapter error is the cause, and it is the one that carries the provider's own wait.
-            await self._retry_or_abandon(event_id, kind, attempts, str(exc), retry_after_ms(exc.__cause__ or exc))
-            return
-        except (TransientError, DeferError) as exc:
-            await self._retry_or_abandon(
-                event_id,
-                kind,
-                attempts,
-                f"news_delivery_deferred:{type(exc).__name__}",
-                retry_after_ms(exc),
-            )
-            return
-        except Exception as exc:
-            # Unclassified, and the contract is the consumer's own: it failed the Deliverer, which
-            # ends the task and marks `news_delivery` faulted beside healthy capabilities. Kept
-            # exactly, with the attempt and its reason recorded on the intent first, so the operator
-            # who restarts the process finds the row saying what happened to it.
-            await self._defer_claim(event_id, kind, f"news_delivery_failed:{type(exc).__name__}", retry_after_ms(exc))
-            logger.error("news delivery attempt crashed event_id=%s (%s)", event_id, type(exc).__name__)
+            turn = await notifications.process(event_id, NEWS_CHANNEL, self)
+        except (TransientError, DeferError):
             raise
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx(
-                "news_delivery_claim_finish",
-                lambda repos: repos.news.finish_delivery_claim(event_id=event_id, kind=kind),
-            )
+        except _RECORDED_TURN_FAILURES as exc:
+            # Already recorded by the core: a deferred plan, a spent card attempt, or a lease another
+            # turn now owns. Semantics and the public outbox are untouched; the next due turn resumes.
+            logger.warning("news notification turn failed event_id=%s error=%s", event_id, _error_code(exc))
+            return "failed"
+        except Exception as exc:
+            logger.error("news notification turn crashed event_id=%s (%s)", event_id, type(exc).__name__)
+            raise
+        if turn.status == "sent":
+            self._enrich_sent(turn)
+        return turn.status
 
-    async def _retry_or_abandon(
-        self, event_id: str, kind: str, attempts: int, error_code: str, advised_wait_ms: int
-    ) -> None:
-        """Spend the attempt the claim already counted, or give up when it was the last one."""
+    # ------------------------------------------------------------------ the `Sender` port
+    async def send(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome:
+        """Send one frozen card through the configured provider and report what the provider proved.
 
-        if attempts >= DELIVERY_ATTEMPTS_MAX:
-            await self._abandon_claim(event_id, kind, error_code)
-            return
-        await self._defer_claim(event_id, kind, error_code, advised_wait_ms)
-
-    async def _defer_claim(self, event_id: str, kind: str, error_code: str, advised_wait_ms: int) -> None:
-        """Record why this attempt did not finish, and how long the provider asked us to stay away.
-
-        The claim's lease is this lane's own wait, and it stands unless the provider named a longer
-        one: `defer_delivery_claim` only ever moves the due time later, so a rate limit that says "not
-        for another two minutes" is obeyed and everything else keeps the flat 30 s (#604 N3).
+        The target preflight runs first and provably sends nothing, so any failure there is `not_sent`.
+        A provider failure the adapter proves never reached a reader is `not_sent` (retryable when its
+        cause passes, with the provider's own `Retry-After`); one it cannot account for is `ambiguous`
+        and is never sent again. The body is the frozen copy, rendered whole around code-owned facts.
         """
 
-        with contextlib.suppress(TransientError, DeferError):
-            stamp = now_ms()
-            await self.db.tx(
-                "news_delivery_claim_defer",
-                lambda repos: repos.news.defer_delivery_claim(
-                    event_id=event_id,
-                    kind=kind,
-                    error_code=error_code,
-                    next_attempt_at_ms=stamp + advised_wait_ms,
-                    now_ms=stamp,
-                ),
-            )
-
-    async def _abandon_claim(self, event_id: str, kind: str, error_code: str) -> None:
-        logger.warning("news delivery intent abandoned event_id=%s error_code=%s", event_id, error_code)
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx(
-                "news_delivery_claim_abandon",
-                lambda repos: repos.news.abandon_delivery_claim(
-                    event_id=event_id, kind=kind, error_code=error_code, now_ms=now_ms()
-                ),
-            )
-
-    async def deliver(
-        self, *, event_id: str, kind: str = DELIVERY_KIND_FIRST, attempts: int = DELIVERY_ATTEMPTS_MAX
-    ) -> None:
-        """One claimed intent: `begin_delivery`, render, send, settle.
-
-        `attempts` is the attempt this claim already spent, and the only thing it decides is whether a
-        failure the adapter proved was *not sent* is worth another one. It defaults to the whole
-        budget, so a caller with no queue row behind it -- a recovery, a test driving one delivery --
-        gets exactly one attempt and settles on it, which is what this method always did.
-        """
-
-        stamp = now_ms()
-        bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
-        if bundle is None:
-            raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, _admission, timing, catalog_candidates = bundle
-        # A queued delivery can outlive the source-contract migration that held its Event. Immutable
-        # evidence and historical verdicts remain audit facts; current PostgreSQL routing still wins before
-        # a delivery ledger row, quote read, or external send is attempted. A retired market kind is one of
-        # those held Events (#553): `_load` answers it with no verdict, which is what "readable evidence,
-        # never delivered" is. Re-testing `EVENT_KINDS` here was that same rule written a second time.
-        if triage_row is None:
-            return
-        tv = dict(triage_row.get("verdict") or {})
-        if triage_row["final_decision"] not in {"push", "escalate"}:
-            return
-        if self.sender is None:
-            await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
-            return
+        sender = self.sender
+        sha = card.payload_sha256
+        if sender is None:
+            return SendOutcome(state="not_sent", payload_sha256=sha, error_code="news_delivery_unavailable")
         try:
             await self.finite.run(
-                "news_delivery_prepare",
-                self.sender.prepare,
-                timeout_seconds=8.0,
+                "news_delivery_prepare", sender.prepare, timeout_seconds=_DELIVERY_PREPARE_TIMEOUT_SECONDS
             )
         except Exception as exc:
-            prepare_error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"
-            # A preflight that provably never reached the provider costs the intent one attempt, not
-            # the card: nothing has been written and nothing has been sent, so the claim keeps its
-            # lease and this Event is due again one delay later. A refusal and an unknown outcome
-            # settle here as they always have -- the target is wrong in a way waiting cannot fix, or
-            # the process cannot say what happened, and neither earns a second call.
-            retriable = classify_delivery_failure(exc) == DELIVERY_FAILURE_RETRIABLE
-            if retriable and attempts < DELIVERY_ATTEMPTS_MAX:
-                raise _ProviderNotSent(prepare_error_code) from exc
-            await self._settle_direct(event_id, kind, prepare_error_code, stamp)
-            if retriable:
-                raise PermanentError("news_delivery_attempts_exhausted") from exc
-            return
-        # Only query a quote after every policy return above. A quote failure
-        # never changes the delivery decision.
-        shown = card_assets(tv, list(card.get("grounded_assets") or []), catalog_candidates=catalog_candidates)
-        shown_symbols = [asset.symbol for asset in shown]
-        news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
-        observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
-        progression_candidates = _progression_review_candidates(triage_row, tv)
-        progression_review_pending = self._progression_verifier is not None and bool(progression_candidates)
-        _, title_identity_confident = tradability_candidates(event=card, verdict=tv, symbols=shown_symbols)
-        tradability_pending = (
-            self._tradability_verifier is not None
-            and _reader_market_scope(tv) == "single_name"
-            and (len(shown) == 1 or (not shown and title_identity_confident))
-        )
-        base_presentation = ReaderDeliveryPresentation(
-            news_at_ms=news_at_ms,
-            observed_at_ms=observed_at_ms,
-            market_scope=_reader_market_scope(tv),
-            novelty=_reader_novelty(tv),
-            # `⏳ 关联确认中` is a promise that an edit is on its way. With no verifier -- none
-            # configured, or the editorial Program faulted and left one unwired (#553 PR-3) -- no edit
-            # is coming, and the badge stayed on the card forever: a permanent "confirming" is a worse
-            # answer than the plain `新进展` the verdict already earned. It is shown only while a review
-            # this delivery actually started is still running (#562 §5 rows 3 and 6).
-            progression_review_state=("pending" if progression_review_pending else None),
-        )
-        progressive_sender = self.sender if isinstance(self.sender, EditableNewsPushSender) else None
-        quotes = (
-            [] if progressive_sender is not None else await self._market_data(shown, now_ms(), news_at_ms=news_at_ms)
-        )
-        reader_card = news_reader_card(
-            event=card,
-            verdict=tv,
-            decision=str(triage_row["final_decision"]),
-            grounded_assets=list(card.get("grounded_assets") or []),
-            assets=shown_symbols,
-            degraded=bool(triage_row.get("degraded")),
-            quotes=quotes,
-        )
-        # One card, two shapes: the model each channel renders for itself, and the Feishu JSON the
-        # ledger freezes as this delivery's evidence and Feishu posts unchanged (#562 PR-C).
-        card_payload = feishu_card(reader_card)
+            return SendOutcome(
+                state="not_sent",
+                payload_sha256=sha,
+                error_code=_error_code(exc),
+                retryable=classify_delivery_failure(exc) == DELIVERY_FAILURE_RETRIABLE,
+                retry_after_ms=retry_after_ms(exc) or None,
+            )
+        editable = isinstance(sender, EditableNewsPushSender)
+        shown = update_card_assets(update, card.claim_refs)
+        news_at_ms = update_news_at_ms(update, card.claim_refs)
+        # A channel that cannot be edited gets its quotes now; an editable one is sent first and edited.
+        quotes = [] if editable else await self._market_data(shown, now_ms(), news_at_ms=news_at_ms)
+        try:
+            reader_card = news_update_card(
+                card, plan=plan, update=update, assets=[asset.symbol for asset in shown], quotes=quotes
+            )
+        except ValueError as exc:
+            return SendOutcome(state="not_sent", payload_sha256=sha, error_code=f"news_delivery_render_failed:{exc}")
         presentation = (
-            replace(base_presentation, market_data_state="pending")
-            if progressive_sender is not None
-            else replace(
-                base_presentation,
+            ReaderDeliveryPresentation(news_at_ms=news_at_ms, market_data_state="pending")
+            if editable
+            else ReaderDeliveryPresentation(
+                news_at_ms=news_at_ms,
                 trade_targets=reader_trade_targets(quotes),
-                market_movements=reader_market_movements(shown_symbols, quotes),
+                market_movements=reader_market_movements([asset.symbol for asset in shown], quotes),
             )
         )
-        history_context_json = canonical_json(
-            {
-                "event_id": event_id,
-                "storyline_key": str(card.get("storyline_key") or ""),
-                "comparison_title": str(card.get("comparison_title") or ""),
-                "comparison_fingerprint": str(card.get("comparison_fingerprint") or ""),
-                "dedupe_family": str(card.get("dedupe_family") or "general"),
-                "grounded_assets": list(card.get("grounded_assets") or ()),
-                "canonical_assets": sorted(
-                    {base_symbol(str(value)) for value in card.get("grounded_assets") or ()}
-                    | {base_symbol(str(value.get("symbol") or "")) for value in tv.get("assets") or ()}
-                ),
-                "assets": list(tv.get("assets") or ()),
-                "direction": str(tv.get("direction") or "unclear"),
-                "headline_zh": str(tv.get("headline_zh") or ""),
-                "why_zh": str(tv.get("why_zh") or ""),
-                "policy_version": str(triage_row.get("policy_version") or ""),
-                "evidence_version": triage_row.get("evidence_version"),
-                "evidence_sha256": triage_row.get("evidence_sha256"),
-                "focus_fact_id": triage_row.get("focus_fact_id"),
-                "verdict_sha256": canonical_sha(tv),
-                "judgment_sha256": triage_row.get("judgment_sha256"),
-                "program_execution_index": dict(triage_row.get("trace") or {}).get("program_execution_index"),
-            }
-        )
-        state = await self.db.tx(
-            "news_delivery_begin",
-            lambda repos: repos.news.begin_delivery(
-                event_id=event_id, kind=kind, card=card_payload, now_ms=stamp, history_context_json=history_context_json
-            ),
-        )
-        if state != "new":
-            if state == "sending":
-                await self.db.tx(
-                    "news_delivery_ambiguous",
-                    lambda repos: repos.news.settle_delivery(
-                        event_id=event_id,
-                        kind=kind,
-                        state="terminal",
-                        receipt=None,
-                        error_code="ambiguous_after_crash",
-                        now_ms=now_ms(),
-                    ),
-                )
-            return
-        error_code: str | None = None
-        receipt: dict[str, Any] | None = None
-        # Whether the failure below was a retriable one on the last attempt this intent had.
-        exhausted = False
         try:
-            # The shared entry paces this send and serialises it against the market loop's. News
-            # keeps reading `code` and nothing else about the failure, exactly as before.
-            # `prepare=False`: the target was validated above, before `begin_delivery`, which is
-            # where this consumer wants a bad channel to fail. Preparing again here would be a second
-            # no-op call per delivery.
+            # `prepare=False`: the target was validated above, where a bad channel fails unsent.
             result = await self.send_entry.send_prepared_card(
-                reader_card,
-                channel_payload=card_payload,
-                presentation=presentation,
-                prepare=False,
+                reader_card, channel_payload=feishu_card(reader_card), presentation=presentation, prepare=False
             )
-            receipt = dict(result)
         except Exception as exc:
-            error_code = getattr(exc, "code", None) or f"news_delivery_failed:{type(exc).__name__}"
-            # Same three answers as the preflight above, one step later and with a row to give back.
-            # The adapter proved this card never reached the provider, so the `sending` row it wrote
-            # is a claim on the identity and not evidence of anything: released, the retry re-owns it;
-            # held, the retry would read `sending` and settle the Event `ambiguous_after_crash`.
-            if classify_delivery_failure(exc) == DELIVERY_FAILURE_RETRIABLE:
-                if attempts < DELIVERY_ATTEMPTS_MAX:
-                    await self.db.tx(
-                        "news_delivery_release",
-                        lambda repos: repos.news.release_delivery(event_id=event_id, kind=kind),
-                    )
-                    raise _ProviderNotSent(error_code) from exc
-                exhausted = True
-        settled_state = "sent" if error_code is None else "terminal"
-        try:
-            settlement_recorded = await self.db.tx(
-                "news_delivery_settle",
-                lambda repos: repos.news.settle_delivery(
-                    event_id=event_id,
-                    kind=kind,
-                    state=settled_state,
-                    receipt=receipt,
-                    error_code=error_code,
-                    now_ms=now_ms(),
-                ),
+            failure = classify_delivery_failure(exc)
+            if failure == DELIVERY_FAILURE_UNKNOWN:
+                return SendOutcome(state="ambiguous", payload_sha256=sha, error_code=_error_code(exc))
+            return SendOutcome(
+                state="not_sent",
+                payload_sha256=sha,
+                error_code=_error_code(exc),
+                retryable=failure == DELIVERY_FAILURE_RETRIABLE,
+                retry_after_ms=retry_after_ms(exc) or None,
             )
-        except (TransientError, DeferError) as exc:
-            raise RuntimeError("news_delivery_settlement_unavailable") from exc
-        if not settlement_recorded:
-            logger.warning("News delivery settlement failed: news_delivery_settlement_conflict")
-            return
-        if exhausted:
-            # The budget is spent on a card nobody ever received. The ledger row above carries the
-            # provider's last word, and the intent becomes this lane's dead letter under the same
-            # code an attempt no process finished earns.
-            raise PermanentError("news_delivery_attempts_exhausted")
+        receipt = dict(result)
+        message_id = receipt.get("message_id")
+        return SendOutcome(
+            state="sent",
+            payload_sha256=sha,
+            # Telegram answers with its message id; a Feishu webhook answers with none, and says so.
+            message_id=None if message_id is None else str(message_id),
+            receipt=receipt,
+        )
+
+    # ------------------------------------------------------------------ Telegram enrichment
+    def _enrich_sent(self, turn: NotificationTurn) -> None:
+        """Start the in-place edit a sent card on an editable channel earns: quotes, then tradability."""
+
+        sender = self.sender
         if (
-            progressive_sender is None
-            or settled_state != "sent"
-            or receipt is None
-            or (not shown and not progression_review_pending and not tradability_pending)
+            not isinstance(sender, EditableNewsPushSender)
+            or turn.lease is None
+            or turn.card is None
+            or turn.update is None
+            or turn.outcome is None
         ):
             return
+        card, plan, update = turn.card, turn.lease.plan, turn.update
+        shown = tuple(update_card_assets(update, card.claim_refs))
+        symbols = update_primary_symbols(update, card.claim_refs)
+        # One named instrument is what a catalogue check can answer about; a card about several, or
+        # about none, has no single contract to find.
+        tradability_symbols = symbols if self._tradability_verifier is not None and len(symbols) == 1 else ()
+        if not shown and not tradability_symbols:
+            return
         try:
-            parsed_receipt = TelegramDeliveryReceipt.model_validate(receipt)
+            receipt = TelegramDeliveryReceipt.model_validate(turn.outcome.receipt or {})
         except ValueError:
             logger.warning("News delivery enrichment edit failed: news_delivery_edit_receipt_invalid")
             return
-        self._start_enrichment_edit(
-            _EnrichmentEditContext(
-                event_id=event_id,
-                kind=kind,
-                event=dict(card),
-                verdict=dict(tv),
-                decision=str(triage_row["final_decision"]),
-                grounded_assets=tuple(card.get("grounded_assets") or ()),
-                shown=tuple(shown),
-                degraded=bool(triage_row.get("degraded")),
-                receipt=parsed_receipt,
-                presentation=base_presentation,
-                progression_candidates=progression_candidates,
-                tradability_pending=tradability_pending,
-            )
+        context = _EnrichmentEditContext(
+            intent_id=turn.lease.intent_id,
+            event_id=update.event_id,
+            card=card,
+            plan=plan,
+            update=update,
+            shown=shown,
+            receipt=receipt,
+            presentation=ReaderDeliveryPresentation(news_at_ms=update_news_at_ms(update, card.claim_refs)),
+            tradability_symbols=tradability_symbols,
         )
-
-    def _start_enrichment_edit(self, context: _EnrichmentEditContext) -> None:
-        task = asyncio.create_task(
-            self._enrich_and_edit(context),
-            name=f"news-delivery-edit-{context.event_id[:12]}",
-        )
+        task = asyncio.create_task(self._enrich_and_edit(context), name=f"news-delivery-edit-{update.event_id[:12]}")
         self._edit_tasks.add(task)
         task.add_done_callback(self._edit_tasks.discard)
 
     async def _enrich_and_edit(self, context: _EnrichmentEditContext) -> None:
         intent_started = False
         try:
-            quotes_task = self._market_data(
-                context.shown, context.receipt.pushed_at_ms, news_at_ms=context.presentation.news_at_ms
+            quotes, tradability_review = await asyncio.gather(
+                self._market_data(
+                    context.shown, context.receipt.pushed_at_ms, news_at_ms=context.presentation.news_at_ms
+                ),
+                self._tradability_review(context),
             )
-            review_task = self._progression_review(context)
-            tradability_task = self._tradability_review(context)
-            quotes, progression_review, tradability_review = await asyncio.gather(
-                quotes_task, review_task, tradability_task
-            )
-            parent_reference = await self._progression_parent_reference(context, progression_review)
-            displayed_progression_review = progression_review
-            if (
-                progression_review is not None
-                and progression_review.state == "confirmed"
-                and parent_reference.message_id is None
-            ):
-                displayed_progression_review = ProgressionReview(
-                    state="unavailable",
-                    reason_zh="未找到可引用的历史推送。",
-                    verifier_id=progression_review.verifier_id,
-                )
             resolved_shown = tuple(context.shown)
             if (
                 tradability_review is not None
@@ -975,19 +668,15 @@ class DelivererLoop:
                             if match.requested_symbol
                         )
                     )
-            reader_card = news_reader_card(
-                event=context.event,
-                verdict=context.verdict,
-                decision=context.decision,
-                grounded_assets=list(context.grounded_assets),
+            reader_card = news_update_card(
+                context.card,
+                plan=context.plan,
+                update=context.update,
                 assets=[asset.symbol for asset in resolved_shown],
-                degraded=context.degraded,
                 quotes=quotes,
                 # The catalogue's authoritative "nothing here can be traded" is a fact about the card,
-                # so it is set on the card and every channel prints it (#562 PR-C/PR-E). The identity
-                # confidence is still the one the deletion path was gated on: an authoritative absence
-                # is only worth printing about a candidate specific enough to be a ticker. What changed
-                # is what it authorises -- a line on the card, not its removal.
+                # so it is set on the card and every channel prints it (#562 PR-C/PR-E). It is printed
+                # only about a candidate specific enough to be a ticker, and never removes the card.
                 untradeable=(
                     tradability_review is not None
                     and tradability_review.state == "absent"
@@ -996,38 +685,12 @@ class DelivererLoop:
                 ),
             )
             card_payload = feishu_card(reader_card)
-            if displayed_progression_review is not None:
-                card_payload["progression_review"] = displayed_progression_review.model_dump(
-                    mode="json", exclude_none=True
-                )
             if tradability_review is not None:
                 card_payload["tradability_review"] = tradability_review.model_dump(mode="json", exclude_none=True)
             presentation = replace(
                 context.presentation,
                 trade_targets=reader_trade_targets(quotes),
                 market_movements=reader_market_movements([a.symbol for a in resolved_shown], quotes),
-                novelty=(
-                    "new_fact"
-                    if displayed_progression_review is not None and displayed_progression_review.state != "confirmed"
-                    else context.presentation.novelty
-                ),
-                progression_from_headline=(
-                    displayed_progression_review.candidate_headline_zh
-                    if displayed_progression_review is not None and displayed_progression_review.state == "confirmed"
-                    else context.presentation.progression_from_headline
-                ),
-                progression_review_state=(
-                    displayed_progression_review.state
-                    if displayed_progression_review is not None
-                    else context.presentation.progression_review_state
-                ),
-                progression_review_reason=(
-                    displayed_progression_review.reason_zh
-                    if displayed_progression_review is not None
-                    else context.presentation.progression_review_reason
-                ),
-                progression_review_parent_age_minutes=parent_reference.age_minutes,
-                progression_review_parent_message_id=parent_reference.message_id,
             )
             # The durable `editing` intent is claimed before the entry is, not inside it: the CAS is
             # what makes this the only task editing this receipt, and holding the process-wide send
@@ -1037,8 +700,7 @@ class DelivererLoop:
                 await self.db.tx(
                     "news_delivery_begin_edit",
                     lambda repos: repos.news.begin_delivery_edit(
-                        event_id=context.event_id,
-                        kind=context.kind,
+                        intent_id=context.intent_id,
                         card=card_payload,
                         receipt=context.receipt.canonical(),
                         now_ms=now_ms(),
@@ -1064,8 +726,7 @@ class DelivererLoop:
                 await self.db.tx(
                     "news_delivery_settle_edit",
                     lambda repos: repos.news.settle_delivery_edit(
-                        event_id=context.event_id,
-                        kind=context.kind,
+                        intent_id=context.intent_id,
                         receipt=updated_receipt.canonical(),
                         now_ms=now_ms(),
                     ),
@@ -1083,14 +744,18 @@ class DelivererLoop:
 
     async def _tradability_review(self, context: _EnrichmentEditContext) -> TradabilityReview | None:
         verifier = self._tradability_verifier
-        if verifier is None or not context.tradability_pending:
+        if verifier is None or not context.tradability_symbols:
             return None
+        # The catalogue check reads identities out of text as well as the symbol: the selected claims'
+        # own statements stand where the source title stood, and the frozen headline beside them.
+        claims = {claim.ref: claim for claim in context.update.claims}
+        statements = "\n".join(claims[ref].statement for ref in context.card.claim_refs if ref in claims)
         try:
             async with asyncio.timeout(TRADABILITY_REVIEW_TIMEOUT_SECONDS):
                 raw = await verifier.review(
-                    event=context.event,
-                    verdict=context.verdict,
-                    symbols=[asset.symbol for asset in context.shown],
+                    event={"leader_title": statements},
+                    verdict={"headline_zh": context.card.headline_zh},
+                    symbols=list(context.tradability_symbols),
                 )
             return raw if isinstance(raw, TradabilityReview) else TradabilityReview.model_validate(raw)
         except asyncio.CancelledError:
@@ -1098,96 +763,19 @@ class DelivererLoop:
         except Exception:
             return TradabilityReview(
                 state="incomplete",
-                candidates=tuple(asset.symbol for asset in context.shown),
+                candidates=context.tradability_symbols,
                 checked_venues=(),
                 failed_venues=(),
                 matches=(),
                 reason_zh="交易所目录核验超时或返回异常，按安全规则保留消息。",
             )
 
-    async def _progression_review(self, context: _EnrichmentEditContext) -> ProgressionReview | None:
-        verifier = self._progression_verifier
-        if verifier is None or not context.progression_candidates:
-            return None
-        try:
-            async with asyncio.timeout(PROGRESSION_REVIEW_TIMEOUT_SECONDS):
-                raw = await verifier.review(
-                    event=context.event,
-                    verdict=context.verdict,
-                    candidates=context.progression_candidates,
-                )
-            review = raw if isinstance(raw, ProgressionReview) else ProgressionReview.model_validate(raw)
-            if review.state != "confirmed":
-                return review
-            candidate = next(
-                (item for item in context.progression_candidates if item["i"] == review.candidate_i),
-                None,
-            )
-            if candidate is None:
-                raise ValueError("news_progression_review_candidate_missing")
-            return review.model_copy(update={"candidate_headline_zh": candidate["headline_zh"]})
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return ProgressionReview(
-                state="unavailable",
-                reason_zh="模型未返回可验证的关联结论。",
-                verifier_id=str(getattr(verifier, "verifier_id", type(verifier).__name__))[:120],
-            )
-
-    async def _progression_parent_reference(
-        self,
-        context: _EnrichmentEditContext,
-        review: ProgressionReview | None,
-    ) -> _ProgressionParentReference:
-        if review is None or review.state != "confirmed" or review.candidate_i is None:
-            return _ProgressionParentReference()
-        candidate = next(
-            (item for item in context.progression_candidates if item.get("i") == review.candidate_i),
-            None,
-        )
-        if candidate is None:
-            return _ProgressionParentReference()
-        parent_event_id = str(candidate.get("event_id") or "").strip()
-        if not parent_event_id:
-            return _ProgressionParentReference()
-        try:
-            row = await self.db.read(
-                "news_delivery_progression_parent",
-                lambda repos: repos.news.delivery(event_id=parent_event_id, kind="first"),
-                timeout_seconds=QUOTE_READ_TIMEOUT_SECONDS,
-            )
-            # A parent worth linking to is one this same channel sent, before this card, and settled.
-            # It used to be checked for deletion as well, in two ways -- a `delete_state` on the row
-            # and a `deleted_at_ms` on the receipt -- and #562 §5 row 5 removed the path that could
-            # ever have written either: no code in this repository deletes a card, so both were
-            # asking a question with one possible answer (#604 N3).
-            if not isinstance(row, Mapping) or row.get("state") != "sent":
-                return _ProgressionParentReference()
-            if not isinstance(row.get("receipt"), Mapping):
-                return _ProgressionParentReference()
-            parent_receipt = TelegramDeliveryReceipt.model_validate(row["receipt"])
-            if (
-                parent_receipt.target_sha256 != context.receipt.target_sha256
-                or parent_receipt.pushed_at_ms > context.receipt.pushed_at_ms
-            ):
-                return _ProgressionParentReference()
-            return _ProgressionParentReference(
-                message_id=parent_receipt.message_id,
-                age_minutes=(context.receipt.pushed_at_ms - parent_receipt.pushed_at_ms) // 60_000,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return _ProgressionParentReference()
-
     async def _mark_edit_ambiguous(self, context: _EnrichmentEditContext, error_code: str) -> None:
         try:
             recorded = await self.db.tx(
                 "news_delivery_ambiguous_edit",
                 lambda repos: repos.news.mark_delivery_edit_ambiguous(
-                    event_id=context.event_id,
-                    kind=context.kind,
+                    intent_id=context.intent_id,
                     receipt=context.receipt.canonical(),
                     error_code=error_code[:160],
                     now_ms=now_ms(),
@@ -1198,16 +786,6 @@ class DelivererLoop:
         except Exception as exc:
             bounded = getattr(exc, "code", None) or f"{type(exc).__module__}.{type(exc).__name__}"
             logger.warning("News delivery enrichment edit failed: %s", bounded)
-
-    async def _settle_direct(self, event_id: str, kind: str, error_code: str, stamp: int) -> None:
-        def _fn(repos: Any) -> None:
-            state = repos.news.begin_delivery(event_id=event_id, kind=kind, card={}, now_ms=stamp)
-            if state == "new":
-                repos.news.settle_delivery(
-                    event_id=event_id, kind=kind, state="terminal", receipt=None, error_code=error_code, now_ms=stamp
-                )
-
-        await self.db.tx("news_delivery_settle_direct", _fn)
 
     async def _market_data(
         self,
@@ -1537,37 +1115,6 @@ class DelivererLoop:
         except Exception:
             return None
         return index, candles
-
-    def _load(self, repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
-        del stamp
-        card = repos.news.event_card(event_id)
-        routing = repos.news.event_admission(event_id)
-        timing = repos.news.event_delivery_timing(event_id)
-        if card is None or routing is None:
-            return None
-        admission = str(routing.get("admission") or "")
-        event_kind = str(routing.get("event_kind") or "")
-        if event_kind not in EVENT_KINDS:
-            return card, None, admission, timing, {}
-        triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
-        if triage is None:
-            return None
-        # What the catalogue proves about the symbols this Event carries (#651 §6.2). Read in the same
-        # session as the card, and used for exactly one thing here: typing a pre-#651 or degraded asset
-        # the judgment left untyped, and only where the catalogue holds one market for it.
-        candidates = repos.instruments.instrument_class_candidates(
-            [
-                *(str(value) for value in card.get("grounded_assets") or () if value),
-                *(
-                    str(asset.get("symbol"))
-                    for asset in dict(triage.get("verdict") or {}).get("assets") or ()
-                    if isinstance(asset, Mapping) and asset.get("symbol")
-                ),
-            ]
-        )
-        # No OI frame row travels in this bundle any more (#458). It grounded the symbol on a pushed OI
-        # card, and Triage publishes to this consumer only on `push`, which the OI lane no longer produces.
-        return card, triage, admission, timing, candidates
 
     async def drain(self) -> None:
         tasks = tuple(self._edit_tasks)
