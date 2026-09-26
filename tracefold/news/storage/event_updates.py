@@ -250,7 +250,7 @@ def item_evidence(item: Mapping[str, Any]) -> Evidence | None:
 
 
 def revision_evidence(item: Mapping[str, Any], revision: Mapping[str, Any]) -> Evidence | None:
-    """A later body of one provider record: the same provenance, its own body identity and clock.
+    """A later source/body version of one provider record, with its own provenance and clock.
 
     The first body stays evidence too; a correction or an added exemption is visible only beside the
     text it revised.
@@ -260,12 +260,19 @@ def revision_evidence(item: Mapping[str, Any], revision: Mapping[str, Any]) -> E
     first = item_evidence(item)
     if not text or first is None:
         return None
+    origin = str(revision.get("reporting_origin") or "").strip() or None
+    url = str(revision.get("canonical_url") or "").strip() or None
     return Evidence.issue(
         text,
         first.source.model_copy(
             update={
-                "artifact_revision": str(revision["body_sha256"]),
+                "artifact_revision": str(revision["revision_sha256"]),
+                "artifact_id": str(revision.get("source_artifact_id") or "").strip() or str(item["source_item_key"]),
+                "origin_id": origin,
+                "url": url,
+                "published_at_ms": int(revision["published_at_ms"]),
                 "first_available_at_ms": int(revision["received_at_ms"]),
+                "source_authority": source_authority(tuple(value for value in (origin, url) if value)),
             }
         ),
     )
@@ -346,7 +353,7 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
             if value is not None:
                 evidence.append(value)
             for revision in sorted(
-                revisions.get(str(item_id), ()), key=lambda row: (int(row["received_at_ms"]), row["body_sha256"])
+                revisions.get(str(item_id), ()), key=lambda row: (int(row["received_at_ms"]), row["revision_sha256"])
             ):
                 revised = revision_evidence(item, revision)
                 if revised is not None:
@@ -630,9 +637,9 @@ class EventUpdateStorage:
             )
         )
         frozen_revisions = [
-            (str(member["item_id"]), str(body_sha))
+            (str(member["item_id"]), str(revision_sha))
             for member in members
-            for body_sha in member.get("body_revisions") or ()
+            for revision_sha in member.get("evidence_revisions") or ()
         ]
         items = (
             self.conn.execute(
@@ -650,10 +657,12 @@ class EventUpdateStorage:
         revisions = (
             self.conn.execute(
                 """
-                SELECT r.item_id, r.body_sha256, r.evidence_text, r.received_at_ms
+                SELECT r.item_id, r.revision_sha256, r.evidence_text, r.reporting_origin,
+                       r.source_artifact_id,
+                       r.canonical_url, r.published_at_ms, r.received_at_ms
                   FROM news_item_revisions r
-                  JOIN unnest(%s::text[], %s::text[]) AS frozen(item_id, body_sha256)
-                    ON frozen.item_id = r.item_id AND frozen.body_sha256 = r.body_sha256
+                  JOIN unnest(%s::text[], %s::text[]) AS frozen(item_id, revision_sha256)
+                    ON frozen.item_id = r.item_id AND frozen.revision_sha256 = r.revision_sha256
                 """,
                 ([row[0] for row in frozen_revisions], [row[1] for row in frozen_revisions]),
             ).fetchall()

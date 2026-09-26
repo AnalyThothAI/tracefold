@@ -86,7 +86,7 @@ class AdmitResult:
     evidence_focus_changed: bool = False
     # A later, different body of an already stored provider record: new evidence for every Event the
     # Item belongs to, not only the one this FactUnit was assigned to.
-    body_revised: bool = False
+    evidence_revised: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -847,11 +847,15 @@ def admit_item(
         evidence_text=prepared.evidence_text,
         evidence_text_sha256=prepared.evidence_text_sha256,
     )
-    body_revised = news.record_item_revision(
+    evidence_revised = news.record_item_revision(
         item_id=item_id,
         evidence_text=prepared.evidence_text,
         evidence_text_sha256=prepared.evidence_text_sha256,
         provider_params_json=prepared.provider_params_json,
+        reporting_origin=event.entry.reporting_origin or "opennews",
+        canonical_url=event.entry.link,
+        source_artifact_id=event.source_artifact_id,
+        published_at_ms=published_at_ms,
         received_at_ms=int(observed_at_ms),
     )
     existing_membership = news.fact_membership(
@@ -874,7 +878,7 @@ def admit_item(
             storyline_key=str(ev["storyline_key"]) if ev else "",
             comparison_fingerprint=fingerprint,
             title=title,
-            body_revised=body_revised,
+            evidence_revised=evidence_revised,
         )
 
     exact = (
@@ -928,7 +932,7 @@ def admit_item(
             grounded_assets_json=prepared.grounded_assets_json,
             watchlist_hits_json=prepared.watchlist_hits_json,
             now_ms=now_ms,
-            body_revised=body_revised,
+            evidence_revised=evidence_revised,
         )
         if append_evidence:
             _append_inline(repos, result, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
@@ -978,7 +982,7 @@ def admit_item(
                 grounded_assets_json=prepared.grounded_assets_json,
                 watchlist_hits_json=prepared.watchlist_hits_json,
                 now_ms=now_ms,
-                body_revised=body_revised,
+                evidence_revised=evidence_revised,
             )
             if append_evidence:
                 _append_inline(repos, result, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
@@ -1029,7 +1033,7 @@ def admit_item(
         storyline_key=storyline,
         comparison_fingerprint=fingerprint,
         title=title,
-        body_revised=body_revised,
+        evidence_revised=evidence_revised,
     )
     if append_evidence:
         _append_inline(repos, created, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
@@ -1100,7 +1104,7 @@ def _member_result(
     grounded_assets_json: str,
     watchlist_hits_json: str,
     now_ms: int,
-    body_revised: bool = False,
+    evidence_revised: bool = False,
 ) -> AdmitResult:
     """Attach a member and, when the member is stronger evidence than the leader, re-gate a suppressed Event."""
 
@@ -1149,7 +1153,7 @@ def _member_result(
         comparison_fingerprint=fingerprint,
         title=title,
         evidence_focus_changed=stronger,
-        body_revised=body_revised,
+        evidence_revised=evidence_revised,
     )
 
 
@@ -1351,7 +1355,7 @@ class DeduperConsumer:
             )
             for result, prepared in zip(batch.results, prepared_frame.admissions, strict=True)
         ]
-        if any(result.body_revised for result in batch.results):
+        if any(result.evidence_revised for result in batch.results):
             # A revised body is new evidence for every Event the Item already belongs to.
             revised = await self.db.read(
                 "news_item_revision_events",

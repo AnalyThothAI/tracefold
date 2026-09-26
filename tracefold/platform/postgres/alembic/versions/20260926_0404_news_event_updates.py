@@ -100,24 +100,28 @@ def _item_revisions() -> None:
         f"""
         CREATE TABLE public.news_item_revisions (
             item_id text NOT NULL,
-            body_sha256 text NOT NULL,
+            revision_sha256 text NOT NULL,
             evidence_text text NOT NULL,
             provider_params jsonb DEFAULT '{{}}'::jsonb NOT NULL,
+            reporting_origin text NOT NULL,
+            canonical_url text,
+            source_artifact_id text NOT NULL,
+            published_at_ms bigint NOT NULL,
             received_at_ms bigint NOT NULL,
-            CONSTRAINT news_item_revisions_pkey PRIMARY KEY (item_id, body_sha256),
+            CONSTRAINT news_item_revisions_pkey PRIMARY KEY (item_id, revision_sha256),
             CONSTRAINT news_item_revisions_item_fkey
                 FOREIGN KEY (item_id) REFERENCES public.news_items(item_id) ON DELETE CASCADE,
             CONSTRAINT news_item_revisions_shape_check CHECK (
-                body_sha256 ~ {_HEX64}
+                revision_sha256 ~ {_HEX64}
                 AND jsonb_typeof(provider_params) = 'object'
-                AND received_at_ms >= 0)
+                AND published_at_ms >= 0 AND received_at_ms >= 0)
         )
         """
     )
 
 
 def _evidence_snapshot_revisions() -> None:
-    """An evidence snapshot names the later body revisions of each member it freezes.
+    """An evidence snapshot names the later source/body revisions of each member it freezes.
 
     The member key is optional: a snapshot of Items with no later revision keeps its exact bytes and
     digest, so no existing Event observes a new evidence version merely because the rule changed.
@@ -186,7 +190,7 @@ def _evidence_snapshot_revisions() -> None:
                       news_jsonb_required_optional_keys(member, ARRAY[
                         'item_id','fact_id','fact_text','joined_at_ms','match_kind','jaccard_estimate',
                         'reporting_origin','canonical_url','provider_metadata','provenance'
-                      ], ARRAY['body_revisions'])
+                      ], ARRAY['evidence_revisions'])
                       AND jsonb_typeof(member -> 'item_id') = 'string' AND member ->> 'item_id' <> ''
                       AND jsonb_typeof(member -> 'fact_id') = 'string' AND member ->> 'fact_id' <> ''
                       AND jsonb_typeof(member -> 'fact_text') = 'string'
@@ -200,11 +204,11 @@ def _evidence_snapshot_revisions() -> None:
                       AND jsonb_typeof(member -> 'canonical_url') IN ('string','null')
                       AND jsonb_typeof(member -> 'provider_metadata') = 'object'
                       AND jsonb_typeof(member -> 'provenance') = 'array'
-                      AND (NOT member ? 'body_revisions' OR (
-                            jsonb_typeof(member -> 'body_revisions') = 'array'
-                            AND jsonb_array_length(member -> 'body_revisions') > 0
+                      AND (NOT member ? 'evidence_revisions' OR (
+                            jsonb_typeof(member -> 'evidence_revisions') = 'array'
+                            AND jsonb_array_length(member -> 'evidence_revisions') > 0
                             AND NOT EXISTS (
-                                  SELECT 1 FROM jsonb_array_elements(member -> 'body_revisions') revision
+                                  SELECT 1 FROM jsonb_array_elements(member -> 'evidence_revisions') revision
                                    WHERE jsonb_typeof(revision) <> 'string'
                                       OR NOT (revision #>> '{{}}') ~ {_HEX64}
                                 )

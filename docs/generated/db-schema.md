@@ -291,9 +291,13 @@
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `item_id` | `TEXT` | False | `None` |
-| `body_sha256` | `TEXT` | False | `None` |
+| `revision_sha256` | `TEXT` | False | `None` |
 | `evidence_text` | `TEXT` | False | `None` |
 | `provider_params` | `JSONB` | False | `'{}'::jsonb` |
+| `reporting_origin` | `TEXT` | False | `None` |
+| `canonical_url` | `TEXT` | True | `None` |
+| `source_artifact_id` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_items`

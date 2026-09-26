@@ -72,12 +72,20 @@ class RecordingBus:
         return [message.message_id for message in self.published if message.kind == "event"]
 
 
-def raw(record: int, text: str, *, stamp: int, link: str | None = None, ingest_mode: str = "live") -> BusMessage:
+def raw(
+    record: int,
+    text: str,
+    *,
+    stamp: int,
+    link: str | None = None,
+    source: str = "Reuters",
+    ingest_mode: str = "live",
+) -> BusMessage:
     params = {
         "id": record,
         "text": text,
         "link": link or f"https://example.org/{record}",
-        "source": "Reuters",
+        "source": source,
         "engineType": "news",
         "ts": stamp,
         "coins": [{"symbol": "BTC", "grade": "A"}],
@@ -146,12 +154,12 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     asyncio.run(deduper.handle(raw(7001, revised, stamp=STAMP + 10_000)))
     kept = sql("SELECT observed_at_ms, evidence_text FROM news_items WHERE item_id = %s", (item["item_id"],))[0]
     assert kept == {"observed_at_ms": item["observed_at_ms"], "evidence_text": item["evidence_text"]}
-    revision = sql("SELECT body_sha256, evidence_text, received_at_ms FROM news_item_revisions")
+    revision = sql("SELECT revision_sha256, evidence_text, received_at_ms FROM news_item_revisions")
     assert len(revision) == 1 and revision[0]["received_at_ms"] == STAMP + 10_000
     versions = snapshots(event_id)
     assert [row["evidence_version"] for row in versions] == [1, 2]
     member = next(m for m in versions[1]["snapshot"]["members"] if m["item_id"] == item["item_id"])
-    assert member["body_revisions"] == [revision[0]["body_sha256"]]
+    assert member["evidence_revisions"] == [revision[0]["revision_sha256"]]
     assert work(event_id)["wanted_revision"] == 2
     assert bus.wakes() == [f"event:{event_id}:1", f"event:{event_id}:2"]
 
@@ -161,13 +169,40 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     assert set(texts) == {revision[0]["evidence_text"]}
     assert {row.claim.ref for row in source.prior} >= {claim.ref for claim in original.claims}
     revised_source = texts[revision[0]["evidence_text"]]
-    assert revised_source.artifact_revision == revision[0]["body_sha256"]
+    assert revised_source.artifact_revision == revision[0]["revision_sha256"]
     assert revised_source.first_available_at_ms == STAMP + 10_000
     assert original.evidence[0].source.first_available_at_ms == item["observed_at_ms"]
 
     # Redelivering the revised body is exact again.
     asyncio.run(deduper.handle(raw(7001, revised, stamp=STAMP + 30_000)))
     assert work(event_id)["wanted_revision"] == 2 and len(bus.wakes()) == 2
+
+
+def test_an_attribution_only_revision_is_new_evidence_with_the_new_source() -> None:
+    bus = RecordingBus()
+    deduper = DeduperConsumer(bus=bus, db=ThreadedDb(), watchlist_symbols=frozenset({"BTC"}))
+    asyncio.run(deduper.handle(raw(7051, TITLE, stamp=STAMP, source="Reuters")))
+    event_id = event_of(7051)
+    clock = Clock(STAMP + 5_000)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
+    agent = NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock)
+    assert asyncio.run(agent.process(event_id)) == "adopted"
+    first = asyncio.run(store.head(event_id))
+    assert first is not None
+
+    asyncio.run(deduper.handle(raw(7051, TITLE, stamp=STAMP + 10_000, source="Associated Press")))
+    assert work(event_id)["wanted_revision"] == 2
+    assert bus.wakes() == [f"event:{event_id}:1", f"event:{event_id}:2"]
+    source = asyncio.run(store.input_for(event_id))
+    assert len(source.evidence) == 1
+    assert source.evidence[0].text == first.evidence[0].text
+    assert source.evidence[0].source.origin_id == "associated press"
+    assert source.evidence[0].ref != first.evidence[0].ref
+    assert source.evidence[0].source.first_available_at_ms == STAMP + 10_000
+    assert {row.claim.ref for row in source.prior} == {claim.ref for claim in first.claims}
+
+    asyncio.run(deduper.handle(raw(7051, TITLE, stamp=STAMP + 20_000, source="Associated Press")))
+    assert work(event_id)["wanted_revision"] == 2
 
 
 def test_a_near_match_joins_as_a_member_and_wakes_semantics_instead_of_settling() -> None:

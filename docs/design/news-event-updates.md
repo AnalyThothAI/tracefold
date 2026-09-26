@@ -20,7 +20,8 @@ NewsAgent: frozen input -> extraction checkpoint -> judgments -> observation
                                                  -> actual receipt and body
 ```
 
-Admission persists a changed source body as an item revision and wakes semantic
+Admission persists a changed source body or attribution as an item evidence
+revision, preserving that revision's source and receipt time, and wakes semantic
 work in the same transaction. Exact retransmission is idempotent. A near match
 joins an Event and supplies candidates; similarity does not decide equivalence or
 end semantic work. The existing worker queue runs `SemanticWorker`, which claims

@@ -178,9 +178,9 @@ def _snapshot_member(row: Mapping[str, Any]) -> dict[str, Any]:
         "provider_metadata": dict(row["provider_metadata"] or {}),
         "provenance": list(row["provenance"] or []),
     }
-    revisions = [str(value) for value in row.get("body_revisions") or ()]
+    revisions = [str(value) for value in row.get("evidence_revisions") or ()]
     if revisions:
-        member["body_revisions"] = revisions
+        member["evidence_revisions"] = revisions
     return member
 
 
@@ -353,35 +353,55 @@ class EventStorage:
         evidence_text: str,
         evidence_text_sha256: str,
         provider_params_json: str,
+        reporting_origin: str,
+        canonical_url: str | None,
+        source_artifact_id: str,
+        published_at_ms: int,
         received_at_ms: int,
     ) -> bool:
-        """Keep a changed body of an already stored provider record as a later revision.
+        """Keep a changed body or source attribution as a later evidence revision.
 
-        Returns True only for a body this record has not carried before. The first body stays on
-        `news_items`; an exact redelivery -- or a first fill of a record stored without a payload --
-        writes nothing, so the first-available clock of every body is its first receipt.
+        The first evidence stays on `news_items`; repeated source/body identities write nothing.
         """
 
         if not evidence_text.strip():
             return False
+        revision_sha256 = hashlib.sha256(
+            _dumps((evidence_text_sha256, reporting_origin, canonical_url, source_artifact_id)).encode("utf-8")
+        ).hexdigest()
         row = self.conn.execute(
             """
-            INSERT INTO news_item_revisions (item_id, body_sha256, evidence_text, provider_params, received_at_ms)
-            SELECT i.item_id, %s, %s, %s::jsonb, %s
+            INSERT INTO news_item_revisions (
+              item_id, revision_sha256, evidence_text, provider_params,
+              reporting_origin, canonical_url, source_artifact_id, published_at_ms, received_at_ms
+            )
+            SELECT i.item_id, %s, %s, %s::jsonb, %s, %s, %s, %s, %s
               FROM news_items i
              WHERE i.item_id = %s
                AND i.provider_params <> '{}'::jsonb
-               AND i.evidence_text_sha256 IS DISTINCT FROM %s
-            ON CONFLICT (item_id, body_sha256) DO NOTHING
+               AND (
+                 i.evidence_text_sha256 IS DISTINCT FROM %s
+                 OR i.reporting_origin IS DISTINCT FROM %s
+                 OR i.canonical_url IS DISTINCT FROM %s
+                 OR i.source_artifact_id IS DISTINCT FROM %s
+               )
+            ON CONFLICT (item_id, revision_sha256) DO NOTHING
             RETURNING item_id
             """,
             (
-                evidence_text_sha256,
+                revision_sha256,
                 evidence_text,
                 provider_params_json,
+                reporting_origin,
+                canonical_url,
+                source_artifact_id,
+                int(published_at_ms),
                 int(received_at_ms),
                 item_id,
                 evidence_text_sha256,
+                reporting_origin,
+                canonical_url,
+                source_artifact_id,
             ),
         ).fetchone()
         return row is not None
@@ -765,9 +785,9 @@ class EventStorage:
             SELECT m.item_id, m.fact_id, m.fact_text, m.joined_at_ms, m.match_kind, m.jaccard_estimate,
                    i.reporting_origin, i.canonical_url, i.provider_metadata, i.provenance,
                    COALESCE((
-                     SELECT jsonb_agg(r.body_sha256 ORDER BY r.received_at_ms, r.body_sha256)
+                     SELECT jsonb_agg(r.revision_sha256 ORDER BY r.received_at_ms, r.revision_sha256)
                        FROM news_item_revisions r WHERE r.item_id = m.item_id
-                   ), '[]'::jsonb) AS body_revisions
+                   ), '[]'::jsonb) AS evidence_revisions
               FROM news_event_members m
               JOIN news_items i ON i.item_id = m.item_id
              WHERE m.event_id = %s

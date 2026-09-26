@@ -413,7 +413,7 @@ def _admitted(event_id: str, dedupe_family: str, *, inserted: bool = True) -> An
         event_id=event_id,
         dedupe_family=dedupe_family,
         evidence_focus_changed=False,
-        body_revised=False,
+        evidence_revised=False,
     )
 
 
@@ -516,9 +516,13 @@ def test_deduper_wakes_semantic_work_for_new_evidence_of_admitted_live_events(mo
     assert news.names().count("mark_event_published") == 3
 
 
-def test_deduper_wakes_every_event_of_an_item_whose_body_was_revised(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deduper_wakes_every_event_of_an_item_whose_evidence_was_revised(monkeypatch: pytest.MonkeyPatch) -> None:
     revised = SimpleNamespace(
-        item_inserted=False, event_id="ev-new", dedupe_family="general", evidence_focus_changed=False, body_revised=True
+        item_inserted=False,
+        event_id="ev-new",
+        dedupe_family="general",
+        evidence_focus_changed=False,
+        evidence_revised=True,
     )
     monkeypatch.setattr(admission_module, "admit_item", lambda *_a, **_k: revised)
     news = RecordingNews(find_band_candidates=[], item_event_ids=["ev-new", "ev-old"])

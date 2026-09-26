@@ -42,7 +42,7 @@ def admit(repos, text: str, *, record: int = 664, stamp: int = 1000):
     )
 
 
-def test_raw_payload_late_fill_and_body_revisions(postgres_clone_dsn):
+def test_raw_payload_late_fill_and_evidence_revisions(postgres_clone_dsn):
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
         text = (

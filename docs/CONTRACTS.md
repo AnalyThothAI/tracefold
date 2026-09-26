@@ -886,7 +886,10 @@ candidate sets; current drift and success cohorts never cross.
 Fingerprints of at most two tokens never share an Event.
 
 Editorial EventUpdate identity is separate from the historical verdict key.
-A new evidence revision causes durable semantic work. The semantic result
+An Item's changed body, attribution or canonical source link creates a new
+evidence revision with its own source provenance; exact retransmission does not.
+Only evidence not yet analyzed for the Event enters the next extraction, while
+adopted claims remain comparison context. A new evidence revision causes durable semantic work. The semantic result
 binds its frozen input, program identity, actual model route and judgment
 answers. The adopted EventUpdate has one CAS head per Event and an insert-only
 content revision. A repeated or differently worded computation with no
@@ -951,6 +954,9 @@ remain audit data. Current Event detail projects them as `legacy_verdict`
 rather than translating them into claims. Current EventUpdate, processing
 status, claim decisions and actual deliveries are distinct read fields;
 the generated OpenAPI and TypeScript declarations own exact JSON shapes.
+The retained legacy verdict/review decoder accepts the fact-kind vocabulary
+`state_change|new_quantity|level_crossed|period_record|quantified_flow|official_measure|statement|recap|schedule|promotion`;
+these values do not classify new EventUpdate claims.
 
 Broker contract: topic exchange `news`, dead-letter exchange `news.dlx`, two
 quorum business queues — `news.raw` (`raw.#`; single-active) and `news.triage`
