@@ -31,12 +31,14 @@ export function TradingTally({
   executionsFailed,
   executionsPending,
   totals,
+  stale,
 }: {
   execution: TradingExecutionReadiness | undefined;
   executions: readonly TradingExecutionRow[];
   executionsFailed: boolean;
   executionsPending: boolean;
   totals: TradingRealizedTotals | undefined;
+  stale: boolean;
 }) {
   const account = execution?.current_account;
   const venue = entrySplit(executions);
@@ -47,7 +49,7 @@ export function TradingTally({
     <Card
       data-block="tally"
       hint="含手工入场，按 UTC 日界聚合；净收益需场所资金费完整覆盖"
-      title="今日战况"
+      title="账户收益与记录范围"
     >
       {/*
        * `.trading-fact-grid` rather than `@shared/ui/FactGrid`: that primitive drops a pair whose value is
@@ -84,7 +86,7 @@ export function TradingTally({
           className="trading-fact"
           data-tone={account?.positions?.length ? "caution" : undefined}
         >
-          <small>当前敞口</small>
+          <small>{stale ? "上次读取敞口" : "当前敞口"}</small>
           <b>{account ? (account.positions?.length ?? 0) : "UNAVAILABLE"}</b>
           <small>{account ? `挂单 ${account.open_orders_count}` : "读自 /status"}</small>
         </span>

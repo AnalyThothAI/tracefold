@@ -1,10 +1,12 @@
+import { useMediaQuery } from "@shared/hooks/useMediaQuery";
+import { researchReturnPath } from "@shared/routing/researchContext";
 import { ActionButton } from "@shared/ui/ActionButton";
 import { Drawer } from "@shared/ui/Drawer";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { useRef } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import {
   useTradingCaseWithToken,
@@ -19,6 +21,7 @@ import { TradingCaseDetail } from "./TradingCaseDetail";
 import { TradingCaseList } from "./TradingCaseList";
 import { TradingDecisionSummary } from "./TradingDecisionSummary";
 import { TradingLoopLedger } from "./TradingLoopLedger";
+import { TradingRecentCases } from "./TradingRecentCases";
 import { TradingExposure, TradingSafetyStrip } from "./TradingRisk";
 import { TradingTally } from "./TradingTally";
 
@@ -27,6 +30,8 @@ import "./trading.css";
 /** Three independent fact reads; positions, execution history and frozen decisions have distinct scopes. */
 export function TradingPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const wide = useMediaQuery("(min-width: 1100px)");
+  const researchFrom = researchReturnPath(searchParams.get("research_from"));
   const statusQuery = useTradingStatusWithToken(token);
   const casesQuery = useTradingCasesWithToken(token);
   const executionsQuery = useTradingExecutionsWithToken(
@@ -56,16 +61,24 @@ export function TradingPage({ token }: { token: string }) {
 
   const coldStatus = statusQuery.isPending && !status;
   const coldExecutions = executionsQuery.isPending && !executionsQuery.data;
-  if (coldStatus && coldExecutions) {
+  if (coldStatus && coldExecutions && casesQuery.isPending) {
     return <PageState.Loading label="正在读取交易台" layout="panel" rows={4} />;
   }
-  if (statusQuery.isError && executionsQuery.isError && !status && !executionsQuery.data) {
+  if (
+    statusQuery.isError &&
+    executionsQuery.isError &&
+    casesQuery.isError &&
+    !status &&
+    !executionsQuery.data &&
+    !casesQuery.data
+  ) {
     return (
       <PageState.Error
         error={statusQuery.error}
         onRetry={() => {
           void statusQuery.refetch();
           void executionsQuery.refetch();
+          void casesQuery.refetch();
         }}
       />
     );
@@ -104,38 +117,63 @@ export function TradingPage({ token }: { token: string }) {
       ? `已配置连接：Binance USD-M · ${execution.configured_connection} · ${execution.account_slot}；尚未连接`
       : "连接状态未取得";
 
+  const browseDecisions = () => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", "decisions");
+    next.delete("cursor");
+    next.delete("execution_case");
+    setSearchParams(next);
+  };
+  const detail = selectedCaseId ? (
+    <Drawer
+      title="策略判定依据"
+      open
+      inline={wide}
+      modal={false}
+      width={680}
+      restoreFocusTo={opener.current}
+      onOpenChange={(open) => {
+        if (!open) selectCase(null);
+      }}
+      actions={
+        <ActionButton size="sm" onClick={() => selectCase(null)}>
+          关闭
+        </ActionButton>
+      }
+    >
+      {selectedCase ? (
+        <TradingCaseDetail item={selectedCase} token={token} />
+      ) : (
+        <EmptyNote className="trading-empty-note">
+          {caseQuery.isPending || caseQuery.isError
+            ? ledgerSentence({
+                failed: caseQuery.isError,
+                pending: caseQuery.isPending,
+                subject: "策略判定",
+              })
+            : "未找到保留的策略判定。"}
+        </EmptyNote>
+      )}
+    </Drawer>
+  ) : null;
+
   return (
     <PageShell archetype="scan" className="trading-shell" label="交易执行监控">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
-          <span className="trading-eyebrow">TRADING / DECISION DESK</span>
+          <span className="trading-eyebrow">TRADING / EXECUTION DESK</span>
           <h1>交易执行</h1>
-          <p>从市场线索、Agent 判定到信号发布与真实执行，逐步追踪每一笔决策。</p>
+          <p>看清当前仓位，也看清策略判断与实际执行。</p>
         </div>
         <div className="trading-heading-aside">
-          <span>最近策略判定 {caseClock(status?.decision.last_case_at_ms)}</span>
-          <small>
-            分析
-            {status?.decision.state === "running"
-              ? "运行中"
-              : status?.decision.state === "model_unconfigured"
-                ? "模型未配置"
-                : status?.decision.state === "disabled"
-                  ? "已停用"
-                  : "不可用"}
-            {status?.decision.model_name ? ` · ${status.decision.model_name}` : ""}
-            {status?.decision.publish_signals ? " · Signal 发布已开启" : " · 只观察"}
-          </small>
-          <small>
-            {status?.decision.active_policy ?? "策略未取得"}
-            {status?.decision.config_digest
-              ? ` · 配置 ${status.decision.config_digest.slice(0, 12)}`
-              : ""}
-          </small>
-          <small>{connectionSummary}</small>
+          <span>{connectionSummary}</span>
         </div>
       </header>
-
+      {researchFrom ? (
+        <Link className="trading-research-return" to={researchFrom}>
+          ← 返回原始观察与筛选
+        </Link>
+      ) : null}
       <PageState.Stale
         failedRefresh={
           failed.length ? `${failed.join(" / ")}账本读取失败；保留其余已验证事实。` : undefined
@@ -148,38 +186,6 @@ export function TradingPage({ token }: { token: string }) {
         updating={casesQuery.isFetching || executionsQuery.isFetching}
       >
         <div className="trading-body">
-          {selectedCaseId ? (
-            <Drawer
-              title="策略判定依据"
-              open
-              modal={false}
-              width={680}
-              restoreFocusTo={opener.current}
-              onOpenChange={(open) => {
-                if (!open) selectCase(null);
-              }}
-              actions={
-                <ActionButton size="sm" onClick={() => selectCase(null)}>
-                  关闭
-                </ActionButton>
-              }
-            >
-              {selectedCase ? (
-                <TradingCaseDetail item={selectedCase} token={token} />
-              ) : (
-                <EmptyNote className="trading-empty-note">
-                  {caseQuery.isPending || caseQuery.isError
-                    ? ledgerSentence({
-                        failed: caseQuery.isError,
-                        pending: caseQuery.isPending,
-                        subject: "策略判定",
-                      })
-                    : "未找到保留的策略判定。"}
-                </EmptyNote>
-              )}
-            </Drawer>
-          ) : null}
-
           {status ? (
             <TradingSafetyStrip execution={status.execution} stale={stale} />
           ) : (
@@ -191,25 +197,12 @@ export function TradingPage({ token }: { token: string }) {
               })}
             </EmptyNote>
           )}
-
-          <TradingDecisionSummary
-            cases={casesQuery.data}
-            failed={casesQuery.isError}
-            pending={casesQuery.isPending}
-            onBrowse={() => {
-              const next = new URLSearchParams(searchParams);
-              next.set("tab", "decisions");
-              next.delete("cursor");
-              setSearchParams(next);
-            }}
-          />
-
           <div className="trading-research-tabs" role="group" aria-label="交易视图">
             {(
               [
                 ["positions", "持仓与订单"],
-                ["executions", "执行记录"],
                 ["decisions", "策略判定"],
+                ["executions", "执行记录"],
               ] as const
             ).map(([value, label]) => (
               <button
@@ -220,8 +213,9 @@ export function TradingPage({ token }: { token: string }) {
                 onClick={() => {
                   const next = new URLSearchParams(searchParams);
                   next.set("tab", value);
-                  next.delete("cursor");
-                  next.delete("execution_case");
+                  ["cursor", "execution_case", "case", "entry", "source_item_id"].forEach((key) =>
+                    next.delete(key),
+                  );
                   setSearchParams(next);
                 }}
               >
@@ -229,53 +223,100 @@ export function TradingPage({ token }: { token: string }) {
               </button>
             ))}
           </div>
-          {tab === "positions" ? (
-            <>
-              {status ? (
-                <TradingExposure execution={status.execution} stale={stale} />
+          <div
+            className="trading-workbench"
+            data-split={tab === "positions" || !!selectedCaseId || undefined}
+          >
+            <div className="trading-workbench-main">
+              {tab === "positions" ? (
+                <>
+                  {status ? (
+                    <TradingExposure execution={status.execution} stale={stale} />
+                  ) : (
+                    <EmptyNote>当前仓位与保护暂不可读。</EmptyNote>
+                  )}
+                  <TradingTally
+                    execution={status?.execution}
+                    executions={executions}
+                    executionsFailed={executionsQuery.isError}
+                    executionsPending={executionsQuery.isPending}
+                    totals={executionsQuery.data?.totals}
+                    stale={stale}
+                  />
+                </>
+              ) : tab === "executions" ? (
+                <>
+                  {searchParams.get("execution_case") ? (
+                    <p className="trading-scope-note">
+                      仅查看判定 {searchParams.get("execution_case")} 的全部保留执行。
+                      <ActionButton
+                        size="sm"
+                        onClick={() => {
+                          const next = new URLSearchParams(searchParams);
+                          next.delete("execution_case");
+                          next.delete("entry");
+                          setSearchParams(next);
+                        }}
+                      >
+                        返回最近 24 小时
+                      </ActionButton>
+                    </p>
+                  ) : null}
+                  <TradingLoopLedger
+                    caseFiltered={!!searchParams.get("execution_case")}
+                    complete={executionsQuery.data?.complete ?? true}
+                    failed={executionsQuery.isError}
+                    onOpenCase={selectCase}
+                    pending={executionsQuery.isPending}
+                    rows={executions}
+                    selectedCaseId={selectedCaseId}
+                  />
+                </>
               ) : (
-                <EmptyNote>当前仓位与保护暂不可读。</EmptyNote>
+                <TradingCaseList token={token} onOpen={selectCase} />
               )}
-              <TradingTally
-                execution={status?.execution}
-                executions={executions}
-                executionsFailed={executionsQuery.isError}
-                executionsPending={executionsQuery.isPending}
-                totals={executionsQuery.data?.totals}
-              />
-            </>
-          ) : tab === "executions" ? (
-            <>
-              {searchParams.get("execution_case") ? (
-                <p className="source-line">
-                  仅查看判定 {searchParams.get("execution_case")} 的全部保留执行。
-                  <ActionButton
-                    size="sm"
-                    onClick={() => {
-                      const next = new URLSearchParams(searchParams);
-                      next.delete("execution_case");
-                      setSearchParams(next);
-                    }}
-                  >
-                    返回最近 24 小时
-                  </ActionButton>
-                </p>
-              ) : null}
-              <TradingLoopLedger
-                caseFiltered={!!searchParams.get("execution_case")}
-                complete={executionsQuery.data?.complete ?? true}
-                failed={executionsQuery.isError}
-                onOpenCase={selectCase}
-                pending={executionsQuery.isPending}
-                rows={executions}
-                selectedCaseId={selectedCaseId}
-              />
-            </>
-          ) : (
-            <>
-              <TradingCaseList token={token} onOpen={selectCase} />
-            </>
-          )}
+            </div>
+            {detail}
+            {tab === "positions" ? (
+              <div hidden={!!selectedCaseId}>
+                <TradingRecentCases token={token} onOpen={selectCase} onBrowse={browseDecisions} />
+              </div>
+            ) : null}
+          </div>
+          <details className="trading-process-disclosure" open={tab === "decisions" || undefined}>
+            <summary>策略运行与统计口径</summary>
+            <div className="trading-runtime-context">
+              <span>最近策略判定 {caseClock(status?.decision.last_case_at_ms)}</span>
+              <span>
+                分析
+                {status?.decision.state === "running"
+                  ? "运行中"
+                  : status?.decision.state === "model_unconfigured"
+                    ? "模型未配置"
+                    : status?.decision.state === "disabled"
+                      ? "已停用"
+                      : "不可用"}
+                {status?.decision.model_name ? ` · ${status.decision.model_name}` : ""}
+                {status
+                  ? status.decision.publish_signals
+                    ? " · Signal 发布已开启"
+                    : " · 只观察"
+                  : " · 发布状态未取得"}
+              </span>
+              <span>
+                {status?.decision.active_policy ?? "策略未取得"}
+                {status?.decision.config_digest
+                  ? ` · 配置 ${status.decision.config_digest.slice(0, 12)}`
+                  : ""}
+              </span>
+            </div>
+            <TradingDecisionSummary
+              cases={casesQuery.data}
+              failed={casesQuery.isError}
+              pending={casesQuery.isPending}
+              onBrowse={browseDecisions}
+            />
+          </details>
         </div>
       </PageState.Stale>
     </PageShell>

@@ -74,6 +74,7 @@ test("opens beside the list, swaps to the next row, and closes on Esc", async ({
 });
 
 test("keeps its Event when a newer one lands at the top of the feed", async ({ page }) => {
+  await page.clock.install();
   const feed = await installMockApi(page);
   await page.goto("/news");
   await expect(page.locator(".news-event-row").first()).toBeVisible();
@@ -83,7 +84,15 @@ test("keeps its Event when a newer one lands at the top of the feed", async ({ p
   await expect(openLink).toHaveAttribute("href", openFullPage("evt-global-policy-2"));
 
   // A live feed prepends and every row index shifts by one. The drawer holds an Event, not a position.
+  // Opening a lower row can scroll the feed. This scenario observes a reader at the top;
+  // away from the top, the product intentionally defers new rows to preserve the reading position.
+  await page.locator(".center-column").evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
   feed.prependEvent("evt-breaking");
+  // Drive the 3-second poll explicitly; concurrent browser workers must not decide its timing.
+  await page.clock.runFor(3100);
   await expect(page.locator(".news-event-row").first()).toHaveAttribute(
     "data-event-id",
     "evt-breaking",

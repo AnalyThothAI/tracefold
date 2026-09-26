@@ -12,7 +12,6 @@ import {
 } from "../../api/newsQueries";
 import { mergeMarketGroups, parseMarketKinds } from "../../model/marketFacts";
 import { optionalTime } from "../../model/newsLabels";
-import { NewsPageHeader } from "../chrome/NewsChrome";
 
 import { NewsMarketGroupTable } from "./NewsMarketGroupTable";
 import { NewsMarketSources } from "./NewsMarketSources";
@@ -101,10 +100,11 @@ export function NewsMarketPage({ token }: { token: string }) {
 
   return (
     <PageShell archetype="scan" className="news-market-shell" label="市场研究">
-      <NewsPageHeader
-        subtitle="先看哪个市场发生变化，再核对测量口径和原始依据。OI 表示未平仓合约规模，增减本身不判断多空。"
-        title="市场研究"
-      />
+      <header className="news-market-page-heading">
+        <span>RESEARCH / MARKET OBSERVATIONS</span>
+        <h1>市场研究</h1>
+        <p>从异动开始，沿证据展开。先核对变化和测量口径，再查看策略判定。</p>
+      </header>
 
       {marketQuery.isLoading && !firstPage ? (
         <div className="news-market-body">
@@ -253,9 +253,10 @@ export function NewsMarketPage({ token }: { token: string }) {
               token={token}
             />
 
+            <IngestNote query={statusQuery} />
             <details className="news-market-panel news-market-data-disclosure">
               <summary>采集、解析与通知详情</summary>
-              <IngestNote query={statusQuery} />
+
               <NewsMarketSources selected={kinds} sources={firstPage.sources} />
               <SourceLine
                 note="来源计数是完整时间窗口，未应用品种与口径筛选；解析与通知分别记录。"

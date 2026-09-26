@@ -44,7 +44,7 @@ export function AppBrand() {
       <BrandMark className="cockpit-app-sidebar-mark" />
       <span className="cockpit-app-sidebar-brand-copy">
         <b>Tracefold</b>
-        <small>News V3 Console</small>
+        <small>研究与执行工作台</small>
       </span>
     </div>
   );
