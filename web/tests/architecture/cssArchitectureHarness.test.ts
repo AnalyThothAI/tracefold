@@ -663,7 +663,7 @@ function matchesAnyPrefix(className: string, prefixes: string[]): boolean {
 }
 
 function relativeToSrc(path: string): string {
-  return relative(srcRoot, path);
+  return relative(srcRoot, path).split(sep).join("/");
 }
 
 function isGlobalStyleFile(path: string): boolean {

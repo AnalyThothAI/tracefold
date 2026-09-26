@@ -1,3 +1,4 @@
+import { researchReturnPath, withResearchReturn } from "@shared/routing/researchContext";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import type { NewsMarketObservation } from "../../api/newsQueries";
@@ -56,6 +57,8 @@ export function OiEvidence({ observation: o }: { observation: NewsMarketObservat
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const researchFrom =
+    researchReturnPath(params.get("research_from")) ?? location.pathname + location.search;
   if (o.market_kind !== "oi") return null;
   return (
     <section className="news-oi-evidence" aria-label="OI 观察依据">
@@ -91,12 +94,17 @@ export function OiEvidence({ observation: o }: { observation: NewsMarketObservat
             按这条观察的口径比较
           </button>
         ) : null}
-        <Link to={`/trading?tab=decisions&source_item_id=${o.item_id}`}>
+        <Link
+          className="news-oi-strategy-link"
+          to={withResearchReturn(
+            `/trading?tab=decisions&source_item_id=${encodeURIComponent(o.item_id)}`,
+            researchFrom,
+          )}
+        >
           查看这条观察的策略判定
         </Link>
         <Link
-          state={{ researchFrom: location.pathname + location.search }}
-          to={`/news/market/${o.item_id}`}
+          to={withResearchReturn(`/news/market/${encodeURIComponent(o.item_id)}`, researchFrom)}
         >
           打开完整观察
         </Link>

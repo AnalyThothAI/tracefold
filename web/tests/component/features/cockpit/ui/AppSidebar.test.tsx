@@ -10,7 +10,7 @@ describe("AppSidebar", () => {
     renderSidebar();
 
     expect(screen.getByText("Tracefold")).toBeInTheDocument();
-    expect(screen.getByText("News V3 Console")).toBeInTheDocument();
+    expect(screen.getByText("研究与执行工作台")).toBeInTheDocument();
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const headings = within(navigation).getAllByRole("heading", { level: 2 });
     /*

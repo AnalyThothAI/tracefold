@@ -1,5 +1,5 @@
 import { Dialog } from "radix-ui";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import "./Drawer.css";
 
@@ -20,6 +20,7 @@ export function Drawer({
   children,
   eyebrow,
   flush = false,
+  inline = false,
   modal = true,
   onOpenChange,
   open,
@@ -33,6 +34,8 @@ export function Drawer({
   eyebrow?: ReactNode;
   /** For a body that brings its own padding — a navigation list, a full-bleed table. */
   flush?: boolean;
+  /** A wide workbench keeps the same accessible detail surface beside its list. */
+  inline?: boolean;
   modal?: boolean;
   onOpenChange: (open: boolean) => void;
   open: boolean;
@@ -42,14 +45,16 @@ export function Drawer({
   title: string;
   width?: number;
 }) {
+  const Container = inline ? Fragment : Dialog.Portal;
   return (
     <Dialog.Root modal={modal} onOpenChange={onOpenChange} open={open}>
-      <Dialog.Portal>
+      <Container>
         {modal ? <Dialog.Overlay className="ui-drawer-overlay" /> : null}
         <Dialog.Content
           aria-describedby={undefined}
           className="ui-drawer"
           data-flush={flush || undefined}
+          data-inline={inline || undefined}
           data-side={side}
           /*
            * A non-modal sheet keeps its dismiss layer out of the page's way. Radix would otherwise close it
@@ -70,7 +75,7 @@ export function Drawer({
                 }
               : undefined
           }
-          style={width ? { width: `min(${width}px, 100%)` } : undefined}
+          style={!inline && width ? { width: `min(${width}px, 100%)` } : undefined}
         >
           <header className="ui-drawer-head">
             {eyebrow ? <span className="ui-drawer-eyebrow">{eyebrow}</span> : null}
@@ -79,7 +84,7 @@ export function Drawer({
           </header>
           <div className="ui-drawer-body">{children}</div>
         </Dialog.Content>
-      </Dialog.Portal>
+      </Container>
     </Dialog.Root>
   );
 }

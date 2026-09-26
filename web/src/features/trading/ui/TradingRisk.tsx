@@ -1,6 +1,5 @@
 import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
-import { Metric, MetricRow } from "@shared/ui/Metric";
 import { SourceLine } from "@shared/ui/SourceLine";
 import type { ReactNode } from "react";
 
@@ -13,7 +12,9 @@ import {
   protectionStatusLabel,
 } from "../model/tradingLabels";
 
-/** Read the single current-state contract, keeping expired observations explicitly historical. */
+import { TradingPriceRange } from "./TradingPriceRange";
+
+/** Read one current-state contract, keeping expired or failed observations historical. */
 export function TradingSafetyStrip({
   execution,
   stale,
@@ -29,20 +30,30 @@ export function TradingSafetyStrip({
        * (#680), so the proof and the tile went together. What remains is whether the process is alive and
        * whether it will take a new entry — and if not, the reason it names.
        */}
-      <MetricRow className="trading-safety-grid" columns={2} label="执行安全状态">
-        <Metric
-          eyebrow="执行状态通道"
-          value={safety(execution.alive, stale)}
-          caption="Runtime 心跳经数据库与 HTTP 发布"
-          tone={!stale && execution.alive ? "accent" : "caution"}
-        />
-        <Metric
-          eyebrow="允许新增仓位"
-          value={safety(execution.entries_armed, stale)}
-          caption={stale ? "等待新状态" : entryBlockReasonLabel(execution.entry_block_reason)}
-          tone={!stale && execution.entries_armed ? "accent" : "caution"}
-        />
-      </MetricRow>
+      <div className="trading-safety-grid" aria-label="执行安全状态">
+        <div
+          className="trading-safety-fact"
+          data-tone={!stale && execution.alive ? "ready" : "caution"}
+        >
+          <span>执行状态通道</span>
+          <b>{safety(execution.alive, stale)}</b>
+          <small>Runtime 心跳经数据库与 HTTP 发布</small>
+        </div>
+        <div
+          className="trading-safety-fact"
+          data-tone={!stale && execution.entries_armed ? "ready" : "caution"}
+        >
+          <span>允许新增仓位</span>
+          <b>{safety(execution.entries_armed, stale)}</b>
+          <small>
+            {stale ? "等待新状态" : entryBlockReasonLabel(execution.entry_block_reason)}
+          </small>
+        </div>
+        <span className="trading-connection-tag">
+          {stale ? "上次连接：" : ""}
+          {execution.connection ?? "尚未连接"}
+        </span>
+      </div>
       {stale ? (
         <p role="status" className="trading-alert-line" data-tone="caution">
           状态通道失联：未取得有效期内的新状态，无法确认 Runtime 当前运行情况；下方保留上次观察。
@@ -103,7 +114,11 @@ export function TradingExposure({
   const open =
     (account?.positions_total ?? 0) > 0 || orders.length > 0 || execution.unexpected_exposure;
   return (
-    <Card data-block="exposure" flush title="当前仓位与保护">
+    <Card
+      data-block="exposure"
+      flush
+      title={accountUnconfirmed ? "上次读取的仓位与保护" : "当前仓位与保护"}
+    >
       <details className="trading-exposure" open={open}>
         <summary>
           <span>
@@ -169,9 +184,12 @@ export function TradingExposure({
           {observedTime(execution.venue_read_completed_at_ms)}
         </p>
         <div className="trading-fact-grid">
-          <Fact label="账户权益" value={moneyLabel(account?.equity_usd)} />
           <Fact
-            label="当日回撤"
+            label={stale ? "上次账户权益" : "账户权益"}
+            value={moneyLabel(account?.equity_usd)}
+          />
+          <Fact
+            label={stale ? "上次当日回撤" : "当日回撤"}
             value={
               account?.daily_drawdown_usd == null
                 ? "未取得"
@@ -222,6 +240,7 @@ export function TradingExposure({
                       warn={position.unrealized_pnl_usd == null}
                     />
                   </div>
+                  <TradingPriceRange position={position} stale={riskUnconfirmed} />
                   <div
                     className="trading-protection-strip"
                     data-tone={!accountUnconfirmed && guarded ? "protected" : "caution"}

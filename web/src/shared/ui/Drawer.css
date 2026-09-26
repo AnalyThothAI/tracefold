@@ -27,6 +27,27 @@
     box-shadow: var(--shadow-drawer-right);
   }
 
+  .ui-drawer[data-inline] {
+    position: relative;
+    inset: auto;
+    z-index: auto;
+    align-self: start;
+    width: 100%;
+    min-width: 0;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--ring-panel);
+    overflow: hidden;
+  }
+
+  .ui-drawer[data-inline] .ui-drawer-body {
+    overflow: visible;
+    padding: 18px;
+  }
+
+  .ui-drawer[data-inline][data-flush] .ui-drawer-body {
+    padding: 0;
+  }
+
   .ui-drawer-head {
     display: flex;
     gap: 10px;

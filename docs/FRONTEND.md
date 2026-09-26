@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench plus one read-only Alpha/Execution monitor. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/events`, `/api/news/wallets/events/{episode_id}`, `/api/trading/status`, `/api/trading/cases`, and `/api/trading/executions` over HTTP — fifteen reads, which is every `/api/` path the server publishes. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The wallet reads expose token episodes, direct episode detail and auxiliary roster/state.
+The React operator console is a News workbench plus one read-only Alpha/Execution monitor. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/events`, `/api/news/wallets/events/{episode_id}`, `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, and the on-demand `/api/trading/cases/{case_id}/replay` over HTTP. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The wallet reads expose token episodes, direct episode detail and auxiliary roster/state.
 `GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2 on the same terms: the OI frame table joined each admission row to its Event on the same line, #553 PR-1 removed that join with the Events themselves, and `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two admission-ledger statements directly. Every operation is a read. The console manual command route and controls were removed in #624. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
@@ -59,7 +59,7 @@ the route components into the eager shell chunk.
 - **Design contract and page archetypes.** Tracefold has one light, restrained
   operator-workbench language: 冷石板 / B SLATE (#74, redesigned to the v6 spec). The
   console is read in Chinese, and Han glyphs bloom under light-on-dark at these sizes,
-  so the ground is a cool grey `#eaedf1` and the ink is near-black. A panel is white,
+  so the ground is a cool grey `#f1f3f5` and the ink is graphite `#1e2733`. A panel is white,
   radius 10, separated from the canvas by a 1px *inset* ring (`--ring-panel`) — never by
   lightening and never by a drop shadow. Real elevation is spent on exactly four things:
   the segmented control's selected pill, the drawer, the pipeline-health popover, and the
@@ -72,8 +72,9 @@ the route components into the eager shell chunk.
   never re-flows the ones beside it.
 
   Stable routes declare one of two information archetypes with `data-page-archetype`:
-  `scan` for the News Event feed, 市场事实, the token page and News status, which sit in a
-  1340px measure;
+  `scan` for the News Event feed, market research, the token page and News status.
+  The Event feed retains its dense 1340px measure; market research and Trading
+  use a 1440px workbench with more space between evidence groups;
   `case` for News Event detail, one document centred at 1000px whose hero leads with the
   model's market direction. The archetype governs measure, hierarchy and density, never
   data ownership or business inference.
@@ -138,7 +139,11 @@ the route components into the eager shell chunk.
   vocabulary does not apply here, and neither does the Signal lane's.
 
   It reads `/api/news/market` for the page and `/api/news/market/{item_id}` when
-  a reader expands one group. The URL carries kind, time window, asset and
+  a reader selects one group. At 1100px and wider, an inline evidence panel
+  sits beside the list; narrower screens use the same shared Drawer as a sheet.
+  Selection is explicit, carried by `item`, and survives a hard reload independently
+  of the currently loaded list. Escape or close restores the opener focus.
+  The URL carries kind, time window, asset and
   measurement scope, sort and pagination. The initial window is 72 h;
   pagination anchors absolute bounds so a moving clock cannot shift a page. Consecutive observations of one `group_key` arrive collapsed to
   their newest member with the run's `observation_count` and its first/last
@@ -185,7 +190,12 @@ the route components into the eager shell chunk.
   Market research defaults to OI. The row leads with typed change, actual
   measurement window, USD notional and venue/instrument. It describes a
   discrete provider observation; it draws no continuous OI history and
-  does not infer long/short direction from OI alone. Numeric sorting requires
+  does not infer long/short direction from OI alone. The evidence panel can show
+  the latest eight discrete bars only when every retained sample has the same
+  proven provider, venue, instrument, measurement definition and window. Signed
+  values remain visible; no line interpolates unsampled periods. Incompatible or
+  missing measurement contracts withhold the chart while the raw timeline remains.
+  Numeric sorting requires
   a proven matching provider, venue and measurement definition. The whole
   selected time window is filtered before sorting, with stable tie-breaking.
   Collection/parse/notification counts are secondary and explicitly describe
@@ -379,37 +389,47 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is 交易执行 (#621). The top of every view shows execution readiness
-  and the #683 chain: source admission, frozen Case, DSPy Agent decision, Signal
-  publication, then a handoff to the independent execution ledger. The first
-  four tiles use their own 24-hour ledger counts; the fifth has no synthetic
-  count. The note states that their populations have different clocks and that
-  a published Signal does not prove an order or fill. TRADE judgments distinguish
-  published, unpublished, and withheld publication.
+  `/trading` is 交易执行. A compact safety strip leads with service readiness,
+  permission for new entries, its blocking reason and the reported connection.
+  Three URL-owned tabs follow: 持仓与订单 (default), 策略判定 and 执行记录.
+  Positions and protection precede account totals. Recent completed decisions are
+  an independent 24-hour list beside positions, never attributed to a position
+  by symbol: account positions do not carry a Case identity.
 
-  Three URL-owned tabs remain: 持仓与订单 (default), 执行记录 and 策略判定.
-  Positions and protection precede daily totals in the default tab at every
-  width. Execution rows retain venue-derived stages and exact decimals.
-  The decision tab holds the 25-row server-filtered Case list with state,
-  asset, reason and a scope-bound keyset cursor. Rows show the lightweight
-  Agent action, direction and publication state, while long policy reasons
-  stay in the Case drawer instead of filling the overview.
-  A Case opens in the shared Drawer, supports Escape and restores opener focus.
-  Its conditions and values come from the frozen manifest and policy checks.
-  New Analysis Cases also show every claim attempt and physical model receipt,
-  including failed or fenced attempts; a reader can replay a selected attempt's
-  frozen archive. WATCH displays both frozen range boundaries, the last
-  observed close, market-response archive reference, expiry and conditional
-  child Case. The root list projects the latest action, and the detail keeps
-  initial and conditional conclusions together.
-  Historical simulation and venue evaluation have distinct source labels;
+  The position price diagram uses recorded stop, take-profit, entry and mark
+  prices only. It orders endpoints numerically for long and short positions,
+  withholds incomplete/invalid ranges and labels marks outside the range. It
+  does not prove protection or execution; those claims remain venue facts.
+
+  Strategy operation and the #683 chain live under 策略运行与统计口径 (open in
+  the decision tab). Admission, Case and decision counts retain their independent
+  24-hour populations; Signal publication does not prove an order or fill.
+  The decision tab retains the server-filtered 25-row list, state, asset, reason
+  and scope-bound cursor. TRADE distinguishes published, unpublished and blocked
+  publication; WATCH distinguishes event wait from a research note or no review.
+
+  Case detail uses the shared Drawer inline at 1100px and wider and as a sheet
+  below that. It supports Escape and restores opener focus. Analysis detail
+  leads with its frozen conclusion, publication, reason, source and execution
+  links. Identity and frozen fields, then diagnostic attempts and historical
+  evaluations, use disclosures. WATCH conditions stay directly visible. Full
+  replay archives are fetched only on demand, including a selected failed or
+  fenced attempt. Root and conditional Case identities remain explicit.
+  Historical simulation and venue evaluation keep distinct source labels;
   missing costs or market coverage remain unavailable rather than zero.
 
   An OI observation links by persisted source Item ID to retained Cases,
   including those older than 24 hours. Missing links are explicit; the UI
-  never guesses by symbol or nearby time. A signal-emitting Case links to
-  its own retained execution records, with the different scope stated and
-  a control to return to the ordinary 24-hour list.
+  never guesses by symbol or nearby time. Every Case can inspect its retained
+  executions, with the different scope stated and a control to return to the
+  ordinary 24-hour list. An empty execution list is not a claim that a trade ran.
+  Execution rows have a compact summary and an `entry`-selected disclosure for
+  frozen risk, exits and separate realized/fee/funding/net amounts.
+
+  The validated `research_from` query carries the original market research path,
+  filters and selected observation through Case and execution links and reloads.
+  It accepts only local market research routes. A Case source link always uses
+  that Case's own persisted source Item ID; return context never replaces identity.
 
   Status, execution and decision reads fail independently. Fact expiry uses
   the server's absolute deadline and schedules a re-render even if no poll
@@ -429,11 +449,9 @@ the route components into the eager shell chunk.
   When Decision is disabled, empty ledger copy says the lane has no work; it
   never rebrands execution as paper. Loading, cold failure, stale refresh, and a
   genuinely empty batch remain different page states. The responsive desk uses
-  cards at desktop, tablet, and phone widths; the ledger's nine-column table
-  scrolls inside its own panel and never widens the document. At `767px` and
-  below the tab order remains the same, and the ledger stops being a table: each entry is a card whose cells print
-  the header they lost from `data-label`, because a horizontal scroll inside a
-  phone card hides eight of the nine columns.
+  cards at desktop, tablet, and phone widths. The ledger uses five summary columns
+  on wide screens and labeled entry cards on mobile or beside a Case panel.
+  Detail amounts wrap within their own panel; the document never scrolls horizontally.
 
 
   The Event detail carried an admission badge until #553 PR-1 and carries none
@@ -739,7 +757,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 ### TradePlan execution completeness (#644)
 
 The existing Trading status, execution and strategy areas retain their roles.
-Execution rows show frozen stop/risk budget/leverage and TP/holding limits;
+Execution row disclosures show frozen stop/risk budget/leverage and TP/holding limits;
 active plans stay visible beyond the 24-hour history window. The totals are
 explicitly known realized amounts with closed/known/missing counts. All-missing
 PnL renders a dash in totals and an unknown label on a closed row, never zero.

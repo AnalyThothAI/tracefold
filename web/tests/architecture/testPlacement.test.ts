@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -35,7 +35,7 @@ describe("frontend test placement", () => {
     const offenders = collectFiles(testsRoot)
       .filter((path) => /\.test\.tsx$/.test(path))
       .filter((path) => readTest(path))
-      .filter((path) => !relative(testsRoot, path).startsWith("routes/"))
+      .filter((path) => !relative(testsRoot, path).split(sep).join("/").startsWith("routes/"))
       .map((path) => relative(webRoot, path));
 
     expect(offenders).toEqual([]);

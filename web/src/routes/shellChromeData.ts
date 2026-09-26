@@ -21,10 +21,10 @@ import { useLocation, useNavigate } from "react-router-dom";
 const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
   [/^\/news\/status$/, "流水线状态"],
-  [/^\/news\/market$/, "市场事实"],
+  [/^\/news\/market$/, "市场研究"],
   [/^\/news\/wallets$/, "链上钱包"],
   [/^\/news$/, "事件流"],
-  [/^\/trading$/, "Alpha 与执行"],
+  [/^\/trading$/, "交易执行"],
 ];
 
 export type ShellRouteContext = {

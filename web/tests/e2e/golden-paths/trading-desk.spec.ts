@@ -27,6 +27,7 @@ test("positions lead the desk; execution opens a keyboard-dismissible Case and r
   expect(blocks).toEqual(["safety", "exposure", "tally"]);
   await page.getByRole("button", { name: "执行记录", exact: true }).click();
   await expect(page.locator(".trading-ledger-row")).toHaveCount(4);
+  await page.getByRole("button", { name: "执行明细", exact: true }).first().click();
   await expect(page.getByText("冻结止损 200 bps").first()).toBeVisible();
   await expect(page.getByText(/止盈 200 bps/).first()).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("trade-plan-ledger.png"), fullPage: true });

@@ -1,5 +1,6 @@
+import { researchReturnPath, withResearchReturn } from "@shared/routing/researchContext";
 import { Card } from "@shared/ui/Card";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import type { TradingCase } from "../api/tradingQueries";
 import { caseChecks, caseVerdict } from "../model/tradingCases";
@@ -26,6 +27,8 @@ import { TradingAnalysisDetail } from "./TradingAnalysisDetail";
  * hint: the identity of the configuration is release evidence, its restated values were not.
  */
 export function TradingCaseDetail({ item, token }: { item: TradingCase; token: string }) {
+  const [params] = useSearchParams();
+  const researchFrom = researchReturnPath(params.get("research_from"));
   if (item.trigger_id)
     return <TradingAnalysisDetail key={item.case_id} item={item} token={token} />;
   const checks = caseChecks(item);
@@ -47,7 +50,14 @@ export function TradingCaseDetail({ item, token }: { item: TradingCase; token: s
             <dt>触发来源</dt>
             <dd>
               {item.source_item_id ? (
-                <Link to={`/news/market/${item.source_item_id}`}>查看原始 OI 观察</Link>
+                <Link
+                  to={withResearchReturn(
+                    `/news/market/${encodeURIComponent(item.source_item_id)}`,
+                    researchFrom,
+                  )}
+                >
+                  查看原始 OI 观察
+                </Link>
               ) : (
                 "来源身份未记录"
               )}
@@ -77,7 +87,12 @@ export function TradingCaseDetail({ item, token }: { item: TradingCase; token: s
             <dt>入场信号</dt>
             <dd>
               {item.state === "SIGNAL_EMITTED" ? (
-                <Link to={`/trading?tab=executions&execution_case=${item.case_id}`}>
+                <Link
+                  to={withResearchReturn(
+                    `/trading?tab=executions&execution_case=${item.case_id}`,
+                    researchFrom,
+                  )}
+                >
                   已发出 · 查看关联执行记录
                 </Link>
               ) : (
