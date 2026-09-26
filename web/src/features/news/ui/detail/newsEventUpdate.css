@@ -1,0 +1,232 @@
+@layer app.features {
+  /*
+   * The EventUpdate sections (#706). One list grammar for changes, claims, sources and decisions: a small
+   * badge carrying the server's word, then the sentence it qualifies. Badges are neutral by default; only
+   * the states a reader must not miss take a signal tone -- a refutation, a disputed or retired claim, an
+   * inference, and a send that failed or is unsettled.
+   */
+  .news-update-changes,
+  .news-update-claims,
+  .news-update-sources,
+  .news-update-relations,
+  .news-update-decisions,
+  .news-update-intents {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-update-relations,
+  .news-update-decisions {
+    gap: 6px;
+  }
+
+  .news-update-change,
+  .news-update-claim,
+  .news-update-source,
+  .news-update-intents > li {
+    display: grid;
+    gap: 6px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-update-change:last-child,
+  .news-update-claim:last-child,
+  .news-update-source:last-child,
+  .news-update-intents > li:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .news-update-change p,
+  .news-update-claim p,
+  .news-update-source p,
+  .news-update-intents p,
+  .news-update-inference p {
+    margin: 0;
+    color: var(--text-primary);
+    font: var(--type-body);
+    text-wrap: pretty;
+  }
+
+  .news-update-previous {
+    color: var(--text-muted);
+  }
+
+  .news-update-change .news-update-previous,
+  .news-update-previous small {
+    color: var(--text-muted);
+    font: var(--type-meta);
+  }
+
+  .news-update-statement {
+    font-weight: 600;
+  }
+
+  .news-update-claim[data-retired] .news-update-statement {
+    color: var(--text-subtle);
+    text-decoration: line-through;
+  }
+
+  .news-update-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .news-update-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 6px;
+    padding: 1px 7px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    font: var(--type-meta);
+    white-space: nowrap;
+  }
+
+  .news-update-badges .news-update-badge {
+    margin-right: 0;
+  }
+
+  .news-update-badge[data-kind="refutes"],
+  .news-update-badge[data-kind="disputed"],
+  .news-update-badge[data-kind="conflict"],
+  .news-update-badge[data-kind="correction"],
+  .news-update-badge[data-kind="terminal"],
+  .news-update-badge[data-kind="dead"],
+  .news-update-badge[data-kind="ambiguous"] {
+    border-color: var(--signal-alert-border);
+    background: var(--signal-alert-soft);
+    color: var(--signal-alert);
+  }
+
+  .news-update-badge[data-kind="retired"],
+  .news-update-badge[data-kind="inference"],
+  .news-update-badge[data-kind="gap"],
+  .news-update-badge[data-kind="possible_new"],
+  .news-update-badge[data-kind="deferred"] {
+    border-color: var(--signal-caution-border);
+    background: var(--signal-caution-soft);
+    color: var(--signal-caution);
+  }
+
+  .news-update-badge[data-kind="supports"],
+  .news-update-badge[data-kind="notify"],
+  .news-update-badge[data-kind="sent"] {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .news-update-facts {
+    margin-top: 2px;
+  }
+
+  .news-update-quote {
+    margin: 0;
+    padding: 8px 12px;
+    border-left: 2px solid var(--border-strong);
+    background: var(--surface-raised);
+  }
+
+  .news-update-quote footer {
+    margin-top: 4px;
+  }
+
+  .news-update-source-label {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    align-items: baseline;
+    color: var(--text-muted);
+    font: var(--type-meta);
+  }
+
+  .news-update-source-label b {
+    color: var(--text-primary);
+    font-weight: 620;
+  }
+
+  .news-update-source-label a {
+    display: inline-flex;
+    gap: 3px;
+    align-items: center;
+    color: var(--accent-primary);
+  }
+
+  .news-update-source-label svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .news-update-relations li,
+  .news-update-decisions li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    align-items: baseline;
+    color: var(--text-secondary);
+    font: var(--type-meta);
+  }
+
+  .news-update-decisions small {
+    flex-basis: 100%;
+    color: var(--text-subtle);
+  }
+
+  .news-update-source-text {
+    color: var(--text-secondary);
+    font: var(--type-meta);
+    white-space: pre-wrap;
+  }
+
+  .news-update-inference {
+    display: grid;
+    gap: 12px;
+  }
+
+  .news-update-implication,
+  .news-update-question {
+    display: grid;
+    gap: 4px;
+    padding: 8px 12px;
+    border-left: 2px solid var(--signal-caution-border);
+  }
+
+  .news-update-implication small,
+  .news-update-question small,
+  .news-update-intents small {
+    color: var(--text-subtle);
+    font: var(--type-meta);
+  }
+
+  .news-update-processing {
+    display: grid;
+    gap: 12px;
+  }
+
+  .news-update-processing h4 {
+    margin: 0 0 6px;
+    color: var(--text-muted);
+    font: var(--type-eyebrow);
+  }
+
+  .news-update-intents p {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    align-items: baseline;
+  }
+
+  .news-update-alert {
+    margin: 0;
+    color: var(--signal-alert);
+    font: var(--type-meta);
+  }
+}

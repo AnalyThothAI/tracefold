@@ -37,7 +37,8 @@ command token), `news.opennews_token`, `llm.api_key`, the optional
 `llm.news_reader_card.api_key` (dedicated ReaderCard endpoint), the optional
 `llm.news_triage_fallback.api_key` (second Triage endpoint, issue #65),
 the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
-fallback endpoint),
+fallback endpoint), the optional `llm.news_judgment.api_key` (News-only Jev
+judgment route),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, the Telegram bot-token file named by
 `news.push.telegram_bot_token_file`, the optional

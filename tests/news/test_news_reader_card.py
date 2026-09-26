@@ -19,13 +19,18 @@ Two claims, both about characters rather than structure:
   one surface without the other fails both.
 
 The fixture separates two things that are easy to blur. `card` is what this repository renders for
-those inputs and is asserted for all 46. `sent_card` is the JSON the provider received; it matches
-`card` for the 16 cards sent by today's code, and differs for 30 older market cards in exactly two
+those inputs and is asserted for all 34. `sent_card` is the JSON the provider received; it matches
+`card` for the 4 cards sent by today's code, and differs for 30 older market cards in exactly two
 already-shipped ways -- the #553 header-separator fix, and the same change's rule that a relative
 `/news/market/<id>` is not a link a Feishu client can follow, so no button is offered. Their markdown
 body, which is everything the reader reads, is asserted identical to what was sent.
 
-The two unstructured cards production sent are no longer in the corpus. #582 §3.2 deleted the branch
+The News cards production sent are no longer in either corpus (#706). A News card is now one EventUpdate
+intent's frozen copy plus code-owned facts, and the verdict renderer that built the recorded ones is deleted
+with the verdict path; their delivery rows stay in production as receipts. The update card is pinned below
+by `test_an_update_card_is_its_frozen_copy_and_code_owned_facts`.
+
+The two unstructured cards production sent are no longer in the corpus either. #582 §3.2 deleted the branch
 that prepared them -- an unstructured record is stored, readable and never a card -- so there is no
 renderer left to rebuild them with, and a fixture asserting a card this repository cannot produce
 would be asserting the fixture to itself. Their delivery rows stay in production as receipts.
@@ -41,8 +46,10 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from tests.support.news_update_cards import adopted, asset, draft, frozen_card, plan_for, source
 from tracefold.news import card_format as fmt
-from tracefold.news.delivery import render_first_card
+from tracefold.news.delivery import news_update_card
+from tracefold.news.feishu_card import feishu_card
 from tracefold.news.market_notifications import MarketObservation, MarketTrack, render_market_card
 from tracefold.news.reader_card import NEWS_HEADLINE_MAX, ReaderCardHeadline, ReaderCardQuote, reader_news
 
@@ -88,73 +95,6 @@ DELIBERATE_CHANGES: Final[dict[str, tuple[tuple[str, str], ...]]] = {
     ),
     "market-smart-money-unlabelled-account": (("Close 只表示来源报告的平仓/减仓动作，不代表账户已全部清仓。", ""),),
     "market-liquidation-three-reports": (("最大单笔来源报告金额 $980000", "最大单笔来源报告金额 $1,000,000.00"),),
-    # A fifth reason, and the only one that touches a News card: #675 §1 deletes `magnitude`, so the
-    # facts line's third part is the kind of fact the card states rather than how much the model thought
-    # it mattered. Every News card in both corpora moves by exactly that one word, and the fixture
-    # verdicts were rewritten from `magnitude` to the `fact_kind` each card's own text states -- so the
-    # pairs below are also the review of that rewrite, card by card.
-    "b4dec618d2ac3442ba6455dae61f0412147fe3cc497a264ff23fc1db67ccf260": (
-        (
-            "利多 · 新进展 · 影响明显 · NVDA · www.thestreet.com（2 条报道） · 04:17",
-            "利多 · 新进展 · 新数据 · NVDA · www.thestreet.com（2 条报道） · 04:17",
-        ),
-    ),
-    "b869c36da8df9202e9e711aa40eb8667c9c63d2e066f6ec329b75a9f881812cc": (
-        ("利空 · 影响明显 · CL · jin10 · 04:15", "利空 · 状态变化 · CL · jin10 · 04:15"),
-    ),
-    "bfd76cf3382bef3e0d6c3261d490cb32444254160d9615c214c98cfca955d041": (
-        ("利多 · 影响明显 · SPACE · opennews · 04:12", "利多 · 状态变化 · SPACE · opennews · 04:12"),
-    ),
-    "dffa06be276d4a60a1de3b112499df9bf8fc942a311534b0bec111e91679985c": (
-        (
-            "利多 · 新进展 · 影响明显 · HYPE · opennews（2 条报道） · 04:01",
-            "利多 · 新进展 · 资金流 · HYPE · opennews（2 条报道） · 04:01",
-        ),
-    ),
-    "02d1e9842b0ec89fb31646e740dec35bba06107cdec3fad9a32e7fefc81dfc75": (
-        ("利多 · 新进展 · 影响重大 · CL · opennews · 03:59", "利多 · 新进展 · 表态 · CL · opennews · 03:59"),
-    ),
-    "b084eadef4c8de13a4f195f876a7673fbb9b6df6752b5670ccffcc2a6133ab4d": (
-        (
-            "利空 · 新进展 · 影响重大 · LINK · خبرگزاری فارس · 03:47",
-            "利空 · 新进展 · 表态 · LINK · خبرگزاری فارس · 03:47",
-        ),
-    ),
-    "4cb6f694de3ebcd6cc84aaed38cd98ac770dee0835d72d52f8cbe82d1442f1a3": (
-        ("利多 · 新进展 · 影响重大 · zerohedge · 03:41", "利多 · 新进展 · 状态变化 · zerohedge · 03:41"),
-    ),
-    "ed010bc15e87537e3cdae9fa5866a1207ca9040e40fb0047cfad2c906b12ba8b": (
-        ("利多 · 新进展 · 影响重大 · CL · opennews · 03:37", "利多 · 新进展 · 表态 · CL · opennews · 03:37"),
-    ),
-    "d0be4f00779d56c8f63164ce97be83e6a5d83fad45525ee3cbeeb1cf84709af0": (
-        ("利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:35", "利空 · 新进展 · 表态 · خبرگزاری فارس · 03:35"),
-    ),
-    "1e86a8b9451e5a13d2f27f068a43178aea44232504ff5005df5be89c9d36b079": (
-        ("利空 · 新进展 · 影响重大 · خبرگزاری فارس · 03:32", "利空 · 新进展 · 表态 · خبرگزاری فارس · 03:32"),
-    ),
-    "af15f0c315e4d4944f777477293f42c2e08467e8b3d6032efcdb8f81de14a76f": (
-        ("利多 · 影响明显 · RAYDIUM · x.com · 03:14", "利多 · 状态变化 · RAYDIUM · x.com · 03:14"),
-    ),
-    "7991dfcc9461491e0d4e9dd3cec2163a02e4e6712a43d0df8bf36eb26e2fd375": (
-        ("利多 · 影响明显 · opennews · 02:23", "利多 · 官方措施 · opennews · 02:23"),
-    ),
-    "news-escalate-two-assets": (
-        (
-            "利多 · 新进展 · 影响重大 · BTC NVDA · Reuters（3 条报道） · 09:05",
-            "利多 · 新进展 · 状态变化 · BTC NVDA · Reuters（3 条报道） · 09:05",
-        ),
-    ),
-    "news-plain-no-quote-no-link": (("利空 · 影响很小 · opennews · 14:32", "利空 · 表态 · opennews · 14:32"),),
-    "news-quotes-bounded-and-filtered": (
-        (
-            "中性 · 影响有限 · AAPL AMZN META MSFT · x.com（2 条报道） · 07:07",
-            "中性 · 新数据 · AAPL AMZN META MSFT · x.com（2 条报道） · 07:07",
-        ),
-    ),
-    "news-unclear-no-event-time": (("方向待定 · 影响明显 · HYPE · opennews", "方向待定 · 状态变化 · HYPE · opennews"),),
-    "news-header-bounded-at-one-hundred": (
-        ("利多 · 影响明显 · opennews · 12:00", "利多 · 状态变化 · opennews · 12:00"),
-    ),
 }
 # Every dollar amount a card prints, compact `$1.20B` included, so a figure that escaped the money
 # rule is found rather than skipped by a pattern that only knows the shape it was supposed to have.
@@ -208,8 +148,6 @@ def _as_this_branch_renders(entry: dict[str, Any], recorded: dict[str, Any]) -> 
 
 def _render(entry: dict[str, Any]) -> dict[str, Any]:
     inputs = entry["inputs"]
-    if entry["source"] == "news":
-        return render_first_card(**inputs)
     return render_market_card(
         track=MarketTrack(**inputs["track"]),
         reason=inputs["reason"],
@@ -248,14 +186,13 @@ def test_the_corpus_covers_both_renderers_and_says_which_cards_are_whole_matches
 
     families = {(entry["source"], entry.get("kind"), entry.get("reason")) for entry in PRODUCTION_CARDS}
     assert families == {
-        ("news", None, None),
         ("market", "oi", "first"),
         ("market", "liquidation", "first"),
     }
     whole = [entry for entry in PRODUCTION_CARDS if entry["reproduces_sent_card"]]
-    assert len(PRODUCTION_CARDS) == 46
-    assert len(whole) == 16
-    assert {entry["source"] for entry in whole} == {"news", "market"}
+    assert len(PRODUCTION_CARDS) == 34
+    assert len(whole) == 4
+    assert {entry["source"] for entry in whole} == {"market"}
     for entry in whole:
         assert _canonical(entry["card"]) == _canonical(_as_this_branch_renders(entry, entry["sent_card"]))
 
@@ -326,7 +263,7 @@ def test_the_branch_corpus_names_the_base_it_was_generated_from_and_covers_what_
     # What this repository writes for those inputs, which the test above ties to the record plus the
     # named changes; asserting the record here would only restate the fixture to itself.
     lines = {entry["id"]: _body(_render(entry)) for entry in BRANCH_CARDS["entries"]}
-    assert len(lines) == len(BRANCH_CARDS["entries"]) == 16
+    assert len(lines) == len(BRANCH_CARDS["entries"]) == 9
     # The action line is bounded at four even though the card covers six reports (#553 §5.2).
     six = lines["market-smart-money-action-change-six-reports"]
     assert "动作变化 3 次 · 首 平空 → 末 开空" in six
@@ -339,15 +276,9 @@ def test_the_branch_corpus_names_the_base_it_was_generated_from_and_covers_what_
     assert fmt.UNKNOWN_VENUE in lines["market-smart-money-unlabelled-account"]
     assert fmt.UNKNOWN_MEASUREMENT in lines["market-oi-followup-unknown-venue-and-measurement"]
     assert f"OI ${fmt.UNKNOWN_FIGURE}" in lines["market-oi-missing-change"]
-    # An escalated card is marked, a degraded one names no judgment, and both headers are bounded.
-    escalated = next(e for e in BRANCH_CARDS["entries"] if e["id"] == "news-escalate-two-assets")
-    assert escalated["card"]["header"]["title"]["content"].startswith("⚡ ")
-    degraded = lines["news-degraded-with-description"]
-    assert degraded.startswith("Provider description kept as wire text\n") and "利多" not in degraded
-    assert lines["news-degraded-without-description"].count("\n") == 0
-    for name in ("news-header-bounded-at-one-hundred", "market-oi-subject-bounded-at-one-hundred"):
-        title = next(e for e in BRANCH_CARDS["entries"] if e["id"] == name)["card"]["header"]["title"]["content"]
-        assert len(title) == 100
+    # A market header is bounded.
+    title = next(e for e in BRANCH_CARDS["entries"] if e["id"] == "market-oi-subject-bounded-at-one-hundred")
+    assert len(title["card"]["header"]["title"]["content"]) == 100
 
 
 @pytest.mark.parametrize("entry", QUOTED_CARDS["entries"], ids=lambda entry: entry["id"])
@@ -421,7 +352,7 @@ def test_every_named_change_belongs_to_a_card_and_is_the_only_one_this_branch_ma
     recorded = {entry["id"]: entry["sent_card"] for entry in PRODUCTION_CARDS}
     recorded |= {entry["id"]: entry["card"] for entry in BRANCH_CARDS["entries"]}
     assert set(DELIBERATE_CHANGES) <= set(recorded)
-    assert len(DELIBERATE_CHANGES) == 23
+    assert len(DELIBERATE_CHANGES) == 6
     for entry_id, changes in DELIBERATE_CHANGES.items():
         rebuilt = _as_this_branch_renders({"id": entry_id}, recorded[entry_id])
         assert _canonical(rebuilt) != _canonical(recorded[entry_id])
@@ -715,3 +646,44 @@ def test_wallet_provider_names_are_literal_text_not_feishu_links_or_mentions() -
     assert card["header"]["title"]["tag"] == "plain_text"
     assert card["elements"][1]["actions"][0]["url"] == ("https://console.example.com/news/market/wallet-observation")
     assert all(element["tag"] != "markdown" for element in card["elements"])
+
+
+def test_an_update_card_is_its_frozen_copy_and_code_owned_facts() -> None:
+    """The #706 News card, pinned whole: frozen headline and claim lines, then what code owns.
+
+    Two claims, one of them correcting an earlier report, a key update and a fresh quote: the header
+    carries the key marker, the body is the frozen copy byte for byte followed by the change label, the
+    primary assets, the source with its report count and the source's own time, then the quote line.
+    """
+
+    first = source("Nvidia to invest $100bn in OpenAI data centres.")
+    second = source("Nvidia corrects: the investment is $90bn, not $100bn.", origin="FT", url="https://www.ft.com/x")
+    update = adopted(
+        (draft("a", first, assets=(asset("NVDA"),)), first),
+        (draft("b", second, assets=(asset("NVDA"), asset("BTC", "crypto"))), second),
+        changes=(("b", "correction"),),
+    )
+    plan = plan_for(update, key=True)
+    card = frozen_card(plan, update)
+    quote = {
+        "requested_symbol": "NVDA",
+        "price": "181.2",
+        "change_pct": 1.5,
+        "change_basis": "rolling_24h",
+        "instrument_class": "equity",
+        "state": "fresh",
+    }
+    payload = feishu_card(news_update_card(card, plan=plan, update=update, quotes=[quote]))
+
+    assert payload["header"] == {
+        "title": {"tag": "plain_text", "content": "⚡ 英伟达向数据中心投资千亿美元"},
+        "template": "grey",
+    }
+    body = payload["elements"][0]["text"]["content"]
+    assert body.startswith(card.body.removeprefix(f"{card.headline_zh}\n\n") + "\n")
+    assert body.splitlines()[-2:] == [
+        "更正 · NVDA BTC · Reuters（2 条报道） · 22:40",
+        "行情 NVDA $181.2 24h +1.50%（永续）",
+    ]
+    assert payload["elements"][1]["actions"][0]["url"] == "https://www.reuters.com/a"
+    assert payload["elements"][2]["elements"][0]["content"] == "Tracefold · event-nv"

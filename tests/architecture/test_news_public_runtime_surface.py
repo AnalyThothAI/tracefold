@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import tracefold.news.program as news_agents
 from tracefold import news
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,41 +12,32 @@ SRC = ROOT / "tracefold"
 NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {
-    "ASSERTION_STATUSES",
-    "CHANGE_STATES",
     # #553 PR-2: the two commit phases a send adapter reports. They are exported because the
     # adapters that raise them live under `tracefold.integrations`, outside News, and a phase spelled
     # as a bare string in two packages is the drift this export exists to prevent.
     "COMMIT_PHASE_NOT_SENT",
     "COMMIT_PHASE_UNKNOWN",
-    "EVENT_FAMILIES",
     "EVENT_KINDS",
     # #562 PR-C: the reader card model and the reader-facing formats a channel serializer needs. The
     # two delivery adapters live outside News and now render from the card instead of parsing another
-    # channel's JSON, so the value object, the vocabulary a reviewed novelty is named in, the clock a
-    # card writes a time with and the ticker grammar a trade action is built from are the surface they
-    # are given. The renderers themselves (`render_first_card`, `feishu_card`) stay private.
+    # channel's JSON, so the value object, the clock a card writes a time with and the ticker grammar a
+    # trade action is built from are the surface they are given. The renderers themselves
+    # (`news_update_card`, `feishu_card`) stay private.
     "LINKABLE_TICKER_RE",
-    "NOVELTY_ZH",
     "ReaderCard",
     "UNTRADEABLE_NOTICE_ZH",
     "card_clock",
     "quote_line",
     "EventKind",
-    "IPTCCodebookSha",
     "IPTC_SUBJECT_CODES",
     # #651 §6.2: the one market vocabulary News compares assets under. The HTTP asset schema is typed by
-    # it, so the browser contract and the Program contract cannot disagree about what a market is. The
+    # it, so the browser contract and the News contracts cannot disagree about what a market is. The
     # normalizer and the comparison rule that read it stay private.
     "MarketType",
-    # #675 §1: the closed vocabulary EventSemantics answers `fact_kind` from. The HTTP triage summary and
-    # the review submission are both typed by it, so the browser contract, the review contract and the
-    # Program contract cannot disagree about what kinds of fact exist. `decide()`'s own groupings of it
-    # (`PUSH_FACT_KINDS` and the rest) stay private: they are policy, not vocabulary.
+    # #675 §1: the closed `fact_kind` vocabulary legacy verdicts carry. The HTTP legacy triage summary and
+    # the review submission are both typed by it, so the browser and review contracts read one vocabulary.
     "FACT_KINDS",
     "FactKind",
-    "NEWS_RETRIEVAL_SHA256",
-    "NewsTaxonomyV1",
     "NetBuySnapshot",
     "OI_METRIC_VERSION",
     # #553: the market read surface's own vocabulary and bounds, which the HTTP route validates a
@@ -59,20 +49,12 @@ PUBLIC_NEWS_INTERFACE = {
     "MARKET_WINDOW_DEFAULT_MS",
     "MARKET_WINDOW_MAX_MS",
     "OpenNewsExpectedError",
-    "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "SOURCE_AUTHORITIES",
-    "ProgramTrace",
-    "ProgramUsage",
-    "ProgressionVerifier",
     "ReaderDeliveryPresentation",
     "ReaderMarketMovement",
     "ReaderTradeTarget",
     "TelegramDeliveryReceipt",
-    "SemanticJudge",
-    "SemanticJudgeError",
-    "SemanticJudgment",
     "SourceAuthority",
-    "TriageContext",
     "source_authority_from_evidence",
 }
 
@@ -222,35 +204,10 @@ def test_news_value_families_do_not_depend_on_io_or_runtime_owners() -> None:
     assert violations == {}
 
 
-def test_dspy_is_confined_to_model_implementation_families() -> None:
-    """#344 makes DSPy the one model framework while keeping it behind owned seams."""
-
-    allowed_roots = (
-        NEWS_ROOT / "program",
-        NEWS_ROOT / "learning",
-        # #202 §4.3. The review plane acquires human truth; the drafter is the one thing in it that asks a
-        # model first, so a person has a rubric to accept or rewrite rather than a blank form. The companion
-        # test below keeps that to the one module — a ReviewDesk that could call a model would be a desk
-        # that could manufacture its own Gold.
-        NEWS_ROOT / "review",
-        SRC / "app" / "workers" / "wiring",
-    )
-    offenders = [
-        str(path.relative_to(ROOT))
-        for path in SRC.rglob("*.py")
-        if "dspy" in _imported_roots(path)
-        and path != SRC / "app" / "learning_runtime.py"
-        and path != SRC / "app" / "trading_analyst.py"
-        and path != SRC / "app" / "trading_tools.py"
-        and not any(root in path.parents for root in allowed_roots)
-    ]
-    assert offenders == []
-
-
 def test_news_model_code_uses_only_public_dspy_and_no_direct_gepa() -> None:
     """#344 permits DSPy public APIs and hard-cuts private DSPy and direct GEPA APIs."""
 
-    model_files = sorted((NEWS_ROOT / "program").rglob("*.py")) + sorted((NEWS_ROOT / "learning").rglob("*.py"))
+    model_files = sorted(SRC.rglob("*.py"))
     forbidden_dspy: list[str] = []
     for path in model_files:
         for module in sorted(_imported_modules(path)):
@@ -270,39 +227,76 @@ def test_news_model_code_uses_only_public_dspy_and_no_direct_gepa() -> None:
     assert gepa_users == []
 
 
-def test_news_program_does_not_own_provider_transport() -> None:
-    """DSPy/LiteLLM own HTTP and provider request rendering after the hard cut."""
+def test_news_updates_do_not_own_provider_transport() -> None:
+    """DSPy, LiteLLM and the native SDK own HTTP and provider request rendering; the News core owns none."""
 
     forbidden_roots = {"httpx", "aiohttp", "requests"}
     forbidden_modules = {"tracefold.integrations.chat_completions"}
     violations = [
         str(path.relative_to(ROOT))
-        for path in (NEWS_ROOT / "program").rglob("*.py")
+        for path in (NEWS_ROOT / "updates").rglob("*.py")
         if (_imported_roots(path) & forbidden_roots) or (_imported_modules(path) & forbidden_modules)
     ]
     assert violations == []
 
 
-def test_only_the_drafter_may_call_a_model_inside_the_review_plane() -> None:
+def test_the_review_plane_calls_no_model() -> None:
+    """#706 deleted the drafter, the review plane's only model caller; review is a human's judgment."""
+
     review = NEWS_ROOT / "review"
-    callers = {path.name for path in review.rglob("*.py") if "dspy" in _imported_roots(path)}
-    assert callers == {"drafter.py"}
+    assert {path.name for path in review.rglob("*.py") if "dspy" in _imported_roots(path)} == set()
 
 
-def test_semantic_judge_contract_has_public_locality() -> None:
-    """#134: callers learn the framework-neutral Interface from ``tracefold.news`` only."""
+def test_the_semantic_runtime_imports_no_retired_program_or_rule_owner() -> None:
+    """#706: the EventUpdate runtime does not import the three-Predictor Program, the taxonomy axes'
+    rule owner, progression review, canary/release arms or the learning plane, and the package root
+    re-exports none of the retired Program contract."""
 
-    for symbol in (
-        "SemanticJudge",
-        "SemanticJudgeError",
-        "TriageContext",
-        "SemanticJudgment",
-        "ProgramTrace",
-        "ProgramUsage",
-    ):
-        assert symbol in news.__all__
-        assert getattr(news, symbol) is not None
-        assert not hasattr(news_agents, symbol)
+    for symbol in ("SemanticJudge", "SemanticJudgeError", "SemanticJudgment", "TriageContext", "ProgramTrace"):
+        assert symbol not in news.__all__
+    retired = (
+        "tracefold.news.program",
+        "tracefold.news.triage_rules",
+        "tracefold.news.progression_review",
+        "tracefold.news.release",
+        "tracefold.news.learning",
+        "tracefold.news.told_context",
+        "tracefold.app.cli",
+    )
+    runtime = [
+        SRC / "news" / "pipeline" / "semantic.py",
+        SRC / "news" / "pipeline" / "admission.py",
+        SRC / "news" / "pipeline" / "maintenance.py",
+        SRC / "news" / "pipeline" / "root.py",
+        SRC / "news" / "storage" / "event_updates.py",
+        SRC / "news" / "storage" / "event_update_store.py",
+        SRC / "app" / "news_updates.py",
+        SRC / "app" / "learning_runtime.py",
+        SRC / "app" / "workers" / "wiring" / "news.py",
+        SRC / "app" / "workers" / "wiring" / "components.py",
+        *sorted((SRC / "news" / "updates").glob("*.py")),
+    ]
+    offenders = {
+        str(path.relative_to(ROOT)): sorted(module for module in _imported_modules(path) if _under(module, retired))
+        for path in runtime
+    }
+    assert {path: modules for path, modules in offenders.items() if modules} == {}
+
+
+def test_the_retired_program_learning_and_release_planes_are_gone() -> None:
+    """#706 hard cut: no retired package, rule owner or taxonomy axis remains importable or exported."""
+
+    for package in ("program", "release"):
+        assert not list((NEWS_ROOT / package).rglob("*.py")), package
+    for module in ("triage_rules.py", "told_context.py", "review/drafter.py", "storage/learning.py"):
+        assert not (NEWS_ROOT / module).exists(), module
+    assert {path.name for path in (NEWS_ROOT / "learning").glob("*.py")} == {
+        "__init__.py",
+        "judge.py",
+        "judge_calibration.py",
+    }
+    for retired in ("EVENT_FAMILIES", "CHANGE_STATES", "ASSERTION_STATUSES", "NewsTaxonomyV1"):
+        assert retired not in news.__all__
 
 
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:

@@ -10,9 +10,9 @@ import dspy
 import pytest
 from pydantic import ValidationError
 
+from tests.support.scripted_lm import ScriptedLM
 from tracefold.app.llm import ConfiguredLMEndpoint
 from tracefold.app.trading_analyst import TradeAnalyst, _WireProposal
-from tracefold.news.program.lm import ScriptedLM
 from tracefold.trading.engine.brief import AnalystBrief
 from tracefold.trading.engine.plans import AnalysisProposal
 from tracefold.trading.engine.policy import InvalidAssessment

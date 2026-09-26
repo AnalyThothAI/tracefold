@@ -3,13 +3,15 @@ import type {
   NewsEvent,
   NewsEventDetail,
   NewsEventMember,
+  NewsEventUpdate,
   NewsFeed,
   NewsFeedEvent,
+  NewsLegacyVerdict,
   NewsOutcome,
+  NewsProcessing,
   NewsStatus,
   NewsTimelineStep,
   NewsVerdict,
-  NewsTriageSummary,
   NewsEventReaction,
   NewsQuote,
   NewsReaction,
@@ -78,13 +80,17 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     reaction: newsReactionFixture(),
     reporting_origin: "Reuters World",
     storyline_key: "asset:BTC",
-    triage: newsTriageFixture(),
+    // A legacy Event by default: judged by a Triage verdict before #706 and carrying no EventUpdate head.
+    legacy_verdict: newsLegacyVerdictFixture(),
+    update: null,
     watchlist_hits: ["BTC"],
     ...overrides,
   };
 }
 
-export function newsTriageFixture(overrides: Partial<NewsTriageSummary> = {}): NewsTriageSummary {
+export function newsLegacyVerdictFixture(
+  overrides: Partial<NewsLegacyVerdict> = {},
+): NewsLegacyVerdict {
   return {
     assets: [
       { market_type: "crypto", role: "primary", symbol: "BTC" },
@@ -109,20 +115,6 @@ export function newsTriageFixture(overrides: Partial<NewsTriageSummary> = {}): N
     throttled_by: null,
     source_authority: "reputable_secondary",
     source_authority_zh: "可信二手来源",
-    taxonomy: {
-      assertion_status: "confirmed",
-      assertion_status_zh: "已确认",
-      change_state: "updated",
-      change_state_zh: "已更新",
-      codebook_sha256: "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac",
-      event_family: "macro_policy_data",
-      event_family_zh: "宏观政策与数据",
-      subject_codes: ["medtop:20000379"],
-      subject_labels_zh: ["货币政策"],
-      taxonomy_version: "news_taxonomy_v1",
-    },
-    taxonomy_error_code: null,
-    taxonomy_status: "available",
     why_zh: "利率指引与市场预期背离，风险资产定价需要重估",
     ...overrides,
   };
@@ -135,9 +127,6 @@ export function newsFeedFixture(overrides: Partial<NewsFeed> = {}): NewsFeed {
     counts: { total: 320, pushed: 41, held: 271, pending: 8 },
     filters: {
       admission: null,
-      assertion_status: null,
-      change_state: null,
-      event_family: null,
       event_kind: null,
       final_decision: null,
       limit: 25,
@@ -208,7 +197,7 @@ export function newsEventMemberFixture(overrides: Partial<NewsEventMember> = {})
 }
 
 export function newsVerdictFixture(overrides: Partial<NewsVerdict> = {}): NewsVerdict {
-  const triage = newsTriageFixture();
+  const legacy = newsLegacyVerdictFixture();
   return {
     created_at_ms: NEWS_NOW_MS - 90_000,
     degraded: false,
@@ -223,9 +212,15 @@ export function newsVerdictFixture(overrides: Partial<NewsVerdict> = {}): NewsVe
     model: "triage-model-v1",
     model_usage_coverage: "unknown",
     model_editorial: {
-      source_authority: triage.source_authority!,
-      source_authority_zh: triage.source_authority_zh,
-      taxonomy: triage.taxonomy!,
+      source_authority: legacy.source_authority!,
+      source_authority_zh: legacy.source_authority_zh,
+      // #706: the retired axes exactly as the verdict stored them, with no vocabulary applied.
+      taxonomy: {
+        assertion_status: "confirmed",
+        change_state: "updated",
+        event_family: "macro_policy_data",
+        subject_codes: ["medtop:20000379"],
+      },
       taxonomy_error_code: null,
       taxonomy_status: "available",
     },
@@ -257,6 +252,7 @@ export function newsDeliveryFixture(overrides: Partial<NewsDelivery> = {}): News
   return {
     attempted_at_ms: NEWS_NOW_MS - 40_000,
     error_code: null,
+    intent_id: `legacy_intent:${"5".repeat(64)}`,
     kind: "first",
     receipt: { message_id: "om_123" },
     settled_at_ms: NEWS_NOW_MS - 20_000,
@@ -334,7 +330,9 @@ export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {})
       state: "received",
     },
     review: { accepted: null, judgment_n: 0, uncertain: false },
-    triage: newsTriageFixture(),
+    event_update: null,
+    processing: null,
+    legacy_verdict: newsLegacyVerdictFixture(),
     timeline: newsTimelineFixture(),
     members: [
       newsEventMemberFixture(),
@@ -351,6 +349,236 @@ export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {})
     verdicts: [newsVerdictFixture()],
     ...overrides,
   };
+}
+
+const CLAIM_25 = `cl:${"a".repeat(64)}`;
+const CLAIM_50 = `cl:${"b".repeat(64)}`;
+const WIRE_REF = `ev:${"c".repeat(64)}`;
+const RIVAL_REF = `ev:${"d".repeat(64)}`;
+
+/**
+ * A News Agent Event's adopted EventUpdate (#706): an announced 25% steel tariff that one source supports and
+ * another refutes, then raised to 50% -- a parameter change -- with an inference and an open question.
+ */
+export function newsEventUpdateFixture(overrides: Partial<NewsEventUpdate> = {}): NewsEventUpdate {
+  const wire = {
+    attribution: "Agency spokesperson",
+    artifact_id: "wire-release",
+    first_available_at_ms: NEWS_NOW_MS - 110_000,
+    origin_id: "agency",
+    publisher_id: "wire",
+    published_at_ms: NEWS_NOW_MS - 115_000,
+    source_authority: "issuer_first_party" as const,
+    source_authority_zh: "发行方一手来源",
+    url: "https://wire.example.test/release",
+  };
+  const rival = {
+    ...wire,
+    artifact_id: "rival-release",
+    origin_id: "ministry",
+    publisher_id: "rival",
+    source_authority: "unknown" as const,
+    source_authority_zh: "来源权威未知",
+    url: "https://rival.example.test/release",
+  };
+  const claim = (ref: string, statement: string, rate: string, evidence: string) => ({
+    action: "set tariff",
+    antecedent_refs: [],
+    assets: [{ market_type: "commodity" as const, role: "primary" as const, symbol: "CL" }],
+    citations: [{ evidence_ref: evidence, quote: statement, source: wire }],
+    conditions: ["unless a deal is signed"],
+    content_kind: "official_measure" as const,
+    content_kind_zh: "官方措施",
+    disputed: false,
+    effective_at: "2026-10-01",
+    first_available_at_ms: NEWS_NOW_MS - 110_000,
+    mode: "decision" as const,
+    mode_zh: "决定",
+    object: "steel imports",
+    occurred_at: null,
+    phase: "announced" as const,
+    phase_zh: "已宣布",
+    polarity: "unknown" as const,
+    polarity_zh: "未知",
+    quantities: [{ name: "rate", period: null, unit: "%", value: rate }],
+    ref,
+    relation_counts: { not_addressed: 0, refutes: 0, reports: 0, supports: 1, unresolved: 0 },
+    retired: false,
+    speaker: "Agency spokesperson",
+    statement,
+    statistical_period: null,
+    subject: "Agency",
+  });
+  const first = claim(CLAIM_25, "Agency announces 25% tariff on steel imports.", "25", WIRE_REF);
+  const raised = claim(CLAIM_50, "Agency raises the steel import tariff to 50%.", "50", WIRE_REF);
+  return {
+    adopted_at_ms: NEWS_NOW_MS - 80_000,
+    changes: [
+      {
+        current_ref: CLAIM_50,
+        current_statement: raised.statement,
+        kind: "parameter_change",
+        kind_zh: "参数变化",
+        previous_content_ref: `update:${"e".repeat(64)}`,
+        previous_event_id: "evt-global-policy",
+        previous_ref: CLAIM_25,
+        previous_statement: first.statement,
+        relation: "real_world_change",
+        relation_zh: "现实变化",
+      },
+    ],
+    claims: [
+      {
+        ...first,
+        disputed: true,
+        relation_counts: { not_addressed: 0, refutes: 1, reports: 0, supports: 1, unresolved: 0 },
+      },
+      raised,
+    ],
+    content_revision: "f".repeat(64),
+    disputed_claim_refs: [CLAIM_25],
+    headline: "钢铁进口关税上调至 50%",
+    headline_source: "sent_card",
+    implications: [
+      {
+        channel: "domestic mills",
+        claim_refs: [CLAIM_50],
+        conditions: [],
+        explanation: "The agency says the higher rate protects domestic mills.",
+        origin: "reported_causality",
+        origin_zh: "来源所述因果（推断）",
+      },
+    ],
+    input_revision: 2,
+    open_questions: [
+      { claim_refs: [CLAIM_50], question: "Has the order been signed?", target_ref: null },
+    ],
+    previous_content_revision: "e".repeat(64),
+    retired_claim_refs: [],
+    sources: [
+      {
+        evidence_ref: WIRE_REF,
+        relations: [
+          {
+            claim_ref: CLAIM_25,
+            claim_statement: first.statement,
+            evidence_ref: WIRE_REF,
+            relation: "supports",
+            relation_zh: "支持",
+          },
+        ],
+        source: wire,
+        text: first.statement,
+        text_truncated: false,
+      },
+      {
+        evidence_ref: RIVAL_REF,
+        relations: [
+          {
+            claim_ref: CLAIM_25,
+            claim_statement: first.statement,
+            evidence_ref: RIVAL_REF,
+            relation: "refutes",
+            relation_zh: "反驳",
+          },
+        ],
+        source: rival,
+        text: "Officials deny any tariff decision on steel imports.",
+        text_truncated: false,
+      },
+    ],
+    topics: [{ code: "medtop:20000384", label_zh: "关税" }],
+    update_ref: `update:${"9".repeat(64)}`,
+    ...overrides,
+  };
+}
+
+export function newsProcessingFixture(overrides: Partial<NewsProcessing> = {}): NewsProcessing {
+  return {
+    intents: [
+      {
+        attempted_at_ms: NEWS_NOW_MS - 60_000,
+        attempts: null,
+        body: "【重点】钢铁进口关税上调至 50%",
+        claim_refs: [CLAIM_50],
+        content_revision: "f".repeat(64),
+        enqueued_at_ms: null,
+        error_code: null,
+        headline_zh: "钢铁进口关税上调至 50%",
+        intent_id: `intent:${"8".repeat(64)}`,
+        key: true,
+        payload_sha256: "7".repeat(64),
+        receipt: { message_id: 42 },
+        settled_at_ms: NEWS_NOW_MS - 59_000,
+        state: "sent",
+        state_zh: "已送达",
+      },
+    ],
+    notification: {
+      attempts: 0,
+      content_revision: "f".repeat(64),
+      next_attempt_at_ms: null,
+      plan: {
+        action: "notify",
+        action_zh: "通知",
+        claim_decisions: [
+          {
+            claim_ref: CLAIM_25,
+            decision: "not_notified",
+            decision_zh: "不通知",
+            reason: "covered_by_sent_receipt",
+            reason_zh: "已送达内容已覆盖",
+            statement: "Agency announces 25% tariff on steel imports.",
+          },
+          {
+            claim_ref: CLAIM_50,
+            decision: "notify",
+            decision_zh: "通知",
+            reason: "actionable_content",
+            reason_zh: "具体动作或数据",
+            statement: "Agency raises the steel import tariff to 50%.",
+          },
+        ],
+        key: true,
+        reader_revision: "reader-1",
+        reason: "uncovered_claims",
+        reason_zh: "有命题未被已送达内容覆盖",
+        update_ref: `update:${"9".repeat(64)}`,
+      },
+      plan_error_code: null,
+      state: "done",
+      state_zh: "已决定",
+      updated_at_ms: NEWS_NOW_MS - 70_000,
+    },
+    observations: [],
+    semantic: {
+      attempts: 1,
+      done_revision: 2,
+      extra_read_state: null,
+      extra_read_state_zh: "",
+      last_error_code: null,
+      last_outcome: "adopted",
+      next_attempt_at_ms: null,
+      state: "done",
+      state_zh: "已完成",
+      updated_at_ms: NEWS_NOW_MS - 80_000,
+      wanted_revision: 2,
+    },
+    update_error_code: null,
+    ...overrides,
+  };
+}
+
+/** A News Agent Event's detail: an EventUpdate head, its processing, and no legacy verdict at all. */
+export function newsUpdateDetailFixture(overrides: Partial<NewsEventDetail> = {}): NewsEventDetail {
+  return newsEventDetailFixture({
+    event_update: newsEventUpdateFixture(),
+    evidence_inputs: [],
+    legacy_verdict: null,
+    processing: newsProcessingFixture(),
+    verdicts: [],
+    ...overrides,
+  });
 }
 
 export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStatus {
@@ -530,12 +758,21 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       triage_24h: 175,
       triage_degraded_24h: 2,
       triage_degraded_by_code_24h: { news_program_route_deadline: 2 },
-      reader_card_dedicated: false,
-      reader_card_fallback_dedicated: false,
-      reader_card_fallback_model: null,
-      reader_card_model: "triage-model-v1",
-      triage_fallback_model: null,
-      triage_model: "triage-model-v1",
+      card_dedicated: false,
+      card_fallback_dedicated: false,
+      card_fallback_model: null,
+      card_model: "news-model-v1",
+      extraction_fallback_model: null,
+      extraction_model: "news-model-v1",
+      judgment_backend: "generated",
+      judgment_model: "news-model-v1",
+      news_judgment_configured: false,
+      news_program_identity: null,
+      semantic_adopted_24h: 150,
+      semantic_failed_24h: 2,
+      semantic_failed_by_code_24h: { "news_provider_unavailable:TimeoutError": 2 },
+      semantic_observations_24h: 173,
+      semantic_pending: 0,
       triage_p50_ms: 640,
       triage_p95_ms: 1_900,
     },

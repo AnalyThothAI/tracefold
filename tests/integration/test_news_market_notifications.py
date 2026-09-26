@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_judgment import scored_judgment
+from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news import card_format as fmt
 from tracefold.news.artifact_identity import canonical_sha
@@ -47,12 +47,11 @@ from tracefold.news.market_notifications import (
 )
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import QUOTE_FRESH_MAX_AGE_MS, QUOTE_READ_TIMEOUT_SECONDS, Quote
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.models import TriageVerdict
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.news.pipeline.delivery import read_display_quotes, read_pushed_news
-from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
 
@@ -1604,12 +1603,12 @@ def _persist_verdict(repos: Any, *, event_id: str, symbol: str, headline_zh: str
         headline_zh=headline_zh,
         why_zh="",
     )
-    judgment = scored_judgment(verdict)
+    judgment = legacy_judgment(verdict)
     manifest_sha = "b" * 64
     assert repos.news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version=TRIAGE_POLICY_VERSION,
+        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
         judgment_contract_version=judgment.judgment_contract_version,
         judgment_origin="model",
         rule_baseline_decision="push",
@@ -1617,11 +1616,11 @@ def _persist_verdict(repos: Any, *, event_id: str, symbol: str, headline_zh: str
         override_rule="fact_kind_state_change",
         throttled_by=None,
         verdict=verdict.model_dump(mode="json"),
-        model_editorial=judgment.editorial.model_dump(mode="json"),
+        model_editorial=judgment.editorial.document,
         judgment_sha256=judgment.scored_judgment_sha256,
         runtime_manifest_sha=manifest_sha,
         model="test",
-        program_version=SEMANTIC_PROGRAM_VERSION,
+        program_version=LEGACY_PROGRAM_VERSION,
         program_sha256="a" * 64,
         degraded=False,
         error_code=None,
@@ -1632,7 +1631,7 @@ def _persist_verdict(repos: Any, *, event_id: str, symbol: str, headline_zh: str
             "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
             "editorial_sha256": judgment.editorial.editorial_sha256,
             "runtime_manifest_sha": manifest_sha,
-            "program_version": SEMANTIC_PROGRAM_VERSION,
+            "program_version": LEGACY_PROGRAM_VERSION,
             "program_sha256": "a" * 64,
             "evidence_version": int(evidence["evidence_version"]),
             "evidence_sha256": str(evidence["evidence_sha256"]),

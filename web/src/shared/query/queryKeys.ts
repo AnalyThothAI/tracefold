@@ -1,8 +1,5 @@
 export type NewsFeedQueryKeyFilters = {
   admission: string | null;
-  eventFamilies: readonly string[];
-  changeStates: readonly string[];
-  assertionStatuses: readonly string[];
   sourceAuthorities: readonly string[];
   subjectCodes: readonly string[];
   finalDecisions: readonly string[];
@@ -17,9 +14,6 @@ export type NewsFeedQueryKeyFilters = {
 export const newsFeedIdentity = (filters: NewsFeedQueryKeyFilters) =>
   [
     filters.q,
-    filters.eventFamilies.join(","),
-    filters.changeStates.join(","),
-    filters.assertionStatuses.join(","),
     filters.sourceAuthorities.join(","),
     filters.subjectCodes.join(","),
     filters.finalDecisions.join(","),

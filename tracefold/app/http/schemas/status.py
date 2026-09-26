@@ -132,12 +132,25 @@ class NewsPipelineStatusData(ExactApiSchema):
     triage_p95_ms: float | None = None
     queue_lag_p95_ms: float | None = None
     reasked_24h: int = 0
-    triage_model: str | None = None
-    reader_card_model: str | None = None
-    reader_card_dedicated: bool = False
-    triage_fallback_model: str | None = None
-    reader_card_fallback_model: str | None = None
-    reader_card_fallback_dedicated: bool = False
+    # The configured News model routes (#706), secret-free. `news_program_identity` is the identity
+    # the configured runtime records on every semantic observation.
+    extraction_model: str | None = None
+    extraction_fallback_model: str | None = None
+    card_model: str | None = None
+    card_dedicated: bool = False
+    card_fallback_model: str | None = None
+    card_fallback_dedicated: bool = False
+    news_judgment_configured: bool = False
+    judgment_backend: Literal["native", "generated"] | None = None
+    judgment_model: str | None = None
+    news_program_identity: str | None = None
+    # The semantic stage's last 24 h: completed turns, adopted content revisions, visibly failed work
+    # (with its codes) and the bounded pending backlog.
+    semantic_observations_24h: int = 0
+    semantic_adopted_24h: int = 0
+    semantic_failed_24h: int = 0
+    semantic_pending: int = 0
+    semantic_failed_by_code_24h: dict[str, int] = Field(default_factory=dict)
     suppressed_by_reason: dict[str, int] = Field(default_factory=dict)
     dropped_by_rule: dict[str, int] = Field(default_factory=dict)
     throttled_by_key: dict[str, int] = Field(default_factory=dict)

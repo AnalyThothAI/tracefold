@@ -1,299 +1,52 @@
-# News taxonomy v1
+# News topics and source authority
 
-`news_taxonomy_v1` is the versioned fact classification for ordinary
-`event_kind=news`. It is persisted inside the existing atomic editorial
-Judgment. It is not a second Event truth, a delivery score, or Trading input.
+The editorial News runtime uses EventUpdate claims, changes and evidence
+relations. The former `news_taxonomy_v1` four-axis result
+(`subject_codes`, `event_family`, `change_state`,
+`assertion_status`) is historical data, not a current model output, policy
+gate, API filter or Trading input. A model's wording does not establish that
+a source's claim is true. See [News EventUpdate](design/news-event-updates.md)
+and [Contracts](CONTRACTS.md) for the current result and read surfaces.
 
-The production rollout for issue #117 intentionally precedes the model-quality
-claim. Issue #437 measures that claim from one frozen development Dataset of
-accepted Gold and the taxonomy already persisted by Stable. Until at least 60
-independent connected-fact clusters are scored, the result is
-`INSUFFICIENT_DATA`; schema deployment is not evidence of model quality.
+## IPTC navigation topics
 
-## Identities and ownership
+`tracefold.news.updates.topics` pins the reviewed IPTC Media Topics codebook.
+An EventUpdate may carry up to three known qcodes; the broad parent cannot
+be combined with a pinned descendant. These codes help navigation and
+notification presentation. They do not collapse a multi-claim article into
+one event family or decide whether a claim is new, supported or worth sending.
+The topic codebook identity enters the News program identity.
 
-- Taxonomy version: `news_taxonomy_v1`.
-- IPTC Media Topics snapshot: `2026-01-05`, 35 reviewed qcodes.
-- Codebook SHA: `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`.
-- Source-authority classifier: `news_source_authority_v4`, registry SHA
-  `5e7c36663b40dd4227a7535eb14496e410ad02e2109139e6b5de64e926f60325`.
-  v4 (#675) adds the official government and military identities a 7-day
-  production sample carried as `unknown` — CENTCOM, the Department of War, the
-  White House, POTUS and the State Department spokesperson as first-party
-  names and handles, `war.gov`, `treasury.gov`, `justice.gov`,
-  `federalreserve.gov` and `house.gov` as first-party registered domains, and
-  the SEC's own account beside `sec.gov` as a regulatory one. The standing
-  exclusions are unchanged: a personal account, a relay and a belligerent's
-  state media stay out, and so does a government press office whose posts are
-  political messaging about a third party.
-- Production Program: `news_semantic_program_v13`, Program SHA
-  `f152602341ddfef9d041b2f656eea3f1a507eac38cfbc2fe5a6a1ab1eed531ae`.
-- Triage policy: `news_triage_policy_v17`.
-- Review contract: `news_review_v8`.
-- The model emits `subject_codes`, `event_family`, `change_state`, and
-  `assertion_status`. Code derives `source_authority` only from the structured
-  reporting-source field. Strategy/provenance routing IDs carry no source
-  authority. The exact allowlists live in `tracefold.news.taxonomy`; prose is
-  not a second editable copy.
+The upstream standard is [IPTC Media Topics](https://iptc.org/standards/media-topics/).
+IPTC supplies topic identifiers; it does not supply Tracefold's event
+relationships, notification rules or source verification.
 
-The upstream references are [IPTC Media Topics](https://iptc.org/standards/media-topics/),
-[IPTC NewsML-G2 guidelines](https://www.iptc.org/std/NewsML-G2/guidelines/),
-and [SEC EDGAR APIs](https://www.sec.gov/search-filings/edgar-application-programming-interfaces).
-IPTC supplies stable subject identities; it does not own Tracefold's event
-families, evidence status, policy, or delivery decisions.
+## Cited source authority
 
-## Exact contract
+`tracefold.news.taxonomy` retains the code-owned source-authority
+classifier and its exact source-name, handle and domain allowlists. The
+current EventUpdate attaches `source_authority` to each cited Source, rather
+than assigning one publisher rank to the whole Event. Classification uses
+the structured reporting source, exact normalized names or handles, and a
+parsed HTTP(S) hostname with a domain boundary. It does not infer authority
+from strategy IDs, fuzzy substrings, URL text or another member's identity.
 
-`subject_codes` is a canonical set of zero to three pinned qcodes. Unknown
-codes, more than three codes, and selecting the broad
-`medtop:04000000` parent with one of its pinned descendants fail closed.
-Subjects answer “what domain is this about”; they do not replace the event
-family. Empty is an honest abstention.
+The classes are `regulatory_filing`, `issuer_first_party`,
+`reputable_secondary` and `unknown`. A first-party source can establish
+that it made a statement, but cannot by itself verify its assertion about a
+third party or a future action. A relay, personal account, or belligerent's
+state media does not borrow an origin's authority. EventUpdate evidence
+relations record which source supports, refutes, reports or does not address
+each claim. Reader notification's `key` flag requires corroboration as
+well as a qualifying change and topic; the classifier alone does not grant
+that flag.
 
-The three label axes have one codebook, and it is code (#501 D3):
-`EVENT_FAMILY_DEFINITIONS`, `CHANGE_STATE_DEFINITIONS`,
-`ASSERTION_STATUS_DEFINITIONS` and `TAXONOMY_PRECEDENCE_RULES` in
-`tracefold/news/taxonomy.py`. `render_taxonomy_seed_instruction()` renders the
-taxonomy Predictor's seed text from those constants byte for byte, the GEPA
-metric quotes the same definitions and precedence rules in its feedback, and
-the blind Gold drafters run the same Signature and seed. This document does not
-restate the definitions: a second prose copy is a second editable truth, and
-the 2026-09-02 post-mortem of #456 found reviewer batches diverging on
-`announced`/`effective`/`reported` and `confirmed`/`claimed` precisely where the
-seed and the reviewer prose had drifted apart. Repairing a confused boundary
-means editing the constant, which moves the seed, the Program identity and the
-metric feedback together. #567 is that repair carried out once: the twelve rules
-the #534 and #548 reviewers had been adjudicating five batches by — the
-subject-code boundaries, the limits on `unknown`, `effective`, `reported` and
-`scheduled`, and the attribution markers that decide `claimed` — are now in those
-constants rather than in a session log, so the drafters, the reviewer and the
-metric read one text, and the epoch that opens on deployment leaves the previous
-epoch's 1020 accepted Gold reviews as audit history.
+## Historical records
 
-`event_family` answers "what happened"; a filing is a source container, never
-automatically an event family. `change_state` is orthogonal to family.
-`assertion_status` describes evidence, not event type. The label sets travel in
-the typed `ModelTaxonomyV1` schema, which the JSON adapter hands the provider
-as a grammar; the seed text carries only what a schema cannot: definitions,
-precedence rules, the qcode glossary and the boundary examples.
-
-`source_authority` is code-owned, and since #651 it is an `EditorialEnvelope`
-field rather than a taxonomy axis: the model never emitted it, and a judgment
-whose taxonomy Predictor failed alone must still carry it, because that is what
-the escalate-corroboration rule reads. The allowlists are unchanged:
-
-
-- `regulatory_filing`: exact recognized regulator/filing provenance.
-- `issuer_first_party`: exact recognized issuer or venue first-party identity.
-  A press-release wire (`prnewswire.com`, `globenewswire.com`,
-  `businesswire.com`) belongs here rather than under `reputable_secondary`: it
-  distributes the issuer's own release verbatim under the issuer's byline, so
-  the release is first-party evidence of what the issuer said.
-- `reputable_secondary`: exact recognized wire/publication identity.
-- `unknown`: no exact allowlist match. Fuzzy names and fan accounts never
-  inherit authority from a substring.
-
-The classifier accepts only an exact normalized source name, an exact `@handle`,
-or the exact hostname returned by the standard HTTP(S) URL parser. It never
-splits arbitrary source text or consults strategy/provenance routing IDs. Names
-and handles match exactly; a hostname matches its registered domain and any
-subdomain of it, on a dot boundary anchored at the end of the host, so
-`investor.uber.com` and `wire.reuters.com` inherit their registered domain's
-authority. Values such as `fan:reuters`, `fake|sec`, `notreuters.com`,
-`reuters.com.evil.example` and userinfo URLs therefore remain `unknown`. The
-classifier version and registry address are part of the Program execution
-envelope.
-
-Membership is a judgment about corroboration weight, so three categories stay
-out on purpose: personal accounts (analysts, traders, journalists posting under
-their own name), aggregators and relays that restate an origin they do not own,
-and a belligerent's state media, which is a party to the event it reports.
-Policy v16 reads `editorial.source_authority` when it decides whether a material change in one of
-four families escalates, and none of those three can carry that weight.
-
-## Persistence and readers
-
-Model-origin `EditorialEnvelope.v4` carries `source_authority`, `taxonomy_status`
-and `taxonomy_error_code` beside a `taxonomy` that may be JSON null, and hashes
-all of it in the same `news_judgment_v3` atom (#651 §5.3): a taxonomy Predictor
-that fails alone leaves the judgment standing. v4 (#675 §1) is v3 without
-`relevance`: the envelope persists code facts about the evidence, and the seven
-model-owned codes were not that.
-
-Three editorial shapes and two verdict shapes are in the ledger and none is
-rewritten. `news_editorial_v3` carries the deleted `relevance` object and
-`news_editorial_v2` additionally nests the authority inside the taxonomy;
-`storage.decisions.editorial_read_shape` is the read boundary and drops
-`relevance` rather than publishing a judgment the Program no longer makes. A
-verdict written under `news_judgment_v2` carries `magnitude` and `audience` and
-no `fact_kind`; `news_current_verdict_contract_shape_valid` binds each shape to
-the contract version that wrote it, `TriageVerdict` reads both, and
-`storage.decisions.triage_verdict_read_shape` is the projection boundary that
-drops the two retired keys. Migration `0336` physically deletes envelopes and
-judgments older than v2; no Program, history, review task, learning dataset,
-release gate, API, or Web path decodes or translates their retired shapes.
-
-The Event detail API and console expose Chinese labels for the four axes and for
-the envelope's source authority, and render `分类不可用` with the error code when
-`taxonomy_status` is `unavailable`; market-review discovery reads versioned
-`event_family`. ReaderHistory,
-ToldContext, progression, learning replay, and evaluation carry full current
-field names and exact current identities; none accepts a compact or historical
-shape. Structured listing, OI, and liquidation presentation reads code-owned
-`event_kind`; OI and liquidation use their own typed judgments and do not
-fabricate model taxonomy or enter the generic Review v8 queue.
-
-## Gold and GEPA measurement
-
-One explicitly accepted `news_review_v7` taxonomy is Gold. Gold is an
-acceptance state, not a claim that an independent human supplied the label. An
-owner-authorized AI adjudicator may accept an explicitly reviewed subset and is
-recorded as AI, never as human.
-
-Under v7 the taxonomy is **optional** (#651 §7.2). A review that states one must
-state all four axes and carry the four `taxonomy_*` dimensions, and a review
-that states none must carry none of them — a label nobody compared and a
-comparison against a label nobody stated are both answers the corpus cannot
-read. A review with no taxonomy is still a real review of everything else it
-judged; it simply is not classification evidence, which the frozen case records
-as `applicable_targets` without `classification`. That is the point of making it
-optional: v6 forced a reviewer who had noticed a wrong number to invent four
-axes first, and those invented axes then became Gold that a candidate was
-scored against.
-
-The review submission carries the four model axes only. `source_authority` was
-never a reviewer's answer — it is derived from the reporting source by code — so
-#651 removed it from the submitted taxonomy and deleted the
-`taxonomy_source_authority` dimension, which compared a code fact with itself
-and was always `pass`.
-
-Gold is drafted blind, twice (#501 D8). `news learning draft-reviews
---rubric-model M --taxonomy-models A,B` runs two drafters, each over the
-Program's own bounded taxonomy input — evidence and Gate facts, no card, no
-Stable label, no told ledger, no review — through the taxonomy Predictor's
-Signature and seed. Agreement is the draft; on disagreement the draft takes A,
-the batch marks `taxonomy_disagreement`, and the accepting reviewer decides
-through the existing `accept-drafts` edit. The accepted review's
-`taxonomy_review.drafts` keeps both labels under their model names, and a
-development freeze reports Cohen's κ over every dual-labelled cluster beside
-the corpus; κ is reported, never a gate. The #456 post-mortem is the reason:
-the rubric drafter labelled taxonomy while reading Stable's own label in
-`card_json`, so Stable-drafted batches agreed with Stable at 0.95–1.00 and
-Codex-drafted batches at 0.03–0.17, and the metric measured who drafted the
-label.
-
-A and B come only from the routes this machine already has (#534):
-`qwen3.8-27b:thinking` (local), `deepseek-v4-pro` and `deepseek-v4-flash`. The
-two names only have to differ, and no third family is introduced. The
-non-thinking production `qwen3.8-27b` is not a drafter because it *is* the
-Stable taxonomy route — same seed, same `evidence_json`, temperature 0 — so its
-label is already in the verdict and readiness reports that agreement for free as
-`stable_exact_n / stable_mismatch_n`. The default is `--rubric-model
-deepseek-v4-pro --taxonomy-models deepseek-v4-pro,qwen3.8-27b:thinking`: A is
-DeepSeek, so a disagreed draft leans away from the Stable family and leaves GEPA
-a target, and B is the local thinking Qwen at zero cost. The rubric model is
-DeepSeek rather than the thinking Qwen because the 2026-09-04 01:22 UTC smoke
-batch had 7 of 20 rubric drafts rejected by `RubricDraft` validation when
-`qwen3.8-27b:thinking` drafted the rubric under `prompt_json` — invented
-`trade_*` enum values and extra keys — against 0 of 40 blind taxonomy failures,
-and a rejected rubric discards that task's two paid taxonomy labels; the rubric
-drafter never labels taxonomy, so one model may hold both the rubric and
-drafter-A roles.
-
-The existing development Dataset projects four model-owned axes into each
-episode: `subject_codes`, `event_family`, `change_state`, and
-`assertion_status`, plus the review's `taxonomy_review` provenance verbatim.
-`source_authority` is derived from evidence by code and is not model Gold. No
-taxonomy table, Dataset kind, migration or parallel corpus exists.
-
-`taxonomy_metric.py` is a pure comparison helper. Per case it computes
-subject-code set F1 (both empty is 1; exactly one empty is 0) and exact matches
-for the other three axes, then averages the four values. The score and feedback
-come from that one comparison; feedback quotes the codebook definition of the
-expected and predicted label and any precedence rule written for that
-confusion, never source authority.
-
-Every case with valid accepted Gold is a `classification` optimizer sample
-(#501 D9, #651 §9); the plan calls it `included`, records whether Stable already
-matched (`stable_exact`, `null` when the previous arm left no comparison), and
-reports `stable_exact_n` / `stable_mismatch_n` as readiness diagnostics. A
-missing recorded Stable answer no longer excludes the case, because GEPA scores
-the candidate against Gold and discarding a reviewer's label to protect a
-diagnostic is the wrong trade. Owner columns and `taxonomy_*` dimension labels
-are audit metadata and grant no optimization authority; since #534 the
-development corpus also ignores every `taxonomy_*` dimension when it splits
-accepted cases into boundary and retention, because those labels are written by
-code from whether Stable matched Gold. Those role counts are published
-diagnostics and gate nothing at all since #651 §9 deleted the corpus quotas
-they used to feed. The
-GEPA student is the single `taxonomy` Predict; the admitted candidate is GEPA's
-own `best_idx` when its selection score is strictly above the seed's, otherwise
-the run is `NO_OP`. The held-out measurement is the same scalar over a window
-frozen after registration, which GEPA neither reflected on nor selected against:
-a taxonomy-only candidate's holdout is decided by the classification partial
-score and the axis deltas rather than by blind pairwise preference, because
-taxonomy reaches neither the verdict, the card nor Delivery and both arms would
-show the reviewer the same card. Since #567 each of those deltas is measured per
-cluster against the same elected representatives and reported with its bootstrap
-95 % interval (the profile's own seed 112, 2,000 replicates), so an axis counts
-as a regression only when its whole interval lies below zero — one cluster of 311
-flipping is noise, not a release FAIL — and the same issue raised the release
-profile's `mean_total_tokens_growth_pct` guardrail from 0.10 to 0.25, leaving the
-call and provider-cost caps at 0.10. The primary metric of this class is
-`taxonomy_overall`, which since #651 is `target_metrics.classification_score` —
-the mean over the axes the Gold states — so the number a release turns on is the
-number the classification target is optimized on. `four_axis_exact_accuracy` is a
-published **diagnostic**, not a gate: it answers "what share of cards would a
-reader see correctly classified", and because it is a joint rate over four
-correlated axes it counts one cluster's slip twice, on its own axis and again
-jointly. #626 had made it the gate; the four per-axis regression intervals
-already refuse a candidate that bought a gain by trading an axis away.
-
-The public chain is the existing `news learning readiness --target classification` followed by one
-`news learning run --target classification`; Dataset forms of `baseline` and standalone `optimize` do
-not exist. The Candidate still passes the existing evaluator and release path.
-
-## Non-authority and rollback
-
-The four model-owned axes (`subject_codes`, `event_family`, `change_state`,
-`assertion_status`) never enter Gate, ReaderCard, Delivery, or Trading, and
-changing them alone must not change any of those. They do enter `decide()`, and
-since policy v15 (#675) that is deliberate: `event_family`, `change_state` and
-`assertion_status` are three of the input columns of the decision table. Nothing
-else reads them and nothing reads `subject_codes`. Every row that reads them is
-silent whenever `taxonomy_status` is `unavailable`, and the `fact_kind` rows
-still apply, so a taxonomy outage costs precision and never the whole table.
-
-Policy v16 (#675 §1) widens what a classification can do, and the widening is
-stated here because the earlier wording of this paragraph promised it could not.
-Under v15 the three rows could only withhold. Under v16 `event_family` also
-decides whether a material change *escalates*, so a classification error can now
-cost a reader a card, withhold one, or make one louder. It still cannot change a
-card's text or reach Trading: the escalate row reads the family and the
-code-owned corroboration and nothing else, and ReaderCard never sees a taxonomy
-at all. The earlier wording also said the axes never enter `decide()`; #117 and
-#501 wrote it when `decide()` read only the model's own relevance enums, and
-#675 withdrew it in favour of the statement above, which is the one the code
-enforces.
-
-The code-owned `source_authority` field has read this way since policy v12
-(#504): `decide()` reads it as issued from the evidence — from
-`editorial.source_authority` since #651 moved it out of the taxonomy object, so
-that a failed taxonomy call cannot take the corroboration fact down with the
-label — as the escalate corroboration fact, where an eligible `escalate` from an
-`unknown` source with a single independent member text is downgraded to `push`
-under `escalate_uncorroborated`, and since v15 as the second column of
-`conflict_claim_uncorroborated`. It is an
-evidence-side fact carried on the editorial envelope, not a model judgment, and
-it is not recomputed inside `decide()`. Since #501 taxonomy is the second of three serial Predictors
-(`event_semantics -> taxonomy -> reader_card`); the common successful production
-route is exactly three physical model calls, and the taxonomy call reads no
-told ledger. #117's "not a third Predictor" decision is withdrawn by #501: the
-independent Predictor is what lets GEPA optimize the classification text alone
-while EventSemantics and ReaderCard stay byte-identical.
-
-Migration `20260829_0328` trips open canaries and records the identity and prior
-evidence disposition. Review v5 and older Program evidence remains append-only
-audit history and cannot enter Review v6 denominators. Worker startup opens the
-new bundle-owned epoch. Rollback restores the prior exact image/bundle; it never
-deletes or rewrites taxonomy judgments, reviews, or receipts.
+Migration `20260926_0404` leaves old verdict, review and learning rows
+untouched. Serve exposes old verdicts as `legacy_verdict`; it does not
+translate their taxonomy labels into EventUpdate claims. The current
+ReviewDesk reviews the new intent and its evidence. The former taxonomy
+Gold/drafter, GEPA optimization, program registry and release/canary
+commands are removed from the executable surface. Historical rows remain
+audit material and do not activate an old program.

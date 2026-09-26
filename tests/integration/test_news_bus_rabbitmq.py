@@ -1,8 +1,8 @@
 """RabbitMQ adapter tests against a real broker: topology, policy, native delayed retry, DLQ tooling.
 
-Requires a RabbitMQ 4.3 broker at TRACEFOLD_TEST_AMQP_URL (default amqp://tracefold:tracefold@127.0.0.1:5672/,
-the compose broker) with the management plugin. The explicit fixture fails closed in evidence mode. Every
-test declares its own prefixed topology, applies its own prefixed policies, and deletes both.
+Requires a disposable RabbitMQ 4.3 broker declared by TRACEFOLD_TEST_AMQP_URL (there is no default: the
+local 5672 is the operator's live broker) with the management plugin. The explicit fixture fails closed in
+evidence mode. Every test declares its own prefixed topology, applies its own prefixed policies, and deletes both.
 
 Nothing here may assert retry behaviour through an application counter: after #400 the delay, the failure
 count and the terminal decision are all the broker's, so the tests read the broker's own numbers.
@@ -15,7 +15,6 @@ import base64
 import contextlib
 import itertools
 import json
-import os
 import socket
 import subprocess
 import threading
@@ -31,6 +30,7 @@ import aio_pika
 import pytest
 from aio_pika import DeliveryMode, ExchangeType
 
+from tests.support.rabbitmq import declared_amqp_url, declared_management_url
 from tracefold.integrations.rabbitmq import (
     MANAGEMENT_READ_TIMEOUT_SECONDS,
     POLICY_EFFECTIVE_TIMEOUT_SECONDS,
@@ -56,12 +56,9 @@ from tracefold.news.pipeline.maintenance import _BROKER_SNAPSHOT_DEADLINE_SECOND
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 
-AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
+AMQP_URL = declared_amqp_url()
 _AMQP = urlsplit(AMQP_URL)
-MANAGEMENT_URL = os.environ.get(
-    "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-    f"http://{_AMQP.hostname or '127.0.0.1'}:15672",
-).rstrip("/")
+MANAGEMENT_URL = declared_management_url(AMQP_URL)
 # Tests that only need "the message came back delayed" use a short delay so a three-attempt sequence
 # fits in an integration budget. The production 30 s value is asserted directly from the checked-in
 # document, and one test runs the whole frozen contract at its real timing.

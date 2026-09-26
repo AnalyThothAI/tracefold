@@ -74,10 +74,25 @@ on unchanged relevant inputs just to populate a checklist.
 ### Resource isolation
 
 PostgreSQL tests clone a migrated baseline into private test databases where
-appropriate; migration-history tests use a separate empty database. Broker restart
-tests require an explicitly supplied disposable `TRACEFOLD_TEST_RABBITMQ_CONTAINER`.
-They must not discover and restart an operator deployment. Required CI and full
-preflight treat missing required resources as failure, not a skip.
+appropriate; migration-history tests use a separate empty database. Broker tests have
+no default broker: on an operator host `127.0.0.1:5672` is the live deployment, so a run
+declares a disposable one with `TRACEFOLD_TEST_AMQP_URL`, plus
+`TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL` when it is not on the default port (the harness
+refuses to guess `15672` for another port). Broker restart tests additionally require
+`TRACEFOLD_TEST_RABBITMQ_CONTAINER`. A local disposable broker:
+
+```bash
+docker run -d --rm --name tracefold-test-rabbitmq -p 127.0.0.1:45672:5672 \
+  -e RABBITMQ_DEFAULT_USER=tracefold -e RABBITMQ_DEFAULT_PASS=tracefold \
+  rabbitmq:4.3.5-management-alpine
+export TRACEFOLD_TEST_AMQP_URL=amqp://tracefold:tracefold@127.0.0.1:45672/
+export TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL=http://$(docker inspect -f \
+  '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' tracefold-test-rabbitmq):15672
+export TRACEFOLD_TEST_RABBITMQ_CONTAINER=tracefold-test-rabbitmq
+```
+
+Without a declaration, broker tests skip locally. Required CI and full preflight
+treat missing required resources as failure, not a skip.
 
 Keep the tested local tree and resource configuration stable during a run. Do not
 share a destructive database or restartable broker between concurrent owners.

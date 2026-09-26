@@ -403,8 +403,8 @@ def final_storyline_key(
     ``aliases`` resolves symbols to one issuer first (#75). ``dedupe_family`` is accepted and unused: the
     fallback key is now ``none``, so the family stays a column instead of becoming a budget bucket (#509 D2).
 
-    ``degraded`` marks a rule-baseline verdict, whose ``assets`` are empty by construction (see
-    ``triage_rules.fallback_verdict``). "The model named no primary" is evidence only when a model actually
+    ``degraded`` marks a rule-baseline verdict, whose ``assets`` are empty by construction (the legacy
+    degraded fallback). "The model named no primary" is evidence only when a model actually
     answered, so a degraded card keeps the pre-#100 fallback: the provider's tags are the only evidence there is.
 
     This key is a duplicate-comparison and operator-facing grouping, never a claim shown to the reader — the

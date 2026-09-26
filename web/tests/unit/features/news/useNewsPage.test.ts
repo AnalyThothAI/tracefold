@@ -18,10 +18,7 @@ import { describe, expect, it } from "vitest";
 
 const baseFilters = {
   admission: null,
-  assertionStatuses: [],
-  changeStates: [],
   directions: [],
-  eventFamilies: [],
   eventKinds: [],
   finalDecisions: [],
   hours: null,
@@ -39,15 +36,12 @@ describe("useNewsFeedWithToken", () => {
 
     expect(latest).not.toEqual(pushed);
     expect(latest[0]).toBe("news-feed");
-    expect(pushed[7]).toBe("push");
+    expect(pushed[4]).toBe("push");
     const held = queryKeys.newsFeed({ ...baseFilters, hours: 6, outcome: "held" });
     expect(held).not.toEqual(latest);
-    expect(held[11]).toBe("held");
-    expect(held[12]).toBe("6");
+    expect(held[8]).toBe("held");
+    expect(held[9]).toBe("6");
     for (const filtered of [
-      { ...baseFilters, eventFamilies: ["financial_results"] as const },
-      { ...baseFilters, changeStates: ["announced"] as const },
-      { ...baseFilters, assertionStatuses: ["confirmed"] as const },
       { ...baseFilters, sourceAuthorities: ["issuer_first_party"] as const },
       { ...baseFilters, subjectCodes: ["medtop:04000000"] as const },
       { ...baseFilters, eventKinds: ["news"] as const },
@@ -64,6 +58,7 @@ describe("useNewsFeedWithToken", () => {
         const params = new URL(request.url).searchParams;
         for (const name of [
           "admission",
+          // #706: the three retired taxonomy axes, which the browser must never send again.
           "assertion_status",
           "change_state",
           "event_family",
@@ -88,10 +83,7 @@ describe("useNewsFeedWithToken", () => {
       () =>
         useNewsFeedWithToken("token", {
           admission: "candidate",
-          assertionStatuses: ["confirmed"],
-          changeStates: ["announced"],
           directions: ["bullish", "neutral"],
-          eventFamilies: ["financial_results"],
           eventKinds: ["news"],
           finalDecisions: ["push"],
           hours: 24,
@@ -106,11 +98,11 @@ describe("useNewsFeedWithToken", () => {
     await waitFor(() => expect(result.current.data?.events).toHaveLength(1));
     expect(observed).toEqual({
       admission: "candidate",
-      assertion_status: "confirmed",
-      change_state: "announced",
+      assertion_status: null,
+      change_state: null,
       cursor: null,
       direction: "bullish,neutral",
-      event_family: "financial_results",
+      event_family: null,
       event_kind: "news",
       final_decision: "push",
       hours: "24",
@@ -121,7 +113,7 @@ describe("useNewsFeedWithToken", () => {
       subject_code: "medtop:04000000",
       symbol: "BTC",
     });
-    expect(result.current.data?.events[0].triage?.final_decision).toBe("push");
+    expect(result.current.data?.events[0].legacy_verdict?.final_decision).toBe("push");
   });
 
   it("reads one Event detail by encoded id", async () => {

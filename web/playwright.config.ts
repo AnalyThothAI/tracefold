@@ -21,6 +21,8 @@ const everyViewport = [
   "page-layout.spec.ts",
   "research-execution.spec.ts",
   "event-feed-controls.spec.ts",
+  // #706: the EventUpdate detail sections must stay inside the page at every width.
+  "news-event-update.spec.ts",
   "price-plane.spec.ts",
   "wallet-net-buy.spec.ts",
 ];

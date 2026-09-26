@@ -836,24 +836,12 @@ An image replacement is a runtime change, never an Alembic downgrade. Use only a
 reviewed local image identified by its full `sha256:` ID. The current source, the
 target image and the live database must report the same migration head.
 
-From the deployment-clean primary checkout on `main`, resolve the latest
-recorded previous image candidate, then inspect and deploy that exact ID:
+From the deployment-clean primary checkout on `main`, select the retained
+previous image digest from the deployment record, inspect it locally, then
+deploy that exact ID:
 
 ```bash
 cd ~/Documents/Code/tracefold
-docker compose exec -T postgres sh -eu -c '
-  PGPASSWORD="$(cat /run/secrets/postgres_database_password)"
-  PGOPTIONS="-c default_transaction_read_only=on"
-  export PGPASSWORD PGOPTIONS
-  exec psql -X -v ON_ERROR_STOP=1 -U tracefold -d tracefold -c "$1"
-' sh \
-  "SELECT payload->>'previous_image_digest' AS image_id
-     FROM news_learning_artifacts
-    WHERE kind = 'deployment_receipt'
-      AND payload->>'action' = 'runtime_deploy'
-      AND NULLIF(payload->>'previous_image_digest', '') IS NOT NULL
-    ORDER BY created_at_ms DESC, artifact_sha DESC
-    LIMIT 1"
 docker image inspect --format '{{.Id}}' sha256:REPLACE_WITH_64_LOWERCASE_HEX
 make deploy-image IMAGE_ID=sha256:REPLACE_WITH_64_LOWERCASE_HEX
 ```
@@ -1217,7 +1205,7 @@ tracefold workers
   -> finite external-operation executor 3
   -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
-     news-triage, news-deliverer, news-janitor); the bounded polling loops
+     news-semantic, news-deliverer, news-janitor); the bounded polling loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
      workers-control
 ```
@@ -1423,633 +1411,85 @@ remains degraded.
 
 ## Domain traces
 
-News:
+### Editorial News EventUpdate (#706)
 
 ```text
-OpenNews account Strategy WSS (whatever the account has enabled; no local allowlist)
-  -> Receiver publishes each accepted frame to RabbitMQ (confirms)
-  -> q:news.raw [SAC] Deduper: Item upsert -> source contract (classifier v2)
-     -> market frame (oi | liquidation | smart_money | unknown_market): Item + one typed
-        fact row in one transaction, then stop. No Gate, no Event, no publish, live
-        and recovery alike; read back by /api/news/market
-     -> editorial frame (news | listing): durable event_kind
-     -> title/identity -> same-kind Event new|member -> Gate -> storyline key
-     -> publish event.<family>.<queue_priority> for admitted Events
-  -> q:news.triage Triage (prefetch news.triage.concurrency):
-     SemanticJudge.judge(TriageContext) -> EventSemantics.v2 + TradeRelevanceV1
-     -> _normalize_and_validate_semantics -> Taxonomy -> ReaderCard.v2
-     -> _assemble -> atomic SemanticJudgment/ScoredJudgment
-     -> policy-v14 decide() -> news_verdicts (editorial + runtime manifest)
-     -> news_delivery_queue row in the same transaction (push/escalate); no broker publish
-  -> Deliverer loop (Workers task, 1 s poll): claim a due row with FOR UPDATE SKIP LOCKED,
-     one configured-provider attempt per claim (kind first); the row is deleted once
-     news_deliveries has it, and `dead` after three attempts 30 s apart. A preflight or
-     send failure the adapter proved was not sent and retriable costs one attempt, not
-     the card; a refusal or an unknown outcome settles news_deliveries terminal at once
-  -> RabbitMQ 4.3 native delayed retry inside each business queue: TransientError is a counted return
-     (30 s delay, terminal after 3 total attempts), DeferError is an uncounted return (same delay);
-     q:news.dead (at-least-once) for decode/PermanentError/exhausted-transient terminal cases
-  -> Janitor: Event->Triage repair only (15 s minimum age, 30 min relevance ceiling, 50 rows);
-     the push-Verdict handoff needs no repair -- it commits with the verdict --
-     band expiry, 30-day purge, broker snapshot
-  -> /api/news/feed + /api/news/events/{event_id} + /api/news/status
+OpenNews -> RabbitMQ news.raw -> admission -> Item / Event / evidence revision
+           -> durable semantic work -> RabbitMQ news.triage
+           -> NewsAgent extraction + judgments -> adopted EventUpdate
+                  |                              |
+                  v                              v
+           public outbox                   notification work
+           -> App relay                    -> claim-level plan
+           -> Trading catalyst or          -> selected intent -> card -> sender
+              source amendment             -> exact receipt / ambiguous state
 ```
 
-`opennews_source_classifier_v2` is a pure step inside the existing Deduper, not
-a registry, queue or worker. It sorts a frame onto one of two planes. An
-editorial frame gets a durable `news_events.event_kind` of `news` or `listing`.
-A market frame — Strategy `1019`, `2000`, `2083`, `2026`, or any other scoreless
-market/wallet Strategy — gets no Event at all: diagnose it on the Item, by
-`news_items.market_kind`, `market_source_strategy_id`, `market_parse_status` and
-`market_parse_error`, or through `/api/news/market`, which shows the same four
-fields per observation. A provider rename no longer breaks a market contract:
-the family keys on the Strategy id alone, and the name, source type and engine
-type are recorded on the fact rather than gating it (#553). `parse_status = raw`
-with a named reason means the template did not match, not that the observation
-was refused — the frame is stored and readable either way. Recovery applies the
-same classifier and the same parsers in the same single transaction, so a
-recovered measurement now produces the ledger row the old Event-shaped path
-never wrote; it never delivers. The official hits contract
-omits `total` on an empty first page; the adapter normalizes only that exact
-shape to zero. Other envelope, pagination, and hit failures remain closed and
-persist as `opennews_history_payload_<reason>` rather than one broad payload
-error. An accepted history hit must carry a normalized provider record ID and
-published timestamp; Recovery indexes the raw row with the same ID normalizer
-used by the canonical parser. Repeated rows for the same normalized provider
-record ID coalesce to the first row in provider order. Editorial recovery
-remains `admission=recovery`; the three market admissions
-(`telemetry_deterministic`, `liquidation_deterministic`,
-`unsupported_market_contract`) are deleted and appear only on rows written
-before #553, whose Chinese labels `tracefold.news.outcome` still carries so the
-console can render them. The hard cut does not rewrite a
-verdict/delivery ledger before genesis. Migration `0336` deleted that entire
-pre-genesis ledger. It is pre-baseline, and the one-time drained-broker
-precondition it ran behind is gone with the `db migrate` preflight that observed
-it (#598 D5-d): `tracefold db migrate` is `upgrade_head` and nothing else.
-Migration `0336` deletes pre-cut deterministic rows that lacked durable typed
-success evidence. Current Admission and Triage therefore see only the current
-source contract.
+Typed OI, liquidation, smart-money and wallet frames stop at their
+existing fact paths. They do not open an editorial Event or wait for
+EventUpdate. Recovery material does not create a fresh reader
+notification.
 
-Broker: RabbitMQ 4 (`rabbitmq:4-management` in compose; `news.broker.url` is
-the AMQP URL, `news.broker.name_prefix` prefixes every exchange/queue).
-`tracefold news bus-check` connects, declares the topology idempotently, and
-prints per-queue message/consumer counts. Run it, and every other CLI command
-that reaches PostgreSQL or RabbitMQ, inside the Workers container
-(`docker compose exec -T workers tracefold ...`). The configured DSN and AMQP
-URL are compose-network addresses and are used exactly as written: the host
-rewriting that silently redirected `postgres` and `rabbitmq` to hard-coded
-loopback ports is deleted (#537 D1), because it read only
-`TRACEFOLD_POSTGRES_PORT` and therefore made the `/flatten` and `/halt` CLI
-channel unreachable on any custom bind address. Connection/setup faults may
-reconnect before consuming a delivery. Once a message task owns a delivery,
-handler-side `BrokerUnavailable` / `BrokerBackpressure` is a counted broker
-return, delayed by the existing policy and terminal only after the shared
-three-attempt budget. Settlement failures and unknown handler exceptions leave
-the consumer scope and make Workers unready; neither is converted into a
-permanent data error.
-While the broker is unreachable the Receiver keeps the WSS open, records every
-failed interval as a durable `broker_unavailable` incident, and Recovery fills
-the closed interval from official Strategy history. Queue overflow on
-`news.raw` (`reject-publish` at 100k) opens recovery-eligible
-`broker_backpressure`. A confirmed live publish always reconciles both broker
-causes from PostgreSQL, including incidents created by a previous process.
+Admission commits a source-body revision and the semantic work marker
+atomically. Exact retransmission is idempotent; a near match supplies
+candidates and still wakes semantic work. The semantic worker claims a
+fenced lease on the existing `news.triage` queue. Each turn saves
+insert-only checkpoints and an observation; a short CAS transaction
+adopts a substantive update, public outbox and notification marker.
+A lost wake can be repaired from the persistent marker. Provider
+failure is deferred within a bounded attempt budget and a persistent
+incident identifies sustained outage. A semantic failure is not a
+negative news decision.
 
-Dead letters: `q:news.dead` receives permanently failed messages (schema
-errors, explicit `PermanentError`, `TransientError` after 3 attempts, and
-handler-side broker publish failures after the same 3 attempts). Unclassified
-handler exceptions and ack/reject failures do not terminally settle the
-delivery; they fail Workers instead. The queue is declared with delivery limit
-1,000,000 so peeking never drops evidence. `tracefold news dlq inspect
-[--limit N]` peeks without consuming, `tracefold news dlq replay [--limit N]`
-republishes to the topic exchange with a fresh attempt counter, and
-`tracefold news dlq purge` empties it; the management UI (`127.0.0.1:15672`)
-and `bus-check` show the depth. Replay is the one that writes back into the
-pipeline, so it proves the broker contract first: an effective policy that is
-not the checked-in one, a management API that cannot be read, or any unexpected
-name under the prefix and it exits non-zero having read no message. A dead
-letter it cannot decode stops the batch — the message is returned to the queue
-and named in the error, along with how many had already been replayed — because
-`news.dead` is terminal and rejecting it would delete the only copy. Fix the
-decode path or remove that message with `purge`, which is the only command that
-destroys evidence. A growing DLQ with a healthy DB means a code bug, not load.
-Purge only after the cause is fixed; recovered Items never deliver, so
-re-driving old raw frames is safe.
+The model route is configured by the direct News Triage and optional
+Reader/fallback endpoints. Optional `llm.news_judgment` is the News-only
+Jev System One route. Without it, generated judgments answer the same
+narrow task contracts. A successful native batch is not voted on again.
+No model has SQL, sending or order tools. The semantic stage allows
+120 seconds, a notification planning stage 60 seconds, a generative
+call 60 seconds and each native batch at most two seconds within its
+remaining stage budget. The semantic lease is 180 seconds. These are
+code-owned ceilings, not operator config keys.
 
-Control: there is none. `news_control_state` and `tracefold news control` were
-removed after the singleton never withheld a card: across the whole retained
-history no verdict carried `override_rule = 'muted'` and no delivery settled as
-`delivery_paused`, while both hot-path consumers read the row on every message.
-To stop delivery, stop the Workers container; to stop a source, turn its
-Strategy off in the OpenNews account (#126).
+NotificationPlanner records a named decision for each claim against
+the adopted content and actual sent body history. A selected update
+gets one stable intent. Card composition runs only for selected claims;
+its failure leaves the semantic update and Trading outbox intact.
+Before an external send, the Deliverer rechecks the head and reader
+revision and sends the frozen body. A proved unsent attempt can retry
+that intent; an uncertain send stays ambiguous and cannot be blindly
+resent. Telegram's post-send quote/tradeability edit may change the
+same provider message, with its own explicit edit state.
 
-Model failure: Triage's sole Interface is
-`SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The production
-Adapter runs the code-owned Program
-`EventSemantics.v2 -> deterministic _normalize_and_validate_semantics ->
-ReaderCard.v2 -> deterministic _assemble`. The normalizer changes a stray
-non-negative `restates` value on `new_fact`/`progression` to `-1`, records both values on the
-EventSemantics trace, canonicalizes the nested `TradeRelevanceV1` sets, and
-spends no provider call. ReaderCard.v2 produces only `headline_zh` and
-`why_zh`; the assembled Verdict has no second title or action projection. Every
-Predictor payload excludes queue priority,
-provider score, Gate macro lexicon, queue lag and watchlist; the taxonomy
-Predictor receives evidence and Gate facts only, and ReaderCard receives
-only its reduced semantic view and never ToldContext or delivery intent. A
-successful primary route makes exactly three serial provider calls
-(EventSemantics, taxonomy, ReaderCard since #501). JSONAdapter
-may make one format fallback per Predictor, so one route makes at most six
-calls; provider errors and truncation do not spend a format fallback. The
-code-owned 20-second deadline covers the whole route. If primary fails, a
-configured `llm.news_triage_fallback` restarts the full Program with its own
-deadline budget. Its taxonomy slot always aliases the same endpoint and its
-ReaderCard slot explicitly aliases it
-unless a complete `llm.news_reader_card_fallback` endpoint is present;
-one missing or invalid fallback slot disables fallback instead of mixing
-routes. One Program execution's maximum is twelve. The typed LM seam makes one
-stock DSPy/LiteLLM call per physical invocation with no client cache or provider
-retry, so every billable attempt is visible. There is still one persisted final semantic judgment and one card,
-not a restored Analyst stage. Capacity planning must account for the normal
-three serial calls per Event (about 6k input and 80 output tokens for the
-taxonomy call) and serial latency. A stale-ledger re-ask is a second full
-Program execution:
-normally six calls total for that Event, with the same per-execution twelve-call
-ceiling and all superseded/failed work included in telemetry.
+Trading consumes a `catalyst` or `source_update` before News acks the
+public row. Catalyst target selection uses the changed claims and first
+availability for freshness. A source update is stored idempotently as
+a Trading amendment; it opens no Case and extends no TTL. The current
+payload schema is `news_public_update_v1`; a legacy headline/why
+catalyst is rejected by name. None of these actions grants execution
+permission.
 
-By default both Predictors use the Triage endpoint, but each has its own
-Adapter and code-owned token cap. A complete `llm.news_reader_card`
-endpoint moves only ReaderCard's primary slot. A complete
-`llm.news_reader_card_fallback` independently moves the ReaderCard fallback
-slot; otherwise that slot is an explicit alias of the EventSemantics fallback
-slot. `tracefold config` and `/api/news/status.pipeline` expose the effective
-model names and dedicated-Reader flags without exposing endpoints or
-credentials.
+For diagnosis, inspect `/api/news/status` and the Event detail's
+`processing`, `event_update`, claim decisions, public delivery and
+legacy verdict separately. The current Events are not summarized by a
+single historical verdict/drop ratio. Check:
 
-A schema-capable Predictor may spend one stock JSONAdapter **format fallback**
-only after a schema answer cannot parse. Provider timeouts, rate limits,
-connection errors and other typed LM failures do not spend that format call;
-they fail the route and may restart the complete Program on fallback. A
-`max_tokens` truncation (`news_program_output_truncated`,
-`finish_reason=length`) also does not retry. The code-owned primary-route breaker defaults to three retryable
-transport failures and 60 seconds; while open it routes directly to fallback.
-Separately, the consumer's configured circuit opens a
-`triage_circuit_open` incident after the whole primary+fallback chain fails
-retryably for `news.triage.circuit_failures` consecutive Events, and remains
-open for `news.triage.circuit_open_seconds`. Output failures do not count
-toward either transport circuit. When fallback answers,
-`news_verdicts.model` names its resolved runtime model, the trace
-carries `model_fallback_from`, and the worker logs one warning per Event; only
-a chain where both routes fail degrades, with `primary_error` retaining the
-first route's code.
+1. `news_semantic_work`: wanted/done revision, lease, attempts,
+   next attempt and last error.
+2. `news_event_update_heads` and `news_event_updates`: adopted
+   content revision and observation; a model result alone is not an
+   adoption.
+3. `news_notification_work`, `news_delivery_queue` and
+   `news_deliveries`: plan, intent, exact body and provider outcome.
+   Pending, sent, not sent and ambiguous mean different things.
+4. `news_trade_events` and `trading_source_amendments`: public
+   handoff and amendment; do not infer a new Trading Case from a
+   correction.
 
-The degraded path is never silent: only a deterministic listing admission and a
-grounded watchlist hit fail open (`degraded_listing_objective` /
-`degraded_watchlist_objective`). Market frames are not in this sentence at all —
-they never reach the model, so they have no degraded path (#553). Score, macro words and queue priority cannot
-rescue failure; everything else drops as `degraded_no_objective_guard` with `degraded=true` and
-is counted in `triage_degraded_24h`. Each Program call records Predictor,
-route/attempt, resolved provider/model identity, request/input/instruction/demo/
-output hashes, validated output and deterministic normalizations, finish reason,
-latency, input/output/cached/total tokens and
-provider cost in microusd when the provider reports it. `program_executions`
-preserves initial and stale-ledger re-ask executions, including
-failed/superseded work, while
-`program_trace` always names the execution whose verdict was persisted;
-the told-only failure restores the complete `first_judgment`, never a detached
-verdict, and an evidence-changing failure cannot reuse it. Each persisted row
-binds verdict/editorial hashes and the exact runtime manifest. Top-level usage
-aggregates all executions. A rising Program output-error count
-means inspect the failing Predictor and its artifact token cap, not edit an
-operator deadline—the route deadline and token budgets are artifact state.
-
-`/api/news/status.health` (and the console's status page) applies code-owned
-thresholds from `tracefold.news.health`: ingest is `warn` after 10 min and
-`bad` after 30 min without a frame, `bad` when disconnected or Workers are not
-running; broker is `warn` at 50 and `bad` at 200 queued messages on a business
-queue, `bad` when a business queue has no consumer, `warn` with dead letters;
-model is `warn` at a 3 % and `bad` at a 10 % 24 h degraded share (the detail
-names the error codes); delivery is `warn` when 10 % of 24 h attempts
-are terminal, `bad` at 30 %. A `warn` or `bad` level from any enabled health
-lane makes top-level `state` `degraded`. A closed incident with
-`recovery_status=pending` keeps ingest at `warn` and is exposed under
-`ingest.recovery` with its count, oldest opening time, latest typed error, and
-bounded product-readiness `reason` (`recovery_pending` before a failed attempt,
-`recovery_transient` after one);
-the API cannot turn green merely because the live connection recovered. This
-projection describes at most the next 20 incident rows, using the same bounded
-batch statement as Recovery and query audit. The
-API no longer reports a green `ready` state beside a failing health item. The
-five visible Event-feed stages in `funnel_24h` use one cohort: Events opened
-in the rolling 24 h window, tested for parsed/admitted/Triage/sent durable facts. The independent Triage and
-delivery rolling ledgers remain throughput/health facts, so late work does not make a later funnel stage exceed
-its intake cohort. `reasons_24h` (Chinese labels
-over `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
-`pushed_by_rule`, `triage_degraded_by_code_24h`) say where the day went. Every
-Event's `outcome` (feed, detail, `news why`) is the same twelve-kind conclusion:
-`held_recovery`, `held_gate`, `expired_triage_handoff`,
-`expired_delivery_handoff`, `queued_publish`, `queued_triage`, `dropped`,
-`throttled`, `degraded_dropped`, `pending_delivery`, `delivered`,
-`delivery_failed`. The two expired kinds are terminal `held` projections after
-the 30-minute handoff ceiling; only the `queued_*` kinds are live backlog.
-
-Diagnose News in this order:
-
-1. `/api/news/status.state` and `ingest`: `connected`, `last_frame_at_ms`,
-   `open_incidents`, and `recovery.pending_count/reason/last_error_code`. Which Strategies are feeding the pipeline is a question for
-   the OpenNews dashboard, not for Tracefold.
-2. For a market frame there is no Event to inspect. Read the Item instead:
-   `market_kind`, `market_source_strategy_id`, `market_parse_status` and
-   `market_parse_error`, or open `/api/news/market` — the list reports the same
-   four fields per observation plus per-kind `received`/`parsed`/`raw`/`groups`
-   for the window, and `/api/news/market/{item_id}` adds the stored
-   `provider_params`. A `raw` observation is a template this repository cannot
-   prove, not a refusal, and it is never retried into the model lane.
-   `notification_status` is the second, independent answer (#553 PR-2). With no
-   send attempt it names the rule holding the observation -- `unprocessed`,
-   `historical`, or `merging` with the track's reason. With one it is the card's
-   state, and three of those mean different things an operator acts on
-   differently: `failed` told nobody and the next observation opens a fresh card;
-   `unknown` means this process could not read the provider's answer, so the card
-   is never re-sent and never claimed as delivered; `unavailable` means no sender
-   is configured and no attempt was consumed. Fix the configuration and restart:
-   held cards become due and each group sends one merged summary, not a replay of
-   every window that passed. The per-kind `sent`/`failed`/`unknown`/`merged`
-   counts beside the intake on `/api/news/market` are the same question at the
-   source level.
-3. `tracefold news bus-check`: consumers attached to every queue (Deduper and
-   Deliverer show exactly one), `news.dead` depth, each queue's `delayed`
-   (native retry backlog), `dead_letter_pending` (at-least-once dead letters the
-   source queue is still holding) and `bytes_used_bps`, plus `policy_ok` and a
-   `drift` list of names the final topology does not contain. It exits non-zero
-   on either policy drift or topology drift. `tracefold news dlq inspect` prints
-   the dead-letter bodies with their broker `delivery_count`.
-4. `pipeline`: `candidate_share_24h` (the Gate now admits nearly every ordinary News Item;
-   a share far below ~90% means the low-signal switch or a template flood),
-   `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
-   `pushed_by_rule`, `reviewed_should_push_24h`,
-   `reviewed_external_miss_24h`, `keep_ratio_sent_24h`,
-   `missed_ratio_dropped_24h`, `triage_24h` vs
-   `triage_degraded_24h`, `triage_p95_ms`, `queue_lag_p95_ms`,
-   `throttled_24h`. For one Event, `tracefold news why <event_id>` prints
-   raw first line -> normalized title -> gate facts -> triage verdict ->
-   decide rule / throttle key -> storyline status snapshots -> delivery.
-   The trace also carries `storyline_registry_sha256`, the identity of the
-   `storyline_registry.json` bytes that produced this card's keys (#509). It is
-   an audit field: it is not part of `policy_sha256`, it opens no learning
-   epoch, and a registry edit is a data change rather than a policy change, so
-   two cards with different registry SHAs are still the same Program and
-   policy. A storyline key reads `asset:<SYM>`, `conflict:<id>`, `actor:<id>`,
-   `geo:<id>`, `topic:<id>` or `none`; `tracefold news why` renders the
-   registry's `label_zh` for it.
-   A `storyline:<key>:budget` throttle key is history: it is the #504
-   per-storyline budget that policy v12-v16 applied (at most two delivered cards
-   per storyline key per hour), which policy v17 deletes (owner decision
-   2026-09-23). Those rows stay in the ledger and still render as 同线索预算; no
-   v17 decision writes the key, so after the v17 deploy a `:budget` count in the
-   24 h `throttled_by_key` map only drains. The throttle keys a current verdict
-   can carry are `storyline:<key>:seen` (same-fact similarity) and
-   `artifact:stale`. A storyline key format change needs no backfill: do not
-   recompute historical `storyline_key` values; the 4 h `recent_seen_rows`
-   ledger the similarity check reads compares headlines, not keys. The day's
-   receipt is still the #504 D5 SQL (`storyline_hour_p95`,
-   `told_saturated_push_share`) against the 300-500 / 50-60 product target,
-   which is a receipt metric and not a gate.
-   Strategy 1019 is no longer in these numbers at all: the four
-   `pipeline.telemetry_*_24h` counters and the whole `status.oi` block counted
-   Events, and a market frame opens none (#553). Use
-   `/api/news/market?kind=oi` — its `sources[]` row carries `received`,
-   `parsed`, `raw`, `groups` and `last_received_at_ms` for the requested window,
-   and a rising `raw` count with `parse_error = oi_template_unmatched` is
-   provider format drift rather than model noise.
-
-   `keep_ratio_sent_24h` and `missed_ratio_dropped_24h` are the daily sampling
-   loop's two product readings (#675 §4), and their **denominator is accepted
-   review judgments, not cards**. Each carries `numerator` and `denominator`
-   beside `ratio` so a two-review day reads as a two-review day rather than as
-   0% or 100%; with no accepted judgment in the window `ratio` is `null`.
-   `keep_ratio_sent_24h` = accepted judgments whose `should_push` is
-   `must_push` or `should_push`, over all accepted judgments whose sampler
-   `selection.stratum` is `delivered`. `missed_ratio_dropped_24h` = the same
-   numerator over the `model_drop` and `throttled` strata. `uncertain` is in
-   both denominators and in neither numerator. Unlike
-   `reviewed_should_push_24h`, these two carry **no** learning-epoch and no
-   `release_eligible` filter: they answer "did the reader want what we sent",
-   which is a property of the last 24 h of reviews rather than of the running
-   bundle, and clamping them to the epoch reset the reading on every deploy.
-   The stratum is the sampler's, so an `escalate` card (stratum `critical`) and
-   a failed delivery are in neither denominator; `news review audit-report`
-   groups the same question by `final_decision` instead and therefore counts
-   `escalate` as delivered.
-5. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
-   (`delivery_unavailable` = push disabled or the selected provider configuration unavailable;
-   `ambiguous_after_crash` = a send whose ack was lost). Historical rows can
-   still contain the retired `delivery_paused` and
-   `hourly_cap_reached` error, but policy v7 never writes it.
-   `delivery_available` is true only when the selected provider contract is
-   complete and Workers is running. If push is explicitly enabled with an
-   absent or insecure Telegram token file, Workers keeps running and reports
-   `news_delivery` `unavailable`: read the fault as `news.push.reason` in
-   `uv run tracefold config` (`news_item_push_telegram_bot_token_unavailable`
-   here), correct the configuration and restart Workers. Reception, admission,
-   triage and the market loop are unaffected while it is wrong (#562 `5 row 1).
-
-   `news.push.min_interval_seconds` is the shortest gap between two outbound
-   messages, and one pacer holds it for every one of them — a first card, its
-   enrichment edit, and a market card all queue at the same lock, so the number
-   is the rate the provider sees rather than half of it (#604 N3). The default
-   0.6 s is chosen for Feishu's custom bot, which admits about 100 messages a
-   minute. Telegram admits about 20 to one chat, so a Telegram deployment
-   should set at least 3 s; `tracefold config` reports
-   `news.push.pacing_warning` =
-   `news_item_push_telegram_interval_below_provider_rate` when it is lower.
-   That is advice printed beside a working configuration and nothing else:
-   delivery stays available, the number stays the operator's, and no check
-   refuses it.
-
-   Not every failure ends the card. A preflight or send failure the adapter can
-   defend as not sent *and* retriable — a connect failure, a 429 — spends one of the
-   intent's three attempts, comes back 30 s later, and writes no `news_deliveries`
-   row at all in the meantime. A refusal the same adapter calls not sent but
-   permanent — a bad channel, a card over the provider's size limit — settles
-   `terminal` on the first attempt, because waiting cannot fix it. An *unknown*
-   outcome — a read timeout, a provider 5xx — also settles `terminal` on the first
-   attempt, and deliberately: the request was written and the answer was not read,
-   so the card may already be on a reader's screen and a retry would put a second
-   one there. Which of the three a row was is not readable from `last_error_code`
-   alone: `news_delivery_feishu_http_failed` is both a 429 that is retried and a 5xx
-   that is not, and `news_delivery_feishu_transport_failed` is both a connect failure
-   that is retried and a read timeout that is not — the decision is the adapter's own
-   evidence about the request, not its error string. A card that ran out of attempts
-   is `terminal` here with the provider's last error code and `dead` in
-   `news_delivery_queue` with `news_delivery_attempts_exhausted`; the queue `SELECT`
-   in the cutover section above is how you find it.
-
-   A market push card carries its 打开明细 button only when this deployment has
-   named its console. `api.public_url` is that name — the origin a reader outside
-   the host opens, not the `api.host`/`api.port` bind address — and the Workers
-   News wiring passes it to the market notification loop. Unset, every market card
-   is sent with the item id on its note line and no button; there is no default,
-   because a guessed origin would be a dead link in Feishu. Set it in
-   `~/.tracefold/config.yaml` and restart Workers:
-
-   ```yaml
-   api:
-     public_url: "https://tracefold.example.com"   # absolute http(s), no query or fragment
-   ```
-
-   `uv run tracefold config` reports the effective value under `api.public_url`
-   (`null` when unset); it is not a secret (#553).
-6. `tracefold news review queue --view coverage --hours 168` first checks
-   whether there is enough same-version production evidence and accepted
-   review coverage to make a quality claim. Work the deterministic strata with
-   `review queue`, inspect the exact frozen input using `review evidence`, and
-   append a rubric with `review submit`; a fact that never became an Event uses
-   `review external-miss`. Do not infer precision/recall from unlabeled rows or
-   infer causality from the market tab.
-   Before and after a Prompt or policy edit, run
-   `news learning baseline` and name the mode you mean. Code around the
-   instructions — the wire envelope, the output contract, the route budget — is
-   not artifact state: editing it changes what every call is billed for while
-   leaving `program_sha256` untouched, and what catches it is the computed
-   `envelope_sha256` pin in
-   `tests/contract/test_program_release_identity.py` (see
-   `docs/ARCHITECTURE.md`). Moving-window `--mode recorded` costs nothing and
-   answers "is the Program metric still wired the way it was"; it makes no
-   provider call, so it cannot see a Prompt change. Dataset-bound recorded mode
-   is the separate taxonomy measurement described below. `--mode compile_live` is the
-   native Program GEPA optimizes on one endpoint. It has no fallback route, but
-   disables the whole-route deadline and cross-case primary breaker that GEPA
-   does not run; the endpoint keeps its per-call timeout and DSPy JSONAdapter's
-   single format fallback per Predictor.
-   `--mode runtime_live` is the configured production Program route and is the
-   only mode whose failure rate resembles the reader's — it spends real provider
-   calls on the same single-slot GPU that serves Triage, so both live modes
-   require an explicit `--max-model-cases N`; expect exactly three physical
-   calls on common success, at most six on one route and at most twelve across
-   a full primary/fallback judgment. Read both
-   `scores.case_macro_answered` and `scores.case_macro_failure_as_zero`: the
-   first is quality given an answer, the second counts every unanswered case as
-   zero, and the gap between them is the availability of the route rather than
-   the quality of the cards. When comparing two runs, compare
-   `prediction_dimensions`; `review_label_distribution` is corpus metadata over
-   every requested case and does not move when the model does. `hard_gates`
-   says which gate zeroed a case, and a `metric_error:*` in `failures.by_code`
-   is a defect in the corpus or the ruler, not a provider outage. Compare
-   metric-v9 components as well: 45% final action, 35% exact TradeRelevance,
-   10% semantics/novelty, 10% ReaderCard reviewer anchors and 10% ReaderCard
-   lint, each with its effective denominator,
-   weight mass and gold coverage. Factual repairs and rewritten `why_support`
-   use the existing evidence-support judge without requiring reference copy;
-   `why_value=fail` without gold remains unscored. Read each dimension's
-   `denominator`, `answered_denominator`, `unavailable_n`, `not_scored_n` and
-   `not_labelled`. `metric_judge` unavailability is a receipted failure-as-zero,
-   distinct from an explicit unsupported claim. Lint and accepted-copy
-   equivalence do not establish an increase in explanation usefulness.
-   Identify receipts by `report_sha256`, which excludes wall-clock latency so two runs
-   with the same predictions have the same address. The command is read-only —
-   one `serve` connection that closes before the first model call, and no write, delivery,
-   proposal, acceptance or promotion authority of any kind.
-6. A release receipt may only claim an identity the deployment can prove. The
-   image cannot hash itself at build time, so `make up` reads the digest of the
-   image it just built and passes it in as `TRACEFOLD_IMAGE_DIGEST`; an absent
-   or empty value is recorded as `unversioned`, never as an empty string.
-   Before starting an evidence run, confirm Workers `/readyz` reports a real
-   `image_digest` and `runtime_revision` — an `unversioned` deployment still
-   serves News correctly but cannot close a promotion.
-7. A change is a registered candidate, not an edited production artifact.
-   Freeze a post-epoch development dataset, then run one command:
-   `learning run --development SHA --out DIR` with explicit metric, task and
-   reflection call limits, a total and a per-call provider-cost
-   limit, and a seed. It writes `readiness` (zero model calls) and invokes one
-   stock GEPA compile into a new empty directory. It ends in `NO_OP`, `REJECTED` or
-   `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
-   a complete `optimization_report.json`. Task and reflection are separate
-   `ModelExecutionIdentity` values, and calls/cost/tokens/failures are accounted separately
-   before they are summed. The optimizer has no judge role. Candidate zero inside that GEPA
-   run is the only optimization baseline. GEPA's own `best_idx` is admitted when it is strictly above
-   candidate zero with a valid instruction; otherwise `NO_OP`. A task answer that reaches `max_tokens` is
-   receipted once and scores that example `0`; it does not retry or abort later candidates.
-   A typed-invalid `ModelTaxonomyV1` answer similarly remains one aligned example at score zero, rather than
-   shortening GEPA's batch.
-   Reflection uses six examples per proposal: the previous ten-example prompt consumed 22,782 input tokens
-   and left a 32K-context thinking teacher only 9,985 output tokens before service truncation.
-   Reflection truncation, provider/transport failure and budget refusal reject the run. Official GEPA log/state is retained;
-   the optimization report does not mirror trajectory or checkpoint state.
-   Then `release
-   register --candidate prompt_candidate.json` binds it to the active stable and that frozen dataset
-   — re-validating and re-hashing the candidate's own `NewsProgramStateV1` document to derive the
-   Program identity, and re-deriving the
-   #199 Objective Plan rather than trusting the candidate — and `release
-   evaluate` runs the gate. A state a person wrote registers on identical terms:
-   the generator is audit, never permission.
-   Production promotion additionally requires a
-   future temporal validation dataset, blind pairwise review
-   and then `release canary arm` — except for a taxonomy-only
-   candidate, whose holdout PASS promotes directly because canary
-   measures reader-facing samples it cannot move; inspect with `canary status`
-   and use `canary trip` immediately on a schema/artifact/quality guardrail
-   breach. Selector `news_canary_selector_v2` includes queue-high Events, excludes recovery/listing/
-   telemetry, and trips on selector, eligibility-profile, rolling-profile or
-   runtime-manifest drift. One Event belongs to one arm and runs one assigned Program (normally
-   three serial Predictor calls, plus only the traced retry/fallback budget). A
-   canary is not an excuse to skip the earlier evidence stages: the evaluator rejects a
-   holdout/canary request before any Program call unless the preceding
-   stage has a sealed PASS. #651 deleted the shadow stage between holdout and
-   canary: it cold-ran the candidate over a closed window to seal a distribution
-   nobody acted on, and its only consumer was canary eligibility, which now reads
-   the holdout PASS directly. Validation fixes at most 50 independent cluster
-   tasks before execution; 100 unresolved human judgments, an empty required
-   set, or a common provider outage is `UNKNOWN`, while a candidate-only
-   critical error is `FAIL`.
-   `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
-   duplicates the reader was spared -- since #651 including the ones whose
-   `direction` had flipped against the told entry they cite, which policy v13
-   let through; `pipeline.reasked_24h` counts Events whose
-   full Program was executed again because a card landed while it was thinking
-   (expect a handful per day; a surge means same-key floods). Program v10 still
-   fails closed on missing `novelty`, but no longer on taxonomy: since #651 the
-   taxonomy Predictor is validated on its own, and its failure leaves the
-   judgment standing with `taxonomy=None`, a `taxonomy_failure` code in the
-   trace and the card unchanged. Migration `0336` deletes pre-current
-   trace diagnostics; they do not appear in the current status contract.
-8. `tracefold news replay <hits.json>`: reproduce
-   Deduper+Gate on a saved provider payload without broker or model.
-
-Evidence eligibility is not a window on the clock (#651 §9). A review enters a
-dataset when its evidence snapshot is frozen and release-eligible, it opened
-inside the window the freeze asked for, and an accepted `news_review_v8` label
-is attached to it — whichever arm answered the Event. The arm is recorded on the
-frozen case as `provenance` and the sealing arm beside the corpus; neither
-admits or refuses a case. `news_review_v6` and `news_review_v7` rows stay readable audit
-history and are counted as `rubric_ineligible_n` rather than silently dropped,
-because "no reviews in this window" and "every review here predates the current
-rubric" have different operator actions behind them.
-
-`news_learning_epochs` is still the runtime's own identity and audit row, and
-the appointed Agent still decides which candidate may be evaluated and which
-blind pair may be judged. Read the running epoch with `WITH agent AS (SELECT
-stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)
-SELECT e.epoch_id, e.starts_at_ms FROM news_learning_epochs e JOIN agent ON
-agent.stable_sha = e.bundle_sha`. Take the newest agent *before* the join, not
-after: joining the whole appointment history and then taking one row reports the
-previous deployment's epoch when the current agent has no row yet, which is
-exactly the case worth diagnosing. Do not
-interpret a successful migration, a valid Program state image, or the
-three-Predictor trace as proof of higher quality. Issue #117 deliberately lands
-the production persistence/read/UI seam before taxonomy denominators exist;
-issue #501 uses them through the existing Review, Dataset, Objective, target ruler and
-release path only.
-
-For the taxonomy Gold → Candidate workflow (#501 PR-D, drafter routes #534):
-
-1. Draft current unjudged ReviewDesk tasks in batches of at most 100 with one
-   rubric model and two blind taxonomy drafters (#534). Drafters come only from
-   the routes this machine already has — `qwen3.8-27b:thinking` (local),
-   `deepseek-v4-pro`, `deepseek-v4-flash` — the two taxonomy drafter names only
-   have to differ, and no third family is introduced. The non-thinking
-   production `qwen3.8-27b` is not a drafter because it *is* the Stable taxonomy
-   route — same seed, same `evidence_json`, temperature 0 — so its label is
-   already in the verdict and readiness reports that agreement for free as
-   `stable_exact_n / stable_mismatch_n`. The default is `news learning
-   draft-reviews --rubric-model deepseek-v4-pro --taxonomy-models
-   deepseek-v4-pro,qwen3.8-27b:thinking --hours 24 --limit 100 --out FILE`: A is
-   DeepSeek, so a disagreed draft leans away from the Stable family and leaves
-   GEPA a target, and B is the local thinking Qwen at zero cost. The rubric
-   model is DeepSeek because the 2026-09-04 01:22 UTC smoke batch of 20 tasks
-   had 7/20 rubric drafts rejected by `RubricDraft` validation when
-   `qwen3.8-27b:thinking` drafted the rubric under `prompt_json` — invented
-   `trade_*` enum values such as `single_instrument`, `cross_asset` and
-   `in_line`, plus extra keys such as `draft_assets` and `dimensions.*_note` —
-   while the two blind taxonomy drafters failed 0/40, and a rejected rubric
-   discards that task's two paid taxonomy labels; the rubric drafter never
-   labels taxonomy, so DeepSeek holding both the rubric and drafter-A roles
-   costs nothing in blindness and stays inside the route set. Swap A for
-   `deepseek-v4-flash` to spend less. Two Qwen names also run; the operator then
-   owns the trade-off that agreeing samples equal Stable and GEPA likely returns
-   `NO_OP`.
-   Read the batch receipt's `taxonomy_drafters.agreement_rate` and per-model
-   `stable_agreement_rate`; a drafter that tracks Stable far more closely than
-   the other is the bias to watch. Inspect each `taxonomy_disagreement` task and
-   edit it before accepting. Preview with `news review accept-drafts
-   --file FILE --dry-run`; every write requires an explicit non-empty `--only`
-   list and an honestly named reviewer, including an AI adjudicator. A visibly
-   low κ on one axis is repaired in the codebook constants first, never diluted
-   with more samples; that is an operating judgment, not a code gate.
-2. Freeze only current-contract accepted reviews with `news learning freeze
-   --role development ...`. Do not reuse or migrate an older Dataset. Accepted
-   four-axis taxonomy is part of each existing episode and its projection root.
-3. Run `news learning readiness --development DATASET_SHA --target
-   classification --out FILE`. This is a zero-provider-call check, and it
-   answers for one target: every cluster whose accepted review states a taxonomy
-   is `included`, whether or not the previous arm left a comparison. Read
-   `taxonomy_gold.stable_exact_n` and `stable_mismatch_n`, the freeze's
-   `counts.calibration` κ, the `targets` block (`rubric_ineligible_n` and
-   `explanation_supervision_pending_n` say which evidence the window held but
-   could not use), and confirm `objective.blockers` is empty — the whole
-   vocabulary is `train_empty`, `selection_empty`, `input_contract_invalid` and
-   `cluster_leak`.
-4. Run `news learning run --development DATASET_SHA --out NEW_EMPTY_DIR --auto
-   light --seed 112 ...` with the remaining budget flags. The reflection model
-   (`llm.news_compiler_reflection`) must be a strong model with at least a 128K
-   context; that is an operating requirement the run receipt records, not a
-   code check. It invokes stock GEPA once; `NO_OP` and `ADVANCE` are both legal
-   terminal states. Record on the issue: Dataset SHA, κ, A/B agreement, each
-   drafter's Stable agreement, the public `DspyGEPAResult` fields, candidate 0
-   and best five-objective scores with the delta, instruction growth, physical
-   calls, tokens, cost, wall clock and the outcome. An `ADVANCE` continues
-   through `release register`, offline and holdout, where an instruction that
-   only fit the selection set is refused. The run never registers, releases or
-   promotes the Candidate.
-5. A *taxonomy-only* candidate — the state document's `event_semantics` and
-   `reader_card` Predictor documents byte-identical to the parent Stable, only
-   `taxonomy` different, which is what `changed_predictors` reads off the two
-   documents rather than a flag the manifest declares — is judged on that
-   evidence instead of on
-   blind pairwise judgments, because both arms hand the reviewer the identical
-   card: `news learning freeze --role validation --candidate ...` projects the
-   same accepted Gold the development freeze does and publishes
-   `counts.primary_cluster_n`, and `news release evaluate --stage
-   offline|holdout --live-program` reads, per axis and for `taxonomy_overall`,
-   the paired per-cluster candidate-minus-Stable delta and its bootstrap 95 %
-   interval under the profile's own `bootstrap` block (seed 112, 2,000
-   replicates), published in the evidence as `axis_interval_95` with `delta`,
-   `lower`, `upper` and `n`: since #567 an axis is a regression only when its
-   whole interval lies below zero, and the primary metric for this class is
-   `taxonomy_overall` — since #651 the classification ruler's own partial score,
-   so the release reads the number the target is optimized on — the candidate
-   improving only when that interval lies above zero.
-   `four_axis_exact_accuracy` stays published as a diagnostic and decides
-   nothing: it is a joint rate over four correlated axes, so #626's use of it as
-   the gate counted one cluster's slip twice. It PASSES on improved with nothing
-   regressed (a holdout PASS advances straight to promotion), FAILS on any
-   regressed axis, and is UNKNOWN — `taxonomy_partial_score_not_improved` — when
-   the partial score's interval crosses zero, as it still is with empty Gold or
-   fewer than `primary_clusters_min` Gold-bearing clusters. #567 also moved
-   `guardrails.mean_total_tokens_growth_pct` from 0.10 to 0.25 while
-   `mean_call_growth_pct` and `mean_provider_cost_growth_pct` stay at 0.10,
-   because on a local task model with ~94 % prompt-cache hits and an unchanged
-   p95 a 10 % prompt-length cap was a stricter gate than the cost it guards.
-   `--live-program` is
-   required for this class — recordings are addressed by whole-program SHA, so a
-   replay misses every Predictor — and without it the command fails closed with
-   `news_release_taxonomy_only_requires_live_program`.
-
-Taxonomy scoring is subject-code set F1 plus exact event family, change state
-and assertion status, folded into the existing semantics/novelty component.
-Code-owned `source_authority` is excluded from model target, score and feedback.
-Do not use taxonomy to alter Gate, Delivery or Trading, and do not describe a
-single offline score increase as production uplift.
-
-Retention: unjudged `news_items`/`news_events` older than 30 days are purged by
-the Janitor; judged evidence is retained under the configured 365-day tier and
-bands expire with their family window. The same turn uses the existing
-one-slot heavy DB admission for learning evidence: unreferenced model
-recordings/cases become eligible after 90 days, report-referenced rows and
-ordinary artifacts after 365 days, while current and previous distinct stable
-release chains and an active canary remain pinned. Each table deletes at most
-500 rows per turn; `/api/news/status.learning_retention` exposes the capped
-remaining eligible count, last-turn deletes, oldest retained age and error.
-Feed shows Events from the first frame after deployment; there is no backfill
-of pre-V3 history.
+Use read-only queries through the configured database access and
+avoid displaying secrets or raw model credentials. A missing provider
+or model affects only its capability. No manual SQL should synthesize
+an EventUpdate, sent receipt, amendment or venue execution result.
 
 ### Current Analysis handoff and historical OI admission
 
@@ -2832,121 +2272,30 @@ For an ordinary migration or production cutover:
 7. retain the backup until the new runtime passes smoke checks.
 
 
-### Issue 663 learning correctness cut
+### Local News evidence and review
 
-Migration `20260919_0383` admits partial review taxonomy and immutable per-case dataset artifacts.
-Coordinate the application cut with the normal maintenance/migration procedure. Do not migrate an
-active deployment merely to run an offline experiment. Existing reviews remain append-only; old dataset
-seals are audit-only and must be frozen anew under v5 before comparison.
+News semantic input comes from persisted Items, Event members and bounded
+local read targets. A citation link is an identifier, not an online
+verification result. Empty, unavailable or conflicting material remains
+explicit in the EventUpdate; it does not authorize a fabricated
+equivalence or a new Trading catalyst. `news why` and the Event detail
+show the source evidence and current processing state.
 
-For explanation optimization explicitly budget `--max-metric-judge-model-calls` together with task,
-reflection, total cost, per-call reservation and wall clock. The default semantic protocol requires a
-judge; use `--explanation-protocol proxy` only for a named proxy experiment. A calibration receipt from
-an earlier judge prompt/schema remains historical evidence and does not attest a changed judge.
+The current ReviewDesk uses `tracefold news review
+queue|evidence|submit|external-miss`. Review the versioned task and its
+source evidence before submitting an append-only judgment under the
+actual reviewer identity. The removed taxonomy drafter, Gold/GEPA,
+freeze/readiness/run/evaluate/canary and `accept-drafts` workflows
+have no executable CLI path. Historical reviews and learning rows
+remain audit evidence. `tracefold news learning judge-calibration`
+is a separate fixed-corpus card judge diagnostic; it does not approve
+a News model or release.
 
-The engineering audit and quality-campaign boundary for this cut are recorded in
-[issue 663 evidence audit](reports/issue-663-evidence-audit.md). No activation, label acceptance or
-unbounded model spend is implied by freezing or testing these changes.
-
-### Local News evidence preparation
-
-News prepares only persisted local Items and frozen Event members. There is no
-webpage setting or cache path. Remove the retired `news.triage.documents_enabled`
-key from operator configuration before starting the new image; it is not a supported
-compatibility switch. Existing webpage rows and frozen execution records remain intact.
-
-Inspect the evidence panel or `news why` for the actual source spans, availability
-cutoff, missing material, excluded candidates and declared refs. A citation link does
-not establish factual truth. Empty refs are diagnostic and do not create a new drop
-policy. Missing material uses the frozen fact; a database failure remains an error.
-Later material does not automatically edit or resend a card. v11 reanalysis uses frozen
-previews with explicit adaptation provenance; exact replay never consults live material.
-
-### 每日抽审 (#675 §4)
-
-The feedback loop that keeps the push policy honest: a model drafts a review for
-each of the day's tasks, code prints only the tasks worth a person's minute, a
-human accepts that subset, and the two status ratios move. It runs from the CLI
-on the host, never in Workers: accepting a label always names a person
-(`--reviewer` and `--only`), and offline learning does not take real-time
-resources.
-
-1. **Draft, three strata.** One batch per stratum, so delivered cards and
-   withheld cards are both represented whatever the day's volume was. The routes
-   are the documented drafting defaults
-   ([taxonomy](NEWS_TAXONOMY.md), which also explains why the non-thinking
-   production `qwen3.8-27b` may not draft: it *is* the Stable taxonomy route):
-
-   ```
-   tracefold news learning draft-reviews --hours 24 --stratum delivered \
-       --limit 100 --rubric-model deepseek-v4-pro \
-       --taxonomy-models deepseek-v4-pro,qwen3.8-27b:thinking \
-       --concurrency 4 --out /tmp/audit-delivered.json
-   tracefold news learning draft-reviews --hours 24 --stratum model_drop --limit 100 ... \
-       --out /tmp/audit-drop.json
-   tracefold news learning draft-reviews --hours 24 --stratum throttled --limit 80 ... \
-       --out /tmp/audit-throttled.json
-   ```
-
-   `--concurrency` is how many tasks are drafted at once (default 4, `1` is the
-   old serial loop). Each task still fails on its own and the batch is written
-   in task order.
-
-   **Cost.** Three model calls per task — one rubric and two blind taxonomy
-   labels — so the ~287 tasks a full day yields are **~861 physical calls**, two
-   of the three on the paid DeepSeek route. Every batch receipt and every batch
-   file now carries `spend_by_model`: physical `calls`, `input_tokens`,
-   `output_tokens`, `cached_tokens`, `total_tokens`, `observed_cost_microusd`
-   and `cost_unknown_calls` per model. A call whose provider stated no cost is
-   counted in `cost_unknown_calls`, never as zero, so an unpriced route is
-   visible rather than free-looking. **`--limit` is the only spend cap this
-   command has**: there is no budget or cost flag, nothing stops a run
-   part-way, and a batch of N tasks is a commitment to about 3N calls. Choose
-   `--limit` before starting, not after.
-
-   The **100 + 100 sample volume only exists once #675 PR-2 removes the
-   relevance-based strata.** Until then `ReviewDesk._selection` sends most tasks
-   into `color_only_progression`, `scheduled_or_in_line_macro` and the other
-   `TradeRelevanceV1` branches, and `--stratum delivered` yields roughly a dozen
-   tasks a day; run the loop on what it returns rather than widening `--hours`
-   to fake the count.
-
-2. **Report.** `tracefold news review audit-report --file /tmp/audit-delivered.json`
-   reads each task's actual decision back through the ReviewDesk queue and
-   prints, in `data.table`, the two ratios for that batch and one line per task:
-   every **disagreement** (the draft says push on a dropped or throttled task,
-   or says hold on a delivered one) plus a deterministic **10% sample of the
-   agreements**, so agreement itself stays audited. The sample is seeded by
-   `task_id`, so re-running the report gives the same reading list. `--json`
-   drops the table and leaves the machine report. It writes nothing.
-
-3. **Read, then accept.** `data.only` is the disagreement + sample task ids,
-   ready to paste. Always run the dry run first — it is the step that shows what
-   the rubric would refuse:
-
-   ```
-   tracefold news review accept-drafts --file /tmp/audit-delivered.json \
-       --only "$(...)" --dry-run
-   tracefold news review accept-drafts --file /tmp/audit-delivered.json \
-       --only "$(...)" --reviewer <person>
-   ```
-
-   `--only` and `--reviewer` are required for a write; a dry run creates no
-   acceptance row, so its placeholder identity never becomes provenance. Accept
-   the tasks you actually read, not the whole batch.
-
-4. **Read the ratios.** `keep_ratio_sent_24h` and `missed_ratio_dropped_24h` in
-   the `pipeline` block of `/api/news/status`, and on the console's 流水线
-   panel, move with what was accepted.
-   Read the denominator beside each one: they are shares of accepted judgments,
-   not of cards, and a handful of reviews is a handful of reviews.
-
-The 2026-09-22 independent audit (1,491 labels) enters the same plane through
-`scripts/news_freeze_audit_2026_09_22.py`, which maps each label to a
-`should_push` with `dimensions={"timeliness": "not_applicable"}` under
-`reviewer=independent_audit_2026-09-22`. It defaults to `--dry-run`; a real
-write needs `--execute` **and** `--confirm independent_audit_2026-09-22`,
-because it appends 1,491 judgments plus 1,491 acceptances to an append-only
-plane. Those reviewers never read the frozen evidence snapshot, so the batch
-carries no `factual_fidelity`, `asset_grounding` or `why_*` label and produces
-no component learning target.
+For a #706 deployment, remove retired `news.policy` and
+`llm.news_compiler_reflection` from the operator config, stop Serve
+and Workers, verify a backup, apply migration `20260926_0404`, then
+start the matching image. Inspect the migrated legacy intent counts
+and current semantic/notification progress; never seed old first-card
+queue rows into the new intent path. See [Migrations](MIGRATIONS.md)
+for the forward-only schema and [News EventUpdate](design/news-event-updates.md)
+for the runtime contract.

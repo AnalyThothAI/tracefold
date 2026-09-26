@@ -208,7 +208,10 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     assert set(components["NewsEventDetailData"]["properties"]) == {
         "event",
         "outcome",
-        "triage",
+        # #706: the adopted EventUpdate, the work behind it, and the legacy verdict kept apart from both.
+        "event_update",
+        "processing",
+        "legacy_verdict",
         "timeline",
         "members",
         "verdicts",
@@ -362,9 +365,16 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
         "NewsSourceContractStageCountsData",
         "NewsSourceContracts24hData",
         "NewsMarketSourceData",
+        # #706: the provenance of one piece of evidence an adopted EventUpdate cites.
+        "NewsUpdateSourceData",
     }
+    # #706: the notification planner's claim decisions and its work state are a current contract, named
+    # deliberately rather than admitted by the retired marker.
+    named_notification_components = {"NewsNotificationPlanData", "NewsNotificationWorkData"}
     assert not {
-        name for name in news_components - named_source_components if any(marker in name for marker in retired_markers)
+        name
+        for name in news_components - named_source_components - named_notification_components
+        if any(marker in name for marker in retired_markers)
     }
     for path in ("/api/news/stories/{story_id}", "/api/news/brief", "/api/news/sources", "/api/radar"):
         assert path not in schema["paths"]
@@ -393,10 +403,8 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     operation = schema["paths"]["/api/news/feed"]["get"]
     parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
 
+    # #706: the three retired taxonomy axes are not parameters any more.
     assert set(parameters) == {
-        "event_family",
-        "change_state",
-        "assertion_status",
         "source_authority",
         "subject_code",
         "final_decision",
@@ -419,9 +427,6 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     assert {"reporting_origin", "provider_score_gt"}.isdisjoint(parameters)
     filters = schema["components"]["schemas"]["NewsFeedFiltersData"]
     assert set(filters["properties"]) == {
-        "event_family",
-        "change_state",
-        "assertion_status",
         "source_authority",
         "subject_code",
         "final_decision",
@@ -435,8 +440,13 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "direction",
     }
     assert set(filters["required"]) == {"limit"}
-    triage = schema["components"]["schemas"]["NewsTriageSummaryData"]["properties"]
-    assert {"taxonomy", "fact_kind", "headline_zh", "final_decision"} <= set(triage)
+    triage = schema["components"]["schemas"]["NewsLegacyVerdictData"]["properties"]
+    assert {"fact_kind", "headline_zh", "final_decision"} <= set(triage)
+    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code"}.isdisjoint(triage)
+    assert "NewsTaxonomyData" not in schema["components"]["schemas"]
+    assert "NewsTriageSummaryData" not in schema["components"]["schemas"]
+    feed_row = schema["components"]["schemas"]["NewsFeedEventData"]["properties"]
+    assert {"update", "legacy_verdict"} <= set(feed_row) and "triage" not in feed_row
     assert {
         "event_type",
         "event_type_zh",
@@ -474,6 +484,13 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "taxonomy_status",
         "taxonomy_error_code",
     }
+    # #706: a legacy verdict's retired axes are stored codes with no vocabulary and no codebook claim.
+    assert set(schema["components"]["schemas"]["NewsLegacyTaxonomyData"]["properties"]) == {
+        "subject_codes",
+        "event_family",
+        "change_state",
+        "assertion_status",
+    }
     assert {
         "judgment_contract_version",
         "judgment_origin",
@@ -496,6 +513,90 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     assert {"payload", "dimensions", "novelty"}.isdisjoint(review)
 
 
+@pytest.mark.contract
+def test_news_event_update_contract_is_exact_and_types_the_core_vocabulary() -> None:
+    """#706: the Event detail's EventUpdate and processing sections, as published.
+
+    Each vocabulary is typed by the core contract's own `Literal`, so an enum the News Agent can write
+    is one the browser contract names, and the outcome kinds are exactly the ones `event_outcome` returns.
+    """
+
+    from typing import get_args
+
+    from tracefold.app.http.app import create_app
+    from tracefold.news.outcome import OutcomeKind
+    from tracefold.news.updates.contracts import Asset, ChangeKind, ContentKind, Mode, Phase
+    from tracefold.news.updates.notification import ClaimReason, PlanAction
+    from tracefold.platform.config.models import Settings
+
+    components = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()["components"]["schemas"]
+
+    assert set(components["NewsEventUpdateData"]["properties"]) == {
+        "update_ref",
+        "content_revision",
+        "input_revision",
+        "previous_content_revision",
+        "adopted_at_ms",
+        "headline",
+        "headline_source",
+        "topics",
+        "claims",
+        "retired_claim_refs",
+        "disputed_claim_refs",
+        "changes",
+        "sources",
+        "implications",
+        "open_questions",
+    }
+    assert set(components["NewsProcessingData"]["properties"]) == {
+        "semantic",
+        "observations",
+        "notification",
+        "intents",
+        "update_error_code",
+    }
+    claim = components["NewsClaimData"]["properties"]
+    assert {
+        "mode",
+        "phase",
+        "content_kind",
+        "quantities",
+        "conditions",
+        "effective_at",
+        "occurred_at",
+        "statistical_period",
+        "assets",
+        "citations",
+        "retired",
+        "disputed",
+        "relation_counts",
+    } <= set(claim)
+    assert claim["mode"]["enum"] == list(get_args(Mode))
+    assert claim["content_kind"]["enum"] == list(get_args(ContentKind))
+    assert claim["phase"]["anyOf"][0]["enum"] == list(get_args(Phase))
+    assert components["NewsClaimAssetData"]["properties"]["market_type"]["enum"] == list(
+        get_args(Asset.model_fields["market_type"].annotation)
+    )
+    assert components["NewsClaimChangeData"]["properties"]["kind"]["enum"] == list(get_args(ChangeKind))
+    assert components["NewsClaimDecisionData"]["properties"]["reason"]["enum"] == list(get_args(ClaimReason))
+    assert components["NewsNotificationPlanData"]["properties"]["action"]["enum"] == list(get_args(PlanAction))
+    assert components["NewsImplicationData"]["properties"]["origin"]["enum"] == [
+        "reported_causality",
+        "system_hypothesis",
+    ]
+    assert components["NewsOutcomeData"]["properties"]["kind"]["enum"] == list(get_args(OutcomeKind))
+    assert components["NewsTimelineStepData"]["properties"]["stage"]["enum"] == [
+        "received",
+        "gate",
+        "triage",
+        "decide",
+        "evidence",
+        "semantic",
+        "notify",
+        "delivery",
+    ]
+
+
 # The version families #369/#398 retired. `tests/architecture/test_news_current_contract_hard_cut.py`
 # banned these across five trees — `tracefold/`, `web/src`, `web/tests`, `docs/generated` and `tests/`
 # — with an allowlist of historical files and no removal condition, so every migration, fixture and
@@ -506,7 +607,7 @@ _RETIRED_NEWS_IDENTITIES = frozenset(
     {f"news_semantic_program_v{version}" for version in range(1, 8)}
     | {f"news_program_v{version}" for version in range(1, 8)}
     | {f"news_triage_policy_v{version}" for version in range(1, 11)}
-    | {f"news_delivery_card_v{version}" for version in range(1, 11)}
+    | {f"news_delivery_card_v{version}" for version in range(1, 12)}
     | {f"news_review_v{version}" for version in range(1, 6)}
     | {
         "news_liquidation_fact_v1",

@@ -5,15 +5,16 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from tracefold.news import EventKind, FactKind, SourceAuthority
+from tracefold.news.updates.contracts import ChangeKind, ContentKind, Mode, Phase, Relation
+from tracefold.news.updates.notification import ClaimDecisionValue, ClaimReason, PlanAction, PlanReason
 
 from .common import ExactApiSchema
 from .news_common import (
     NewsAssetRefData,
+    NewsLegacyVerdictData,
     NewsOutcomeData,
     NewsSymbolNormalizationData,
-    NewsTaxonomyData,
     NewsTriageAssetData,
-    NewsTriageSummaryData,
 )
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -128,11 +129,24 @@ class NewsPresentationVerdictData(ExactApiSchema):
     why_zh: str = Field(default="", max_length=140)
 
 
-class NewsModelEditorialData(ExactApiSchema):
-    """The editorial sibling of one model verdict, in the current `news_editorial_v4` read shape.
+class NewsLegacyTaxonomyData(ExactApiSchema):
+    """The four retired taxonomy axes exactly as one legacy verdict stored them (#706).
 
-    ``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer
-    and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
+    Audit only. The axes have no current owner or reading, so no vocabulary is applied and nothing is
+    validated against the retired enums: a stored code is published as stored, a missing one as ``null``.
+    """
+
+    subject_codes: list[str] = Field(default_factory=list)
+    event_family: str | None = None
+    change_state: str | None = None
+    assertion_status: str | None = None
+
+
+class NewsModelEditorialData(ExactApiSchema):
+    """The editorial sibling of one legacy model verdict, in the `news_editorial_v4` read shape.
+
+    ``source_authority`` is code-owned and always present; ``taxonomy`` is the retired taxonomy Predictor's
+    stored answer and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
     ``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under
     `news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row
     reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3), and a
@@ -141,7 +155,7 @@ class NewsModelEditorialData(ExactApiSchema):
 
     source_authority: SourceAuthority
     source_authority_zh: str = ""
-    taxonomy: NewsTaxonomyData | None = None
+    taxonomy: NewsLegacyTaxonomyData | None = None
     taxonomy_status: Literal["available", "unavailable"] = "available"
     taxonomy_error_code: str | None = None
 
@@ -191,6 +205,8 @@ class NewsVerdictData(ExactApiSchema):
 
 
 class NewsDeliveryData(ExactApiSchema):
+    # A legacy card's deterministic `legacy_intent:*` id, or an EventUpdate intent's `intent:*` id (#706).
+    intent_id: str
     kind: str
     state: str
     error_code: str | None = None
@@ -251,7 +267,8 @@ class NewsEventReviewSummaryData(ExactApiSchema):
 
 
 class NewsTimelineStepData(ExactApiSchema):
-    stage: Literal["received", "gate", "triage", "decide", "delivery"]
+    # `triage`/`decide` are a legacy verdict's steps; `evidence`/`semantic`/`notify` the EventUpdate path's.
+    stage: Literal["received", "gate", "triage", "decide", "evidence", "semantic", "notify", "delivery"]
     title_zh: str
     at_ms: int
     summary_zh: str
@@ -304,10 +321,254 @@ class NewsLateEvidenceData(ExactApiSchema):
     available_at_ms: int
 
 
+# ------------------------------------------------------------------------------------------ EventUpdate (#706)
+class NewsUpdateSourceData(ExactApiSchema):
+    """Where one piece of evidence came from, as ingestion knew it; the authority is code-owned."""
+
+    publisher_id: str
+    artifact_id: str
+    origin_id: str | None = None
+    attribution: str | None = None
+    published_at_ms: int | None = None
+    first_available_at_ms: int
+    url: str | None = None
+    source_authority: SourceAuthority
+    source_authority_zh: str = ""
+
+
+class NewsClaimCitationData(ExactApiSchema):
+    evidence_ref: str
+    quote: str
+    source: NewsUpdateSourceData | None = None
+
+
+class NewsClaimQuantityData(ExactApiSchema):
+    name: str
+    # The source's exact decimal text; the console never does arithmetic on it.
+    value: str
+    unit: str
+    period: str | None = None
+
+
+class NewsClaimAssetData(ExactApiSchema):
+    symbol: str
+    market_type: Literal["crypto", "equity", "commodity", "index", "forex", "fund", "unknown"]
+    role: Literal["primary", "mentioned"]
+
+
+class NewsRelationCountsData(ExactApiSchema):
+    supports: int = 0
+    refutes: int = 0
+    reports: int = 0
+    not_addressed: int = 0
+    unresolved: int = 0
+
+
+class NewsClaimData(ExactApiSchema):
+    """One adopted claim with its own mode, phase, time, conditions and quantities -- never merged."""
+
+    ref: str
+    statement: str
+    retired: bool = False
+    subject: str
+    action: str
+    object: str = ""
+    speaker: str | None = None
+    conditions: list[str] = Field(default_factory=list)
+    quantities: list[NewsClaimQuantityData] = Field(default_factory=list)
+    effective_at: str | None = None
+    occurred_at: str | None = None
+    statistical_period: str | None = None
+    polarity: Literal["affirmative", "negative", "unknown"]
+    polarity_zh: str = ""
+    mode: Mode
+    mode_zh: str = ""
+    # `null` for a claim that is not an action; a future `effective_at` never changes it.
+    phase: Phase | None = None
+    phase_zh: str = ""
+    content_kind: ContentKind
+    content_kind_zh: str = ""
+    assets: list[NewsClaimAssetData] = Field(default_factory=list)
+    citations: list[NewsClaimCitationData] = Field(min_length=1)
+    first_available_at_ms: int
+    antecedent_refs: list[str] = Field(default_factory=list)
+    relation_counts: NewsRelationCountsData
+    # One source refutes what another supports or reports.
+    disputed: bool = False
+
+
+class NewsClaimChangeData(ExactApiSchema):
+    """What this revision changed relative to an earlier claim. An unfound earlier claim stays unknown."""
+
+    kind: ChangeKind
+    kind_zh: str = ""
+    current_ref: str
+    current_statement: str = ""
+    previous_ref: str | None = None
+    previous_content_ref: str | None = None
+    previous_statement: str | None = None
+    previous_event_id: str | None = None
+    relation: Relation | None = None
+    relation_zh: str = ""
+
+
+class NewsEvidenceRelationData(ExactApiSchema):
+    claim_ref: str
+    evidence_ref: str
+    relation: Literal["supports", "refutes", "reports", "not_addressed", "unresolved"]
+    relation_zh: str = ""
+    claim_statement: str = ""
+
+
+class NewsUpdateEvidenceData(ExactApiSchema):
+    """One cited source and how it bears on each claim; a relation describes the material, not trust."""
+
+    evidence_ref: str
+    text: str
+    text_truncated: bool = False
+    source: NewsUpdateSourceData
+    relations: list[NewsEvidenceRelationData] = Field(default_factory=list)
+
+
+class NewsImplicationData(ExactApiSchema):
+    """An explanatory hypothesis, never a fact, a price call or a corroboration. ``origin`` says whose."""
+
+    claim_refs: list[str]
+    channel: str
+    explanation: str
+    conditions: list[str] = Field(default_factory=list)
+    origin: Literal["reported_causality", "system_hypothesis"]
+    origin_zh: str = ""
+
+
+class NewsOpenQuestionData(ExactApiSchema):
+    question: str
+    claim_refs: list[str]
+    target_ref: str | None = None
+
+
+class NewsTopicData(ExactApiSchema):
+    code: str
+    label_zh: str
+
+
+class NewsEventUpdateData(ExactApiSchema):
+    """The Event's adopted EventUpdate head: what happened, what changed, who says so, what is missing."""
+
+    update_ref: str
+    content_revision: str = Field(pattern=_SHA256_PATTERN)
+    input_revision: int = Field(ge=1)
+    previous_content_revision: str | None = None
+    adopted_at_ms: int
+    # The card headline a reader actually received for the latest sent update, else the first claim the
+    # head has not retired.
+    headline: str | None = None
+    headline_source: Literal["sent_card", "claim"] | None = None
+    topics: list[NewsTopicData] = Field(default_factory=list)
+    claims: list[NewsClaimData]
+    retired_claim_refs: list[str] = Field(default_factory=list)
+    disputed_claim_refs: list[str] = Field(default_factory=list)
+    changes: list[NewsClaimChangeData] = Field(default_factory=list)
+    sources: list[NewsUpdateEvidenceData] = Field(default_factory=list)
+    implications: list[NewsImplicationData] = Field(default_factory=list)
+    open_questions: list[NewsOpenQuestionData] = Field(default_factory=list)
+
+
+class NewsSemanticWorkData(ExactApiSchema):
+    state: Literal["pending", "done", "failed"]
+    state_zh: str = ""
+    wanted_revision: int
+    done_revision: int | None = None
+    attempts: int = 0
+    last_outcome: str | None = None
+    last_error_code: str | None = None
+    next_attempt_at_ms: int | None = None
+    extra_read_state: str | None = None
+    extra_read_state_zh: str = ""
+    updated_at_ms: int
+
+
+class NewsSemanticObservationData(ExactApiSchema):
+    result_id: str
+    input_revision: int
+    program_identity: str
+    completed_at_ms: int
+    # `null`: the observation changed no business content and the head stayed where it was.
+    adopted_content_revision: str | None = None
+
+
+class NewsClaimDecisionData(ExactApiSchema):
+    claim_ref: str
+    statement: str | None = None
+    decision: ClaimDecisionValue
+    decision_zh: str = ""
+    reason: ClaimReason
+    reason_zh: str = ""
+
+
+class NewsNotificationPlanData(ExactApiSchema):
+    action: PlanAction
+    action_zh: str = ""
+    reason: PlanReason
+    reason_zh: str = ""
+    key: bool = False
+    update_ref: str
+    reader_revision: str
+    claim_decisions: list[NewsClaimDecisionData] = Field(default_factory=list)
+
+
+class NewsNotificationWorkData(ExactApiSchema):
+    state: Literal["pending", "done"]
+    state_zh: str = ""
+    content_revision: str
+    attempts: int = 0
+    next_attempt_at_ms: int | None = None
+    updated_at_ms: int
+    plan: NewsNotificationPlanData | None = None
+    plan_error_code: str | None = None
+
+
+class NewsUpdateIntentData(ExactApiSchema):
+    """One notification intent: what was selected, what happened to it, and the exact text sent."""
+
+    intent_id: str
+    content_revision: str | None = None
+    claim_refs: list[str] = Field(default_factory=list)
+    key: bool = False
+    state: Literal["queued", "dead", "sending", "sent", "terminal", "ambiguous"]
+    state_zh: str = ""
+    error_code: str | None = None
+    attempts: int | None = None
+    enqueued_at_ms: int | None = None
+    attempted_at_ms: int | None = None
+    settled_at_ms: int | None = None
+    headline_zh: str | None = None
+    body: str | None = None
+    payload_sha256: str | None = None
+    receipt: dict[str, Any] | None = None
+
+
+class NewsProcessingData(ExactApiSchema):
+    """What the EventUpdate path did with this Event, from its durable work rows and receipts (#706)."""
+
+    semantic: NewsSemanticWorkData | None = None
+    observations: list[NewsSemanticObservationData] = Field(default_factory=list)
+    notification: NewsNotificationWorkData | None = None
+    intents: list[NewsUpdateIntentData] = Field(default_factory=list)
+    # Set when the adopted head's stored document does not decode under the current contract.
+    update_error_code: str | None = None
+
+
 class NewsEventDetailData(ExactApiSchema):
+    """One Event. ``event_update``/``processing`` are the EventUpdate path (#706); ``legacy_verdict``,
+    ``verdicts``, ``evidence_inputs`` and ``late_evidence`` are the history of an Event judged before it,
+    and none of them is merged into the other."""
+
     event: NewsEventData
     outcome: NewsOutcomeData
-    triage: NewsTriageSummaryData | None = None
+    event_update: NewsEventUpdateData | None = None
+    processing: NewsProcessingData | None = None
+    legacy_verdict: NewsLegacyVerdictData | None = None
     timeline: list[NewsTimelineStepData] = Field(default_factory=list)
     members: list[NewsEventMemberData]
     verdicts: list[NewsVerdictData]
@@ -362,19 +623,30 @@ class NewsQuotesData(ExactApiSchema):
 
 __all__ = [
     "NewsAcceptedReviewData",
+    "NewsClaimChangeData",
+    "NewsClaimData",
+    "NewsClaimDecisionData",
     "NewsDeliveryData",
     "NewsEventData",
     "NewsEventDetailData",
     "NewsEventMemberData",
     "NewsEventReactionData",
     "NewsEventReviewSummaryData",
+    "NewsEventUpdateData",
     "NewsEvidenceSnapshotData",
+    "NewsLegacyTaxonomyData",
     "NewsModelEditorialData",
+    "NewsNotificationPlanData",
+    "NewsNotificationWorkData",
     "NewsPresentationVerdictData",
+    "NewsProcessingData",
     "NewsQuoteData",
     "NewsQuotesData",
     "NewsReactionSummaryData",
     "NewsReaderReceiptData",
+    "NewsSemanticWorkData",
     "NewsTimelineStepData",
+    "NewsUpdateEvidenceData",
+    "NewsUpdateIntentData",
     "NewsVerdictData",
 ]

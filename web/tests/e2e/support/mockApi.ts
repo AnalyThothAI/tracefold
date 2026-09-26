@@ -11,6 +11,7 @@ import {
   newsQuoteFixture,
   newsStatusFixture,
   newsSymbolFixture,
+  newsUpdateDetailFixture,
   newsWalletEventsForParams,
   newsWalletsFixture,
   newsWalletEventDetailFixture,
@@ -157,7 +158,7 @@ function newsFeedData(prepended: string[] = [], empty = false) {
   const row = (eventId: string, title: string) => ({
     ...event,
     // No Chinese headline on the mock rows, so the wire line is the row headline (distinct per row).
-    triage: event.triage ? { ...event.triage, headline_zh: null } : null,
+    legacy_verdict: event.legacy_verdict ? { ...event.legacy_verdict, headline_zh: null } : null,
     event_id: eventId,
     leader_title: title,
   });
@@ -261,6 +262,10 @@ function marketData(url: URL) {
 
 function newsEventDetailData(path: string) {
   const eventId = decodeURIComponent(path.split("/").pop() ?? "evt-global-policy");
+  // #706: an Event the News Agent processed reads its EventUpdate and processing, and no legacy verdict.
+  if (eventId.startsWith("evt-agent")) {
+    return newsUpdateDetailFixture({ event: newsEventFixture({ event_id: eventId }) });
+  }
   return newsEventDetailFixture({
     event: newsEventFixture({
       event_id: eventId,

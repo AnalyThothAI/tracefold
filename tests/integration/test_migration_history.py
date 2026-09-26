@@ -21,17 +21,18 @@ from pydantic import ValidationError
 from tests.postgres_test_utils import connect_postgres_test, prepare_test_migration_database
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
+from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.journal import (
     ObservationFactory,
     day_start_baseline_from_observation,
 )
 from tracefold.news.events.facts import extract_fact_units
-from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.news.smart_money import PARSER_VERSION
 from tracefold.news.smart_money import source_key as smart_money_source_key
 from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
+from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.wallet_snapshots import wallet_snapshot
 from tracefold.news.wallet_contracts import NetBuySnapshot
 from tracefold.platform.postgres.migrations import alembic_config
@@ -50,7 +51,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260926_0403"
+HEAD = "20260926_0404"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -257,6 +258,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260926_0403",
         "20260926_0402",
         "20260925_0401",
         "20260925_0400",
@@ -515,9 +517,13 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="native_fill_identity_forward_only"):
+    with pytest.raises(RuntimeError, match="news_event_updates_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260926_0403")
+    with pytest.raises(RuntimeError, match="native_fill_identity_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260926_0403"
     command.stamp(config, "20260926_0402")
     with pytest.raises(RuntimeError, match="trading_runtime_observation_truth_forward_only"):
         command.downgrade(config, "base")
@@ -2692,6 +2698,62 @@ def test_the_catalogue_freshness_answer_survives_the_move_off_the_row() -> None:
         conn.close()
 
 
+def _seed_admitted_event(conn: Any, text: str, *, record: int = 664, at_ms: int = 1000) -> str:
+    """One admitted Event with its leader Item and current evidence, written in SQL for an older schema.
+
+    These revisions predate the #706 semantic-work tables, so a seed through today's admission -- which
+    commits semantic work beside its evidence -- cannot run against them. The rows are the ones admission
+    wrote at those revisions: an Item, an admitted Event, its leader membership and a v3 snapshot.
+    """
+
+    from tests.postgres_test_utils import seed_current_news_evidence
+
+    item_id = f"item-{record}"
+    event_id = f"event-{record}"
+    conn.execute(
+        """
+        INSERT INTO news_items (
+          item_id, source_id, source_item_key, title, raw_first_line, description, canonical_url,
+          reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+          first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id
+        ) VALUES (%(item)s, 'opennews', %(record)s, %(text)s, %(text)s, '', %(url)s, 'Reuters', %(at)s, %(at)s,
+                  '{}'::jsonb, '[]'::jsonb, 'live', 'migration-seed', %(at)s, %(at)s, %(item)s)
+        """,
+        {"item": item_id, "record": str(record), "text": text, "url": f"https://example.org/{record}", "at": at_ms},
+    )
+    conn.execute(
+        """
+        INSERT INTO news_events (
+          event_id, leader_item_id, dedupe_family, comparison_fingerprint, comparison_title, leader_title,
+          opened_at_ms, last_member_at_ms, expires_at_ms, admission, ingest_mode, trace_id, created_at_ms,
+          updated_at_ms, focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method,
+          focus_span_start, focus_span_end, event_kind, grounded_assets
+        ) VALUES (%(event)s, %(item)s, 'general', %(fp)s, %(text)s, %(text)s, %(at)s, %(at)s, %(expires)s,
+                  'candidate', 'live', 'migration-seed', %(at)s, %(at)s, %(fact)s, %(text)s, '', 'whole_item',
+                  0, %(span)s, 'news', '[]'::jsonb)
+        """,
+        {
+            "event": event_id,
+            "item": item_id,
+            "fp": hashlib.sha256(text.encode()).hexdigest(),
+            "text": text,
+            "at": at_ms,
+            "expires": at_ms + 86_400_000,
+            "fact": f"fact-{record}",
+            "span": len(text),
+        },
+    )
+    conn.execute(
+        """
+        INSERT INTO news_event_members (event_id, item_id, joined_at_ms, match_kind, fact_id, fact_text)
+        VALUES (%s, %s, %s, 'leader', %s, %s)
+        """,
+        (event_id, item_id, at_ms, f"fact-{record}", text),
+    )
+    seed_current_news_evidence(conn)
+    return event_id
+
+
 def _persist_pre_v3_verdict(
     repos,
     *,
@@ -2704,7 +2766,7 @@ def _persist_pre_v3_verdict(
 
     A migration test's seed has to be what the ledger actually held before the cut, and after #675 §1
     that is a verdict carrying `magnitude` and `audience` inside a `news_editorial_v3` envelope carrying
-    `relevance`. `tests.support.news_judgment` builds the current contract and nothing else, so the two
+    `relevance`. `tests.support.news_legacy` builds the v3 contract and nothing else, so the two
     canonical digests the CHECK recomputes are built here from the same `canonical_sha` the worker used.
     """
 
@@ -2804,8 +2866,6 @@ def _persist_pre_v3_verdict(
 def test_local_evidence_migration_preserves_v11_verdict_and_archive(monkeypatch):
     from contextlib import closing
 
-    from tests.integration.test_news_evidence_material import admit
-
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "20260919_0384")
@@ -2814,7 +2874,7 @@ def test_local_evidence_migration_preserves_v11_verdict_and_archive(monkeypatch)
     # would make the seed itself the thing the CHECK rejects, and the revision under test would never run.
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
-        event_id = admit(repos, "BTC acquisition remains pending approval.").results[0].event_id
+        event_id = _seed_admitted_event(conn, "BTC acquisition remains pending approval.")
         _persist_pre_v3_verdict(
             repos,
             event_id=event_id,
@@ -2856,14 +2916,13 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
     from contextlib import closing
 
     from tests.integration import test_news_reader_history as history
-    from tests.integration.test_news_evidence_material import admit
 
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "20260922_0386")
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
-        old_event = admit(repos, "BTC acquisition remains pending approval.").results[0].event_id
+        old_event = _seed_admitted_event(conn, "BTC acquisition remains pending approval.", record=665)
         _persist_pre_v3_verdict(
             repos,
             event_id=old_event,
@@ -2875,7 +2934,7 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
         assert [row["row"]["judgment_contract_version"] for row in before] == ["news_judgment_v2"]
         assert before[0]["row"]["verdict"]["magnitude"] == 2
 
-        blocked = admit(repos, "ETH acquisition remains pending approval.").results[0].event_id
+        blocked = _seed_admitted_event(conn, "ETH acquisition remains pending approval.", record=666)
         with pytest.raises(psycopg.errors.CheckViolation):
             history._persist_triage_verdict(repos, event_id=blocked, at_ms=2100, symbol="ETH")
         conn.rollback()
@@ -2887,7 +2946,7 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
     with closing(connect_postgres_test(read_only=False)) as conn:
         assert conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall() == before
         repos = repositories_for_connection(conn)
-        new_event = admit(repos, "SOL acquisition remains pending approval.").results[0].event_id
+        new_event = _seed_admitted_event(conn, "SOL acquisition remains pending approval.", record=667)
         history._persist_triage_verdict(repos, event_id=new_event, at_ms=2200, symbol="SOL")
         conn.commit()
         rows = conn.execute(
@@ -2901,7 +2960,7 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
         # itself admitted; the v15 row is the one that matters here.
         assert {str(row["policy_version"]) for row in rows} == {
             "news_triage_policy_v15",
-            TRIAGE_POLICY_VERSION,
+            LEGACY_TRIAGE_POLICY_VERSION,
         }
         # And each shape stays bound to the contract that wrote it: a v3 row states a kind and no
         # magnitude, a v2 row the other way round, and `news_current_verdict_contract_shape_valid` is
@@ -3216,18 +3275,17 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
     from contextlib import closing
 
     from tests.integration import test_news_reader_history as history
-    from tests.integration.test_news_evidence_material import admit
 
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "20260922_0389")
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
-        pushed = admit(repos, "Kraken opens BTC options trading to US customers.", record=69001).results[0].event_id
+        pushed = _seed_admitted_event(conn, "Kraken opens BTC options trading to US customers.", record=69001)
         history._persist_triage_verdict(
             repos, event_id=pushed, at_ms=2000, symbol="BTC", policy_version="news_triage_policy_v16"
         )
-        withheld = admit(repos, "Lido pauses ETH withdrawals after an oracle fault.", record=69002).results[0].event_id
+        withheld = _seed_admitted_event(conn, "Lido pauses ETH withdrawals after an oracle fault.", record=69002)
         history._persist_triage_verdict(
             repos,
             event_id=withheld,
@@ -3246,7 +3304,7 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
         ).fetchone()["d"]
         assert "news_triage_policy_v17" not in definition_before
 
-        blocked = admit(repos, "Solana validators vote to cut the SOL issuance rate.", record=69003).results[0].event_id
+        blocked = _seed_admitted_event(conn, "Solana validators vote to cut the SOL issuance rate.", record=69003)
         with pytest.raises(psycopg.errors.CheckViolation):
             history._persist_triage_verdict(repos, event_id=blocked, at_ms=2200, symbol="SOL")
         conn.rollback()
@@ -3265,7 +3323,7 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
         assert definition.count("'news_triage_policy_v17'::text") == 3
         assert definition.replace(", 'news_triage_policy_v17'::text", "") == definition_before
         repos = repositories_for_connection(conn)
-        current = admit(repos, "Ripple wins an XRP custody licence in Singapore.", record=69004).results[0].event_id
+        current = _seed_admitted_event(conn, "Ripple wins an XRP custody licence in Singapore.", record=69004)
         history._persist_triage_verdict(repos, event_id=current, at_ms=2300, symbol="XRP")
         conn.commit()
         rows = conn.execute("SELECT policy_version FROM news_verdicts WHERE stage = 'triage'").fetchall()
@@ -3274,7 +3332,7 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
             "news_triage_policy_v16",
             "news_triage_policy_v17",
         ]
-        assert TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
+        assert LEGACY_TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
 
 
 def test_native_identity_cut_preserves_original_payloads_without_promoting_historical_ids():
@@ -3314,5 +3372,74 @@ def test_native_identity_cut_preserves_original_payloads_without_promoting_histo
         ).fetchone()
         assert {key: after[key] for key in before} == before
         assert after["native_environment"] is after["native_instrument"] is after["native_trade_id"] is None
+    finally:
+        conn.close()
+
+
+def test_event_update_cut_keys_every_delivery_by_its_legacy_intent_without_resending() -> None:
+    """0404 backfills the Python legacy intent identity and keeps every row's state and payload."""
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260926_0403")
+    at_ms = 1_790_000_000_000
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            _seed_pre_cut_oi_event(conn, event_id="ev-legacy", leader_item="it-a", member_item="it-b", at_ms=at_ms)
+            conn.execute(
+                """
+                INSERT INTO news_deliveries (event_id, kind, state, card, receipt, attempted_at_ms,
+                                             settled_at_ms, created_at_ms)
+                VALUES ('ev-legacy', 'first', 'sent', '{"header": {"title": {"content": "旧卡"}}}'::jsonb,
+                        '{"provider": "telegram", "message_id": 7}'::jsonb, %s, %s, %s),
+                       ('ev-legacy', 'followup', 'terminal', '{}'::jsonb, NULL, %s, %s, %s)
+                """,
+                (at_ms, at_ms + 1, at_ms, at_ms, at_ms + 2, at_ms),
+            )
+            conn.execute(
+                """
+                INSERT INTO news_delivery_queue (event_id, kind, state, attempts, enqueued_at_ms,
+                                                 next_attempt_at_ms, last_attempt_at_ms, updated_at_ms)
+                VALUES ('ev-legacy', 'followup', 'pending', 1, %s, %s, %s, %s)
+                """,
+                (at_ms, at_ms, at_ms, at_ms),
+            )
+        before = {row["kind"]: row for row in conn.execute("SELECT * FROM news_deliveries ORDER BY kind").fetchall()}
+        command.upgrade(config, HEAD)
+        after = {row["kind"]: row for row in conn.execute("SELECT * FROM news_deliveries").fetchall()}
+        for kind, row in before.items():
+            assert after[kind]["intent_id"] == legacy_intent_id("ev-legacy", kind)
+            assert {key: after[kind][key] for key in row} == row
+            assert after[kind]["body"] is after[kind]["payload_sha256"] is after[kind]["claim_refs"] is None
+        queued = conn.execute("SELECT intent_id, state, attempts FROM news_delivery_queue").fetchone()
+        assert queued["intent_id"] == legacy_intent_id("ev-legacy", "followup")
+        assert (queued["state"], queued["attempts"]) == ("pending", 1)
+
+        # A legacy kind cannot be written under any other identity.
+        with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO news_delivery_queue (intent_id, event_id, kind, state, enqueued_at_ms,
+                                                 next_attempt_at_ms, updated_at_ms)
+                VALUES ('intent:' || repeat('0', 64), 'ev-legacy', 'first', 'pending', 1, 1, 1)
+                """
+            )
+        # An update intent must retain the exact body whose digest it claims.
+        with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO news_deliveries (intent_id, event_id, kind, state, card, attempted_at_ms,
+                                             created_at_ms, content_revision, claim_refs, body,
+                                             payload_sha256, plan_key)
+                VALUES ('intent:' || repeat('1', 64), 'ev-legacy', 'update', 'sending', '{}'::jsonb, 1, 1,
+                        repeat('a', 64), '["cl:x"]'::jsonb, '正文', repeat('b', 64), false)
+                """
+            )
+        kinds = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+            "WHERE conname = 'news_trade_events_kind_check'"
+        ).fetchone()
+        assert "source_update" in kinds["definition"]
     finally:
         conn.close()

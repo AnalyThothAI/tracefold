@@ -17,13 +17,14 @@ past decisions but are not additional runtime or PR requirements.
 ```text
 OpenNews Strategy WSS / history recovery
   -> RabbitMQ raw handoff -> News admission -> PostgreSQL Item
-       |-- editorial: Event -> triage handoff -> News Program -> deterministic decision
-       |      -> verdict + delivery intent -> sender -> durable delivery outcome
+       |-- editorial: Event + evidence revision -> durable semantic work
+       |      -> News Agent -> adopted EventUpdate + public outbox
+       |      -> notification plan -> selected intent -> card -> actual receipt
        |-- market: typed OI / liquidation / smart-money fact
               |-- market notification rules -> durable intent -> sender -> outcome
               `-- News trade-event outbox -> App relay -> Trading Trigger / Case
 
-Editorial verdict -> same News trade-event outbox, independent of reader-card delivery
+Adopted EventUpdate -> same News trade-event outbox, independent of card delivery
 Trading Analysis process -> bounded market data -> frozen evidence -> Agent assessment
   -> pure Decision -> optional TradeSignalV2 -> Nautilus final validity check
   -> scoped TradePlan -> order / fill / protection / exit observations
@@ -62,7 +63,7 @@ Production code is under `tracefold/`, without a `src/` parent:
 
 | Package | Responsibility |
 | --- | --- |
-| `tracefold.news` | Admission, editorial Events, Program, deterministic decisions, delivery, review/learning/release, market observations, wallet episodes, and `news_*` storage. |
+| `tracefold.news` | Admission, editorial Events and EventUpdates, notification planning and delivery, review, market observations, wallet episodes, and `news_*` storage. |
 | `tracefold.trading` | Target, evidence, assessment and decision contracts, frozen Cases, scoped Signals, execution transport contracts, and `trading_*` storage. |
 | `tracefold.integrations` | Provider, broker, delivery, public-market, and Nautilus/Binance adapters. |
 | `tracefold.platform` | Configuration, PostgreSQL/Alembic, telemetry, identity, and bounded process resources. |
@@ -84,17 +85,17 @@ App composition and concrete integration collaborators use explicit internal own
 imports where the architecture harness permits them; they do not enlarge public
 exports simply to construct an implementation. Package roots perform no runtime I/O.
 
-`news/learning/target_metrics.py` owns every comparison between a Program answer and an
-accepted review: the three per-target rulers, the typed asset and taxonomy comparisons the
-composite metric also reports, and the outcome vocabulary a denominator is stated in. The
-metric judge (`news/learning/judge.py`) belongs to the metric, never to the Program, and
-cannot change `program_sha256`. A caller passes it in; nothing reads it from ambient state.
+The retained card judge and calibration corpus measure reader copy; they do not
+decide the EventUpdate or change its program identity. The old optimization
+and release plane is no longer executable.
 
-`news_trade_events` is committed with each News OI fact or editorial verdict.
-The separate Analysis process selects a target through News' public instrument
-projection, commits an idempotent Trading Trigger and initial Case, then confirms
-the News outbox row. A crash between those commits repeats safely. Neither domain
-imports or queries the other's internal tables.
+`news_trade_events` is committed with each News OI fact or adopted public
+EventUpdate. The separate Analysis process dispatches an editorial
+`source_update` before target selection and records an idempotent Trading
+amendment without a new Trigger or Case. A `catalyst` selects a target through
+News' public instrument projection, commits a Trigger and initial Case, then
+confirms the News outbox row. A crash between those commits repeats safely.
+Neither domain imports or queries the other's internal tables.
 
 `tests/architecture/test_backend_boundaries.py` enforces the implemented dependency
 and SQL boundaries. Installed-distribution tests verify the wheel outside the checkout;
@@ -105,8 +106,8 @@ a local import from the repository alone does not establish correct packaging.
 | Kind | Examples | Meaning |
 | --- | --- | --- |
 | Source facts | Items, typed market observations, wallet fills and source provenance | What was observed and durably recorded, including explicit uncertainty. |
-| Decisions and receipts | Verdicts, accepted reviews, Signals, delivery outcomes, execution observations | What the named owner decided or actually observed, with its evidence and identity. |
-| Control state | Claims, retry scheduling, broker queues, runtime/capability status, release activation | Progress and authority, not an alternative copy of the business facts. |
+| Decisions and receipts | Adopted EventUpdates, historical verdicts, accepted reviews, Signals, delivery outcomes, execution observations | What the named owner decided or actually observed, with its evidence and identity. |
+| Control state | Semantic work, notification work, retry scheduling, broker queues, runtime/capability status | Progress and authority, not an alternative copy of the business facts. |
 | Derived views | Event membership, quotes, reactions, current episode state, HTTP/React projections | Replaceable projections with an identified writer and freshness meaning. |
 
 A model prediction is not a source fact. An accepted review is a recorded acceptance,
@@ -119,11 +120,10 @@ fact lineage and avoid rewriting unchanged business payloads. Provider timestamp
 host availability timestamps, and database timestamps describe different clocks;
 do not invent ordering between independent clocks or clamp a measured source time.
 
-News learning artifacts bind the actual Program, execution envelope, policy, review,
-and dataset identities as provenance. Review and dataset eligibility follow the
-evidence snapshot and the accepted labels, not the runtime bundle; runtime bundle
-changes name a cohort for release evidence only. Retired hand-written epoch numbers
-are audit history. Read the owning identity and release code when changing those contracts.
+News semantic observations bind frozen input, program and model identities.
+Adopted content revisions move only for substantive changes. Historical
+learning artifacts and Program epochs remain audit records, not a current
+release selector.
 
 ## Transaction ownership
 
@@ -132,7 +132,8 @@ not hide commits. Business database callbacks receive only their bounded reposit
 capability, not a cross-context session or an escape hatch into App internals.
 
 Important atomic units include an admitted Item plus its editorial assignment or
-typed market fact; a verdict plus its delivery intent; a Case plus its admission
+typed market fact; an adopted EventUpdate plus its public outbox and pending
+notification work; a planned intent and its exact receipt; a Case plus its admission
 record; a Signal plus its Case transition; and a complete wallet receipt's facts
 or derivation updates. Read the owning repository for the exact predicates.
 
@@ -219,67 +220,43 @@ behind a green readiness response.
 
 ### News
 
-Admission stores normalized provider Items and separates editorial from market input.
-Editorial Items join same-kind Events through the existing dedupe and grounding owners.
-Triage receives frozen evidence rather than mutable provider responses.
+Admission stores normalized provider Items and separates editorial from
+typed market facts. Editorial Items join same-kind Events. A new source body
+or member advances the Event's evidence revision and durable semantic work;
+exact retransmission is idempotent and near matching only recalls candidates.
+The existing `news.triage` queue runs the semantic worker. It freezes stored
+input, checkpoints extraction and judgments, and adopts an EventUpdate with a
+head compare-and-swap. Failed work stays visible, with bounded retries and
+Janitor repair.
 
-Grounding is the provider's name resolution plus two code conditions, and the Gate keeps
-no name table of its own: a B+/A/A+ coin tag or a literal `$TICKER` is the grounded asset.
-The conditions narrow it where a tag is about a word rather than an instrument — crude
-needs the storyline registry's energy context, and every other commodity underlying needs
-its own name in the text, bilingually (`events/grounding.py`). Beside that, each verdict
-records how the Event carries every instrument it names (`cashtag`, `text`, `alias`,
-`provider_tag`, `unsupported`) and what the catalogue holds for it. That reading is
-recorded evidence for a later decision and for the console; `decide()` consumes none of
-it. It is a signal rather than a rule because a symbol is not a name: a measured day of
-delivered cards has correct primaries the text never spells (`LMT` for Lockheed Martin,
-`0700.HK` for 腾讯) and mis-resolved ones it spells perfectly, so separating them needs an
-issuer-name source the catalogue does not yet have.
+The EventUpdate is the single editorial understanding owner: claims, mode,
+phase, time, evidence, source relations, changes, implications and gaps.
+Multiple claims can express different actions or conflicting evidence. The
+optional News-specific Jev endpoint answers narrow native judgments; the
+configured generative route remains the default and fallback. Similarity
+does not prove a fact has already been reported, and observation does not
+prove that a reader received it. [News topics and source
+authority](NEWS_TAXONOMY.md) describes the retained IPTC codebook and the
+per-source authority classifier.
 
-The public semantic seam is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`.
-The native DSPy Program executes EventSemantics, Taxonomy, and ReaderCard predictors;
-deterministic assembly and policy own validation and the reader-facing decision.
-A better-looking model answer alone does not establish a better final notification.
-EventSemantics outputs what a reader of the text can check and nothing about the
-reader: typed assets, novelty and the ledger entry a restatement cites, direction,
-scope, `fact_kind` — one of ten kinds of new thing a text can state — and the
-`evidence_ref` it was read off. Every threshold is `decide()`'s, where one ordered
-decision table turns those observations, the four taxonomy axes, the code-owned
-source authority, the count of independent member texts and the told ledger into one
-named action. Novelty is the model's claim and the action is the code's: a card the
-model calls a restatement of a ledger entry it was shown is dropped whichever
-direction it reports, because a reported direction is a reading rather than a fact,
-while a real reversal arrives as a progression or new fact and keeps its duplicate
-and budget exemptions.
+Adoption commits the update, public outbox and notification work together.
+NotificationPlanner separately compares each claim against the reader's
+actual sent bodies and current content rules. It records a named decision
+per claim. Only selected claims cause Chinese card generation and a stable
+delivery intent. Sending uses a frozen body, checks the current head and
+reader revision, and records the provider result. An unknown outcome is
+ambiguous and is not blindly retried. A card failure never retracts the
+semantic update or blocks the Trading outbox.
 
-The released Program image is the native DSPy state document
-(`news_program_state_v1`: instructions, demos and Signature state per predictor, no
-model routes) loaded through one path; routes come from operator configuration. A
-learning run names one target — `classification` (Taxonomy), `understanding`
-(EventSemantics) or `explanation` (ReaderCard) — and GEPA moves only that predictor's
-state, on that predictor's own production primary endpoint. Assets carry a typed
-market identity `(market_type, symbol, role)`; Taxonomy may fail on its own
-(`taxonomy_status=unavailable`) while the code-owned `source_authority` on the
-editorial envelope and the reader card survive. A storyline key is recomputed only
-for the judgment that is being produced: the told and receipt ledgers a replay reads
-carry the key their own delivery recorded, because a verdict written before the key
-carried a market would recompute into a key the ledger never held.
-[News taxonomy](NEWS_TAXONOMY.md)
-owns classification language; program and learning code own signatures, budgets,
-identity, metrics, and selection.
-
-Review proposals, explicit acceptance, frozen datasets, optimization, candidate
-registration, evaluation, and production release are distinct actions. An optimizer
-cannot make its own proposals accepted truth or authorize its own promotion. Use
-[CONTEXT.md](../CONTEXT.md), the current CLI, and [Operations](OPERATIONS.md), rather
-than old experiment transcripts or machine-specific model presets as instructions.
-
-An approved editorial decision and delivery intent commit together. The sender claims
-work, performs the provider call outside the transaction, and persists the outcome.
-Only an actual sent receipt means the reader received a card. Retry is conditioned on
-what the provider failure proves; an unknown result is not proof of non-delivery.
-Price or contextual presentation reads must not silently become a second decision
-policy or require a card to wait indefinitely.
+The App relay maps a structured catalyst delta to Trading's existing
+candidate path. It maps a correction or source evidence update to a Trading
+amendment before target selection, without opening a fresh Case or extending
+the old trigger's freshness. Serve and the console expose adopted updates,
+claim-level reasons, processing progress and actual deliveries; old verdicts
+remain labeled historical. The old three-Predictor Program, four taxonomy
+axes, optimization and release plane are absent from current runtime.
+[News EventUpdate](design/news-event-updates.md) details these identities
+and cutover constraints.
 
 #### Price Review plane (#88, #304)
 
@@ -321,7 +298,7 @@ classification and reader delivery.
 ### The one live path
 
 ```text
-News OI fact or editorial verdict -> durable trade-event outbox
+News OI fact or adopted editorial catalyst -> durable trade-event outbox
   -> App relay -> Trading Trigger + initial Case
   -> per-asset fenced claim -> bounded MarketDataPort reads -> frozen evidence
   -> bounded Agent research + one structured selection -> pure Decision
@@ -329,6 +306,8 @@ News OI fact or editorial verdict -> durable trade-event outbox
   -> separate Nautilus Runtime -> final validity check -> scoped TradePlan
   -> venue order / fill / protection / exit observations
 ```
+An editorial `source_update` branches at App relay into a Trading source
+amendment. It does not create a new Trigger or Case or restart the path above.
 
 The default Agent policy does not publish Signals (`publish_signals: false`). Missing model
 configuration, incomplete evidence, invalid model output and an active NO_TRADE
@@ -433,7 +412,7 @@ live account may still have exposure.
 ## Market observations (#137, #553)
 
 Market frames and editorial Events answer different questions. Admission stores a
-market Item and its typed fact without running editorial dedupe, Gate, or Triage.
+market Item and its typed fact without running editorial dedupe or semantics.
 Unknown or unparsable evidence remains visible with its raw data and parse reason;
 it must not be converted into a fabricated measurement.
 
@@ -505,8 +484,8 @@ and digest tasks are not the current product. See the
 
 ### Retention
 
-Apply the owning retention policy to source facts, projections, receipts, and learning
+Apply the owning retention policy to source facts, projections, receipts, and historical learning
 evidence according to their actual lifetime and foreign-key lineage. Market facts do
 not gain editorial-review evidence merely by sharing `news_items`. Preserve required
-audit and active release references; use current schema and retention code, not a
+audit references; use current schema and retention code, not a
 manually counted table list or obsolete migration narrative.

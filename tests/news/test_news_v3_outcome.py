@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from tracefold.news.health import status_health
+from tracefold.news.models import FACT_KINDS
 from tracefold.news.outcome import (
     OUTCOME_GROUP,
     OVERRIDE_RULE_ZH,
@@ -16,7 +17,6 @@ from tracefold.news.outcome import (
     throttled_by_zh,
 )
 from tracefold.news.timeline import event_timeline
-from tracefold.news.triage_rules import DECISION_TABLE_RULES
 
 NOW = 1_800_000_000_000
 
@@ -274,9 +274,15 @@ def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_c
         "trade_relevance_inconsistent",
         "trade_relevance_realtime",
         "watchlist_objective_guard",
-        # #675 §3: the policy-v15 decision table's three rows. They are ordinary `drop` rules, so they
-        # appear in `dropped_by_rule` beside `restatement` and owe the reader the same named reason.
-        *DECISION_TABLE_RULES,
+        # #675 §3: the legacy decision table's rows. Legacy verdicts carry them as override rules, so the
+        # historical outcome still owes the reader the same named reason.
+        "fact_kind_unavailable",
+        "escalate_corroborated",
+        "escalate_uncorroborated",
+        "price_report_without_basis",
+        "conflict_claim_uncorroborated",
+        "conflict_running_storyline",
+        *(f"fact_kind_{kind}" for kind in FACT_KINDS),
     }
     missing = sorted(rule for rule in current_rules if rule not in OVERRIDE_RULE_ZH)
     assert missing == []
@@ -360,8 +366,10 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
         event=_event(grounded_assets=["CL", "XYZ-CL", "BTC"]), members=[], verdicts=[], deliveries=[]
     )
     assert cl_steps[1]["summary_zh"] == "已送审 · 关联 CL BTC"
-    assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 状态变化 / 市场准入"
-    assert steps[2]["facts"]["taxonomy"]["event_family"] == "market_access"
+    # #706: the retired taxonomy axes have no current reading. A legacy verdict's step keeps its headline,
+    # direction and fact kind; its stored axes stay on the verdict row for audit and are not narrated.
+    assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 状态变化"
+    assert "taxonomy" not in steps[2]["facts"]
     assert steps[2]["facts"]["fact_kind"] == "state_change"
     assert steps[3]["summary_zh"] == "推送 · 事实类型：状态变化，推送"
     assert steps[4]["summary_zh"] == "已送达" and steps[4]["at_ms"] == NOW + 9_500
@@ -471,6 +479,9 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "throttled_by_key": {"storyline:asset:BTC:seen": 12},
             "pushed_by_rule": {"trade_relevance_realtime": 18, "trade_relevance_escalate": 2},
             "triage_degraded_by_code_24h": {"news_program_route_deadline": 3},
+            "semantic_observations_24h": 147,
+            "semantic_failed_24h": 3,
+            "semantic_failed_by_code_24h": {"news_provider_unavailable:TimeoutError": 3},
             "tagged_24h": 150,
             "grounded_24h": 144,
             "ungrounded_by_symbol_24h": {"SPOT": 38, "NEAR": 9},
@@ -678,7 +689,7 @@ def test_status_health_does_not_fall_back_to_throughput_counts() -> None:
     }
     out = status_health(**inputs)  # type: ignore[arg-type]
 
-    assert out["health"]["model"]["summary_zh"] == "24 小时内没有送审事件"
+    assert out["health"]["model"]["summary_zh"] == "24 小时内没有语义处理"
     assert {stage: out["funnel_24h"][stage] for stage in ("received", "admitted", "triaged", "delivered")} == {
         "received": 0,
         "admitted": 0,
@@ -688,11 +699,15 @@ def test_status_health_does_not_fall_back_to_throughput_counts() -> None:
 
 
 def test_status_health_thresholds_turn_amber_and_red() -> None:
-    degraded = status_health(**_status_inputs(pipeline={**_status_inputs()["pipeline"], "triage_degraded_24h": 30}))  # type: ignore[arg-type]
+    degraded = status_health(
+        **_status_inputs(
+            pipeline={**_status_inputs()["pipeline"], "semantic_observations_24h": 120, "semantic_failed_24h": 30}
+        )
+    )  # type: ignore[arg-type]
     assert degraded["health"]["model"]["level"] == "bad" and "20%" in degraded["health"]["model"]["summary_zh"]
     assert degraded["health"]["overall"] == "bad"
 
-    amber = status_health(**_status_inputs(pipeline={**_status_inputs()["pipeline"], "triage_degraded_24h": 8}))  # type: ignore[arg-type]
+    amber = status_health(**_status_inputs(pipeline={**_status_inputs()["pipeline"], "semantic_failed_24h": 8}))  # type: ignore[arg-type]
     assert amber["health"]["model"]["level"] == "warn"
 
     stale = status_health(**_status_inputs(ingest={"connected": True, "last_frame_at_ms": NOW - 40 * 60_000}))  # type: ignore[arg-type]

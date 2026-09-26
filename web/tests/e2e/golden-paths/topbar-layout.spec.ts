@@ -211,7 +211,7 @@ async function routeNewsFeed(page: Page, titles: string[]) {
       newsFeedEventFixture({
         event_id: `news-density-${index + 1}`,
         leader_title: title,
-        triage: { ...newsFeedEventFixture().triage!, headline_zh: null },
+        legacy_verdict: { ...newsFeedEventFixture().legacy_verdict!, headline_zh: null },
       }),
     ),
   });

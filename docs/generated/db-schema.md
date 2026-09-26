@@ -81,6 +81,12 @@
 | `delete_attempted_at_ms` | `BIGINT` | True | `None` |
 | `delete_settled_at_ms` | `BIGINT` | True | `None` |
 | `history_context` | `JSONB` | True | `None` |
+| `intent_id` | `TEXT` | False | `None` |
+| `content_revision` | `TEXT` | True | `None` |
+| `claim_refs` | `JSONB` | True | `None` |
+| `body` | `TEXT` | True | `None` |
+| `payload_sha256` | `TEXT` | True | `None` |
+| `plan_key` | `BOOLEAN` | True | `None` |
 
 ## `news_delivery_queue`
 
@@ -96,6 +102,12 @@
 | `last_attempt_at_ms` | `BIGINT` | True | `None` |
 | `settled_at_ms` | `BIGINT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `intent_id` | `TEXT` | False | `None` |
+| `content_revision` | `TEXT` | True | `None` |
+| `claim_refs` | `JSONB` | True | `None` |
+| `plan_key` | `BOOLEAN` | True | `None` |
+| `frozen_card` | `JSONB` | True | `None` |
+| `lease_token` | `TEXT` | True | `None` |
 
 ## `news_event_assets`
 
@@ -165,6 +177,28 @@
 | `unavailable_reason` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_event_update_heads`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `content_revision` | `TEXT` | False | `None` |
+| `input_revision` | `INTEGER` | False | `None` |
+| `update_ref` | `TEXT` | False | `None` |
+| `adopted_at_ms` | `BIGINT` | False | `None` |
+
+## `news_event_updates`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `content_revision` | `TEXT` | False | `None` |
+| `input_revision` | `INTEGER` | False | `None` |
+| `previous_content_revision` | `TEXT` | True | `None` |
+| `adopted_at_ms` | `BIGINT` | False | `None` |
+| `observation_result_id` | `TEXT` | False | `None` |
+| `document` | `JSONB` | False | `None` |
 
 ## `news_events`
 
@@ -252,6 +286,20 @@
 | `broker_snapshot` | `JSONB` | False | `'{}'::jsonb` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_item_revisions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `item_id` | `TEXT` | False | `None` |
+| `revision_sha256` | `TEXT` | False | `None` |
+| `evidence_text` | `TEXT` | False | `None` |
+| `provider_params` | `JSONB` | False | `'{}'::jsonb` |
+| `reporting_origin` | `TEXT` | False | `None` |
+| `canonical_url` | `TEXT` | True | `None` |
+| `source_artifact_id` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_items`
 
 | Column | Type | Nullable | Default |
@@ -285,8 +333,14 @@
 | `provider_params_sha256` | `TEXT` | True | `None` |
 | `evidence_text` | `TEXT` | True | `None` |
 | `evidence_text_sha256` | `TEXT` | True | `None` |
-| `provider_params_conflict_sha256` | `TEXT` | True | `None` |
-| `provider_params_conflict_at_ms` | `BIGINT` | True | `None` |
+
+## `news_judgment_cache`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `cache_key` | `TEXT` | False | `None` |
+| `answer` | `JSONB` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_learning_artifacts`
 
@@ -667,6 +721,20 @@
 | `total_tokens` | `INTEGER` | True | `None` |
 | `provider_cost_microusd` | `BIGINT` | True | `None` |
 
+## `news_notification_work`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `channel` | `TEXT` | False | `None` |
+| `content_revision` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `plan` | `JSONB` | True | `None` |
+| `reader_revision` | `TEXT` | True | `None` |
+| `attempts` | `INTEGER` | False | `0` |
+| `next_attempt_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_oi_signals`
 
 | Column | Type | Nullable | Default |
@@ -754,6 +822,51 @@
 | `accepts_review_id` | `TEXT` | True | `None` |
 | `release_eligible` | `BOOLEAN` | False | `true` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_semantic_checkpoints`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `work_id` | `TEXT` | False | `None` |
+| `stage` | `TEXT` | False | `None` |
+| `document` | `JSONB` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_semantic_observations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `result_id` | `TEXT` | False | `None` |
+| `work_id` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | False | `None` |
+| `input_revision` | `INTEGER` | False | `None` |
+| `input_sha256` | `TEXT` | False | `None` |
+| `program_identity` | `TEXT` | False | `None` |
+| `completed_at_ms` | `BIGINT` | False | `None` |
+| `understanding` | `JSONB` | False | `None` |
+| `evidence_refs` | `ARRAY` | False | `'{}'::text[]` |
+
+## `news_semantic_work`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `wanted_revision` | `INTEGER` | False | `None` |
+| `done_revision` | `INTEGER` | True | `None` |
+| `processed_evidence_refs` | `ARRAY` | False | `'{}'::text[]` |
+| `lineage_id` | `TEXT` | False | `None` |
+| `attempts` | `INTEGER` | False | `0` |
+| `next_attempt_at_ms` | `BIGINT` | False | `None` |
+| `leased_until_ms` | `BIGINT` | True | `None` |
+| `lease_token` | `TEXT` | True | `None` |
+| `published_at_ms` | `BIGINT` | True | `None` |
+| `last_outcome` | `TEXT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `extra_read_state` | `TEXT` | True | `None` |
+| `extra_read_target_ref` | `TEXT` | True | `None` |
+| `attached_evidence` | `JSONB` | True | `None` |
+| `focus_claim_refs` | `JSONB` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_symbol_aliases`
 
@@ -1094,6 +1207,19 @@
 | `signal_id` | `TEXT` | False | `None` |
 | `reason` | `TEXT` | False | `None` |
 | `retired_at_ns` | `BIGINT` | False | `None` |
+
+## `trading_source_amendments`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `update_id` | `TEXT` | False | `None` |
+| `source_fact_key` | `TEXT` | False | `None` |
+| `content_revision` | `TEXT` | False | `None` |
+| `affected_claim_refs` | `JSONB` | False | `None` |
+| `retired_claim_refs` | `JSONB` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `payload_sha256` | `TEXT` | False | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_trade_plans`
 

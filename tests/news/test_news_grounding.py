@@ -6,7 +6,8 @@ first line, provider coins), the frozen evidence text, the assets the model name
 rows it was shown, and the label an independent reviewer gave the card. `audit_case` names the 27 rows the
 Issue's grounding audit called out by hand.
 
-Two rules run against it and the third column of this file is what they *do not* do. A rule that demoted
+The Gate's commodity-context rule runs against it (the contradicted-primary demotion left with the retired
+Program in #706), and so does what the rules deliberately *do not* do. A rule that demoted
 every primary the text does not spell would take 50 of 338 primaries with it, 16 of them on cards a
 reviewer wanted kept -- `LMT` for Lockheed Martin, `ACN` for Accenture, `HK1810` for 小米. That measurement
 is asserted here too, because it is the reason the support reading is published as a signal instead of
@@ -21,8 +22,6 @@ from typing import Any
 
 import pytest
 
-from tests.news.test_news_policy_v16_replay import proxy_fact_kind
-from tests.support.news_judgment import news_taxonomy, scored_judgment
 from tracefold.news.events import grounding as grounding_module
 from tracefold.news.events.gate import grounded_assets
 from tracefold.news.events.grounding import (
@@ -34,19 +33,9 @@ from tracefold.news.events.grounding import (
     verdict_grounding,
 )
 from tracefold.news.market_review.instruments import ALIAS_SEEDS, COMMODITY_SYMBOLS
-from tracefold.news.models import TriageVerdict
-from tracefold.news.program.assembly import contradicted_primary_symbols
-from tracefold.news.program.module import _demote_contradicted_primaries
-from tracefold.news.program.signatures import EventSemantics
 from tracefold.news.timeline import event_timeline
-from tracefold.news.triage_rules import GateFacts, StorylineStatus, decide
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "grounding_replay_24h.jsonl"
-# The same delivered day recorded for the policy replay (#675 PR-1), which carries the relevance and
-# taxonomy columns `decide()` reads. Joined by event id so the delivery consequence of a demotion is
-# measured through the production decision rather than asserted from the rule's own point of view.
-POLICY_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "policy_v16_replay_24h.jsonl"
-NOW = 1_800_000_000_000
 # The 上期所 margin notice: the provider tagged gold and silver on a frame that adjusts copper, aluminium,
 # zinc and lead, and the model made both its primaries. It is the one delivered card whose own primary
 # loses its grounding to the commodity condition.
@@ -154,74 +143,6 @@ def test_a_commodity_tag_still_grounds_wherever_the_text_names_the_commodity(row
 # ------------------------------------------------------------------ the post-model rule
 
 
-def test_only_a_primary_the_shown_catalogue_contradicts_is_demoted(rows: list[dict[str, Any]]) -> None:
-    hits = [(row, contradicted_primary_symbols(row["assets"], row["catalog_candidates"])) for row in rows]
-    changed = [(row, symbols) for row, symbols in hits if symbols]
-    assert [symbols for _, symbols in changed] == [("SILVER",), ("XYZ-COPPER",)]
-    assert [row["reviewer_verdict"] for row, _ in changed] == ["demote", "demote"]
-    assert [row["audit_case"] for row, _ in changed] == ["catalogue_class_contradiction"] * 2
-    # Both are `single_name`, so the demotion reaches the reader as `single_name_without_instrument`.
-    assert [row["scope"] for row, _ in changed] == ["single_name", "single_name"]
-    # 135 primaries had exactly one candidate class on the day; 133 of them agreed with it.
-    unambiguous = [
-        row
-        for row in rows
-        for asset in row["assets"]
-        if asset["role"] == "primary"
-        and len(row["catalog_candidates"].get(asset["symbol"].removeprefix("XYZ-"), ())) == 1
-    ]
-    assert len(unambiguous) == 135
-
-
-def test_the_rule_is_silent_where_the_catalogue_is_ambiguous_or_absent(rows: list[dict[str, Any]]) -> None:
-    """Two candidate classes is a question for the text, and no candidate row is not a contradiction."""
-
-    assert (
-        contradicted_primary_symbols(
-            [{"role": "primary", "symbol": "GOLD", "market_type": "equity"}], {"GOLD": ("commodity", "equity")}
-        )
-        == ()
-    )
-    assert contradicted_primary_symbols([{"role": "primary", "symbol": "LMT", "market_type": "equity"}], {}) == ()
-    assert (
-        contradicted_primary_symbols(
-            [{"role": "mentioned", "symbol": "SILVER", "market_type": "unknown"}], {"SILVER": ("commodity",)}
-        )
-        == ()
-    )
-    # 33 primaries on the day are neither tagged nor spelled in their own text and are simply right.
-    absent = [
-        reading
-        for row in rows
-        for reading in _primaries(row)
-        if reading.support == "unsupported" and not reading.in_catalogue
-    ]
-    assert {reading.symbol for reading in absent} >= {"0700.HK", "WUXIY", "TCE"}
-
-
-def test_the_program_demotes_a_contradicted_primary_and_keeps_the_name() -> None:
-    """End to end through the Program's own normalization: role changes, order and the name do not."""
-
-    semantics = EventSemantics.model_validate(
-        {
-            "novelty": "new_fact",
-            "restates": -1,
-            "assets": [
-                {"symbol": "SILVER", "role": "primary", "market_type": "unknown"},
-                {"symbol": "XAG", "role": "mentioned", "market_type": "commodity"},
-            ],
-            "direction": "neutral",
-            "scope": "single_name",
-            "fact_kind": "state_change",
-            "evidence_ref": "c1",
-            "confidence": 0.9,
-        }
-    )
-    demoted = _demote_contradicted_primaries(semantics, {"SILVER": ("commodity",)})
-    assert [(asset.symbol, asset.role) for asset in demoted.assets] == [("SILVER", "mentioned"), ("XAG", "mentioned")]
-    assert _demote_contradicted_primaries(semantics, {}) is semantics
-
-
 # ------------------------------------------------------------------ the published signal
 
 
@@ -277,137 +198,6 @@ def test_demoting_every_unsupported_primary_would_take_sixteen_keep_cards(rows: 
     keeps = {reading.symbol for row, reading in unsupported if row["reviewer_verdict"] == "keep"}
     assert len([1 for row, _ in unsupported if row["reviewer_verdict"] == "keep"]) == 16
     assert {"LMT", "ACN", "ALKS", "HK1810", "SOFTBANK"} <= keeps
-
-
-def test_hong_kong_primaries_are_untouched_and_resolvable(rows: list[dict[str, Any]]) -> None:
-    hk = [
-        (row, reading)
-        for row in rows
-        for reading in _primaries(row)
-        if ".HK" in reading.symbol.upper() or reading.symbol.upper().startswith("HK")
-    ]
-    assert len(hk) == 9
-    assert all(not contradicted_primary_symbols(row["assets"], row["catalog_candidates"]) for row, _ in hk)
-    supported = [reading for _, reading in hk if reading.support in {"text", "alias", "cashtag"}]
-    assert len(supported) == 6
-    # The three that are not: two 小米 cards written as 小米 with no code, and the 腾讯 card that names the
-    # company in Chinese only. Nothing demotes them; the signal says the code is not in the text.
-    assert sorted(reading.symbol for _, reading in hk if reading.support == "unsupported") == [
-        "0700.HK",
-        "HK1810",
-        "HK1810",
-    ]
-
-
-def test_the_audit_cases_this_change_corrects_and_the_ones_it_cannot(rows: list[dict[str, Any]]) -> None:
-    """The 27 hand-labelled mis-groundings, and which mechanism each one needs.
-
-    Only `catalogue_class_contradiction` is separable with the evidence the pipeline holds. The provider
-    tag families (`Walrus Pump` -> PUMP, `Funding Circle` -> CRCL, `Anterix` -> AAPL) and the model's own
-    (`BAE` -> BA, `Muse` -> ANTHROPIC) are name-resolution errors: the frame carries no matched name and
-    the catalogue carries no issuer name, so no reading here can see them. That is the finding, and this
-    assertion is what will fail when an issuer-name column makes them visible.
-    """
-
-    outcome: dict[str, set[str]] = {}
-    for row in rows:
-        case = row["audit_case"]
-        if not case:
-            continue
-        acted = set()
-        if contradicted_primary_symbols(row["assets"], row["catalog_candidates"]):
-            acted.add("primary_demoted")
-        grounded_now = grounded_assets(row["title"], row["coins"], raw_first_line=row["raw_first_line"])
-        if any(
-            symbol.removeprefix("XYZ-") in COMMODITY_CONTEXT and symbol not in grounded_now
-            for symbol in row["grounded_assets"]
-        ):
-            acted.add("tag_ungrounded")
-        outcome.setdefault(case, set()).update(acted or {"unchanged"})
-    assert outcome == {
-        "catalogue_class_contradiction": {"primary_demoted"},
-        "commodity_tag_without_commodity": {"tag_ungrounded"},
-        # The eight remaining families are name-resolution errors nothing here can see.
-        "commodity_of_a_company_story": {"unchanged"},
-        "commodity_tag_on_miner": {"unchanged"},
-        "model_invented_ticker": {"unchanged"},
-        "model_private_proxy": {"unchanged"},
-        "provider_tag_other_party": {"unchanged"},
-        "provider_tag_word_collision": {"unchanged"},
-        "provider_tag_wrong_issuer": {"unchanged"},
-    }
-
-
-def _decide_row(row: dict[str, Any], assets: list[dict[str, Any]]) -> tuple[str, str | None]:
-    """One recorded card through the production decision, with the assets this test supplies."""
-
-    judgment = scored_judgment(
-        TriageVerdict(
-            novelty=row["novelty"],
-            restates=-1,
-            assets=assets,
-            direction=row["direction"],
-            scope=row["scope"],
-            fact_kind=proxy_fact_kind(row),
-            evidence_ref="c1",
-            confidence=0.8,
-            headline_zh=row["headline_zh"][:60],
-            why_zh="",
-        ),
-        taxonomy=news_taxonomy(
-            event_family=row["event_family"],
-            change_state=row["change_state"],
-            assertion_status=row["assertion_status"],
-        ),
-        source_authority=row["source_authority"],
-    )
-    facts = GateFacts(
-        grounded_assets=tuple(asset["symbol"] for asset in assets),
-        watchlist_symbols=frozenset(),
-        admission="listing_deterministic" if row["v14_override_rule"] == "listing_deterministic" else "candidate",
-        independent_text_count=row["independent_text_count"],
-        title=row["title"],
-    )
-    told = row["told_same_key_4h"]
-    status = StorylineStatus(
-        key=row["storyline_key"],
-        told_directions=("neutral",) * told,
-        told_assets=(frozenset(),) * told,
-        told_keys=(row["storyline_key"],) * told,
-        told_at_ms=tuple(NOW - (index + 1) * 60_000 for index in range(told)),
-    )
-    result = decide(judgment, facts, status, now_ms=NOW)
-    return result.final, result.override_rule
-
-
-def test_a_demoted_primary_reaches_the_reader_as_a_dropped_card(rows: list[dict[str, Any]]) -> None:
-    """What the reader actually sees: the two cards stop being delivered, under the existing rule.
-
-    Nothing new decides this. A `single_name` fact with no primary instrument names nothing the reader
-    can act on, which is `single_name_without_instrument` (#504 PR-A); the demotion only stops that
-    question being answered with an instrument the catalogue says is something else.
-    """
-
-    policy = {
-        json.loads(line)["event_id"]: json.loads(line)
-        for line in POLICY_FIXTURE.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    }
-    outcomes = []
-    for row in rows:
-        demoted = contradicted_primary_symbols(row["assets"], row["catalog_candidates"])
-        if not demoted:
-            continue
-        source = policy[row["event_id"]]
-        after = [
-            {**asset, "role": "mentioned"} if asset["symbol"] in demoted and asset["role"] == "primary" else asset
-            for asset in source["assets"]
-        ]
-        outcomes.append((_decide_row(source, source["assets"]), _decide_row(source, after)))
-    assert outcomes == [
-        (("push", "fact_kind_state_change"), ("drop", "single_name_without_instrument")),
-        (("push", "fact_kind_state_change"), ("drop", "single_name_without_instrument")),
-    ]
 
 
 def test_the_timeline_publishes_the_reading_beside_the_assets() -> None:

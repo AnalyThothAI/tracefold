@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 
@@ -12,36 +12,10 @@ from .market_review.instruments import INSTRUMENT_CLASSES, InstrumentClass
 
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v6"
-# v7 (#675 PR-3): the Gate's grounding moved -- a commodity symbol needs commodity context, and a
-# contradicted primary is taken off the verdict after the model answers -- so a frame admitted today
-# and the same frame admitted last week were admitted under different rules. The version is bumped
-# here because `models.py` owns it; the behaviour it names is #677's.
-GATE_POLICY_VERSION = "news_gate_v7"
-# v10 (#160) removes queue/provider hints from editorial authority and chooses
-# reader actions from the typed trade-relevance contract plus objective guards.
-# v14 (#651 §5.3) moves the input of the uncorroborated-escalate rule: source authority is read from
-# `editorial.source_authority`, the code fact computed from the evidence, instead of from the taxonomy
-# label the model may have failed to produce. The rule itself is unchanged, and so is every action it
-# takes -- but a judgment whose taxonomy call failed now reaches it with the authority intact, which
-# under v13 it could not have done at all.
-# v15 (#675 §3) gives `decide()` the facts the code already owned and was not consuming. Three decision
-# rows run after the realtime branch resolves to push and can only downgrade it to `drop`: a price report
-# with no verifiable basis in its own text, an uncorroborated conflict claim, and one more item on a
-# conflict storyline the reader was already reading. They read the taxonomy axes, `source_authority`, the
-# count of independent member texts and the told ledger -- every one of them a stored fact on the day the
-# two #675 cards shipped -- and they leave the escalate, listing and watchlist paths byte-identical to v14.
-# v16 (#675 §1) finishes that move. `decide()` is now the whole decision table: it reads `fact_kind`, the
-# four taxonomy axes, `source_authority`, the count of independent member texts, the told ledger and the
-# verdict's own scope, and names the row that produced the action. The model's reader-value opinion is
-# gone with the fields that carried it, so the `trade_relevance_*` and `reader_value_*` rule names are
-# gone too; historical rows keep them and `outcome.py` still renders them.
-# v17 deletes the #504 D2 per-storyline budget (owner decision 2026-09-23, reversing #675 §6): an ordinary
-# push is no longer withheld as `storyline:<key>:budget` because the reader already received two cards on
-# its storyline key inside an hour, and `news.policy` loses `storyline_budget_window_s` and
-# `storyline_budget_max`. Every other row, guard and duplicate check is byte-identical to v16; the v12-v16
-# `:budget` rows stay in the ledger as history and `outcome.py` still renders them.
-TRIAGE_POLICY_VERSION = "news_triage_policy_v17"
-DELIVERY_CARD_VERSION = "news_delivery_card_v11"
+# v12 (#706): a News card is one EventUpdate intent's frozen Chinese copy -- its headline and one line per
+# selected claim -- plus code-owned facts: the selected claims' primary assets and quotes, the key marker
+# and the change label (新增/更新/更正). No model direction, novelty or fact kind, and no progression review.
+DELIVERY_CARD_VERSION = "news_delivery_card_v12"
 
 # What the editorial Gate can decide about one Event. Three market admissions left this vocabulary
 # with the Events they described (#553): a market observation is stored with its typed fact at
@@ -67,11 +41,9 @@ ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset({"candidate", "listing_de
 # 30.6 h old exchange notice). Code-owned, not policy: it is a relevance floor, not a tuning knob.
 OUTBOX_MAX_AGE_MS: Final[int] = 30 * 60_000
 
-# #675 §1: what kind of new thing one Event's text states. It is an observation of the words on the page,
-# not a reading of the reader: `TradeRelevanceV1` asked the model seven questions about who would care and
-# how much, and seven days of 8950 judgments answered all of them with one bit (magnitude 2 <-> reader_value
-# realtime on 3002 of 3759). These ten are separable from the text alone, and what the reader is woken for
-# is decided from them by `triage_rules.decide()`, where a threshold can be replayed and versioned.
+# #675 §1: the closed `fact_kind` vocabulary legacy `news_judgment_v3` verdicts carry. Nothing new writes
+# it since #706 (an EventUpdate states claims, not one kind per Event); it stays so the durable verdict
+# ledger, the Console and the ReviewDesk can still read the rows that do.
 #
 # The order is canonical: the six that state a new fact about the world first, the four that restate,
 # schedule or sell one after them. Nothing here is ranked by importance, and no row reads the order.
@@ -99,28 +71,9 @@ FactKind = Literal[
     "schedule",
     "promotion",
 ]
-# The six kinds that state a new fact about the world, and the four that do not. A `statement` is somebody
-# saying something, a `recap` is the same fact told again, a `schedule` is a calendar entry, and a
-# `promotion` is somebody selling something; none of them is a reason to interrupt a reader. This is the
-# whole of the push/drop split, and the 2026-09-22 audit is why it is drawn here: 64 of the 232 cards a
-# reviewer wanted demoted were marketing and small-project product announcements, 39 were price
-# broadcasts, 22 were pure opinion and 7 were schedules -- four kinds, not four thresholds.
-#
-# It lives beside `FACT_KINDS` rather than in `triage_rules` because two planes read it and neither may
-# import the other: `triage_rules.decide()` acts on it, and `review.desk` flags a delivered card whose
-# kind is in the drop half. A second copy in the review plane would be a second policy, and the two would
-# drift the first time a kind moved sides.
-PUSH_FACT_KINDS: Final[frozenset[str]] = frozenset(
-    {"state_change", "new_quantity", "level_crossed", "period_record", "quantified_flow", "official_measure"}
-)
+# The four kinds the legacy decision table never pushed on their own; the ReviewDesk flags a legacy card
+# of one of them that still reached the reader.
 DROP_FACT_KINDS: Final[frozenset[str]] = frozenset({"statement", "recap", "schedule", "promotion"})
-# A new state of the world, however it arrived: a thing that happened, or a measure an authority took.
-# `official_measure` is the half of the retired `development_delta=state_change` the audit named as the
-# conflict rows' only real cost -- "Trump presses Zelensky to stop striking refineries" and "Russia to
-# extend the diesel export ban" were withheld as one more statement on a running storyline because
-# `change_state=announced` cannot tell a measure from a spokesman's opinion. `fact_kind` can, so both
-# kinds are exempt from the conflict rows and both can escalate.
-MATERIAL_FACT_KINDS: Final[frozenset[str]] = frozenset({"state_change", "official_measure"})
 AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
 Decision = Literal["push", "escalate", "drop", "throttled"]
@@ -153,8 +106,6 @@ class ReaderTradeTarget:
 
 ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
 ReaderMarketDataState = Literal["pending", "ready"]
-ReaderMarketScope = Literal["macro", "sector", "single_name"]
-ProgressionReviewState = Literal["pending", "confirmed", "rejected", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,15 +126,7 @@ class ReaderDeliveryPresentation:
     trade_targets: tuple[ReaderTradeTarget, ...] = ()
     market_movements: tuple[ReaderMarketMovement, ...] = ()
     news_at_ms: int | None = None
-    observed_at_ms: int | None = None
     market_data_state: ReaderMarketDataState = "ready"
-    market_scope: ReaderMarketScope | None = None
-    novelty: Novelty | None = None
-    progression_from_headline: str | None = None
-    progression_review_state: ProgressionReviewState | None = None
-    progression_review_reason: str | None = None
-    progression_review_parent_age_minutes: int | None = None
-    progression_review_parent_message_id: int | None = None
 
 
 class ExactNewsModel(BaseModel):
@@ -322,13 +265,6 @@ def same_market_asset(left: MarketAsset, right: MarketAsset) -> bool:
     return "unknown" in {left.market_type, right.market_type} or left.market_type == right.market_type
 
 
-def market_assets_overlap(left: Iterable[MarketAsset], right: Iterable[MarketAsset]) -> bool:
-    """True when any asset on the left names the same instrument as any asset on the right."""
-
-    other = tuple(right)
-    return any(same_market_asset(one, two) for one in left for two in other)
-
-
 class TriageAsset(BaseModel):
     """One instrument a judgment is about, in the one market vocabulary News compares assets under.
 
@@ -422,25 +358,9 @@ class TriageVerdict(BaseModel):
 
 
 def base_symbol(symbol: str) -> str:
-    """The canonical instrument identity used wherever two symbol sets are compared.
-
-    One definition, shared by ``decide()`` and the told-context selector, so retrieval and policy can never
-    disagree about whether two cards are about the same instrument.
-    """
+    """The canonical instrument identity used wherever two symbol sets are compared."""
 
     return str(symbol or "").upper().replace("XYZ-", "")
-
-
-def json_ready(value: Any) -> Any:
-    """Return a JSON-serializable copy of pydantic/dataclass-free structures."""
-
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {str(k): json_ready(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [json_ready(v) for v in value]
-    return value
 
 
 __all__ = [
@@ -449,13 +369,9 @@ __all__ = [
     "DROP_FACT_KINDS",
     "EVENT_IDENTITY_VERSION",
     "FACT_KINDS",
-    "GATE_POLICY_VERSION",
     "MARKET_TYPES",
-    "MATERIAL_FACT_KINDS",
     "NEWS_BUS_SCHEMA_VERSION",
     "OUTBOX_MAX_AGE_MS",
-    "PUSH_FACT_KINDS",
-    "TRIAGE_POLICY_VERSION",
     "Admission",
     "AssetClass",
     "Decision",
@@ -475,8 +391,6 @@ __all__ = [
     "TriageAsset",
     "TriageVerdict",
     "base_symbol",
-    "json_ready",
-    "market_assets_overlap",
     "market_type_of",
     "same_market_asset",
 ]

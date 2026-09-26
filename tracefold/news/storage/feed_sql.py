@@ -9,7 +9,13 @@ from ..models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
 from ..source_contracts import EVENT_KINDS
 
 ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
-# Feed task tabs mirror OUTCOME_GROUP in outcome.py over the feed's joined rows. Keeping these predicates
+# The legacy Triage verdict contracts. `news_verdicts` receives no writes since #706; every read of it is a
+# read of history under these two names, and the EventUpdate path never consults it.
+LEGACY_VERDICT_CONTRACTS_SQL: Final = "('news_judgment_v2', 'news_judgment_v3')"
+# A card a reader could have received: the legacy first card and every EventUpdate intent (#706). The
+# legacy `followup` kind was never a feed or status fact and stays out.
+READER_DELIVERY_KINDS_SQL: Final = "('first', 'update')"
+# Feed task tabs mirror `outcome.event_outcome` over the feed's joined rows. Keeping these predicates
 # beside both statement builders makes the page and count query share one definition.
 _EVENT_HANDOFF_LIVE_SQL: Final = (
     f"e.published_at_ms IS NOT NULL OR e.opened_at_ms >= clock.handoff_now_ms - {OUTBOX_MAX_AGE_MS}"
@@ -17,16 +23,24 @@ _EVENT_HANDOFF_LIVE_SQL: Final = (
 _VERDICT_HANDOFF_LIVE_SQL: Final = (
     f"t.published_at_ms IS NOT NULL OR t.created_at_ms >= clock.handoff_now_ms - {OUTBOX_MAX_AGE_MS}"
 )
+# The EventUpdate path (#706), after the ledger and the Gate: semantic work still owed a revision, or an
+# adopted head whose notification is undecided, deferred or decided to notify.
+_UPDATE_PENDING_SQL: Final = (
+    "(sw.wanted_revision > COALESCE(sw.done_revision, 0) AND sw.last_outcome IS DISTINCT FROM 'failed')"
+    " OR (h.event_id IS NOT NULL AND (nw.event_id IS NULL OR nw.state = 'pending'"
+    " OR COALESCE(nw.plan ->> 'action', '') IN ('notify', 'unresolved')))"
+)
 _PENDING_CORE_SQL: Final = (
-    "COALESCE(d.state = 'sending', false) OR ("
-    "d.state IS NULL"
+    "COALESCE(d.state = 'sending', false)"
+    " OR COALESCE(d.state IN ('terminal', 'ambiguous') AND q.state = 'pending', false)"
+    " OR (d.state IS NULL"
     " AND q.state IS DISTINCT FROM 'dead'"
     f" AND e.admission IN ({ADMITTED_SQL})"
-    " AND ((t.final_decision IS NULL AND ("
-    f"{_EVENT_HANDOFF_LIVE_SQL}"
-    ")) OR (COALESCE(t.final_decision IN ('push', 'escalate'), false) AND ("
-    f"{_VERDICT_HANDOFF_LIVE_SQL}"
-    "))))"
+    " AND COALESCE(CASE"
+    f" WHEN sw.event_id IS NOT NULL THEN ({_UPDATE_PENDING_SQL})"
+    " WHEN t.final_decision IS NOT NULL"
+    f" THEN t.final_decision IN ('push', 'escalate') AND ({_VERDICT_HANDOFF_LIVE_SQL})"
+    f" ELSE ({_EVENT_HANDOFF_LIVE_SQL}) END, false))"
 )
 OUTCOME_GROUP_SQL: Final = {
     "pushed": "d.state = 'sent'",
@@ -39,13 +53,25 @@ OUTCOME_GROUP_SQL: Final = {
 # PostgreSQL as immutable evidence, and this predicate is what stops the live feed reading them back.
 EVENT_KIND_SQL: Final = ", ".join(f"'{value}'" for value in EVENT_KINDS)
 EDITORIAL_EVENT_SQL: Final = f"e.event_kind IN ({EVENT_KIND_SQL})"
-# Where the code-owned source authority is in one stored editorial document, asked of rows the query has
-# not fetched yet. `news_editorial_v3` writes it beside the relevance; `news_editorial_v2` nested it in the
-# taxonomy object, and those rows are audit truth that is never rewritten (#651 §5.3). This is the SQL half
-# of `storage.decisions.editorial_read_shape` and states the same conversion: a reader filtering by source
-# authority has to get the same answer for a card from before the cut as for one from after it.
+# Where the code-owned source authority is in one stored legacy editorial document, asked of rows the
+# query has not fetched yet. `news_editorial_v3` writes it beside the relevance; `news_editorial_v2` nested
+# it in the taxonomy object, and those rows are audit truth that is never rewritten (#651 §5.3). This is
+# the SQL half of `storage.decisions.editorial_read_shape`.
 EDITORIAL_SOURCE_AUTHORITY_SQL: Final = (
     "COALESCE(t.editorial ->> 'source_authority', t.editorial #>> '{taxonomy,source_authority}')"
+)
+# #706: an Event with an adopted head is filtered by the authority of the sources its update actually
+# cites, any of them; an Event without one by its legacy editorial authority. Two bound arrays.
+SOURCE_AUTHORITY_PREDICATE: Final = (
+    "(CASE WHEN u.event_id IS NOT NULL THEN EXISTS ("  # noqa: S608
+    "SELECT 1 FROM jsonb_array_elements(u.document -> 'evidence') cited"
+    " WHERE cited #>> '{source,source_authority}' = ANY(%s))"
+    f" ELSE COALESCE({EDITORIAL_SOURCE_AUTHORITY_SQL} = ANY(%s), false) END)"
+)
+# IPTC topics: the adopted head's navigation topics, else the legacy taxonomy's subject codes. Both are
+# labelled against the same pinned codebook.
+SUBJECT_CODE_PREDICATE: Final = (
+    "COALESCE(u.document -> 'topics', t.editorial #> '{taxonomy,subject_codes}', '[]'::jsonb) ?| %s"
 )
 ASSET_SEARCH_PREDICATE: Final = (
     "EXISTS (SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = ANY(%s))"
@@ -74,16 +100,16 @@ CURRENT_EVENT_CARD_SQL: Final = """
 # -- so it has to resolve to "not an Event" rather than to a row the response envelope cannot
 # validate. The observation that Event was built from is readable at `/api/news/market`.
 EDITORIAL_EVENT_CARD_SQL: Final = f"{CURRENT_EVENT_CARD_SQL.rstrip()}\n       AND {EDITORIAL_EVENT_SQL}\n"
-EVENT_VERDICTS_SQL: Final = """
+EVENT_VERDICTS_SQL: Final = f"""
     SELECT event_id, stage, policy_version, rule_baseline_decision, final_decision,
            override_rule, throttled_by, verdict, model, degraded, error_code, trace,
            published_at_ms, created_at_ms, evidence_version, evidence_sha256, focus_fact_id,
            program_version, program_sha256, editorial, scored_judgment_sha256,
            judgment_contract_version, judgment_origin
       FROM news_verdicts
-     WHERE event_id = %s AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
+     WHERE event_id = %s AND judgment_contract_version IN {LEGACY_VERDICT_CONTRACTS_SQL}
      ORDER BY created_at_ms
-"""
+"""  # noqa: S608
 EVENT_MEMBERS_SQL: Final = """
             SELECT m.item_id, m.joined_at_ms, m.match_kind, m.jaccard_estimate, i.title, i.canonical_url,
                    i.reporting_origin, i.published_at_ms, i.provenance, i.description, m.fact_id, m.fact_text
@@ -108,15 +134,18 @@ STATUS_LEARNING_RETENTION_SQL: Final = """
 # a `count(news_verdicts)` sketch while the route ran the correlated latest-Evidence subquery, the
 # percentile aggregates and the funnel beside it, and a passing audit said nothing about either (#570 A2).
 # One bounded Event cohort, projected into the two editorial source-contract funnels.
-STATUS_SOURCE_CONTRACTS_SQL: Final = """
+STATUS_SOURCE_CONTRACTS_SQL: Final = f"""
     SELECT e.event_kind, count(*) AS received,
            count(*) FILTER (WHERE COALESCE(v.has_verdict, false)) AS verdict
       FROM news_events e
       LEFT JOIN LATERAL (
-        SELECT bool_or(true) AS has_verdict
-         FROM news_verdicts
-         WHERE event_id = e.event_id AND stage = 'triage'
-           AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
+        -- A legacy Triage verdict or, since #706, an adopted EventUpdate head.
+        SELECT EXISTS (
+                 SELECT 1 FROM news_verdicts
+                  WHERE event_id = e.event_id AND stage = 'triage'
+                    AND judgment_contract_version IN {LEGACY_VERDICT_CONTRACTS_SQL}
+               ) OR EXISTS (SELECT 1 FROM news_event_update_heads head WHERE head.event_id = e.event_id)
+               AS has_verdict
       ) v ON true
      WHERE e.opened_at_ms >= %s
        AND EXISTS (
@@ -130,9 +159,9 @@ STATUS_SOURCE_CONTRACTS_SQL: Final = """
             AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
        )
      GROUP BY e.event_kind
-"""
+"""  # noqa: S608
 
-STATUS_PIPELINE_SQL: Final = """
+STATUS_PIPELINE_SQL: Final = f"""
     WITH event_counts AS (
       SELECT
         count(*) FILTER (WHERE opened_at_ms >= %s) AS events_1h,
@@ -176,7 +205,7 @@ STATUS_PIPELINE_SQL: Final = """
         count(*) FILTER (WHERE reasked_after_told_change) AS reasked_24h
         FROM news_verdicts
        WHERE stage = 'triage' AND created_at_ms >= %s
-         AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
+         AND judgment_contract_version IN {LEGACY_VERDICT_CONTRACTS_SQL}
     )
     SELECT event_counts.events_1h, event_counts.events_24h, event_counts.candidates_24h,
            verdict_counts.triage_24h, verdict_counts.model_triage_24h,
@@ -185,16 +214,16 @@ STATUS_PIPELINE_SQL: Final = """
            verdict_counts.triage_p95_ms, verdict_counts.queue_lag_p95_ms,
            verdict_counts.reasked_24h
       FROM event_counts CROSS JOIN verdict_counts
-"""
+"""  # noqa: S608
 
-STATUS_DELIVERY_SQL: Final = """
+STATUS_DELIVERY_SQL: Final = f"""
     WITH terminal AS NOT MATERIALIZED (
       SELECT event_id, error_code, settled_at_ms FROM news_deliveries WHERE state = 'terminal'
       UNION ALL
       SELECT q.event_id, q.error_code, q.settled_at_ms FROM news_delivery_queue q
        WHERE q.state = 'dead'
          AND NOT EXISTS (
-           SELECT 1 FROM news_deliveries d WHERE d.event_id = q.event_id AND d.kind = q.kind
+           SELECT 1 FROM news_deliveries d WHERE d.intent_id = q.intent_id
          )
     )
     SELECT
@@ -214,13 +243,27 @@ STATUS_DELIVERY_SQL: Final = """
          WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
          FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
          JOIN news_items i ON i.item_id = e.leader_item_id
-        WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p50_ms,
+        WHERE d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
+          -- An Event's first card a reader received, whether a legacy first card or its first update.
+          AND NOT EXISTS (
+            SELECT 1 FROM news_deliveries earlier
+             WHERE earlier.event_id = d.event_id AND earlier.kind IN {READER_DELIVERY_KINDS_SQL}
+               AND earlier.state = 'sent'
+               AND (earlier.settled_at_ms, earlier.intent_id) < (d.settled_at_ms, d.intent_id)
+          )) AS e2e_p50_ms,
       (SELECT percentile_cont(0.95)
          WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
          FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
          JOIN news_items i ON i.item_id = e.leader_item_id
-        WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p95_ms
-"""
+        WHERE d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
+          -- An Event's first card a reader received, whether a legacy first card or its first update.
+          AND NOT EXISTS (
+            SELECT 1 FROM news_deliveries earlier
+             WHERE earlier.event_id = d.event_id AND earlier.kind IN {READER_DELIVERY_KINDS_SQL}
+               AND earlier.state = 'sent'
+               AND (earlier.settled_at_ms, earlier.intent_id) < (d.settled_at_ms, d.intent_id)
+          )) AS e2e_p95_ms
+"""  # noqa: S608
 
 # The five funnel statements. `_funnel_24h` folds their rows into the named reasons a reader sees.
 STATUS_FUNNEL_SUPPRESSED_SQL: Final = f"""
@@ -240,24 +283,19 @@ STATUS_FUNNEL_SUPPRESSED_SQL: Final = f"""
 """  # noqa: S608
 
 # One pass over the last 24 h of Triage verdicts; the four named maps are folded from it in Python.
-STATUS_FUNNEL_VERDICTS_SQL: Final = """
+STATUS_FUNNEL_VERDICTS_SQL: Final = f"""
     SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
            COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
            count(*) AS n
      FROM news_verdicts
      WHERE stage = 'triage' AND created_at_ms >= %s
-       AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
+       AND judgment_contract_version IN {LEGACY_VERDICT_CONTRACTS_SQL}
      GROUP BY 1, 2, 3, 4, 5
-"""
+"""  # noqa: S608
 
+# No epoch clamp since #706: the Agent epoch was release identity, and the release plane and its epoch
+# writer are gone, so a clamp would pin this counter to the last legacy epoch forever.
 STATUS_FUNNEL_REVIEWS_SQL: Final = """
-    WITH current_epoch AS (
-      SELECT epoch.starts_at_ms
-        FROM news_review_active_agent_v1 active
-        JOIN news_learning_epochs epoch ON epoch.bundle_sha = active.stable_sha
-       ORDER BY active.created_at_ms DESC
-       LIMIT 1
-    )
     SELECT count(*) FILTER (WHERE j.should_push IN ('must_push', 'should_push')) AS n,
            count(*) FILTER (
              WHERE j.subject_kind = 'external_miss'
@@ -265,17 +303,14 @@ STATUS_FUNNEL_REVIEWS_SQL: Final = """
            ) AS external
       FROM news_review_records_v1 acceptance
       JOIN news_review_records_v1 j ON j.review_id = acceptance.accepts_review_id
-      JOIN current_epoch ON true
      WHERE acceptance.review_kind = 'acceptance'
        AND acceptance.release_eligible AND j.release_eligible
-       AND acceptance.created_at_ms >= greatest(%s, current_epoch.starts_at_ms)
-       AND j.created_at_ms >= current_epoch.starts_at_ms
+       AND acceptance.created_at_ms >= %s
 """
 
 # #675 §4. The two product ratios of the daily audit loop, from the same accepted judgments the corpus is
-# made of. Deliberately not the statement above: that one is release evidence and is clamped to the active
-# epoch and to release-eligible rows, and clamping these would reset the product reading on every deploy —
-# "did the reader want what we sent" is a question about the last 24 h of reviews, not about one bundle.
+# made of. Deliberately not the statement above: that one counts only release-eligible rows, while "did the
+# reader want what we sent" is a question about every accepted judgment of the last 24 h.
 # The denominator is accepted judgments, not cards, and `uncertain` is in it without being in the numerator.
 # `selection` is projected on the judgment row only, which is where the sampler recorded the stratum.
 STATUS_FUNNEL_REVIEW_RATIOS_SQL: Final = """
@@ -296,27 +331,28 @@ STATUS_FUNNEL_REVIEW_RATIOS_SQL: Final = """
        AND acceptance.created_at_ms >= %s
 """
 
+# An Event the model reached: a legacy Triage verdict, or an adopted EventUpdate head (#706).
+_JUDGED_SQL: Final = f"""
+               EXISTS (
+                 SELECT 1 FROM news_verdicts v
+                  WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
+                    AND v.judgment_contract_version IN {LEGACY_VERDICT_CONTRACTS_SQL}
+               )
+               OR EXISTS (
+                 SELECT 1 FROM news_event_update_heads head WHERE head.event_id = current_event.event_id
+               )"""  # noqa: S608
 STATUS_FUNNEL_TOTALS_SQL: Final = f"""
     SELECT count(*) AS events,
            count(*) FILTER (WHERE admission IN ({ADMITTED_SQL})) AS admitted,
            count(*) FILTER (
-             WHERE admission IN ({ADMITTED_SQL})
-               AND EXISTS (
-                 SELECT 1 FROM news_verdicts v
-                  WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
-                    AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
-               )
+             WHERE admission IN ({ADMITTED_SQL}) AND ({_JUDGED_SQL})
            ) AS triaged,
            count(*) FILTER (
-             WHERE admission IN ({ADMITTED_SQL})
-               AND EXISTS (
-                 SELECT 1 FROM news_verdicts v
-                  WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
-                    AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
-               )
+             WHERE admission IN ({ADMITTED_SQL}) AND ({_JUDGED_SQL})
                AND EXISTS (
                  SELECT 1 FROM news_deliveries d
-                  WHERE d.event_id = current_event.event_id AND d.kind = 'first' AND d.state = 'sent'
+                  WHERE d.event_id = current_event.event_id AND d.kind IN {READER_DELIVERY_KINDS_SQL}
+                    AND d.state = 'sent'
                )
            ) AS delivered
       FROM news_events current_event WHERE current_event.opened_at_ms >= %s
@@ -330,6 +366,51 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
             AND evidence.provenance = 'observed'
             AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
        )
+"""  # noqa: S608
+
+
+# The joins the page and the count query share, after the Event, its leader Item and its current Evidence:
+# the legacy Triage verdict (history only), the EventUpdate plane (#706) and the reader deliveries. Every
+# EventUpdate join is on a primary key. `d` is the Event's representative ledger row -- its latest sent
+# card, else its latest attempt -- over the `(event_id, kind)` index; `q` is its latest intent still owed
+# with no ledger row, from one pass over the in-flight queue.
+_FEED_JOINS_SQL: Final = f"""
+          JOIN news_items i ON i.item_id = e.leader_item_id
+          JOIN LATERAL (
+            SELECT s.provenance, s.snapshot
+              FROM news_event_evidence_snapshots s
+             WHERE s.event_id = e.event_id
+             ORDER BY s.evidence_version DESC LIMIT 1
+          ) current_evidence
+            ON current_evidence.provenance = 'observed'
+           AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+          LEFT JOIN LATERAL (
+            SELECT v.final_decision, v.override_rule, v.throttled_by, v.degraded, v.error_code,
+                   v.created_at_ms, v.published_at_ms, v.verdict, v.editorial,
+                   v.verdict ->> 'direction' AS direction
+              FROM news_verdicts v
+             WHERE v.event_id = e.event_id AND v.stage = 'triage'
+               AND v.judgment_contract_version IN {LEGACY_VERDICT_CONTRACTS_SQL}
+             ORDER BY v.created_at_ms DESC LIMIT 1
+          ) t ON true
+          LEFT JOIN news_semantic_work sw ON sw.event_id = e.event_id
+          LEFT JOIN news_event_update_heads h ON h.event_id = e.event_id
+          LEFT JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+          LEFT JOIN news_notification_work nw ON nw.event_id = e.event_id AND nw.channel = 'news'
+          LEFT JOIN LATERAL (
+            SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key
+              FROM news_deliveries dl
+             WHERE dl.event_id = e.event_id AND dl.kind IN {READER_DELIVERY_KINDS_SQL}
+             ORDER BY (dl.state = 'sent') DESC, dl.created_at_ms DESC, dl.intent_id DESC
+             LIMIT 1
+          ) d ON true
+          LEFT JOIN (
+            SELECT DISTINCT ON (owed.event_id) owed.event_id, owed.state, owed.error_code
+              FROM news_delivery_queue owed
+             WHERE owed.kind IN {READER_DELIVERY_KINDS_SQL}
+               AND NOT EXISTS (SELECT 1 FROM news_deliveries settled WHERE settled.intent_id = owed.intent_id)
+             ORDER BY owed.event_id, owed.enqueued_at_ms DESC, owed.intent_id DESC
+          ) q ON q.event_id = e.event_id
 """  # noqa: S608
 
 
@@ -350,32 +431,37 @@ def feed_page_sql(where_sql: str) -> str:
                t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
                t.error_code AS triage_error_code, t.created_at_ms AS verdict_created_at_ms,
                t.published_at_ms AS verdict_published_at_ms,
-               t.verdict ->> 'direction' AS direction,
-               t.verdict ->> 'headline_zh' AS headline_zh, t.verdict ->> 'scope' AS scope,
                t.verdict AS triage_verdict, t.editorial AS model_editorial,
-               d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code,
+               sw.event_id IS NOT NULL AS has_semantic_work, sw.wanted_revision AS semantic_wanted_revision,
+               sw.done_revision AS semantic_done_revision, sw.last_outcome AS semantic_last_outcome,
+               sw.last_error_code AS semantic_last_error_code,
+               h.content_revision AS update_content_revision, h.adopted_at_ms AS update_adopted_at_ms,
+               jsonb_array_length(u.document -> 'claims') AS update_claim_n,
+               -- Twin of `update_view.headline_claim_statement`: what a later revision changed, else the lead claim.
+               COALESCE(
+                 (SELECT claim ->> 'statement'
+                    FROM jsonb_array_elements(u.document -> 'changes') WITH ORDINALITY AS changed(change, position)
+                    JOIN jsonb_array_elements(u.document -> 'claims') AS listed(claim)
+                      ON listed.claim ->> 'ref' = changed.change ->> 'current_ref'
+                   WHERE u.document ->> 'previous_content_revision' IS NOT NULL
+                     AND changed.change ->> 'kind' IN ('new_fact', 'parameter_change', 'phase_change', 'scope_change',
+                                                      'correction', 'conflict', 'possible_new')
+                     AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                   ORDER BY changed.position LIMIT 1),
+                 (SELECT claim ->> 'statement'
+                    FROM jsonb_array_elements(u.document -> 'claims') WITH ORDINALITY AS listed(claim, position)
+                   WHERE NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                   ORDER BY position LIMIT 1)
+               ) AS update_claim_headline,
+               nw.state AS notification_state, nw.plan ->> 'action' AS notification_action,
+               nw.plan -> 'claim_decisions' AS notification_claim_decisions,
+               d.kind AS delivery_kind, d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms,
+               d.error_code AS delivery_error_code, d.plan_key AS delivery_plan_key,
+               CASE WHEN d.kind = 'update' AND d.state = 'sent'
+                    THEN NULLIF(btrim(d.card ->> 'headline_zh'), '') END AS sent_update_headline,
                q.state AS delivery_queue_state, q.error_code AS delivery_queue_error_code
           FROM clock CROSS JOIN news_events e
-          JOIN news_items i ON i.item_id = e.leader_item_id
-          JOIN LATERAL (
-            SELECT s.provenance, s.snapshot
-              FROM news_event_evidence_snapshots s
-             WHERE s.event_id = e.event_id
-             ORDER BY s.evidence_version DESC LIMIT 1
-          ) current_evidence
-            ON current_evidence.provenance = 'observed'
-           AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-          LEFT JOIN LATERAL (
-            SELECT v.final_decision, v.override_rule, v.throttled_by, v.degraded, v.error_code,
-                   v.created_at_ms, v.published_at_ms, v.verdict, v.editorial, v.trace,
-                   v.verdict ->> 'direction' AS direction
-              FROM news_verdicts v
-             WHERE v.event_id = e.event_id AND v.stage = 'triage'
-               AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
-             ORDER BY v.created_at_ms DESC LIMIT 1
-          ) t ON true
-          LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
-          LEFT JOIN news_delivery_queue q ON q.event_id = e.event_id AND q.kind = 'first'
+          {_FEED_JOINS_SQL}
          WHERE {where_sql}
          ORDER BY e.opened_at_ms DESC, e.event_id DESC
          LIMIT %s
@@ -392,25 +478,7 @@ def feed_counts_sql(where_sql: str) -> str:
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["held"]}) AS held,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pending"]}) AS pending
           FROM clock CROSS JOIN news_events e
-          JOIN news_items i ON i.item_id = e.leader_item_id
-          JOIN LATERAL (
-            SELECT s.provenance, s.snapshot
-              FROM news_event_evidence_snapshots s
-             WHERE s.event_id = e.event_id
-             ORDER BY s.evidence_version DESC LIMIT 1
-          ) current_evidence
-            ON current_evidence.provenance = 'observed'
-           AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-          LEFT JOIN LATERAL (
-            SELECT v.final_decision, v.editorial, v.created_at_ms, v.published_at_ms,
-                   v.verdict ->> 'direction' AS direction
-              FROM news_verdicts v
-             WHERE v.event_id = e.event_id AND v.stage = 'triage'
-               AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
-             ORDER BY v.created_at_ms DESC LIMIT 1
-          ) t ON true
-          LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
-          LEFT JOIN news_delivery_queue q ON q.event_id = e.event_id AND q.kind = 'first'
+          {_FEED_JOINS_SQL}
          WHERE {where_sql}
     """  # noqa: S608
 
@@ -425,9 +493,13 @@ __all__ = [
     "EVENT_KIND_SQL",
     "EVENT_MEMBERS_SQL",
     "EVENT_VERDICTS_SQL",
+    "LEGACY_VERDICT_CONTRACTS_SQL",
     "OUTCOME_GROUP_SQL",
+    "READER_DELIVERY_KINDS_SQL",
+    "SOURCE_AUTHORITY_PREDICATE",
     "STATUS_INGEST_SQL",
     "STATUS_LEARNING_RETENTION_SQL",
+    "SUBJECT_CODE_PREDICATE",
     "TEXT_SEARCH_PREDICATE",
     "feed_counts_sql",
     "feed_page_sql",

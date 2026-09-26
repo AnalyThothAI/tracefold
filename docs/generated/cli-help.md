@@ -17,7 +17,8 @@ positional arguments:
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
-    news                News V3 broker, ReviewDesk, and learning commands
+    news                News V3 broker, ReviewDesk, and judge calibration
+                        commands
     trading             inspect Trading facts and record bounded operator
                         intent
     ops                 maintenance commands
@@ -179,10 +180,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,bus-policy,instruments,review,learning,release,replay,wallets,why,dlq} ...
+                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,dlq} ...
 
 positional arguments:
-  {bus-check,bus-policy,instruments,review,learning,release,replay,wallets,why,dlq}
+  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,dlq}
     bus-check           declare the News topology and report queue state,
                         effective retry policy, and topology drift
     bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
@@ -190,10 +191,8 @@ positional arguments:
     instruments         instrument universe: snapshot the venues, or inspect
                         what is stored
     review              ReviewDesk queue, evidence, and append-only judgments
-    learning            freeze reviewed datasets and evaluate one-variable
-                        Agent candidates
-    release             register a Prompt candidate, gather release evidence,
-                        and control the canary
+    learning            measure the News card judge against its fixed
+                        calibration corpus
     replay              replay a JSON file of provider hits through
                         Deduper+Gate (no model, no broker)
     wallets             explain the smart-money alert flow: roster,
@@ -251,19 +250,13 @@ options:
 ## `news review`
 
 ```
-usage: tracefold news review [-h]
-                             {queue,evidence,submit,accept-drafts,audit-report,external-miss} ...
+usage: tracefold news review [-h] {queue,evidence,submit,external-miss} ...
 
 positional arguments:
-  {queue,evidence,submit,accept-drafts,audit-report,external-miss}
+  {queue,evidence,submit,external-miss}
     queue               open the deterministic operator review queue
     evidence            show the task-scoped evidence view
-    submit              append and accept one rubric or pairwise judgment
-    accept-drafts       submit reviewed model drafts through ReviewDesk under
-                        the named reviewer's identity
-    audit-report        compare a draft batch with the shipped decisions;
-                        prints disagreements, a one-in-ten agreement sample
-                        and two ratios
+    submit              append and accept one event rubric judgment
     external-miss       append an external miss and its rubric
 
 options:
@@ -274,10 +267,8 @@ options:
 ## `news review queue`
 
 ```
-usage: tracefold news review queue [-h]
-                                   [--view {queue,coverage,proposals,market}]
-                                   [--mode {event,pairwise}] [--cohort COHORT]
-                                   [--stratum STRATUM] [--proposal PROPOSAL]
+usage: tracefold news review queue [-h] [--view {queue,coverage,market}]
+                                   [--cohort COHORT] [--stratum STRATUM]
                                    [--task TASK] [--event EVENT]
                                    [--status {pending,accepted,all}]
                                    [--hours HOURS] [--limit LIMIT]
@@ -285,11 +276,9 @@ usage: tracefold news review queue [-h]
 
 options:
   -h, --help            show this help message and exit
-  --view {queue,coverage,proposals,market}
-  --mode {event,pairwise}
+  --view {queue,coverage,market}
   --cohort COHORT
   --stratum STRATUM
-  --proposal PROPOSAL
   --task TASK
   --event EVENT
   --status {pending,accepted,all}
@@ -312,7 +301,7 @@ options:
   -h, --help         show this help message and exit
   --version VERSION
   --source-only      show only the pinned TaskRef and source evidence,
-                     excluding Stable, drafts, and reviews
+                     excluding the agent answer and reviews
 
 ```
 
@@ -336,52 +325,6 @@ options:
 
 ```
 
-## `news review accept-drafts`
-
-```
-usage: tracefold news review accept-drafts [-h] --file FILE
-                                           [--min-confidence MIN_CONFIDENCE]
-                                           [--only ONLY] [--exclude EXCLUDE]
-                                           [--reviewer REVIEWER]
-                                           [--first-bad-owner FIRST_BAD_OWNER]
-                                           [--dry-run]
-
-options:
-  -h, --help            show this help message and exit
-  --file FILE           draft batch produced by `learning draft-reviews`
-  --min-confidence MIN_CONFIDENCE
-                        skip drafts the model was less sure of than this
-                        (0.0-1.0)
-  --only ONLY           required for writes: comma-separated event_id or
-                        task_id prefixes explicitly approved; an empty value
-                        is allowed only with --dry-run
-  --exclude EXCLUDE     comma-separated event_id or task_id prefixes to skip
-                        after you have read them
-  --reviewer REVIEWER   required for writes: actual accepting reviewer
-                        recorded on each row, including an identified AI
-                        adjudicator; an empty value is allowed only with
-                        --dry-run
-  --first-bad-owner FIRST_BAD_OWNER
-                        explicit owner written into every selected review, for
-                        example taxonomy; omitted keeps null
-  --dry-run             report exactly what would be submitted, and write
-                        nothing
-
-```
-
-## `news review audit-report`
-
-```
-usage: tracefold news review audit-report [-h] --file FILE [--json]
-
-options:
-  -h, --help   show this help message and exit
-  --file FILE  draft batch produced by `learning draft-reviews`
-  --json       omit the rendered table from the payload, leaving only the
-               machine report
-
-```
-
 ## `news review external-miss`
 
 ```
@@ -398,88 +341,15 @@ options:
 ## `news learning`
 
 ```
-usage: tracefold news learning [-h]
-                               {readiness,baseline,judge-calibration,draft-reviews,run,freeze} ...
+usage: tracefold news learning [-h] {judge-calibration} ...
 
 positional arguments:
-  {readiness,baseline,judge-calibration,draft-reviews,run,freeze}
-    readiness           explain the Objective Plan for a frozen development
-                        dataset; 0 model calls, 0 writes
-    baseline            score a moving-window Program baseline (no sandbox,
-                        tariff, or writes)
-    judge-calibration   score the metric judge against the fixed perturbation
-                        corpus; writes a receipt, no DB
-    draft-reviews       propose news_review_v8 rubrics with optional taxonomy
-                        Gold (writes a file, never the DB)
-    run                 the one bounded candidate path: readiness -> stock
-                        GEPA, into a new empty directory
-    freeze              freeze accepted reviews into a dataset
+  {judge-calibration}
+    judge-calibration  score the card judge against the fixed perturbation
+                       corpus; writes a receipt, no DB
 
 options:
-  -h, --help            show this help message and exit
-
-```
-
-## `news learning readiness`
-
-```
-usage: tracefold news learning readiness [-h] --development DEVELOPMENT
-                                         [--target {classification,understanding,explanation}]
-                                         [--out OUT]
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --target {classification,understanding,explanation}
-                        which Predictor to answer for: taxonomy,
-                        event_semantics or reader_card
-  --out OUT             write the readiness report JSON (per-case dispositions
-                        live only here)
-
-```
-
-## `news learning baseline`
-
-```
-usage: tracefold news learning baseline [-h] --from-ms FROM_MS --to-ms TO_MS
-                                        [--mode {recorded,compile_live,runtime_live}]
-                                        [--action-source {recorded,policy}]
-                                        [--max-model-cases MAX_MODEL_CASES]
-                                        [--semantic-judge MODEL]
-                                        [--limit LIMIT] [--out OUT]
-
-options:
-  -h, --help            show this help message and exit
-  --from-ms FROM_MS
-  --to-ms TO_MS
-  --mode {recorded,compile_live,runtime_live}
-                        recorded: no model call; score persisted action for
-                        the moving window; compile_live: the graph GEPA
-                        optimizes, one task endpoint, no route
-                        fallback/deadline/circuit; per-call timeout and JSON
-                        format fallback remain; runtime_live: the configured
-                        four-slot production Program route (excludes consumer
-                        transaction, advisory lock, stale re-ask, degraded
-                        wire card, broker and delivery)
-  --action-source {recorded,policy}
-                        recorded: the action that shipped, valid only with
-                        --mode recorded; policy: re-run decide(), required by
-                        the live modes. Defaults to the only valid value for
-                        the chosen mode
-  --max-model-cases MAX_MODEL_CASES
-                        required by --mode compile_live and runtime_live: the
-                        most cases allowed to reach a provider. runtime_live
-                        spends 2-8 real calls per case, sequentially, on the
-                        endpoints that also serve production Triage
-  --semantic-judge MODEL
-                        score free-text retention anchors by meaning instead
-                        of byte equality, using this model (e.g.
-                        deepseek-v4-pro). Enum dimensions stay exact. Moving-
-                        window recorded costs nothing because persisted texts
-                        already match
-  --limit LIMIT
-  --out OUT             write the baseline report JSON
+  -h, --help           show this help message and exit
 
 ```
 
@@ -493,262 +363,6 @@ options:
   -h, --help     show this help message and exit
   --model MODEL  the judge model to measure, e.g. deepseek-v4-pro
   --out OUT      write the calibration receipt JSON
-
-```
-
-## `news learning draft-reviews`
-
-```
-usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
-                                             --rubric-model RUBRIC_MODEL
-                                             --taxonomy-models TAXONOMY_MODELS
-                                             [--limit LIMIT]
-                                             [--stratum STRATUM]
-                                             [--include-reviewed]
-                                             [--concurrency CONCURRENCY]
-                                             --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --hours HOURS         look back this many hours from now (max 720)
-  --rubric-model RUBRIC_MODEL
-                        rubric drafting model, e.g. deepseek-v4-pro or
-                        qwen3.8-27b:thinking
-  --taxonomy-models TAXONOMY_MODELS
-                        two comma-separated blind taxonomy drafting models,
-                        A,B; the draft takes A on disagreement
-  --limit LIMIT
-  --stratum STRATUM     restrict the existing ReviewDesk sampler stratum
-  --include-reviewed    also draft Events that already carry an accepted
-                        review (default: only unjudged ones)
-  --concurrency CONCURRENCY
-                        how many tasks may be drafted at once (1 = the serial
-                        loop); each task still fails on its own
-  --out OUT             write the draft batch JSON for authorized review
-
-```
-
-## `news learning run`
-
-```
-usage: tracefold news learning run [-h] --development DEVELOPMENT --out OUT
-                                   (--auto {light,medium,heavy} |
-                                   --max-metric-calls MAX_METRIC_CALLS)
-                                   --max-task-model-calls MAX_TASK_MODEL_CALLS
-                                   --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
-                                   [--max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS]
-                                   [--explanation-protocol {semantic,proxy}]
-                                   [--judge-calibration-receipt-sha256 JUDGE_CALIBRATION_RECEIPT_SHA256]
-                                   --max-cost-microusd MAX_COST_MICROUSD
-                                   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
-                                   [--max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS]
-                                   [--seed SEED]
-                                   [--target {classification,understanding,explanation}]
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --out OUT             run directory for every artifact this run writes
-  --auto {light,medium,heavy}
-  --max-metric-calls MAX_METRIC_CALLS
-  --max-task-model-calls MAX_TASK_MODEL_CALLS
-  --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
-  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-  --explanation-protocol {semantic,proxy}
-  --judge-calibration-receipt-sha256 JUDGE_CALIBRATION_RECEIPT_SHA256
-  --max-cost-microusd MAX_COST_MICROUSD
-  --max-call-cost-microusd MAX_CALL_COST_MICROUSD
-  --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
-  --seed SEED
-  --target {classification,understanding,explanation}
-                        classification optimizes taxonomy, understanding
-                        event_semantics, explanation reader_card
-
-```
-
-## `news learning freeze`
-
-```
-usage: tracefold news learning freeze [-h]
-                                      [--evaluation-protocol {historical_selected_context,counterfactual_sequence}]
-                                      --role {development,validation}
-                                      --from-ms FROM_MS --to-ms TO_MS
-                                      [--candidate CANDIDATE] --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --evaluation-protocol {historical_selected_context,counterfactual_sequence}
-  --role {development,validation}
-  --from-ms FROM_MS
-  --to-ms TO_MS
-  --candidate CANDIDATE
-                        candidate manifest; required for validation
-  --out OUT             write the dataset manifest
-
-```
-
-## `news release`
-
-```
-usage: tracefold news release [-h] {register,evaluate,canary} ...
-
-positional arguments:
-  {register,evaluate,canary}
-    register            bind a Prompt candidate to the active stable and a
-                        frozen dataset
-    evaluate            run the evaluate release-evidence gate
-    canary              arm, inspect, or stop the durable one-arm production
-                        canary
-
-options:
-  -h, --help            show this help message and exit
-
-```
-
-## `news release register`
-
-```
-usage: tracefold news release register [-h] --development DEVELOPMENT
-                                       --candidate CANDIDATE
-                                       --artifact-root ARTIFACT_ROOT
-                                       [--hypothesis HYPOTHESIS] --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --candidate CANDIDATE
-                        news_prompt_candidate_v3 JSON/YAML
-  --artifact-root ARTIFACT_ROOT
-                        write the candidate <program-sha>.json artifact
-                        document
-  --hypothesis HYPOTHESIS
-                        what this candidate is expected to repair
-  --out OUT             write the sealed candidate manifest
-
-```
-
-## `news release evaluate`
-
-```
-usage: tracefold news release evaluate [-h] --development DEVELOPMENT
-                                       [--validation VALIDATION]
-                                       --candidate CANDIDATE
-                                       [--stage {offline,holdout,canary}]
-                                       [--live-program]
-                                       [--observation-manifest OBSERVATION_MANIFEST]
-                                       --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --validation VALIDATION
-                        validation dataset SHA
-  --candidate CANDIDATE
-                        candidate manifest JSON/YAML
-  --stage {offline,holdout,canary}
-                        evaluation evidence stage
-  --live-program        run the assigned Program live and append per-Predictor
-                        recordings
-  --observation-manifest OBSERVATION_MANIFEST
-                        optional sealed canary observation artifact SHA
-  --out OUT             write the sealed evaluation report
-
-```
-
-## `news release canary`
-
-```
-usage: tracefold news release canary [-h]
-                                     {arm,status,hold,resume,trip,close} ...
-
-positional arguments:
-  {arm,status,hold,resume,trip,close}
-    arm                 arm the image-carried candidate at code-owned exposure
-    status              show activation, revision, and assignment counts
-    hold                hold one activation
-    resume              resume one activation
-    trip                trip one activation
-    close               close one activation
-
-options:
-  -h, --help            show this help message and exit
-
-```
-
-## `news release canary arm`
-
-```
-usage: tracefold news release canary arm [-h] --candidate CANDIDATE
-
-options:
-  -h, --help            show this help message and exit
-  --candidate CANDIDATE
-                        sealed CandidateManifest SHA carried by this image
-
-```
-
-## `news release canary status`
-
-```
-usage: tracefold news release canary status [-h]
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
-## `news release canary hold`
-
-```
-usage: tracefold news release canary hold [-h] --activation ACTIVATION
-                                          --reason REASON
-
-options:
-  -h, --help            show this help message and exit
-  --activation ACTIVATION
-  --reason REASON
-
-```
-
-## `news release canary resume`
-
-```
-usage: tracefold news release canary resume [-h] --activation ACTIVATION
-                                            --reason REASON
-
-options:
-  -h, --help            show this help message and exit
-  --activation ACTIVATION
-  --reason REASON
-
-```
-
-## `news release canary trip`
-
-```
-usage: tracefold news release canary trip [-h] --activation ACTIVATION
-                                          --reason REASON
-
-options:
-  -h, --help            show this help message and exit
-  --activation ACTIVATION
-  --reason REASON
-
-```
-
-## `news release canary close`
-
-```
-usage: tracefold news release canary close [-h] --activation ACTIVATION
-                                           --reason REASON
-
-options:
-  -h, --help            show this help message and exit
-  --activation ACTIVATION
-  --reason REASON
 
 ```
 

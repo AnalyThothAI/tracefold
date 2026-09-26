@@ -1,23 +1,13 @@
-"""How close one card is to a card the reader already received (pure, no model, microseconds).
+"""Two pure text-similarity primitives (no model, microseconds).
 
-The Deduper merges Items that *look* alike (comparison tokens, MinHash/LSH) before Triage sees them. It cannot
-merge a Reuters wire in English with a 金十 line in Chinese about the same fact — different bytes, different
-family windows — so the same event can reach `decide()` twice as two Events.
-
-This module gives `decide()` the one piece of evidence that cap was missing: how much of this card's Chinese
-headline the reader has already read. Character bigrams because the text is Chinese (no whitespace tokens) and
-short (<= 60 chars); Jaccard because it is symmetric and scale-free. It is deliberately crude — a paraphrase with
-no shared characters scores 0.
-
-Policy v7 uses this evidence directly and has no count quota. `decide()` carries two guards the metric itself
-cannot provide: it never withholds an `escalate`, and it never withholds a card whose direction contradicts the
-ledger entry it matched (character bigrams are blind to negation: "SEC 批准…" and "SEC 拒绝…" score 0.60).
-Anyone raising `similarity_max` should read those guards first.
+`similarity` is Jaccard over character bigrams, because short Chinese headlines have no whitespace tokens;
+the market review uses it. `trigram_similarity` is the Python twin of PostgreSQL pg_trgm, so the reader
+history's title band ranks with the same number PostgreSQL retrieves with. Both are deliberately crude: a
+paraphrase with no shared characters scores 0, and neither sees negation.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Final
 
 _MIN_LENGTH: Final = 2
@@ -43,26 +33,8 @@ def similarity(left: str, right: str) -> float:
     return len(a & b) / len(a | b)
 
 
-def max_similarity(text: str, others: Sequence[str]) -> tuple[float, int]:
-    """The closest of ``others`` to ``text``: its score and its index, or ``(0.0, -1)`` when there is nothing to
-    compare against. The index is what the trace records so ``news why`` can name the card it resembled."""
-
-    mine = character_bigrams(text)
-    if not mine:
-        return 0.0, -1
-    best, best_index = 0.0, -1
-    for index, other in enumerate(others):
-        theirs = character_bigrams(other)
-        if not theirs:
-            continue
-        score = len(mine & theirs) / len(mine | theirs)
-        if score > best:
-            best, best_index = score, index
-    return best, best_index
-
-
 def word_trigrams(text: str) -> frozenset[str]:
-    """pg_trgm's trigram set, so the told selector ranks with the same number PostgreSQL retrieves with (#491).
+    """pg_trgm's trigram set, so the reader-history title band ranks with the number PostgreSQL retrieves with.
 
     Lower-case the text, split it into runs of alphanumeric characters, pad each run with two leading spaces and
     one trailing space, and take every consecutive three characters. That is `show_trgm()` with its default
@@ -71,8 +43,8 @@ def word_trigrams(text: str) -> frozenset[str]:
     consecutive characters. pg_trgm hashes a multibyte trigram to three bytes before comparing; equality on the
     characters themselves differs only by that hash's collisions.
 
-    Character bigrams stay for `decide()`: that comparison is Chinese headline against Chinese headline, where
-    bigrams are the right grain. Word trigrams are for `comparison_title`, which is English 87% of the time and
+    Character bigrams stay for Chinese headline against Chinese headline, where bigrams are the right grain.
+    Word trigrams are for `comparison_title`, which is English 87% of the time and
     where the word-boundary padding is what separates "same wire, other outlet" from "shares three letters":
     on 22k random English title pairs 4.6% score >= 0.25 on bigrams and 0.10% on trigrams, while the labelled
     duplicates keep a median of 0.19-0.27 either way.
@@ -106,4 +78,4 @@ def trigram_similarity(left: str, right: str) -> float:
     return shared / (len(a) + len(b) - shared)
 
 
-__all__ = ["character_bigrams", "max_similarity", "similarity", "trigram_similarity", "word_trigrams"]
+__all__ = ["character_bigrams", "similarity", "trigram_similarity", "word_trigrams"]

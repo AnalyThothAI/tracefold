@@ -2,18 +2,36 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import Field
+
 from .common import ExactApiSchema
 from .events import NewsEventData, NewsReactionSummaryData
 from .news_common import (
     NewsDeliverySummaryData,
+    NewsLegacyVerdictData,
     NewsOutcomeData,
-    NewsTriageSummaryData,
 )
+
+
+class NewsFeedUpdateData(ExactApiSchema):
+    """The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.
+
+    ``headline`` is the card headline a reader actually received for this Event's latest sent update, else
+    the first claim the head has not retired. It is ``null`` only when every claim is retired.
+    """
+
+    content_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    adopted_at_ms: int
+    claim_n: int = Field(ge=0)
+    headline: str | None = None
+    headline_source: Literal["sent_card", "claim"] | None = None
 
 
 class NewsFeedEventData(NewsEventData):
     outcome: NewsOutcomeData
-    triage: NewsTriageSummaryData | None = None
+    update: NewsFeedUpdateData | None = None
+    # History only: the Triage verdict of an Event judged before #706.
+    legacy_verdict: NewsLegacyVerdictData | None = None
     delivery: NewsDeliverySummaryData | None = None
     # #88: the fixed 1H/4H return after this Event. Current quotes are deliberately *not* here — they change
     # every few seconds and would make the feed's ETag useless; the browser reads them from /api/news/quotes.
@@ -21,9 +39,6 @@ class NewsFeedEventData(NewsEventData):
 
 
 class NewsFeedFiltersData(ExactApiSchema):
-    event_family: str | None = None
-    change_state: str | None = None
-    assertion_status: str | None = None
     source_authority: str | None = None
     subject_code: str | None = None
     final_decision: str | None = None
@@ -71,4 +86,5 @@ __all__ = [
     "NewsFeedEventData",
     "NewsFeedFiltersData",
     "NewsFeedSearchData",
+    "NewsFeedUpdateData",
 ]
