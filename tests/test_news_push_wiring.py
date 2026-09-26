@@ -399,7 +399,10 @@ def test_a_semantic_runtime_that_cannot_be_assembled_faults_editorial_and_leaves
 
     wiring = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=_with_models(tmp_path), capabilities=capabilities))
 
-    assert wiring.pipeline.semantic is None and wiring.news_updates is None
+    assert wiring.news_updates is None
+    # No agent: the worker only acknowledges wakes so the bounded queue keeps accepting admission's
+    # publishes, and the semantic work waits durably in PostgreSQL.
+    assert wiring.pipeline.semantic.agent is None
     # Workers cannot claim the configured program it does not run: the deployment check sees that.
     assert wiring.runtime_manifest_sha is None
     assert capabilities.payload()[NEWS_EDITORIAL] == {
@@ -408,8 +411,7 @@ def test_a_semantic_runtime_that_cannot_be_assembled_faults_editorial_and_leaves
     }
     assert capabilities.payload()[NEWS_INGESTION] == {"state": "running", "reason": None}
     task_names = {name for name, _ in wiring.pipeline.runners()}
-    assert "news-semantic" not in task_names
-    assert {"news-deduper", "news-deliverer", "news-janitor"} <= task_names
+    assert {"news-deduper", "news-semantic", "news-deliverer", "news-janitor"} <= task_names
 
 
 def test_unconfigured_news_models_leave_no_semantic_worker_and_a_disabled_editorial_capability(
@@ -423,7 +425,7 @@ def test_unconfigured_news_models_leave_no_semantic_worker_and_a_disabled_editor
 
     wiring = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities))
 
-    assert wiring.pipeline.semantic is None
+    assert wiring.pipeline.semantic.agent is None
     assert capabilities.payload()[NEWS_EDITORIAL] == {"state": "disabled", "reason": "news_models_not_configured"}
     # Admission still commits semantic work; the manifest names the configuration Workers actually runs.
     assert wiring.runtime_manifest_sha == news_wiring.configured_runtime_manifest_sha(settings)
@@ -441,7 +443,8 @@ def test_configured_models_compose_the_semantic_worker_as_a_confined_editorial_t
 
     wiring = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities))
 
-    assert wiring.pipeline.semantic is not None and wiring.news_updates is not None
+    assert wiring.news_updates is not None
+    assert wiring.pipeline.semantic.agent is wiring.news_updates.agent
     assert wiring.pipeline.semantic.program_identity == wiring.news_updates.program_identity
     # Trading's System One route never enables News Jev.
     assert wiring.news_updates.judgment_connection is None

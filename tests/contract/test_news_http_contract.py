@@ -1339,15 +1339,20 @@ def test_status_marks_the_product_degraded_when_model_outputs_are_unusable(
             "last_frame_at_ms": now_ms,
         }
         snapshot["broker"] = {"connected": True, "queues": {}, "error_code": None, "observed_at_ms": now_ms}
-        snapshot["pipeline"] = {
-            **snapshot["pipeline"],
-            "model_triage_24h": 20,
-            "triage_degraded_24h": 20,
-            "triage_degraded_by_code_24h": {"news_program_event_semantics_invalid": 20},
-        }
         return snapshot
 
+    def semantic_status(*, now_ms: int) -> dict[str, Any]:
+        # Every semantic turn of the day ended in a contract fault: nothing was understood.
+        return {
+            "semantic_observations_24h": 0,
+            "semantic_adopted_24h": 0,
+            "semantic_failed_24h": 20,
+            "semantic_pending": 0,
+            "semantic_failed_by_code_24h": {"news_generation_output_contract_invalid": 20},
+        }
+
     news.status_snapshot = status_snapshot  # type: ignore[method-assign]
+    news.semantic_status = semantic_status  # type: ignore[method-assign]
     app = create_app(settings=settings)
     app.state.service = _FakeRuntime(settings, news)
     monkeypatch.setattr(
@@ -1360,6 +1365,8 @@ def test_status_marks_the_product_degraded_when_model_outputs_are_unusable(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["health"]["model"]["level"] == "bad"
+    assert data["health"]["model"]["summary_zh"] == "24 小时语义失败率 100%（20/20）"
+    assert data["pipeline"]["semantic_failed_by_code_24h"] == {"news_generation_output_contract_invalid": 20}
     assert data["state"] == "degraded"
 
 

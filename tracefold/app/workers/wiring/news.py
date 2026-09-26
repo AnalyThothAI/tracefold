@@ -464,19 +464,15 @@ def _compose_news_pipeline(
             db=news_db,
             watchlist_symbols=watchlist_symbols,
         ),
-        semantic=(
-            None
-            if news_updates is None
-            else SemanticWorker(
-                bus=bus,
-                db=news_db,
-                store=PgNewsStore(news_db, watch_symbols=watchlist_symbols),
-                agent=news_updates.agent,
-                concurrency=settings.news.triage.concurrency,
-                circuit_failures=settings.news.triage.circuit_failures,
-                circuit_open_seconds=settings.news.triage.circuit_open_seconds,
-                program_identity=news_updates.program_identity,
-            )
+        semantic=SemanticWorker(
+            bus=bus,
+            db=news_db,
+            store=PgNewsStore(news_db, watch_symbols=watchlist_symbols),
+            agent=None if news_updates is None else news_updates.agent,
+            concurrency=settings.news.triage.concurrency,
+            circuit_failures=settings.news.triage.circuit_failures,
+            circuit_open_seconds=settings.news.triage.circuit_open_seconds,
+            program_identity=None if news_updates is None else news_updates.program_identity,
         ),
         deliverer=DelivererLoop(
             db=news_db,

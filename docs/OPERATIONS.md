@@ -1217,7 +1217,7 @@ tracefold workers
   -> finite external-operation executor 3
   -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
-     news-triage, news-deliverer, news-janitor); the bounded polling loops
+     news-semantic, news-deliverer, news-janitor); the bounded polling loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
      workers-control
 ```

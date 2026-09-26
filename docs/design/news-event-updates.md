@@ -9,8 +9,10 @@
 ```text
 既有来源接入（typed market facts 继续使用既有旁路）
     ↓
-NewsAdmission：来源记录 + 正文/归因修订幂等
-    near 只召回候选，不决定等价，不结束语义工作
+Admission（news/pipeline/admission.py）：来源记录幂等 + 正文修订（news_item_revisions）
+    新证据快照与 news_semantic_work 同事务；near/exact 只召回为成员，不决定等价，不结束语义工作
+    ↓
+语义 worker（news/pipeline/semantic.py，news.triage 队列）：租约、有限重试、失败码
     ↓
 FrozenInput：原文证据、候选命题、合法读取目标
     ↓
@@ -22,7 +24,7 @@ NewsStore.atomic_adopt（生产适配尚未实现）
     短事务：head CAS + EventUpdate + public outbox + notification_pending
     ├──────────────────────────────────────┐
     ↓                                      ↓
-Notifications                          PublicRelay
+Notifications                          App relay（AnalysisRunner.relay_once）
     实际已送正文覆盖                       在目标选择之前分流
     内容选择与明确原因                     ├─ catalyst_delta → 既有候选研究
     稳定 intent                            └─ source_update → 相关研究依据修订
@@ -36,7 +38,6 @@ Notifications                          PublicRelay
 
 | 文件 | 职责 |
 |---|---|
-| `tracefold/news/updates/admission.py` | 来源正文修订及候选召回接口；精确重传与近似文本分开。 |
 | `contracts.py`、`identity.py` | 新精确合同、证据和命题引用、内容及通知身份。 |
 | `semantics.py` | 抽取、关系接续、引用检查与内容组装，不读取读者卡片决定事实。 |
 | `judgment.py`、`dspy_backend.py` | 生成式默认路径、可选原生 Choice/Noul 批次、局部降级、共享预算。 |
@@ -44,7 +45,7 @@ Notifications                          PublicRelay
 | `notification.py` | 真实送达正文覆盖、命题选择、稳定 intent 与冻结卡片。 |
 | `public.py`、`service.py` | 公开内容投影、语义/通知/公开接续、有限补证和 repair 回调。 |
 | `ports.py` | 持久化和副作用接口合同，不是生产数据库实现。 |
-| `tracefold/app/news_updates.py` | 显式组合新核心与独立 News Jev 连接，未接入现有 worker 构造。 |
+| `tracefold/app/news_updates.py` | 显式组合新核心与可选独立 News Jev 连接；Workers 经 `app/learning_runtime.py` 的模型路由组合并由语义 worker 运行。 |
 
 表中未写完整路径的文件均位于 `tracefold/news/updates/`。
 
@@ -86,7 +87,7 @@ CardComposer 只读取所选命题及其引用，输出中文标题和对应段�
 
 PublicUpdate 提供结构化 claims/evidence/changes 以及带出处的确定性文本，不依赖 ReaderCard。
 
-PublicRelay 在目标选择之前分派 source_update 与 catalyst_delta。source_update 必须携带前一内容引用及受影响命题引用；接收成功而 News ack 之前退出时，重投保持同一 update_id。
+App relay（`AnalysisRunner.relay_once`，唯一的 News→Trading 中继）在目标选择之前分派 source_update 与 catalyst_delta。source_update 必须携带前一内容引用及受影响命题引用；接收成功而 News ack 之前退出时，重投保持同一 update_id。
 
 当前只实现公开投影、分流和接收接口，**尚未实现 Trading 数据库中的研究依据修订**。真正的 App/Trading 适配必须只更新引用相关命题的研究，不创建新 Case、不刷新原 TTL、不整体废止同 Event 的无关研究、不隐式撤单或扩大执行权限。原 FrameReader、qualification 和 trading_analysis 仍需切换。
 
@@ -94,7 +95,7 @@ PublicRelay 在目标选择之前分派 source_update 与 catalyst_delta。sourc
 
 已采用语义先提交。仅当存在影响理解的缺口与合法既有读取目标时，才选择额外读取。预算归属持久 lineage，最多一次，重试或补读的新 revision 不复位。不允许模型生成任意 URL 或工具。
 
-返回材料形成针对受影响命题的窄输入；无材料或预算耗尽保留已采用内容。Repair 只将持久 pending 交给现有调度回调，不新增守护进程或消息队列。pending 查询、唤醒和原子预算需要生产存储适配。
+返回材料形成针对受影响命题的窄输入；无材料或预算耗尽保留已采用内容。Repair 只将持久 pending 交给现有调度回调，不新增守护进程或消息队列：Janitor 重新唤醒 wake 超过 15 s 的 pending 语义工作，通知 pending 交给通知阶段提供的 wake 回调。
 
 ## 持久化与副作用合同：无迁移、无 DDL
 
@@ -127,9 +128,9 @@ PublicRelay 在目标选择之前分派 source_update 与 catalyst_delta。sourc
 | `news/program/contracts.py` 旧语义/卡片 envelope 与自动适配 | HTTP/schema、recording、learning/review；旧记录不伪装成新 claims。 |
 | `news/taxonomy.py` 四轴 owner | 必要 IPTC 导航、真实来源辅助、badge、过滤、API/UI 与学习指标一起收敛。 |
 | `news/progression_review.py` 和 `news/program/progression_review.py` | 由采用 changes/关系承接，迁出仍有用的纯展示辅助，删除重复模型复核。 |
-| `news/pipeline/triage.py` 与旧 route/reask | 原 broker/capability 接线、存储原子采用、pending repair；不同时运行两套程序。 |
+| `news/pipeline/triage.py` 与旧 route/reask | 已由 `news/pipeline/semantic.py` 取代：同一队列与 capability，存储原子采用，Janitor pending repair。 |
 | `news/triage_rules.py` 的旧内容否决 | 同步删除相应 policy/config/UI/测试；不留下无读者旋钮。 |
-| `news/pipeline/admission.py` 的 near 终止权力 | 来源正文修订、候选召回、唤醒与精确幂等一起替换，保留 typed market facts。 |
+| `news/pipeline/admission.py` 的 near 终止权力 | 已替换：正文修订、成员召回、按修订唤醒与精确幂等；typed market facts 不变。 |
 | `delivery.py` 每 Event 一张 first 卡假设 | intent、queue、receipt、preflight、重试和 ambiguous 恢复一起接线。 |
 | `app/learning_runtime.py`、`app/workers/wiring/news.py` | 显式 News 连接生命周期、调用回执、配置槽、CLI、capability 和既有市场旁路。 |
 | `news/storage/trade_projection.py`、`app/trading_analysis.py` | 新公开契约、Trading 幂等接收、命题关联、FrameReader 与 qualification。 |

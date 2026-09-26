@@ -22,10 +22,10 @@ class NewsPipeline:
     receiver: OpenNewsReceiver | None
     recovery: RecoveryRunner | None
     deduper: DeduperConsumer
-    # Editorial is one capability among several: models that are not configured or cannot be
-    # composed leave no semantic worker, and reception, admission and retention run on without it.
-    # Admitted evidence still commits its semantic work, which waits durably (#553 PR-3, #706).
-    semantic: SemanticWorker | None
+    # Editorial is one capability among several. Models that are not configured or cannot be composed
+    # leave a semantic worker with no agent: it acknowledges wakes so the bounded queue keeps accepting
+    # admission's publishes, and the semantic work waits durably in PostgreSQL (#553 PR-3, #706).
+    semantic: SemanticWorker
     deliverer: DelivererLoop
     janitor: JanitorLoop
     instruments: InstrumentSnapshotLoop | None = None
@@ -46,8 +46,7 @@ class NewsPipeline:
             out.append(("news-recovery", lambda stop: recovery.run(stop_event=stop)))
         deduper, semantic, deliverer, janitor = self.deduper, self.semantic, self.deliverer, self.janitor
         out.append(("news-deduper", lambda stop: deduper.run(stop_event=stop)))
-        if semantic is not None:
-            out.append(("news-semantic", lambda stop: semantic.run(stop_event=stop)))
+        out.append(("news-semantic", lambda stop: semantic.run(stop_event=stop)))
         out.extend(
             [
                 ("news-deliverer", lambda stop: deliverer.run(stop_event=stop)),

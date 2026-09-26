@@ -96,11 +96,11 @@ class SemanticWorker:
         bus: Any,
         db: NewsDatabasePort,
         store: SemanticWorkStore,
-        agent: SemanticAgent,
+        agent: SemanticAgent | None,
         concurrency: int,
         circuit_failures: int,
         circuit_open_seconds: float,
-        program_identity: str,
+        program_identity: str | None,
         lease_ms: int = SEMANTIC_LEASE_MS,
         clock: Callable[[], int] = now_ms,
     ) -> None:
@@ -129,6 +129,11 @@ class SemanticWorker:
         event_id = str(message.payload.get("event_id") or "")
         if not event_id:
             raise PermanentError("news_event_id_missing")
+        if self.agent is None:
+            # No semantic runtime in this process (models unconfigured or not composable): the wake is
+            # acknowledged so the bounded queue never refuses admission's publishes, and the work stays
+            # durably pending in PostgreSQL for a process that can run it.
+            return
         for _ in range(TURNS_PER_WAKE):
             if self.breaker.is_open(self.clock()):
                 return
@@ -142,9 +147,12 @@ class SemanticWorker:
     async def turn(self, lease: SemanticLease) -> TurnOutcome:
         """One claimed attempt. The last attempt of a revision adopts unresolved comparisons as such."""
 
+        agent = self.agent
+        if agent is None:
+            raise RuntimeError("news_semantic_agent_missing")
         final_attempt = lease.attempts >= SEMANTIC_ATTEMPTS_MAX
         try:
-            outcome = await self.agent.process(lease.event_id, final_attempt=final_attempt)
+            outcome = await agent.process(lease.event_id, final_attempt=final_attempt)
         except (asyncio.CancelledError, TransientError, DeferError):
             # Cancellation or a PostgreSQL lane failure says nothing about the provider or the content.
             # The lease expires on its own and the repair turn wakes the still-pending work.
