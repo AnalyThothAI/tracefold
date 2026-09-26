@@ -24,8 +24,10 @@ five-second timer runs, and no public entry point runs one pass of them.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterator
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -39,7 +41,12 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import MessageBus, TestClock
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports, ModifyOrder
+from nautilus_trader.execution.messages import (
+    GenerateFillReports,
+    GenerateOrderStatusReports,
+    GeneratePositionStatusReports,
+    ModifyOrder,
+)
 from nautilus_trader.execution.reports import ExecutionMassStatus, OrderStatusReport, PositionStatusReport
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.currencies import USDT
@@ -217,6 +224,19 @@ class _Venue:
                 )
             if url_path.endswith("/openAlgoOrders"):
                 return msgspec.json.encode([])
+            if url_path.endswith("/order"):
+                assert params.get("orderId") == TAKE_PROFIT_CHILD_ORDER_ID
+                return msgspec.json.encode(
+                    _binance_order(
+                        TAKE_PROFIT_CHILD_ORDER_ID,
+                        TAKE_PROFIT_ID.value,
+                        "SELL",
+                        "0.8562",
+                        FILL_MS + 2_000,
+                        filled="600.0" if self.child_status != "FILLED" else "1188.3",
+                        status=self.child_status,
+                    )
+                )
             if url_path.endswith("/allOrders"):
                 return msgspec.json.encode(
                     [
@@ -240,6 +260,10 @@ class _Venue:
                         status=400,
                         message={"code": -2013, "msg": "Order does not exist."},
                         headers={},
+                    )
+                if params.get("clientAlgoId") == STOP_ID.value:
+                    raise BinanceClientError(
+                        status=400, message={"code": -2013, "msg": "Order does not exist."}, headers={}
                     )
                 assert params.get("algoId") == PROTECTION[1][1] or params.get("clientAlgoId") == TAKE_PROFIT_ID.value
                 return msgspec.json.encode(
@@ -798,7 +822,7 @@ def test_generation_restart_replays_a_flat_venues_historical_take_profit(account
     recovered = runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime))
 
     assert recovered is True
-    assert runtime.venue.user_trade_symbols == ["APTUSDT"]
+    assert set(runtime.venue.user_trade_symbols) == {"APTUSDT"}
     assert runtime.cache.order(TAKE_PROFIT_ID).order_type == OrderType.MARKET
     [closed] = runtime.cache.positions_closed(instrument_id=APT)
     assert closed.opening_order_id == ENTRY_ID
@@ -1078,3 +1102,349 @@ def test_a_reduce_only_fill_on_a_flat_cache_never_opens_a_mirror_position(accoun
 
     assert close.is_closed
     assert stock.open_positions() == []
+
+
+def _algo_finished_wire() -> bytes:
+    return msgspec.json.encode(
+        {
+            "e": "ALGO_UPDATE",
+            "E": FILL_MS + 2_001,
+            "T": FILL_MS + 2_000,
+            "o": {
+                "caid": TAKE_PROFIT_ID.value,
+                "aid": PROTECTION[1][1],
+                "at": "CONDITIONAL",
+                "o": "TAKE_PROFIT_MARKET",
+                "s": "APTUSDT",
+                "S": "SELL",
+                "ps": "BOTH",
+                "f": "GTC",
+                "q": "1188.3",
+                "X": "FINISHED",
+                "tp": "0.8562",
+                "p": "0",
+                "wt": "MARK_PRICE",
+                "pm": "NONE",
+                "cp": False,
+                "pP": False,
+                "R": True,
+                "tt": FILL_MS + 2_000,
+                "gtd": 0,
+                "ai": str(TAKE_PROFIT_CHILD_ORDER_ID),
+                "ap": "0.8562",
+                "aq": "1188.3",
+                "act": "MARKET",
+            },
+        }
+    )
+
+
+async def _deliver_algo(runtime: _Account, wire: bytes | None = None) -> None:
+    consumer = asyncio.create_task(runtime.engine._run_evt_queue())
+    wire = _algo_finished_wire() if wire is None else wire
+    try:
+        triggered = msgspec.json.decode(wire)
+        triggered["o"]["X"] = "TRIGGERED"
+        runtime.client._handle_algo_update(msgspec.json.encode(triggered))
+        await asyncio.gather(*list(runtime.client._tasks))
+        await asyncio.sleep(0.05)
+        runtime.client._handle_algo_update(wire)
+        # Await the native client's tracked work and event queue, not only the
+        # callback invocation. The handler may schedule bounded signed reads.
+        await asyncio.gather(*list(runtime.client._tasks))
+        await asyncio.sleep(0.05)
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+
+
+def test_algo_finished_without_native_trades_never_generates_a_zero_fee_synthetic_fill(account: Any) -> None:
+    runtime = account(triggered_take_profit=True, missing_child_trade=True)
+    runtime.client._instrument_provider.add(INSTRUMENT)
+    runtime.loop.run_until_complete(_deliver_algo(runtime))
+    assert runtime.open_positions() == _HELD
+    assert runtime.strategy.filled == []
+    assert runtime.cache.order(TAKE_PROFIT_ID).filled_qty.as_decimal() == 0
+
+
+@pytest.mark.parametrize("split_child_trades", [False, True])
+def test_algo_updates_replay_only_real_native_fills_once(account: Any, split_child_trades: bool) -> None:
+    runtime = account(triggered_take_profit=True, split_child_trades=split_child_trades)
+    runtime.client._instrument_provider.add(INSTRUMENT)
+    runtime.loop.run_until_complete(_deliver_algo(runtime))
+    assert runtime.open_positions() == []
+    order = runtime.cache.order(TAKE_PROFIT_ID)
+    expected = {str(TAKE_PROFIT_CHILD_TRADE_ID + offset) for offset in range(2 if split_child_trades else 1)}
+    assert {identity.value for identity in order.trade_ids} == expected
+    assert all(identity.value.isdecimal() for identity in order.trade_ids)
+    runtime.loop.run_until_complete(_deliver_algo(runtime))
+    assert runtime.open_positions() == []
+    assert len(runtime.strategy.filled) == len(expected)
+    assert runtime.strategy.closed == [TAKE_PROFIT_ID.value]
+
+
+async def _open_order_check(runtime: _Account) -> None:
+    consumer = asyncio.create_task(runtime.engine._run_evt_queue())
+    try:
+        await runtime.client.generate_order_status_reports(
+            GenerateOrderStatusReports(
+                instrument_id=APT,
+                open_only=True,
+                start=None,
+                end=None,
+                command_id=UUID4(),
+                ts_init=runtime.clock.timestamp_ns(),
+            )
+        )
+        await asyncio.gather(*list(runtime.client._tasks), return_exceptions=True)
+        await asyncio.sleep(0.05)
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+
+
+def test_disappearing_known_order_uses_exact_parent_and_real_child_before_any_position_check(account: Any) -> None:
+    runtime = account(triggered_take_profit=True)
+    runtime.loop.run_until_complete(_open_order_check(runtime))
+    assert runtime.open_positions() == []
+    assert runtime.strategy.filled == [TAKE_PROFIT_ID.value]
+    assert {value.value for value in runtime.cache.order(TAKE_PROFIT_ID).trade_ids} == {str(TAKE_PROFIT_CHILD_TRADE_ID)}
+    assert any(request.get("orderId") == TAKE_PROFIT_CHILD_ORDER_ID for request in runtime.venue.trade_requests)
+
+
+def test_failed_open_list_does_not_trigger_disappearance_recovery(
+    account: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = account(triggered_take_profit=True)
+    reader = AsyncMock(side_effect=TimeoutError("open list unavailable"))
+    monkeypatch.setattr(runtime.client._futures_http_account, "query_open_orders", reader)
+    with pytest.raises(TimeoutError):
+        runtime.loop.run_until_complete(_open_order_check(runtime))
+    assert runtime.venue.trade_requests == []
+    assert runtime.open_positions() == _HELD
+
+
+def test_duplicate_recovery_notifications_share_one_backoff_and_do_not_request_storm(account: Any) -> None:
+    runtime = account(triggered_take_profit=True, missing_child_trade=True)
+    runtime.loop.run_until_complete(_deliver_algo(runtime))
+    before = len(runtime.venue.trade_requests)
+    assert before == 1
+    for _ in range(10):
+        runtime.loop.run_until_complete(_deliver_algo(runtime))
+    runtime.loop.run_until_complete(_open_order_check(runtime))
+    assert len(runtime.venue.trade_requests) == before
+    assert runtime.open_positions() == _HELD
+
+
+def test_recorded_inj_signed_chain_closes_exactly_121_3_with_native_trade_and_fee(
+    account: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = json.loads((Path(__file__).parent / "fixtures/binance/inj_20260925_execution.json").read_text())
+    entry, child = recorded["orders"]
+    entry_trade, exit_trade = recorded["trades"]
+    parent = recorded["algo"]
+    runtime = account(seed_existing=False)
+    runtime.clock.set_time(1790380800_000000000)
+    instrument_id = InstrumentId.from_str("INJUSDT-PERP.BINANCE")
+    instrument = CryptoPerpetual(
+        instrument_id=instrument_id,
+        raw_symbol=Symbol("INJUSDT"),
+        base_currency=Currency.from_str("INJ"),
+        quote_currency=USDT,
+        settlement_currency=USDT,
+        is_inverse=False,
+        price_precision=4,
+        size_precision=1,
+        price_increment=Price.from_str("0.0001"),
+        size_increment=Quantity.from_str("0.1"),
+        ts_event=0,
+        ts_init=0,
+    )
+    runtime.cache.add_instrument(instrument)
+    runtime.client._instrument_provider.add(instrument)
+    position_id = PositionId(f"{instrument_id}-{runtime.strategy.id}")
+    opening = runtime.strategy.order_factory.market(
+        instrument_id=instrument_id,
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str(entry["origQty"]),
+        client_order_id=ClientOrderId(entry["clientOrderId"]),
+    )
+    runtime.cache.add_order(opening, None, ClientId(BINANCE))
+    opening.apply(
+        TestEventStubs.order_submitted(opening, account_id=runtime.account_id, ts_event=entry["time"] * 1_000_000 - 1)
+    )
+    opening.apply(
+        TestEventStubs.order_accepted(
+            opening,
+            account_id=runtime.account_id,
+            venue_order_id=VenueOrderId(str(entry["orderId"])),
+            ts_event=entry["time"] * 1_000_000,
+        )
+    )
+    fill = TestEventStubs.order_filled(
+        order=opening,
+        instrument=instrument,
+        strategy_id=runtime.strategy.id,
+        account_id=runtime.account_id,
+        venue_order_id=VenueOrderId(str(entry["orderId"])),
+        trade_id=TradeId(str(entry_trade["id"])),
+        position_id=position_id,
+        last_qty=Quantity.from_str(entry_trade["qty"]),
+        last_px=Price.from_str(entry_trade["price"]),
+        commission=Money(entry_trade["commission"], USDT),
+        ts_event=entry_trade["time"] * 1_000_000,
+    )
+    opening.apply(fill)
+    runtime.cache.update_order(opening)
+    runtime.cache.add_position(Position(instrument, fill), OmsType.NETTING)
+    take_profit = runtime.strategy.order_factory.market_if_touched(
+        instrument_id=instrument_id,
+        order_side=OrderSide.SELL,
+        quantity=Quantity.from_str(parent["quantity"]),
+        trigger_price=Price.from_str(parent["triggerPrice"]),
+        trigger_type=TriggerType.MARK_PRICE,
+        reduce_only=True,
+        client_order_id=ClientOrderId(parent["clientAlgoId"]),
+    )
+    runtime.cache.add_order(take_profit, position_id, ClientId(BINANCE))
+    take_profit.apply(
+        TestEventStubs.order_submitted(
+            take_profit, account_id=runtime.account_id, ts_event=parent["createTime"] * 1_000_000 - 1
+        )
+    )
+    take_profit.apply(
+        TestEventStubs.order_accepted(
+            take_profit,
+            account_id=runtime.account_id,
+            venue_order_id=VenueOrderId(str(parent["algoId"])),
+            ts_event=parent["createTime"] * 1_000_000,
+        )
+    )
+    runtime.cache.update_order(take_profit)
+
+    async def send_request(_client: Any, _method: Any, url_path: str, payload: Any = None, **_: Any) -> bytes:
+        if url_path.endswith("/algoOrder"):
+            assert payload["clientAlgoId"] == parent["clientAlgoId"]
+            return msgspec.json.encode(parent)
+        if url_path.endswith("/order"):
+            assert payload["orderId"] == child["orderId"]
+            return msgspec.json.encode(child)
+        if url_path.endswith("/userTrades"):
+            assert payload["orderId"] == child["orderId"] and payload["symbol"] == "INJUSDT"
+            return msgspec.json.encode([exit_trade])
+        raise AssertionError(url_path)
+
+    monkeypatch.setattr(BinanceHttpClient, "send_request", send_request)
+    wire = msgspec.json.decode(_algo_finished_wire())
+    wire.update(E=parent["updateTime"], T=parent["updateTime"])
+    wire["o"].update(
+        caid=parent["clientAlgoId"],
+        aid=parent["algoId"],
+        s="INJUSDT",
+        q=parent["quantity"],
+        tp=parent["triggerPrice"],
+        tt=parent["triggerTime"],
+        ai=parent["actualOrderId"],
+        ap=child["avgPrice"],
+        aq=child["executedQty"],
+    )
+    runtime.loop.run_until_complete(_deliver_algo(runtime, msgspec.json.encode(wire)))
+    assert runtime.cache.positions_open(instrument_id=instrument_id) == []
+    assert {value.value for value in take_profit.trade_ids} == {"63772472"}
+    [position] = runtime.cache.positions_closed(instrument_id=instrument_id)
+    assert position.ts_closed == 1790338365075_000000
+    assert position.realized_pnl.as_decimal() == Decimal("19.087768")
+    assert runtime.strategy.filled == [parent["clientAlgoId"]]
+    runtime.loop.run_until_complete(_deliver_algo(runtime, msgspec.json.encode(wire)))
+    assert runtime.strategy.filled == [parent["clientAlgoId"]]
+
+
+@pytest.mark.parametrize("execution_type", ["TRADE", "CALCULATED"])
+def test_trade_or_filled_summary_before_algo_identity_recovers_from_the_same_signed_chain(
+    account: Any,
+    execution_type: str,
+) -> None:
+    runtime = account(triggered_take_profit=True)
+    raw = msgspec.json.encode(
+        {
+            "e": "ORDER_TRADE_UPDATE",
+            "E": FILL_MS + 2_001,
+            "T": FILL_MS + 2_000,
+            "o": {
+                "s": "APTUSDT",
+                "c": TAKE_PROFIT_ID.value,
+                "S": "SELL",
+                "o": "MARKET",
+                "f": "GTC",
+                "q": "1188.3",
+                "p": "0",
+                "ap": "0.8562",
+                "sp": "0",
+                "x": execution_type,
+                "X": "FILLED",
+                "i": TAKE_PROFIT_CHILD_ORDER_ID,
+                "l": "1188.3",
+                "z": "1188.3",
+                "L": "0.8562",
+                "N": "USDT",
+                "n": "0.1",
+                "T": FILL_MS + 2_000,
+                "t": TAKE_PROFIT_CHILD_TRADE_ID,
+                "b": "0",
+                "a": "0",
+                "m": False,
+                "R": True,
+                "wt": "MARK_PRICE",
+                "ot": "MARKET",
+                "ps": "BOTH",
+                "pP": False,
+                "si": 0,
+                "ss": 0,
+                "rp": "0",
+                "gtd": 0,
+            },
+        }
+    )
+
+    async def deliver() -> None:
+        consumer = asyncio.create_task(runtime.engine._run_evt_queue())
+        try:
+            runtime.client._handle_order_trade_update(raw)
+            await asyncio.gather(*list(runtime.client._tasks))
+            await asyncio.sleep(0.05)
+        finally:
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    runtime.loop.run_until_complete(deliver())
+    assert runtime.open_positions() == []
+    assert runtime.strategy.filled == [TAKE_PROFIT_ID.value]
+    assert {value.value for value in runtime.cache.order(TAKE_PROFIT_ID).trade_ids} == {str(TAKE_PROFIT_CHILD_TRADE_ID)}
+
+
+def test_generation_shutdown_cancels_pending_evidence_before_it_can_change_cache(
+    account: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = account(triggered_take_profit=True)
+
+    async def stop_during_read() -> None:
+        reading = asyncio.Event()
+
+        async def blocked(**_: Any) -> list[Any]:
+            reading.set()
+            await asyncio.Event().wait()
+            raise AssertionError("cancelled read resumed")
+
+        monkeypatch.setattr(runtime.client._futures_http_account, "query_user_trades", blocked)
+        runtime.client._handle_algo_update(_algo_finished_wire())
+        await asyncio.wait_for(reading.wait(), 1)
+        await runtime.client.cancel_pending_tasks(timeout_secs=1)
+        await asyncio.sleep(0)
+        assert runtime.client._evidence_reads == {}
+
+    runtime.loop.run_until_complete(stop_during_read())
+    assert runtime.open_positions() == _HELD
+    assert runtime.cache.order(TAKE_PROFIT_ID).venue_order_id == VenueOrderId(str(PROTECTION[1][1]))
+    assert runtime.strategy.filled == []

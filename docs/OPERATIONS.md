@@ -161,7 +161,9 @@ its three-month retention still limits what can be recovered from that endpoint.
 
 For a triggered stop or take-profit, Binance reports the fill under the regular
 child order ID, while Nautilus may still cache the original Algo order ID (#699).
-During full native reconciliation the Runtime's Binance client verifies the
+The Runtime's Binance client uses the same immutable order-evidence reader for
+full reconciliation, live order/Algo updates, exact-order queries, and known
+orders missing from successful complete open-order lists. It verifies the
 parent's signed `GET /fapi/v1/algoOrder` receipt, including `actualOrderId`, against
 the child order and its complete venue trades. It then sends Nautilus an
 `OrderUpdated` to move the cached order to the child ID before the engine replays
@@ -170,7 +172,23 @@ remaining position and Plan stay open for protection and exit. A triggered
 child with missing trades or contradictory signed evidence fails
 reconciliation; a matching client order ID by itself never authorizes a close.
 The original strategy order and its Plan retain the stop or take-profit
-attribution.
+attribution. `ALGO_UPDATE FINISHED` cannot create an aggregate zero-fee fill:
+missing trades remain incomplete. Reads coalesce per symbol/client order, allow
+two concurrent chains, time out after ten seconds, and retain a 5–60 second
+backoff across duplicate notifications. Native client shutdown cancels its reads;
+a completed historical-only chain never injects an isolated exit into an empty
+current Cache. An old inferred Cache quantity that cannot be matched to native
+trade IDs produces `binance_cache_native_trade_history_conflict`, rather than
+applying its quantity twice. Venue integer millisecond timestamps are preserved
+when constructing native reports.
+
+The recorded INJ fixture contains signed Demo historical reads captured on
+2026-09-26 (entry `308643511`/`63767654`, child `308654865`/`63772472`, Algo
+`1000000218190388`). Offline installed-engine replay confirms quantity 121.3,
+exit time 2026-09-25 12:12:45.075 UTC, fees 0.805432 USDT and realized PnL
+19.087768 USDT before funding. This is a replay of recorded receipts, not a new
+Demo trade or a production history correction.
+
 On a generation restart, a flat venue and empty Cache otherwise provide no
 "active" symbol for Nautilus to query. PostgreSQL's open Plans supply only the
 bounded symbol query scope. A signed Algo parent receipt then identifies a
