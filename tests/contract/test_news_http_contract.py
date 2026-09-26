@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from contextlib import contextmanager
 from typing import Any, get_args
@@ -10,6 +11,7 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from tests.support.news_event_updates import first_update, notify_plan, raised_update
 from tracefold.app.http.app import create_app
 from tracefold.app.http.schemas import events as event_schemas
 from tracefold.app.http.schemas import feed as feed_schemas
@@ -20,6 +22,14 @@ from tracefold.news.market_review.instruments import InstrumentSearchIdentity
 from tracefold.news.market_review.pricing import REACTION_METRIC_VERSION
 from tracefold.news.models import Admission
 from tracefold.news.storage.feed import _triage_assets
+from tracefold.news.update_view import (
+    event_update_view,
+    intent_views,
+    notification_view,
+    semantic_view,
+    sent_headline,
+)
+from tracefold.news.updates.identity import canonical_json
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 
@@ -62,6 +72,7 @@ class _FakeNewsRepository:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.events = [_event()]
         self.event_assets_by_id = {"ev-1": ["COPPER", "SPOT"]}
+        self.detail_overrides: dict[str, dict[str, Any]] = {}
 
     def list_feed(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("list_feed", kwargs))
@@ -75,9 +86,6 @@ class _FakeNewsRepository:
             if kwargs.get("cursor")
             else {"total": len(self.events), "pushed": 0, "held": 0, "pending": len(self.events)},
             "filters": {
-                "event_family": ",".join(kwargs.get("event_family") or ()) or None,
-                "change_state": ",".join(kwargs.get("change_state") or ()) or None,
-                "assertion_status": ",".join(kwargs.get("assertion_status") or ()) or None,
                 "source_authority": ",".join(kwargs.get("source_authority") or ()) or None,
                 "subject_code": ",".join(kwargs.get("subject_code") or ()) or None,
                 "final_decision": ",".join(kwargs.get("final_decision") or ()) or None,
@@ -122,7 +130,7 @@ class _FakeNewsRepository:
                 "received_at_ms": None,
                 "rendered_card": None,
             },
-        }
+        } | self.detail_overrides.get(event_id, {})
 
     def event_asset_symbols(self, event_ids: Any) -> dict[str, list[str]]:
         requested = [str(event_id) for event_id in event_ids]
@@ -450,10 +458,8 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "normalized_query",
         "resolved_symbols",
     }
+    # #706: the three retired taxonomy axes are no longer filters. Topics and cited-source authority are.
     assert set(feed_schemas.NewsFeedFiltersData.model_fields) == {
-        "event_family",
-        "change_state",
-        "assertion_status",
         "source_authority",
         "subject_code",
         "final_decision",
@@ -468,7 +474,9 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
     }
     assert set(feed_schemas.NewsFeedEventData.model_fields) - set(event_schemas.NewsEventData.model_fields) == {
         "outcome",
-        "triage",
+        # #706: the adopted EventUpdate head, and the legacy Triage verdict under a name that says so.
+        "update",
+        "legacy_verdict",
         "delivery",
         # #88: the fixed post-Event return. The *current* quote is deliberately not a feed field.
         "reaction",
@@ -479,7 +487,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
     # The two OI-shaped response types went with the lane that produced them.
     assert not hasattr(feed_schemas, "NewsFeedOiData")
     assert not hasattr(status_schemas, "NewsOiStatusData")
-    assert set(news_common_schemas.NewsTriageSummaryData.model_fields).isdisjoint(
+    assert set(news_common_schemas.NewsLegacyVerdictData.model_fields).isdisjoint(
         {"event_type", "event_type_zh", "actionable", "model_decision", "model_decision_zh", "title_zh"}
     )
     assert {"payload", "dimensions", "novelty"}.isdisjoint(event_schemas.NewsAcceptedReviewData.model_fields)
@@ -551,7 +559,10 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
     assert set(event_schemas.NewsEventDetailData.model_fields) == {
         "event",
         "outcome",
-        "triage",
+        # #706: the EventUpdate path, and the legacy verdict beside it rather than mixed into it.
+        "event_update",
+        "processing",
+        "legacy_verdict",
         "timeline",
         "members",
         "verdicts",
@@ -567,6 +578,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "reactions",
     }
     assert set(event_schemas.NewsDeliveryData.model_fields) == {
+        "intent_id",
         "kind",
         "state",
         "error_code",
@@ -582,23 +594,20 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
     }
     assert set(news_common_schemas.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
     assert set(news_common_schemas.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
-    assert set(news_common_schemas.NewsTaxonomyData.model_fields) == {
-        "taxonomy_version",
-        "codebook_sha256",
-        "subject_codes",
-        "subject_labels_zh",
-        "event_family",
-        "event_family_zh",
-        "change_state",
-        "change_state_zh",
-        "assertion_status",
-        "assertion_status_zh",
-    }
-    # #651 §5.3: the code-owned authority is an editorial field, published beside the classification
-    # rather than inside it, and it survives a taxonomy the model failed to produce.
-    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code", "source_authority", "source_authority_zh"} <= set(
-        news_common_schemas.NewsTriageSummaryData.model_fields
+    # #706: the taxonomy Predictor is retired. No summary projects its four axes into a current reading;
+    # a legacy verdict row keeps its stored codes, verbatim and unlabelled, for audit only.
+    assert not hasattr(news_common_schemas, "NewsTaxonomyData")
+    assert not hasattr(news_common_schemas, "NewsTriageSummaryData")
+    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code"}.isdisjoint(
+        news_common_schemas.NewsLegacyVerdictData.model_fields
     )
+    assert {"source_authority", "source_authority_zh"} <= set(news_common_schemas.NewsLegacyVerdictData.model_fields)
+    assert set(event_schemas.NewsLegacyTaxonomyData.model_fields) == {
+        "subject_codes",
+        "event_family",
+        "change_state",
+        "assertion_status",
+    }
     assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(status_schemas.NewsStatusData.model_fields) == {
         "state",
@@ -649,13 +658,16 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "last_error_code",
         "updated_at_ms",
     }
+    # #706: a notification plan is a current contract again -- the planner's claim decisions and its work
+    # state -- and each such name is listed here deliberately rather than by marker.
+    named_notification = {"NewsNotificationPlanData", "NewsNotificationWorkData"}
     for schema_module in (
         event_schemas,
         feed_schemas,
         news_common_schemas,
         status_schemas,
     ):
-        for name in dir(schema_module):
+        for name in set(dir(schema_module)) - named_notification:
             assert not any(
                 marker in name for marker in ("Story", "Brief", "Rss", "TitleTranslation", "Notification")
             ), name
@@ -679,17 +691,12 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
         "source_authority_zh": "发行方一手来源",
         "taxonomy_status": "available",
         "taxonomy_error_code": None,
+        # #706: the retired axes as the legacy verdict stored them, with no vocabulary applied.
         "taxonomy": {
-            "taxonomy_version": "news_taxonomy_v1",
-            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac",
             "subject_codes": ["medtop:20000385"],
-            "subject_labels_zh": ["市场与交易所"],
             "event_family": "market_access",
-            "event_family_zh": "市场准入",
             "change_state": "effective",
-            "change_state_zh": "已生效",
             "assertion_status": "confirmed",
-            "assertion_status_zh": "已确认",
         },
     }
     payload = {
@@ -763,18 +770,15 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
 
     response = http.get(
         "/api/news/feed",
-        params={"token": TOKEN, "event_family": "other,financial_results", "limit": 5},
+        params={"token": TOKEN, "subject_code": "medtop:16000000,medtop:04000000", "limit": 5},
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
     assert body["data"]["filters"] == {
-        "event_family": "financial_results,other",
-        "change_state": None,
-        "assertion_status": None,
         "source_authority": None,
-        "subject_code": None,
+        "subject_code": "medtop:04000000,medtop:16000000",
         "final_decision": None,
         "event_kind": None,
         "admission": None,
@@ -881,9 +885,6 @@ def test_feed_forwards_all_current_filters_in_canonical_order(client) -> None:
         params={
             "token": TOKEN,
             "direction": "neutral,bullish",
-            "event_family": "other,financial_results",
-            "change_state": "unknown,announced",
-            "assertion_status": "rumor,confirmed",
             "source_authority": "unknown,issuer_first_party",
             "subject_code": "medtop:16000000,medtop:04000000",
             "final_decision": "throttled,push",
@@ -894,18 +895,13 @@ def test_feed_forwards_all_current_filters_in_canonical_order(client) -> None:
     assert response.status_code == 200
     forwarded = news.calls[0][1]
     assert forwarded["directions"] == ("bullish", "neutral")
-    assert forwarded["event_family"] == ("financial_results", "other")
-    assert forwarded["change_state"] == ("announced", "unknown")
-    assert forwarded["assertion_status"] == ("confirmed", "rumor")
+    assert {"event_family", "change_state", "assertion_status"}.isdisjoint(forwarded)
     assert forwarded["source_authority"] == ("issuer_first_party", "unknown")
     assert forwarded["subject_code"] == ("medtop:04000000", "medtop:16000000")
     assert forwarded["final_decision"] == ("push", "throttled")
     assert forwarded["event_kind"] == ("news", "listing")
     filters = response.json()["data"]["filters"]
     assert filters["direction"] == "bullish,neutral"
-    assert filters["event_family"] == "financial_results,other"
-    assert filters["change_state"] == "announced,unknown"
-    assert filters["assertion_status"] == "confirmed,rumor"
     assert filters["source_authority"] == "issuer_first_party,unknown"
     assert filters["subject_code"] == "medtop:04000000,medtop:16000000"
     assert filters["final_decision"] == "push,throttled"
@@ -963,9 +959,11 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
     ("params", "error", "field"),
     [
         ({"admission": "bogus"}, "news_feed_admission_invalid", "admission"),
-        ({"event_family": "general"}, "news_feed_event_family_invalid", "event_family"),
-        ({"change_state": "new"}, "news_feed_change_state_invalid", "change_state"),
-        ({"assertion_status": "maybe"}, "news_feed_assertion_status_invalid", "assertion_status"),
+        # #706: the retired taxonomy axes are refused rather than ignored, so a stale console link cannot
+        # serve an unfiltered feed under a filtered heading.
+        ({"event_family": "other"}, "unsupported_query_param", "event_family"),
+        ({"change_state": "announced"}, "unsupported_query_param", "change_state"),
+        ({"assertion_status": "confirmed"}, "unsupported_query_param", "assertion_status"),
         ({"source_authority": "blog"}, "news_feed_source_authority_invalid", "source_authority"),
         ({"subject_code": "topic:1"}, "news_feed_subject_code_invalid", "subject_code"),
         ({"final_decision": "maybe"}, "news_feed_final_decision_invalid", "final_decision"),
@@ -1079,6 +1077,121 @@ def test_event_detail_returns_current_envelope_or_missing_state(client) -> None:
     too_long = http.get(f"/api/news/events/{'x' * 129}", params={"token": TOKEN})
     assert too_long.status_code == 400
     assert too_long.json() == {"ok": False, "error": "news_event_id_invalid", "field": "event_id"}
+
+
+def test_event_detail_serves_the_event_update_and_its_processing_beside_no_legacy_verdict(client) -> None:
+    """#706: the detail of a News Agent Event, projected by the production read view, through the schema.
+
+    The head is a real `assemble_update` revision -- a 25% tariff raised to 50% -- whose first revision
+    was supported by one source and refuted by another. The Console must see what changed against which
+    earlier statement, each source's relation, the inference labelled as one, the gap, and what the
+    notification planner and the deliverer actually did, with the exact body sent.
+    """
+
+    http, news = client
+    head = first_update("ev-1")
+    raised = raised_update(head)
+    plan = notify_plan(raised, key=True)
+    body = "【重点】钢铁进口关税上调至 50%"
+    ledger = {
+        "intent_id": plan.intent_id,
+        "kind": "update",
+        "state": "sent",
+        "card": {"headline_zh": "钢铁进口关税上调至 50%"},
+        "receipt": {"channel": "telegram", "message_id": 42},
+        "error_code": None,
+        "attempted_at_ms": raised.adopted_at_ms + 10,
+        "settled_at_ms": raised.adopted_at_ms + 20,
+        "created_at_ms": raised.adopted_at_ms + 10,
+        "content_revision": raised.content_revision,
+        "claim_refs": list(plan.selected_claim_refs),
+        "body": body,
+        "payload_sha256": "f" * 64,
+        "plan_key": True,
+    }
+    intents = intent_views([], [ledger])
+    document = json.loads(canonical_json(raised))
+    prior = {(head.ref, claim.ref): {"statement": claim.statement, "event_id": "ev-1"} for claim in head.claims}
+    update = event_update_view({"document": document}, previous_claims=prior, sent_headline=sent_headline(intents))
+    assert update is not None
+    statements = {claim["ref"]: claim["statement"] for claim in update["claims"]}
+    news.detail_overrides["ev-1"] = {
+        "event_update": update,
+        "processing": {
+            "semantic": semantic_view(
+                {"wanted_revision": 2, "done_revision": 2, "attempts": 1, "updated_at_ms": raised.adopted_at_ms}
+            ),
+            "observations": [],
+            "notification": notification_view(
+                {
+                    "state": "done",
+                    "content_revision": raised.content_revision,
+                    "plan": json.loads(canonical_json(plan)),
+                    "attempts": 0,
+                    "updated_at_ms": raised.adopted_at_ms + 5,
+                },
+                statements=statements,
+            ),
+            "intents": intents,
+            "update_error_code": None,
+        },
+        "legacy_verdict": None,
+    }
+
+    response = http.get("/api/news/events/ev-1", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["legacy_verdict"] is None
+    served = data["event_update"]
+    # The headline a reader actually received outranks any claim text.
+    assert (served["headline"], served["headline_source"]) == ("钢铁进口关税上调至 50%", "sent_card")
+    assert served["topics"] == [{"code": "medtop:20000384", "label_zh": "关税"}]
+    assert [(change["kind"], change["previous_statement"]) for change in served["changes"]] == [
+        ("parameter_change", head.claims[0].statement)
+    ]
+    first, second = served["claims"]
+    assert (first["mode"], first["phase"], first["phase_zh"]) == ("decision", "announced", "已宣布")
+    assert first["effective_at"] == "2026-10-01" and first["conditions"] == ["unless a deal is signed"]
+    assert first["quantities"] == [{"name": "rate", "value": "25", "unit": "%", "period": None}]
+    assert first["disputed"] is True and second["disputed"] is False
+    assert served["disputed_claim_refs"] == [first["ref"]]
+    relations = {
+        (source["source"]["publisher_id"], row["relation"])
+        for source in served["sources"]
+        for row in source["relations"]
+    }
+    assert {("wire", "supports"), ("rival", "refutes")} <= relations
+    assert served["implications"][0]["origin_zh"] == "来源所述因果（推断）"
+    assert served["open_questions"][0]["question"] == "Has the order been signed?"
+    processing = data["processing"]
+    assert processing["semantic"]["state"] == "done"
+    decisions = processing["notification"]["plan"]["claim_decisions"]
+    assert {row["reason_zh"] for row in decisions} == {"具体动作或数据"}
+    assert processing["notification"]["plan"]["key"] is True
+    assert processing["intents"][0]["state"] == "sent" and processing["intents"][0]["body"] == body
+
+
+def test_a_legacy_event_detail_keeps_its_verdict_under_the_legacy_name(client) -> None:
+    http, news = client
+    news.detail_overrides["ev-1"] = {
+        "legacy_verdict": {
+            "final_decision": "push",
+            "direction": "bullish",
+            "fact_kind": "state_change",
+            "headline_zh": "铜价创新高",
+            "direction_zh": "利多",
+            "fact_kind_zh": "状态变化",
+            "source_authority": "reputable_secondary",
+            "source_authority_zh": "可信二手来源",
+        }
+    }
+
+    data = http.get("/api/news/events/ev-1", params={"token": TOKEN}).json()["data"]
+
+    assert data.get("event_update") is None and data.get("processing") is None
+    assert data["legacy_verdict"]["headline_zh"] == "铜价创新高"
+    assert "taxonomy" not in data["legacy_verdict"]
 
 
 def test_status_reports_unavailable_without_broker_or_token(client) -> None:

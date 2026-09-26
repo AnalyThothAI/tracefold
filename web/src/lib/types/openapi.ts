@@ -753,6 +753,192 @@ export interface components {
                 [key: string]: components["schemas"]["NewsBrokerQueueData"];
             };
         };
+        /** NewsClaimAssetData */
+        NewsClaimAssetData: {
+            /**
+             * Market Type
+             * @enum {string}
+             */
+            market_type: "crypto" | "equity" | "commodity" | "index" | "forex" | "fund" | "unknown";
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "primary" | "mentioned";
+            /** Symbol */
+            symbol: string;
+        };
+        /**
+         * NewsClaimChangeData
+         * @description What this revision changed relative to an earlier claim. An unfound earlier claim stays unknown.
+         */
+        NewsClaimChangeData: {
+            /** Current Ref */
+            current_ref: string;
+            /**
+             * Current Statement
+             * @default
+             */
+            current_statement: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "new_fact" | "possible_new" | "parameter_change" | "phase_change" | "scope_change" | "correction" | "conflict" | "evidence_change" | "restatement";
+            /**
+             * Kind Zh
+             * @default
+             */
+            kind_zh: string;
+            /** Previous Content Ref */
+            previous_content_ref?: string | null;
+            /** Previous Event Id */
+            previous_event_id?: string | null;
+            /** Previous Ref */
+            previous_ref?: string | null;
+            /** Previous Statement */
+            previous_statement?: string | null;
+            /** Relation */
+            relation?: ("equivalent" | "adds_information" | "real_world_change" | "corrects" | "conflicts" | "unrelated" | "unresolved") | null;
+            /**
+             * Relation Zh
+             * @default
+             */
+            relation_zh: string;
+        };
+        /** NewsClaimCitationData */
+        NewsClaimCitationData: {
+            /** Evidence Ref */
+            evidence_ref: string;
+            /** Quote */
+            quote: string;
+            source?: components["schemas"]["NewsUpdateSourceData"] | null;
+        };
+        /**
+         * NewsClaimData
+         * @description One adopted claim with its own mode, phase, time, conditions and quantities -- never merged.
+         */
+        NewsClaimData: {
+            /** Action */
+            action: string;
+            /** Antecedent Refs */
+            antecedent_refs?: string[];
+            /** Assets */
+            assets?: components["schemas"]["NewsClaimAssetData"][];
+            /** Citations */
+            citations: components["schemas"]["NewsClaimCitationData"][];
+            /** Conditions */
+            conditions?: string[];
+            /**
+             * Content Kind
+             * @enum {string}
+             */
+            content_kind: "state_change" | "official_measure" | "new_quantity" | "level_crossed" | "period_record" | "quantified_flow" | "schedule" | "other";
+            /**
+             * Content Kind Zh
+             * @default
+             */
+            content_kind_zh: string;
+            /**
+             * Disputed
+             * @default false
+             */
+            disputed: boolean;
+            /** Effective At */
+            effective_at?: string | null;
+            /** First Available At Ms */
+            first_available_at_ms: number;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "observation" | "decision" | "commitment" | "conditional_threat" | "guidance" | "forecast" | "commentary" | "promotion" | "unknown";
+            /**
+             * Mode Zh
+             * @default
+             */
+            mode_zh: string;
+            /**
+             * Object
+             * @default
+             */
+            object: string;
+            /** Occurred At */
+            occurred_at?: string | null;
+            /** Phase */
+            phase?: ("proposed" | "announced" | "ordered" | "effective" | "executing" | "completed" | "cancelled" | "unknown") | null;
+            /**
+             * Phase Zh
+             * @default
+             */
+            phase_zh: string;
+            /**
+             * Polarity
+             * @enum {string}
+             */
+            polarity: "affirmative" | "negative" | "unknown";
+            /**
+             * Polarity Zh
+             * @default
+             */
+            polarity_zh: string;
+            /** Quantities */
+            quantities?: components["schemas"]["NewsClaimQuantityData"][];
+            /** Ref */
+            ref: string;
+            relation_counts: components["schemas"]["NewsRelationCountsData"];
+            /**
+             * Retired
+             * @default false
+             */
+            retired: boolean;
+            /** Speaker */
+            speaker?: string | null;
+            /** Statement */
+            statement: string;
+            /** Statistical Period */
+            statistical_period?: string | null;
+            /** Subject */
+            subject: string;
+        };
+        /** NewsClaimDecisionData */
+        NewsClaimDecisionData: {
+            /** Claim Ref */
+            claim_ref: string;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "notify" | "not_notified" | "deferred";
+            /**
+             * Decision Zh
+             * @default
+             */
+            decision_zh: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "watchlist_hit" | "large_daily_move" | "actionable_content" | "retired" | "mode_commentary" | "mode_promotion" | "mode_forecast" | "mode_unknown" | "content_schedule" | "price_report_without_basis" | "stale_source" | "covered_by_sent_receipt" | "send_outcome_unresolved";
+            /**
+             * Reason Zh
+             * @default
+             */
+            reason_zh: string;
+            /** Statement */
+            statement?: string | null;
+        };
+        /** NewsClaimQuantityData */
+        NewsClaimQuantityData: {
+            /** Name */
+            name: string;
+            /** Period */
+            period?: string | null;
+            /** Unit */
+            unit: string;
+            /** Value */
+            value: string;
+        };
         /** NewsDeliveryData */
         NewsDeliveryData: {
             /** Attempted At Ms */
@@ -771,6 +957,8 @@ export interface components {
             edit_state?: ("editing" | "edited" | "ambiguous") | null;
             /** Error Code */
             error_code?: string | null;
+            /** Intent Id */
+            intent_id: string;
             /** Kind */
             kind: string;
             /** Pending Card */
@@ -924,22 +1112,30 @@ export interface components {
             /** Watchlist Hits */
             watchlist_hits?: string[];
         };
-        /** NewsEventDetailData */
+        /**
+         * NewsEventDetailData
+         * @description One Event. ``event_update``/``processing`` are the EventUpdate path (#706); ``legacy_verdict``,
+         *     ``verdicts``, ``evidence_inputs`` and ``late_evidence`` are the history of an Event judged before it,
+         *     and none of them is merged into the other.
+         */
         NewsEventDetailData: {
             /** Deliveries */
             deliveries: components["schemas"]["NewsDeliveryData"][];
             event: components["schemas"]["NewsEventData"];
+            event_update?: components["schemas"]["NewsEventUpdateData"] | null;
             /** Evidence Inputs */
             evidence_inputs?: components["schemas"]["NewsEvidenceInputData"][];
             /** Evidence Snapshots */
             evidence_snapshots?: components["schemas"]["NewsEvidenceSnapshotData"][];
             /** Late Evidence */
             late_evidence?: components["schemas"]["NewsLateEvidenceData"][];
+            legacy_verdict?: components["schemas"]["NewsLegacyVerdictData"] | null;
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
             /** Normalization */
             normalization?: components["schemas"]["NewsSymbolNormalizationData"][];
             outcome: components["schemas"]["NewsOutcomeData"];
+            processing?: components["schemas"]["NewsProcessingData"] | null;
             reaction?: components["schemas"]["NewsReactionSummaryData"] | null;
             /** Reactions */
             reactions?: components["schemas"]["NewsEventReactionData"][];
@@ -947,7 +1143,6 @@ export interface components {
             review: components["schemas"]["NewsEventReviewSummaryData"];
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
-            triage?: components["schemas"]["NewsTriageSummaryData"] | null;
             /** Verdicts */
             verdicts: components["schemas"]["NewsVerdictData"][];
         };
@@ -1059,6 +1254,42 @@ export interface components {
              */
             uncertain: boolean;
         };
+        /**
+         * NewsEventUpdateData
+         * @description The Event's adopted EventUpdate head: what happened, what changed, who says so, what is missing.
+         */
+        NewsEventUpdateData: {
+            /** Adopted At Ms */
+            adopted_at_ms: number;
+            /** Changes */
+            changes?: components["schemas"]["NewsClaimChangeData"][];
+            /** Claims */
+            claims: components["schemas"]["NewsClaimData"][];
+            /** Content Revision */
+            content_revision: string;
+            /** Disputed Claim Refs */
+            disputed_claim_refs?: string[];
+            /** Headline */
+            headline?: string | null;
+            /** Headline Source */
+            headline_source?: ("sent_card" | "claim") | null;
+            /** Implications */
+            implications?: components["schemas"]["NewsImplicationData"][];
+            /** Input Revision */
+            input_revision: number;
+            /** Open Questions */
+            open_questions?: components["schemas"]["NewsOpenQuestionData"][];
+            /** Previous Content Revision */
+            previous_content_revision?: string | null;
+            /** Retired Claim Refs */
+            retired_claim_refs?: string[];
+            /** Sources */
+            sources?: components["schemas"]["NewsUpdateEvidenceData"][];
+            /** Topics */
+            topics?: components["schemas"]["NewsTopicData"][];
+            /** Update Ref */
+            update_ref: string;
+        };
         /** NewsEvidenceInputData */
         NewsEvidenceInputData: {
             /** Candidate Count */
@@ -1097,6 +1328,28 @@ export interface components {
             selected_count: number;
             /** Status */
             status: string;
+        };
+        /** NewsEvidenceRelationData */
+        NewsEvidenceRelationData: {
+            /** Claim Ref */
+            claim_ref: string;
+            /**
+             * Claim Statement
+             * @default
+             */
+            claim_statement: string;
+            /** Evidence Ref */
+            evidence_ref: string;
+            /**
+             * Relation
+             * @enum {string}
+             */
+            relation: "supports" | "refutes" | "reports" | "not_addressed" | "unresolved";
+            /**
+             * Relation Zh
+             * @default
+             */
+            relation_zh: string;
         };
         /**
          * NewsEvidenceSnapshotData
@@ -1255,6 +1508,7 @@ export interface components {
             leader_title: string;
             /** Leader Url */
             leader_url?: string | null;
+            legacy_verdict?: components["schemas"]["NewsLegacyVerdictData"] | null;
             /**
              * Macro Lexicon
              * @default false
@@ -1282,7 +1536,7 @@ export interface components {
              * @default
              */
             storyline_key: string;
-            triage?: components["schemas"]["NewsTriageSummaryData"] | null;
+            update?: components["schemas"]["NewsFeedUpdateData"] | null;
             /** Watchlist Hits */
             watchlist_hits?: string[];
         };
@@ -1290,14 +1544,8 @@ export interface components {
         NewsFeedFiltersData: {
             /** Admission */
             admission?: string | null;
-            /** Assertion Status */
-            assertion_status?: string | null;
-            /** Change State */
-            change_state?: string | null;
             /** Direction */
             direction?: string | null;
-            /** Event Family */
-            event_family?: string | null;
             /** Event Kind */
             event_kind?: string | null;
             /** Final Decision */
@@ -1328,6 +1576,25 @@ export interface components {
             normalized_query: string;
             /** Resolved Symbols */
             resolved_symbols: string[];
+        };
+        /**
+         * NewsFeedUpdateData
+         * @description The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.
+         *
+         *     ``headline`` is the card headline a reader actually received for this Event's latest sent update, else
+         *     the first claim the head has not retired. It is ``null`` only when every claim is retired.
+         */
+        NewsFeedUpdateData: {
+            /** Adopted At Ms */
+            adopted_at_ms: number;
+            /** Claim N */
+            claim_n: number;
+            /** Content Revision */
+            content_revision: string;
+            /** Headline */
+            headline?: string | null;
+            /** Headline Source */
+            headline_source?: ("sent_card" | "claim") | null;
         };
         /** NewsFunnelData */
         NewsFunnelData: {
@@ -1408,6 +1675,30 @@ export interface components {
             level: "ok" | "warn" | "bad" | "off";
             /** Summary Zh */
             summary_zh: string;
+        };
+        /**
+         * NewsImplicationData
+         * @description An explanatory hypothesis, never a fact, a price call or a corroboration. ``origin`` says whose.
+         */
+        NewsImplicationData: {
+            /** Channel */
+            channel: string;
+            /** Claim Refs */
+            claim_refs: string[];
+            /** Conditions */
+            conditions?: string[];
+            /** Explanation */
+            explanation: string;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "reported_causality" | "system_hypothesis";
+            /**
+             * Origin Zh
+             * @default
+             */
+            origin_zh: string;
         };
         /** NewsIncidentData */
         NewsIncidentData: {
@@ -1546,6 +1837,100 @@ export interface components {
             oldest_recording_age_ms?: number | null;
             /** Updated At Ms */
             updated_at_ms?: number | null;
+        };
+        /**
+         * NewsLegacyTaxonomyData
+         * @description The four retired taxonomy axes exactly as one legacy verdict stored them (#706).
+         *
+         *     Audit only. The axes have no current owner or reading, so no vocabulary is applied and nothing is
+         *     validated against the retired enums: a stored code is published as stored, a missing one as ``null``.
+         */
+        NewsLegacyTaxonomyData: {
+            /** Assertion Status */
+            assertion_status?: string | null;
+            /** Change State */
+            change_state?: string | null;
+            /** Event Family */
+            event_family?: string | null;
+            /** Subject Codes */
+            subject_codes?: string[];
+        };
+        /**
+         * NewsLegacyVerdictData
+         * @description The reader-facing view of one legacy Triage verdict: history only since #706.
+         *
+         *     `news_verdicts` receives no writes. An Event the News Agent processed has no verdict and therefore no
+         *     summary; its reading is `event_update`. Every `*_zh` is server-owned copy; the raw enum stays beside it
+         *     so the browser can map it to a visual tone without owning a vocabulary table. The retired taxonomy axes
+         *     are not summarized here -- the verdict rows keep their stored values for audit.
+         */
+        NewsLegacyVerdictData: {
+            /** Assets */
+            assets?: components["schemas"]["NewsTriageAssetData"][];
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Decision Zh
+             * @default
+             */
+            decision_zh: string;
+            /**
+             * Degraded
+             * @default false
+             */
+            degraded: boolean;
+            /** Direction */
+            direction?: string | null;
+            /**
+             * Direction Zh
+             * @default
+             */
+            direction_zh: string;
+            /** Error Code */
+            error_code?: string | null;
+            /** Evidence Ref */
+            evidence_ref?: string | null;
+            /** Fact Kind */
+            fact_kind?: ("state_change" | "new_quantity" | "level_crossed" | "period_record" | "quantified_flow" | "official_measure" | "statement" | "recap" | "schedule" | "promotion") | null;
+            /**
+             * Fact Kind Zh
+             * @default
+             */
+            fact_kind_zh: string;
+            /**
+             * Final Decision
+             * @enum {string}
+             */
+            final_decision: "push" | "escalate" | "drop" | "throttled";
+            /** Headline Zh */
+            headline_zh?: string | null;
+            /** Novelty */
+            novelty?: string | null;
+            /**
+             * Novelty Zh
+             * @default
+             */
+            novelty_zh: string;
+            /** Override Rule */
+            override_rule?: string | null;
+            /** Scope */
+            scope?: string | null;
+            /**
+             * Scope Zh
+             * @default
+             */
+            scope_zh: string;
+            /** Source Authority */
+            source_authority?: ("regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown") | null;
+            /**
+             * Source Authority Zh
+             * @default
+             */
+            source_authority_zh: string;
+            /** Throttled By */
+            throttled_by?: string | null;
+            /** Why Zh */
+            why_zh?: string | null;
         };
         /** NewsMarketData */
         NewsMarketData: {
@@ -1857,10 +2242,10 @@ export interface components {
         };
         /**
          * NewsModelEditorialData
-         * @description The editorial sibling of one model verdict, in the current `news_editorial_v4` read shape.
+         * @description The editorial sibling of one legacy model verdict, in the `news_editorial_v4` read shape.
          *
-         *     ``source_authority`` is code-owned and always present; ``taxonomy`` is the taxonomy Predictor's answer
-         *     and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
+         *     ``source_authority`` is code-owned and always present; ``taxonomy`` is the retired taxonomy Predictor's
+         *     stored answer and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
          *     ``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under
          *     `news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row
          *     reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3), and a
@@ -1877,7 +2262,7 @@ export interface components {
              * @default
              */
             source_authority_zh: string;
-            taxonomy?: components["schemas"]["NewsTaxonomyData"] | null;
+            taxonomy?: components["schemas"]["NewsLegacyTaxonomyData"] | null;
             /** Taxonomy Error Code */
             taxonomy_error_code?: string | null;
             /**
@@ -1886,6 +2271,76 @@ export interface components {
              * @enum {string}
              */
             taxonomy_status: "available" | "unavailable";
+        };
+        /** NewsNotificationPlanData */
+        NewsNotificationPlanData: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "notify" | "no_notification" | "unresolved";
+            /**
+             * Action Zh
+             * @default
+             */
+            action_zh: string;
+            /** Claim Decisions */
+            claim_decisions?: components["schemas"]["NewsClaimDecisionData"][];
+            /**
+             * Key
+             * @default false
+             */
+            key: boolean;
+            /** Reader Revision */
+            reader_revision: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "uncovered_claims" | "send_outcome_unresolved" | "no_uncovered_actionable_claims";
+            /**
+             * Reason Zh
+             * @default
+             */
+            reason_zh: string;
+            /** Update Ref */
+            update_ref: string;
+        };
+        /** NewsNotificationWorkData */
+        NewsNotificationWorkData: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /** Content Revision */
+            content_revision: string;
+            /** Next Attempt At Ms */
+            next_attempt_at_ms?: number | null;
+            plan?: components["schemas"]["NewsNotificationPlanData"] | null;
+            /** Plan Error Code */
+            plan_error_code?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "done";
+            /**
+             * State Zh
+             * @default
+             */
+            state_zh: string;
+            /** Updated At Ms */
+            updated_at_ms: number;
+        };
+        /** NewsOpenQuestionData */
+        NewsOpenQuestionData: {
+            /** Claim Refs */
+            claim_refs: string[];
+            /** Question */
+            question: string;
+            /** Target Ref */
+            target_ref?: string | null;
         };
         /**
          * NewsOutcomeData
@@ -1901,7 +2356,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "held_recovery" | "held_gate" | "expired_triage_handoff" | "expired_delivery_handoff" | "queued_publish" | "queued_triage" | "dropped" | "throttled" | "degraded_dropped" | "pending_delivery" | "delivered" | "delivery_failed";
+            kind: "held_recovery" | "held_gate" | "expired_triage_handoff" | "expired_delivery_handoff" | "queued_publish" | "queued_triage" | "dropped" | "throttled" | "degraded_dropped" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "not_notified" | "delivery_ambiguous";
             /**
              * Reason Zh
              * @default
@@ -2144,6 +2599,20 @@ export interface components {
             sources?: components["schemas"]["NewsQuoteVenueData"][];
         };
         /**
+         * NewsProcessingData
+         * @description What the EventUpdate path did with this Event, from its durable work rows and receipts (#706).
+         */
+        NewsProcessingData: {
+            /** Intents */
+            intents?: components["schemas"]["NewsUpdateIntentData"][];
+            notification?: components["schemas"]["NewsNotificationWorkData"] | null;
+            /** Observations */
+            observations?: components["schemas"]["NewsSemanticObservationData"][];
+            semantic?: components["schemas"]["NewsSemanticWorkData"] | null;
+            /** Update Error Code */
+            update_error_code?: string | null;
+        };
+        /**
          * NewsQuoteData
          * @description One current quote (#88). `state` is derived when read, never maintained by a timer write.
          *
@@ -2334,6 +2803,34 @@ export interface components {
             /** Reason */
             reason?: ("recovery_pending" | "recovery_transient") | null;
         };
+        /** NewsRelationCountsData */
+        NewsRelationCountsData: {
+            /**
+             * Not Addressed
+             * @default 0
+             */
+            not_addressed: number;
+            /**
+             * Refutes
+             * @default 0
+             */
+            refutes: number;
+            /**
+             * Reports
+             * @default 0
+             */
+            reports: number;
+            /**
+             * Supports
+             * @default 0
+             */
+            supports: number;
+            /**
+             * Unresolved
+             * @default 0
+             */
+            unresolved: number;
+        };
         /**
          * NewsReviewRatio24hData
          * @description One daily-audit product ratio with the two numbers it was divided from (#675 §4).
@@ -2354,6 +2851,56 @@ export interface components {
             numerator: number;
             /** Ratio */
             ratio?: number | null;
+        };
+        /** NewsSemanticObservationData */
+        NewsSemanticObservationData: {
+            /** Adopted Content Revision */
+            adopted_content_revision?: string | null;
+            /** Completed At Ms */
+            completed_at_ms: number;
+            /** Input Revision */
+            input_revision: number;
+            /** Program Identity */
+            program_identity: string;
+            /** Result Id */
+            result_id: string;
+        };
+        /** NewsSemanticWorkData */
+        NewsSemanticWorkData: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /** Done Revision */
+            done_revision?: number | null;
+            /** Extra Read State */
+            extra_read_state?: string | null;
+            /**
+             * Extra Read State Zh
+             * @default
+             */
+            extra_read_state_zh: string;
+            /** Last Error Code */
+            last_error_code?: string | null;
+            /** Last Outcome */
+            last_outcome?: string | null;
+            /** Next Attempt At Ms */
+            next_attempt_at_ms?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "done" | "failed";
+            /**
+             * State Zh
+             * @default
+             */
+            state_zh: string;
+            /** Updated At Ms */
+            updated_at_ms: number;
+            /** Wanted Revision */
+            wanted_revision: number;
         };
         /** NewsSourceContractStageCountsData */
         NewsSourceContractStageCountsData: {
@@ -2459,54 +3006,6 @@ export interface components {
             /** Sources */
             sources?: string[];
         };
-        /**
-         * NewsTaxonomyData
-         * @description The four model-owned classification axes and the codebook they were labelled against.
-         *
-         *     Source authority left this object in #651: it is code-owned, computed from the evidence, and present
-         *     on a judgment whose taxonomy call failed and which therefore has no taxonomy at all. It is published
-         *     beside this one, on the editorial and the Triage summary.
-         */
-        NewsTaxonomyData: {
-            /**
-             * Assertion Status
-             * @enum {string}
-             */
-            assertion_status: "confirmed" | "claimed" | "rumor" | "conflicted" | "unknown";
-            /** Assertion Status Zh */
-            assertion_status_zh: string;
-            /**
-             * Change State
-             * @enum {string}
-             */
-            change_state: "announced" | "scheduled" | "effective" | "reported" | "updated" | "delayed" | "cancelled" | "recalled" | "unknown";
-            /** Change State Zh */
-            change_state_zh: string;
-            /**
-             * Codebook Sha256
-             * @constant
-             */
-            codebook_sha256: "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac";
-            /**
-             * Event Family
-             * @enum {string}
-             */
-            event_family: "financial_results" | "guidance_outlook" | "product_service_change" | "corporate_transaction" | "financing_capital_allocation" | "leadership_governance" | "regulatory_legal" | "security_operational_incident" | "market_access" | "market_flow_price" | "macro_policy_data" | "geopolitical_conflict" | "other";
-            /** Event Family Zh */
-            event_family_zh: string;
-            /**
-             * Subject Codes
-             * @default []
-             */
-            subject_codes: ("medtop:04000000" | "medtop:20000174" | "medtop:20000175" | "medtop:20000177" | "medtop:20000178" | "medtop:20000180" | "medtop:20000183" | "medtop:20000186" | "medtop:20000187" | "medtop:20000189" | "medtop:20000190" | "medtop:20000192" | "medtop:20000195" | "medtop:20000196" | "medtop:20000197" | "medtop:20000199" | "medtop:20000200" | "medtop:20000204" | "medtop:20000205" | "medtop:20000207" | "medtop:20000208" | "medtop:20000344" | "medtop:20000346" | "medtop:20000350" | "medtop:20000359" | "medtop:20000365" | "medtop:20000370" | "medtop:20000371" | "medtop:20000373" | "medtop:20000379" | "medtop:20000384" | "medtop:20000385" | "medtop:20001164" | "medtop:20001279" | "medtop:16000000")[];
-            /** Subject Labels Zh */
-            subject_labels_zh?: string[];
-            /**
-             * Taxonomy Version
-             * @constant
-             */
-            taxonomy_version: "news_taxonomy_v1";
-        };
         /** NewsTimelineStepData */
         NewsTimelineStepData: {
             /** At Ms */
@@ -2519,11 +3018,18 @@ export interface components {
              * Stage
              * @enum {string}
              */
-            stage: "received" | "gate" | "triage" | "decide" | "delivery";
+            stage: "received" | "gate" | "triage" | "decide" | "evidence" | "semantic" | "notify" | "delivery";
             /** Summary Zh */
             summary_zh: string;
             /** Title Zh */
             title_zh: string;
+        };
+        /** NewsTopicData */
+        NewsTopicData: {
+            /** Code */
+            code: string;
+            /** Label Zh */
+            label_zh: string;
         };
         /**
          * NewsTriageAssetData
@@ -2549,82 +3055,99 @@ export interface components {
             symbol: string;
         };
         /**
-         * NewsTriageSummaryData
-         * @description The reader-facing view of one Triage verdict. Every `*_zh` is server-owned copy; the raw enum stays
-         *     beside it so the browser can map it to a visual tone without owning a vocabulary table.
+         * NewsUpdateEvidenceData
+         * @description One cited source and how it bears on each claim; a relation describes the material, not trust.
          */
-        NewsTriageSummaryData: {
-            /** Assets */
-            assets?: components["schemas"]["NewsTriageAssetData"][];
-            /** Confidence */
-            confidence?: number | null;
+        NewsUpdateEvidenceData: {
+            /** Evidence Ref */
+            evidence_ref: string;
+            /** Relations */
+            relations?: components["schemas"]["NewsEvidenceRelationData"][];
+            source: components["schemas"]["NewsUpdateSourceData"];
+            /** Text */
+            text: string;
             /**
-             * Decision Zh
-             * @default
-             */
-            decision_zh: string;
-            /**
-             * Degraded
+             * Text Truncated
              * @default false
              */
-            degraded: boolean;
-            /** Direction */
-            direction?: string | null;
-            /**
-             * Direction Zh
-             * @default
-             */
-            direction_zh: string;
+            text_truncated: boolean;
+        };
+        /**
+         * NewsUpdateIntentData
+         * @description One notification intent: what was selected, what happened to it, and the exact text sent.
+         */
+        NewsUpdateIntentData: {
+            /** Attempted At Ms */
+            attempted_at_ms?: number | null;
+            /** Attempts */
+            attempts?: number | null;
+            /** Body */
+            body?: string | null;
+            /** Claim Refs */
+            claim_refs?: string[];
+            /** Content Revision */
+            content_revision?: string | null;
+            /** Enqueued At Ms */
+            enqueued_at_ms?: number | null;
             /** Error Code */
             error_code?: string | null;
-            /** Evidence Ref */
-            evidence_ref?: string | null;
-            /** Fact Kind */
-            fact_kind?: ("state_change" | "new_quantity" | "level_crossed" | "period_record" | "quantified_flow" | "official_measure" | "statement" | "recap" | "schedule" | "promotion") | null;
-            /**
-             * Fact Kind Zh
-             * @default
-             */
-            fact_kind_zh: string;
-            /**
-             * Final Decision
-             * @enum {string}
-             */
-            final_decision: "push" | "escalate" | "drop" | "throttled";
             /** Headline Zh */
             headline_zh?: string | null;
-            /** Novelty */
-            novelty?: string | null;
+            /** Intent Id */
+            intent_id: string;
             /**
-             * Novelty Zh
+             * Key
+             * @default false
+             */
+            key: boolean;
+            /** Payload Sha256 */
+            payload_sha256?: string | null;
+            /** Receipt */
+            receipt?: {
+                [key: string]: unknown;
+            } | null;
+            /** Settled At Ms */
+            settled_at_ms?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "dead" | "sending" | "sent" | "terminal" | "ambiguous";
+            /**
+             * State Zh
              * @default
              */
-            novelty_zh: string;
-            /** Override Rule */
-            override_rule?: string | null;
-            /** Scope */
-            scope?: string | null;
+            state_zh: string;
+        };
+        /**
+         * NewsUpdateSourceData
+         * @description Where one piece of evidence came from, as ingestion knew it; the authority is code-owned.
+         */
+        NewsUpdateSourceData: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Attribution */
+            attribution?: string | null;
+            /** First Available At Ms */
+            first_available_at_ms: number;
+            /** Origin Id */
+            origin_id?: string | null;
+            /** Published At Ms */
+            published_at_ms?: number | null;
+            /** Publisher Id */
+            publisher_id: string;
             /**
-             * Scope Zh
-             * @default
+             * Source Authority
+             * @enum {string}
              */
-            scope_zh: string;
-            /** Source Authority */
-            source_authority?: ("regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown") | null;
+            source_authority: "regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown";
             /**
              * Source Authority Zh
              * @default
              */
             source_authority_zh: string;
-            taxonomy?: components["schemas"]["NewsTaxonomyData"] | null;
-            /** Taxonomy Error Code */
-            taxonomy_error_code?: string | null;
-            /** Taxonomy Status */
-            taxonomy_status?: ("available" | "unavailable") | null;
-            /** Throttled By */
-            throttled_by?: string | null;
-            /** Why Zh */
-            why_zh?: string | null;
+            /** Url */
+            url?: string | null;
         };
         /** NewsVerdictData */
         NewsVerdictData: {
@@ -4070,9 +4593,6 @@ export interface operations {
     get_news_feed_api_news_feed_get: {
         parameters: {
             query?: {
-                event_family?: string;
-                change_state?: string;
-                assertion_status?: string;
                 source_authority?: string;
                 subject_code?: string;
                 final_decision?: string;

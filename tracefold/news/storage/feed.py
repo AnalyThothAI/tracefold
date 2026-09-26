@@ -25,16 +25,26 @@ from ..source_contracts import (
     SOURCE_CONTRACT_CLASSIFIER_VERSION,
     EventKind,
 )
-from ..taxonomy import source_authority_zh, taxonomy_public
-from ..timeline import event_timeline
+from ..taxonomy import source_authority_zh
+from ..timeline import event_timeline, reader_delivery
+from ..update_view import (
+    UPDATE_DECODE_ERROR,
+    event_update_view,
+    intent_views,
+    notification_view,
+    previous_content_refs,
+    semantic_view,
+    sent_headline,
+)
+from . import update_reads
 from .decisions import editorial_read_shape, triage_verdict_read_shape
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_SQL,
-    EDITORIAL_SOURCE_AUTHORITY_SQL,
     EVENT_MEMBERS_SQL,
     EVENT_VERDICTS_SQL,
     OUTCOME_GROUP_SQL,
+    SOURCE_AUTHORITY_PREDICATE,
     STATUS_DELIVERY_SQL,
     STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
@@ -45,6 +55,7 @@ from .feed_sql import (
     STATUS_LEARNING_RETENTION_SQL,
     STATUS_PIPELINE_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
+    SUBJECT_CODE_PREDICATE,
     TEXT_SEARCH_PREDICATE,
     feed_counts_sql,
     feed_page_sql,
@@ -57,9 +68,6 @@ class FeedStorage:
     def list_feed(
         self,
         *,
-        event_family: tuple[str, ...] | None,
-        change_state: tuple[str, ...] | None,
-        assertion_status: tuple[str, ...] | None,
         source_authority: tuple[str, ...] | None,
         subject_code: tuple[str, ...] | None,
         final_decision: tuple[str, ...] | None,
@@ -86,22 +94,12 @@ class FeedStorage:
             since_ms = handoff_now_ms - window_hours * 3600_000
             where.append("e.opened_at_ms >= %s")
             params.append(since_ms)
-        taxonomy_filters = (
-            (event_family, "event_family"),
-            (change_state, "change_state"),
-            (assertion_status, "assertion_status"),
-        )
-        for values, key in taxonomy_filters:
-            if values:
-                where.append(f"t.editorial #>> '{{taxonomy,{key}}}' = ANY(%s)")
-                params.append(list(values))
         if source_authority:
-            # Not a taxonomy axis since #651: the authority is an editorial field of its own, and this
-            # predicate reads it from wherever the stored document keeps it.
-            where.append(f"{EDITORIAL_SOURCE_AUTHORITY_SQL} = ANY(%s)")
-            params.append(list(source_authority))
+            # #706: the authority of the sources an adopted update cites, else the legacy editorial one.
+            where.append(SOURCE_AUTHORITY_PREDICATE)
+            params.extend([list(source_authority), list(source_authority)])
         if subject_code:
-            where.append("COALESCE(t.editorial #> '{taxonomy,subject_codes}', '[]'::jsonb) ?| %s")
+            where.append(SUBJECT_CODE_PREDICATE)
             params.append(list(subject_code))
         if admission:
             where.append("e.admission = %s")
@@ -147,9 +145,6 @@ class FeedStorage:
             "next_cursor": next_cursor,
             "counts": counts,
             "filters": {
-                "event_family": _joined_filter(event_family),
-                "change_state": _joined_filter(change_state),
-                "assertion_status": _joined_filter(assertion_status),
                 "source_authority": _joined_filter(source_authority),
                 "subject_code": _joined_filter(subject_code),
                 "final_decision": _joined_filter(final_decision),
@@ -196,17 +191,37 @@ class FeedStorage:
             (event_id,),
         ).fetchall()
         verdicts = self.conn.execute(EVENT_VERDICTS_SQL, (event_id,)).fetchall()
-        deliveries = self.conn.execute(
-            """
-            SELECT kind, state, card, receipt, error_code, attempted_at_ms, settled_at_ms,
-                   created_at_ms, edit_state, pending_card, edit_error_code,
-                   edit_attempted_at_ms, edit_settled_at_ms
-              FROM news_deliveries
-             WHERE event_id = %s
-             ORDER BY created_at_ms
-            """,
-            (event_id,),
-        ).fetchall()
+        deliveries = update_reads.event_deliveries(self.conn, event_id)
+        queue = update_reads.event_delivery_queue(self.conn, event_id)
+        # #706: the EventUpdate plane. A legacy Event has none of these rows and reads exactly as before.
+        work = update_reads.semantic_work(self.conn, event_id)
+        head = update_reads.event_update_head(self.conn, event_id)
+        on_update_path = work is not None or head is not None
+        revisions = update_reads.event_update_revisions(self.conn, event_id) if on_update_path else []
+        observations = update_reads.semantic_observations(self.conn, event_id) if on_update_path else []
+        notification = update_reads.notification_work(self.conn, event_id) if on_update_path else None
+        snapshots = [
+            {
+                "event_id": row["event_id"],
+                "evidence_version": int(row["evidence_version"]),
+                "focus_fact_id": row["focus_fact_id"],
+                "evidence_sha256": row["evidence_sha256"],
+                "provenance": row["provenance"],
+                "release_eligible": bool(row["release_eligible"]),
+                "created_at_ms": int(row["created_at_ms"]),
+            }
+            for row in self.conn.execute(
+                """
+                SELECT event_id, evidence_version, focus_fact_id, evidence_sha256,
+                       provenance, release_eligible, created_at_ms
+                  FROM news_event_evidence_snapshots
+                 WHERE event_id = %s AND provenance = 'observed'
+                   AND snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                 ORDER BY evidence_version
+                """,
+                (event_id,),
+            ).fetchall()
+        ]
         event = _event_public(card)
         member_rows = [
             {
@@ -227,33 +242,51 @@ class FeedStorage:
         ]
         timeline_verdict_rows = [dict(r) | {"model_editorial": editorial_read_shape(r["editorial"])} for r in verdicts]
         verdict_rows = [_verdict_public(dict(r)) for r in verdicts]
-        delivery_rows = [
+        delivery_rows = [_delivery_public(row) for row in deliveries]
+        intents = intent_views(queue, deliveries)
+        event_update = None
+        update_error_code = None
+        if head is not None:
+            prior = update_reads.previous_claims(self.conn, event_id, previous_content_refs(head["document"]))
+            event_update = event_update_view(head, previous_claims=prior, sent_headline=sent_headline(intents))
+            update_error_code = UPDATE_DECODE_ERROR if event_update is None else None
+        statements = {str(claim["ref"]): str(claim["statement"]) for claim in (event_update or {}).get("claims", [])}
+        notification_public = notification_view(notification, statements=statements)
+        processing = (
             {
-                "kind": r["kind"],
-                "state": r["state"],
-                "error_code": r["error_code"],
-                "attempted_at_ms": int(r["attempted_at_ms"]),
-                "settled_at_ms": r["settled_at_ms"],
-                "card": dict(r["card"] or {}),
-                "pending_card": dict(r["pending_card"]) if r["pending_card"] is not None else None,
-                "receipt": r["receipt"],
-                "edit_state": r["edit_state"],
-                "edit_error_code": r["edit_error_code"],
-                "edit_attempted_at_ms": r["edit_attempted_at_ms"],
-                "edit_settled_at_ms": r["edit_settled_at_ms"],
+                "semantic": semantic_view(work),
+                "observations": [
+                    {
+                        "result_id": row["result_id"],
+                        "input_revision": int(row["input_revision"]),
+                        "program_identity": row["program_identity"],
+                        "completed_at_ms": int(row["completed_at_ms"]),
+                        "adopted_content_revision": row["adopted_content_revision"],
+                    }
+                    for row in observations
+                ],
+                "notification": notification_public,
+                "intents": intents,
+                "update_error_code": update_error_code,
             }
-            for r in deliveries
-        ]
+            if on_update_path or intents
+            else None
+        )
+        reader_card = reader_delivery(deliveries)
         outcome, timeline = event_timeline(
             event=event,
             members=member_rows,
             verdicts=timeline_verdict_rows,
-            deliveries=delivery_rows,
-            delivery_queue=(
-                None
-                if any(row["kind"] == "first" for row in deliveries)
-                else self.delivery_claim(event_id=event_id, kind="first")  # type: ignore[attr-defined]
-            ),
+            deliveries=deliveries,
+            delivery_queue=_owed_intent(queue, deliveries),
+            semantic=work,
+            adopted=head is not None,
+            notification=_notification_outcome_input(notification),
+            evidence_snapshots=snapshots if on_update_path else [],
+            revisions=revisions,
+            observations=observations,
+            notification_view=notification_public,
+            intents=intents,
             now_ms=int(time.time() * 1000),
         )
         latest_triage = next((dict(v) for v in reversed(verdicts) if v["stage"] == "triage"), None)
@@ -279,7 +312,11 @@ class FeedStorage:
         return {
             "event": event,
             "outcome": outcome.as_dict(),
-            "triage": _triage_summary(
+            "event_update": event_update,
+            "processing": processing,
+            # History only: the Triage verdict an Event was judged by before #706. A new Event has none,
+            # and nothing here is merged into `event_update`.
+            "legacy_verdict": _legacy_verdict(
                 final_decision=(latest_triage or {}).get("final_decision"),
                 override_rule=(latest_triage or {}).get("override_rule"),
                 throttled_by=(latest_triage or {}).get("throttled_by"),
@@ -296,31 +333,10 @@ class FeedStorage:
             "review": self._review_summary(event_id),
             "evidence_inputs": evidence_inputs,
             "late_evidence": late_evidence,
-            "evidence_snapshots": [
-                {
-                    "event_id": row["event_id"],
-                    "evidence_version": int(row["evidence_version"]),
-                    "focus_fact_id": row["focus_fact_id"],
-                    "evidence_sha256": row["evidence_sha256"],
-                    "provenance": row["provenance"],
-                    "release_eligible": bool(row["release_eligible"]),
-                    "created_at_ms": int(row["created_at_ms"]),
-                }
-                for row in self.conn.execute(
-                    """
-                    SELECT event_id, evidence_version, focus_fact_id, evidence_sha256,
-                           provenance, release_eligible, created_at_ms
-                      FROM news_event_evidence_snapshots
-                     WHERE event_id = %s AND provenance = 'observed'
-                       AND snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                     ORDER BY evidence_version
-                    """,
-                    (event_id,),
-                ).fetchall()
-            ],
-            "reader_receipt": ReaderReceipt.from_delivery(delivery_rows[-1] if delivery_rows else None).model_dump(
-                mode="json"
-            ),
+            "evidence_snapshots": snapshots,
+            "reader_receipt": ReaderReceipt.from_delivery(
+                _delivery_public(reader_card) if reader_card is not None else None
+            ).model_dump(mode="json"),
         }
 
     def _review_summary(self, event_id: str) -> dict[str, Any]:
@@ -651,7 +667,7 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _triage_summary(
+def _legacy_verdict(
     *,
     final_decision: Any,
     override_rule: Any = None,
@@ -662,18 +678,19 @@ def _triage_summary(
     editorial: Mapping[str, Any] | None = None,
     full: bool = False,
 ) -> dict[str, Any] | None:
-    """The reader-facing Triage summary shared by the feed row and the Event detail.
+    """The reader-facing summary of one legacy Triage verdict, shared by the feed row and the Event detail.
 
-    Every business word is resolved to Chinese here so no browser owns a vocabulary table (the Feishu card in
-    ``delivery.py`` emits the same `DIRECTION_ZH`/`FACT_KIND_ZH` words, and one definition keeps the card and
-    the console from drifting); the raw enum ships beside it purely so the UI can pick a visual tone.
+    History since #706: `news_verdicts` receives no writes, and an Event judged by the News Agent has no
+    verdict and therefore no summary. Every business word is resolved to Chinese here so no browser owns a
+    vocabulary table; the raw enum ships beside it purely so the UI can pick a visual tone.
 
     ``full`` is the Event detail. The feed row renders only direction/fact kind over 25 rows, so it takes
     the slim shape — carrying the detail fields there cost 20.7% of the feed payload for nothing.
 
     A verdict written under `news_judgment_v2` carries `magnitude` and `audience` and no `fact_kind`;
     those rows are audit truth and are never rewritten, so `fact_kind` reads as ``None`` for them and
-    the badge is simply absent (#675 §1). This is the read boundary that says so."""
+    the badge is simply absent (#675 §1). The retired taxonomy axes are not summarized: the verdict rows
+    keep their stored values for audit, and nothing projects them into a current reading (#706)."""
 
     if not final_decision:
         return None
@@ -697,18 +714,13 @@ def _triage_summary(
         return summary
     novelty = v.get("novelty")
     # The read shape `editorial_read_shape` produces, or nothing at all for a degraded/OI/liquidation
-    # verdict that has no editorial sibling. `source_authority` survives a taxonomy failure because it is
-    # a code fact about the evidence, so the detail keeps showing it while the classification is absent.
+    # verdict that has no editorial sibling. `source_authority` is a code fact about the evidence.
     e: Mapping[str, Any] = editorial or {}
-    taxonomy = e.get("taxonomy")
     return summary | {
         "scope": scope,
         "novelty": novelty,
         "evidence_ref": v.get("evidence_ref"),
         "confidence": optional_float(v.get("confidence")),
-        "taxonomy": taxonomy_public(taxonomy) if isinstance(taxonomy, Mapping) else None,
-        "taxonomy_status": e.get("taxonomy_status"),
-        "taxonomy_error_code": e.get("taxonomy_error_code"),
         "source_authority": e.get("source_authority"),
         "source_authority_zh": source_authority_zh(e.get("source_authority")),
         "why_zh": v.get("why_zh"),
@@ -742,7 +754,7 @@ def _triage_assets(value: Any) -> list[dict[str, str]]:
 
 
 def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
-    triage = _triage_summary(
+    legacy = _legacy_verdict(
         final_decision=row.get("final_decision"),
         override_rule=row.get("override_rule"),
         throttled_by=row.get("throttled_by"),
@@ -762,11 +774,11 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
     )
     outcome_triage = (
         {
-            **triage,
+            **legacy,
             "created_at_ms": row.get("verdict_created_at_ms"),
             "published_at_ms": row.get("verdict_published_at_ms"),
         }
-        if triage is not None
+        if legacy is not None
         else None
     )
     outcome = event_outcome(
@@ -774,14 +786,48 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         opened_at_ms=row.get("opened_at_ms"),
         published_at_ms=row.get("published_at_ms"),
         triage=outcome_triage,
-        delivery=delivery,
+        delivery=delivery | {"plan_key": row.get("delivery_plan_key")} if delivery is not None else None,
         delivery_queue={"state": row.get("delivery_queue_state"), "error_code": row.get("delivery_queue_error_code")},
+        semantic=(
+            {
+                "wanted_revision": row.get("semantic_wanted_revision"),
+                "done_revision": row.get("semantic_done_revision"),
+                "last_outcome": row.get("semantic_last_outcome"),
+                "last_error_code": row.get("semantic_last_error_code"),
+            }
+            if row.get("has_semantic_work")
+            else None
+        ),
+        adopted=row.get("update_content_revision") is not None,
+        notification=(
+            {
+                "state": row["notification_state"],
+                "action": row.get("notification_action"),
+                "claim_decisions": row.get("notification_claim_decisions"),
+            }
+            if row.get("notification_state")
+            else None
+        ),
         now_ms=now_ms,
+    )
+    sent_update = row.get("sent_update_headline")
+    headline = sent_update or row.get("update_claim_headline")
+    update = (
+        {
+            "content_revision": row["update_content_revision"],
+            "adopted_at_ms": int(row["update_adopted_at_ms"]),
+            "claim_n": int(row.get("update_claim_n") or 0),
+            "headline": headline,
+            "headline_source": "sent_card" if sent_update else ("claim" if headline else None),
+        }
+        if row.get("update_content_revision") is not None
+        else None
     )
     return {
         **_event_public(row),
         "outcome": outcome.as_dict(),
-        "triage": triage,
+        "update": update,
+        "legacy_verdict": legacy,
         "delivery": delivery,
     }
 
@@ -796,7 +842,7 @@ def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
         model_editorial = {
             "source_authority": editorial["source_authority"],
             "source_authority_zh": source_authority_zh(editorial["source_authority"]),
-            "taxonomy": taxonomy_public(taxonomy) if taxonomy is not None else None,
+            "taxonomy": _legacy_taxonomy(taxonomy) if taxonomy is not None else None,
             "taxonomy_status": editorial["taxonomy_status"],
             "taxonomy_error_code": editorial["taxonomy_error_code"],
         }
@@ -826,6 +872,66 @@ def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
         "focus_fact_id": row.get("focus_fact_id"),
         "published_at_ms": row.get("published_at_ms"),
         "created_at_ms": int(row["created_at_ms"]),
+    }
+
+
+def _legacy_taxonomy(value: Mapping[str, Any]) -> dict[str, Any]:
+    """The four retired taxonomy axes as the legacy verdict stored them, for audit and nothing else.
+
+    No vocabulary is applied: the axes have no current owner or reading since #706, so the stored codes
+    are published as stored, and a missing axis stays missing.
+    """
+
+    codes = value.get("subject_codes")
+    return {
+        "subject_codes": [str(code) for code in codes] if isinstance(codes, list) else [],
+        "event_family": _optional_text(value.get("event_family")),
+        "change_state": _optional_text(value.get("change_state")),
+        "assertion_status": _optional_text(value.get("assertion_status")),
+    }
+
+
+def _optional_text(value: Any) -> str | None:
+    return str(value) if value else None
+
+
+def _delivery_public(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "intent_id": row["intent_id"],
+        "kind": row["kind"],
+        "state": row["state"],
+        "error_code": row["error_code"],
+        "attempted_at_ms": int(row["attempted_at_ms"]),
+        "settled_at_ms": row["settled_at_ms"],
+        "card": dict(row["card"] or {}),
+        "pending_card": dict(row["pending_card"]) if row["pending_card"] is not None else None,
+        "receipt": row["receipt"],
+        "edit_state": row["edit_state"],
+        "edit_error_code": row["edit_error_code"],
+        "edit_attempted_at_ms": row["edit_attempted_at_ms"],
+        "edit_settled_at_ms": row["edit_settled_at_ms"],
+    }
+
+
+def _owed_intent(queue: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The Event's latest reader intent still owed with no ledger row -- `q` in the feed statement."""
+
+    settled = {str(row["intent_id"]) for row in rows}
+    owed = [row for row in queue if row.get("kind") in {"first", "update"} and str(row["intent_id"]) not in settled]
+    if not owed:
+        return None
+    return max(owed, key=lambda row: (int(row.get("enqueued_at_ms") or 0), str(row["intent_id"])))
+
+
+def _notification_outcome_input(work: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if work is None:
+        return None
+    stored = work.get("plan")
+    plan: Mapping[str, Any] = stored if isinstance(stored, Mapping) else {}
+    return {
+        "state": work["state"],
+        "action": plan.get("action"),
+        "claim_decisions": plan.get("claim_decisions"),
     }
 
 

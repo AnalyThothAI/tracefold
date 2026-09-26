@@ -1,6 +1,7 @@
 import type {
   NewsAssetRef,
   NewsEventKind,
+  NewsFeedEvent,
   NewsFeedOutcome,
   NewsHealthLevel,
   NewsOutcomeKind,
@@ -52,6 +53,14 @@ const OUTCOME_TONE: Record<NewsOutcomeKind, Tone> = {
   expired_delivery_handoff: "alert",
   degraded_dropped: "alert",
   delivery_failed: "alert",
+  // #706: the EventUpdate path.
+  queued_semantic: "info",
+  queued_notification: "info",
+  notification_deferred: "info",
+  semantic_failed: "alert",
+  no_update: "neutral",
+  not_notified: "neutral",
+  delivery_ambiguous: "alert",
 };
 
 export function outcomeTone(kind: NewsOutcomeKind): Tone {
@@ -186,11 +195,32 @@ const TIMELINE_STAGE_TONE: Record<NewsTimelineStep["stage"], Tone> = {
   gate: "neutral",
   triage: "done",
   decide: "done",
+  evidence: "neutral",
+  semantic: "done",
+  notify: "done",
   delivery: "done",
 };
 
 export function timelineStageTone(stage: NewsTimelineStep["stage"]): Tone {
   return TIMELINE_STAGE_TONE[stage] ?? "neutral";
+}
+
+/**
+ * One Event's headline, from whichever judgment it has (#706). The server resolves the EventUpdate headline
+ * itself -- the card a reader actually received, else the first unretired claim -- and a legacy Event keeps
+ * its verdict's card headline. The provider title is the last word, never a guess.
+ */
+export function eventHeadline(
+  event: Pick<NewsFeedEvent, "leader_title"> & {
+    update?: { headline?: string | null } | null;
+    legacy_verdict?: { headline_zh?: string | null } | null;
+  },
+): string {
+  return (
+    event.update?.headline?.trim() ||
+    event.legacy_verdict?.headline_zh?.trim() ||
+    event.leader_title
+  );
 }
 
 /**

@@ -15,10 +15,10 @@ import {
   type NewsEventDetail,
   type NewsEventMember,
   type NewsEventReaction,
+  type NewsLegacyVerdict,
   type NewsQuote,
   type NewsReaction,
   type NewsSymbolNormalization,
-  type NewsTriageSummary,
   type NewsVerdict,
   useNewsEventWithToken,
   useNewsQuotesWithToken,
@@ -27,6 +27,7 @@ import {
   absoluteTime,
   clockTime,
   displayAssetRefs,
+  eventHeadline,
   optionalTime,
   timelineEndToEnd,
   validExternalUrl,
@@ -40,6 +41,7 @@ import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
 import { NewsEventPager } from "./NewsEventPager";
+import { NewsEventUpdateSections, NewsProcessingState } from "./NewsEventUpdate";
 import { NewsQuoteTable } from "./NewsQuoteTable";
 import { NewsTimeline } from "./NewsTimeline";
 
@@ -94,15 +96,21 @@ function EventDocument({
   detail: NewsEventDetail;
   quotes: Record<string, NewsQuote>;
 }) {
-  const { event, outcome, triage } = detail;
-  const headline = triage?.headline_zh?.trim() || event.leader_title;
+  const { event, outcome } = detail;
+  const legacy = detail.legacy_verdict ?? null;
+  const update = detail.event_update ?? null;
+  const headline = eventHeadline({
+    leader_title: event.leader_title,
+    legacy_verdict: legacy,
+    update,
+  });
   const url = validExternalUrl(event.leader_url);
   const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
   const quoteList = assets.map((asset) => quotes[asset.symbol]).filter(Boolean);
   const steps = detail.timeline ?? [];
   return (
     <>
-      <article className="news-detail-hero" data-direction={triage?.direction ?? undefined}>
+      <article className="news-detail-hero" data-direction={legacy?.direction ?? undefined}>
         <div className="news-detail-hero-top">
           {/* The conclusion and its one-line why, side by side: the chip is the verdict, the sentence is the
               server's reason for it. The chip does not repeat the reason inside itself. */}
@@ -121,9 +129,17 @@ function EventDocument({
         </div>
 
         <h1 className="news-detail-headline">{headline}</h1>
-        {triage || assets.length ? (
+        {legacy || assets.length || update?.topics?.length ? (
           <div aria-label="事件判定" className="news-detail-verdict">
-            {triage ? <NewsDirectionChip size="lg" triage={triage} /> : null}
+            {legacy ? <NewsDirectionChip size="lg" verdict={legacy} /> : null}
+            {update?.topics?.length ? (
+              <span className="news-detail-asset-group">
+                <small>主题</small>
+                {update.topics.map((topic) => (
+                  <b key={topic.code}>{topic.label_zh}</b>
+                ))}
+              </span>
+            ) : null}
             {assets.length ? (
               <>
                 <span aria-hidden className="news-detail-rule" />
@@ -134,10 +150,6 @@ function EventDocument({
         ) : null}
 
         {quoteList.length ? <NewsQuoteTable quotes={quoteList} /> : null}
-
-        {triage?.why_zh ? <p className="news-detail-why">{triage.why_zh}</p> : null}
-        {triage ? <VerdictFacts triage={triage} /> : null}
-        {triage ? <VerdictAssets triage={triage} /> : null}
 
         <p className="news-detail-original">
           <span className="news-detail-original-label">
@@ -154,6 +166,10 @@ function EventDocument({
         </p>
       </article>
 
+      {update ? <NewsEventUpdateSections update={update} /> : null}
+      {detail.processing ? <NewsProcessingState processing={detail.processing} /> : null}
+      {legacy ? <LegacyVerdict verdict={legacy} /> : null}
+
       <SymbolNormalization groups={detail.normalization ?? []} />
 
       {/* The second market block, deliberately its own card: "now" and "after this Event" are different time
@@ -167,7 +183,7 @@ function EventDocument({
       </Card>
 
       <ReviewSummary detail={detail} />
-      <EvidenceInputs detail={detail} />
+      {legacy || detail.evidence_inputs?.length ? <EvidenceInputs detail={detail} /> : null}
 
       <div className="news-detail-grid">
         <Card
@@ -299,48 +315,49 @@ function EventReactions({
 }
 
 /**
- * The rest of the current judgment, in the server's own words. A cell is omitted rather than rendered as a
+ * 旧版判定: the Triage verdict an Event was judged by before the News Agent (#706). History only -- it is
+ * never merged into the EventUpdate sections above, and a News Agent Event has none. The retired taxonomy
+ * axes are not shown; a verdict row keeps its stored codes in the technical details.
+ */
+function LegacyVerdict({ verdict }: { verdict: NewsLegacyVerdict }) {
+  return (
+    <Card aria-label="旧版判定" hint="#706 之前的 Triage 判定，仅供历史查阅" title="旧版判定">
+      {verdict.why_zh ? <p className="news-detail-why">{verdict.why_zh}</p> : null}
+      <VerdictFacts verdict={verdict} />
+      <VerdictAssets verdict={verdict} />
+    </Card>
+  );
+}
+
+/**
+ * The rest of the legacy judgment, in the server's own words. A cell is omitted rather than rendered as a
  * dash when the server has nothing for it, so a macro Event with no assets does not show a row of dashes.
  */
-function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
-  const taxonomy = triage.taxonomy;
-  // The four classification axes come from their own Predictor, which can fail while the card the reader
-  // is looking at is real (#651 §5.3). When it does, the four cells say so once, with the code, instead of
-  // reading as four Events nobody classified. 来源权威 is code-owned and survives that failure.
-  const unavailable =
-    triage.taxonomy_status === "unavailable"
-      ? `分类不可用（${triage.taxonomy_error_code ?? "未知原因"}）`
-      : "";
+function VerdictFacts({ verdict }: { verdict: NewsLegacyVerdict }) {
   return (
     <FactGrid
       className="news-detail-fact-grid"
       facts={[
-        { label: "事件族", value: unavailable || (taxonomy?.event_family_zh ?? "") },
-        { label: "变化状态", value: unavailable ? "" : (taxonomy?.change_state_zh ?? "") },
-        { label: "来源权威", value: triage.source_authority_zh ?? "" },
-        { label: "断言状态", value: unavailable ? "" : (taxonomy?.assertion_status_zh ?? "") },
-        {
-          label: "主题",
-          value: unavailable ? "" : (taxonomy?.subject_labels_zh?.join("、") ?? ""),
-        },
-        { label: "范围", value: triage.scope_zh },
+        { label: "判定", value: verdict.decision_zh ?? "" },
+        { label: "来源权威", value: verdict.source_authority_zh ?? "" },
+        { label: "范围", value: verdict.scope_zh ?? "" },
         // Confidence used to sit beside the direction, where it competed with the one number that matters
         // there. It is a judgment detail like the rest, so it reads as one (#87).
         {
           label: "把握",
-          value: triage.confidence == null ? "" : `${Math.round(triage.confidence * 100)}%`,
+          value: verdict.confidence == null ? "" : `${Math.round(verdict.confidence * 100)}%`,
         },
-        { label: "新颖度", value: triage.novelty_zh },
-        { label: "事实类型", value: triage.fact_kind_zh },
+        { label: "新颖度", value: verdict.novelty_zh ?? "" },
+        { label: "事实类型", value: verdict.fact_kind_zh ?? "" },
       ]}
       label="判定明细"
     />
   );
 }
 
-/** Which assets the current judgment called primary, and which it merely mentioned. */
-function VerdictAssets({ triage }: { triage: NewsTriageSummary }) {
-  const assets = triage.assets ?? [];
+/** Which assets the legacy judgment called primary, and which it merely mentioned. */
+function VerdictAssets({ verdict }: { verdict: NewsLegacyVerdict }) {
+  const assets = verdict.assets ?? [];
   const primary = assets.filter((asset) => asset.role === "primary").map((a) => a.symbol);
   const mentioned = assets.filter((asset) => asset.role !== "primary").map((a) => a.symbol);
   if (!primary.length && !mentioned.length) return null;

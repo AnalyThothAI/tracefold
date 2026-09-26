@@ -501,9 +501,6 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     detail = repos.news.event_detail(event_id)
     assert detail is not None and detail["deliveries"][0]["state"] == "sent"
     feed = repos.news.list_feed(
-        event_family=None,
-        change_state=None,
-        assertion_status=None,
         source_authority=None,
         subject_code=None,
         admission=None,
@@ -522,9 +519,6 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
 
     def _feed(**over):
         base = dict(
-            event_family=None,
-            change_state=None,
-            assertion_status=None,
             source_authority=None,
             subject_code=None,
             admission=None,
@@ -1853,9 +1847,6 @@ def test_feed_direction_and_event_kind_filters_compose_over_the_authoritative_qu
 
     def ids(**filters):
         params = dict(
-            event_family=None,
-            change_state=None,
-            assertion_status=None,
             source_authority=None,
             subject_code=None,
             admission=None,
@@ -2126,9 +2117,6 @@ def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> N
 
     def _served(symbol: str) -> set[str]:
         page = repos.news.list_feed(
-            event_family=None,
-            change_state=None,
-            assertion_status=None,
             source_authority=None,
             subject_code=None,
             admission=None,
@@ -2212,9 +2200,6 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
         cursor: str | None = None,
     ):
         return repos.news.list_feed(
-            event_family=None,
-            change_state=None,
-            assertion_status=None,
             source_authority=None,
             subject_code=None,
             admission=None,
@@ -2411,7 +2396,7 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
     # The public detail projection carries the market, so the browser can tell the two `V`s apart too.
     detail = repos.news.event_detail(event_id)
     assert detail is not None
-    assert detail["triage"]["assets"] == [
+    assert detail["legacy_verdict"]["assets"] == [
         {"symbol": "V", "market_type": "equity", "role": "primary"},
         {"symbol": "CRCL", "market_type": "equity", "role": "mentioned"},
     ]

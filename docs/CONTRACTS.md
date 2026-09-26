@@ -557,12 +557,21 @@ column named by `news_event_evidence_current_contract_check`, and is `NULL` on
 every Event this code can open.
 
 - `GET /api/news/feed` returns current Events newest first: the leader title,
-  the durable routing facts, the latest Triage summary, the first delivery state
-  and **one `outcome`**. An Event has exactly one outcome; it is the feed's
-  task-tab filter and its SQL mirrors the three outcome groups
+  the durable routing facts, `update` (the adopted EventUpdate head, #706:
+  `content_revision`, `adopted_at_ms`, `claim_n`, and `headline` with
+  `headline_source` -- the card headline of the latest sent update intent,
+  else the first claim the head has not retired), `legacy_verdict` (the Triage
+  summary of an Event judged before #706; `null` for a News Agent Event), the
+  representative reader delivery (the latest sent `first`/`update` card, else
+  the latest attempt) and **one `outcome`**. An Event has exactly one outcome;
+  it is the feed's task-tab filter and its SQL mirrors the three outcome groups
   (`pushed|held|pending`), so a row and the tab it appears under can never
-  disagree. `hours` bounds `opened_at_ms` to the last N hours (`0` or absent =
-  no bound).
+  disagree. An Event with semantic work is on the EventUpdate path and reads
+  `queued_semantic`, `semantic_failed`, `no_update`, `queued_notification`,
+  `notification_deferred`, `not_notified`, `pending_delivery`, `delivered`,
+  `delivery_ambiguous` or `delivery_failed` from its work rows, plan and
+  intents; any other Event keeps its legacy verdict outcome. `hours` bounds
+  `opened_at_ms` to the last N hours (`0` or absent = no bound).
 
   The Event-to-Triage handoff uses a code-owned 30-minute relevance ceiling. A
   marker-null handoff is pending at exactly the boundary and expired only when
@@ -581,10 +590,14 @@ every Event this code can open.
   row under any filter, and `/api/news/market` is where it is read (#553).
 
   The set-valued filters accept comma-separated, duplicate-free closed sets.
-  Taxonomy axes filter the current model editorial object; `event_kind` filters
-  the durable source/routing fact. Neither is inferred from the other. The axes
-  compose with every existing predicate before the count aggregate and cursor
-  pagination.
+  `subject_code` matches the adopted head's IPTC `topics` (else a legacy
+  verdict's subject codes); `source_authority` matches the code-owned authority
+  of any source the adopted head cites (else a legacy verdict's editorial
+  authority); `final_decision` and `direction` exist only on legacy verdicts;
+  `event_kind` filters the durable source/routing fact. The retired taxonomy
+  axes `event_family`, `change_state` and `assertion_status` are not parameters
+  (#706) and return 400 `unsupported_query_param`. Every filter composes with
+  every existing predicate before the count aggregate and cursor pagination.
 
   `q` and `symbol` are mutually exclusive. `symbol` (maximum 32 characters) is
   always an exact asset-identity request. A normalized single-token `q` becomes
@@ -644,11 +657,26 @@ every Event this code can open.
   real listing. Each response reads all Event assets in one bounded batch and
   resolves all symbols in one instrument batch, never one query per Event.
 - `GET /api/news/events/{event_id}` returns one **editorial** Event in full: its
-  `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
-  `delivery`, each carrying the raw `facts` it was built from, so a step is
-  auditable rather than narrated), its member Items, every Triage verdict, its
-  deliveries, and `normalization[]`. Nullable `prompt_version` on a verdict is
-  Prompt-era audit history only and is never written again.
+  `timeline` (ordered steps `received` → `gate`, then a legacy verdict's
+  `triage` → `decide` or the EventUpdate path's `evidence` → `semantic` →
+  `notify`, then `delivery`, each carrying the raw `facts` it was built from, so
+  a step is auditable rather than narrated), its member Items, its deliveries
+  (each with its `intent_id`), and `normalization[]`. Since #706 it carries
+  `event_update` -- the adopted head's claims (mode, phase, content kind,
+  quantities, time, conditions, assets, citations with their source, retired
+  and disputed flags), `changes` with the previous claim's statement when it is
+  found in this Event's own history or a related Event's current head (else
+  `null`, never guessed), per-source `evidence_relations`
+  (`supports|refutes|reports|not_addressed|unresolved`), `implications` marked
+  with their origin as inference, `open_questions`, `topics`, and the content,
+  input and adoption identities -- and `processing`: the semantic work state,
+  its recent observations, the notification plan with one named decision per
+  claim, and every update intent with its real state, receipt and exact sent
+  body. A legacy Event keeps `legacy_verdict`, `verdicts`, `evidence_inputs`
+  and `late_evidence` as history; its retired taxonomy axes are published only
+  on a verdict row, as the stored codes with no vocabulary. Nullable
+  `prompt_version` on a verdict is Prompt-era audit history only and is never
+  written again.
 
   `normalization[]` is the alias groups this Event's assets fall into. Only
   the code-owned seed aliases count (`source = 'seed'`, reconciled from

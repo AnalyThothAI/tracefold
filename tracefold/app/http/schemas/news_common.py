@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from tracefold.news import FactKind, IPTCCodebookSha, MarketType, NewsTaxonomyV1, SourceAuthority
+from tracefold.news import FactKind, MarketType, SourceAuthority
 
 from .common import ExactApiSchema
 
@@ -25,6 +25,14 @@ class NewsOutcomeData(ExactApiSchema):
         "pending_delivery",
         "delivered",
         "delivery_failed",
+        # #706: the EventUpdate path's own conclusions.
+        "queued_semantic",
+        "semantic_failed",
+        "no_update",
+        "queued_notification",
+        "notification_deferred",
+        "not_notified",
+        "delivery_ambiguous",
     ]
     text_zh: str
     reason_zh: str = ""
@@ -43,22 +51,6 @@ class NewsTriageAssetData(ExactApiSchema):
     symbol: str = Field(min_length=1, max_length=16)
     market_type: MarketType
     role: Literal["primary", "mentioned"]
-
-
-class NewsTaxonomyData(NewsTaxonomyV1):
-    """The four model-owned classification axes and the codebook they were labelled against.
-
-    Source authority left this object in #651: it is code-owned, computed from the evidence, and present
-    on a judgment whose taxonomy call failed and which therefore has no taxonomy at all. It is published
-    beside this one, on the editorial and the Triage summary.
-    """
-
-    taxonomy_version: Literal["news_taxonomy_v1"]
-    codebook_sha256: IPTCCodebookSha
-    subject_labels_zh: list[str] = Field(default_factory=list, max_length=3)
-    event_family_zh: str
-    change_state_zh: str
-    assertion_status_zh: str
 
 
 class NewsAssetRefData(ExactApiSchema):
@@ -83,9 +75,14 @@ class NewsSymbolNormalizationData(ExactApiSchema):
     sources: list[str] = Field(default_factory=list)
 
 
-class NewsTriageSummaryData(ExactApiSchema):
-    """The reader-facing view of one Triage verdict. Every `*_zh` is server-owned copy; the raw enum stays
-    beside it so the browser can map it to a visual tone without owning a vocabulary table."""
+class NewsLegacyVerdictData(ExactApiSchema):
+    """The reader-facing view of one legacy Triage verdict: history only since #706.
+
+    `news_verdicts` receives no writes. An Event the News Agent processed has no verdict and therefore no
+    summary; its reading is `event_update`. Every `*_zh` is server-owned copy; the raw enum stays beside it
+    so the browser can map it to a visual tone without owning a vocabulary table. The retired taxonomy axes
+    are not summarized here -- the verdict rows keep their stored values for audit.
+    """
 
     final_decision: Literal["push", "escalate", "drop", "throttled"]
     override_rule: str | None = None
@@ -94,12 +91,7 @@ class NewsTriageSummaryData(ExactApiSchema):
     error_code: str | None = None
     direction: str | None = None
     fact_kind: FactKind | None = None
-    taxonomy: NewsTaxonomyData | None = None
     # `null` on a verdict with no editorial sibling at all -- a degraded, OI or liquidation judgment.
-    # `unavailable` on a model judgment whose taxonomy Predictor failed while the other two answered:
-    # the card is real, the classification is missing, and `taxonomy_error_code` says why (#651 §5.3).
-    taxonomy_status: Literal["available", "unavailable"] | None = None
-    taxonomy_error_code: str | None = None
     source_authority: SourceAuthority | None = None
     source_authority_zh: str = ""
     scope: str | None = None
@@ -125,9 +117,8 @@ class NewsDeliverySummaryData(ExactApiSchema):
 __all__ = [
     "NewsAssetRefData",
     "NewsDeliverySummaryData",
+    "NewsLegacyVerdictData",
     "NewsOutcomeData",
     "NewsSymbolNormalizationData",
-    "NewsTaxonomyData",
     "NewsTriageAssetData",
-    "NewsTriageSummaryData",
 ]

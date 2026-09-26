@@ -134,9 +134,6 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert feed.status_code == 200
     feed_data = feed.json()["data"]
     assert feed_data["filters"] == {
-        "event_family": None,
-        "change_state": None,
-        "assertion_status": None,
         "source_authority": None,
         "subject_code": None,
         "final_decision": None,
@@ -531,10 +528,10 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
         secondary_feed = client.get("/api/news/feed?source_authority=reputable_secondary&limit=100", headers=headers)
 
     assert detail.status_code == 200
-    triage = detail.json()["data"]["triage"]
-    assert triage["taxonomy"] is None
-    assert triage["taxonomy_status"] == "unavailable"
-    assert triage["taxonomy_error_code"] == "news_program_output_truncated"
+    # #706: the Triage verdict is history, served under its legacy name and without the retired axes.
+    triage = detail.json()["data"]["legacy_verdict"]
+    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code"}.isdisjoint(triage)
+    assert detail.json()["data"]["event_update"] is None
     assert triage["source_authority"] == "issuer_first_party"
     assert triage["source_authority_zh"]
     assert triage["headline_zh"] == "比特币获得新的市场准入"
@@ -547,11 +544,13 @@ def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_author
     # The v2 row reads as v3 above the storage boundary: the authority is lifted out of the taxonomy,
     # which is present and therefore `available`.
     assert historical_detail.status_code == 200
-    historical_triage = historical_detail.json()["data"]["triage"]
-    assert historical_triage["taxonomy_status"] == "available"
+    historical_triage = historical_detail.json()["data"]["legacy_verdict"]
     assert historical_triage["source_authority"] == "reputable_secondary"
-    assert historical_triage["taxonomy"]["event_family"] == "market_access"
-    assert "source_authority" not in historical_triage["taxonomy"]
+    historical_row = next(row for row in historical_detail.json()["data"]["verdicts"] if row["stage"] == "triage")
+    assert historical_row["model_editorial"]["taxonomy_status"] == "available"
+    # The stored axis as stored: no vocabulary, no codebook claim, and the authority lifted out.
+    assert historical_row["model_editorial"]["taxonomy"]["event_family"] == "market_access"
+    assert "source_authority" not in historical_row["model_editorial"]["taxonomy"]
 
     assert issuer_feed.status_code == 200 and secondary_feed.status_code == 200
     issuer_ids = {event["event_id"] for event in issuer_feed.json()["data"]["events"]}
