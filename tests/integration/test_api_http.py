@@ -176,6 +176,8 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "pending_delivery",
         "delivered",
         "delivery_failed",
+        # #706: admission commits semantic work beside the evidence of every admitted live Event.
+        "queued_semantic",
     }
     assert 0 < len(feed_data["events"]) <= 10
     assert all("title_zh" not in event for event in feed_data["events"])
