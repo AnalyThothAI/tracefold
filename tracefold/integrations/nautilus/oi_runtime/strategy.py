@@ -82,6 +82,8 @@ _STRATEGY_ID = "OI-RUNTIME"
 _CALLBACK_BATCH = 16
 _PUMP_INTERVAL_MS = 100
 _CONVERGE_INTERVAL_NS = int(CONTINUOUS_CHECK_SECONDS * 1_000_000_000)
+_RECOVERY_INITIAL_DELAY_NS = 5_000_000_000
+_RECOVERY_MAX_DELAY_NS = 60_000_000_000
 # The venue refusing a protective order because its trigger is already crossed (`-2021 Order would
 # immediately trigger`). The stop or take-profit condition is then already met, so the position is
 # closed at market under that leg's reason instead of retrying a trigger that can never rest.
@@ -146,6 +148,13 @@ class RuntimeView:
     venue_read_started_at_ns: int | None
     venue_read_completed_at_ns: int | None
     venue_read_failure: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryBackoff:
+    signature: tuple[str, Decimal, Decimal]
+    delay_ns: int
+    next_attempt_ns: int
 
 
 @dataclass(slots=True)
@@ -260,7 +269,7 @@ class OiNautilusStrategy(Strategy):
         self._convergence_checked_at_ns: int | None = None
         self._convergence_failure: str | None = None
         self._recovery_requested_read_ns = 0
-        self._recovery_attempts: dict[str, tuple[str, int]] = {}
+        self._recovery_attempts: dict[str, _RecoveryBackoff] = {}
         self._day_start = day_start
         self._day_start_lock = Lock()
         # Venue truth (#680 PR-3). The latest successful read and the last failure's name; the read the
@@ -1429,25 +1438,35 @@ class OiNautilusStrategy(Strategy):
             self._converge_due_ns = 0
 
     def take_recovery_request(self, now_ns: int) -> int | None:
-        """One native reconciliation attempt per new, stable venue read for a unique Plan."""
+        """Retry fresh, attributable discrepancies with bounded delay in this generation."""
 
         reading = self._fresh_venue(now_ns)
         if (
-            reading is None
+            self._stopped
+            or reading is None
             or self._venue_failure is not None
             or self._convergence_failure is not None
             or self._convergence_checked_at_ns is None
             or reading.completed_at_ns <= self._recovery_requested_read_ns
         ):
             return None
-        for symbol in self._venue_mismatch:
+        # Oldest attempted instrument first: a busy first symbol must not
+        # consume every account-wide single-flight recovery opportunity.
+        for symbol in sorted(
+            self._venue_mismatch,
+            key=lambda symbol: (
+                self._recovery_attempts[symbol].next_attempt_ns - self._recovery_attempts[symbol].delay_ns
+                if symbol in self._recovery_attempts
+                else 0
+            ),
+        ):
             instrument_id = self._venue_instruments().get(symbol)
             if instrument_id is None:
                 continue
             candidates = [plan for plan in self._plans.values() if plan.instrument_id == instrument_id.value]
             if len(candidates) != 1:
                 continue
-            venue_quantity = reading.positions.get(symbol) if reading.positions is not None else None
+            venue_quantity = reading.quantity(symbol)
             if venue_quantity and (
                 (venue_quantity > 0 and candidates[0].direction != "long")
                 or (venue_quantity < 0 and candidates[0].direction != "short")
@@ -1456,12 +1475,15 @@ class OiNautilusStrategy(Strategy):
             cached_positions = self.cache.positions_open(instrument_id=instrument_id)
             if any(not position_claimed(position, candidates[0], self.id) for position in cached_positions):
                 continue
-            signature = f"{venue_quantity}:{sum(position.signed_decimal_qty() for position in cached_positions)}"
+            cache_quantity = sum(position.signed_decimal_qty() for position in cached_positions)
+            signature = (candidates[0].entry_id, venue_quantity, cache_quantity)
             previous = self._recovery_attempts.get(symbol)
-            attempts = previous[1] if previous is not None and previous[0] == signature else 0
-            if attempts >= 3:
-                continue
-            self._recovery_attempts[symbol] = (signature, attempts + 1)
+            delay_ns = _RECOVERY_INITIAL_DELAY_NS
+            if previous is not None and previous.signature == signature:
+                if now_ns < previous.next_attempt_ns:
+                    continue
+                delay_ns = min(previous.delay_ns * 2, _RECOVERY_MAX_DELAY_NS)
+            self._recovery_attempts[symbol] = _RecoveryBackoff(signature, delay_ns, now_ns + delay_ns)
             self._recovery_requested_read_ns = reading.completed_at_ns
             return reading.completed_at_ns
         return None

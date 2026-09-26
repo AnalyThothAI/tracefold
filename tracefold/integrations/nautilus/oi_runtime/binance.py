@@ -1,14 +1,8 @@
 """The Binance USD-M adapter this Runtime runs on, and the one venue read it makes itself (#680 PR-3).
 
-Nautilus' own Binance execution client, with one public method made idempotent. On 1.231.0
-`generate_fill_reports` asks Binance for the trades of every "active" symbol and unions two spellings
-of the same symbol -- the Cache's `APTUSDT-PERP` and positionRisk's `APTUSDT` -- so `userTrades` is
-called twice for one market and every fill comes back twice. Nautilus' mass-status reconciliation then
-replays twice the venue's quantity and, taking the surplus for missing opening fills, adds a synthetic
-opposite fill that closes the Cache position the venue still holds (the 2026-09-23 APT close, Path A).
-The duplicate is dropped here, on the method every caller of the adapter goes through: the mass
-status a user-data re-subscribe requests, startup reconciliation and the position check's
-missing-fill query alike.
+Native trade reads canonicalize symbols before querying, page within a bounded
+request budget, and refuse incomplete or contradictory evidence. Startup, user-data
+resubscribe and the engine's missing-fill query all use this same report entry.
 
 `BinanceVenuePositions` is the other half: the account's signed positions, read through the same
 Nautilus HTTP stack and credentials, for the Strategy to compare with the Cache. A read that fails
@@ -21,7 +15,6 @@ the client from the same public helpers `BinanceLiveExecClientFactory.create` us
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
@@ -45,29 +38,12 @@ from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, Posit
 from nautilus_trader.model.objects import Quantity
 
 from .config import BinanceRuntimeCredentials
+from .trade_history import TRADE_WINDOW_MS, IncompleteTradeHistory, TradeHistoryCursor, read_trade_history
 
 # How long a signed positionRisk read stays valid at Binance. The venue's default is 5 s, and this
 # host has measured 9-27 s round trips (`-1021`, #680); a read has no side effect a late arrival
 # could repeat, so it gets the venue's maximum and the caller's timeout bounds it instead.
 _POSITION_READ_RECV_WINDOW_MS = "60000"
-
-
-def unique_fill_reports(reports: Iterable[FillReport]) -> list[FillReport]:
-    """Each venue trade once, first report kept, in the order the adapter returned them.
-
-    A Binance trade id is unique per symbol, so the instrument, the venue order and the trade together
-    name one fill.
-    """
-
-    seen: set[tuple[str, str, str]] = set()
-    unique: list[FillReport] = []
-    for report in reports:
-        key = (report.instrument_id.value, report.venue_order_id.value, report.trade_id.value)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(report)
-    return unique
 
 
 class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
@@ -231,7 +207,49 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
         return status
 
     async def generate_fill_reports(self, command: GenerateFillReports) -> list[FillReport]:
-        return unique_fill_reports(await super().generate_fill_reports(command))
+        if command.instrument_id is not None:
+            instrument = self._cache.instrument(command.instrument_id)
+            symbols = {
+                str(instrument.raw_symbol.value)
+                if instrument is not None
+                else command.instrument_id.symbol.value.removesuffix("-PERP")
+            }
+        else:
+            if command.venue_order_id is not None:
+                raise ValueError("binance_order_trade_instrument_required")
+            symbols = {
+                symbol.removesuffix("-PERP")
+                for symbol in self._get_cache_active_symbols() | await self._get_binance_active_position_symbols(None)
+            }
+        end_ms = int(command.end.timestamp() * 1_000) if command.end is not None else self._clock.timestamp_ms()
+        start_ms = int(command.start.timestamp() * 1_000) if command.start is not None else end_ms - TRADE_WINDOW_MS + 1
+        order_id = int(command.venue_order_id.value) if command.venue_order_id is not None else None
+        reports: list[FillReport] = []
+        remaining_requests = 32
+        for symbol in sorted(symbols):
+            if remaining_requests == 0:
+                raise RuntimeError("binance_trade_history_request_budget_exhausted")
+            history = await read_trade_history(
+                self._futures_http_account,
+                symbol=symbol,
+                cursors=(TradeHistoryCursor(start_ms, end_ms),),
+                order_id=order_id,
+                max_requests=remaining_requests,
+            )
+            remaining_requests -= history.requests_used
+            if not history.complete:
+                raise IncompleteTradeHistory(history)
+            reports.extend(
+                trade.parse_to_fill_report(
+                    account_id=self.account_id,
+                    instrument_id=self._get_cached_instrument_id(symbol),
+                    report_id=UUID4(),
+                    ts_init=self._clock.timestamp_ns(),
+                    use_position_ids=self._use_position_ids,
+                )
+                for trade in history.trades
+            )
+        return sorted(reports, key=lambda report: (report.ts_event, report.instrument_id.value, report.trade_id.value))
 
     async def generate_position_status_reports(
         self, command: GeneratePositionStatusReports
@@ -379,5 +397,4 @@ __all__ = [
     "BinanceVenuePositions",
     "OiBinanceExecClientFactory",
     "OiBinanceFuturesExecutionClient",
-    "unique_fill_reports",
 ]

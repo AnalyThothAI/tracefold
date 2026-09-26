@@ -147,6 +147,18 @@ closed the position as flat. The cost of the flag: at startup, a venue position
 with no fill inside the reconciliation lookback is no longer adopted into the
 Cache. The venue-truth invariant below names it instead.
 
+Native `userTrades` reads normalize symbol spelling before requesting and share
+one budget of 32 signed requests per report generation. Each page is at most
+1,000 rows. Full time windows are subdivided to avoid losing earlier trades when
+the endpoint returns the most recent page; windows never exceed seven days.
+Exact-order queries page by `fromId`, without mixing it with time parameters.
+The reader returns immutable native rows and unfinished cursors. A timeout,
+contradictory native trade identity, exhausted budget or saturated millisecond
+is not a complete history and cannot authorize an inferred fill. Dense exact
+orders can still be paged without losing trades sharing one timestamp. These
+limits follow Binance's [account trade endpoint](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade#account-trade-list-user-data);
+its three-month retention still limits what can be recovered from that endpoint.
+
 For a triggered stop or take-profit, Binance reports the fill under the regular
 child order ID, while Nautilus may still cache the original Algo order ID (#699).
 During full native reconciliation the Runtime's Binance client verifies the
@@ -217,8 +229,13 @@ the venue's own positions:
   less than 5 s before a read began is judged by the next read, not that one. The
   invariant itself submits and cancels nothing. After a stable mismatch, the
   Runtime may ask Nautilus for one bounded native reconciliation, only when a
-  unique open Plan claims the instrument and direction; it makes at most three
-  attempts for the same unchanged discrepancy. A position only the Cache holds
+  unique open Plan claims the instrument and direction. The same discrepancy
+  retries with 5, 10, 20, 40, then 60-second backoff, without a terminal retry
+  count. Identical new reads do not reset that delay; genuine quantity/Plan
+  changes or agreement do. Instruments are considered oldest-attempt-first.
+  Only one recovery task runs per generation, and stopping it cancels that task.
+  The public recovery path still works after Nautilus' own position timer has
+  exhausted its retries; the Runtime never resets native private counters. A position only the Cache holds
   gets no new stop, take-profit or time exit, since the venue would refuse them;
 - a position, or a non-reduce-only order, that no plan claims is *unexpected
   exposure* too: new entries are refused with `unexpected_exposure` and a `risk`
@@ -231,8 +248,8 @@ strategy; a failed Algo-order report during reconciliation is only logged, so a
 triggered child's signed parent receipt is checked separately before replaying its
 fills; a lost user-data listen key is
 recovered once, after which the 5 s checks keep the Cache honest; the Binance
-adapter's duplicated fill reports are de-duplicated by the Runtime's execution
-client. The position-report override preserves Binance read failures; a
+adapter's duplicate symbol reads are eliminated by the Runtime's execution
+client before requesting native trades. The position-report override preserves Binance read failures; a
 successful instrument-specific empty read reports genuine flatness.
 The Binance position-report adapter uses one pinned private Nautilus helper to preserve
 venue read errors; the installed-version regression test fixes that seam. Other Runtime

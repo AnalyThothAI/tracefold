@@ -36,7 +36,7 @@ from nautilus_trader.adapters.binance import BINANCE, BinanceLiveExecClientFacto
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.error import BinanceClientError
 from nautilus_trader.cache.cache import Cache
-from nautilus_trader.common.component import LiveClock, MessageBus
+from nautilus_trader.common.component import MessageBus, TestClock
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import GenerateFillReports, GeneratePositionStatusReports, ModifyOrder
@@ -127,6 +127,7 @@ class _Venue:
         missing_entry_trades: bool = False,
         child_status: str = "FILLED",
         split_child_trades: bool = False,
+        dense_child_trades: bool = False,
     ) -> None:
         self.position_risk_error = position_risk_error
         self.prior_round_trip = prior_round_trip
@@ -137,6 +138,8 @@ class _Venue:
         self.missing_entry_trades = missing_entry_trades
         self.child_status = child_status
         self.split_child_trades = split_child_trades
+        self.dense_child_trades = dense_child_trades
+        self.trade_requests: list[dict[str, str]] = []
         self.user_trade_symbols: list[str] = []
         self.position_amount = "588.3" if child_status != "FILLED" else ("0" if triggered_take_profit else "1188.3")
 
@@ -154,6 +157,7 @@ class _Venue:
             return msgspec.json.encode([_position_risk("APTUSDT", self.position_amount)])
         if url_path.endswith("/userTrades"):
             self.user_trade_symbols.append(params["symbol"])
+            self.trade_requests.append(dict(params))
             trades = (
                 []
                 if self.missing_entry_trades
@@ -170,18 +174,30 @@ class _Venue:
                     if self.split_child_trades
                     else ("600.0" if self.child_status != "FILLED" else "1188.3",)
                 )
+                if self.dense_child_trades:
+                    child_quantities = (*("1.0" for _ in range(1_000)), "188.3")
                 trades.extend(
                     _trade(
                         TAKE_PROFIT_CHILD_TRADE_ID + offset,
                         TAKE_PROFIT_CHILD_ORDER_ID,
                         "SELL",
                         quantity,
-                        FILL_MS + 2_000 + offset,
+                        FILL_MS + 2_000 + (0 if self.dense_child_trades else offset),
                         price="0.8562",
                     )
                     for offset, quantity in enumerate(child_quantities)
                 )
-            return msgspec.json.encode(trades)
+            # Respect the real endpoint's filters, including inclusive native
+            # cursors. A full time page may be the most recent rows in its window.
+            trades = [
+                trade
+                for trade in trades
+                if (params.get("startTime") is None or trade["time"] >= int(params["startTime"]))
+                and (params.get("endTime") is None or trade["time"] <= int(params["endTime"]))
+                and (params.get("fromId") is None or trade["id"] >= int(params["fromId"]))
+                and (params.get("orderId") is None or trade["orderId"] == int(params["orderId"]))
+            ]
+            return msgspec.json.encode(trades[: int(params.get("limit", 500))])
         if self.triggered_take_profit:
             if url_path.endswith("/openOrders"):
                 return msgspec.json.encode(
@@ -341,7 +357,8 @@ class _Account:
         seed_existing: bool = True,
     ) -> None:
         self.loop = asyncio.new_event_loop()
-        self.clock = LiveClock()
+        self.clock = TestClock()
+        self.clock.set_time(FILL_NS + 60_000_000_000)
         self.msgbus = MessageBus(TRADER, self.clock)
         self.cache = Cache(database=None)
         self.portfolio = Portfolio(self.msgbus, self.cache, self.clock)
@@ -712,6 +729,61 @@ def test_native_reconciliation_connects_a_triggered_algo_child_fill_to_the_cache
     child = runtime.cache.order(TAKE_PROFIT_ID)
     assert child is not None and child.is_closed
     assert child.venue_order_id == VenueOrderId(str(TAKE_PROFIT_CHILD_ORDER_ID))
+
+
+def test_late_child_evidence_recovers_after_native_position_retry_exhaustion(account: Any) -> None:
+    runtime = account(triggered_take_profit=True, missing_child_trade=True)
+    runtime.position_checks(count=10)
+    native_key = (APT, runtime.account_id)
+    assert runtime.engine._position_recon_retries[native_key] == runtime.engine.position_check_retries
+    assert runtime.open_positions() == _HELD
+
+    # The public recovery path keeps querying while this same engine has exhausted
+    # its timer retries. Neither the engine nor its private retry map is reset.
+    for _ in range(4):
+        assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is False
+        assert runtime.strategy.filled == []
+    runtime.venue.missing_child_trade = False
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is True
+    assert runtime.engine._position_recon_retries[native_key] == runtime.engine.position_check_retries
+    assert runtime.open_positions() == []
+    assert runtime.strategy.filled == [TAKE_PROFIT_ID.value]
+    assert runtime.strategy.closed == [TAKE_PROFIT_ID.value]
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is True
+    assert runtime.strategy.filled == [TAKE_PROFIT_ID.value]
+
+
+def test_adapter_pages_the_exact_native_child_order_over_the_signed_http_boundary(account: Any) -> None:
+    runtime = account(triggered_take_profit=True, dense_child_trades=True)
+    command = GenerateFillReports(
+        instrument_id=APT,
+        venue_order_id=VenueOrderId(str(TAKE_PROFIT_CHILD_ORDER_ID)),
+        start=None,
+        end=None,
+        command_id=UUID4(),
+        ts_init=runtime.clock.timestamp_ns(),
+    )
+    reports = runtime.loop.run_until_complete(runtime.client.generate_fill_reports(command))
+    assert len(reports) == 1_001
+    assert sum((fill.last_qty.as_decimal() for fill in reports), Decimal()) == Decimal("1188.3")
+    assert {fill.venue_order_id for fill in reports} == {VenueOrderId(str(TAKE_PROFIT_CHILD_ORDER_ID))}
+    assert len(runtime.venue.trade_requests) == 2
+    for request in runtime.venue.trade_requests:
+        assert request["symbol"] == "APTUSDT" and int(request["orderId"]) == TAKE_PROFIT_CHILD_ORDER_ID
+        assert "startTime" not in request and "endTime" not in request
+    assert [int(request["fromId"]) for request in runtime.venue.trade_requests] == [
+        0,
+        TAKE_PROFIT_CHILD_TRADE_ID + 1_000,
+    ]
+
+
+def test_truncated_mass_history_cannot_infer_a_fill_or_change_native_identity(account: Any) -> None:
+    runtime = account(triggered_take_profit=True, dense_child_trades=True)
+    assert runtime.loop.run_until_complete(_reconcile_with_event_queue(runtime)) is False
+    assert len(runtime.venue.trade_requests) <= 32
+    assert runtime.open_positions() == _HELD
+    assert runtime.strategy.filled == [] and runtime.strategy.closed == []
+    assert runtime.cache.order(TAKE_PROFIT_ID).venue_order_id == VenueOrderId(str(PROTECTION[1][1]))
 
 
 def test_generation_restart_replays_a_flat_venues_historical_take_profit(account: Any) -> None:

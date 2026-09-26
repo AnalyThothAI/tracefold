@@ -388,21 +388,50 @@ def test_flatten_without_a_fresh_venue_read_closes_the_cache_and_says_the_venue_
     assert runtime.dispositions()[-1]["venue_positions"] == "unknown"
 
 
-def test_native_recovery_is_single_flight_per_read_and_bounded_per_discrepancy() -> None:
+def test_native_recovery_keeps_retrying_with_bounded_backoff_in_the_same_generation() -> None:
     runtime, _position, _stop, _take_profit = _protected_plan()
     strategy = runtime.strategy
     runtime.venue({SYMBOL: "0.05"})
     runtime.venue({SYMBOL: "0.05"})
     requested: list[int] = []
-    for _ in range(4):
-        at_ns = strategy.take_recovery_request(runtime.clock.timestamp_ns())
-        if at_ns is not None:
-            requested.append(at_ns)
-        assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+    for delay_seconds in (5, 10, 20, 40, 60, 60, 60):
+        now_ns = runtime.clock.timestamp_ns()
+        at_ns = strategy.take_recovery_request(now_ns)
+        assert at_ns is not None
+        requested.append(at_ns)
+        assert strategy.take_recovery_request(now_ns) is None
+        # New identical evidence must not reset the delay; after it expires the
+        # fourth and later attempts still run without replacing the generation.
         runtime.venue({SYMBOL: "0.05"})
-    assert len(requested) == 3
+        retry_ns = now_ns + delay_seconds * SECOND_NS
+        assert strategy.take_recovery_request(retry_ns - 1) is None
+        runtime.clock.set_time(retry_ns)
+        runtime.venue({SYMBOL: "0.05"})
+    assert len(set(requested)) == 7
+
+    # A genuine change in the discrepancy is new work, while agreement clears
+    # the delay so a later recurrence is recoverable immediately.
     runtime.venue({SYMBOL: "0.06"})
     assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is not None
+    runtime.venue(HELD)
+    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+    runtime.venue({SYMBOL: "0.06"})
+    runtime.venue({SYMBOL: "0.06"})
+    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is not None
+
+
+def test_recovery_waits_for_fresh_successful_evidence_and_stops_with_its_generation() -> None:
+    runtime, _position, _stop, _take_profit = _protected_plan()
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.venue(None)
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.advance(VENUE_STALE_AFTER_NS + SECOND_NS)
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
+    runtime.venue({SYMBOL: "0.05"})
+    runtime.strategy.on_stop()
+    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
 
 
 def test_unclaimed_venue_position_never_requests_automatic_recovery() -> None:
