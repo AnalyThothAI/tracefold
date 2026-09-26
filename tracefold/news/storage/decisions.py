@@ -1047,16 +1047,27 @@ class DecisionStorage:
         return dict(row) if row else None
 
     def terminalize_interrupted_deliveries(self, *, now_ms: int) -> int:
-        cursor = self.conn.execute(
+        """A send nobody settled is ambiguous. A legacy card becomes `terminal`; an update intent is held
+        `ambiguous` and its queue reservation leaves the queue, exactly as a settled ambiguous send does."""
+
+        row = self.conn.execute(
             """
-            UPDATE news_deliveries
-               SET state = CASE WHEN kind = 'update' THEN 'ambiguous' ELSE 'terminal' END,
-                   error_code = 'ambiguous_after_crash', settled_at_ms = %s
-             WHERE state = 'sending' AND attempted_at_ms < %s
+            WITH settled AS (
+              UPDATE news_deliveries
+                 SET state = CASE WHEN kind = 'update' THEN 'ambiguous' ELSE 'terminal' END,
+                     error_code = 'ambiguous_after_crash', settled_at_ms = %s
+               WHERE state = 'sending' AND attempted_at_ms < %s
+              RETURNING intent_id, kind
+            ), released AS (
+              DELETE FROM news_delivery_queue q USING settled s
+               WHERE q.intent_id = s.intent_id AND s.kind = 'update'
+              RETURNING q.intent_id
+            )
+            SELECT (SELECT count(*) FROM settled) AS settled, (SELECT count(*) FROM released) AS released
             """,
             (int(now_ms), int(now_ms) - 60_000),
-        )
-        return int(cursor.rowcount or 0)
+        ).fetchone()
+        return int(row["settled"] or 0)
 
     def terminalize_interrupted_delivery_edits(self, *, now_ms: int) -> int:
         cursor = self.conn.execute(

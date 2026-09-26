@@ -6,6 +6,7 @@ from typing import Any
 
 from .chain_tape import ChainTapeStorage
 from .decisions import DecisionStorage
+from .event_updates import EventUpdateStorage
 from .events import EventStorage
 from .evidence import EvidenceStorage
 from .feed import FeedStorage
@@ -22,6 +23,7 @@ class NewsRepository(
     EventStorage,
     EvidenceStorage,
     DecisionStorage,
+    EventUpdateStorage,
     MarketStorage,
     ChainTapeStorage,
     WalletEventStorage,
