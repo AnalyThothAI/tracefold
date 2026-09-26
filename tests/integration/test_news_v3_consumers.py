@@ -965,45 +965,41 @@ def test_triage_materialization_and_canonical_json_run_outside_real_transactions
     ).fetchone()
 
 
-def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) -> None:
-    deliverer = _deliverer(conn)
+def test_a_deliverer_retires_legacy_intents_and_without_a_sender_plans_nothing(conn) -> None:
+    """#706: a pending legacy `first` intent is dead-lettered with its reason and never sent.
+
+    The verdict path that owed those cards is gone; its queue rows are not sent through it after the
+    cutover. With no sender configured nothing is planned either: notification work stays visible.
+    """
+
     row = conn.execute(
-        # Any delivering decision: #77 made the fixture's high-priority verdict a `push` rather than an
-        # `escalate`, and the Deliverer treats both identically — escalate is loudness, not a second lane.
         "SELECT event_id FROM news_verdicts WHERE stage = 'triage' AND final_decision IN ('push', 'escalate') LIMIT 1"
     ).fetchone()
-    dropped = conn.execute(
-        "SELECT event_id FROM news_verdicts WHERE stage = 'triage' AND final_decision = 'drop' LIMIT 1"
-    ).fetchone()
-    assert row is not None and dropped is not None
+    assert row is not None
     event_id = str(row["event_id"])
-    stamp = now_ms()
+    repos = repositories_for_connection(conn)
+    conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (event_id,))
+    conn.execute("DELETE FROM news_delivery_queue WHERE event_id = %s", (event_id,))
+    assert repos.news.enqueue_delivery(event_id=event_id, kind="first", now_ms=now_ms())
+    conn.commit()
+    deliverer = _deliverer(conn)
+    stop = asyncio.Event()
 
-    del stamp
+    async def scenario() -> int:
+        task = asyncio.create_task(deliverer.run(stop_event=stop))
+        await asyncio.sleep(0.05)
+        stop.set()
+        await task
+        return await deliverer.advance()
 
-    async def scenario() -> None:
-        await deliverer.deliver(event_id=event_id, kind="first")
-        await deliverer.deliver(event_id=event_id, kind="first")  # re-claim: the row keeps its terminal state
-        await deliverer.deliver(event_id=str(dropped["event_id"]), kind="first")  # a drop owes no card
-        with pytest.raises(PermanentError, match="news_delivery_inputs_missing"):
-            await deliverer.deliver(event_id="does-not-exist", kind="first")
-
-    asyncio.run(scenario())
+    assert asyncio.run(scenario()) == 0
     conn.commit()
 
-    deliveries = conn.execute(
-        "SELECT event_id, kind, state, error_code, settled_at_ms FROM news_deliveries ORDER BY event_id"
+    queued = conn.execute(
+        "SELECT kind, state, error_code FROM news_delivery_queue WHERE event_id = %s", (event_id,)
     ).fetchall()
-    assert [dict(d) for d in deliveries] == [
-        {
-            "event_id": event_id,
-            "kind": "first",
-            "state": "terminal",
-            "error_code": "delivery_unavailable",
-            "settled_at_ms": deliveries[0]["settled_at_ms"],
-        }
+    assert [dict(item) for item in queued] == [
+        {"kind": "first", "state": "dead", "error_code": "legacy_intent_retired"}
     ]
-    assert deliveries[0]["settled_at_ms"] is not None
-    repos = repositories_for_connection(conn)
-    detail = repos.news.event_detail(event_id)
-    assert detail is not None and detail["deliveries"][0]["state"] == "terminal"
+    deliveries = conn.execute("SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,))
+    assert deliveries.fetchone()["n"] == 0

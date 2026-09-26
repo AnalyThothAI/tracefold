@@ -248,9 +248,9 @@ def test_delivery_adapters_import_the_card_model_and_never_a_renderer_or_a_loop(
 
     from tracefold import news
 
-    for name in ("ReaderCard", "quote_line", "card_clock", "LINKABLE_TICKER_RE", "NOVELTY_ZH"):
+    for name in ("ReaderCard", "quote_line", "card_clock", "LINKABLE_TICKER_RE"):
         assert name in news.__all__
-    for renderer in ("render_first_card", "render_market_card", "feishu_card"):
+    for renderer in ("news_update_card", "render_market_card", "feishu_card"):
         assert renderer not in news.__all__
 
 

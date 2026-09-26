@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Final
 
 from .contracts import EventUpdate, Extraction, FrozenInput, PriorClaim, ReadTarget
 from .identity import canonical_json, identity
 from .judgment import Budget, ContractFault, ProviderUnavailable, Question
-from .notification import CardComposer, NotificationPlanner, freeze_card
+from .notification import CardComposer, FrozenCard, NotificationPlanner, freeze_card
 from .ports import (
     ExistingSourceReader,
+    IntentLease,
     NewsStore,
     SemanticObservation,
     Sender,
@@ -185,13 +187,35 @@ class NewsAgent:
         # remains durable even if the worker is stopped at this point.
 
 
+@dataclass(frozen=True, slots=True)
+class NotificationTurn:
+    """What one notification turn did.
+
+    `status` is `no_work`, the plan action (`no_notification` / `unresolved`), `deferred_or_already_owned`,
+    `preflight_changed`, or the settled send state. A settled send carries the intent it settled and the
+    provider's outcome, so a delivery adapter can enrich exactly that receipt afterwards.
+    """
+
+    status: str
+    update: EventUpdate | None = None
+    lease: IntentLease | None = None
+    card: FrozenCard | None = None
+    outcome: SendOutcome | None = None
+
+
 class Notifications:
+    """Plan a pending head, reserve its intent, compose and freeze its card, then send it once.
+
+    Planning and card composition share one model stage deadline. The send does not: a paced provider
+    entry may hold a card for longer than a model stage, and a wait that nothing sent is not an unknown
+    outcome. The sender bounds its own provider call.
+    """
+
     def __init__(
         self,
         store: NewsStore,
         planner: NotificationPlanner,
         composer: CardComposer,
-        sender: Sender,
         *,
         clock: Callable[[], int] = clock_ms,
         stage_seconds: float = STAGE_SECONDS,
@@ -199,45 +223,67 @@ class Notifications:
         self.store = store
         self.planner = planner
         self.composer = composer
-        self.sender = sender
         self.clock = clock
         self.stage_seconds = stage_seconds
 
-    async def process(self, event_id: str, channel: str) -> str:
-        """One notification turn for one channel under one stage deadline."""
+    async def process(self, event_id: str, channel: str, sender: Sender) -> NotificationTurn:
+        """One notification turn for one channel.
+
+        A failed plan spends one bounded notification attempt; a failed card spends one attempt of its
+        intent. Either failure is raised after it is recorded, and neither touches adopted semantics.
+        """
 
         budget = Budget.start(self.stage_seconds)
-        async with asyncio.timeout(self.stage_seconds):
-            return await self._process(event_id, channel, budget)
-
-    async def _process(self, event_id: str, channel: str, budget: Budget) -> str:
         snapshot = await self.store.notification_snapshot(event_id, channel)
         if snapshot is None:
-            return "no_work"
-        plan = await self.planner.plan(snapshot.update, snapshot.reader, budget, now_ms=self.clock())
+            return NotificationTurn("no_work")
+        try:
+            # The stage deadline surfaces here as TimeoutError, so an expired plan is recorded like any
+            # other failed one instead of leaving its work due again at once.
+            async with asyncio.timeout(budget.remaining()):
+                plan = await self.planner.plan(snapshot.update, snapshot.reader, budget, now_ms=self.clock())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self.store.defer_notification(event_id, channel)
+            raise
         lease = await self.store.atomic_record_plan(plan)
         if plan.action != "notify":
-            return plan.action
+            return NotificationTurn(plan.action, update=snapshot.update)
         if lease is None:
-            return "deferred_or_already_owned"
+            return NotificationTurn("deferred_or_already_owned", update=snapshot.update)
         card = lease.card
         if card is None:
-            try:
-                selected = tuple(claim for claim in snapshot.update.claims if claim.ref in plan.selected_claim_refs)
-                async with asyncio.timeout(budget.remaining()):
-                    copy = await self.composer.compose(selected)
-                card = await self.store.save_card(lease, freeze_card(plan, snapshot.update, copy))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await self.store.record_card_failure(lease, error_code=type(exc).__name__)
-                raise
-        budget.remaining()
-        if not await self.store.atomic_begin_send(lease, card):
-            return "preflight_changed"
+            card = await self._card(lease, snapshot.update, budget)
+        return await self._send(lease, snapshot.update, card, sender)
+
+    async def _card(self, lease: IntentLease, update: EventUpdate, budget: Budget) -> FrozenCard:
+        """Compose copy for exactly the selected claims and freeze it; a failure costs only this card."""
+
+        plan = lease.plan
         try:
+            selected = tuple(claim for claim in update.claims if claim.ref in plan.selected_claim_refs)
             async with asyncio.timeout(budget.remaining()):
-                outcome = await self.sender.send(card, channel=channel)
+                copy = await self.composer.compose(selected)
+            frozen = freeze_card(plan, update, copy)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self.store.record_card_failure(lease, error_code=type(exc).__name__)
+            raise
+        return await self.store.save_card(lease, frozen)
+
+    async def _send(
+        self,
+        lease: IntentLease,
+        update: EventUpdate,
+        card: FrozenCard,
+        sender: Sender,
+    ) -> NotificationTurn:
+        if not await self.store.atomic_begin_send(lease, card):
+            return NotificationTurn("preflight_changed", update=update, lease=lease, card=card)
+        try:
+            outcome = await sender.send(card, plan=lease.plan, update=update)
             if outcome.payload_sha256 != card.payload_sha256:
                 raise ContractFault("news_sender_changed_frozen_payload")
         except BaseException as exc:
@@ -249,7 +295,7 @@ class Notifications:
             await self.store.settle_send(lease, card, ambiguous, settled_at_ms=self.clock())
             raise
         await self.store.settle_send(lease, card, outcome, settled_at_ms=self.clock())
-        return outcome.state
+        return NotificationTurn(outcome.state, update=update, lease=lease, card=card, outcome=outcome)
 
 
 class PublicRelay:

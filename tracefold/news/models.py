@@ -41,7 +41,10 @@ GATE_POLICY_VERSION = "news_gate_v7"
 # `storyline_budget_max`. Every other row, guard and duplicate check is byte-identical to v16; the v12-v16
 # `:budget` rows stay in the ledger as history and `outcome.py` still renders them.
 TRIAGE_POLICY_VERSION = "news_triage_policy_v17"
-DELIVERY_CARD_VERSION = "news_delivery_card_v11"
+# v12 (#706): a News card is one EventUpdate intent's frozen Chinese copy -- its headline and one line per
+# selected claim -- plus code-owned facts: the selected claims' primary assets and quotes, the key marker
+# and the change label (新增/更新/更正). No model direction, novelty or fact kind, and no progression review.
+DELIVERY_CARD_VERSION = "news_delivery_card_v12"
 
 # What the editorial Gate can decide about one Event. Three market admissions left this vocabulary
 # with the Events they described (#553): a market observation is stored with its typed fact at
@@ -153,8 +156,6 @@ class ReaderTradeTarget:
 
 ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
 ReaderMarketDataState = Literal["pending", "ready"]
-ReaderMarketScope = Literal["macro", "sector", "single_name"]
-ProgressionReviewState = Literal["pending", "confirmed", "rejected", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,15 +176,7 @@ class ReaderDeliveryPresentation:
     trade_targets: tuple[ReaderTradeTarget, ...] = ()
     market_movements: tuple[ReaderMarketMovement, ...] = ()
     news_at_ms: int | None = None
-    observed_at_ms: int | None = None
     market_data_state: ReaderMarketDataState = "ready"
-    market_scope: ReaderMarketScope | None = None
-    novelty: Novelty | None = None
-    progression_from_headline: str | None = None
-    progression_review_state: ProgressionReviewState | None = None
-    progression_review_reason: str | None = None
-    progression_review_parent_age_minutes: int | None = None
-    progression_review_parent_message_id: int | None = None
 
 
 class ExactNewsModel(BaseModel):

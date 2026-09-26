@@ -261,7 +261,6 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
 
     assert composition.program_configured is False
     assert composition.semantic_judge(load_stable_program_state()) is None
-    assert composition.progression_verifier() is None
     assert composition.secret_free_slot_identities() == {
         "event_semantics.primary": None,
         "taxonomy.primary": None,
@@ -392,34 +391,6 @@ def test_compile_binds_each_predictor_to_its_own_production_primary_slot() -> No
         "taxonomy": "openai/event-model",
         "reader_card": "openai/card-model",
     }
-
-
-def test_news_runtime_composes_progression_review_from_the_event_model_endpoint() -> None:
-    created: list[dict[str, Any]] = []
-
-    def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
-        created.append({"model": model, **kwargs})
-        return ScriptedLM(
-            [{"review": {"related": False, "candidate_i": -1, "reason_zh": "没有同一事件链。"}}],
-            model=model,
-        )
-
-    settings = Settings.model_validate(
-        {
-            "llm": {
-                "api_key": "event-key",
-                "base_url": "https://triage.test/v1",
-                "news_triage_model": "triage-model",
-            }
-        }
-    )
-
-    verifier = learning_runtime.compose_news_program_runtime(settings).progression_verifier(lm_type=scripted_factory)
-
-    assert verifier is not None
-    assert created[0]["model"] == "openai/triage-model"
-    assert created[0]["max_tokens"] == 512
-    assert created[0]["timeout"] == 12.0
 
 
 def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_identity() -> None:
@@ -957,17 +928,13 @@ def _wire_startup_test(
     )
     stable_artifact = SimpleNamespace(program_sha256="b" * 64, schema_version=PROGRAM_SCHEMA_VERSION)
     stable_program = object()
-    progression_verifier = object()
     news = _StartupNewsRepository(
         candidate_manifest_sha=candidate_manifest_sha,
         candidate_bundle_sha=candidate_bundle_sha,
     )
     database = _StartupDatabase(news)
     monkeypatch.setattr("tracefold.integrations.rabbitmq.RabbitMQBus", _StartupBus)
-    composition = SimpleNamespace(
-        semantic_judge=lambda _artifact: stable_program,
-        progression_verifier=lambda: progression_verifier,
-    )
+    composition = SimpleNamespace(semantic_judge=lambda _artifact: stable_program)
     monkeypatch.setattr(workers, "compose_news_program_runtime", lambda _settings: composition)
     monkeypatch.setattr(workers, "active_arm_manifest", lambda _settings, **_kwargs: stable_arm)
     monkeypatch.setattr(workers, "load_stable_program_state", lambda: stable_artifact)
@@ -997,7 +964,6 @@ def _wire_startup_test(
     assert bus.policies_verified is True
     assert bus.settle_timeout_seconds == POLICY_EFFECTIVE_TIMEOUT_SECONDS
     assert pipeline.triage.judge is stable_program
-    assert pipeline.deliverer._progression_verifier is progression_verifier
     assert identity_reads == 1
     manifest = pipeline.triage.runtime_manifest
     assert manifest["image_digest"] == "image"

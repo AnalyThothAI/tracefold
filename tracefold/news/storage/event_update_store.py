@@ -272,6 +272,7 @@ class PgNewsStore:
                 retryable=outcome.retryable,
                 retry_after_ms=outcome.retry_after_ms,
                 settled_at_ms=settled_at_ms,
+                provider_receipt=outcome.receipt,
             ),
         )
 
@@ -282,6 +283,13 @@ class PgNewsStore:
             lambda repos: repos.news.record_intent_card_failure(
                 intent_id=lease.intent_id, lease_token=lease.lease_token, error_code=error_code, now_ms=now_ms
             ),
+        )
+
+    async def defer_notification(self, event_id: str, channel: str) -> None:
+        now_ms = self.clock()
+        await self.db.tx(
+            "news_update_defer_notification",
+            lambda repos: repos.news.defer_notification_work(event_id=event_id, channel=channel, now_ms=now_ms),
         )
 
     # ------------------------------------------------------------------ optional read

@@ -1060,12 +1060,15 @@ class EventUpdateStorage:
         retryable: bool,
         retry_after_ms: int | None,
         settled_at_ms: int,
+        provider_receipt: Mapping[str, Any] | None = None,
     ) -> str | None:
         """Record the actual outcome of one frozen send; returns the ledger state written, if any.
 
-        Only a `sending` row with this exact payload is settled. Sent keeps the body, digest and provider
-        message id; ambiguous is held for reconciliation; a retryable not-sent releases the identity for
-        the same payload under the queue's attempt bound, otherwise it is terminal.
+        Only a `sending` row with this exact payload is settled. Sent keeps the body, digest, provider
+        message id and the provider's own receipt (what an in-place edit is later fenced by); a provider
+        that answers with no message id is recorded with none. Ambiguous is held for reconciliation; a
+        retryable not-sent releases the identity for the same payload under the queue's attempt bound
+        and the provider's own `Retry-After`, otherwise it is terminal.
         """
 
         ledger = self.conn.execute(
@@ -1089,6 +1092,9 @@ class EventUpdateStorage:
                 "payload_sha256": payload_sha256,
                 "provider_message_id": provider_message_id,
                 "pushed_at_ms": now_ms,
+                # The provider's own fields win: a Telegram receipt's push stamp and target identity are
+                # what its enrichment edit is fenced by.
+                **dict(provider_receipt or {}),
             }
             self.conn.execute(
                 """
@@ -1174,6 +1180,32 @@ class EventUpdateStorage:
             self._pend_notification(str(row["event_id"]), next_at_ms=int(row["next_attempt_at_ms"]), now_ms=now_ms)
         else:
             self._complete_intent(str(row["event_id"]), str(row["content_revision"]), now_ms=now_ms)
+        return True
+
+    def defer_notification_work(self, *, event_id: str, channel: str, now_ms: int) -> bool:
+        """A planning turn failed before recording a plan: spend one attempt of the pending marker.
+
+        The marker stays pending and visible; after the last attempt it is no longer due until a new
+        adopted head resets it. Nothing else is touched.
+        """
+
+        row = self.conn.execute(
+            """
+            SELECT attempts FROM news_notification_work
+             WHERE event_id = %s AND channel = %s AND state = 'pending' FOR UPDATE
+            """,
+            (event_id, channel),
+        ).fetchone()
+        if row is None:
+            return False
+        spent = min(int(row["attempts"]) + 1, NOTIFICATION_ATTEMPTS_MAX)
+        self.conn.execute(
+            """
+            UPDATE news_notification_work SET attempts = %s, next_attempt_at_ms = %s, updated_at_ms = %s
+             WHERE event_id = %s AND channel = %s
+            """,
+            (spent, int(now_ms) + _retry_delay(NOTIFICATION_RETRY_MS, spent), int(now_ms), event_id, channel),
+        )
         return True
 
     def pending_notification_event_ids(self, *, channel: str, now_ms: int, limit: int) -> list[str]:

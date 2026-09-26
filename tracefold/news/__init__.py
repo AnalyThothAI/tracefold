@@ -29,8 +29,7 @@ from .program.contracts import (
     SemanticJudgment,
     TriageContext,
 )
-from .progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionVerifier
-from .reader_card import NOVELTY_ZH, UNTRADEABLE_NOTICE_ZH, ReaderCard, quote_line
+from .reader_card import UNTRADEABLE_NOTICE_ZH, ReaderCard, quote_line
 from .source_contracts import EVENT_KINDS, MARKET_KINDS, EventKind
 from .taxonomy import (
     ASSERTION_STATUSES,
@@ -61,9 +60,7 @@ __all__ = [
     "MARKET_WINDOW_DEFAULT_MS",
     "MARKET_WINDOW_MAX_MS",
     "NEWS_RETRIEVAL_SHA256",
-    "NOVELTY_ZH",
     "OI_METRIC_VERSION",
-    "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "SOURCE_AUTHORITIES",
     "UNTRADEABLE_NOTICE_ZH",
     "EventKind",
@@ -75,7 +72,6 @@ __all__ = [
     "OpenNewsExpectedError",
     "ProgramTrace",
     "ProgramUsage",
-    "ProgressionVerifier",
     "ReaderCard",
     "ReaderDeliveryPresentation",
     "ReaderMarketMovement",

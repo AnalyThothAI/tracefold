@@ -14,7 +14,6 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.delivery import card_assets
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import QuoteRequest
 from tracefold.news.models import TRIAGE_POLICY_VERSION, MarketAsset, TriageVerdict
@@ -22,6 +21,7 @@ from tracefold.news.opennews import parse_opennews_message, source_artifact_iden
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.search import compile_news_search
+from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.operations import RECOVERY_BACKLOG_LIMIT
 from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, fallback_verdict, storyline_status
 
@@ -400,15 +400,13 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
             now_ms=2_000,
         )
         assert not repos.news.begin_delivery_edit(
-            event_id=event_id,
-            kind="first",
+            intent_id=legacy_intent_id(event_id, "first"),
             card={"x": 99},
             receipt={**initial_receipt, "source_url": "https://should-not-persist.test"},
             now_ms=2_100,
         )
         assert repos.news.begin_delivery_edit(
-            event_id=event_id,
-            kind="first",
+            intent_id=legacy_intent_id(event_id, "first"),
             card={"x": 2, "market_data_state": "ready"},
             receipt=initial_receipt,
             now_ms=2_200,
@@ -419,26 +417,22 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
         assert editing["pending_card"] == {"x": 2, "market_data_state": "ready"}
         assert editing["edit_state"] == "editing"
         assert not repos.news.settle_delivery_edit(
-            event_id=event_id,
-            kind="first",
+            intent_id=legacy_intent_id(event_id, "first"),
             receipt={**updated_receipt, "pushed_at_ms": 1_501},
             now_ms=2_400,
         )
         assert not repos.news.settle_delivery_edit(
-            event_id=event_id,
-            kind="first",
+            intent_id=legacy_intent_id(event_id, "first"),
             receipt={**updated_receipt, "provider_response": "untrusted"},
             now_ms=2_400,
         )
         assert not repos.news.settle_delivery_edit(
-            event_id=event_id,
-            kind="first",
+            intent_id=legacy_intent_id(event_id, "first"),
             receipt={**updated_receipt, "edited_at_ms": 1_499},
             now_ms=2_400,
         )
         assert repos.news.settle_delivery_edit(
-            event_id=event_id,
-            kind="first",
+            intent_id=legacy_intent_id(event_id, "first"),
             receipt=updated_receipt,
             now_ms=2_500,
         )
@@ -451,8 +445,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     assert delivery["edit_state"] == "edited"
     with repos.transaction():
         assert repos.news.begin_delivery_edit(
-            event_id=event_id,
-            kind="first",
+            intent_id=legacy_intent_id(event_id, "first"),
             card={"x": 3, "market_data_state": "newer"},
             receipt=updated_receipt,
             now_ms=3_000,
@@ -487,8 +480,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
             (event_id,),
         )
         assert repos.news.begin_delivery_edit(
-            event_id=event_id,
-            kind="first",
+            intent_id=legacy_intent_id(event_id, "first"),
             card={"x": 4, "market_data_state": "stale-settlement"},
             receipt=updated_receipt,
             now_ms=5_000,
@@ -2392,8 +2384,8 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
     with repos.transaction():
         _insert(verdict.model_dump(mode="json"))
 
-    # The card names the judgment's own subject rather than the only tag the provider sent.
-    shown = card_assets(verdict.model_dump(mode="json"), ["CRCL"], catalog_candidates=candidates)
+    # The quote target is the judgment's own typed subject rather than the only tag the provider sent.
+    shown = [MarketAsset.of(asset) for asset in verdict.model_dump(mode="json")["assets"]]
     assert shown == [MarketAsset("V", "equity"), MarketAsset("CRCL", "equity")]
 
     # And the typed quote target refuses the same-name coin: `V/equity` is priced by an equity source or
