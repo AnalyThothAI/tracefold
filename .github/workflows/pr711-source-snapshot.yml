@@ -1,7 +1,7 @@
 name: PR 711 source snapshot
 
-# Temporary read-only source handoff for the existing PR's implementation work.
-# No environment secrets, installation, deployment, model or venue calls.
+# Temporary verification handoff for this PR; remove after implementation.
+# Only public source and locked dependencies are archived. No secrets/deployment.
 on:
   pull_request:
     branches: [main]
@@ -14,24 +14,35 @@ jobs:
   snapshot:
     if: github.event.pull_request.number == 711
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Archive tracked public source only
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: '0.11.7'
+      - name: Install the existing lockfile without invoking application services
+        run: uv sync --locked
+      - name: Archive tracked public source and installed dependency files
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
           mkdir -p "$RUNNER_TEMP/pr711-source"
           git archive --format=tar HEAD | gzip > "$RUNNER_TEMP/pr711-source/source.tar.gz"
+          tar -C .venv --exclude='__pycache__' -czf "$RUNNER_TEMP/pr711-source/dependencies.tar.gz" lib/python3.13/site-packages bin
           git rev-parse HEAD > "$RUNNER_TEMP/pr711-source/commit.txt"
-          sha256sum "$RUNNER_TEMP/pr711-source/source.tar.gz" > "$RUNNER_TEMP/pr711-source/sha256.txt"
+          uv pip freeze > "$RUNNER_TEMP/pr711-source/dependencies.txt"
+          sha256sum "$RUNNER_TEMP/pr711-source/"*.tar.gz > "$RUNNER_TEMP/pr711-source/sha256.txt"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: pr711-source-${{ github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/pr711-source
           retention-days: 1
+          compression-level: 0
           if-no-files-found: error
