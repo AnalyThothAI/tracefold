@@ -15,6 +15,7 @@ from tests.postgres_test_utils import (
     postgres_migration_test_dsn,
     reset_postgres_schema,
 )
+from tests.trading.news_public_updates import first_report
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.llm import ConfiguredLMEndpoint
 from tracefold.app.trading_analysis import AnalysisRunner, FrameReader
@@ -149,7 +150,7 @@ def test_oi_case_does_not_require_optional_current_market_oi(tmp_path) -> None:
     assert len(prepared.plans) >= 2
 
 
-def test_catalyst_source_headline_is_citable_only_when_present(tmp_path) -> None:
+def test_catalyst_source_text_is_citable_only_when_present(tmp_path) -> None:
     now_ms = int(time.time() * 1000)
     reader = FrameReader(_Market(), AnalysisFiles(tmp_path / "catalyst-evidence"))
     case = {
@@ -163,23 +164,22 @@ def test_catalyst_source_headline_is_citable_only_when_present(tmp_path) -> None
             "instrument": {"native_symbol": "SOLUSDT", "environment": "live", "mapping_semantics_digest": "a" * 64},
         },
     }
-    source = {
-        "kind": "catalyst",
-        "headline": "A visible source headline",
-        "why": "A source explanation",
-        "source_recorded_at_ms": now_ms - 20_000,
-    }
+    _, catalyst = first_report(
+        event_id="catalyst-source", first_available_at_ms=now_ms - 30_000, completed_at_ms=now_ms - 20_000
+    )
+    source = catalyst.model_dump(mode="json")
     prepared = asyncio.run(reader.prepare(case=case, source_fact=source, source_first_visible_at_ms=now_ms - 10_000))
     item = prepared.brief.evidence_catalog["source"]
     assert item["status"] == "ok"
-    assert item["values"] == {"headline": source["headline"], "why": source["why"]}
-    assert item["unit_definition"] == {"headline": "text", "why": "text"}
+    assert item["values"] == {"text": catalyst.text}
+    assert item["unit_definition"] == {"text": "text"}
+    assert item["event_at_ms"] == now_ms - 20_000
     assert "source" in json.loads(prepared.brief.text)["citable_evidence_ids"]
 
     empty = asyncio.run(
         reader.prepare(
             case={**case, "case_id": "catalyst-source-empty"},
-            source_fact={"kind": "catalyst", "source_recorded_at_ms": now_ms - 20_000},
+            source_fact={**source, "text": " "},
             source_first_visible_at_ms=now_ms - 10_000,
         )
     )
