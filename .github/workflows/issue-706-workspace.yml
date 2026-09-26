@@ -16,21 +16,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
         with:
-          python-version: "3.13"
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with:
-          version: "0.11.7"
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Install repository-locked dependencies
-        run: uv sync --locked
-      - name: Archive offline dependency environment
-        run: tar -czf /tmp/issue-706-dependencies.tar.gz -C .venv lib/python3.13/site-packages bin/ruff
+          node-version: "22"
+      - name: Install locked frontend dependencies
+        working-directory: web
+        run: npm ci
+      - name: Archive frontend environment
+        run: tar -czf /tmp/issue-706-frontend.tar.gz -C web node_modules
+      - name: Prepare disposable PostgreSQL 18 runtime
+        run: |
+          mkdir -p /tmp/issue-706-pg
+          docker run --rm --entrypoint bash -v /tmp/issue-706-pg:/out postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296 -c '
+            set -eu
+            mkdir /bundle
+            cp -a --parents /usr/lib/postgresql/18 /usr/share/postgresql/18 /bundle
+            ldd /usr/lib/postgresql/18/bin/* /usr/lib/postgresql/18/lib/*.so 2>/dev/null | awk '\''/=> \/|^\// {for(i=1;i<=NF;i++) if ($i ~ /^\//) print $i}'\'' | sort -u > /tmp/libraries
+            while read -r library; do cp -aL --parents "$library" /bundle; done < /tmp/libraries
+            tar -czf /out/issue-706-postgres.tar.gz -C /bundle .
+          '
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: issue-706-dependencies-${{ github.sha }}
-          path: /tmp/issue-706-dependencies.tar.gz
+          name: issue-706-local-test-dependencies-${{ github.sha }}
+          path: |
+            /tmp/issue-706-frontend.tar.gz
+            /tmp/issue-706-pg/issue-706-postgres.tar.gz
           retention-days: 1
           if-no-files-found: error
