@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[2]
         {"venues": {"hyperliquid_enabled": True}},
         {"nautilus": {"accept_intents": True}},
         {"candidates": {"max_age_seconds": 300}},
+        {"execution": {"mode": "paper"}},
+        {"analysis": {"data_environment": "live"}},
+        {"analysis": {"strategy_publication_enabled": True}},
     ),
 )
 def test_retired_execution_configuration_fails_closed(retired: dict[str, object]) -> None:

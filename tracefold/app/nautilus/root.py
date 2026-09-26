@@ -31,6 +31,7 @@ from nautilus_trader.adapters.binance import (
     BinanceInstrumentProviderConfig,
     BinanceLiveDataClientFactory,
 )
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.live.node import TradingNode
@@ -46,14 +47,13 @@ from tracefold.app.process import create_probe_app, install_signal_handlers, rem
 from tracefold.app.repository_session import RepositorySession, postgres_connection, repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.binance import BinanceVenuePositions, OiBinanceExecClientFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
-    ActiveRuntimeMode,
     BinanceRuntimeCredentials,
     OiExitPolicy,
     OiInstrumentRoute,
     OiRiskLimits,
     OiRuntimeProfile,
-    binance_environment,
     build_oi_node_config,
+    connection_environment,
     route_catalogue,
 )
 from tracefold.integrations.nautilus.oi_runtime.funding import BinanceFundingIncome, watch_funding
@@ -102,14 +102,14 @@ class _ProbeState:
     lock: Lock
 
     @classmethod
-    def starting(cls, *, mode: str, account_slot: str) -> _ProbeState:
+    def starting(cls, *, connection: str, account_slot: str) -> _ProbeState:
         return cls(
             payload={
                 "ok": False,
                 "alive": False,
                 "entries_armed": False,
                 "entry_block_reason": "runtime_starting",
-                "mode": mode,
+                "connection": connection,
                 "account_slot": account_slot,
                 "unexpected_exposure": False,
                 "positions_count": 0,
@@ -130,13 +130,13 @@ class _ProbeState:
 
 
 def run_nautilus(settings: Settings) -> None:
-    """Supervise the configured paper/live node, or say why there is nothing to supervise."""
+    """Supervise the configured Binance connection, or say why it is disabled."""
 
     execution = settings.trading.execution
-    if execution.mode == "disabled":
+    if not execution.enabled:
         logger.info("Execution runtime disabled by configuration; no Binance node is built")
         return
-    mode = execution.mode
+    environment = BinanceEnvironment(execution.binance.environment) if execution.binance.environment else None
     credentials = _read_credentials(settings)
     with postgres_connection(settings, application_name="tracefold_nautilus_singleton", long_lived=True) as conn:
         _require_current_schema(conn)
@@ -150,10 +150,19 @@ def run_nautilus(settings: Settings) -> None:
         if not singleton.acquire():
             raise RuntimeFatal("oi_runtime_account_slot_already_owned")
         try:
+            previous = singleton_repos.trading.execution_runtime_state(execution.account_slot)
+            configured = connection_environment(environment).upper()
+            if previous is not None and previous.connection != configured:
+                raise RuntimeFatal("oi_runtime_connection_target_changed_for_account_slot")
+            with singleton_repos.transaction():
+                control = singleton_repos.trading.ensure_execution_runtime_control_state(
+                    execution.account_slot, now_ns=time.time_ns()
+                )
             asyncio.run(
                 _run_active_runtime(
                     settings=settings,
-                    mode=mode,
+                    environment=environment,
+                    namespace=control.execution_namespace,
                     credentials=credentials,
                     singleton=singleton,
                     repos=singleton_repos,
@@ -200,7 +209,8 @@ def _database_precedes_image(database_head: Any, *, image_head: str) -> bool:
 async def _run_active_runtime(
     *,
     settings: Settings,
-    mode: ActiveRuntimeMode,
+    environment: BinanceEnvironment | None,
+    namespace: str,
     credentials: BinanceRuntimeCredentials,
     singleton: AccountSlotSingleton,
     repos: RepositorySession,
@@ -210,7 +220,10 @@ async def _run_active_runtime(
     execution = settings.trading.execution
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
-    probe = _ProbeState.starting(mode=mode, account_slot=execution.account_slot)
+    probe = _ProbeState.starting(
+        connection=connection_environment(environment).upper(),
+        account_slot=execution.account_slot,
+    )
     server = _probe_server(probe.readiness)
     installed_signals = install_signal_handlers(loop, stop.set)
     probe_task = asyncio.create_task(server.serve(), name="oi-nautilus-probe")
@@ -220,7 +233,8 @@ async def _run_active_runtime(
             try:
                 await _run_generation(
                     settings=settings,
-                    mode=mode,
+                    environment=environment,
+                    namespace=namespace,
                     credentials=credentials,
                     singleton=singleton,
                     repos=repos,
@@ -261,7 +275,8 @@ def _failure_name(exc: BaseException) -> str:
 async def _run_generation(
     *,
     settings: Settings,
-    mode: ActiveRuntimeMode,
+    environment: BinanceEnvironment | None,
+    namespace: str,
     credentials: BinanceRuntimeCredentials,
     singleton: AccountSlotSingleton,
     repos: RepositorySession,
@@ -271,8 +286,8 @@ async def _run_generation(
     """One TradingNode, from route discovery to shutdown. Returns only when `stop` was requested."""
 
     execution = settings.trading.execution
-    routes = await _discover_routes(mode, credentials, stop_distance_bps=execution.risk.stop_distance_bps)
-    profile = _active_profile(settings, mode, routes)
+    routes = await _discover_routes(environment, credentials, stop_distance_bps=execution.risk.stop_distance_bps)
+    profile = _active_profile(settings, routes, namespace=namespace)
     inputs = load_runtime_inputs(repos, profile, now_ns=time.time_ns())
     profile = replace(
         profile,
@@ -318,21 +333,20 @@ async def _run_generation(
             return
         # The venue-truth read runs beside the node on the same loop, so every reading reaches the
         # Strategy on the thread that owns the Cache. It reads, and nothing else (#680 PR-3).
-        venue = BinanceVenuePositions(mode=mode, credentials=credentials)
+        venue = BinanceVenuePositions(environment=environment, credentials=credentials)
         venue_task = asyncio.create_task(
             watch_venue(venue.read, strategy.observe_venue, stop), name="oi-venue-positions"
         )
-        if mode == "paper":
-            funding = BinanceFundingIncome(mode=mode, credentials=credentials)
-            funding_task = asyncio.create_task(
-                watch_funding(
-                    funding.read,
-                    strategy.observe_funding,
-                    strategy.observe_funding_coverage,
-                    stop,
-                ),
-                name="oi-paper-funding",
-            )
+        funding = BinanceFundingIncome(environment=environment, credentials=credentials)
+        funding_task = asyncio.create_task(
+            watch_funding(
+                funding.read,
+                strategy.observe_funding,
+                strategy.observe_funding_coverage,
+                stop,
+            ),
+            name="oi-funding",
+        )
         started_at_ns = time.time_ns()
         state = _runtime_state(
             profile=profile,
@@ -353,9 +367,9 @@ async def _run_generation(
         )
         bridge.start()
         logger.info(
-            "Execution runtime generation running account_slot={} mode={} routes={} open_plans={}",
+            "Execution runtime generation running account_slot={} connection={} routes={} open_plans={}",
             profile.account_slot,
-            profile.mode,
+            profile.environment,
             len(profile.routes),
             len(inputs.open_plans),
         )
@@ -451,7 +465,7 @@ def _runtime_state(
     if base is None:
         return ExecutionRuntimeState(
             account_slot=profile.account_slot,
-            mode=profile.mode,
+            connection=connection_environment(profile.environment).upper(),
             runtime_id=uuid4(),
             alive=True,
             entries_armed=view.entries_armed,
@@ -483,21 +497,17 @@ def _runtime_state(
 
 def _active_profile(
     settings: Settings,
-    mode: ActiveRuntimeMode,
     routes: tuple[OiInstrumentRoute, ...],
+    *,
+    namespace: str | None = None,
 ) -> OiRuntimeProfile:
     execution = settings.trading.execution
-    # Every deterministic client order id this Runtime can claim lives under this namespace, so the
-    # account slot and the mode are what a restart matches intent under (#520 PR-A).
-    namespace = f"tracefold:{execution.account_slot}:{mode}"
+    namespace = namespace or f"tracefold:{execution.account_slot}"
     exit_policy = execution.exit_policy
     if exit_policy is None:
-        if mode == "live":
-            raise RuntimeFatal("trading_execution_live_exit_policy_required")
         exit_policy = TradingExitPolicySettings(take_profit_bps=200, max_holding_seconds=14_400)
     try:
         return OiRuntimeProfile(
-            mode=mode,
             account_slot=execution.account_slot,
             account_id=_BINANCE_USDM_ACCOUNT_ID,
             namespace=namespace,
@@ -508,6 +518,7 @@ def _active_profile(
                 take_profit_bps=exit_policy.take_profit_bps,
                 max_holding_ns=exit_policy.max_holding_seconds * 1_000_000_000,
             ),
+            environment=(BinanceEnvironment(execution.binance.environment) if execution.binance.environment else None),
             excluded_asset_ids=frozenset(settings.trading.analysis.excluded_asset_ids),
             verified_routes=tuple(
                 (route.native_symbol, route.asset_id, route.units_per_contract)
@@ -553,7 +564,7 @@ def _risk_limits(settings: Settings) -> OiRiskLimits:
 
 
 async def _discover_routes(
-    mode: ActiveRuntimeMode,
+    environment: BinanceEnvironment | None,
     credentials: BinanceRuntimeCredentials,
     *,
     stop_distance_bps: int,
@@ -570,7 +581,7 @@ async def _discover_routes(
         account_type=BinanceAccountType.USDT_FUTURES,
         api_key=credentials.api_key,
         api_secret=credentials.api_secret,
-        environment=binance_environment(mode),
+        **({} if environment is None else {"environment": environment}),
     )
     provider = BinanceFuturesInstrumentProvider(
         client=client,
@@ -606,7 +617,7 @@ def _probe_payload(state: ExecutionRuntimeState) -> dict[str, Any]:
         "alive": state.alive,
         "entries_armed": state.entries_armed,
         "entry_block_reason": state.entry_block_reason,
-        "mode": state.mode,
+        "connection": state.connection,
         "account_slot": state.account_slot,
         "unexpected_exposure": state.unexpected_exposure,
         "positions_count": state.positions_count,

@@ -42,7 +42,6 @@ class TradePlan(BaseModel):
     source: Literal["signal", "manual"]
     case_id: str | None = Field(default=None, min_length=1, max_length=128)
     account_slot: str = Field(pattern=IDENTITY_PATTERN)
-    runtime_mode_at_creation: Literal["paper", "live"]
     market_key: str = Field(pattern=MARKET_KEY_PATTERN)
     instrument_id: str = Field(min_length=1, max_length=128)
     direction: Literal["long", "short"]

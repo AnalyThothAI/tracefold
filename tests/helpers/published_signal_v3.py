@@ -51,7 +51,6 @@ def append_published_v3_signal(
         case_id=case_id,
         decision_id=decision_id,
         account_slot=profile.account_slot,
-        runtime_mode=profile.mode,
         entry_scope_id=scope,
         asset_id=asset_id,
         market_key=MARKET,

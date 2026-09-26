@@ -84,9 +84,9 @@ make runtime-down
 ```
 
 These are lifecycle commands, not a recommendation to enable live trading.
-`make up` does not restart the execution Runtime; `make down` refuses while it exists.
+`make up` does not restart the execution Runtime; `make down` stops it first.
 Use the [Operations](docs/OPERATIONS.md) and [Security](docs/SECURITY.md) procedures
-for the configured paper/live account and any authorized activation or cutover.
+for the configured Binance connection and any authorized activation or cutover.
 The current Signal lane is OI-based; arbitrary editorial explanations do not
 implicitly become implemented trading strategies.
 

@@ -130,7 +130,8 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                 "trading": {
                     "enabled": settings.trading.enabled,
                     "execution": {
-                        "mode": settings.trading.execution.mode,
+                        "enabled": settings.trading.execution.enabled,
+                        "binance": settings.trading.execution.binance.model_dump(mode="json"),
                         "account_slot": settings.trading.execution.account_slot,
                         "credentials": {
                             "api_key_file": None if binance_key_file is None else str(binance_key_file),

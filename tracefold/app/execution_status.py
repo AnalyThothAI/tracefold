@@ -33,11 +33,13 @@ def execution_readiness_projection(
     now_ns: int,
 ) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "mode": execution.mode,
+        "configured_connection": execution.binance.environment or "LIVE",
+        "connection": None,
+        "connection_observed_at_ms": None,
         "account_slot": execution.account_slot,
         "alive": False,
         "entries_armed": False,
-        "entry_block_reason": "disabled" if execution.mode == "disabled" else "runtime_state_missing",
+        "entry_block_reason": "disabled" if not execution.enabled else "runtime_state_missing",
         "entries_paused": True,
         "emergency_halted": False,
         "unexpected_exposure": False,
@@ -46,9 +48,9 @@ def execution_readiness_projection(
         "facts_expire_at_ms": None,
         "current_account": None,
     }
-    if execution.mode == "disabled" or state is None:
+    if not execution.enabled or state is None:
         return base
-    if state.mode != execution.mode or state.account_slot != execution.account_slot:
+    if state.account_slot != execution.account_slot:
         base["entry_block_reason"] = "runtime_identity_mismatch"
         return base
     stale = max(0, now_ns - state.heartbeat_at_ns) > _HEARTBEAT_STALE_AFTER_NS
@@ -61,6 +63,8 @@ def execution_readiness_projection(
     base.update(
         {
             "alive": alive,
+            "connection": state.connection,
+            "connection_observed_at_ms": state.heartbeat_at_ns // 1_000_000,
             "entries_armed": entries_armed,
             "entry_block_reason": None if entries_armed else entry_block_reason or "entry_blocked",
             "entries_paused": True if current_control is None else current_control.entries_paused,

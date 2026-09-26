@@ -52,21 +52,21 @@ test("missing PnL stays explicit in the existing desk", async ({ page }, testInf
   const data = tradingExecutionsFixture();
   data.totals = {
     ...data.totals,
-    realized_known_today_usd: null,
-    realized_known_total_usd: null,
+    net_known_today_usd: null,
+    net_known_total_usd: null,
     closed_today: 3,
     closed_total: 3,
-    pnl_known_today: 0,
-    pnl_known_total: 0,
-    pnl_missing_today: 3,
-    pnl_missing_total: 3,
+    net_known_today: 0,
+    net_known_total: 0,
+    net_missing_today: 3,
+    net_missing_total: 3,
   };
   data.executions = [
     // Closed, but a fill without a quote-currency commission leaves no net number to fold (#680).
     tradingExecutionRowFixture({
       fees_usd: null,
-      pnl_known: false,
-      realized_pnl_usd: null,
+      net_known: false,
+      net_pnl_usd: null,
     }),
   ];
   await page.route("**/api/trading/executions*", (route) =>
@@ -75,11 +75,13 @@ test("missing PnL stays explicit in the existing desk", async ({ page }, testInf
   await page.goto("/trading");
   await expect(page.getByText("平仓 3 · 已知 0 · 缺失 3")).toHaveCount(2);
   await expect(
-    page.getByText(/^3 笔已平仓交易的成交或手续费记录不全.*不能视为账户完整净利润/),
+    page.getByText(
+      /^3 笔已平仓交易缺少完整成交、手续费或资金费归因；已知部分不能视为账户完整净利润/,
+    ),
   ).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await page.getByRole("button", { name: "执行记录", exact: true }).click();
-  await expect(page.getByText("盈亏未知")).toBeVisible();
+  await expect(page.getByText("净收益未知")).toBeVisible();
   await expect(page.getByText(/^手续费 /)).toHaveCount(0);
   await expectNoDocumentHorizontalOverflow(page);
   await page.screenshot({

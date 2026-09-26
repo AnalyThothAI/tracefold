@@ -818,7 +818,6 @@ def test_0360_keeps_the_answer_the_console_showed_and_rewrites_the_signal_payloa
             execution_strategy=EXECUTION_STRATEGY_ID,
             now_ns=1,
             limit=10,
-            runtime_mode="paper",
         )
         assert stored == ()
         historical = conn.execute(

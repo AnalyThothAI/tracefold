@@ -35,7 +35,7 @@ _OI_INTERVALS = {
 def _futures_base(environment: str) -> str:
     if environment == "live":
         return _FUTURES
-    if environment == "demo":
+    if environment in ("demo", "testnet"):
         return _DEMO_FUTURES
     raise ValueError("market_data_environment_unsupported")
 

@@ -82,7 +82,7 @@ if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
     *"--entrypoint tracefold migrate config"*)
       printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
       printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
-      printf ',"execution":{"mode":"%s"}}}}\\n' "$TRACEFOLD_TEST_EXECUTION_MODE"
+      printf ',"execution":{"enabled":%s}}}}\\n' "$TRACEFOLD_TEST_EXECUTION_ENABLED"
       ;;
   esac
   exit 0
@@ -194,7 +194,7 @@ fi
 if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
   printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
   printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
-  printf ',"execution":{"mode":"%s"}}}}\\n' "$TRACEFOLD_TEST_EXECUTION_MODE"
+  printf ',"execution":{"enabled":%s}}}}\\n' "$TRACEFOLD_TEST_EXECUTION_ENABLED"
   exit 0
 fi
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
@@ -274,7 +274,7 @@ esac
         "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
-        "TRACEFOLD_TEST_EXECUTION_MODE": "disabled",
+        "TRACEFOLD_TEST_EXECUTION_ENABLED": "false",
         "TRACEFOLD_TEST_TRADING_CONTROL": str(trading_control),
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
         "TRACEFOLD_TEST_NAUTILUS_STOPPED": str(tmp_path / "nautilus-stopped"),
@@ -608,27 +608,27 @@ def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
 
 
 @pytest.mark.parametrize(
-    ("trading_enabled", "credentials_configured", "execution_mode", "expected_ok", "expected_state"),
+    ("trading_enabled", "credentials_configured", "execution_enabled", "expected_ok", "expected_state"),
     (
-        ("true", "true", "disabled", True, "disabled"),
-        ("true", "false", "disabled", True, "disabled"),
-        ("false", "false", "disabled", True, "disabled"),
-        ("true", "true", "paper", True, "mode=paper"),
+        ("true", "true", "false", True, "disabled"),
+        ("true", "false", "false", True, "disabled"),
+        ("false", "false", "false", True, "disabled"),
+        ("true", "true", "true", True, "enabled"),
     ),
 )
 def test_status_does_not_require_an_adapter_before_its_owner_issue(
     tmp_path: Path,
     trading_enabled: str,
     credentials_configured: str,
-    execution_mode: str,
+    execution_enabled: str,
     expected_ok: bool,
     expected_state: str,
 ) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = trading_enabled
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = credentials_configured
-    env["TRACEFOLD_TEST_EXECUTION_MODE"] = execution_mode
-    if execution_mode != "disabled":
+    env["TRACEFOLD_TEST_EXECUTION_ENABLED"] = execution_enabled
+    if execution_enabled == "true":
         env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
 
     result = subprocess.run(
@@ -688,11 +688,11 @@ def test_exact_image_deploy_does_not_recreate_nautilus_without_demo_credentials(
 
 
 @pytest.mark.parametrize("target", ("up", "deploy-image"))
-@pytest.mark.parametrize("execution_mode", ("disabled", "paper"))
+@pytest.mark.parametrize("execution_enabled", ("false", "true"))
 def test_a_deploy_never_stops_or_recreates_the_execution_runtime(
     tmp_path: Path,
     target: str,
-    execution_mode: str,
+    execution_enabled: str,
 ) -> None:
     """The inversion of the old contract (#537 D3).
 
@@ -700,14 +700,14 @@ def test_a_deploy_never_stops_or_recreates_the_execution_runtime(
     News-only merge destroyed and rebuilt the process holding a live Binance position: 26 restarts
     in 56.7 hours, and three Signals lost to `expired`/`account_stale`. The runtime now has its own
     image and its own `make runtime-*` lifecycle, and a deploy must not name the service at all —
-    in either execution mode, and whether or not the container is currently running.
+    with execution enabled or disabled, and whether or not the container is currently running.
     """
 
     repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_EXECUTION_MODE"] = execution_mode
+    env["TRACEFOLD_TEST_EXECUTION_ENABLED"] = execution_enabled
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
-    if execution_mode != "disabled":
+    if execution_enabled == "true":
         env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
     command = ["make", target]
     if target == "deploy-image":
@@ -1194,7 +1194,7 @@ def test_runtime_status_prints_the_readiness_payload_it_gets(tmp_path: Path, rea
 
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_EXECUTION_MODE"] = "paper"
+    env["TRACEFOLD_TEST_EXECUTION_ENABLED"] = "true"
     env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
     env["TRACEFOLD_TEST_NAUTILUS_READYZ"] = readyz
 

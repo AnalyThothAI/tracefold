@@ -25,7 +25,6 @@ def _signal() -> TradeSignalV3:
         case_id="case-v3",
         decision_id="2" * 64,
         account_slot=profile.account_slot,
-        runtime_mode=profile.mode,
         entry_scope_id="3" * 64,
         asset_id=semantics[0],
         market_key="crypto:perp:BTC:USDT",
@@ -75,6 +74,60 @@ def test_dynamic_short_plan_waits_for_final_check_before_submitting() -> None:
     runtime.pump()
     assert len(runtime.strategy.submitted) == 1
     assert runtime.strategy.submitted[0][0].side.name == "SELL"
+
+
+def test_stale_quote_after_plan_commit_retries_same_plan_and_order_id() -> None:
+    profile = replace(oi_profile(), excluded_asset_ids=frozenset())
+    runtime = unit_runtime(signals=(_signal(),), profile=profile)
+    runtime.pump()
+    plan = runtime.settle()
+    assert plan is not None
+    runtime.advance(11 * SECOND_NS)
+    runtime.journal.settle_entry_validity(
+        EntryValidityReceipt(entry_id=plan.entry_id, allowed=True, reason="valid", checked_at_ns=NOW_NS)
+    )
+    runtime.pump()
+    assert runtime.strategy.submitted == []
+    assert runtime.strategy._plans[plan.entry_id].status == "prepared"
+    assert runtime.dispositions() == []
+    runtime.add_quote(9_999, 10_000)
+    runtime.advance(SECOND_NS)
+    runtime.pump()
+    assert runtime.journal.pending_entry_validity() == plan
+    runtime.journal.settle_entry_validity(
+        EntryValidityReceipt(
+            entry_id=plan.entry_id, allowed=True, reason="valid", checked_at_ns=NOW_NS + 12 * SECOND_NS
+        )
+    )
+    runtime.pump()
+    assert len(runtime.strategy.submitted) == 1
+    assert runtime.strategy.submitted[0][0].client_order_id.value == plan.entry_client_order_id
+    runtime.pump()
+    assert len(runtime.strategy.submitted) == 1
+
+
+def test_venue_verification_is_rechecked_before_a_prepared_order() -> None:
+    profile = replace(oi_profile(), excluded_asset_ids=frozenset())
+    runtime = unit_runtime(signals=(_signal(),), profile=profile)
+    runtime.pump()
+    plan = runtime.settle()
+    assert plan is not None
+    runtime.strategy._venue_reads = True
+    runtime.journal.settle_entry_validity(
+        EntryValidityReceipt(entry_id=plan.entry_id, allowed=True, reason="valid", checked_at_ns=NOW_NS)
+    )
+    runtime.pump()
+    assert runtime.strategy.submitted == []
+    assert runtime.strategy._plans[plan.entry_id].status == "prepared"
+    runtime.advance(SECOND_NS)
+    runtime.strategy._venue_reads = False
+    runtime.pump()
+    assert runtime.journal.pending_entry_validity() == plan
+    runtime.journal.settle_entry_validity(
+        EntryValidityReceipt(entry_id=plan.entry_id, allowed=True, reason="valid", checked_at_ns=NOW_NS + SECOND_NS)
+    )
+    runtime.pump()
+    assert len(runtime.strategy.submitted) == 1
 
 
 def test_failed_final_check_ends_plan_without_order() -> None:

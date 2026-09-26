@@ -290,7 +290,7 @@ services:
     # `make runtime-up` computes it from the image it is about to run.
     environment:
       TRACEFOLD_IMAGE_DIGEST: ${TRACEFOLD_IMAGE_DIGEST:-}
-    # Canonical deployment enables this profile only for explicit paper/live config. Disabled
+    # Canonical deployment enables this profile only when execution.enabled is true. False
     # remains the default and constructs no TradingNode or credential-capable process.
     profiles: ["execution"]
     init: true

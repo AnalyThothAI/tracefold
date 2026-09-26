@@ -28,8 +28,6 @@ from tracefold.platform.market_identity import (
     VerifiedAlias,
 )
 from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
-from tracefold.trading.engine.contracts import ExitPlan
-from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
 from tracefold.trading.engine.features import (
     PROFILE_VERSION,
     catalyst_text_values,
@@ -41,13 +39,12 @@ from tracefold.trading.engine.outcomes import price_path_label
 from tracefold.trading.engine.plans import (
     ENTRY_WINDOW_MS,
     MAX_HOLDING_SECONDS,
-    STRATEGY_VERSION,
     EntryPlan,
     build_entry_plans,
     compile_proposal,
     directed_cross,
 )
-from tracefold.trading.engine.policy import InvalidAssessment, decision_identity
+from tracefold.trading.engine.policy import InvalidAssessment, decision_identity, is_citable_evidence
 from tracefold.trading.engine.target import SourceAsset, TargetSelection, select_target
 from tracefold.trading.execution_contracts import (
     SignalEntryEnvelopeV3,
@@ -59,9 +56,6 @@ from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prep
 
 _BAR_MS = 60_000
 _PROFILE_BARS = 241
-# Shadow paths use a fixed $10 reference risk to keep historical comparisons stable.
-# This number never reaches the execution Runtime or limits a real order.
-_SHADOW_REFERENCE_RISK_USD = Decimal("10")
 _LOG = logging.getLogger(__name__)
 _FILE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-files")
 
@@ -105,7 +99,6 @@ class FrameReader:
         case: dict[str, Any],
         source_fact: dict[str, Any],
         source_first_visible_at_ms: int,
-        execution_environment: str | None = None,
         source_history: tuple[dict[str, Any], ...] = (),
         source_history_at: Callable[[int], Awaitable[tuple[dict[str, Any], ...]]] | None = None,
         source_revision: str | None = None,
@@ -136,7 +129,7 @@ class FrameReader:
                 dataset=dataset,
                 native_symbol=symbol,
                 venue="binance.usdm",
-                environment=environment,
+                environment="live" if spot else environment,
                 product="spot" if spot else "perpetual",
                 source_identity="binance_public_v1",
                 unit_definition=unit_definition,
@@ -187,7 +180,6 @@ class FrameReader:
             "case_id": case["case_id"],
             "knowledge_cutoff_ms": knowledge_cutoff,
             "data_environment": environment,
-            "execution_environment": execution_environment,
             "source_fact": source_fact,
             "source_first_visible_at_ms": source_first_visible_at_ms,
             "same_asset_source_history": source_history,
@@ -223,6 +215,9 @@ class FrameReader:
                 raise ValueError("market_data_received_after_cutoff")
             if not results["perp_bars"].payload:
                 raise ValueError("required_perp_price_unavailable")
+            rules = results["instrument_rules"]
+            if rules.status != "ok" or not rules.payload or rules.payload[0].get("native_symbol") != native:
+                raise ValueError("executable_contract_unavailable")
             last_bar = results["perp_bars"].payload[-1]
             reference_price = Decimal(str(last_bar["close"]))
             reference_at_ms = int(last_bar["event_at_ms"])
@@ -253,7 +248,6 @@ class FrameReader:
             snapshot_ref=evidence_ref,
             knowledge_cutoff_ms=knowledge_cutoff,
             data_environment=environment,
-            execution_environment=execution_environment,
             source_first_visible_at_ms=source_first_visible_at_ms,
             source_fact=source_fact,
             results=results,
@@ -372,11 +366,15 @@ def _registry_from_rows(
     verified = {route.native_symbol: route for route in verified_routes}
     aliases = []
     for row in rows:
-        if row["venue"] != "binance.perp" or row["instrument_class"] != "crypto":
+        if "venue" in row and (row["venue"] != "binance.perp" or row["instrument_class"] != "crypto"):
             continue
-        native = str(row["venue_symbol"])
-        base = str(row["base_symbol"])
+        if row.get("trading_status", "TRADING") != "TRADING" or row.get("contract_type", "PERPETUAL") != "PERPETUAL":
+            continue
+        native = str(row.get("native_symbol", row.get("venue_symbol", "")))
+        base = str(row.get("base_asset", row.get("base_symbol", "")))
         quote = str(row["quote_asset"])
+        if quote != "USDT" or row.get("settlement_asset", quote) != "USDT":
+            continue
         reviewed = verified.get(native)
         if reviewed is None and (not base or base[0].isdigit() or native != base + quote):
             # A multiplier or a nonstandard native spelling needs reviewed
@@ -415,17 +413,17 @@ def _registry_from_rows(
                     native,
                 )
             )
-    snapshot = str(max((int(row["observed_at_ms"]) for row in rows), default=0))
+    snapshot = str(max((int(row.get("received_at_ms", row.get("observed_at_ms", 0))) for row in rows), default=0))
     return AssetRegistry(
-        snapshot_ref=f"news_native_catalogue:{snapshot}",
+        snapshot_ref=f"binance_connection_catalogue:{environment}:{snapshot}",
         instruments=tuple(instruments),
         aliases=tuple(aliases),
         known_assets=universe.excluded_asset_ids,
     )
 
 
-def _select_from_public_projection(
-    repos: Any,
+async def _select_from_connection(
+    market_data: MarketDataPort,
     event: dict[str, Any],
     *,
     environment: str,
@@ -438,20 +436,34 @@ def _select_from_public_projection(
     for route in verified_routes:
         if route.source_symbol in symbols:
             symbols.add(route.native_symbol[:-4])
-    rows_by_native: dict[str, dict[str, Any]] = {}
+    native_symbols: set[str] = set()
     for symbol in sorted(symbols):
-        for row in repos.news.trade_candidate_instrument(
-            base_symbol=symbol,
-            venues=("binance.perp",),
-            observed_at_ms=int(event["source_recorded_at_ms"]),
-        ):
-            rows_by_native[str(row["venue_symbol"])] = row
-    registry = _registry_from_rows(
-        list(rows_by_native.values()), environment=environment, universe=universe, verified_routes=verified_routes
+        native_symbols.add(symbol if symbol.endswith("USDT") else symbol + "USDT")
+    native_symbols.update(route.native_symbol for route in verified_routes if route.source_symbol in symbols)
+    deadline = time.monotonic() + 5.0
+    requests = tuple(
+        MarketDataRequest(
+            dataset="instrument_rules",
+            native_symbol=native,
+            venue="binance.usdm",
+            environment=environment,
+            product="perpetual",
+            source_identity="binance_public_v1",
+            unit_definition="binance_usdm_contract_rules_v1",
+            start_ms=None,
+            end_ms=None,
+            interval_ms=None,
+            max_age_ms=3_600_000,
+            deadline_at_monotonic=deadline,
+        )
+        for native in sorted(native_symbols)
     )
-    return select_target(
-        kind=event["kind"], assets=assets, registry=registry, universe=universe, execution_environment=environment
-    )
+    results = await asyncio.gather(*(market_data.fetch(request) for request in requests))
+    if any(result.status in ("error", "stale") for result in results):
+        raise TimeoutError("connection_catalogue_unavailable")
+    rows = [dict(result.payload[0]) for result in results if result.status == "ok" and result.payload]
+    registry = _registry_from_rows(rows, environment=environment, universe=universe, verified_routes=verified_routes)
+    return select_target(kind=event["kind"], assets=assets, registry=registry, universe=universe)
 
 
 def _configured_universe(settings: Any) -> UniversePolicy:
@@ -483,28 +495,22 @@ class AnalysisRunner:
         self._lease_ms = (settings.trading.analysis.model_timeout_seconds + 20) * 1000
         self._universe = _configured_universe(settings)
         execution = settings.trading.execution
-        self._runtime_id = f"{execution.account_slot}:{execution.mode}"
+        self._runtime_id = execution.account_slot
         self._config_digest = hashlib.sha256(
             json.dumps(
                 {
                     "analysis": settings.trading.analysis.model_dump(mode="json"),
                     "account_slot": execution.account_slot,
-                    "runtime_mode": execution.mode,
+                    "binance_connection": execution.binance.model_dump(mode="json"),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode()
         ).hexdigest()
-        if settings.trading.analysis.publish_signals and settings.trading.execution.mode not in ("paper", "live"):
-            raise ValueError("analysis_publication_requires_runtime_mode")
-        if settings.trading.analysis.strategy_publication_enabled and settings.trading.execution.mode != "paper":
-            raise ValueError("strategy_publication_requires_paper_mode")
         self._active: set[asyncio.Task[bool]] = set()
         self._label_task: asyncio.Task[int] | None = None
         self._watch_task: asyncio.Task[int] | None = None
         self._root_tape_task: asyncio.Task[int] | None = None
-        self._quote_task: asyncio.Task[int] | None = None
-        self._evaluation_task: asyncio.Task[int] | None = None
         self._db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-db")
 
     def _db(self, fn: Any, *, transaction: bool = False) -> Any:
@@ -559,18 +565,18 @@ class AnalysisRunner:
 
     async def relay_once(self, *, batch_size: int = 64) -> int:
         events = await self._db_async(lambda repos: repos.news.unacknowledged_trade_events(limit=batch_size))
-        environment = self.settings.trading.analysis.data_environment
+        environment = (self.settings.trading.execution.binance.environment or "LIVE").lower()
         for event in events:
             try:
-                selection = await self._db_async(
-                    lambda repos, event=event: _select_from_public_projection(
-                        repos,
-                        event,
-                        environment=environment,
-                        universe=self._universe,
-                        verified_routes=self.settings.trading.analysis.verified_routes,
-                    ),
+                selection = await _select_from_connection(
+                    self.reader.market_data,
+                    event,
+                    environment=environment,
+                    universe=self._universe,
+                    verified_routes=self.settings.trading.analysis.verified_routes,
                 )
+            except TimeoutError:
+                continue
             except (KeyError, TypeError, ValueError):
                 await self._db_async(
                     lambda repos, event=event: repos.news.reject_trade_event(
@@ -667,7 +673,6 @@ class AnalysisRunner:
                     source_fact=source["payload"],
                     source_first_visible_at_ms=int(source["first_visible_at_ms"]),
                     source_revision=str(source["source_revision"]),
-                    execution_environment=self.settings.trading.execution.mode,
                     source_history_at=source_history_at,
                 )
             )
@@ -769,6 +774,28 @@ class AnalysisRunner:
                         raise TimeoutError("model_call_finish_fence_expired")
 
                 if isinstance(self.analyst, TradeAnalyst):
+
+                    def compile_candidate(proposal: Any) -> Any:
+                        return compile_proposal(
+                            proposal=proposal,
+                            plans=tuple(tool_context.plans.values()),
+                            evidence_catalog=tool_context.evidence_catalog,
+                            judgment_refs=frozenset(tool_context.judgment_refs),
+                            now_ms=_clock_ms(),
+                        )
+
+                    def correction_catalog() -> dict[str, Any]:
+                        return {
+                            "plans": [
+                                {"plan_id": plan.plan_id, "kind": plan.kind, "side": plan.side}
+                                for plan in tool_context.plans.values()
+                            ],
+                            "evidence_refs": [
+                                ref for ref, item in tool_context.evidence_catalog.items() if is_citable_evidence(item)
+                            ],
+                            "judgment_refs": sorted(tool_context.judgment_refs),
+                        }
+
                     receipt = await self.analyst.assess(
                         prepared.brief,
                         deadline_at_ms=min(
@@ -780,6 +807,8 @@ class AnalysisRunner:
                         after_call=after_call,
                         tools_factory=tool_context.tools,
                         fatal_error=tool_context.fatal_error,
+                        compile_candidate=compile_candidate,
+                        correction_catalog=correction_catalog,
                     )
                 else:
                     receipt = await self.analyst.assess(prepared.brief)
@@ -796,16 +825,13 @@ class AnalysisRunner:
                     decision = compiled.model_dump(mode="json")
                     status = "analyzed"
                     if compiled.action == "TRADE" and self.settings.trading.analysis.publish_signals:
-                        if not self.settings.trading.analysis.strategy_publication_enabled:
-                            publish_block_reason = "strategy_not_validated"
-                        else:
-                            try:
-                                selected = tool_context.plans[decision["selected_plan_id"]]
-                                prepared_signal = self._prepare_signal(case, selected, decision)
-                            except ValueError as exc:
-                                # The analysis remains valid, but an invalid or expired
-                                # execution envelope must be visible as a publication refusal.
-                                publish_block_reason = str(exc)
+                        try:
+                            selected = tool_context.plans[decision["selected_plan_id"]]
+                            prepared_signal = self._prepare_signal(case, selected, decision)
+                        except ValueError as exc:
+                            # The analysis remains valid, but an invalid or expired
+                            # execution envelope must be visible as a publication refusal.
+                            publish_block_reason = str(exc)
         except FrozenEvidenceError as exc:
             status = "evidence_unavailable"
             analysis_error_code = str(exc)
@@ -979,28 +1005,6 @@ class AnalysisRunner:
                 ),
                 transaction=True,
             )
-        if settled and decision is not None and decision.get("action") == "TRADE":
-            try:
-                await self._start_shadow_evaluation(case, decision, decision_at_ms=settled_at_ms)
-            except Exception as exc:
-                error_type = type(exc).__name__
-                await self._db_async(
-                    lambda repos, error_type=error_type: repos.trading.record_shadow_evaluation(
-                        case_id=case["case_id"],
-                        decision_at_ms=settled_at_ms,
-                        scheduled_at_ms=settled_at_ms,
-                        due_at_ms=settled_at_ms,
-                        decision_quote_ref=None,
-                        planned_quote_ref=None,
-                        initial_result={
-                            "status": "unevaluable",
-                            "source": "shadow_simulation",
-                            "evaluation_version": EVALUATION_VERSION,
-                            "reason": f"capture_{error_type}",
-                        },
-                    ),
-                    transaction=True,
-                )
         return True
 
     async def _read_executable_quote(self, case: dict[str, Any]) -> dict[str, Any]:
@@ -1039,52 +1043,6 @@ class AnalysisRunner:
         except (TimeoutError, ValueError, OSError) as exc:
             return {**identity, "status": "error", "payload": (), "missing_reasons": (type(exc).__name__,)}
 
-    async def _start_shadow_evaluation(
-        self,
-        case: dict[str, Any],
-        decision: dict[str, Any],
-        *,
-        decision_at_ms: int,
-    ) -> None:
-        first_quote = await self._read_executable_quote(case)
-        target_at = decision_at_ms + self.settings.trading.analysis.shadow_order_latency_ms
-        if _clock_ms() < target_at:
-            await asyncio.sleep((target_at - _clock_ms()) / 1_000)
-        scheduled_at_ms = _clock_ms()
-        planned_quote = await self._read_executable_quote(case)
-        first_ref = await _file_io(self.files.write, first_quote)
-        planned_ref = await _file_io(self.files.write, planned_quote)
-        valid_quotes = (
-            first_quote["status"] == "ok"
-            and bool(first_quote["payload"])
-            and planned_quote["status"] == "ok"
-            and bool(planned_quote["payload"])
-        )
-        initial_result = (
-            None
-            if valid_quotes
-            else {
-                "status": "unevaluable",
-                "reason": "executable_quote_missing",
-                "source": "shadow_simulation",
-                "evaluation_version": EVALUATION_VERSION,
-            }
-        )
-        plan = ExitPlan.model_validate(decision["exit_plan"])
-        due_at_ms = scheduled_at_ms + plan.max_holding_seconds * 1_000 + 120_000
-        await self._db_async(
-            lambda repos: repos.trading.record_shadow_evaluation(
-                case_id=case["case_id"],
-                decision_at_ms=decision_at_ms,
-                scheduled_at_ms=scheduled_at_ms,
-                due_at_ms=due_at_ms,
-                decision_quote_ref=first_ref,
-                planned_quote_ref=planned_ref,
-                initial_result=initial_result,
-            ),
-            transaction=True,
-        )
-
     def _prepare_signal(
         self,
         case: dict[str, Any],
@@ -1098,10 +1056,6 @@ class AnalysisRunner:
         native = str(instrument["native_symbol"])
         if not native.endswith("USDT") or len(native) <= 4:
             raise ValueError("analysis_native_market_unsupported")
-        mode = self.settings.trading.execution.mode
-        expected_environment = "demo" if mode == "paper" else "live" if mode == "live" else None
-        if instrument.get("environment") != expected_environment:
-            raise ValueError("analysis_execution_environment_mismatch")
         now_ns = _clock_ms() * 1_000_000
         expiry_ns = min(
             int(case["root_expires_at_ms"]) * 1_000_000,
@@ -1129,7 +1083,6 @@ class AnalysisRunner:
             case_id=str(case["case_id"]),
             decision_id=decision_id,
             account_slot=self.settings.trading.execution.account_slot,
-            runtime_mode=mode,
             entry_scope_id=str(case["entry_scope_id"]),
             asset_id=str(case["target_asset_id"]),
             market_key=market_key(native[:-4]),
@@ -1666,269 +1619,6 @@ class AnalysisRunner:
         except Exception:
             _LOG.exception("analysis_root_research_sampling_failed")
 
-    async def sample_shadow_quotes_once(self, *, limit: int = 8) -> int:
-        """Archive one level-one executable quote per minute for pending shadow paths."""
-        now_ms = _clock_ms()
-        rows = await self._db_async(lambda repos: repos.trading.due_shadow_quote_samples(now_ms=now_ms, limit=limit))
-        for row in rows:
-            try:
-                prior_ref = row["quote_tape_ref"]
-                tape = (
-                    {"version": "shadow_quote_tape_v1", "samples": []}
-                    if prior_ref is None
-                    else await _file_io(self.files.read, str(prior_ref))
-                )
-                samples = tape.get("samples")
-                if tape.get("version") != "shadow_quote_tape_v1" or not isinstance(samples, list):
-                    raise ValueError("shadow_quote_tape_invalid")
-                snapshot = await self._read_executable_quote(row)
-                quote_ref = await _file_io(self.files.write, snapshot)
-                quote = snapshot["payload"][0] if snapshot.get("status") == "ok" and snapshot.get("payload") else None
-                sample = {
-                    "sampled_at_ms": _clock_ms(),
-                    "quote_ref": quote_ref,
-                    "status": snapshot["status"],
-                    "environment": snapshot.get("environment"),
-                    "native_symbol": snapshot.get("native_symbol"),
-                    "mapping_semantics_digest": snapshot.get("mapping_semantics_digest"),
-                    "units_per_contract": snapshot.get("units_per_contract"),
-                    "missing_reasons": snapshot.get("missing_reasons", ()),
-                }
-                if isinstance(quote, dict):
-                    sample.update(quote)
-                samples.append(sample)
-                tape_ref = await _file_io(self.files.write, tape)
-                await self._db_async(
-                    lambda repos, row=row, prior_ref=prior_ref, tape_ref=tape_ref, sample=sample: (
-                        repos.trading.record_shadow_quote_sample(
-                            case_id=row["case_id"],
-                            prior_ref=prior_ref,
-                            tape_ref=tape_ref,
-                            sampled_at_ms=int(sample["sampled_at_ms"]),
-                        )
-                    ),
-                    transaction=True,
-                )
-            except (OSError, ValueError, KeyError, TypeError):
-                _LOG.exception("analysis_shadow_quote_sample_failed", extra={"case_id": row["case_id"]})
-        return len(rows)
-
-    def _quote_completed(self, task: asyncio.Task[int]) -> None:
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOG.exception("analysis_shadow_quote_sampling_failed")
-
-    async def evaluate_once(self, *, limit: int = 4) -> int:
-        """Label due shadow paths with executable quotes and explicit costs."""
-        rows = await self._db_async(lambda repos: repos.trading.due_shadow_evaluations(now_ms=_clock_ms(), limit=limit))
-        for row in rows:
-            now = _clock_ms()
-            decision = row["decision"]
-            plan = ExitPlan.model_validate(decision["exit_plan"])
-            selection = row["target_selection"] or {}
-            instrument = selection.get("instrument") if isinstance(selection, dict) else None
-            mark_ref: str | None = None
-            funding_ref: str | None = None
-            result: dict[str, Any]
-            if not isinstance(instrument, dict):
-                result = {
-                    "status": "unevaluable",
-                    "reason": "instrument_identity_missing",
-                    "evaluation_version": EVALUATION_VERSION,
-                    "source": "shadow_simulation",
-                }
-            else:
-                instrument_rules = None
-                try:
-                    decision_quote_snapshot = await _file_io(self.files.read, str(row["decision_quote_ref"]))
-                    planned_quote_snapshot = await _file_io(self.files.read, str(row["planned_quote_ref"]))
-                    for snapshot in (decision_quote_snapshot, planned_quote_snapshot):
-                        if (
-                            snapshot.get("native_symbol") != instrument["native_symbol"]
-                            or snapshot.get("mapping_semantics_digest") != instrument["mapping_semantics_digest"]
-                            or snapshot.get("units_per_contract") != str(instrument["units_per_contract"])
-                        ):
-                            raise ValueError("shadow_quote_instrument_mismatch")
-                    decision_quote = decision_quote_snapshot["payload"][0]
-                    planned_quote = planned_quote_snapshot["payload"][0]
-                    quote_environment = str(decision_quote_snapshot["environment"])
-                    if quote_environment != str(planned_quote_snapshot["environment"]):
-                        quote_environment = "mixed"
-                    tape = (
-                        await _file_io(self.files.read, str(row["quote_tape_ref"]))
-                        if row.get("quote_tape_ref")
-                        else None
-                    )
-                    exit_quotes = (
-                        tuple(
-                            sample
-                            for sample in tape["samples"]
-                            if isinstance(sample, dict)
-                            and sample.get("native_symbol") == instrument["native_symbol"]
-                            and sample.get("mapping_semantics_digest") == instrument["mapping_semantics_digest"]
-                            and sample.get("units_per_contract") == str(instrument["units_per_contract"])
-                        )
-                        if isinstance(tape, dict)
-                        and tape.get("version") == "shadow_quote_tape_v1"
-                        and isinstance(tape.get("samples"), list)
-                        else ()
-                    )
-                except (OSError, ValueError, KeyError, IndexError, TypeError):
-                    decision_quote = planned_quote = None
-                    quote_environment = "unknown"
-                    exit_quotes = ()
-                try:
-                    if row.get("evidence_ref"):
-                        evidence_snapshot = await _file_io(self.files.read, str(row["evidence_ref"]))
-                        rules_frame = evidence_snapshot["market"]["instrument_rules"]
-                        rules_payload = rules_frame.get("payload")
-                        if (
-                            rules_frame.get("status") == "ok"
-                            and rules_frame.get("unit_definition") == "binance_usdm_contract_rules_v1"
-                            and isinstance(rules_payload, (list, tuple))
-                            and rules_payload
-                            and isinstance(rules_payload[0], dict)
-                            and rules_payload[0].get("native_symbol") == instrument["native_symbol"]
-                            and evidence_snapshot.get("data_environment") == instrument["environment"]
-                            and isinstance(rules_frame.get("received_at_ms"), int)
-                            and rules_frame["received_at_ms"] <= int(row["decision_at_ms"])
-                        ):
-                            instrument_rules = rules_payload[0]
-                except (OSError, ValueError, KeyError, IndexError, TypeError):
-                    pass
-                start_at = int(row["scheduled_at_ms"])
-                mark_rows: tuple[dict[str, Any], ...] = ()
-                mark_status = "partial"
-                funding_events: tuple[dict[str, Any], ...] = ()
-                funding_complete = False
-                tape_ref = row.get("root_market_tape_ref")
-                if tape_ref:
-                    try:
-                        tape = await _file_io(self.files.read, str(tape_ref))
-                        research_end = int(row["root_expires_at_ms"]) + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS
-                        if (
-                            tape.get("version") != "root_research_tape_v2"
-                            or tape.get("case_id") != row["root_case_id"]
-                            or tape.get("native_symbol") != instrument["native_symbol"]
-                            or tape.get("environment") != instrument["environment"]
-                            or tape.get("mapping_semantics_digest") != instrument["mapping_semantics_digest"]
-                            or tape.get("root_accepted_at_ms") != int(row["root_accepted_at_ms"])
-                            or tape.get("root_expires_at_ms") != int(row["root_expires_at_ms"])
-                        ):
-                            raise ValueError("root_market_tape_identity_mismatch")
-                        marks = tape["mark_bars"]
-                        if not isinstance(marks, list):
-                            raise ValueError("root_market_tape_mark_invalid")
-                        mark_rows = tuple(mark for mark in marks if isinstance(mark, dict))
-                        if len(mark_rows) == len(marks) and all(
-                            isinstance(mark.get("event_at_ms"), int) for mark in mark_rows
-                        ):
-                            mark_status = "ok"
-                        mark_ref = str(tape_ref)
-                        funding = tape.get("funding_history")
-                        if (
-                            isinstance(funding, dict)
-                            and funding.get("status") == "ok"
-                            and funding.get("snapshot_ref")
-                            and isinstance(funding.get("scan_received_at_ms"), int)
-                            and funding["scan_received_at_ms"] >= research_end + 120_000
-                            and isinstance(funding.get("payload"), list)
-                            and all(isinstance(event, dict) for event in funding["payload"])
-                        ):
-                            funding_events = tuple(funding["payload"])
-                            funding_ref = str(funding["snapshot_ref"])
-                            funding_complete = True
-                    except (OSError, ValueError, KeyError, TypeError):
-                        mark_rows = ()
-                        mark_status = "partial"
-                        mark_ref = None
-                        funding_events = ()
-                        funding_ref = None
-                        funding_complete = False
-                result = evaluate_shadow(
-                    side=str(decision["side"]),
-                    decision_at_ms=int(row["decision_at_ms"]),
-                    scheduled_at_ms=start_at,
-                    decision_quote=decision_quote,
-                    planned_quote=planned_quote,
-                    exit_quotes=exit_quotes,
-                    requested_notional_usdt=(
-                        _SHADOW_REFERENCE_RISK_USD * Decimal(10_000) / Decimal(plan.stop_distance_bps)
-                    ),
-                    mark_rows=mark_rows,
-                    mark_status=mark_status,
-                    funding_events=funding_events,
-                    funding_coverage_complete=funding_complete,
-                    exit_plan=plan,
-                    fee_bps_per_side=self.settings.trading.analysis.shadow_fee_bps_per_side,
-                    quote_environment=quote_environment,
-                    target_environment=str(instrument["environment"]),
-                    instrument_rules=instrument_rules,
-                )
-            fee_ref = await _file_io(
-                self.files.write,
-                {
-                    "kind": "shadow_fee_assumption_v1",
-                    "fee_bps_per_side": (
-                        None
-                        if self.settings.trading.analysis.shadow_fee_bps_per_side is None
-                        else str(self.settings.trading.analysis.shadow_fee_bps_per_side)
-                    ),
-                    "config_digest": self._config_digest,
-                },
-            )
-            result.update(
-                {
-                    "strategy_version": STRATEGY_VERSION,
-                    "entry_quote_ref": row.get("planned_quote_ref"),
-                    "decision_quote_ref": row.get("decision_quote_ref"),
-                    "quote_tape_ref": row.get("quote_tape_ref"),
-                    "instrument_rules_ref": row.get("evidence_ref"),
-                    "mark_path_ref": mark_ref,
-                    "funding_ref": funding_ref,
-                    "fee_ref": fee_ref,
-                }
-            )
-            retryable = result.get("reason") in (
-                "mark_path_incomplete",
-                "mark_path_gap",
-                "mark_endpoint_missing",
-                "funding_coverage_missing",
-            )
-            if retryable and now < int(row["due_at_ms"]) + 48 * 3_600_000:
-                await self._db_async(
-                    lambda repos, row=row, now=now: repos.trading.retry_shadow_evaluation(
-                        case_id=row["case_id"],
-                        next_attempt_at_ms=now + 300_000,
-                    ),
-                    transaction=True,
-                )
-                continue
-            await self._db_async(
-                lambda repos, row=row, result=result, mark_ref=mark_ref, funding_ref=funding_ref, now=now: (
-                    repos.trading.settle_shadow_evaluation(
-                        case_id=row["case_id"],
-                        result=result,
-                        mark_path_ref=mark_ref,
-                        funding_ref=funding_ref,
-                        now_ms=now,
-                    )
-                ),
-                transaction=True,
-            )
-        return len(rows)
-
-    def _evaluation_completed(self, task: asyncio.Task[int]) -> None:
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOG.exception("analysis_shadow_evaluation_failed")
-
     async def run(self, stop_event: asyncio.Event) -> None:
         """Relay keeps draining while model calls occupy separate bounded tasks."""
 
@@ -1968,12 +1658,6 @@ class AnalysisRunner:
                     if self._root_tape_task is None or self._root_tape_task.done():
                         self._root_tape_task = asyncio.create_task(self.sample_root_research_once())
                         self._root_tape_task.add_done_callback(self._root_tape_completed)
-                    if self._quote_task is None or self._quote_task.done():
-                        self._quote_task = asyncio.create_task(self.sample_shadow_quotes_once())
-                        self._quote_task.add_done_callback(self._quote_completed)
-                    if self._evaluation_task is None or self._evaluation_task.done():
-                        self._evaluation_task = asyncio.create_task(self.evaluate_once())
-                        self._evaluation_task.add_done_callback(self._evaluation_completed)
                 except Exception:
                     _LOG.exception("analysis_runner_cycle_failed")
                 with contextlib.suppress(TimeoutError):
@@ -1987,8 +1671,4 @@ class AnalysisRunner:
                 await asyncio.gather(self._watch_task, return_exceptions=True)
             if self._root_tape_task is not None:
                 await asyncio.gather(self._root_tape_task, return_exceptions=True)
-            if self._quote_task is not None:
-                await asyncio.gather(self._quote_task, return_exceptions=True)
-            if self._evaluation_task is not None:
-                await asyncio.gather(self._evaluation_task, return_exceptions=True)
             self._db_executor.shutdown(wait=True)

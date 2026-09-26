@@ -46,7 +46,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* A constant is not a warning. `EXECUTION paper` has not changed since the lane started (#604 T4). */
   .trading-heading-aside small {
     color: var(--text-subtle);
     font-size: inherit;

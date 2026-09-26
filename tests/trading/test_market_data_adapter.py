@@ -286,7 +286,7 @@ async def _latest_clock_boundaries() -> None:
         assert expired.missing_reasons == ("source_clock_expired",)
 
 
-def test_shadow_quote_mark_and_funding_sources_are_distinct() -> None:
+def test_quote_mark_and_funding_sources_are_distinct() -> None:
     asyncio.run(_shadow_market_sources())
 
 

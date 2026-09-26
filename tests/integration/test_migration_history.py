@@ -49,7 +49,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260925_0399"
+HEAD = "20260925_0401"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -256,6 +256,8 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260925_0400",
+        "20260925_0399",
         "20260925_0398",
         "20260925_0397",
         "20260924_0396",
@@ -351,12 +353,79 @@ def test_fresh_database_upgrades_through_baseline_and_signal_cut() -> None:
     assert _stamped_revision() == HEAD
 
 
+def test_single_connection_cut_retires_unplanned_signal_and_removes_mode_payload() -> None:
+    from contextlib import closing
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260925_0400")
+    signal_id = "7" * 64
+    case_id = "case-0401-cutover"
+    with closing(connect_postgres_test(read_only=False)) as conn, conn.transaction():
+        conn.execute(
+            """
+            INSERT INTO trading_cases (
+              case_id, underlying_key, trigger_kind, primary_source_key, manifest, manifest_sha256,
+              state, policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
+              updated_at_ms
+            ) VALUES (%s, 'crypto:BTC', 'oi', 'oi:0401', '{}'::jsonb, %s,
+                      'SIGNAL_EMITTED', 'long', 'test', 1, 1, 1, 1)
+            """,
+            (case_id, "4" * 64),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_trade_signals (
+              signal_id, case_id, market_key, direction, observed_at_ns, expires_at_ns,
+              payload, account_slot, runtime_mode, entry_scope_id, asset_id, mapping_semantics_digest
+            ) VALUES (%s, %s, 'crypto:perp:BTC:USDT', 'long', 1000, 2000,
+                      %s::jsonb, 'binance_usdm_primary', 'paper', %s, 'crypto:BTC', %s)
+            """,
+            (
+                signal_id,
+                case_id,
+                json.dumps({"signal_version": "trade_signal_v3", "signal_id": signal_id, "runtime_mode": "paper"}),
+                case_id,
+                "f" * 64,
+            ),
+        )
+
+    command.upgrade(config, "head")
+
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        row = conn.execute(
+            """
+            SELECT signal.payload, retirement.reason
+              FROM trading_trade_signals signal
+              JOIN trading_signal_retirements retirement USING (signal_id)
+             WHERE signal.signal_id = %s
+            """,
+            (signal_id,),
+        ).fetchone()
+        assert row == {
+            "payload": {"signal_version": "trade_signal_v3", "signal_id": signal_id},
+            "reason": "connection_cutover",
+        }
+        assert (
+            conn.execute(
+                """
+            SELECT column_name FROM information_schema.columns
+             WHERE table_schema='public' AND table_name='trading_trade_signals'
+               AND column_name='runtime_mode'
+            """
+            ).fetchone()
+            is None
+        )
+        with pytest.raises(psycopg.errors.RaiseException):
+            conn.execute("UPDATE trading_trade_signals SET expires_at_ns=3000 WHERE signal_id=%s", (signal_id,))
+
+
 def test_current_head_downgrade_is_irreversible() -> None:
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="wallet_complete_prefix_forward_only"):
+    with pytest.raises(RuntimeError, match="single_connection_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     command.stamp(config, "20260924_0396")
@@ -796,6 +865,7 @@ def test_account_slot_identity_cut_renames_backfills_and_folds_control_state() -
         assert [dict(row) for row in control] == [
             {
                 "account_slot": slot,
+                "execution_namespace": f"tracefold:{slot}:paper",
                 "entries_paused": True,
                 "emergency_halted": True,
                 "last_command_seq": 2,
@@ -1421,7 +1491,7 @@ def test_runtime_identity_cut_drops_the_columns_and_rewrites_the_observation_pay
         repo = TradingRepository(conn)
         state = repo.execution_runtime_state(slot)
         assert state is not None
-        assert (state.mode, state.entries_armed, state.routes_count) == ("paper", False, 5)
+        assert (state.connection, state.entries_armed, state.routes_count) == ("DEMO", False, 5)
         rewritten = replace(state, heartbeat_at_ns=4_000, updated_at_ns=4_000, entry_block_reason="runtime_stopped")
         with conn.transaction():
             assert repo.update_execution_runtime_state(rewritten) is True

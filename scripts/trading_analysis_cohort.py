@@ -23,8 +23,8 @@ from scripts.historical_price_confirmation import (
     build_event_price_candidates,
     range_cross_side,
 )
+from scripts.historical_shadow_evaluation import EVALUATION_VERSION
 from tracefold.trading.engine.contracts import ExitPlan
-from tracefold.trading.engine.evaluation import EVALUATION_VERSION
 
 ARMS = ("rule", "dspy")
 # The last entry can occur just before the root expires. The root tape's

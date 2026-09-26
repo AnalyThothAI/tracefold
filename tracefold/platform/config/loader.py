@@ -160,8 +160,9 @@ news:
 trading:
   enabled: false
   execution:
-    mode: disabled
+    enabled: false
     account_slot: binance_usdm_primary
+    binance: {{}}
     credentials:
       api_key_file: "binance_usdm_api_key"
       api_secret_file: "binance_usdm_api_secret"

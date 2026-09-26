@@ -36,8 +36,8 @@ export function TradingDecisionSummary({
     );
   const trade = count("TRADE");
   const published = count("TRADE", "published");
-  const shadow = count("TRADE", "shadow");
-  const withheld = trade - published - shadow;
+  const unpublished = count("TRADE", "unpublished");
+  const withheld = trade - published - unpublished;
   const caseCount = sum(Object.values(states));
   const admitted = sum(
     admissions.filter((row) => row.status === "CASE_CREATED").map((row) => row.count),
@@ -91,7 +91,7 @@ export function TradingDecisionSummary({
           <span className="trading-journey-main">TRADE 判断已发布</span>
           <small>
             {hasDecisionCounts
-              ? `影子 ${shadow} · 阻断或失效 ${withheld}`
+              ? `未发布 ${unpublished} · 阻断或失效 ${withheld}`
               : "等待新接口提供发布状态"}
           </small>
         </div>

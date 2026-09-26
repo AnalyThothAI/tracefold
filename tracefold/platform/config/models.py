@@ -616,11 +616,7 @@ class TradingExecutionRiskSettings(BaseModel):
 
 
 class TradingExitPolicySettings(BaseModel):
-    """Paper engineering defaults, not a fitted OI return claim (#644).
-
-    Four hours matches the existing research observation horizon; 200 bps is an explicit
-    bounded profit target. Live must supply this section before activation.
-    """
+    """Execution defaults shared by every Binance connection."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     policy_id: Literal["oi_fixed_v1"] = "oi_fixed_v1"
@@ -628,27 +624,25 @@ class TradingExitPolicySettings(BaseModel):
     max_holding_seconds: int = Field(ge=1, le=2_592_000)
 
 
-class TradingExecutionSettings(BaseModel):
-    """The one Binance USD-M account slot this deployment executes for.
-
-    `account_slot` plus `mode` is the whole execution identity (#520). There is no separate
-    `profile_id`: it existed only to fence a Runtime whose release or config digest had moved, and
-    that fence refused 58 restarts in one day without ever refusing a real risk.
-    """
+class TradingBinanceConnectionSettings(BaseModel):
+    """Native Binance adapter target shared by market data and execution clients."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    mode: Literal["disabled", "paper", "live"] = "disabled"
+    environment: Literal["LIVE", "DEMO", "TESTNET"] | None = None
+
+
+class TradingExecutionSettings(BaseModel):
+    """The one Binance USD-M connection this deployment executes for."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
     account_slot: str = "binance_usdm_primary"
+    binance: TradingBinanceConnectionSettings = Field(default_factory=TradingBinanceConnectionSettings)
     credentials: TradingExecutionCredentialsSettings = Field(default_factory=TradingExecutionCredentialsSettings)
     risk: TradingExecutionRiskSettings = Field(default_factory=TradingExecutionRiskSettings)
     exit_policy: TradingExitPolicySettings | None = None
-
-    @model_validator(mode="after")
-    def validate_exit_policy(self) -> TradingExecutionSettings:
-        if self.mode == "live" and self.exit_policy is None:
-            raise ValueError("trading_execution_live_exit_policy_required")
-        return self
 
     @field_validator("account_slot")
     @classmethod
@@ -671,17 +665,13 @@ class TradingVerifiedRouteSettings(BaseModel):
 
 
 class TradingAnalysisSettings(BaseModel):
-    """One shadow-first analysis deployment; model credentials use the existing LLM endpoint."""
+    """One analysis deployment; model credentials use the existing LLM endpoint."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     model_name: str | None = None
-    data_environment: Literal["live", "demo"] = "live"
     active_policy: Literal["entry_plan_v1"] = "entry_plan_v1"
     publish_signals: bool = False
-    strategy_publication_enabled: bool = False
-    shadow_order_latency_ms: int = Field(default=1_000, ge=0, le=5_000)
-    shadow_fee_bps_per_side: Decimal | None = Field(default=None, ge=0)
     verified_routes: list[TradingVerifiedRouteSettings] = Field(default_factory=list)
     excluded_asset_ids: list[str] = Field(
         default_factory=lambda: [

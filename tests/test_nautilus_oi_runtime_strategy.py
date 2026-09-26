@@ -253,6 +253,21 @@ def test_a_restart_with_a_position_and_both_orders_adopts_them_and_sends_nothing
     assert runtime.strategy.runtime_view(NOW_NS + 12 * SECOND_NS).protection_status == "protected"
 
 
+def test_restart_after_final_check_keeps_unknown_submission_open_without_resending() -> None:
+    plan = open_plan(opened_at_ns=None)
+    runtime = unit_runtime(
+        open_plans=(OpenPlan(plan, disposition_pending=True, signal=trade_signal(), final_check_started=True),),
+        venue_reads=True,
+    )
+    runtime.venue({})
+
+    assert runtime.journal.pending_entry_validity() is None
+    assert runtime.strategy.submitted == []
+    assert runtime.plans() == []
+    assert runtime.dispositions() == []
+    assert runtime.strategy.runtime_view(runtime.clock.timestamp_ns()).unexpected_exposure is True
+
+
 def test_a_restart_that_finds_the_stop_missing_places_it_again_and_touches_nothing_else() -> None:
     plan = open_plan()
 

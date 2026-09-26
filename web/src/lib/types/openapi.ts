@@ -3564,6 +3564,15 @@ export interface components {
             account_slot: string;
             /** Alive */
             alive: boolean;
+            /**
+             * Configured Connection
+             * @enum {string}
+             */
+            configured_connection: "LIVE" | "DEMO" | "TESTNET" | "SDK_DEFAULT";
+            /** Connection */
+            connection?: ("LIVE" | "DEMO" | "TESTNET" | "SDK_DEFAULT") | null;
+            /** Connection Observed At Ms */
+            connection_observed_at_ms?: number | null;
             current_account?: components["schemas"]["TradingExecutionAccountData"] | null;
             /**
              * Emergency Halted
@@ -3581,11 +3590,6 @@ export interface components {
             entry_block_reason?: string | null;
             /** Facts Expire At Ms */
             facts_expire_at_ms?: number | null;
-            /**
-             * Mode
-             * @enum {string}
-             */
-            mode: "disabled" | "paper" | "live";
             /**
              * Protection Status
              * @default not_applicable
@@ -3611,7 +3615,7 @@ export interface components {
          *     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
          *     `case_id` is absent on those rows rather than invented.
          *
-         *     `realized_pnl_usd` retains the historical fee-adjusted fill fold. PAPER net
+         *     `realized_pnl_usd` retains the historical fee-adjusted fill fold. Net PnL
          *     additionally requires complete signed funding-income coverage and unambiguous
          *     account-slot attribution over the fill-to-fill holding interval.
          */
@@ -3657,14 +3661,14 @@ export interface components {
             max_holding_ns?: number | null;
             /** Max Leverage At Creation */
             max_leverage_at_creation?: number | null;
+            /** Net Known */
+            net_known: boolean;
+            /** Net Pnl Usd */
+            net_pnl_usd?: string | null;
             /** Observed At Ns */
             observed_at_ns: number;
             /** Order Reject Reason */
             order_reject_reason?: string | null;
-            /** Paper Net Known */
-            paper_net_known: boolean;
-            /** Paper Net Pnl Usd */
-            paper_net_pnl_usd?: string | null;
             /** Plan Status */
             plan_status?: string | null;
             /** Pnl Known */
@@ -3675,8 +3679,6 @@ export interface components {
             realized_pnl_usd?: string | null;
             /** Risk Budget Usd */
             risk_budget_usd?: string | null;
-            /** Runtime Mode At Creation */
-            runtime_mode_at_creation?: ("paper" | "live") | null;
             /**
              * Source
              * @enum {string}
@@ -3769,22 +3771,18 @@ export interface components {
             closed_today: number;
             /** Closed Total */
             closed_total: number;
-            /** Paper Closed Today */
-            paper_closed_today: number;
-            /** Paper Closed Total */
-            paper_closed_total: number;
-            /** Paper Net Known Today */
-            paper_net_known_today: number;
-            /** Paper Net Known Today Usd */
-            paper_net_known_today_usd: string | null;
-            /** Paper Net Known Total */
-            paper_net_known_total: number;
-            /** Paper Net Known Total Usd */
-            paper_net_known_total_usd: string | null;
-            /** Paper Net Missing Today */
-            paper_net_missing_today: number;
-            /** Paper Net Missing Total */
-            paper_net_missing_total: number;
+            /** Net Known Today */
+            net_known_today: number;
+            /** Net Known Today Usd */
+            net_known_today_usd: string | null;
+            /** Net Known Total */
+            net_known_total: number;
+            /** Net Known Total Usd */
+            net_known_total_usd: string | null;
+            /** Net Missing Today */
+            net_missing_today: number;
+            /** Net Missing Total */
+            net_missing_total: number;
             /** Pnl Known Today */
             pnl_known_today: number;
             /** Pnl Known Total */

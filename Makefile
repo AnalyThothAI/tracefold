@@ -3,7 +3,7 @@ export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
 READ_TRADING_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading enabled")'
-READ_TRADING_EXECUTION_MODE := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["execution"]["mode"]; print(value) if value in {"disabled", "paper", "live"} else sys.exit("invalid trading execution mode")'
+READ_TRADING_EXECUTION_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["execution"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading execution enabled")'
 # Every published Compose binding is declared once, here, with the same default `compose.yaml`
 # renders, and exported once. Six of the twelve used to be missing: an operator who exported
 # `TRACEFOLD_POSTGRES_PORT` for one command and forgot it for the next changed the rendered
@@ -571,7 +571,7 @@ _deploy-image-locked:
 			echo "Target image could not parse the active operator config; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
-		printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE) >/dev/null; \
+		printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_ENABLED) >/dev/null; \
 		fail() { \
 			docker compose ps --all >&2 || true; \
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
@@ -715,9 +715,9 @@ _runtime-up-locked:
 			echo "RUNTIME_IMAGE is empty; pass make runtime-up RUNTIME_IMAGE=tracefold-runtime:<sha>." >&2; \
 			exit 2; \
 		fi; \
-		execution_mode=$$($(TRACEFOLD) config | $(READ_TRADING_EXECUTION_MODE)); \
-		if [ "$$execution_mode" = disabled ]; then \
-			echo "trading.execution.mode is disabled; there is no execution runtime to start." >&2; \
+		execution_enabled=$$($(TRACEFOLD) config | $(READ_TRADING_EXECUTION_ENABLED)); \
+		if [ "$$execution_enabled" = false ]; then \
+			echo "trading.execution.enabled is false; there is no execution runtime to start." >&2; \
 			exit 2; \
 		fi; \
 		if ! image_id=$$(docker image inspect --format '{{.Id}}' "$$image" 2>/dev/null); then \
@@ -777,11 +777,11 @@ runtime-status: ## report the execution runtime container, health, and operator 
 	@set -eu; \
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
-		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
+		execution_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_ENABLED)); \
 		COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; \
 		failed=0; \
 		container_id=$$(docker compose ps -q nautilus); \
-		if [ "$$execution_mode" = disabled ]; then \
+		if [ "$$execution_enabled" = false ]; then \
 			if [ -n "$$container_id" ]; then \
 				echo "execution runtime: disabled but nautilus is still running" >&2; \
 				failed=1; \
@@ -791,7 +791,7 @@ runtime-status: ## report the execution runtime container, health, and operator 
 				echo "execution runtime: disabled (Trading disabled)"; \
 			fi; \
 		elif [ -z "$$container_id" ]; then \
-			echo "execution runtime: mode=$$execution_mode but no container is running; run make runtime-up" >&2; \
+			echo "execution runtime: enabled but no container is running; run make runtime-up" >&2; \
 			failed=1; \
 		else \
 			state=$$(docker inspect --format '{{.State.Status}}' "$$container_id"); \
@@ -807,7 +807,7 @@ runtime-status: ## report the execution runtime container, health, and operator 
 				echo "execution runtime readyz: unreachable at $(TRACEFOLD_NAUTILUS_URL)/readyz"; \
 			fi; \
 			if [ "$$failed" -eq 0 ]; then \
-				echo "execution runtime: mode=$$execution_mode (Binance Runtime ready)"; \
+				echo "execution runtime: enabled (Binance Runtime ready)"; \
 			fi; \
 		fi; \
 		if [ "$$failed" -ne 0 ]; then \

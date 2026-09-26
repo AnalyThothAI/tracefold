@@ -96,14 +96,12 @@ class _Trading:
             "pnl_known_total": 11,
             "pnl_missing_today": 0,
             "pnl_missing_total": 1,
-            "paper_net_known_today_usd": None,
-            "paper_net_known_total_usd": None,
-            "paper_net_known_today": 0,
-            "paper_net_known_total": 0,
-            "paper_net_missing_today": 0,
-            "paper_net_missing_total": 0,
-            "paper_closed_today": 0,
-            "paper_closed_total": 0,
+            "net_known_today_usd": None,
+            "net_known_total_usd": None,
+            "net_known_today": 0,
+            "net_known_total": 0,
+            "net_missing_today": 0,
+            "net_missing_total": 0,
         }
 
     def console_executions(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -274,7 +272,8 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
         "heartbeat_at_ms": None,
     }
     expected = {
-        "mode": "disabled",
+        "configured_connection": "LIVE",
+        "connection": None,
         "account_slot": "binance_usdm_primary",
         "alive": False,
         "entries_armed": False,
@@ -596,14 +595,12 @@ def test_executions_publishes_the_realized_totals_the_window_cannot_add_up(
         "pnl_known_total": 11,
         "pnl_missing_today": 0,
         "pnl_missing_total": 1,
-        "paper_net_known_today_usd": None,
-        "paper_net_known_total_usd": None,
-        "paper_net_known_today": 0,
-        "paper_net_known_total": 0,
-        "paper_net_missing_today": 0,
-        "paper_net_missing_total": 0,
-        "paper_closed_today": 0,
-        "paper_closed_total": 0,
+        "net_known_today_usd": None,
+        "net_known_total_usd": None,
+        "net_known_today": 0,
+        "net_known_total": 0,
+        "net_missing_today": 0,
+        "net_missing_total": 0,
     }
     totals_call = next(kwargs for name, kwargs in trading.calls if name == "console_realized_totals")
     assert totals_call["account_slot"] == "binance_usdm_primary"

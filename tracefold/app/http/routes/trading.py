@@ -66,9 +66,7 @@ def get_trading_status(request: Request) -> Response:
     with runtime.repositories() as repos:
         last_case_at_ms = repos.trading.latest_case_created_at_ms()
         execution = runtime.settings.trading.execution
-        analysis_runtime = repos.trading.analysis_runtime(
-            f"{execution.account_slot}:{execution.mode}",
-        )
+        analysis_runtime = repos.trading.analysis_runtime(execution.account_slot)
         execution_status = execution_readiness_projection(
             execution,
             repos.trading.execution_runtime_state(execution.account_slot),
@@ -360,7 +358,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
     fill_quantity = _string_or_none(row.get("fill_quantity"))
     stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
     realized = _string_or_none(row.get("realized_pnl_usd"))
-    paper_net = _string_or_none(row.get("paper_net_pnl_usd"))
+    net = _string_or_none(row.get("net_pnl_usd"))
     return {
         "source": str(row["source"]),
         "entry_id": str(row["entry_id"]),
@@ -380,11 +378,10 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "realized_pnl_usd": realized,
         "fees_usd": _string_or_none(row.get("fees_usd")),
         "funding_usd": _string_or_none(row.get("funding_usd")),
-        "paper_net_pnl_usd": paper_net,
+        "net_pnl_usd": net,
         "exit_reason": _string_or_none(row.get("exit_reason")),
         "plan_status": _string_or_none(row.get("plan_status")),
         "account_slot": _string_or_none(row.get("account_slot")),
-        "runtime_mode_at_creation": _string_or_none(row.get("runtime_mode_at_creation")),
         "instrument_id": _string_or_none(row.get("instrument_id")),
         "entry_client_order_id": _string_or_none(row.get("entry_client_order_id")),
         "risk_budget_usd": _string_or_none(row.get("risk_budget_usd")),
@@ -394,7 +391,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "take_profit_bps": _int_or_none(row.get("take_profit_bps")),
         "max_holding_ns": _int_or_none(row.get("max_holding_ns")),
         "pnl_known": realized is not None,
-        "paper_net_known": paper_net is not None,
+        "net_known": net is not None,
         "duration_ns": _int_or_none(row.get("duration_ns")),
         # The venue's own `order_status` and `position_status` are inputs to this word, not a second
         # answer beside it (#537 PR-5). The Signal's own TTL is an input for the same reason (#604 T3).
@@ -416,8 +413,8 @@ def _totals(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "realized_known_today_usd": _string_or_none(row["realized_known_today_usd"]),
         "realized_known_total_usd": _string_or_none(row["realized_known_total_usd"]),
-        "paper_net_known_today_usd": _string_or_none(row["paper_net_known_today_usd"]),
-        "paper_net_known_total_usd": _string_or_none(row["paper_net_known_total_usd"]),
+        "net_known_today_usd": _string_or_none(row["net_known_today_usd"]),
+        "net_known_total_usd": _string_or_none(row["net_known_total_usd"]),
         **{
             key: int(row[key])
             for key in (
@@ -427,12 +424,10 @@ def _totals(row: dict[str, Any]) -> dict[str, Any]:
                 "pnl_known_total",
                 "pnl_missing_today",
                 "pnl_missing_total",
-                "paper_net_known_today",
-                "paper_net_known_total",
-                "paper_net_missing_today",
-                "paper_net_missing_total",
-                "paper_closed_today",
-                "paper_closed_total",
+                "net_known_today",
+                "net_known_total",
+                "net_missing_today",
+                "net_missing_total",
             )
         },
     }

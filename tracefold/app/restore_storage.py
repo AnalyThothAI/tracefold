@@ -57,7 +57,6 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
             case_id=_CASE_ID,
             decision_id="b" * 64,
             account_slot=_ACCOUNT_SLOT,
-            runtime_mode="paper",
             entry_scope_id="c" * 64,
             asset_id="crypto:RESTORE",
             market_key="crypto:perp:RESTORE:USDT",

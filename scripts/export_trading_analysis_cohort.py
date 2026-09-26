@@ -20,9 +20,9 @@ import psycopg
 from psycopg.rows import dict_row
 
 from scripts.historical_price_confirmation import ENTRY_WINDOW_MS, MAX_HOLDING_SECONDS, STRATEGY_VERSION
+from scripts.historical_shadow_evaluation import EVALUATION_VERSION, evaluate_shadow
 from scripts.trading_analysis_cohort import RuleDecision, _rule_decision
 from tracefold.app.analysis_files import AnalysisFiles
-from tracefold.trading.engine.evaluation import EVALUATION_VERSION, evaluate_shadow
 from tracefold.trading.execution_contracts import entry_structure_allows
 
 _BAR_MS = 60_000

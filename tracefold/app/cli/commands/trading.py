@@ -46,7 +46,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             last_case_at_ms = trading.latest_case_created_at_ms()
             execution = settings.trading.execution
             analysis_runtime = trading.analysis_runtime(
-                f"{execution.account_slot}:{execution.mode}",
+                execution.account_slot,
             )
             execution_status = execution_readiness_projection(
                 execution,

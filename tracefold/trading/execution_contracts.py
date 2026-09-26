@@ -163,7 +163,6 @@ class TradeSignalV3(_FrozenContract):
     case_id: str = Field(min_length=1, max_length=128)
     decision_id: str = Field(pattern=SHA256_PATTERN)
     account_slot: str = Field(pattern=IDENTITY_PATTERN)
-    runtime_mode: Literal["paper", "live"]
     entry_scope_id: str = Field(pattern=SHA256_PATTERN)
     asset_id: str = Field(pattern=r"^crypto:[A-Z0-9._-]{1,32}$")
     market_key: str = Field(pattern=MARKET_KEY_PATTERN)

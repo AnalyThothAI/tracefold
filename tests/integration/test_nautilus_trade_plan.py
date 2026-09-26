@@ -6,6 +6,7 @@ from contextlib import closing
 from uuid import uuid4
 
 import pytest
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from psycopg.errors import RaiseException, UniqueViolation
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, open_plan, trade_signal, unit_runtime
@@ -35,7 +36,7 @@ def _bridge(runtime) -> OiRuntimeDatabaseBridge:  # type: ignore[no-untyped-def]
     assert singleton.acquire()
     state = ExecutionRuntimeState(
         account_slot=runtime.profile.account_slot,
-        mode="paper",
+        connection="DEMO",
         runtime_id=uuid4(),
         alive=True,
         entries_armed=False,
@@ -118,7 +119,7 @@ def test_a_lost_commit_receipt_retried_finds_its_own_plan_and_a_foreign_one_auth
 
 
 @pytest.mark.parametrize("age_days", [8, 30])
-def test_open_plans_are_the_restart_input_whatever_their_age_and_only_for_their_slot_and_mode(age_days: int) -> None:
+def test_open_plans_are_the_restart_input_whatever_their_age_and_connection(age_days: int) -> None:
     from tests.nautilus_oi_runtime_fixtures import oi_profile
 
     age = age_days * 86_400_000_000_000
@@ -129,7 +130,10 @@ def test_open_plans_are_the_restart_input_whatever_their_age_and_only_for_their_
             assert repos.trading.insert_trade_plan(prepare_trade_plan(plan))
         inputs = load_runtime_inputs(repos, oi_profile(), now_ns=NOW_NS)
         assert [(value.plan, value.disposition_pending) for value in inputs.open_plans] == [(plan, True)]
-        assert load_runtime_inputs(repos, oi_profile("live"), now_ns=NOW_NS).open_plans == ()
+        assert [
+            (value.plan, value.disposition_pending)
+            for value in load_runtime_inputs(repos, oi_profile(BinanceEnvironment.LIVE), now_ns=NOW_NS).open_plans
+        ] == [(plan, True)]
         assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 0
 
 

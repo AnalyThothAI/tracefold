@@ -35,8 +35,7 @@ class FeatureValue(Frozen):
 class FrozenEvidence(Frozen):
     snapshot_ref: str = Field(pattern=r"^[a-f0-9]{64}$")
     knowledge_cutoff_ms: int
-    data_environment: Literal["live", "demo"]
-    execution_environment: Literal["disabled", "paper", "live"] | None
+    data_environment: Literal["live", "demo", "testnet"]
     values: tuple[FeatureValue, ...]
 
 

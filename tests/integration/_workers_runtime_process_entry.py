@@ -667,7 +667,10 @@ async def _main() -> None:
         news=news,
         trading={
             "enabled": trading_process,
-            "execution": {"mode": "paper" if arguments.mode == "trading_execution_requested" else "disabled"},
+            "execution": {
+                "enabled": arguments.mode == "trading_execution_requested",
+                "binance": {"environment": "DEMO"},
+            },
         },
         storage={"postgres": {"dsn": arguments.dsn, "password_file": None}},
     )

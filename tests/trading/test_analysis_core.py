@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
-from types import SimpleNamespace
 
 import pytest
 
-from tracefold.app.trading_analysis import AnalysisRunner, _registry_from_rows
+from tracefold.app.trading_analysis import _registry_from_rows
 from tracefold.platform.config.models import TradingVerifiedRouteSettings
 from tracefold.platform.market_identity import (
     DEFAULT_UNIVERSE,
@@ -23,13 +22,11 @@ from tracefold.trading.engine.policy import InvalidAssessment
 from tracefold.trading.engine.target import SourceAsset, select_target
 
 
-def test_paper_signal_rejects_a_frozen_mainnet_case() -> None:
-    runner = SimpleNamespace(settings=SimpleNamespace(trading=SimpleNamespace(execution=SimpleNamespace(mode="paper"))))
-    case = {"target_selection": {"instrument": {"native_symbol": "SOLUSDT", "environment": "live"}}}
-    decision = {"side": "long", "exit_plan": {"stop_distance_bps": 200}}
-
-    with pytest.raises(ValueError, match="analysis_execution_environment_mismatch"):
-        AnalysisRunner._prepare_signal(runner, case, None, decision)
+def test_connection_source_does_not_change_contract_economics() -> None:
+    live = _route("SOLUSDT", "SOL")
+    demo = _route("SOLUSDT", "SOL", environment="demo")
+    assert live.semantics_digest == demo.semantics_digest
+    assert AssetRegistry(snapshot_ref="demo", instruments=(demo,)).resolve("SOL").instrument == demo
 
 
 def _route(symbol: str, asset: str, *, environment: str = "live") -> InstrumentRef:
@@ -124,7 +121,7 @@ def test_multiplier_contract_requires_reviewed_asset_and_units() -> None:
         }
     ]
     unreviewed = _registry_from_rows(rows, environment="demo", universe=DEFAULT_UNIVERSE, verified_routes=[])
-    assert unreviewed.resolve("PEPE", execution_environment="demo").status == "unknown"
+    assert unreviewed.resolve("PEPE").status == "unknown"
     reviewed = _registry_from_rows(
         rows,
         environment="demo",
@@ -139,7 +136,7 @@ def test_multiplier_contract_requires_reviewed_asset_and_units() -> None:
             )
         ],
     )
-    result = reviewed.resolve("PEPE", execution_environment="demo")
+    result = reviewed.resolve("PEPE")
     assert result.asset_id == AssetId("crypto", "PEPE")
     assert result.instrument is not None
     assert result.instrument.units_per_contract == Decimal(1000)
@@ -172,7 +169,7 @@ def test_frozen_brief_lists_exactly_compiler_citable_evidence() -> None:
     assert payload["brief_version"] == "trade_brief_v4"
     assert payload["citable_evidence_ids"] == ["source"]
     compile_proposal(
-        proposal=AnalysisProposal(action="NO_TRADE", supporting_evidence=("source",), public_rationale="No plan."),
+        proposal=AnalysisProposal(selected_plan_id=None, supporting_evidence=("source",), public_rationale="No plan."),
         plans=(),
         evidence_catalog=catalog,
         judgment_refs=frozenset(),
@@ -181,7 +178,9 @@ def test_frozen_brief_lists_exactly_compiler_citable_evidence() -> None:
     for ref in ("feature:missing", "feature:future"):
         with pytest.raises(InvalidAssessment, match="proposal_evidence_unavailable"):
             compile_proposal(
-                proposal=AnalysisProposal(action="NO_TRADE", supporting_evidence=(ref,), public_rationale="No plan."),
+                proposal=AnalysisProposal(
+                    selected_plan_id=None, supporting_evidence=(ref,), public_rationale="No plan."
+                ),
                 plans=(),
                 evidence_catalog=catalog,
                 judgment_refs=frozenset(),
