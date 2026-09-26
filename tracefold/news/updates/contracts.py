@@ -1,9 +1,13 @@
 """One exact EventUpdate contract. Stored old documents are not coerced into it."""
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..taxonomy import SourceAuthority
 from .identity import digest, identity
 
 
@@ -12,12 +16,62 @@ class Exact(BaseModel):
 
 
 Mode = Literal[
-    "observation", "decision", "commitment", "conditional_threat", "guidance",
-    "forecast", "commentary", "promotion", "unknown",
+    "observation",
+    "decision",
+    "commitment",
+    "conditional_threat",
+    "guidance",
+    "forecast",
+    "commentary",
+    "promotion",
+    "unknown",
 ]
 Phase = Literal["proposed", "announced", "ordered", "effective", "executing", "completed", "cancelled", "unknown"]
-Relation = Literal["equivalent", "adds_information", "real_world_change", "corrects", "conflicts", "unrelated", "unresolved"]
-ChangeKind = Literal["new_fact", "parameter_change", "phase_change", "scope_change", "correction", "conflict", "evidence_change", "restatement"]
+Relation = Literal[
+    "equivalent",
+    "adds_information",
+    "real_world_change",
+    "corrects",
+    "conflicts",
+    "unrelated",
+    "unresolved",
+]
+# What kind of new content a claim states. Attribution, intent, forecasts, commentary and promotion are the
+# claim's `mode`; a repeat is its relation to earlier claims. Neither is a content kind.
+ContentKind = Literal[
+    "state_change",
+    "official_measure",
+    "new_quantity",
+    "level_crossed",
+    "period_record",
+    "quantified_flow",
+    "schedule",
+    "other",
+]
+# `possible_new` is a claim whose relation to at least one supplied prior claim was not established. It is
+# adopted content and a notification candidate, but never a public catalyst: an unresolved comparison is not
+# evidence that the world changed.
+ChangeKind = Literal[
+    "new_fact",
+    "possible_new",
+    "parameter_change",
+    "phase_change",
+    "scope_change",
+    "correction",
+    "conflict",
+    "evidence_change",
+    "restatement",
+]
+
+_RELATION_CHANGE_KINDS: dict[str, frozenset[ChangeKind | None]] = {
+    "equivalent": frozenset({None}),
+    "unrelated": frozenset({None}),
+    "unresolved": frozenset({None}),
+    "adds_information": frozenset({"new_fact", "scope_change", "parameter_change"}),
+    "real_world_change": frozenset({"phase_change", "parameter_change", "scope_change", "new_fact"}),
+    "corrects": frozenset({"correction"}),
+    "conflicts": frozenset({"conflict"}),
+}
 
 
 class Quantity(Exact):
@@ -39,6 +93,9 @@ class Source(Exact):
     published_at_ms: int | None = Field(default=None, ge=0)
     first_available_at_ms: int = Field(ge=0)
     url: str | None = None
+    # Code-owned classification of the provenance (the News source-authority classifier), supplied by the
+    # store. It is not part of evidence identity and never comes from a model.
+    source_authority: SourceAuthority = "unknown"
 
 
 class Evidence(Exact):
@@ -54,9 +111,16 @@ class Evidence(Exact):
     def source_ref(text: str, source: Source) -> str:
         # Provenance corrections change evidence identity; re-observation time
         # does not. The store preserves the first availability clock on replay.
-        return identity("ev", source.publisher_id, source.artifact_id,
-                        source.artifact_revision, source.origin_id,
-                        source.attribution, source.published_at_ms, text)
+        return identity(
+            "ev",
+            source.publisher_id,
+            source.artifact_id,
+            source.artifact_revision,
+            source.origin_id,
+            source.attribution,
+            source.published_at_ms,
+            text,
+        )
 
     @model_validator(mode="after")
     def check_ref(self) -> Evidence:
@@ -90,6 +154,9 @@ class ClaimFields(Exact):
     mode: Mode = "unknown"
     # A non-action claim can use None. A future effective_at never changes phase.
     phase: Phase | None = None
+    # The notification policy's reading of the content. It is not part of claim identity: a different
+    # reading of the same proposition on a rerun must not manufacture a new claim.
+    content_kind: ContentKind = "other"
     assets: tuple[Asset, ...] = ()
 
 
@@ -135,13 +202,7 @@ class RelationDraft(Exact):
 
     @model_validator(mode="after")
     def check_kind(self) -> RelationDraft:
-        allowed = {
-            "equivalent": {None}, "unrelated": {None}, "unresolved": {None},
-            "adds_information": {"new_fact", "scope_change", "parameter_change"},
-            "real_world_change": {"phase_change", "parameter_change", "scope_change", "new_fact"},
-            "corrects": {"correction"}, "conflicts": {"conflict"},
-        }
-        if self.change_kind not in allowed[self.relation]:
+        if self.change_kind not in _RELATION_CHANGE_KINDS[self.relation]:
             raise ValueError("news_relation_change_kind_mismatch")
         return self
 
@@ -186,7 +247,7 @@ class Extraction(Exact):
         slots = {claim.slot for claim in self.claims}
         if len(slots) != len(self.claims):
             raise ValueError("news_duplicate_claim_slot")
-        referenced = {r.slot for r in self.relations} | {r.slot for r in self.supports}
+        referenced = {row.slot for row in self.relations} | {row.slot for row in self.supports}
         referenced |= {slot for row in self.implications for slot in row.slots}
         referenced |= {slot for row in self.open_questions for slot in row.slots}
         if not referenced <= slots:
@@ -205,6 +266,17 @@ class Change(Exact):
     current_ref: str
     previous_ref: str | None = None
     previous_content_ref: str | None = None
+    # The established claim relation behind this change, when one exists. `possible_new` carries
+    # `unresolved`; an evidence change or a first report carries none.
+    relation: Relation | None = None
+
+    @model_validator(mode="after")
+    def check_previous(self) -> Change:
+        if (self.previous_ref is None) != (self.previous_content_ref is None):
+            raise ValueError("news_change_previous_identity_incomplete")
+        if self.kind == "possible_new" and (self.previous_ref is None or self.relation != "unresolved"):
+            raise ValueError("news_possible_new_requires_unresolved_prior")
+        return self
 
 
 class Implication(Exact):
@@ -219,6 +291,31 @@ class KnowledgeGap(Exact):
     question: str
     claim_refs: tuple[str, ...]
     target_ref: str | None = None
+
+
+def content_material(
+    event_id: str,
+    claim_refs: Iterable[str],
+    retired_claim_refs: Iterable[str],
+    evidence_relations: Iterable[EvidenceRelation],
+) -> dict[str, object]:
+    """The business material of one adopted revision.
+
+    Wording, program, observation/adoption clocks, topic labels and explanatory prose do not manufacture a
+    new business revision. Evidence is identified by immutable source refs; changed support relations are
+    genuine source updates.
+    """
+
+    relations = sorted(
+        (row.model_dump(mode="json") for row in evidence_relations),
+        key=lambda row: (row["claim_ref"], row["evidence_ref"], row["relation"]),
+    )
+    return {
+        "event_id": event_id,
+        "claims": sorted(claim_refs),
+        "retired_claim_refs": sorted(retired_claim_refs),
+        "evidence_relations": relations,
+    }
 
 
 class EventUpdate(Exact):
@@ -242,20 +339,17 @@ class EventUpdate(Exact):
         return identity("update", self.event_id, self.content_revision)
 
     def content_material(self) -> dict[str, object]:
-        # Wording, program, observation/adoption clocks, topic labels and explanatory
-        # prose do not manufacture a new business revision. Evidence is identified by
-        # immutable source refs; changed support relations are genuine source updates.
-        return {
-            "event_id": self.event_id,
-            "claims": sorted((c.ref for c in self.claims)),
-            "retired_claim_refs": sorted(self.retired_claim_refs),
-            "evidence_relations": sorted((r.model_dump(mode="json") for r in self.evidence_relations), key=lambda x: (x["claim_ref"], x["evidence_ref"], x["relation"])),
-        }
+        return content_material(
+            self.event_id,
+            (claim.ref for claim in self.claims),
+            self.retired_claim_refs,
+            self.evidence_relations,
+        )
 
     @model_validator(mode="after")
     def check_links(self) -> EventUpdate:
-        claims = {c.ref for c in self.claims}
-        evidence = {e.ref for e in self.evidence}
+        claims = {claim.ref for claim in self.claims}
+        evidence = {item.ref for item in self.evidence}
         if len(claims) != len(self.claims) or len(evidence) != len(self.evidence):
             raise ValueError("news_update_duplicate_reference")
         if self.content_revision != digest(self.content_material()):
@@ -263,7 +357,7 @@ class EventUpdate(Exact):
         if not set(self.retired_claim_refs) <= claims:
             raise ValueError("news_retired_claim_missing")
         for claim in self.claims:
-            if not {c.evidence_ref for c in claim.citations} <= evidence:
+            if not {citation.evidence_ref for citation in claim.citations} <= evidence:
                 raise ValueError("news_update_citation_missing")
         for relation in self.evidence_relations:
             if relation.claim_ref not in claims or relation.evidence_ref not in evidence:
@@ -271,8 +365,6 @@ class EventUpdate(Exact):
         for change in self.changes:
             if change.current_ref not in claims:
                 raise ValueError("news_change_current_missing")
-            if (change.previous_ref is None) != (change.previous_content_ref is None):
-                raise ValueError("news_change_previous_identity_incomplete")
         return self
 
 
@@ -290,7 +382,7 @@ class FrozenInput(Exact):
 
     @property
     def evidence_sha(self) -> str:
-        return digest(sorted((e.model_dump(mode="json") for e in self.evidence), key=lambda e: e["ref"]))
+        return digest(sorted((item.model_dump(mode="json") for item in self.evidence), key=lambda row: row["ref"]))
 
     @model_validator(mode="after")
     def unique_input_refs(self) -> FrozenInput:
@@ -298,17 +390,24 @@ class FrozenInput(Exact):
             refs = [row.ref for row in rows]
             if len(refs) != len(set(refs)):
                 raise ValueError("news_input_duplicate_reference")
-        evidence = {e.ref: e for e in self.evidence}
+        evidence = {item.ref: item for item in self.evidence}
         for hint in self.identity_hints:
             if hint.evidence_ref not in evidence or hint.surface not in evidence[hint.evidence_ref].text:
                 raise ValueError("news_identity_hint_not_grounded")
-        prior = [p.claim.ref for p in self.prior]
+        prior = [row.claim.ref for row in self.prior]
         if len(prior) != len(set(prior)):
             raise ValueError("news_input_duplicate_prior_reference")
         return self
 
 
 class PublicUpdate(Exact):
+    """Deterministic, claim-scoped public facts for Trading; never a ReaderCard.
+
+    `superseded_claim_refs` (catalyst_delta only) are earlier claims a real-world, parameter or phase change
+    replaced. `retired_claim_refs` (source_update only) are earlier claims a correction retired. Both are
+    subsets of `affected_claim_refs`, so a consumer amends only research that cited them.
+    """
+
     schema_version: Literal["news_public_update_v1"] = "news_public_update_v1"
     update_id: str
     kind: Literal["catalyst_delta", "source_update"]
@@ -321,16 +420,31 @@ class PublicUpdate(Exact):
     evidence_relations: tuple[EvidenceRelation, ...] = ()
     previous_content_refs: tuple[str, ...] = ()
     affected_claim_refs: tuple[str, ...] = ()
+    superseded_claim_refs: tuple[str, ...] = ()
+    retired_claim_refs: tuple[str, ...] = ()
     first_available_at_ms: int = Field(ge=0)
     semantic_completed_at_ms: int = Field(ge=0)
     text: str
+
+    @staticmethod
+    def identity_for(event_id: str, content_revision: str, kind: str, claim_refs: tuple[str, ...]) -> str:
+        return identity("public", event_id, content_revision, kind, sorted(claim_refs))
 
     @model_validator(mode="after")
     def check_public_identity(self) -> PublicUpdate:
         if set(self.claim_refs) != {claim.ref for claim in self.claims}:
             raise ValueError("news_public_claim_refs_mismatch")
-        if self.update_id != identity("public", self.event_id, self.content_revision, self.kind, sorted(self.claim_refs)):
+        if self.update_id != self.identity_for(self.event_id, self.content_revision, self.kind, self.claim_refs):
             raise ValueError("news_public_identity_mismatch")
         if self.kind == "source_update" and (not self.previous_content_refs or not self.affected_claim_refs):
             raise ValueError("news_source_update_target_missing")
+        if any(change.kind == "possible_new" for change in self.changes):
+            raise ValueError("news_public_possible_new_not_publishable")
+        affected = set(self.affected_claim_refs)
+        if not set(self.superseded_claim_refs) <= affected or not set(self.retired_claim_refs) <= affected:
+            raise ValueError("news_public_scoped_refs_not_affected")
+        if self.kind == "source_update" and self.superseded_claim_refs:
+            raise ValueError("news_source_update_supersedes_claims")
+        if self.kind == "catalyst_delta" and self.retired_claim_refs:
+            raise ValueError("news_catalyst_delta_retires_claims")
         return self

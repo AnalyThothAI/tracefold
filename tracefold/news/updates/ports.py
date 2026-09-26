@@ -4,14 +4,17 @@ The host implements these with the existing PG repository/worker/delivery
 capabilities. Every method named atomic_* is one short database transaction;
 none may execute a model, source fetch, or external send inside that transaction.
 No implementation is allowed to encode revisions in a delivery `kind` string.
+No port method takes a timeout: callers bound external calls with asyncio.timeout.
 """
+
 from __future__ import annotations
 
 from typing import Literal, Protocol
+
 from pydantic import Field
 
 from .contracts import EventUpdate, Evidence, Exact, Extraction, FrozenInput, PublicUpdate, ReadTarget
-from .notification import DeliveredText, FrozenCard, NotificationPlan, ReaderSnapshot
+from .notification import FrozenCard, NotificationPlan, ReaderSnapshot
 
 
 class SemanticCheckpoint(Exact):
@@ -53,59 +56,88 @@ class SendOutcome(Exact):
 
 
 class ExistingSourceReader(Protocol):
-    async def read(self, target: ReadTarget, *, timeout: float) -> tuple[Evidence, ...]: ...
+    async def read(self, target: ReadTarget) -> tuple[Evidence, ...]:
+        """Read one code-prepared target with existing capabilities; no model-generated URL or tool."""
+        ...
 
 
 class Sender(Protocol):
-    async def send(self, card: FrozenCard, *, channel: str, timeout: float) -> SendOutcome: ...
+    async def send(self, card: FrozenCard, *, channel: str) -> SendOutcome:
+        """Send the frozen body unchanged and report the actual outcome."""
+        ...
 
 
 class NewsStore(Protocol):
     async def input_for(self, event_id: str) -> FrozenInput: ...
+
     async def head(self, event_id: str) -> EventUpdate | None: ...
+
     async def checkpoint(self, work_id: str) -> SemanticCheckpoint | None: ...
+
     async def save_extraction(self, work_id: str, extracted: Extraction) -> Extraction:
         """Insert-only work stage; return the first stored winner on a race."""
         ...
+
     async def save_understanding(self, work_id: str, understood: Extraction) -> Extraction: ...
+
     async def save_observation(self, observation: SemanticObservation) -> SemanticObservation:
         """Insert-only result_id; return the stored winner, including its original
         completion clock, on replay. Content mismatches are errors. This write is
         independent of adoption and cards.
         """
         ...
-    async def atomic_adopt(self, *, expected_head_ref: str | None, observation: SemanticObservation,
-                           update: EventUpdate, public: tuple[PublicUpdate, ...]) -> bool:
+
+    async def atomic_adopt(
+        self,
+        *,
+        expected_head_ref: str | None,
+        observation: SemanticObservation,
+        update: EventUpdate,
+        public: tuple[PublicUpdate, ...],
+    ) -> bool:
         """CAS the adopted head, save update + public outbox + notification_pending.
 
         Return False only for a changed adopted head, not simply newer arriving
         evidence. Never downgrade an adopted input revision. Unique public IDs
         retain the first payload; conflicting payload on an ID is an error.
+        A `possible_new` change is adopted content and marks notification work,
+        but it never has a public row: `public` already excludes it.
         """
         ...
+
     async def finish_semantic_work(self, work_id: str, *, reason: str) -> None: ...
+
     async def defer_semantic_work(self, work_id: str, *, reason: str) -> None: ...
+
     async def notification_snapshot(self, event_id: str, channel: str) -> NotificationSnapshot | None:
         """Consistent adopted head and actual-reader snapshot, not observed history.
 
         blocked_claim_refs comes from overlapping sending/ambiguous intents. It
         prevents a new ID from blindly retrying an unresolved external send; it
-        does not count those claims as received.
+        does not count those claims as received. watch_symbols is the reader's
+        code-owned watchlist as canonical upper-case base symbols.
         """
         ...
-    async def atomic_record_plan(self, plan: NotificationPlan) -> IntentLease | None:
-        """Check head/reader versions; persist decision and reserve an intent.
 
-        No-notification clears the matching pending marker. Unresolved stays
-        retryable under the existing bounded work policy. A notify result gets
-        one stable intent/queue row. deferred_claim_refs remain pending even if
-        other selected claims were reserved successfully. A concurrent active lease, version race, or
-        already sending/sent/ambiguous identity returns None without resetting it.
+    async def atomic_record_plan(self, plan: NotificationPlan) -> IntentLease | None:
+        """Check head/reader versions; persist the plan and its claim decisions; reserve an intent.
+
+        Every claim_decisions row is persisted with its reason, so the Console can
+        show why a claim was or was not notified. A no_notification plan clears
+        the matching pending marker; not_notified decisions are final for this
+        head and reader revision. An unresolved plan (only overlapping
+        sending/ambiguous intents make one) stays retryable under the existing
+        bounded work policy. A notify result gets one stable intent/queue row;
+        deferred claims remain pending even if other selected claims were
+        reserved successfully. A concurrent active lease, version race, or already
+        sending/sent/ambiguous identity returns None without resetting it.
         """
         ...
+
     async def save_card(self, lease: IntentLease, card: FrozenCard) -> FrozenCard:
         """Fenced insert-only payload; an existing frozen payload wins."""
         ...
+
     async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> bool:
         """Recheck head, reader revision, lease and in-flight overlap; freeze sending.
 
@@ -113,8 +145,15 @@ class NewsStore(Protocol):
         notification pending. Never mutate a sending payload or reset ambiguous.
         """
         ...
-    async def settle_send(self, lease: IntentLease, card: FrozenCard, outcome: SendOutcome,
-                          *, settled_at_ms: int) -> None:
+
+    async def settle_send(
+        self,
+        lease: IntentLease,
+        card: FrozenCard,
+        outcome: SendOutcome,
+        *,
+        settled_at_ms: int,
+    ) -> None:
         """Fenced actual receipt + queue outcome, atomically.
 
         Sent retains the exact body/hash, target, provider message ID and time.
@@ -122,12 +161,20 @@ class NewsStore(Protocol):
         limits/backoff. Ambiguous is held for existing reconciliation, not retried.
         """
         ...
+
     async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None: ...
+
     async def reserve_extra_read(self, lineage_id: str, target_ref: str) -> bool:
         """Atomic one-read budget for the entire lineage, durable across retries."""
         ...
-    async def attach_extra_evidence(self, source: FrozenInput, target: ReadTarget,
-                                    evidence: tuple[Evidence, ...], affected_claim_refs: tuple[str, ...]) -> None:
+
+    async def attach_extra_evidence(
+        self,
+        source: FrozenInput,
+        target: ReadTarget,
+        evidence: tuple[Evidence, ...],
+        affected_claim_refs: tuple[str, ...],
+    ) -> None:
         """Append a new evidence revision and enqueue only the affected semantic work.
 
         Preserve lineage and source first-known clocks. The next frozen input has
@@ -135,22 +182,33 @@ class NewsStore(Protocol):
         head claims are carried by assembly rather than re-extracted.
         """
         ...
+
     async def record_read_outcome(self, lineage_id: str, *, outcome: str) -> None: ...
+
     async def pending_semantic_events(self, limit: int) -> tuple[str, ...]: ...
+
     async def pending_notification_events(self, channel: str, limit: int) -> tuple[str, ...]: ...
+
     async def pending_public_updates(self, limit: int) -> tuple[PublicUpdate, ...]: ...
+
     async def acknowledge_public_update(self, update_id: str) -> None: ...
 
 
 class TradingReceiver(Protocol):
     async def receive_catalyst(self, update: PublicUpdate) -> None:
-        """App maps to existing target selection/accept-trigger, once per update_id."""
+        """App maps to existing target selection/accept-trigger, once per update_id.
+
+        superseded_claim_refs names earlier claims this delta replaced; research
+        citing only other claims of the Event stays valid.
+        """
         ...
+
     async def receive_source_update(self, update: PublicUpdate) -> None:
         """App maps to Trading-owned claim-scoped research amendments.
 
         Atomically receive update_id and amend only research referencing
-        affected_claim_refs/previous_content_refs. Do not accept a trigger,
-        create a Case, refresh TTL, cancel orders or expand execution authority.
+        affected_claim_refs/previous_content_refs; retired_claim_refs are the
+        claims a correction withdrew. Do not accept a trigger, create a Case,
+        refresh TTL, cancel orders or expand execution authority.
         """
         ...

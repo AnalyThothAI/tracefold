@@ -1,4 +1,5 @@
 """Source-content idempotency and candidate recall, without near-match authority."""
+
 from __future__ import annotations
 
 from typing import Protocol
@@ -24,7 +25,9 @@ class Admission(Exact):
 
 class AdmissionStore(Protocol):
     async def source_event(self, record_key: str) -> str | None: ...
+
     async def recall_candidates(self, message: SourceMessage) -> tuple[str, ...]: ...
+
     async def atomic_ingest(self, admission: Admission) -> bool:
         """In one short transaction append raw evidence revision and semantic work.
 
@@ -49,9 +52,21 @@ class NewsAdmission:
         assigned = await self.store.source_event(record_key)
         candidates = await self.store.recall_candidates(message)
         body_sha = digest(message.text)
-        revision_key = identity("source_revision", record_key, message.source.artifact_revision, body_sha,
-            message.source.origin_id, message.source.attribution, message.source.published_at_ms)
-        admission = Admission(record_key=record_key, revision_key=revision_key,
-            event_id=assigned or identity("news_event", record_key), body_sha256=body_sha,
-            message=message, related_event_ids=tuple(dict.fromkeys(candidates)))
+        revision_key = identity(
+            "source_revision",
+            record_key,
+            message.source.artifact_revision,
+            body_sha,
+            message.source.origin_id,
+            message.source.attribution,
+            message.source.published_at_ms,
+        )
+        admission = Admission(
+            record_key=record_key,
+            revision_key=revision_key,
+            event_id=assigned or identity("news_event", record_key),
+            body_sha256=body_sha,
+            message=message,
+            related_event_ids=tuple(dict.fromkeys(candidates)),
+        )
         return await self.store.atomic_ingest(admission)

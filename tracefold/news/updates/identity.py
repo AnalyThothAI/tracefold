@@ -1,4 +1,5 @@
 """Code-owned content identities; no artifact upgrades or legacy decoders."""
+
 from __future__ import annotations
 
 import hashlib
@@ -22,7 +23,13 @@ def _json_value(value: Any) -> Any:
 
 
 def canonical_json(value: Any) -> str:
-    return json.dumps(_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(
+        _json_value(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def digest(value: Any) -> str:
