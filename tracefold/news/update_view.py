@@ -31,7 +31,7 @@ MODE_ZH: Final[dict[str, str]] = {
     "conditional_threat": "条件性威胁",
     "guidance": "前瞻指引",
     "forecast": "预测",
-    "commentary": "评论",
+    "commentary": "表态或观点",
     "promotion": "推广",
     "unknown": "表达方式未知",
 }
@@ -103,7 +103,7 @@ CLAIM_REASON_ZH: Final[dict[str, str]] = {
     "large_daily_move": "商品/指数日内大幅波动",
     "actionable_content": "具体动作或数据",
     "retired": "已撤回的命题",
-    "mode_commentary": "评论",
+    "mode_commentary": "仅表态或观点",
     "mode_promotion": "推广",
     "mode_forecast": "预测",
     "mode_unknown": "表达方式未知",
