@@ -125,9 +125,9 @@ def plan_for(
         reason="uncovered_claims",
         update_ref=update.ref,
         claim_decisions=tuple(
-            ClaimDecision(claim_ref=claim.ref, decision="notify", reason="actionable_content")
+            ClaimDecision(claim_ref=claim.ref, decision="notify", reason="editor_key" if key else "editor_notify")
             if claim.ref in chosen
-            else ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="mode_commentary")
+            else ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="editor_feed_only")
             for claim in update.claims
         ),
         key=key,

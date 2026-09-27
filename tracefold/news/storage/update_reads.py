@@ -64,10 +64,11 @@ EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = """
      LIMIT 20
 """
 EVENT_NOTIFICATION_WORK_SQL: Final = """
-    SELECT event_id, channel, content_revision, state, plan, reader_revision, attempts,
-           next_attempt_at_ms, updated_at_ms
-      FROM news_notification_work
-     WHERE event_id = %s AND channel = 'news'
+    SELECT w.event_id, w.channel, w.content_revision, w.state, d.plan, w.decision_ref,
+           w.reader_revision, w.attempts, w.next_attempt_at_ms, w.updated_at_ms
+      FROM news_notification_work w
+      LEFT JOIN news_notification_decisions d ON d.decision_ref = w.decision_ref
+     WHERE w.event_id = %s AND w.channel = 'news'
 """
 # Every ledger row of one Event, legacy cards and update intents alike.
 EVENT_DELIVERIES_SQL: Final = """

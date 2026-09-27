@@ -28,6 +28,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news import card_format as fmt
 from tracefold.news.artifact_identity import canonical_sha
@@ -1569,7 +1570,7 @@ def _news_event(
         _persist_verdict(repos, event_id=event_id, symbol=symbol, headline_zh=headline_zh, at_ms=settled_at_ms - 1)
         card = {"header": {"title": {"content": delivered_title}}} if delivered_title is not None else {}
         assert (
-            repos.news.begin_delivery(
+            legacy_news(repos.news).begin_delivery(
                 event_id=event_id,
                 kind="first",
                 card=card,
@@ -1578,7 +1579,7 @@ def _news_event(
             )
             == "new"
         )
-        assert repos.news.settle_delivery(
+        assert legacy_news(repos.news).settle_delivery(
             event_id=event_id,
             kind="first",
             state=state,
@@ -1605,7 +1606,7 @@ def _persist_verdict(repos: Any, *, event_id: str, symbol: str, headline_zh: str
     )
     judgment = legacy_judgment(verdict)
     manifest_sha = "b" * 64
-    assert repos.news.insert_verdict(
+    assert legacy_news(repos.news).insert_verdict(
         event_id=event_id,
         stage="triage",
         policy_version=LEGACY_TRIAGE_POLICY_VERSION,

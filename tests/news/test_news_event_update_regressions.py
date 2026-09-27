@@ -513,7 +513,7 @@ class MemoryCache:
 class UnusedExtractor:
     identity = "unused-extractor"
 
-    async def extract(self, source: FrozenInput, *, extract_only: bool) -> Extraction:
+    async def extract(self, source: FrozenInput) -> Extraction:
         raise AssertionError("understanding must not re-extract supplied claims")
 
 

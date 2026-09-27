@@ -13,6 +13,14 @@
 > [!IMPORTANT]
 > 接受的复核不等于独立人类真值；校准不会自动训练、发布或激活生产模型。
 
+| 所有者 | 职责 |
+| --- | --- |
+| [review/desk.py](../../tracefold/news/review/desk.py) | 决策命题队列、版本化证据、简短反馈与外部漏报；历史 Event 复核只读 |
+| [learning/judge.py](../../tracefold/news/learning/judge.py) | 保留的卡片评审器契约和调用 |
+| [learning/judge_calibration.py](../../tracefold/news/learning/judge_calibration.py) | 固定扰动语料、评估与独立结果凭据 |
+| [app/learning_runtime.py](../../tracefold/app/learning_runtime.py) | 当前评估执行的模型装配，不是线上自动发布器 |
+| [CLI parsers](../../tracefold/app/cli/parsers/news.py)、[CLI commands](../../tracefold/app/cli/commands/) | 显式查询 / 写入命令与真实 reviewer 身份 |
+
 [复核术语](../../CONTEXT.md) · [测试边界](../TESTING.md)
 
 <details>
@@ -72,7 +80,7 @@ class Ledger store;
 
 *复核视图 · 接受是账本状态，不是独立人类准确性的保证。*
 
-任务引用必须绑定精确版本，可能指向 EventUpdate、意图或其证据。新版本出现不允许覆盖旧复核。幂等键用于同一次提交重试，不是把多个不同判断压成同一条事实。
+当前队列从不可变 `news_notification_decisions` 与 EventUpdate 逐命题生成，含 `feed_only` 和模型不可用时的默认通知，不要求旧 verdict。任务引用绑定决策输入、命题与结果的精确版本；证据视图展示实际发送正文和状态，`--source-only` 只展示来源材料。复核只需 `should_push`（`should_push|should_hold|uncertain`）和可选备注，追加到 `news_notification_feedback`。幂等键用于同一次提交重试。
 
 ```bash
 # 以下查询使用具备数据库连通性的 Workers 容器
@@ -82,7 +90,7 @@ docker compose exec -T workers tracefold news review evidence TASK --version VER
 
 `--source-only` 只提供绑定的来源证据，不展示待评 Agent 答案或其他复核，避免把看过原答案后的评分误称盲评。
 
-`news review submit` 要求任务、版本、判断文件和真实 reviewer；它会写入接受记录。`external-miss` 追加系统外发现的遗漏及其 rubric。两者是显式数据操作，不因修改手册而运行。准确参数见[CLI 参考](../generated/cli-help.md)。
+`news review submit` 要求 `dec.` 任务、版本、判断文件和真实 reviewer；`evt.` 历史任务仍可按版本读取，但拒绝新写入。`external-miss` 追加系统外发现的遗漏及同样的短反馈。两者是显式数据操作，不因修改手册而运行。准确参数见[CLI 参考](../generated/cli-help.md)。
 
 <a id="section-评审器校准做什么"></a>
 ## 03 · 评审器校准做什么

@@ -30,14 +30,12 @@ from tracefold.news.updates.judgment import (
     BatchResult,
     Budget,
     ConfigurationFault,
-    ContractFault,
     NewsJudgments,
     ProviderUnavailable,
     Question,
     Task,
 )
 from tracefold.news.updates.semantics import SemanticAnalyzer
-from tracefold.news.updates.topics import CODEBOOK
 
 STAMP = 1_790_405_000_000
 
@@ -181,26 +179,11 @@ def test_native_operation_timeout_never_extends_the_shared_stage_deadline() -> N
     asyncio.run(run())
 
 
-def test_topic_codebook_is_one_request_with_shared_context() -> None:
-    async def run() -> None:
-        native = Backend(True, identity="native")
-        judgments = NewsJudgments(generated=Backend(identity="generated"), native=native, cache=MemoryCache())
-        items = tuple(Question(item_id=code, payload_json=json.dumps({"topic": label})) for code, label in CODEBOOK)
-        context = json.dumps({"claims": ["one shared copy"]})
-        answers = await judgments.judge("topic", items, Budget.start(5), context_json=context)
-        assert len(answers) == len(CODEBOOK) > judgments.batch_size
-        assert native.calls == [("topic", tuple(code for code, _label in CODEBOOK), context)]
-
-    asyncio.run(run())
-
-
 def test_other_tasks_keep_their_packing_batch_size() -> None:
     judgments = NewsJudgments(generated=Backend(), cache=MemoryCache())
     assert [len(batch) for batch in judgments.batches("relation", questions(20))] == [8, 8, 4]
     with pytest.raises(ValueError, match="news_judgment_batch_size_invalid"):
         NewsJudgments(generated=Backend(), cache=MemoryCache(), batch_size=33)
-    with pytest.raises(ContractFault, match="news_single_request_too_large"):
-        judgments.batches("topic", questions(65))
 
 
 def test_reask_uses_the_generated_backend_once_and_caches_apart_from_first_answers() -> None:
@@ -297,37 +280,6 @@ def test_native_choice_batch_decodes_each_slot_back_to_its_item() -> None:
         assert question["type"] == "choice"
         assert "inputs.items[1]" in question["instructions"]
         assert set(question["criteria"]) == {option for option, _description in OPTIONS["relation"]}
-
-    asyncio.run(run())
-
-
-def test_native_topic_questions_share_one_context_and_decode_nouls() -> None:
-    async def run() -> None:
-        sent: list[dict[str, Any]] = []
-
-        async def respond(request: httpx2.Request) -> httpx2.Response:
-            sent.append(json.loads(request.content))
-            return _response({"answer_0": {"type": "noul", "noul": 0.9}, "answer_1": {"type": "noul", "noul": 0.2}})
-
-        connection = _connection(respond)
-        try:
-            native = NativeJudgments(lambda: connection.bind(timeout_seconds=2.0), model_identity="jev-test")
-            items = tuple(
-                Question(item_id=code, payload_json=json.dumps({"topic": label})) for code, label in CODEBOOK[-2:]
-            )
-            context = json.dumps({"claims": [{"statement": "Iran strikes a Gulf base."}]})
-            result = await native.judge("topic", items, context_json=context)
-        finally:
-            await connection.aclose()
-        assert [(row.item_id, row.value) for row in result.answers] == [
-            ("medtop:20001279", True),
-            ("medtop:16000000", False),
-        ]
-        assert result.answers[0].probabilities == {"true": 0.9, "false": pytest.approx(0.1)}
-        inputs = sent[0]["state"]["inputs"]
-        assert inputs["context"] == {"claims": [{"statement": "Iran strikes a Gulf base."}]}
-        assert all("claims" not in row["payload"] for row in inputs["items"])
-        assert {question["type"] for question in sent[0]["questions"].values()} == {"noul"}
 
     asyncio.run(run())
 
@@ -431,7 +383,7 @@ class TaskBackend:
 class UnusedExtractor:
     identity = "unused-extractor"
 
-    async def extract(self, source: FrozenInput, *, extract_only: bool) -> Extraction:
+    async def extract(self, source: FrozenInput) -> Extraction:
         raise AssertionError("understanding must not re-extract supplied claims")
 
 
@@ -453,40 +405,46 @@ def _source_and_claims(count: int) -> tuple[FrozenInput, Extraction]:
     return source, Extraction(claims=claims)
 
 
-def test_analyzer_asks_native_readings_per_claim_and_the_whole_codebook_once() -> None:
+def test_analyzer_keeps_fused_per_claim_readings_and_only_asks_missing_support():
     async def run() -> None:
-        native = TaskBackend(
-            {
-                "mode": "decision",
-                "phase": "ordered",
-                "content_kind": "official_measure",
-                "topic": True,
-                "support": "supports",
-            }
-        )
+        native = TaskBackend({"support": "supports"})
         generated = Backend(identity="generated")
         analyzer = SemanticAnalyzer(
             UnusedExtractor(), NewsJudgments(generated=generated, native=native, cache=MemoryCache())
         )
-        source, extracted = _source_and_claims(10)
-        result = await analyzer.understand(source, extracted, Budget.start(5))
-        topic_calls = [call for call in native.calls if call[0] == "topic"]
-        assert topic_calls == [("topic", len(CODEBOOK), topic_calls[0][2])]
-        assert json.loads(topic_calls[0][2] or "{}")["claims"][0]["slot"] == "c0"
-        # Ten claims pack into batches of eight for every per-claim reading.
-        assert [call[:2] for call in native.calls if call[0] == "mode"] == [("mode", 8), ("mode", 2)]
-        assert {claim.fields.mode for claim in result.claims} == {"decision"}
-        assert {claim.fields.phase for claim in result.claims} == {"ordered"}
-        assert {claim.fields.content_kind for claim in result.claims} == {"official_measure"}
-        assert all(len(claim.topics) == 3 for claim in result.claims)
+        source, extracted = _source_and_claims(2)
+        first, second = extracted.claims
+        first = first.model_copy(
+            update={
+                "fields": first.fields.model_copy(
+                    update={"mode": "decision", "phase": "ordered", "content_kind": "official_measure"}
+                ),
+                "topics": ("medtop:20000384",),
+            }
+        )
+        second = second.model_copy(
+            update={
+                "fields": second.fields.model_copy(
+                    update={"mode": "observation", "phase": None, "content_kind": "new_quantity"}
+                ),
+                "topics": ("medtop:20000350",),
+            }
+        )
+        result = await analyzer.understand(
+            source, extracted.model_copy(update={"claims": (first, second)}), Budget.start(5)
+        )
+        assert result.claims[0].fields == first.fields
+        assert result.claims[1].fields == second.fields
+        assert result.claims[0].topics != result.claims[1].topics
+        assert {call[0] for call in native.calls} == {"support"}
         assert generated.calls == []
 
     asyncio.run(run())
 
 
-def test_unavailable_content_reading_keeps_the_extracted_kind() -> None:
+def test_unknown_mode_clarification_does_not_rejudge_other_fused_fields():
     async def run() -> None:
-        native = TaskBackend({"mode": "decision", "phase": "ordered", "topic": False, "support": "supports"})
+        native = TaskBackend({"support": "supports"})
         generated = Backend(identity="generated", fail_batch=1)
         analyzer = SemanticAnalyzer(
             UnusedExtractor(), NewsJudgments(generated=generated, native=native, cache=MemoryCache())
@@ -494,6 +452,7 @@ def test_unavailable_content_reading_keeps_the_extracted_kind() -> None:
         source, extracted = _source_and_claims(1)
         result = await analyzer.understand(source, extracted, Budget.start(5))
         assert result.claims[0].fields.content_kind == "other"
-        assert result.claims[0].fields.mode == "decision"
+        assert result.claims[0].fields.mode == "unknown"
+        assert {call[0] for call in native.calls} == {"support"}
 
     asyncio.run(run())

@@ -141,28 +141,135 @@ class OperationsStorage:
             """,
             (current_event_id,),
         )
+        # Build a current EventUpdate and decision, then a terminal update intent. This drill is a
+        # synthetic schema/restore proof; it makes no provider or model call.
+        from ..updates.contracts import (
+            Citation,
+            ClaimFields,
+            DraftClaim,
+            Evidence,
+            Extraction,
+            FrozenInput,
+            Source,
+            SupportDraft,
+        )
+        from ..updates.identity import digest
+        from ..updates.notification import ClaimDecision, FrozenCard, NotificationPlan
+        from ..updates.semantics import assemble_update
+
         repository = cast(Any, self)
-        evidence = repository.append_evidence_snapshot(event_id=current_event_id, now_ms=11)
-        if (
-            repository.begin_delivery(
-                event_id=current_event_id,
-                kind="first",
-                card={"event_id": current_event_id, "evidence_sha256": evidence["evidence_sha256"]},
-                now_ms=12,
-            )
-            != "new"
-        ):
-            raise RuntimeError("postgres_restore_drill_delivery_seed_conflict")
-        if not repository.settle_delivery(
-            event_id=current_event_id,
-            kind="first",
-            state="terminal",
-            receipt=None,
-            error_code="restore_drill",
-            now_ms=13,
-        ):
-            raise RuntimeError("postgres_restore_drill_delivery_seed_failed")
-        return str(evidence["evidence_sha256"])
+        evidence_snapshot = repository.append_evidence_snapshot(event_id=current_event_id, now_ms=11)
+        source = Source(
+            publisher_id="restore",
+            artifact_id="restore-current",
+            artifact_revision="1",
+            record_id="restore-current",
+            first_available_at_ms=10,
+        )
+        material = Evidence.issue("restore current", source)
+        frozen = FrozenInput(event_id=current_event_id, revision=1, lineage_id="restore-drill", evidence=(material,))
+        extraction = Extraction(
+            claims=(
+                DraftClaim(
+                    slot="a",
+                    statement=material.text,
+                    fields=ClaimFields(subject="restore", action="reported", mode="observation"),
+                    citations=(Citation(evidence_ref=material.ref, quote=material.text),),
+                ),
+            ),
+            supports=(SupportDraft(slot="a", evidence_ref=material.ref, relation="supports"),),
+        )
+        update = assemble_update(frozen, extraction, None, adopted_at_ms=12)
+        if update is None:
+            raise RuntimeError("postgres_restore_drill_update_missing")
+        claim_ref = update.claims[0].ref
+        self.conn.execute(
+            """INSERT INTO news_semantic_observations
+                 (result_id,work_id,event_id,input_revision,input_sha256,program_identity,
+                  completed_at_ms,understanding,evidence_refs)
+               VALUES (%s,%s,%s,1,%s,'restore_drill_v1',12,%s::jsonb,%s)""",
+            (
+                "restore-result",
+                "restore-work",
+                current_event_id,
+                digest(frozen),
+                _dumps(extraction.model_dump(mode="json")),
+                [material.ref],
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO news_event_updates
+                 (event_id,content_revision,input_revision,adopted_at_ms,observation_result_id,document)
+               VALUES (%s,%s,1,12,'restore-result',%s::jsonb)""",
+            (current_event_id, update.content_revision, update.model_dump_json()),
+        )
+        self.conn.execute(
+            """INSERT INTO news_event_update_heads
+                 (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
+               VALUES (%s,%s,1,%s,12)""",
+            (current_event_id, update.content_revision, update.ref),
+        )
+        decision_input = {"update": update.model_dump(mode="json"), "reader_receipts": [], "fixture": "restore_drill"}
+        plan = NotificationPlan(
+            action="notify",
+            reason="uncovered_claims",
+            update_ref=update.ref,
+            claim_decisions=(
+                ClaimDecision(claim_ref=claim_ref, decision="notify", reason="attention_unavailable_default_notify"),
+            ),
+            channel="news",
+            reader_revision="restore-reader:12",
+            assessment_status="unavailable",
+            assessment_error_code="restore_drill_no_model",
+            assessment_identity="restore_drill_v1",
+            assessment_input_digest=digest(decision_input),
+            assessment_input=decision_input,
+        )
+        self.conn.execute(
+            """INSERT INTO news_notification_decisions
+                 (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
+               VALUES (%s,%s,%s,'news',%s,%s::jsonb,%s::jsonb,'editorial_v1',12)""",
+            (
+                plan.record_ref,
+                current_event_id,
+                update.ref,
+                plan.assessment_input_digest,
+                _dumps(decision_input),
+                plan.model_dump_json(),
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO news_notification_work
+                 (event_id,channel,content_revision,state,decision_ref,reader_revision,
+                  attempts,next_attempt_at_ms,updated_at_ms)
+               VALUES (%s,'news',%s,'done',%s,%s,0,13,13)""",
+            (current_event_id, update.content_revision, plan.record_ref, plan.reader_revision),
+        )
+        body = "恢复演练 · restore current"
+        card = FrozenCard(
+            intent_id=plan.intent_id,
+            claim_refs=(claim_ref,),
+            headline_zh="恢复演练",
+            body=body,
+            payload_sha256=digest(body),
+        )
+        self.conn.execute(
+            """INSERT INTO news_deliveries
+                 (intent_id,event_id,kind,state,card,attempted_at_ms,settled_at_ms,
+                  created_at_ms,content_revision,claim_refs,body,payload_sha256,plan_key,decision_ref,error_code)
+               VALUES (%s,%s,'update','terminal',%s::jsonb,12,13,12,%s,%s::jsonb,%s,%s,false,%s,'restore_drill')""",
+            (
+                plan.intent_id,
+                current_event_id,
+                card.model_dump_json(),
+                update.content_revision,
+                _dumps([claim_ref]),
+                body,
+                card.payload_sha256,
+                plan.record_ref,
+            ),
+        )
+        return str(evidence_snapshot["evidence_sha256"])
 
     def update_ingest_state(
         self,

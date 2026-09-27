@@ -1116,6 +1116,14 @@ class EventUpdateStorage:
         return True
 
     # ------------------------------------------------------------------ notification snapshot and plan
+    def lookup_notification_decision(self, *, event_id: str, channel: str, input_digest: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """SELECT plan FROM news_notification_decisions
+                WHERE event_id = %s AND channel = %s AND input_digest = %s""",
+            (event_id, channel, input_digest),
+        ).fetchone()
+        return None if row is None else dict(row["plan"])
+
     def invalidated_claim_refs(self, event_id: str) -> list[str]:
         """Read the adopted change ledger; no second writable claim-status authority."""
         rows = self.conn.execute(
@@ -1173,8 +1181,18 @@ class EventUpdateStorage:
         history = cast(DecisionStorage, self).reader_history(event_id=event_id, now_ms=now_ms)
         band = [row.event_id for row in history.told_source_rows]
         event = self.conn.execute(
-            "SELECT comparison_title FROM news_events WHERE event_id = %s", (event_id,)
+            "SELECT comparison_title, event_kind FROM news_events WHERE event_id = %s", (event_id,)
         ).fetchone()
+        listing_members = (
+            self.conn.execute(
+                """SELECT m.item_id,m.fact_text,i.provider_metadata
+                     FROM news_event_members m JOIN news_items i ON i.item_id=m.item_id
+                    WHERE m.event_id=%s""",
+                (event_id,),
+            ).fetchall()
+            if event is not None and event["event_kind"] == "listing"
+            else []
+        )
         queries = receipt_queries(
             EventUpdate.model_validate(head),
             str(event["comparison_title"] or "") if event else "",
@@ -1226,6 +1244,7 @@ class EventUpdateStorage:
             "revision": reader_revision(now_ms, ledger, blocked, watch_symbols, invalidated),
             "receipt_queries": queries,
             "receipt_rows": [dict(row) for row in (*rows, *relevant)],
+            "listing_members": [dict(row) for row in listing_members],
         }
 
     def record_notification_plan(
@@ -1238,11 +1257,7 @@ class EventUpdateStorage:
         now_ms: int,
         lease_ms: int = INTENT_LEASE_MS,
     ) -> dict[str, Any] | None:
-        """CAS head and reader revision, persist the plan, and reserve its one stable intent.
-
-        Returns the leased intent (`intent_id`, stored `frozen_card`) or None. None leaves an owned,
-        sending, sent or ambiguous identity exactly as it is.
-        """
+        """CAS head/reader, record or reuse an immutable decision, then reserve its stable intent."""
 
         head = self.conn.execute(
             "SELECT event_id, content_revision FROM news_event_update_heads WHERE update_ref = %s",
@@ -1286,13 +1301,45 @@ class EventUpdateStorage:
                 "DELETE FROM news_delivery_queue WHERE intent_id = ANY(%s)",
                 ([str(row["intent_id"]) for row in others],),
             )
+        self.conn.execute(
+            """
+            INSERT INTO news_notification_decisions
+              (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
+            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,'editorial_v1',%s)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                plan.record_ref,
+                event_id,
+                plan.update_ref,
+                plan.channel,
+                plan.assessment_input_digest,
+                _dumps(plan.assessment_input or {}),
+                plan_json,
+                int(now_ms),
+            ),
+        )
+        stored = self.conn.execute(
+            "SELECT decision_ref,plan FROM news_notification_decisions WHERE decision_ref = %s",
+            (plan.record_ref,),
+        ).fetchone()
+        if stored is None:
+            raise EventUpdateConflict("news_notification_decision_missing")
+        plan = NotificationPlan.model_validate(stored["plan"]).model_copy(
+            update={"reader_revision": plan.reader_revision, "decision_ref": str(stored["decision_ref"])}
+        )
+        plan_json = plan.model_dump_json()
+
+        def recorded(intent: str | None = None, card: Any = None) -> dict[str, Any]:
+            return {"plan": plan.model_dump(mode="json"), "intent_id": intent, "frozen_card": card}
+
         attempts = int(work["attempts"])
         if plan.action == "no_notification":
             self._settle_work(event_id, plan, plan_json, state="done", attempts=0, next_at_ms=now_ms, now_ms=now_ms)
-            return None
+            return recorded()
         if plan.action == "unresolved":
             self._retry_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
-            return None
+            return recorded()
         intent_id = plan.intent_id
         ledger = self.conn.execute("SELECT state FROM news_deliveries WHERE intent_id = %s", (intent_id,)).fetchone()
         if ledger is not None:
@@ -1301,14 +1348,14 @@ class EventUpdateStorage:
                 self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
             else:
                 self._retry_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
-            return None
+            return recorded()
         selected = list(plan.selected_claim_refs)
         reserved = self.conn.execute(
             """
             INSERT INTO news_delivery_queue (
               intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms,
-              last_attempt_at_ms, updated_at_ms, content_revision, claim_refs, plan_key, lease_token
-            ) VALUES (%s, %s, 'update', 'pending', 1, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+              last_attempt_at_ms, updated_at_ms, content_revision, claim_refs, plan_key, lease_token, decision_ref
+            ) VALUES (%s, %s, 'update', 'pending', 1, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
             ON CONFLICT (intent_id) DO NOTHING
             RETURNING frozen_card
             """,
@@ -1323,22 +1370,23 @@ class EventUpdateStorage:
                 _dumps(selected),
                 plan.key,
                 lease_token,
+                plan.record_ref,
             ),
         ).fetchone()
         frozen_card = None
         if reserved is None:
             existing = self.conn.execute(
                 """
-                SELECT state, attempts, lease_token, next_attempt_at_ms, frozen_card
+                SELECT state, attempts, lease_token, next_attempt_at_ms, frozen_card, decision_ref
                   FROM news_delivery_queue WHERE intent_id = %s FOR UPDATE
                 """,
                 (intent_id,),
             ).fetchone()
             if existing["state"] == "dead":
                 self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
-                return None
+                return recorded()
             if existing["lease_token"] is not None and int(existing["next_attempt_at_ms"]) > int(now_ms):
-                return None
+                return recorded()
             if int(existing["attempts"]) >= INTENT_ATTEMPTS_MAX:
                 self.conn.execute(
                     """
@@ -1350,7 +1398,7 @@ class EventUpdateStorage:
                     (int(now_ms), int(now_ms), intent_id),
                 )
                 self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
-                return None
+                return recorded()
             self.conn.execute(
                 """
                 UPDATE news_delivery_queue
@@ -1361,6 +1409,17 @@ class EventUpdateStorage:
                 (lease_token, int(now_ms) + int(lease_ms), int(now_ms), int(now_ms), intent_id),
             )
             frozen_card = existing["frozen_card"]
+            if existing["decision_ref"] is not None and existing["decision_ref"] != plan.record_ref:
+                original = self.conn.execute(
+                    "SELECT plan FROM news_notification_decisions WHERE decision_ref = %s",
+                    (existing["decision_ref"],),
+                ).fetchone()
+                if original is None:
+                    raise EventUpdateConflict("news_intent_decision_missing")
+                plan = NotificationPlan.model_validate(original["plan"]).model_copy(
+                    update={"reader_revision": plan.reader_revision, "decision_ref": str(existing["decision_ref"])}
+                )
+                plan_json = plan.model_dump_json()
         # The marker stays pending while the reserved intent is in flight. If this turn dies before
         # the send is settled, the repair turn re-plans after the lease and reclaims the same identity.
         spent = min(attempts + 1, NOTIFICATION_ATTEMPTS_MAX) if plan.deferred_claim_refs else attempts
@@ -1374,7 +1433,7 @@ class EventUpdateStorage:
             next_at_ms=int(now_ms) + max(int(lease_ms), retry_ms),
             now_ms=now_ms,
         )
-        return {"intent_id": intent_id, "event_id": event_id, "frozen_card": frozen_card}
+        return recorded(intent_id, frozen_card)
 
     def _complete_plan(
         self, event_id: str, plan: NotificationPlan, plan_json: str, *, attempts: int, now_ms: int
@@ -1390,14 +1449,18 @@ class EventUpdateStorage:
 
         work = self.conn.execute(
             """
-            SELECT attempts, plan, content_revision, state FROM news_notification_work
-             WHERE event_id = %s AND channel = %s FOR UPDATE
+            SELECT w.attempts, d.plan, w.decision_ref, w.content_revision, w.state
+              FROM news_notification_work w
+              LEFT JOIN news_notification_decisions d ON d.decision_ref = w.decision_ref
+             WHERE w.event_id = %s AND w.channel = %s FOR UPDATE OF w
             """,
             (event_id, NEWS_CHANNEL),
         ).fetchone()
         if work is None or work["plan"] is None or work["content_revision"] != content_revision:
             return
-        plan = NotificationPlan.model_validate(work["plan"])
+        plan = NotificationPlan.model_validate(work["plan"]).model_copy(
+            update={"decision_ref": str(work["decision_ref"])}
+        )
         self._complete_plan(event_id, plan, _dumps(work["plan"]), attempts=int(work["attempts"]), now_ms=now_ms)
 
     def _retry_work(self, event_id: str, plan: NotificationPlan, plan_json: str, *, attempts: int, now_ms: int) -> None:
@@ -1426,11 +1489,20 @@ class EventUpdateStorage:
         self.conn.execute(
             """
             UPDATE news_notification_work
-               SET state = %s, plan = %s::jsonb, reader_revision = %s, attempts = %s,
+               SET state = %s, plan = NULL, decision_ref = %s, reader_revision = %s, attempts = %s,
                    next_attempt_at_ms = %s, updated_at_ms = %s
              WHERE event_id = %s AND channel = %s
             """,
-            (state, plan_json, plan.reader_revision, attempts, int(next_at_ms), int(now_ms), event_id, plan.channel),
+            (
+                state,
+                plan.record_ref,
+                plan.reader_revision,
+                attempts,
+                int(next_at_ms),
+                int(now_ms),
+                event_id,
+                plan.channel,
+            ),
         )
 
     def _pend_notification(
@@ -1482,13 +1554,15 @@ class EventUpdateStorage:
 
         queued = self.conn.execute(
             """
-            SELECT event_id, state, lease_token, frozen_card, content_revision, claim_refs, plan_key
+            SELECT event_id, state, lease_token, frozen_card, content_revision, claim_refs, plan_key, decision_ref
               FROM news_delivery_queue WHERE intent_id = %s AND kind = 'update' FOR UPDATE
             """,
             (intent_id,),
         ).fetchone()
         if queued is None or queued["state"] != "pending" or queued["lease_token"] != lease_token:
             return False
+        if queued["decision_ref"] != plan.record_ref:
+            raise EventUpdateConflict("news_intent_decision_mismatch")
         frozen = queued["frozen_card"]
         if frozen is None or FrozenCard.model_validate(frozen) != card:
             raise EventUpdateConflict("news_intent_card_not_frozen")
@@ -1542,10 +1616,10 @@ class EventUpdateStorage:
             )
             INSERT INTO news_deliveries (
               intent_id, event_id, kind, state, card, attempted_at_ms, created_at_ms,
-              content_revision, claim_refs, body, payload_sha256, plan_key, history_context
+              content_revision, claim_refs, body, payload_sha256, plan_key, decision_ref, history_context
             )
             SELECT %(intent)s, e.event_id, 'update', 'sending', %(card)s::jsonb, %(now)s, %(now)s,
-                   %(revision)s, %(claim_refs)s::jsonb, %(body)s, %(sha)s, %(key)s,
+                   %(revision)s, %(claim_refs)s::jsonb, %(body)s, %(sha)s, %(key)s, %(decision)s,
                    jsonb_build_object(
                      'event_id', e.event_id,
                      'intent_id', %(intent)s::text,
@@ -1572,6 +1646,7 @@ class EventUpdateStorage:
                 "body": card.body,
                 "sha": card.payload_sha256,
                 "key": bool(queued["plan_key"]),
+                "decision": queued["decision_ref"],
                 "headline": card.headline_zh,
             },
         ).fetchone()
@@ -1758,9 +1833,16 @@ class EventUpdateStorage:
 
     def notification_work(self, event_id: str, channel: str = NEWS_CHANNEL) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT * FROM news_notification_work WHERE event_id = %s AND channel = %s", (event_id, channel)
+            """SELECT w.*,d.plan AS effective_plan FROM news_notification_work w
+                 LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref
+                WHERE w.event_id=%s AND w.channel=%s""",
+            (event_id, channel),
         ).fetchone()
-        return None if row is None else dict(row)
+        if row is None:
+            return None
+        result = dict(row)
+        result["plan"] = result.pop("effective_plan") or result["plan"]
+        return result
 
     def retry_failed_work(
         self, *, event_id: str, kind: str, revision: str, now_ms: int, intent_id: str | None = None

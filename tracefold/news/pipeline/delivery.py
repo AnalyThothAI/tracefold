@@ -8,8 +8,7 @@ enrichment edit that fills quotes and tradability into the message already sent.
 that intent's card attempt and nothing else; an outcome the provider did not report is held ambiguous
 and never sent again.
 
-Legacy `first`/`followup` intents are not sent any more: a pending one is dead-lettered at startup
-with `legacy_intent_retired`, and the settled ledger rows keep their edit reconciliation by intent id.
+Historical settled `first`/`followup` receipts keep their edit reconciliation by intent id.
 """
 
 from __future__ import annotations
@@ -414,13 +413,8 @@ class DelivererLoop:
                 "news_delivery_reconcile", lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms())
             )
         # Unlike an initial-send ambiguity, an inherited edit intent cannot be left in a pretend in-flight state:
-        # this process owns no edit task yet. Refuse to claim until PostgreSQL records that truth. The legacy
-        # intents are retired the same way: a pending one is dead-lettered with its reason, never sent.
+        # this process owns no edit task yet. Refuse to claim until PostgreSQL records that truth.
         startup_reconciliations = (
-            (
-                "news_delivery_retire_legacy",
-                lambda repos: repos.news.retire_legacy_delivery_intents(now_ms=now_ms()),
-            ),
             (
                 "news_delivery_edit_reconcile",
                 lambda repos: repos.news.terminalize_interrupted_delivery_edits(now_ms=now_ms()),

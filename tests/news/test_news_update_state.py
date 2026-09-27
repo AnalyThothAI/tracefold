@@ -12,9 +12,9 @@ from tracefold.news.updates.contracts import (
     QuestionResolution,
     RelationDraft,
     SupportDraft,
+    current_evidence,
 )
 from tracefold.news.updates.judgment import ContractFault
-from tracefold.news.updates.notification import corroborated, is_key
 from tracefold.news.updates.public import public_updates
 from tracefold.news.updates.semantics import assemble_update
 
@@ -164,7 +164,10 @@ def test_attribution_and_authority_corrections_do_not_accumulate_corroboration(a
         first,
         adopted_at_ms=STAMP + 100,
     )
-    assert updated is not None and not corroborated(updated.claims[0], updated)
+    assert updated is not None
+    active = {item.ref for item in current_evidence(updated.evidence).values()}
+    assert active == {revised.ref}
+    assert sum(row.relation == "supports" and row.evidence_ref in active for row in updated.evidence_relations) == 1
     assert len(updated.evidence) == 2 and len(updated.evidence_relations) == 2
 
 
@@ -194,7 +197,9 @@ def test_unproductive_source_replacement_removes_old_authority_without_inventing
         ),
     )
     updated = assemble_update(source_for(first, revised), Extraction(claims=()), first, adopted_at_ms=STAMP + 100)
-    assert updated is not None and not corroborated(updated.claims[0], updated)
+    assert updated is not None
+    active = {item.ref for item in current_evidence(updated.evidence).values()}
+    assert not any(row.relation == "supports" and row.evidence_ref in active for row in updated.evidence_relations)
     assert any(r.evidence_ref == revised.ref and r.relation == "unresolved" for r in updated.evidence_relations)
     (public,) = public_updates(updated, semantic_completed_at_ms=STAMP + 100)
     assert public.kind == "source_update" and not public.retired_claim_refs
@@ -222,7 +227,7 @@ def test_v1_archive_identity_survives_v2_topic_transition():
     del document["superseded_claim_refs"]
     legacy = EventUpdate.model_validate(document)
     assert legacy.content_sha == sha
-    assert is_key(legacy.claims[0], legacy) == is_key(head.claims[0], head) is True
+    assert legacy.topics == head.topics
     ev = material("Agency adds a separate provision.", publisher="new")
     updated = assemble_update(source_for(legacy, ev), Extraction(claims=()), legacy, adopted_at_ms=STAMP + 100)
     assert updated is not None and updated.schema_version == "news_event_update_v2"

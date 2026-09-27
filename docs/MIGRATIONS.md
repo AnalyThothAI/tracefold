@@ -9,7 +9,7 @@
 
 1. [确认源、镜像与数据库版本](#section-确认源镜像与数据库版本)
 2. [正常升级顺序](#section-正常升级顺序)
-3. [EventUpdate 的 0404 / 0405 切换](#section-eventupdate-的-0404--0405-切换)
+3. [EventUpdate 的 0404 / 0405 / 0407 切换](#section-eventupdate-的-0404--0405--0407-切换)
 4. [基线之前的备份与严格拒绝](#section-基线之前的备份与严格拒绝)
 5. [回退不是数据库降级](#section-回退不是数据库降级)
 6. [迁移验证与提交证据](#section-迁移验证与提交证据)
@@ -31,7 +31,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20260927_0406`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20260927_0407`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
@@ -74,15 +74,16 @@ class Runtime execution;
 
 普通 `init` 保留配置；`init --force` 不是迁移工具。严格设置报出旧字段时，仅删除其确切 YAML 路径，保留其他 operator 选择。
 
-<a id="section-eventupdate-的-0404--0405-切换"></a>
-## 03 · EventUpdate 的 0404 / 0405 切换
+<a id="section-eventupdate-的-0404--0405--0407-切换"></a>
+## 03 · EventUpdate 的 0404 / 0405 / 0407 切换
 
 | Revision | 建立的当前契约 | 源码 |
 | --- | --- | --- |
 | `20260926_0404` | Item 修订、语义工作 / 检查点 / 观察、EventUpdate 与 head、通知工作、intent 发送、公开更新与 Trading amendment | [0404](../tracefold/platform/postgres/alembic/versions/20260926_0404_news_event_updates.py) |
 | `20260927_0405` | 来源修订顺序 / 前驱、保留不可变 v1 与新 v2、跨 Event claim 定位索引 | [0405](../tracefold/platform/postgres/alembic/versions/20260927_0405_news_revision_ownership.py) |
+| `20260927_0407` | 不可变通知决策、工作与意图引用、逐命题复核和外部漏报短反馈 | [0407](../tracefold/platform/postgres/alembic/versions/20260927_0407_news_notification_decisions.py) |
 
-这两次切换是前向迁移，不提供通过旧卡片 / verdict 伪造新 Claim 的降级路径。旧 v1 保留原始 hash 与语义，新内容才使用 v2；不得批量改历史 JSON 让它“看起来都是最新版本”。
+这些切换是前向迁移，不提供通过旧卡片 / verdict 伪造新 Claim 的降级路径。旧 v1 保留原始 hash 与语义，新内容才使用 v2；不得批量改历史 JSON 让它“看起来都是最新版本”。0407 将已有工作计划按原字节标记为 `legacy_work_plan`，不捏造历史模型判断；旧 pending `first`/`followup` 意图以 `legacy_intent_retired` 结算为 dead，已发送及状态不明的账本行保持原样。新 intent 的发送账本保留决策引用。
 
 `20260927_0406` 为 [执行硬切 Signal 退休原因](../tracefold/platform/postgres/alembic/versions/20260927_0406_execution_hard_cut_retirement.py) 增加约束取值；它自身不清理账户数据。数据切换步骤见 [#719 运行说明](OPERATIONS.md#719-一次性执行基线硬切)。
 
@@ -94,7 +95,7 @@ class Runtime execution;
 | 原始证据 | 来源正文修订与前驱不丢失，不把相同正文的再次出现当旧版本重投 |
 | 语义工作 | wanted / done、owner / lease、耗尽结算与新版本预算隔离 |
 | 知识 | EventUpdate 不可变，head 不倒退，未变的命题 / 问题保留 |
-| 通知 | 旧实际回执继续约束读者覆盖；不因 schema 迁移重复推送 |
+| 通知 | 旧实际回执继续约束读者覆盖；新决策与工作 / intent 引用一致，不因 schema 迁移重复推送 |
 | Trading | 旧公开 payload 与新契约明确区分；来源更正不制造新 TTL |
 
 迁移不是整库重新分析。保留的 legacy verdict / historical review 只具有其原来含义；也不能把旧静态 Program 资产重新挂回运行时以掩盖切换缺口。
@@ -111,7 +112,7 @@ class Runtime execution;
 <a id="section-回退不是数据库降级"></a>
 ## 05 · 回退不是数据库降级
 
-`make deploy-image` 只用于源码 / 镜像 / 数据库 schema 兼容的本地精确镜像替换，不能反转 0404 / 0405。需要恢复旧 schema 时，使用匹配备份与镜像，在隔离环境验证后再安排切换。
+`make deploy-image` 只用于源码 / 镜像 / 数据库 schema 兼容的本地精确镜像替换，不能反转 0404 / 0405 / 0406。需要恢复旧 schema 时，使用匹配备份与镜像，在隔离环境验证后再安排切换。
 
 数据库恢复可能改变本地已记录事实，但不会撤销交易所已发生的订单或成交。账户侧必须独立对账；不能通过恢复旧数据库让系统“忘记”已有风险。
 

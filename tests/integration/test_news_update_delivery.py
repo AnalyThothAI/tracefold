@@ -33,13 +33,15 @@ from tests.integration.test_news_event_update_store import (
     sql,
 )
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_attention import FeedOnly, NotifyAll
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.bus import TransientError
 from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from tracefold.news.models import ReaderDeliveryPresentation
 from tracefold.news.pipeline.delivery import DelivererLoop
 from tracefold.news.reader_card import ReaderCard
-from tracefold.news.storage.decisions import LEGACY_INTENT_RETIRED, legacy_intent_id
+from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore
 from tracefold.news.updates.contracts import (
     Asset,
@@ -150,6 +152,7 @@ class Rig:
         clock: Clock | None = None,
         db: FaultDb | None = None,
         backend: TaskBackend | None = None,
+        assessor: Any = None,
     ) -> None:
         self.clock = clock or Clock()
         self.db = db or FaultDb()
@@ -158,7 +161,9 @@ class Rig:
         judgments = NewsJudgments(
             generated=backend or TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(self.db)
         )
-        self.notifications = Notifications(self.store, NotificationPlanner(judgments), self.composer, clock=self.clock)
+        self.notifications = Notifications(
+            self.store, NotificationPlanner(judgments, assessor or NotifyAll()), self.composer, clock=self.clock
+        )
         self.provider = provider
         self.loop = DelivererLoop(
             db=self.db,
@@ -202,7 +207,10 @@ def _queue() -> list[dict[str, Any]]:
 
 
 def _work() -> dict[str, Any]:
-    return sql("SELECT state, attempts, next_attempt_at_ms, content_revision, plan FROM news_notification_work")[0]
+    return sql("""SELECT w.state,w.attempts,w.next_attempt_at_ms,w.content_revision,
+                         COALESCE(d.plan,w.plan) AS plan
+                    FROM news_notification_work w
+                    LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref""")[0]
 
 
 def test_planner_intent_card_and_send_record_the_exact_frozen_body_and_receipt() -> None:
@@ -240,7 +248,7 @@ def test_a_no_notification_plan_composes_no_card_and_sends_nothing() -> None:
 
     _adopt(clock, StubAnalyzer(commentary))
     provider = Provider()
-    rig = Rig(provider, clock=clock)
+    rig = Rig(provider, clock=clock, assessor=FeedOnly())
 
     rig.advance()
 
@@ -248,11 +256,11 @@ def test_a_no_notification_plan_composes_no_card_and_sends_nothing() -> None:
     assert provider.sent == [] and _ledger() == [] and _queue() == []
     work = _work()
     assert work["state"] == "done"
-    assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["mode_commentary"]
+    assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["editor_feed_only"]
 
 
 def test_a_failed_plan_spends_one_bounded_attempt_and_touches_nothing_else() -> None:
-    """A judgment answer outside its contract fails the plan: no intent, no card, the marker backs off."""
+    """A programming error remains visible while the durable marker backs off."""
 
     clock = Clock()
 
@@ -263,10 +271,16 @@ def test_a_failed_plan_spends_one_bounded_attempt_and_touches_nothing_else() -> 
 
     head = _adopt(clock, StubAnalyzer(market_report))
     provider = Provider()
-    rig = Rig(provider, clock=clock, backend=TaskBackend({"market_basis": "not-a-basis"}))
+
+    class BrokenEditor(NotifyAll):
+        async def assess(self, claims, *, sources, watch_symbols):
+            raise RuntimeError("editor_bug")
+
+    rig = Rig(provider, clock=clock, assessor=BrokenEditor())
 
     for attempt in range(1, 4):
-        rig.advance()
+        with pytest.raises(RuntimeError, match="editor_bug"):
+            rig.advance()
         work = _work()
         assert (work["state"], work["attempts"], work["plan"]) == ("pending", attempt, None)
         assert work["next_attempt_at_ms"] > clock.now_ms
@@ -515,47 +529,21 @@ def test_the_telegram_edit_enriches_the_intents_receipt_and_keeps_the_frozen_car
     assert FrozenCard.model_validate(ledger["card"]).body == ledger["body"]
 
 
-def test_a_pending_legacy_intent_is_retired_with_its_reason_and_its_sent_row_still_edits() -> None:
-    clock = Clock()
-    seed_event()
+def test_a_sent_historical_card_still_edits() -> None:
     seed_event("ev-legacy-sent", fingerprint="fp-legacy")
     receipt = {"provider": "telegram", "message_id": 7, "pushed_at_ms": STAMP, "target_sha256": TELEGRAM_TARGET}
     conn = connect_postgres_test(read_only=False)
     try:
         repos = repositories_for_connection(conn)
         with repos.transaction():
-            # A card the retired verdict path owed before the cutover, exactly as that path queued it.
-            conn.execute(
-                """
-                INSERT INTO news_delivery_queue (
-                  intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms, updated_at_ms
-                ) VALUES (%s, %s, 'first', 'pending', 0, %s, %s, %s)
-                """,
-                (legacy_intent_id(EVENT, "first"), EVENT, STAMP, STAMP, STAMP),
+            assert legacy_news(repos.news).begin_delivery(
+                event_id="ev-legacy-sent", kind="first", card={"x": 1}, now_ms=STAMP
             )
-            assert repos.news.begin_delivery(event_id="ev-legacy-sent", kind="first", card={"x": 1}, now_ms=STAMP)
-            assert repos.news.settle_delivery(
+            assert legacy_news(repos.news).settle_delivery(
                 event_id="ev-legacy-sent", kind="first", state="sent", receipt=receipt, error_code=None, now_ms=STAMP
             )
     finally:
         conn.close()
-    provider = Provider()
-    rig = Rig(provider, clock=clock)
-    stop = asyncio.Event()
-
-    async def run_once() -> None:
-        task = asyncio.create_task(rig.loop.run(stop_event=stop))
-        await asyncio.sleep(0.2)
-        stop.set()
-        await task
-
-    asyncio.run(run_once())
-
-    assert provider.sent == []
-    assert sql("SELECT kind, state, error_code FROM news_delivery_queue WHERE event_id = %s", (EVENT,)) == [
-        {"kind": "first", "state": "dead", "error_code": LEGACY_INTENT_RETIRED}
-    ]
-    assert sql("SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (EVENT,))[0]["n"] == 0
     # A settled legacy card keeps its edit reconciliation, keyed by its legacy intent id.
     legacy = legacy_intent_id("ev-legacy-sent", "first")
     conn = connect_postgres_test(read_only=False)

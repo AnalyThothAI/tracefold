@@ -515,6 +515,9 @@ class NewsNotificationPlanData(ExactApiSchema):
     key: bool = False
     update_ref: str
     reader_revision: str
+    decision_ref: str | None = None
+    assessment_status: Literal["available", "unavailable", "skipped"] = "skipped"
+    assessment_error_code: str | None = None
     claim_decisions: list[NewsClaimDecisionData] = Field(default_factory=list)
 
 

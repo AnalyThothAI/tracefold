@@ -22,6 +22,7 @@ from tests.postgres_test_utils import connect_postgres_test, prepare_test_migrat
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
 from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.journal import (
     ObservationFactory,
@@ -51,7 +52,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260927_0406"
+HEAD = "20260927_0407"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -519,7 +520,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="execution_hard_cut_retirement_forward_only"):
+    with pytest.raises(RuntimeError, match="news_notification_decisions_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     command.stamp(config, "20260927_0405")
@@ -2828,7 +2829,7 @@ def _persist_pre_v3_verdict(
         }
     )
     runtime_manifest_sha = "b" * 64
-    assert repos.news.insert_verdict(
+    assert legacy_news(repos.news).insert_verdict(
         event_id=event_id,
         stage="triage",
         policy_version=policy_version,
@@ -3418,9 +3419,9 @@ def test_event_update_cut_keys_every_delivery_by_its_legacy_intent_without_resen
             assert after[kind]["intent_id"] == legacy_intent_id("ev-legacy", kind)
             assert {key: after[kind][key] for key in row} == row
             assert after[kind]["body"] is after[kind]["payload_sha256"] is after[kind]["claim_refs"] is None
-        queued = conn.execute("SELECT intent_id, state, attempts FROM news_delivery_queue").fetchone()
+        queued = conn.execute("SELECT intent_id, state, attempts, error_code FROM news_delivery_queue").fetchone()
         assert queued["intent_id"] == legacy_intent_id("ev-legacy", "followup")
-        assert (queued["state"], queued["attempts"]) == ("pending", 1)
+        assert (queued["state"], queued["attempts"], queued["error_code"]) == ("dead", 1, "legacy_intent_retired")
 
         # A legacy kind cannot be written under any other identity.
         with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():

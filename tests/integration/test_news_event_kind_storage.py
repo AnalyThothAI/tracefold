@@ -8,6 +8,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.liquidations import parse_liquidation
@@ -138,7 +139,7 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
         "told": [],
         "told_count": 0,
     }
-    news.insert_verdict(
+    legacy_news(news).insert_verdict(
         event_id=event_id,
         stage="triage",
         policy_version=LEGACY_TRIAGE_POLICY_VERSION,
@@ -499,8 +500,8 @@ def test_terminal_delivery_without_a_verdict_is_held_in_both_row_and_tab_partiti
     with repos.transaction():
         _item(news, "terminal-item")
         _event(news, "terminal-event", "terminal-item", "news")
-        assert news.begin_delivery(event_id="terminal-event", kind="first", card={}, now_ms=NOW) == "new"
-        assert news.settle_delivery(
+        assert legacy_news(news).begin_delivery(event_id="terminal-event", kind="first", card={}, now_ms=NOW) == "new"
+        assert legacy_news(news).settle_delivery(
             event_id="terminal-event",
             kind="first",
             state="terminal",

@@ -47,6 +47,12 @@ class IntentLease(Exact):
     card: FrozenCard | None = None
 
 
+class PlanCommit(Exact):
+    recorded: bool
+    effective_plan: NotificationPlan | None = None
+    lease: IntentLease | None = None
+
+
 class SendOutcome(Exact):
     state: Literal["sent", "not_sent", "ambiguous"]
     payload_sha256: str
@@ -130,8 +136,8 @@ class NewsStore(Protocol):
         """
         ...
 
-    async def atomic_record_plan(self, plan: NotificationPlan) -> IntentLease | None:
-        """Check head/reader versions; persist the plan and its claim decisions; reserve an intent.
+    async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
+        """Check head/reader versions; persist or reuse an immutable decision; reserve an intent.
 
         Every claim_decisions row is persisted with its reason, so the Console can
         show why a claim was or was not notified. A no_notification plan clears
@@ -141,9 +147,13 @@ class NewsStore(Protocol):
         bounded work policy. A notify result gets one stable intent/queue row;
         deferred claims remain pending even if other selected claims were
         reserved successfully. A concurrent active lease, version race, or already
-        sending/sent/ambiguous identity returns None without resetting it.
+        sending/sent/ambiguous identity returns a recorded result without a lease.
         """
         ...
+
+    async def lookup_notification_decision(
+        self, event_id: str, channel: str, input_digest: str
+    ) -> NotificationPlan | None: ...
 
     async def save_card(self, lease: IntentLease, card: FrozenCard) -> FrozenCard:
         """Fenced insert-only payload; an existing frozen payload wins."""

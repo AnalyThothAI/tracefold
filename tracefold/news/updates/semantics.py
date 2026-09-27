@@ -29,7 +29,6 @@ from .contracts import (
 )
 from .identity import canonical_json, digest, identity
 from .judgment import (
-    CLAIM_READING_TASKS,
     MAX_QUESTIONS_PER_REQUEST,
     Answer,
     Budget,
@@ -37,15 +36,14 @@ from .judgment import (
     NewsJudgments,
     ProviderUnavailable,
     Question,
-    Task,
 )
-from .topics import CODEBOOK, project_topics
+from .topics import CODEBOOK
 
 
 class ClaimExtractor(Protocol):
     identity: str
 
-    async def extract(self, source: FrozenInput, *, extract_only: bool) -> Extraction:
+    async def extract(self, source: FrozenInput) -> Extraction:
         """Open claim extraction. The caller bounds the call with its own asyncio.timeout."""
         ...
 
@@ -202,7 +200,7 @@ class SemanticAnalyzer:
 
     async def extract(self, source: FrozenInput, budget: Budget) -> Extraction:
         async with asyncio.timeout(budget.remaining()):
-            result = await self.extractor.extract(source, extract_only=self.judgments.native is not None)
+            result = await self.extractor.extract(source)
         validate_extraction(source, result)
         return result
 
@@ -224,9 +222,6 @@ class SemanticAnalyzer:
 
         validate_extraction(source, extracted)
         result = extracted
-        if self.judgments.native is not None and not rebase_only:
-            result = await self._claim_readings(source, result, budget)
-            result = await self._topics(result, budget)
         if not rebase_only:
             result = await self._clarify_modes(source, result, budget)
         result = await self._relations(source, result, budget, final_attempt=final_attempt)
@@ -262,51 +257,6 @@ class SemanticAnalyzer:
                 claims.append(claim)
         # Unknown/unavailable is settled content uncertainty, not a new retry lifecycle.
         return _replace(extraction, claims=tuple(claims))
-
-    async def _claim_readings(self, source: FrozenInput, extraction: Extraction, budget: Budget) -> Extraction:
-        """The native backend owns mode, phase and content kind for each claim."""
-
-        # The frozen evidence is shared context; each item carries only its own claim.
-        context = canonical_json({"evidence": source.evidence})
-        items = tuple(
-            Question(item_id=claim.slot, payload_json=canonical_json({"claim": claim})) for claim in extraction.claims
-        )
-        readings: dict[Task, dict[str, Answer]] = {}
-        for task in CLAIM_READING_TASKS:
-            answers = await self.judgments.judge(task, items, budget, context_json=context)
-            readings[task] = {answer.item_id: answer for answer in answers}
-        updated = []
-        for claim in extraction.claims:
-            mode = readings["mode"][claim.slot]
-            phase = readings["phase"][claim.slot]
-            content_kind = readings["content_kind"][claim.slot]
-            if mode.status == "unavailable":
-                raise ProviderUnavailable("news_required_claim_mode_unavailable")
-            values = claim.fields.model_dump(mode="json")
-            values["mode"] = mode.value
-            if phase.value == "not_applicable":
-                values["phase"] = None
-            else:
-                values["phase"] = phase.value or "unknown"
-            # An unavailable content reading keeps the extractor's own; it never blocks adoption.
-            if content_kind.status == "available":
-                values["content_kind"] = content_kind.value
-            updated.append(DraftClaim.model_validate({**claim.model_dump(mode="json"), "fields": values}))
-        return _replace(extraction, claims=tuple(updated))
-
-    async def _topics(self, extraction: Extraction, budget: Budget) -> Extraction:
-        # Retain each extraction's topic contribution on its claims. The native codebook is
-        # still asked once for the new material, never again for accumulated Event history.
-        items = tuple(
-            Question(item_id=code, payload_json=canonical_json({"topic": label})) for code, label in self.topics
-        )
-        answers = await self.judgments.judge(
-            "topic", items, budget, context_json=canonical_json({"claims": extraction.claims})
-        )
-        topics = project_topics(answers, self.topics)
-        return _replace(
-            extraction, claims=tuple(claim.model_copy(update={"topics": topics}) for claim in extraction.claims)
-        )
 
     async def _relations(
         self, source: FrozenInput, extraction: Extraction, budget: Budget, *, final_attempt: bool

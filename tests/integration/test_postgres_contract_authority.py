@@ -11,7 +11,19 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_legacy import legacy_editorial, legacy_taxonomy
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TriageVerdict
-from tracefold.news.review.desk import _V8_NO_TAXONOMY, EventRubricSubmission
+from tracefold.news.review.desk import EventRubricSubmission
+
+# Frozen v8 historical row shape. The current ReviewDesk no longer writes this retired taxonomy.
+_HISTORICAL_V8_TAXONOMY: Final[dict[str, Any]] = {
+    "taxonomy": None,
+    "taxonomy_review": {
+        "label_source": "human",
+        "draft_author": "",
+        "review_role": "primary",
+        "adjudicates_review_id": "",
+        "draft_taxonomy": None,
+    },
+}
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -122,16 +134,16 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
             expected=expected,
             note=note,
         ).model_dump(mode="json")
-        | _V8_NO_TAXONOMY
+        | _HISTORICAL_V8_TAXONOMY
     )
 
 
 def _review_row_accepted_by_python(payload: dict[str, Any]) -> bool:
-    """The ReviewDesk writes the submission plus the two constant `news_review_v8` taxonomy keys (#706)."""
+    """The old ReviewDesk wrote a v8 submission plus two required taxonomy placeholders."""
 
-    if any(key not in payload or payload[key] != value for key, value in _V8_NO_TAXONOMY.items()):
+    if any(key not in payload or payload[key] != value for key, value in _HISTORICAL_V8_TAXONOMY.items()):
         return False
-    submission = {key: value for key, value in payload.items() if key not in _V8_NO_TAXONOMY}
+    submission = {key: value for key, value in payload.items() if key not in _HISTORICAL_V8_TAXONOMY}
     return _python_persisted_form_accepts(EventRubricSubmission, submission)
 
 

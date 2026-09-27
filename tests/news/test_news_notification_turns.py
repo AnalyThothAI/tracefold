@@ -24,15 +24,15 @@ from tracefold.news.updates.notification import (
     NotificationPlan,
     ReaderSnapshot,
 )
-from tracefold.news.updates.ports import IntentLease, NotificationSnapshot, SendOutcome
+from tracefold.news.updates.ports import IntentLease, NotificationSnapshot, PlanCommit, SendOutcome
 from tracefold.news.updates.service import Notifications
 
 
 def _plan(update: EventUpdate, *, notify: bool = True) -> NotificationPlan:
     decision = (
-        ClaimDecision(claim_ref=update.claims[0].ref, decision="notify", reason="actionable_content")
+        ClaimDecision(claim_ref=update.claims[0].ref, decision="notify", reason="editor_notify")
         if notify
-        else ClaimDecision(claim_ref=update.claims[0].ref, decision="not_notified", reason="mode_commentary")
+        else ClaimDecision(claim_ref=update.claims[0].ref, decision="not_notified", reason="editor_feed_only")
     )
     return NotificationPlan(
         action="notify" if notify else "no_notification",
@@ -61,11 +61,18 @@ class Store:
     async def defer_notification(self, event_id: str, channel: str, expected_content_revision: str) -> None:
         self.calls.append(("defer_notification", (event_id, expected_content_revision)))
 
-    async def atomic_record_plan(self, plan: NotificationPlan) -> IntentLease | None:
+    async def lookup_notification_decision(self, event_id: str, channel: str, input_digest: str):
+        return None
+
+    async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
         self.calls.append(("record_plan", plan.action))
         if plan.action != "notify":
-            return None
-        return IntentLease(intent_id=plan.intent_id, lease_token="lease", plan=plan, card=self.card)
+            return PlanCommit(recorded=True, effective_plan=plan)
+        return PlanCommit(
+            recorded=True,
+            effective_plan=plan,
+            lease=IntentLease(intent_id=plan.intent_id, lease_token="lease", plan=plan, card=self.card),
+        )
 
     async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None:
         self.calls.append(("card_failure", error_code))
@@ -91,7 +98,7 @@ class Planner:
         self.error = error
         self.delay = delay
 
-    async def plan(self, update: EventUpdate, reader: ReaderSnapshot, budget: Budget, *, now_ms: int):
+    async def plan(self, update: EventUpdate, reader: ReaderSnapshot, budget: Budget, *, now_ms: int, reuse=None):
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.error is not None:

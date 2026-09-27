@@ -134,6 +134,9 @@ def _summary(conn: Any) -> dict[str, Any]:
                      AS evidence_sha256,
                    (SELECT count(*) FROM news_deliveries WHERE event_id = %s AND state = 'terminal')
                      AS delivery_rows,
+                   (SELECT count(*) FROM news_event_updates WHERE event_id = %s) AS update_rows,
+                   (SELECT count(*) FROM news_notification_decisions WHERE event_id = %s)
+                     AS decision_rows,
                    (SELECT count(*) FROM trading_cases
                      WHERE case_id = %s AND state = 'SIGNAL_EMITTED') AS case_rows,
                    (SELECT max(manifest_sha256) FROM trading_cases WHERE case_id = %s) AS case_manifest_sha256,
@@ -145,6 +148,8 @@ def _summary(conn: Any) -> dict[str, Any]:
                      WHERE event_id = %s AND payload ->> 'event_id' = event_id) AS observation_rows
             """,
             (
+                _CURRENT_EVENT_ID,
+                _CURRENT_EVENT_ID,
                 _CURRENT_EVENT_ID,
                 _CURRENT_EVENT_ID,
                 _CURRENT_EVENT_ID,
@@ -164,6 +169,8 @@ def _summary(conn: Any) -> dict[str, Any]:
         "retired_compatibility_objects",
         "evidence_rows",
         "delivery_rows",
+        "update_rows",
+        "decision_rows",
         "case_rows",
         "signal_rows",
         "command_rows",
@@ -176,7 +183,15 @@ def _smoke(conn: Any) -> dict[str, bool]:
     summary = _summary(conn)
     repos = repositories_for_connection(conn)
     evidence = repos.news.latest_evidence_snapshot(_CURRENT_EVENT_ID)
-    delivery = repos.news.delivery(event_id=_CURRENT_EVENT_ID, kind="first")
+    delivery = conn.execute(
+        """SELECT d.state,d.kind,d.decision_ref,n.plan,u.document
+             FROM news_deliveries d
+             JOIN news_notification_decisions n ON n.decision_ref=d.decision_ref
+             JOIN news_event_updates u ON u.event_id=n.event_id
+              AND n.update_ref=public.news_identity('update',jsonb_build_array(u.event_id,u.content_revision))
+            WHERE d.event_id=%s AND d.kind='update'""",
+        (_CURRENT_EVENT_ID,),
+    ).fetchone()
     case = repos.trading.restore_drill_case(case_id=_CASE_ID)
     commands = materialize_operator_intents(
         repos.trading.unresolved_operator_intents(
@@ -190,7 +205,11 @@ def _smoke(conn: Any) -> dict[str, bool]:
         "migration_head": summary["migration_head"] == latest_migration_version(),
         "news_current_fact": repos.news.event_card(_CURRENT_EVENT_ID) is not None,
         "news_evidence_identity": evidence is not None and evidence["evidence_sha256"] == summary["evidence_sha256"],
-        "news_delivery_terminal": delivery is not None and delivery["state"] == "terminal",
+        "news_delivery_terminal": delivery is not None
+        and delivery["state"] == "terminal"
+        and delivery["plan"]["action"] == "notify"
+        and delivery["document"]["event_id"] == _CURRENT_EVENT_ID
+        and summary["update_rows"] == summary["decision_rows"] == summary["delivery_rows"] == 1,
         "pre_genesis_compatibility_absent": summary["retired_compatibility_objects"] == 0,
         "trading_case_fact": case is not None
         and case["state"] == "SIGNAL_EMITTED"

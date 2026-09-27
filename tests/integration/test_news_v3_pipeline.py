@@ -17,6 +17,7 @@ from tests.support.news_legacy import (
     legacy_degraded_judgment,
     legacy_judgment,
 )
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
@@ -54,6 +55,10 @@ NEWS_TABLES = {
     "news_event_update_heads",
     "news_judgment_cache",
     "news_notification_work",
+    "news_notification_decisions",
+    "news_notification_feedback",
+    "news_notification_external_feedback",
+    "news_notification_review_tasks_v1",
     "news_reviews",
     "news_external_miss_snapshots",
     "news_learning_artifacts",
@@ -220,7 +225,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         "told_count": 0,
     }
     with repos.transaction():
-        inserted = repos.news.insert_verdict(
+        inserted = legacy_news(repos.news).insert_verdict(
             event_id=row["event_id"],
             stage="triage",
             policy_version=LEGACY_TRIAGE_POLICY_VERSION,
@@ -246,7 +251,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             now_ms=now_ms,
         )
         assert inserted is True
-        again = repos.news.insert_verdict(
+        again = legacy_news(repos.news).insert_verdict(
             event_id=row["event_id"],
             stage="triage",
             policy_version=LEGACY_TRIAGE_POLICY_VERSION,
@@ -285,7 +290,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     later = now_ms + 1000
     with repos.transaction():
         assert (
-            repos.news.begin_delivery(
+            legacy_news(repos.news).begin_delivery(
                 event_id=row["event_id"],
                 kind="first",
                 card={},
@@ -294,7 +299,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             )
             == "new"
         )
-        assert repos.news.settle_delivery(
+        assert legacy_news(repos.news).settle_delivery(
             event_id=row["event_id"],
             kind="first",
             state="terminal",
@@ -308,7 +313,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     with repos.transaction():
         conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
         assert (
-            repos.news.begin_delivery(
+            legacy_news(repos.news).begin_delivery(
                 event_id=row["event_id"],
                 kind="first",
                 card={},
@@ -317,7 +322,7 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             )
             == "new"
         )
-        assert repos.news.settle_delivery(
+        assert legacy_news(repos.news).settle_delivery(
             event_id=row["event_id"],
             kind="first",
             state="sent",
@@ -362,9 +367,15 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     }
     updated_receipt = {**initial_receipt, "edited_at_ms": 2_500}
     with repos.transaction():
-        assert repos.news.begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=1_000) == "new"
-        assert repos.news.begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=1_000) == "sending"
-        assert repos.news.settle_delivery(
+        assert (
+            legacy_news(repos.news).begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=1_000)
+            == "new"
+        )
+        assert (
+            legacy_news(repos.news).begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=1_000)
+            == "sending"
+        )
+        assert legacy_news(repos.news).settle_delivery(
             event_id=event_id,
             kind="first",
             state="sent",
@@ -384,7 +395,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
             receipt=initial_receipt,
             now_ms=2_200,
         )
-        editing = repos.news.delivery(event_id=event_id, kind="first")
+        editing = legacy_news(repos.news).delivery(event_id=event_id, kind="first")
         assert editing is not None
         assert editing["card"] == {"x": 1}
         assert editing["pending_card"] == {"x": 2, "market_data_state": "ready"}
@@ -409,8 +420,8 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
             receipt=updated_receipt,
             now_ms=2_500,
         )
-        assert repos.news.begin_delivery(event_id=event_id, kind="first", card={}, now_ms=3_000) == "sent"
-    delivery = repos.news.delivery(event_id=event_id, kind="first")
+        assert legacy_news(repos.news).begin_delivery(event_id=event_id, kind="first", card={}, now_ms=3_000) == "sent"
+    delivery = legacy_news(repos.news).delivery(event_id=event_id, kind="first")
     assert delivery is not None
     assert delivery["card"] == {"x": 2, "market_data_state": "ready"}
     assert delivery["receipt"] == updated_receipt
@@ -425,7 +436,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
         )
         # A new process owns no edit task yet, so even a just-written inherited intent is unambiguously interrupted.
         assert repos.news.terminalize_interrupted_delivery_edits(now_ms=3_001) == 1
-    interrupted = repos.news.delivery(event_id=event_id, kind="first")
+    interrupted = legacy_news(repos.news).delivery(event_id=event_id, kind="first")
     assert interrupted is not None
     assert interrupted["card"] == {"x": 2, "market_data_state": "ready"}
     assert interrupted["pending_card"] == {"x": 3, "market_data_state": "newer"}
@@ -459,7 +470,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
             now_ms=5_000,
         )
         assert repos.news.terminalize_stale_delivery_edits(now_ms=65_001) == 1
-    stale = repos.news.delivery(event_id=event_id, kind="first")
+    stale = legacy_news(repos.news).delivery(event_id=event_id, kind="first")
     assert stale is not None
     assert stale["edit_state"] == "ambiguous"
     assert stale["edit_error_code"] == "edit_settlement_unavailable"
@@ -574,7 +585,7 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
     }
     degraded_card = {"header": {"title": {"tag": "plain_text", "content": "实际降级卡片"}}}
     with repos.transaction():
-        assert repos.news.insert_verdict(
+        assert legacy_news(repos.news).insert_verdict(
             event_id=sent_event,
             stage="triage",
             policy_version=LEGACY_TRIAGE_POLICY_VERSION,
@@ -599,7 +610,10 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
             focus_fact_id=str(evidence["focus_fact_id"]),
             now_ms=10_000,
         )
-        assert repos.news.begin_delivery(event_id=sent_event, kind="first", card=degraded_card, now_ms=10_100) == "new"
+        assert (
+            legacy_news(repos.news).begin_delivery(event_id=sent_event, kind="first", card=degraded_card, now_ms=10_100)
+            == "new"
+        )
     # A sending reservation is not a receipt.
     assert sent_event not in {
         row.event_id
@@ -608,10 +622,13 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         ).recent_seen_rows
     }
     with repos.transaction():
-        assert repos.news.settle_delivery(
+        assert legacy_news(repos.news).settle_delivery(
             event_id=sent_event, kind="first", state="sent", receipt={"ok": True}, error_code=None, now_ms=10_200
         )
-        assert repos.news.begin_delivery(event_id=ambiguous_event, kind="first", card={}, now_ms=20_000) == "new"
+        assert (
+            legacy_news(repos.news).begin_delivery(event_id=ambiguous_event, kind="first", card={}, now_ms=20_000)
+            == "new"
+        )
         assert repos.news.terminalize_interrupted_deliveries(now_ms=81_001) == 1
 
     told = [
@@ -859,7 +876,7 @@ def _insert_test_verdict(
         "told": [],
         "told_count": 0,
     }
-    assert repos.news.insert_verdict(
+    assert legacy_news(repos.news).insert_verdict(
         event_id=event_id,
         stage="triage",
         policy_version=LEGACY_TRIAGE_POLICY_VERSION,
@@ -1617,10 +1634,8 @@ def test_delivery_timing_uses_original_tweet_time_and_first_local_observation(co
     conn.commit()
 
 
-def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn) -> None:
-    """An ungrounded post wearing a weak law-firm template phrase opens a suppressed Event; the same headline arriving
-    from a news source with score 85 and a grade-A tag re-gates the Event to candidate and reports it as publishable
-    once. (Until #504 D7 the suppressed seed was the Gate low-signal switch, which no longer exists.)"""
+def test_a_stronger_member_updates_a_candidate_without_republishing(conn) -> None:
+    """A later grounded source enriches the existing Event without reopening its candidate admission."""
 
     repos = repositories_for_connection(conn)
     text = "SafePal faces a class action over a security breach exposing personal data of nearly 40,000 customers"
@@ -1664,7 +1679,7 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
             watchlist_symbols=frozenset(),
             now_ms=now_ms,
         )
-        assert opened.event_created and opened.admission == "suppressed_pr_template"
+        assert opened.event_created and opened.admission == "candidate"
         first_evidence = repos.news.latest_evidence_snapshot(opened.event_id)
         assert first_evidence is not None and int(first_evidence["evidence_version"]) == 1
         joined = admit_item(
@@ -1677,7 +1692,7 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
             now_ms=now_ms,
         )
         assert joined.event_id == opened.event_id and joined.match_kind == "exact"
-        assert joined.admission == "candidate" and joined.event_created is True  # publish once, like a new candidate
+        assert joined.admission == "candidate" and joined.event_created is False
         again = admit_item(
             repos,
             event=second,
@@ -1700,10 +1715,10 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
         "SELECT admission, grounded_assets, member_count, provider_score_max FROM news_events WHERE event_id = %s",
         (opened.event_id,),
     ).fetchone()
-    assert row["admission"] == "candidate" and list(row["grounded_assets"]) == ["SFP"]
+    assert row["admission"] == "candidate" and list(row["grounded_assets"]) == []
     assert row["member_count"] == 2 and float(row["provider_score_max"]) == 85.0
     assets = conn.execute("SELECT symbol FROM news_event_assets WHERE event_id = %s", (opened.event_id,)).fetchall()
-    assert {r["symbol"] for r in assets} == {"SFP"}
+    assert {r["symbol"] for r in assets} == set()
     conn.commit()
 
 
@@ -1766,20 +1781,17 @@ def test_explain_event_prints_the_chain_with_a_one_line_outcome(conn) -> None:
     with_verdict = conn.execute(
         "SELECT event_id FROM news_verdicts WHERE stage = 'triage' ORDER BY created_at_ms LIMIT 1"
     ).fetchone()
-    suppressed = conn.execute(
-        "SELECT event_id FROM news_events WHERE admission = 'suppressed_pr_template' ORDER BY opened_at_ms LIMIT 1"
-    ).fetchone()
-    assert with_verdict is not None and suppressed is not None
+    assert with_verdict is not None
     explained = explain_event(repos, with_verdict["event_id"])
     assert explained is not None
     stages = [step["stage"] for step in explained["chain"]]
     assert stages[:4] == ["item", "gate", "triage", "decide"]
     assert explained["chain"][0]["provider_coins"] is not None
     assert explained["outcome"]
-    held = explain_event(repos, suppressed["event_id"])
-    assert held is not None and held["outcome"] == "未送审：律所推广模板，规则直接拦截"
-    assert held["outcome_kind"] == "held_gate" and [s["stage"] for s in held["timeline"]] == ["received", "gate"]
-    assert [step["stage"] for step in held["chain"]] == ["item", "gate"]
+    assert (
+        conn.execute("SELECT count(*) AS n FROM news_events WHERE admission = 'suppressed_pr_template'").fetchone()["n"]
+        == 0
+    )
     assert explain_event(repos, "does-not-exist") is None
 
 
@@ -1865,7 +1877,7 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
                 now_ms=now_ms - 10 * 60_000 + offset,
             )
             assert (
-                repos.news.begin_delivery(
+                legacy_news(repos.news).begin_delivery(
                     event_id=event_id,
                     kind="first",
                     card={"event_id": event_id},
@@ -1873,7 +1885,7 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
                 )
                 == "new"
             )
-            assert repos.news.settle_delivery(
+            assert legacy_news(repos.news).settle_delivery(
                 event_id=event_id,
                 kind="first",
                 state="sent",
@@ -2160,7 +2172,7 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
     }
 
     def _insert(payload: dict[str, Any]) -> None:
-        repos.news.insert_verdict(
+        legacy_news(repos.news).insert_verdict(
             event_id=event_id,
             stage="triage",
             policy_version=LEGACY_TRIAGE_POLICY_VERSION,

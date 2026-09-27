@@ -6,6 +6,7 @@ from contextlib import closing
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.evidence import query_for, text_sha
 from tracefold.news.opennews import parse_opennews_message
@@ -101,7 +102,7 @@ def test_delivery_history_uses_sent_context_not_mutable_verdict_or_event(postgre
             policy_version="bound-policy",
         )
         assert (
-            repos.news.begin_delivery(
+            legacy_news(repos.news).begin_delivery(
                 event_id=event_id, kind="first", card={}, now_ms=1500, history_context_json=json.dumps(history)
             )
             == "new"

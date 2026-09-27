@@ -265,15 +265,27 @@ class Notifications:
             # The stage deadline surfaces here as TimeoutError, so an expired plan is recorded like any
             # other failed one instead of leaving its work due again at once.
             async with asyncio.timeout(budget.remaining()):
-                plan = await self.planner.plan(snapshot.update, snapshot.reader, budget, now_ms=self.clock())
+                plan = await self.planner.plan(
+                    snapshot.update,
+                    snapshot.reader,
+                    budget,
+                    now_ms=self.clock(),
+                    reuse=lambda fingerprint: self.store.lookup_notification_decision(
+                        snapshot.update.event_id, channel, fingerprint
+                    ),
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
             await self.store.defer_notification(event_id, channel, snapshot.update.content_revision)
             raise
-        lease = await self.store.atomic_record_plan(plan)
+        committed = await self.store.atomic_record_plan(plan)
+        if not committed.recorded or committed.effective_plan is None:
+            return NotificationTurn("preflight_changed", update=snapshot.update)
+        plan = committed.effective_plan
         if plan.action != "notify":
             return NotificationTurn(plan.action, update=snapshot.update)
+        lease = committed.lease
         if lease is None:
             return NotificationTurn("deferred_or_already_owned", update=snapshot.update)
         card = lease.card

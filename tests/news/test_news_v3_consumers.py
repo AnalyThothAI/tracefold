@@ -744,7 +744,6 @@ class ScriptedNotifications:
 def _delivery_news(**overrides: Any) -> RecordingNews:
     responses: dict[str, Any] = {
         "terminalize_interrupted_deliveries": 0,
-        "retire_legacy_delivery_intents": 0,
         "terminalize_interrupted_delivery_edits": 0,
         "terminalize_stale_delivery_edits": 0,
         "begin_delivery_edit": True,
@@ -1468,11 +1467,10 @@ def test_a_card_about_several_instruments_gets_no_catalogue_check() -> None:
     assert verifier.calls == []
 
 
-def test_delivery_retires_legacy_intents_and_reconciles_before_it_claims() -> None:
+def test_delivery_reconciles_edits_before_it_claims() -> None:
     order: list[str] = []
     news = _delivery_news(
         terminalize_interrupted_deliveries=lambda **_kwargs: order.append("interrupted-sends") or 0,
-        retire_legacy_delivery_intents=lambda **_kwargs: order.append("retire-legacy") or 2,
         terminalize_interrupted_delivery_edits=lambda **_kwargs: order.append("interrupted-edits") or 0,
     )
     stop_event = asyncio.Event()
@@ -1485,7 +1483,7 @@ def test_delivery_retires_legacy_intents_and_reconciles_before_it_claims() -> No
 
     asyncio.run(_deliverer(news, notifications=StopAfterPoll(), sender=RecordingSender()).run(stop_event=stop_event))
 
-    assert order[:4] == ["interrupted-sends", "retire-legacy", "interrupted-edits", "poll"]
+    assert order[:3] == ["interrupted-sends", "interrupted-edits", "poll"]
 
 
 def test_delivery_refuses_to_claim_when_startup_edit_reconciliation_is_unavailable() -> None:

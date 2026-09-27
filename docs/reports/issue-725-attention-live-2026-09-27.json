@@ -1,0 +1,147 @@
+{
+  "assessment_identity": "news_attention:1f2ce5d175c287f35a2117440b0d70df6ee55a8ead483d57894a6e58b6347706",
+  "cases": [
+    {
+      "case_id": "official-policy",
+      "decisions": [
+        {
+          "claim_ref": "cl:00f61c8b003b0a7e2d6e8fc6df4ef0e04ab9cabdca83bf15e6241d5d08e9ad8f",
+          "disposition": "key",
+          "reason_zh": "官方宣布对钢铁进口加征25%关税，属于重大贸易政策调整，直接影响供应链成本及市场情绪，具有显著的市场关注度。"
+        }
+      ],
+      "elapsed_ms": 7576,
+      "error_type": null,
+      "event_id": "eval-official-policy",
+      "labels": {
+        "cl:00f61c8b003b0a7e2d6e8fc6df4ef0e04ab9cabdca83bf15e6241d5d08e9ad8f": "should_push"
+      },
+      "noise_notified": 0,
+      "physical_calls": 1,
+      "recording_origin": null,
+      "useful_held": 0
+    },
+    {
+      "case_id": "product-release",
+      "decisions": [
+        {
+          "claim_ref": "cl:25756d76ebac69382d6d53dabc17b7f3ad8b38a9cd665d81554c2e649de4938b",
+          "disposition": "notify",
+          "reason_zh": "ACME推出新的付费API并降低了开发者的月度费用，这属于具体的产品发布和商业条款变更，对市场和投资者具有实质性信息价值。"
+        }
+      ],
+      "elapsed_ms": 3662,
+      "error_type": null,
+      "event_id": "eval-product-release",
+      "labels": {
+        "cl:25756d76ebac69382d6d53dabc17b7f3ad8b38a9cd665d81554c2e649de4938b": "should_push"
+      },
+      "noise_notified": 0,
+      "physical_calls": 1,
+      "recording_origin": null,
+      "useful_held": 0
+    },
+    {
+      "case_id": "proposed-project",
+      "decisions": [
+        {
+          "claim_ref": "cl:61fa7c77bfc4e8acc8a6bb1b4a31b00bd3ecdfb54d32b8fff81212cf7f5bd394",
+          "disposition": "notify",
+          "reason_zh": "项目团队提出测试网桥接方案供开发者审查，属于具体的技术进展与开发阶段更新，具有实质性信息价值。"
+        }
+      ],
+      "elapsed_ms": 1708,
+      "error_type": null,
+      "event_id": "eval-proposed-project",
+      "labels": {
+        "cl:61fa7c77bfc4e8acc8a6bb1b4a31b00bd3ecdfb54d32b8fff81212cf7f5bd394": "uncertain"
+      },
+      "noise_notified": 0,
+      "physical_calls": 1,
+      "recording_origin": null,
+      "useful_held": 0
+    },
+    {
+      "case_id": "routine-promo",
+      "decisions": [
+        {
+          "claim_ref": "cl:3f8e9e8f2a89c48f62776505046d4e1a2760bbc182824298ae6e8420d7ffb7f1",
+          "disposition": "feed_only",
+          "reason_zh": "该声明仅为ACME的赠品推广活动，明确未包含任何产品变更或实质性市场信息，属于无实质更新的例行宣传噪音。"
+        }
+      ],
+      "elapsed_ms": 1996,
+      "error_type": null,
+      "event_id": "eval-routine-promo",
+      "labels": {
+        "cl:3f8e9e8f2a89c48f62776505046d4e1a2760bbc182824298ae6e8420d7ffb7f1": "should_hold"
+      },
+      "noise_notified": 0,
+      "physical_calls": 1,
+      "recording_origin": null,
+      "useful_held": 0
+    },
+    {
+      "case_id": "empty-event-promo",
+      "decisions": [
+        {
+          "claim_ref": "cl:eb1b2835d9784414a8ed4e3ef6e94508e4b7ca49f8c0b9a918e6da0d72d57897",
+          "disposition": "feed_only",
+          "reason_zh": "仅为无新议程或公告的例行社区聊天邀请，属于空泛推广，无实质信息更新。"
+        }
+      ],
+      "elapsed_ms": 1639,
+      "error_type": null,
+      "event_id": "eval-empty-event-promo",
+      "labels": {
+        "cl:eb1b2835d9784414a8ed4e3ef6e94508e4b7ca49f8c0b9a918e6da0d72d57897": "should_hold"
+      },
+      "noise_notified": 0,
+      "physical_calls": 1,
+      "recording_origin": null,
+      "useful_held": 0
+    },
+    {
+      "case_id": "legal-fact-and-solicitation",
+      "decisions": [
+        {
+          "claim_ref": "cl:d2da01cba1123553a5de7c3ee3294251d1ca763a026af2a8d80159e4a2529d4f",
+          "disposition": "notify",
+          "reason_zh": "涉及ACME的20亿美元证券索赔诉讼属于重大法律事件，虽未裁决但具有实质市场意义，符合常规通知标准。"
+        },
+        {
+          "claim_ref": "cl:7b7f8c085e076c2b33d1e7e4515b03994c6c79d128debfbcae77457c29cf31a7",
+          "disposition": "feed_only",
+          "reason_zh": "律所寻求投资者联系以获取代理资格，属于典型的诉讼营销或招募行为，无新增案件事实，判定为噪音。"
+        }
+      ],
+      "elapsed_ms": 3108,
+      "error_type": null,
+      "event_id": "eval-legal-fact-and-solicitation",
+      "labels": {
+        "cl:7b7f8c085e076c2b33d1e7e4515b03994c6c79d128debfbcae77457c29cf31a7": "should_hold",
+        "cl:d2da01cba1123553a5de7c3ee3294251d1ca763a026af2a8d80159e4a2529d4f": "should_push"
+      },
+      "noise_notified": 0,
+      "physical_calls": 1,
+      "recording_origin": null,
+      "useful_held": 0
+    }
+  ],
+  "mode": "live",
+  "model": "openai/qwen3.8-27b",
+  "schema": "news_attention_eval_v1",
+  "totals": {
+    "cases": 6,
+    "cost_usd": null,
+    "elapsed_ms": 19689,
+    "noise_notified": 0,
+    "physical_calls": 6,
+    "technical_failures": 0,
+    "usage": {
+      "input_tokens": 6813,
+      "output_tokens": 571
+    },
+    "useful_held": 0
+  }
+}

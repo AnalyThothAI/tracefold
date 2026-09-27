@@ -1,0 +1,1060 @@
+{
+  "schema": "news_attention_eval_cases_v1",
+  "cases": [
+    {
+      "case_id": "official-policy",
+      "input_snapshot": {
+        "assessor_identity": "frozen-evaluation",
+        "candidate": {
+          "brief_identity": "editorial_brief:88473f8ccc6d6c3ce85bf583dcefa0821070a8944d95ec688943c797dfe79835",
+          "claims": [
+            {
+              "citations": [
+                {
+                  "quote": "Agency announces a 25% tariff on steel imports effective October 1.",
+                  "ref": "ev:e04348c57890a32d8663ae7b5d1064faaed40eb12b5b55c20cc6abc3d069e58e",
+                  "source": {
+                    "artifact_id": "article-1",
+                    "artifact_revision": "1",
+                    "attribution": "Agency",
+                    "first_available_at_ms": 1790405000001,
+                    "origin_id": null,
+                    "published_at_ms": null,
+                    "publisher_id": "official-policy-source",
+                    "record_id": null,
+                    "revision_sequence": 0,
+                    "source_authority": "issuer_first_party",
+                    "url": null
+                  }
+                }
+              ],
+              "fields": {
+                "action": "announces",
+                "assets": [],
+                "conditions": [],
+                "content_kind": "official_measure",
+                "effective_at": null,
+                "mode": "decision",
+                "object": "steel import tariff",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Agency"
+              },
+              "ref": "cl:00f61c8b003b0a7e2d6e8fc6df4ef0e04ab9cabdca83bf15e6241d5d08e9ad8f",
+              "statement": "Agency announces a 25% tariff on steel imports effective October 1.",
+              "topics": []
+            }
+          ],
+          "watch_symbols": []
+        },
+        "preselection": {},
+        "reader_receipts": [],
+        "update": {
+          "adopted_at_ms": 1790405000010,
+          "changes": [
+            {
+              "current_ref": "cl:00f61c8b003b0a7e2d6e8fc6df4ef0e04ab9cabdca83bf15e6241d5d08e9ad8f",
+              "kind": "new_fact",
+              "previous_content_ref": null,
+              "previous_ref": null,
+              "relation": null
+            }
+          ],
+          "claims": [
+            {
+              "antecedent_refs": [],
+              "citations": [
+                {
+                  "evidence_ref": "ev:e04348c57890a32d8663ae7b5d1064faaed40eb12b5b55c20cc6abc3d069e58e",
+                  "quote": "Agency announces a 25% tariff on steel imports effective October 1."
+                }
+              ],
+              "fields": {
+                "action": "announces",
+                "assets": [],
+                "conditions": [],
+                "content_kind": "official_measure",
+                "effective_at": null,
+                "mode": "decision",
+                "object": "steel import tariff",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Agency"
+              },
+              "first_available_at_ms": 1790405000001,
+              "known_identity": [],
+              "ref": "cl:00f61c8b003b0a7e2d6e8fc6df4ef0e04ab9cabdca83bf15e6241d5d08e9ad8f",
+              "statement": "Agency announces a 25% tariff on steel imports effective October 1.",
+              "topics": []
+            }
+          ],
+          "content_revision": "be9eebcfacfacc3cc20c56dec9beccac807171f4c2452d8aa423785b53bd731b",
+          "content_sha": "b3f318709669694a4a9502acc6ba6541ff9c3566ef214867b20c51cab0423180",
+          "event_id": "eval-official-policy",
+          "evidence": [
+            {
+              "ref": "ev:e04348c57890a32d8663ae7b5d1064faaed40eb12b5b55c20cc6abc3d069e58e",
+              "source": {
+                "artifact_id": "article-1",
+                "artifact_revision": "1",
+                "attribution": "Agency",
+                "first_available_at_ms": 1790405000001,
+                "origin_id": null,
+                "published_at_ms": null,
+                "publisher_id": "official-policy-source",
+                "record_id": null,
+                "revision_sequence": 0,
+                "source_authority": "issuer_first_party",
+                "url": null
+              },
+              "text": "Agency announces a 25% tariff on steel imports effective October 1."
+            }
+          ],
+          "evidence_relations": [
+            {
+              "claim_ref": "cl:00f61c8b003b0a7e2d6e8fc6df4ef0e04ab9cabdca83bf15e6241d5d08e9ad8f",
+              "evidence_ref": "ev:e04348c57890a32d8663ae7b5d1064faaed40eb12b5b55c20cc6abc3d069e58e",
+              "relation": "unresolved"
+            }
+          ],
+          "implications": [],
+          "input_revision": 1,
+          "open_questions": [],
+          "previous_content_revision": null,
+          "retired_claim_refs": [],
+          "schema_version": "news_event_update_v2",
+          "superseded_claim_refs": [],
+          "topics": []
+        }
+      },
+      "recording_origin": "synthetic_notify_all_baseline",
+      "recorded_decisions": [
+        {
+          "claim_ref": "cl:00f61c8b003b0a7e2d6e8fc6df4ef0e04ab9cabdca83bf15e6241d5d08e9ad8f",
+          "decision": "notify",
+          "reason": "editor_notify"
+        }
+      ],
+      "labels": {
+        "cl:00f61c8b003b0a7e2d6e8fc6df4ef0e04ab9cabdca83bf15e6241d5d08e9ad8f": "should_push"
+      }
+    },
+    {
+      "case_id": "product-release",
+      "input_snapshot": {
+        "assessor_identity": "frozen-evaluation",
+        "candidate": {
+          "brief_identity": "editorial_brief:88473f8ccc6d6c3ce85bf583dcefa0821070a8944d95ec688943c797dfe79835",
+          "claims": [
+            {
+              "citations": [
+                {
+                  "quote": "ACME launched a paid API with a lower monthly fee for developers.",
+                  "ref": "ev:8e394c55a847682fd8a6cf0982c7f0752a0f2b52906bed04daaa02595dbc4c79",
+                  "source": {
+                    "artifact_id": "article-1",
+                    "artifact_revision": "1",
+                    "attribution": "Company",
+                    "first_available_at_ms": 1790405000001,
+                    "origin_id": null,
+                    "published_at_ms": null,
+                    "publisher_id": "product-release-source",
+                    "record_id": null,
+                    "revision_sequence": 0,
+                    "source_authority": "issuer_first_party",
+                    "url": null
+                  }
+                }
+              ],
+              "fields": {
+                "action": "launched",
+                "assets": [
+                  {
+                    "market_type": "equity",
+                    "role": "primary",
+                    "symbol": "ACME"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "state_change",
+                "effective_at": null,
+                "mode": "observation",
+                "object": "paid API",
+                "occurred_at": null,
+                "phase": "effective",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "ACME"
+              },
+              "ref": "cl:25756d76ebac69382d6d53dabc17b7f3ad8b38a9cd665d81554c2e649de4938b",
+              "statement": "ACME launched a paid API with a lower monthly fee for developers.",
+              "topics": []
+            }
+          ],
+          "watch_symbols": []
+        },
+        "preselection": {},
+        "reader_receipts": [],
+        "update": {
+          "adopted_at_ms": 1790405000010,
+          "changes": [
+            {
+              "current_ref": "cl:25756d76ebac69382d6d53dabc17b7f3ad8b38a9cd665d81554c2e649de4938b",
+              "kind": "new_fact",
+              "previous_content_ref": null,
+              "previous_ref": null,
+              "relation": null
+            }
+          ],
+          "claims": [
+            {
+              "antecedent_refs": [],
+              "citations": [
+                {
+                  "evidence_ref": "ev:8e394c55a847682fd8a6cf0982c7f0752a0f2b52906bed04daaa02595dbc4c79",
+                  "quote": "ACME launched a paid API with a lower monthly fee for developers."
+                }
+              ],
+              "fields": {
+                "action": "launched",
+                "assets": [
+                  {
+                    "market_type": "equity",
+                    "role": "primary",
+                    "symbol": "ACME"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "state_change",
+                "effective_at": null,
+                "mode": "observation",
+                "object": "paid API",
+                "occurred_at": null,
+                "phase": "effective",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "ACME"
+              },
+              "first_available_at_ms": 1790405000001,
+              "known_identity": [],
+              "ref": "cl:25756d76ebac69382d6d53dabc17b7f3ad8b38a9cd665d81554c2e649de4938b",
+              "statement": "ACME launched a paid API with a lower monthly fee for developers.",
+              "topics": []
+            }
+          ],
+          "content_revision": "6a276064b2abce8984e32a1321aa92304a6d04d1624950f5791e0fc0fbe131db",
+          "content_sha": "e2e9d411763e869f0355f63ed28d516d5508476baf3836e59132060e4bd5606e",
+          "event_id": "eval-product-release",
+          "evidence": [
+            {
+              "ref": "ev:8e394c55a847682fd8a6cf0982c7f0752a0f2b52906bed04daaa02595dbc4c79",
+              "source": {
+                "artifact_id": "article-1",
+                "artifact_revision": "1",
+                "attribution": "Company",
+                "first_available_at_ms": 1790405000001,
+                "origin_id": null,
+                "published_at_ms": null,
+                "publisher_id": "product-release-source",
+                "record_id": null,
+                "revision_sequence": 0,
+                "source_authority": "issuer_first_party",
+                "url": null
+              },
+              "text": "ACME launched a paid API with a lower monthly fee for developers."
+            }
+          ],
+          "evidence_relations": [
+            {
+              "claim_ref": "cl:25756d76ebac69382d6d53dabc17b7f3ad8b38a9cd665d81554c2e649de4938b",
+              "evidence_ref": "ev:8e394c55a847682fd8a6cf0982c7f0752a0f2b52906bed04daaa02595dbc4c79",
+              "relation": "unresolved"
+            }
+          ],
+          "implications": [],
+          "input_revision": 1,
+          "open_questions": [],
+          "previous_content_revision": null,
+          "retired_claim_refs": [],
+          "schema_version": "news_event_update_v2",
+          "superseded_claim_refs": [],
+          "topics": []
+        }
+      },
+      "recording_origin": "synthetic_notify_all_baseline",
+      "recorded_decisions": [
+        {
+          "claim_ref": "cl:25756d76ebac69382d6d53dabc17b7f3ad8b38a9cd665d81554c2e649de4938b",
+          "decision": "notify",
+          "reason": "editor_notify"
+        }
+      ],
+      "labels": {
+        "cl:25756d76ebac69382d6d53dabc17b7f3ad8b38a9cd665d81554c2e649de4938b": "should_push"
+      }
+    },
+    {
+      "case_id": "proposed-project",
+      "input_snapshot": {
+        "assessor_identity": "frozen-evaluation",
+        "candidate": {
+          "brief_identity": "editorial_brief:88473f8ccc6d6c3ce85bf583dcefa0821070a8944d95ec688943c797dfe79835",
+          "claims": [
+            {
+              "citations": [
+                {
+                  "quote": "Project team proposed a testnet bridge for developer review; no launch date is set.",
+                  "ref": "ev:e5fde5917bf8686c246e4da3b5155c872ccb824d585498eb95e3f85c2dd3c639",
+                  "source": {
+                    "artifact_id": "article-1",
+                    "artifact_revision": "1",
+                    "attribution": "Project team",
+                    "first_available_at_ms": 1790405000001,
+                    "origin_id": null,
+                    "published_at_ms": null,
+                    "publisher_id": "proposed-project-source",
+                    "record_id": null,
+                    "revision_sequence": 0,
+                    "source_authority": "issuer_first_party",
+                    "url": null
+                  }
+                }
+              ],
+              "fields": {
+                "action": "proposed",
+                "assets": [
+                  {
+                    "market_type": "crypto",
+                    "role": "primary",
+                    "symbol": "TKN"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "other",
+                "effective_at": null,
+                "mode": "decision",
+                "object": "testnet bridge",
+                "occurred_at": null,
+                "phase": "proposed",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Project team"
+              },
+              "ref": "cl:61fa7c77bfc4e8acc8a6bb1b4a31b00bd3ecdfb54d32b8fff81212cf7f5bd394",
+              "statement": "Project team proposed a testnet bridge for developer review; no launch date is set.",
+              "topics": []
+            }
+          ],
+          "watch_symbols": [
+            "TKN"
+          ]
+        },
+        "preselection": {},
+        "reader_receipts": [],
+        "update": {
+          "adopted_at_ms": 1790405000010,
+          "changes": [
+            {
+              "current_ref": "cl:61fa7c77bfc4e8acc8a6bb1b4a31b00bd3ecdfb54d32b8fff81212cf7f5bd394",
+              "kind": "new_fact",
+              "previous_content_ref": null,
+              "previous_ref": null,
+              "relation": null
+            }
+          ],
+          "claims": [
+            {
+              "antecedent_refs": [],
+              "citations": [
+                {
+                  "evidence_ref": "ev:e5fde5917bf8686c246e4da3b5155c872ccb824d585498eb95e3f85c2dd3c639",
+                  "quote": "Project team proposed a testnet bridge for developer review; no launch date is set."
+                }
+              ],
+              "fields": {
+                "action": "proposed",
+                "assets": [
+                  {
+                    "market_type": "crypto",
+                    "role": "primary",
+                    "symbol": "TKN"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "other",
+                "effective_at": null,
+                "mode": "decision",
+                "object": "testnet bridge",
+                "occurred_at": null,
+                "phase": "proposed",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Project team"
+              },
+              "first_available_at_ms": 1790405000001,
+              "known_identity": [],
+              "ref": "cl:61fa7c77bfc4e8acc8a6bb1b4a31b00bd3ecdfb54d32b8fff81212cf7f5bd394",
+              "statement": "Project team proposed a testnet bridge for developer review; no launch date is set.",
+              "topics": []
+            }
+          ],
+          "content_revision": "837f4ad4d3242723d6d4884e7aeee94bd3e8342072db37360a74df6ed4f59b3b",
+          "content_sha": "78c8a43c8c5079fbc6f813efaad24333922b730c1112ba1746421ec2671e0a26",
+          "event_id": "eval-proposed-project",
+          "evidence": [
+            {
+              "ref": "ev:e5fde5917bf8686c246e4da3b5155c872ccb824d585498eb95e3f85c2dd3c639",
+              "source": {
+                "artifact_id": "article-1",
+                "artifact_revision": "1",
+                "attribution": "Project team",
+                "first_available_at_ms": 1790405000001,
+                "origin_id": null,
+                "published_at_ms": null,
+                "publisher_id": "proposed-project-source",
+                "record_id": null,
+                "revision_sequence": 0,
+                "source_authority": "issuer_first_party",
+                "url": null
+              },
+              "text": "Project team proposed a testnet bridge for developer review; no launch date is set."
+            }
+          ],
+          "evidence_relations": [
+            {
+              "claim_ref": "cl:61fa7c77bfc4e8acc8a6bb1b4a31b00bd3ecdfb54d32b8fff81212cf7f5bd394",
+              "evidence_ref": "ev:e5fde5917bf8686c246e4da3b5155c872ccb824d585498eb95e3f85c2dd3c639",
+              "relation": "unresolved"
+            }
+          ],
+          "implications": [],
+          "input_revision": 1,
+          "open_questions": [],
+          "previous_content_revision": null,
+          "retired_claim_refs": [],
+          "schema_version": "news_event_update_v2",
+          "superseded_claim_refs": [],
+          "topics": []
+        }
+      },
+      "recording_origin": "synthetic_notify_all_baseline",
+      "recorded_decisions": [
+        {
+          "claim_ref": "cl:61fa7c77bfc4e8acc8a6bb1b4a31b00bd3ecdfb54d32b8fff81212cf7f5bd394",
+          "decision": "notify",
+          "reason": "editor_notify"
+        }
+      ],
+      "labels": {
+        "cl:61fa7c77bfc4e8acc8a6bb1b4a31b00bd3ecdfb54d32b8fff81212cf7f5bd394": "uncertain"
+      }
+    },
+    {
+      "case_id": "routine-promo",
+      "input_snapshot": {
+        "assessor_identity": "frozen-evaluation",
+        "candidate": {
+          "brief_identity": "editorial_brief:88473f8ccc6d6c3ce85bf583dcefa0821070a8944d95ec688943c797dfe79835",
+          "claims": [
+            {
+              "citations": [
+                {
+                  "quote": "Join the ACME giveaway for a chance to win merchandise; no product changes were announced.",
+                  "ref": "ev:cbbc0de027d167b1a2b2131c92b6a4855f7b09763eddff00fcc4924f808b132d",
+                  "source": {
+                    "artifact_id": "article-1",
+                    "artifact_revision": "1",
+                    "attribution": "ACME marketing",
+                    "first_available_at_ms": 1790405000001,
+                    "origin_id": null,
+                    "published_at_ms": null,
+                    "publisher_id": "routine-promo-source",
+                    "record_id": null,
+                    "revision_sequence": 0,
+                    "source_authority": "unknown",
+                    "url": null
+                  }
+                }
+              ],
+              "fields": {
+                "action": "promotes",
+                "assets": [
+                  {
+                    "market_type": "equity",
+                    "role": "primary",
+                    "symbol": "ACME"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "other",
+                "effective_at": null,
+                "mode": "promotion",
+                "object": "giveaway",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "ACME"
+              },
+              "ref": "cl:3f8e9e8f2a89c48f62776505046d4e1a2760bbc182824298ae6e8420d7ffb7f1",
+              "statement": "Join the ACME giveaway for a chance to win merchandise; no product changes were announced.",
+              "topics": []
+            }
+          ],
+          "watch_symbols": []
+        },
+        "preselection": {},
+        "reader_receipts": [],
+        "update": {
+          "adopted_at_ms": 1790405000010,
+          "changes": [
+            {
+              "current_ref": "cl:3f8e9e8f2a89c48f62776505046d4e1a2760bbc182824298ae6e8420d7ffb7f1",
+              "kind": "new_fact",
+              "previous_content_ref": null,
+              "previous_ref": null,
+              "relation": null
+            }
+          ],
+          "claims": [
+            {
+              "antecedent_refs": [],
+              "citations": [
+                {
+                  "evidence_ref": "ev:cbbc0de027d167b1a2b2131c92b6a4855f7b09763eddff00fcc4924f808b132d",
+                  "quote": "Join the ACME giveaway for a chance to win merchandise; no product changes were announced."
+                }
+              ],
+              "fields": {
+                "action": "promotes",
+                "assets": [
+                  {
+                    "market_type": "equity",
+                    "role": "primary",
+                    "symbol": "ACME"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "other",
+                "effective_at": null,
+                "mode": "promotion",
+                "object": "giveaway",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "ACME"
+              },
+              "first_available_at_ms": 1790405000001,
+              "known_identity": [],
+              "ref": "cl:3f8e9e8f2a89c48f62776505046d4e1a2760bbc182824298ae6e8420d7ffb7f1",
+              "statement": "Join the ACME giveaway for a chance to win merchandise; no product changes were announced.",
+              "topics": []
+            }
+          ],
+          "content_revision": "c7d2256f360bb321010267a47b7687f8f17c4fec2fac4b2fe0ed871999230067",
+          "content_sha": "a19aa98697828d43c16a1264db32e210e2c92620945a251318d42006ba8d360d",
+          "event_id": "eval-routine-promo",
+          "evidence": [
+            {
+              "ref": "ev:cbbc0de027d167b1a2b2131c92b6a4855f7b09763eddff00fcc4924f808b132d",
+              "source": {
+                "artifact_id": "article-1",
+                "artifact_revision": "1",
+                "attribution": "ACME marketing",
+                "first_available_at_ms": 1790405000001,
+                "origin_id": null,
+                "published_at_ms": null,
+                "publisher_id": "routine-promo-source",
+                "record_id": null,
+                "revision_sequence": 0,
+                "source_authority": "unknown",
+                "url": null
+              },
+              "text": "Join the ACME giveaway for a chance to win merchandise; no product changes were announced."
+            }
+          ],
+          "evidence_relations": [
+            {
+              "claim_ref": "cl:3f8e9e8f2a89c48f62776505046d4e1a2760bbc182824298ae6e8420d7ffb7f1",
+              "evidence_ref": "ev:cbbc0de027d167b1a2b2131c92b6a4855f7b09763eddff00fcc4924f808b132d",
+              "relation": "unresolved"
+            }
+          ],
+          "implications": [],
+          "input_revision": 1,
+          "open_questions": [],
+          "previous_content_revision": null,
+          "retired_claim_refs": [],
+          "schema_version": "news_event_update_v2",
+          "superseded_claim_refs": [],
+          "topics": []
+        }
+      },
+      "recording_origin": "synthetic_notify_all_baseline",
+      "recorded_decisions": [
+        {
+          "claim_ref": "cl:3f8e9e8f2a89c48f62776505046d4e1a2760bbc182824298ae6e8420d7ffb7f1",
+          "decision": "notify",
+          "reason": "editor_notify"
+        }
+      ],
+      "labels": {
+        "cl:3f8e9e8f2a89c48f62776505046d4e1a2760bbc182824298ae6e8420d7ffb7f1": "should_hold"
+      }
+    },
+    {
+      "case_id": "empty-event-promo",
+      "input_snapshot": {
+        "assessor_identity": "frozen-evaluation",
+        "candidate": {
+          "brief_identity": "editorial_brief:88473f8ccc6d6c3ce85bf583dcefa0821070a8944d95ec688943c797dfe79835",
+          "claims": [
+            {
+              "citations": [
+                {
+                  "quote": "Project team invites followers to a weekly community chat with no new agenda or announcement.",
+                  "ref": "ev:6651b3eaba0e02031f013c5fe915a5ba881dab0262adbd7c4867c39d75ee8036",
+                  "source": {
+                    "artifact_id": "article-1",
+                    "artifact_revision": "1",
+                    "attribution": "Project team",
+                    "first_available_at_ms": 1790405000001,
+                    "origin_id": null,
+                    "published_at_ms": null,
+                    "publisher_id": "empty-event-promo-source",
+                    "record_id": null,
+                    "revision_sequence": 0,
+                    "source_authority": "issuer_first_party",
+                    "url": null
+                  }
+                }
+              ],
+              "fields": {
+                "action": "invites",
+                "assets": [
+                  {
+                    "market_type": "crypto",
+                    "role": "primary",
+                    "symbol": "TKN"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "schedule",
+                "effective_at": null,
+                "mode": "promotion",
+                "object": "weekly community chat",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Project team"
+              },
+              "ref": "cl:eb1b2835d9784414a8ed4e3ef6e94508e4b7ca49f8c0b9a918e6da0d72d57897",
+              "statement": "Project team invites followers to a weekly community chat with no new agenda or announcement.",
+              "topics": []
+            }
+          ],
+          "watch_symbols": []
+        },
+        "preselection": {},
+        "reader_receipts": [],
+        "update": {
+          "adopted_at_ms": 1790405000010,
+          "changes": [
+            {
+              "current_ref": "cl:eb1b2835d9784414a8ed4e3ef6e94508e4b7ca49f8c0b9a918e6da0d72d57897",
+              "kind": "new_fact",
+              "previous_content_ref": null,
+              "previous_ref": null,
+              "relation": null
+            }
+          ],
+          "claims": [
+            {
+              "antecedent_refs": [],
+              "citations": [
+                {
+                  "evidence_ref": "ev:6651b3eaba0e02031f013c5fe915a5ba881dab0262adbd7c4867c39d75ee8036",
+                  "quote": "Project team invites followers to a weekly community chat with no new agenda or announcement."
+                }
+              ],
+              "fields": {
+                "action": "invites",
+                "assets": [
+                  {
+                    "market_type": "crypto",
+                    "role": "primary",
+                    "symbol": "TKN"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "schedule",
+                "effective_at": null,
+                "mode": "promotion",
+                "object": "weekly community chat",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Project team"
+              },
+              "first_available_at_ms": 1790405000001,
+              "known_identity": [],
+              "ref": "cl:eb1b2835d9784414a8ed4e3ef6e94508e4b7ca49f8c0b9a918e6da0d72d57897",
+              "statement": "Project team invites followers to a weekly community chat with no new agenda or announcement.",
+              "topics": []
+            }
+          ],
+          "content_revision": "f801dcb126af9da6cccde882e70c90cae7021e3b2a407da85fca9234cb93342f",
+          "content_sha": "cf46e0d64b997f9786723d4c4b8debc70abef32265e3b191db8b34ab30a6c52f",
+          "event_id": "eval-empty-event-promo",
+          "evidence": [
+            {
+              "ref": "ev:6651b3eaba0e02031f013c5fe915a5ba881dab0262adbd7c4867c39d75ee8036",
+              "source": {
+                "artifact_id": "article-1",
+                "artifact_revision": "1",
+                "attribution": "Project team",
+                "first_available_at_ms": 1790405000001,
+                "origin_id": null,
+                "published_at_ms": null,
+                "publisher_id": "empty-event-promo-source",
+                "record_id": null,
+                "revision_sequence": 0,
+                "source_authority": "issuer_first_party",
+                "url": null
+              },
+              "text": "Project team invites followers to a weekly community chat with no new agenda or announcement."
+            }
+          ],
+          "evidence_relations": [
+            {
+              "claim_ref": "cl:eb1b2835d9784414a8ed4e3ef6e94508e4b7ca49f8c0b9a918e6da0d72d57897",
+              "evidence_ref": "ev:6651b3eaba0e02031f013c5fe915a5ba881dab0262adbd7c4867c39d75ee8036",
+              "relation": "unresolved"
+            }
+          ],
+          "implications": [],
+          "input_revision": 1,
+          "open_questions": [],
+          "previous_content_revision": null,
+          "retired_claim_refs": [],
+          "schema_version": "news_event_update_v2",
+          "superseded_claim_refs": [],
+          "topics": []
+        }
+      },
+      "recording_origin": "synthetic_notify_all_baseline",
+      "recorded_decisions": [
+        {
+          "claim_ref": "cl:eb1b2835d9784414a8ed4e3ef6e94508e4b7ca49f8c0b9a918e6da0d72d57897",
+          "decision": "notify",
+          "reason": "editor_notify"
+        }
+      ],
+      "labels": {
+        "cl:eb1b2835d9784414a8ed4e3ef6e94508e4b7ca49f8c0b9a918e6da0d72d57897": "should_hold"
+      }
+    },
+    {
+      "case_id": "legal-fact-and-solicitation",
+      "input_snapshot": {
+        "assessor_identity": "frozen-evaluation",
+        "candidate": {
+          "brief_identity": "editorial_brief:88473f8ccc6d6c3ce85bf583dcefa0821070a8944d95ec688943c797dfe79835",
+          "claims": [
+            {
+              "citations": [
+                {
+                  "quote": "A securities complaint against ACME seeks $2 billion in damages; the allegations have not been adjudicated.",
+                  "ref": "ev:013368c46ca428b4d71a8a63320c235a9a03b78ff66925d9ecac430c746cf89d",
+                  "source": {
+                    "artifact_id": "article-1",
+                    "artifact_revision": "1",
+                    "attribution": "Court filing",
+                    "first_available_at_ms": 1790405000001,
+                    "origin_id": null,
+                    "published_at_ms": null,
+                    "publisher_id": "legal-fact-and-solicitation-source",
+                    "record_id": null,
+                    "revision_sequence": 0,
+                    "source_authority": "unknown",
+                    "url": null
+                  }
+                }
+              ],
+              "fields": {
+                "action": "seeks",
+                "assets": [
+                  {
+                    "market_type": "equity",
+                    "role": "primary",
+                    "symbol": "ACME"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "other",
+                "effective_at": null,
+                "mode": "observation",
+                "object": "$2 billion in damages",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Complaint"
+              },
+              "ref": "cl:d2da01cba1123553a5de7c3ee3294251d1ca763a026af2a8d80159e4a2529d4f",
+              "statement": "A securities complaint against ACME seeks $2 billion in damages; the allegations have not been adjudicated.",
+              "topics": []
+            },
+            {
+              "citations": [
+                {
+                  "quote": "A law firm asks ACME investors to contact it about potential representation.",
+                  "ref": "ev:3ce601e1c4cfb107cc01456c13fb3cdf403de47f069da3c7be7f4f7c5a7a59e2",
+                  "source": {
+                    "artifact_id": "article-2",
+                    "artifact_revision": "1",
+                    "attribution": "Law firm",
+                    "first_available_at_ms": 1790405000002,
+                    "origin_id": null,
+                    "published_at_ms": null,
+                    "publisher_id": "legal-fact-and-solicitation-source",
+                    "record_id": null,
+                    "revision_sequence": 0,
+                    "source_authority": "unknown",
+                    "url": null
+                  }
+                }
+              ],
+              "fields": {
+                "action": "asks",
+                "assets": [
+                  {
+                    "market_type": "equity",
+                    "role": "primary",
+                    "symbol": "ACME"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "other",
+                "effective_at": null,
+                "mode": "promotion",
+                "object": "investors to contact it",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Law firm"
+              },
+              "ref": "cl:7b7f8c085e076c2b33d1e7e4515b03994c6c79d128debfbcae77457c29cf31a7",
+              "statement": "A law firm asks ACME investors to contact it about potential representation.",
+              "topics": []
+            }
+          ],
+          "watch_symbols": []
+        },
+        "preselection": {},
+        "reader_receipts": [],
+        "update": {
+          "adopted_at_ms": 1790405000010,
+          "changes": [
+            {
+              "current_ref": "cl:d2da01cba1123553a5de7c3ee3294251d1ca763a026af2a8d80159e4a2529d4f",
+              "kind": "new_fact",
+              "previous_content_ref": null,
+              "previous_ref": null,
+              "relation": null
+            },
+            {
+              "current_ref": "cl:7b7f8c085e076c2b33d1e7e4515b03994c6c79d128debfbcae77457c29cf31a7",
+              "kind": "new_fact",
+              "previous_content_ref": null,
+              "previous_ref": null,
+              "relation": null
+            }
+          ],
+          "claims": [
+            {
+              "antecedent_refs": [],
+              "citations": [
+                {
+                  "evidence_ref": "ev:013368c46ca428b4d71a8a63320c235a9a03b78ff66925d9ecac430c746cf89d",
+                  "quote": "A securities complaint against ACME seeks $2 billion in damages; the allegations have not been adjudicated."
+                }
+              ],
+              "fields": {
+                "action": "seeks",
+                "assets": [
+                  {
+                    "market_type": "equity",
+                    "role": "primary",
+                    "symbol": "ACME"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "other",
+                "effective_at": null,
+                "mode": "observation",
+                "object": "$2 billion in damages",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Complaint"
+              },
+              "first_available_at_ms": 1790405000001,
+              "known_identity": [],
+              "ref": "cl:d2da01cba1123553a5de7c3ee3294251d1ca763a026af2a8d80159e4a2529d4f",
+              "statement": "A securities complaint against ACME seeks $2 billion in damages; the allegations have not been adjudicated.",
+              "topics": []
+            },
+            {
+              "antecedent_refs": [],
+              "citations": [
+                {
+                  "evidence_ref": "ev:3ce601e1c4cfb107cc01456c13fb3cdf403de47f069da3c7be7f4f7c5a7a59e2",
+                  "quote": "A law firm asks ACME investors to contact it about potential representation."
+                }
+              ],
+              "fields": {
+                "action": "asks",
+                "assets": [
+                  {
+                    "market_type": "equity",
+                    "role": "primary",
+                    "symbol": "ACME"
+                  }
+                ],
+                "conditions": [],
+                "content_kind": "other",
+                "effective_at": null,
+                "mode": "promotion",
+                "object": "investors to contact it",
+                "occurred_at": null,
+                "phase": "announced",
+                "polarity": "unknown",
+                "quantities": [],
+                "speaker": null,
+                "statistical_period": null,
+                "subject": "Law firm"
+              },
+              "first_available_at_ms": 1790405000002,
+              "known_identity": [],
+              "ref": "cl:7b7f8c085e076c2b33d1e7e4515b03994c6c79d128debfbcae77457c29cf31a7",
+              "statement": "A law firm asks ACME investors to contact it about potential representation.",
+              "topics": []
+            }
+          ],
+          "content_revision": "6b33973bbf8d4d68cba78bc7091699aa4ab070a629250b8c24858ea7f8d6998c",
+          "content_sha": "6f9bb431a8524d68ab6830b1f8dbb3a837964853ae14fca4683ad4c4aa4293a9",
+          "event_id": "eval-legal-fact-and-solicitation",
+          "evidence": [
+            {
+              "ref": "ev:013368c46ca428b4d71a8a63320c235a9a03b78ff66925d9ecac430c746cf89d",
+              "source": {
+                "artifact_id": "article-1",
+                "artifact_revision": "1",
+                "attribution": "Court filing",
+                "first_available_at_ms": 1790405000001,
+                "origin_id": null,
+                "published_at_ms": null,
+                "publisher_id": "legal-fact-and-solicitation-source",
+                "record_id": null,
+                "revision_sequence": 0,
+                "source_authority": "unknown",
+                "url": null
+              },
+              "text": "A securities complaint against ACME seeks $2 billion in damages; the allegations have not been adjudicated."
+            },
+            {
+              "ref": "ev:3ce601e1c4cfb107cc01456c13fb3cdf403de47f069da3c7be7f4f7c5a7a59e2",
+              "source": {
+                "artifact_id": "article-2",
+                "artifact_revision": "1",
+                "attribution": "Law firm",
+                "first_available_at_ms": 1790405000002,
+                "origin_id": null,
+                "published_at_ms": null,
+                "publisher_id": "legal-fact-and-solicitation-source",
+                "record_id": null,
+                "revision_sequence": 0,
+                "source_authority": "unknown",
+                "url": null
+              },
+              "text": "A law firm asks ACME investors to contact it about potential representation."
+            }
+          ],
+          "evidence_relations": [
+            {
+              "claim_ref": "cl:d2da01cba1123553a5de7c3ee3294251d1ca763a026af2a8d80159e4a2529d4f",
+              "evidence_ref": "ev:013368c46ca428b4d71a8a63320c235a9a03b78ff66925d9ecac430c746cf89d",
+              "relation": "unresolved"
+            },
+            {
+              "claim_ref": "cl:7b7f8c085e076c2b33d1e7e4515b03994c6c79d128debfbcae77457c29cf31a7",
+              "evidence_ref": "ev:3ce601e1c4cfb107cc01456c13fb3cdf403de47f069da3c7be7f4f7c5a7a59e2",
+              "relation": "unresolved"
+            }
+          ],
+          "implications": [],
+          "input_revision": 1,
+          "open_questions": [],
+          "previous_content_revision": null,
+          "retired_claim_refs": [],
+          "schema_version": "news_event_update_v2",
+          "superseded_claim_refs": [],
+          "topics": []
+        }
+      },
+      "recording_origin": "synthetic_notify_all_baseline",
+      "recorded_decisions": [
+        {
+          "claim_ref": "cl:d2da01cba1123553a5de7c3ee3294251d1ca763a026af2a8d80159e4a2529d4f",
+          "decision": "notify",
+          "reason": "editor_notify"
+        },
+        {
+          "claim_ref": "cl:7b7f8c085e076c2b33d1e7e4515b03994c6c79d128debfbcae77457c29cf31a7",
+          "decision": "notify",
+          "reason": "editor_notify"
+        }
+      ],
+      "labels": {
+        "cl:d2da01cba1123553a5de7c3ee3294251d1ca763a026af2a8d80159e4a2529d4f": "should_push",
+        "cl:7b7f8c085e076c2b33d1e7e4515b03994c6c79d128debfbcae77457c29cf31a7": "should_hold"
+      }
+    }
+  ]
+}

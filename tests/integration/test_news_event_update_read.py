@@ -27,6 +27,7 @@ from tests.support.news_event_updates import (
     silent_plan,
 )
 from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.models import TriageVerdict
@@ -124,7 +125,7 @@ def _legacy_verdict(news: Any, event_id: str, *, now_ms: int) -> None:
         ),
         source_authority="reputable_secondary",
     )
-    news.insert_verdict(
+    legacy_news(news).insert_verdict(
         event_id=event_id,
         stage="triage",
         policy_version=LEGACY_TRIAGE_POLICY_VERSION,
@@ -313,7 +314,7 @@ def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -
     assert rows["agent-sent"]["legacy_verdict"] is None
     assert rows["agent-silent"]["update"]["headline"] == seeded["silent"].claims[0].statement
     assert rows["agent-silent"]["update"]["headline_source"] == "claim"
-    assert rows["agent-silent"]["outcome"]["reason_zh"] == "仅表态或观点"
+    assert rows["agent-silent"]["outcome"]["reason_zh"] == "仅进入信息流"
     assert rows["agent-pending"]["update"] is None and rows["agent-pending"]["legacy_verdict"] is None
     assert rows["legacy"]["update"] is None
     assert rows["legacy"]["legacy_verdict"]["headline_zh"] == "央行政策转向，风险资产承压"

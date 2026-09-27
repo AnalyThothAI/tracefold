@@ -17,6 +17,7 @@ from tests.support.news_legacy import (
     LegacyDegradedJudgment,
     legacy_judgment,
 )
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
@@ -191,7 +192,7 @@ def _event(
         "told": [],
         "told_count": 0,
     }
-    repos.news.insert_verdict(
+    legacy_news(repos.news).insert_verdict(
         event_id=event_id,
         stage="triage",
         policy_version="news_triage_policy_v13",

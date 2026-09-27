@@ -4,6 +4,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TriageVerdict
@@ -99,7 +100,7 @@ def _seed_current_event(repos, *, event_id: str, at_ms: int, judged: bool) -> st
             "told": [],
             "told_count": 0,
         }
-        repos.news.insert_verdict(
+        legacy_news(repos.news).insert_verdict(
             event_id=event_id,
             stage="triage",
             policy_version=LEGACY_TRIAGE_POLICY_VERSION,

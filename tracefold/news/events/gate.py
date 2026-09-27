@@ -1,9 +1,9 @@
-"""Gate v4: deterministic evidence, queue scheduling, and orthogonal vetoes (pure).
+"""Gate v4: deterministic evidence and queue scheduling (pure).
 
 The Gate no longer decides relevance and keeps no name table of its own: the provider already resolved entities into
 ``coins[]`` with a grade, so a B+/A/A+ tag (or a literal ``$TICKER`` cashtag) *is* the grounded asset; Triage — the
 model — verifies which of them are primary. The only admissions that skip the model are recovery replays,
-deterministic listing notices, law-firm PR templates without a grounded asset, and unscored or under-80 market
+deterministic listing notices and unscored or under-80 market
 telemetry frames (#126). Provider-specific deterministic lanes compose after this policy.
 
 The three word lists this policy still needs — the energy context that lets a ``CL`` tag ground, the macro reading
@@ -11,8 +11,7 @@ behind ``asset_class="macro"``, and the queue-order subset — are **not defined
 storyline registry (#509 D3): ``gate.energy_context`` on the energy topic and the Gulf places, ``gate.macro`` on the
 central banks and the macro topics, ``gate.queue_high`` on the subset a desk wants ahead of the queue. The Gate reads
 whatever ``events.storyline`` matched, so "energy" is one vocabulary with one owner instead of a regex here and a
-theme there that disagreed about ``iranian``, 沙特, ``barrels`` and every central bank outside the Fed. Only the
-law-firm PR templates stay regexes: they are sentence templates, not a storyline anyone groups by.
+theme there that disagreed about ``iranian``, 沙特, ``barrels`` and every central bank outside the Fed.
 """
 
 from __future__ import annotations
@@ -27,20 +26,6 @@ from ..models import Admission, AssetClass, EngineType
 from .grounding import commodity_context_present
 from .storyline import match_storyline, storyline_entry
 
-# Law-firm solicitation templates. The strong list (firm names, template phrases) is vetoed outright — a real
-# company event never reads like this; the weak list ("class action", "law firm") only vetoes ungrounded titles.
-PR_TEMPLATE_STRONG_LEXICON = re.compile(
-    r"levi & korsinsky|pomerantz|rosen law|hagens berman|\bhbss\b|bragar eagel|glancy prongay|faruqi|kessler topaz"
-    r"|schall law|portnoy law|johnson fistel|kahn swick|robbins geller|bernstein liebhard|the gross law"
-    r"|securities (investigation|class action) notice|investigation notice|investor alert|shareholder alert"
-    r"|deadline (alert|reminder)|class period|investors? (who|that) (lost|suffered)|lead plaintiff"
-    r"|encourages investors|urged to contact|opportunity to lead|faces securities class action"
-    r"|sued for securities fraud|alleged misrepresentations|investors learn of",
-    re.IGNORECASE,
-)
-PR_TEMPLATE_LEXICON = re.compile(
-    r"securities (investigation|class action)|law ?firm|class action|securities fraud lawsuit", re.IGNORECASE
-)
 # Provider tags whose symbol collides with an ordinary English word, so the tag is usually about the word rather
 # than the asset ("near-instant" -> NEAR, "SPOT GOLD" -> SPOT, "the Clarity bill" -> BILL). This is a *collision*
 # list, not a tradability list: all of these except SPOT/CORE/PRIME are real listed contracts (OPENAI and ANTHROPIC
@@ -114,7 +99,6 @@ class GateVerdict:
     grounded_assets: tuple[str, ...]
     macro_lexicon: bool
     energy_lexicon: bool
-    pr_template: bool
     watchlist_hits: tuple[str, ...]
     reasons: tuple[str, ...] = field(default_factory=tuple)
     strong_assets: tuple[str, ...] = field(default_factory=tuple)  # A/A+ or cashtag: may open a preliminary storyline
@@ -222,8 +206,6 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     text = f"{title} {inp.raw_first_line}".strip()
     flags = gate_lexicon_flags(text)
     macro = flags.macro
-    pr_strong = bool(PR_TEMPLATE_STRONG_LEXICON.search(text))
-    pr_template = pr_strong or bool(PR_TEMPLATE_LEXICON.search(text))
     # One registry scan per event: the flags are all `grounded_assets` needed the text for, and matching it
     # three times cost ~70 µs an event on the live corpus.
     grounded = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line, energy=flags.energy)
@@ -238,9 +220,6 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
         reasons.append("recovery_never_delivers")
     elif listing:
         admission = "listing_deterministic"
-    elif pr_strong or (pr_template and not grounded):
-        admission = "suppressed_pr_template"
-        reasons.append("law_firm_template" if pr_strong else "law_firm_template_without_asset")
     # A missing provider score is `0.0`, so the old `and score` guard skipped this rule for exactly the frames
     # it exists to hold back. It never mattered while an allowlist decided which Strategies could reach the
     # Gate at all; #126 removed that, so an unscored market frame would otherwise cost a Triage call and could
@@ -261,7 +240,6 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
         grounded_assets=grounded,
         macro_lexicon=macro,
         energy_lexicon=flags.energy,
-        pr_template=pr_template,
         watchlist_hits=watch_hits,
         reasons=tuple(reasons),
         strong_assets=strong,
@@ -269,8 +247,6 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
 
 
 __all__ = [
-    "PR_TEMPLATE_LEXICON",
-    "PR_TEMPLATE_STRONG_LEXICON",
     "GateFlags",
     "GateInput",
     "GateVerdict",
