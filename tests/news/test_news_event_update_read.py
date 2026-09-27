@@ -130,7 +130,7 @@ def test_outcome_texts_name_the_key_card_and_the_reasons_nothing_was_sent() -> N
             ],
         },
     )
-    assert silent.reason_zh == "评论 ×2 · 已送达内容已覆盖"
+    assert silent.reason_zh == "仅表态或观点 ×2 · 已送达内容已覆盖"
     # A failed newer revision never hides the head the Event already has.
     failed_after_head = _outcome(
         semantic={"wanted_revision": 2, "done_revision": 1, "last_outcome": "failed"},
@@ -237,7 +237,9 @@ def test_notification_view_names_every_claim_decision_and_flags_an_undecodable_p
 
     assert view is not None and view["plan"] is not None
     assert view["plan"]["action_zh"] == "不通知"
-    assert [(row["decision_zh"], row["reason_zh"]) for row in view["plan"]["claim_decisions"]] == [("不通知", "评论")]
+    assert [(row["decision_zh"], row["reason_zh"]) for row in view["plan"]["claim_decisions"]] == [
+        ("不通知", "仅表态或观点")
+    ]
     assert view["plan"]["claim_decisions"][0]["statement"] == head.claims[0].statement
     assert broken is not None and broken["plan"] is None
     assert broken["plan_error_code"] == "news_notification_plan_undecodable"

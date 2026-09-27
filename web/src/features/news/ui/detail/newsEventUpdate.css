@@ -56,6 +56,18 @@
     color: var(--text-muted);
   }
 
+  .news-update-priors {
+    display: grid;
+    gap: 4px;
+    padding-left: 12px;
+    border-left: 2px solid var(--border-faint);
+  }
+
+  .news-update-priors > small {
+    color: var(--text-muted);
+    font: var(--type-meta);
+  }
+
   .news-update-change .news-update-previous,
   .news-update-previous small {
     color: var(--text-muted);

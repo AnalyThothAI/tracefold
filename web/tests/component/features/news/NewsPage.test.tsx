@@ -425,7 +425,7 @@ describe("NewsPage", () => {
                 outcome: newsOutcomeFixture({
                   group: "held",
                   kind: "not_notified",
-                  reason_zh: "评论 ×2",
+                  reason_zh: "仅表态或观点 ×2",
                   text_zh: "未通知",
                 }),
                 update: {
@@ -450,7 +450,7 @@ describe("NewsPage", () => {
     expect(row).toHaveAttribute("data-direction", "flat");
     expect(row).toHaveAttribute("data-outcome", "not_notified");
     expect(row.querySelector(".news-direction")).toBeNull();
-    expect(within(row).getByText("评论 ×2")).toBeInTheDocument();
+    expect(within(row).getByText("仅表态或观点 ×2")).toBeInTheDocument();
   });
 
   it("keeps row-level expansion controls off the approved feed interaction", async () => {
@@ -1095,6 +1095,48 @@ describe("NewsPage", () => {
     expect(within(processing).getByText("通知 · 有命题未被已送达内容覆盖")).toBeInTheDocument();
     expect(within(processing).getByText("已送达内容已覆盖")).toBeInTheDocument();
     expect(within(processing).getByText("【重点】钢铁进口关税上调至 50%")).toBeInTheDocument();
+  });
+
+  it("shows one changed claim with all its prior comparisons", async () => {
+    const detail = newsUpdateDetailFixture();
+    const update = detail.event_update!;
+    const first = update.changes?.[0];
+    if (!first) throw new Error("Expected a change in the update fixture");
+    update.changes = [
+      first,
+      {
+        ...first,
+        previous_ref: "older-claim-2",
+        previous_statement: "Agency first proposed a steel tariff.",
+      },
+      {
+        ...first,
+        previous_ref: "older-claim-3",
+        previous_statement: "Agency discussed import measures.",
+      },
+    ];
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: detail }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+
+    const changes = await screen.findByRole("region", { name: "新增了什么" });
+    expect(within(changes).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(changes).getAllByText(first.current_statement)).toHaveLength(1);
+    expect(within(changes).getByText("与此前 3 条命题的比较")).toBeVisible();
+    for (const statement of [
+      "Agency announces 25% tariff on steel imports.",
+      "Agency first proposed a steel tariff.",
+      "Agency discussed import measures.",
+    ]) {
+      expect(within(changes).getByText(`此前：${statement}`)).toBeVisible();
+    }
   });
 
   it("hides same-name non-primary market candidates from Event evidence", async () => {

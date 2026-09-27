@@ -64,24 +64,53 @@ function sourcesHint(update: NewsEventUpdate): string {
 
 function ChangeList({ changes }: { changes: NewsClaimChange[] }) {
   if (!changes.length) return <EmptyNote>这一版没有相对此前命题的变化。</EmptyNote>;
+  // One change row describes one comparison with a prior claim. Several rows can describe the same
+  // current claim, so present its statement once while retaining every comparison underneath it.
+  const byClaim = new Map<string, NewsClaimChange[]>();
+  for (const change of changes) {
+    const group = byClaim.get(change.current_ref) ?? [];
+    group.push(change);
+    byClaim.set(change.current_ref, group);
+  }
   return (
     <ol className="news-update-changes">
-      {changes.map((change, index) => (
-        <li className="news-update-change" key={`${change.current_ref}-${change.kind}-${index}`}>
-          <span className="news-update-badge" data-kind={change.kind}>
-            {change.kind_zh || change.kind}
-          </span>
-          <p>{change.current_statement || change.current_ref}</p>
-          {change.previous_ref ? (
-            <p className="news-update-previous">
-              此前：
-              {change.previous_statement ??
-                `未能读取此前命题（${change.previous_ref.slice(0, 16)}…）`}
-              {change.relation_zh ? <small> · {change.relation_zh}</small> : null}
-            </p>
-          ) : null}
-        </li>
-      ))}
+      {Array.from(byClaim, ([ref, related]) => {
+        const kinds = Array.from(new Map(related.map((change) => [change.kind, change])).values());
+        const previous = related.filter((change) => change.previous_ref);
+        return (
+          <li className="news-update-change" key={ref}>
+            <div className="news-update-badges">
+              {kinds.map((change) => (
+                <span className="news-update-badge" data-kind={change.kind} key={change.kind}>
+                  {change.kind_zh || change.kind}
+                </span>
+              ))}
+            </div>
+            <p>{related.find((change) => change.current_statement)?.current_statement || ref}</p>
+            {previous.length ? (
+              <div className="news-update-priors">
+                {previous.length > 1 ? <small>与此前 {previous.length} 条命题的比较</small> : null}
+                {previous.map((change, index) => (
+                  <p
+                    className="news-update-previous"
+                    key={`${change.previous_content_ref}-${change.previous_ref}-${change.kind}-${index}`}
+                  >
+                    此前：
+                    {change.previous_statement ??
+                      `未能读取此前命题（${change.previous_ref?.slice(0, 16)}…）`}
+                    {kinds.length > 1 || change.relation_zh ? (
+                      <small>
+                        {kinds.length > 1 ? ` · ${change.kind_zh || change.kind}` : ""}
+                        {change.relation_zh ? ` · ${change.relation_zh}` : ""}
+                      </small>
+                    ) : null}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+          </li>
+        );
+      })}
     </ol>
   );
 }

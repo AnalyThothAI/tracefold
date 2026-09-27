@@ -313,7 +313,7 @@ def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -
     assert rows["agent-sent"]["legacy_verdict"] is None
     assert rows["agent-silent"]["update"]["headline"] == seeded["silent"].claims[0].statement
     assert rows["agent-silent"]["update"]["headline_source"] == "claim"
-    assert rows["agent-silent"]["outcome"]["reason_zh"] == "评论"
+    assert rows["agent-silent"]["outcome"]["reason_zh"] == "仅表态或观点"
     assert rows["agent-pending"]["update"] is None and rows["agent-pending"]["legacy_verdict"] is None
     assert rows["legacy"]["update"] is None
     assert rows["legacy"]["legacy_verdict"]["headline_zh"] == "央行政策转向，风险资产承压"
