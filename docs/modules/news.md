@@ -268,6 +268,14 @@ illustrative, not an observed news item or execution receipt.
 
 ## 8. Verification entry points
 
+The feed read side in [feed.py](../../tracefold/news/storage/feed.py) and
+[feed_sql.py](../../tracefold/news/storage/feed_sql.py) shares representative-receipt
+ordering between the page and its counts: sent receipts take precedence, then
+creation time and intent identity. The bounded page uses per-Event lookups; counts
+select representative receipts in one ledger pass rather than sorting one lookup
+for every retained Event. A count is not the number of notification attempts.
+
+
 [Input scope](../../tests/news/test_news_update_input_scope.py),
 [semantic worker](../../tests/news/test_news_semantic_worker.py),
 [revision ownership](../../tests/integration/test_news_revision_ownership.py),
