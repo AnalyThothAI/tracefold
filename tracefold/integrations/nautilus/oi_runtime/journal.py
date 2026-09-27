@@ -212,7 +212,7 @@ class ExecutionJournal:
     # -- the Strategy's side ---------------------------------------------------------------------
 
     def offer(self, value: ExecutionObservationV1) -> bool:
-        """Queue one observation. An identical re-offer is already on its way; a full journal refuses."""
+        """Queue one observation; native evidence and dispositions survive queue pressure."""
 
         with self._lock:
             queued = self._index.get(value.event_id)
@@ -239,7 +239,11 @@ class ExecutionJournal:
                 ):
                     raise ValueError("execution_observation_pending_identity_conflict")
                 return True
-            if len(self._rows) >= self._max_rows:
+            critical = (
+                value.normalized_kind in NATIVE_EXECUTION_KINDS | {"signal_disposition", "control_disposition"}
+                or value.summary.get("binding_version") == "plan_order_v1"
+            )
+            if len(self._rows) >= self._max_rows and not critical:
                 return False
             row = JournalRow(value)
             self._rows.append(row)
@@ -330,6 +334,79 @@ class ExecutionJournal:
             for row in ready:
                 (plans if isinstance(row.value, TradePlan) else observations).append(row)
             return tuple((plans + observations)[:limit]) if limit is not None else tuple(plans + observations)
+
+    def terminal_dependencies(self, plan: TradePlan) -> tuple[JournalRow, ...]:
+        """Snapshot the exact pending native rows on which this Plan's end depends."""
+        with self._lock:
+            bindings = [
+                row
+                for row in self._rows
+                if isinstance(row.value, ExecutionObservationV1)
+                and row.value.normalized_kind == "native_fill_binding"
+                and plan.entry_id in {row.value.signal_id, row.value.command_id}
+            ]
+            trades = {
+                (
+                    row.value.summary.get("venue_environment"),
+                    row.value.summary.get("native_instrument"),
+                    row.value.summary.get("native_trade_id"),
+                )
+                for row in bindings
+            }
+            native = [
+                row
+                for row in self._rows
+                if isinstance(row.value, ExecutionObservationV1)
+                and row.value.normalized_kind in {"native_fill", "native_fill_cost"}
+                and (
+                    row.value.summary.get("venue_environment"),
+                    row.value.summary.get("native_instrument"),
+                    row.value.summary.get("native_trade_id"),
+                )
+                in trades
+            ]
+            orders = {
+                (
+                    row.value.summary.get("venue_environment"),
+                    row.value.summary.get("native_instrument"),
+                    row.value.summary.get("venue_order_id"),
+                )
+                for row in native
+            }
+            proofs = [
+                row
+                for row in self._rows
+                if isinstance(row.value, ExecutionObservationV1)
+                and row.value.normalized_kind == "native_order_result"
+                and (
+                    row.value.summary.get("venue_environment"),
+                    row.value.summary.get("native_instrument"),
+                    row.value.summary.get("venue_order_id"),
+                )
+                in orders
+            ]
+            lifecycle = [
+                row
+                for row in self._rows
+                if isinstance(row.value, ExecutionObservationV1)
+                and plan.entry_id in {row.value.signal_id, row.value.command_id}
+                and (
+                    row.value.normalized_kind in {"signal_disposition", "control_disposition"}
+                    or (
+                        row.value.normalized_kind == "order"
+                        and row.value.summary.get("status") in {"rejected", "denied", "canceled", "expired"}
+                    )
+                    or (row.value.normalized_kind == "position" and row.value.summary.get("status") == "closed")
+                )
+            ]
+            selected = tuple(dict.fromkeys((*bindings, *native, *proofs, *lifecycle)))
+            if len(selected) > 128:
+                raise RuntimeError("terminal_evidence_batch_budget_exhausted")
+            return selected
+
+    def pending(self, row: JournalRow) -> bool:
+        with self._lock:
+            return self._index.get(row.key) is row
 
     def written(self, row: JournalRow, value: ExecutionObservationV1 | TradePlan) -> None:
         """`value` is durable (or the database will never take it), so its row leaves the journal.

@@ -67,7 +67,7 @@ def test_native_binance_environment_is_shared_by_data_and_execution(
     # match a position report: a positionRisk error answered "no reports", and the position check
     # closed a held position with a synthetic fill (#680 PR-3, Path B).
     assert engine.generate_missing_orders is False
-    assert engine.inflight_check_retries > 0
+    assert engine.inflight_check_interval_ms == 0
     assert engine.open_check_interval_secs == 5.0
     assert engine.open_check_open_only is True
     assert engine.position_check_interval_secs == 5.0
@@ -148,6 +148,7 @@ def _real_node() -> Iterator[Any]:
         venue_reads=True,
     )
     loop = asyncio.new_event_loop()
+    clients: list[OiBinanceFuturesExecutionClient] = []
     node = _build_active_node(
         journal=journal,
         profile=profile,
@@ -155,15 +156,17 @@ def _real_node() -> Iterator[Any]:
         strategy=strategy,
         loop=loop,
         recovery_symbols=frozenset(),
+        on_execution_client=clients.append,
     )
     try:
-        yield node
+        yield node, clients
     finally:
         node.dispose()
         loop.close()
 
 
 def test_the_canonical_root_builds_one_binance_execution_client_and_one_claiming_strategy(real_node: Any) -> None:
+    real_node, clients = real_node
     assert [client.value for client in real_node.kernel.exec_engine.registered_clients] == [BINANCE]
     [strategy] = real_node.trader.strategies()
     assert strategy.external_order_claims == [route.instrument_id for route in oi_profile().routes]
@@ -174,3 +177,4 @@ def test_the_canonical_root_builds_one_binance_execution_client_and_one_claiming
     )
     [client] = real_node.kernel.exec_engine.get_clients_for_orders([order])
     assert type(client) is OiBinanceFuturesExecutionClient
+    assert clients == [client]

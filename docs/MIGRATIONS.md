@@ -18,7 +18,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-代码链包含 `20260926_0404` 与 `20260927_0405`；若之后增加迁移，以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20260927_0406`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 ## 2. 正常升级顺序
 
@@ -48,6 +48,8 @@ flowchart TD
 | `20260927_0405` | 来源修订顺序 / 前驱、保留不可变 v1 与新 v2、跨 Event claim 定位索引 | [0405](../tracefold/platform/postgres/alembic/versions/20260927_0405_news_revision_ownership.py) |
 
 这两次切换是前向迁移，不提供通过旧卡片 / verdict 伪造新 Claim 的降级路径。旧 v1 保留原始 hash 与语义，新内容才使用 v2；不得批量改历史 JSON 让它“看起来都是最新版本”。
+
+`20260927_0406` 为 [执行硬切 Signal 退休原因](../tracefold/platform/postgres/alembic/versions/20260927_0406_execution_hard_cut_retirement.py) 增加约束取值；它自身不清理账户数据。数据切换步骤见 [#719 运行说明](OPERATIONS.md#719-一次性执行基线硬切)。
 
 ### 配套检查
 

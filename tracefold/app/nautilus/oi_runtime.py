@@ -16,7 +16,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
 from threading import Event, Lock, Thread
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 from psycopg import InterfaceError, OperationalError
@@ -327,6 +327,46 @@ def write_journal_row(repos: RepositorySession, value: ExecutionObservationV1 | 
             raise ValueError("execution_observation_write_unconfirmed")
 
 
+def write_terminal_plan(
+    repos: RepositorySession,
+    plan: TradePlan,
+    dependencies: tuple[JournalRow, ...],
+) -> None:
+    """Append this execution's minimal native basis and its end in one PG transaction."""
+    if plan.status != "closed":
+        raise ValueError("trade_plan_terminal_status_invalid")
+    observations = tuple(row.value for row in dependencies)
+    if any(not isinstance(value, ExecutionObservationV1) for value in observations):
+        raise ValueError("trade_plan_terminal_evidence_invalid")
+    prepared = prepare_execution_observations(cast(tuple[ExecutionObservationV1, ...], observations))
+    update = prepare_trade_plan_update(plan)
+    with repos.transaction():
+        if observations:
+            sequences = repos.trading.append_execution_observations(prepared)
+            if len(sequences) != len(observations) or any(seq <= 0 for seq in sequences):
+                raise ValueError("trade_plan_terminal_evidence_unconfirmed")
+        if plan.opened_at_ns is not None:
+            result = repos.trading.execution_result(entry_id=plan.entry_id)
+            if result is None or result.get("fill_quantity") is None:
+                raise ValueError("trade_plan_terminal_entry_evidence_pending")
+            if not repos.trading.execution_entry_proven(entry_id=plan.entry_id, account_slot=plan.account_slot):
+                raise ValueError("trade_plan_terminal_entry_evidence_pending")
+            if (
+                plan.exit_reason not in {"external", "venue_unknown"}
+                and result.get("result_evidence_source") != "signed_native_trades"
+            ):
+                raise ValueError("trade_plan_terminal_exit_evidence_pending")
+        elif not repos.trading.execution_disposition_exists(
+            entry_id=plan.entry_id, account_slot=plan.account_slot, source=plan.source
+        ):
+            raise ValueError("trade_plan_terminal_disposition_pending")
+        written = repos.trading.update_trade_plan(update)
+        if not written:
+            stored = repos.trading.trade_plan(plan.entry_id)
+            if stored is None or TradePlan.model_validate(stored) != plan:
+                raise ValueError("trade_plan_transition_conflict")
+
+
 class OiRuntimeDatabaseBridge:
     """Commands, durable preparation, journal and signals; current-state has its own writer."""
 
@@ -495,9 +535,16 @@ class OiRuntimeDatabaseBridge:
         for row in self._journal.due(time.monotonic(), limit=32):
             if time.monotonic() >= deadline:
                 break
+            if not self._journal.pending(row):
+                continue
             value = row.value
             try:
-                write_journal_row(repos, value)
+                dependencies: tuple[JournalRow, ...] = ()
+                if isinstance(value, TradePlan) and value.status == "closed":
+                    dependencies = self._journal.terminal_dependencies(value)
+                    write_terminal_plan(repos, value, dependencies)
+                else:
+                    write_journal_row(repos, value)
             except (InterfaceError, OperationalError):
                 self._journal.retry_later(row, time.monotonic())
                 raise
@@ -531,6 +578,8 @@ class OiRuntimeDatabaseBridge:
                 continue
             self._settled(value)
             self._journal.written(row, value)
+            for dependency in dependencies:
+                self._journal.written(dependency, dependency.value)
             if time.monotonic() >= deadline:
                 break
 

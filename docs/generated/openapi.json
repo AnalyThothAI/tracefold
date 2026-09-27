@@ -11116,28 +11116,6 @@
             ],
             "title": "Order Reject Reason"
           },
-          "original_exit_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Original Exit Reason"
-          },
-          "original_terminal_at_ns": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Original Terminal At Ns"
-          },
           "plan_status": {
             "anyOf": [
               {

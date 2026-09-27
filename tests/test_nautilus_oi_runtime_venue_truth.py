@@ -275,7 +275,6 @@ def test_last_venue_only_position_remains_visible_after_failed_and_expired_reads
     assert view.positions_count == 1
     [position] = view.account_snapshot.positions
     assert (position.source, position.quantity, position.protection_status) == ("venue", "0.5", "unknown")
-    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
 
 
 def test_a_cache_position_the_venue_does_not_hold_is_named_and_never_protected_or_exited_again() -> None:
@@ -291,6 +290,31 @@ def test_a_cache_position_the_venue_does_not_hold_is_named_and_never_protected_o
     runtime.advance(5 * 3_600 * SECOND_NS)
     runtime.venue(FLAT)
     assert runtime.strategy.submitted == [] and runtime.strategy.closed == []
+
+
+def test_confirmed_mismatch_names_only_the_plans_actual_orders_for_adapter_recovery() -> None:
+    runtime, _position, stop, take_profit = _protected_plan()
+    plan = open_plan()
+    runtime.venue(FLAT)
+    runtime.venue(FLAT)
+
+    assert set(runtime.strategy.recovery_candidates(runtime.clock.timestamp_ns())) == {
+        (SYMBOL, plan.entry_client_order_id),
+        (SYMBOL, stop.client_order_id.value),
+        (SYMBOL, take_profit.client_order_id.value),
+    }
+    assert runtime.strategy.recovery_candidates(runtime.clock.timestamp_ns()) == ()
+
+    runtime.advance(VENUE_STALE_AFTER_NS + 2)
+    assert runtime.strategy.recovery_candidates(runtime.clock.timestamp_ns()) == ()
+
+
+def test_unowned_venue_mismatch_has_no_order_recovery_candidate() -> None:
+    runtime = unit_runtime(venue_reads=True)
+    runtime.venue({SYMBOL: "0.5"})
+    runtime.venue({SYMBOL: "0.5"})
+
+    assert runtime.strategy.recovery_candidates(runtime.clock.timestamp_ns()) == ()
 
 
 def test_a_read_that_crossed_a_fill_in_flight_is_not_an_alarm() -> None:
@@ -386,56 +410,3 @@ def test_flatten_without_a_fresh_venue_read_closes_the_cache_and_says_the_venue_
         OrderType.MARKET_IF_TOUCHED,
     }
     assert runtime.dispositions()[-1]["venue_positions"] == "unknown"
-
-
-def test_native_recovery_keeps_retrying_with_bounded_backoff_in_the_same_generation() -> None:
-    runtime, _position, _stop, _take_profit = _protected_plan()
-    strategy = runtime.strategy
-    runtime.venue({SYMBOL: "0.05"})
-    runtime.venue({SYMBOL: "0.05"})
-    requested: list[int] = []
-    for delay_seconds in (5, 10, 20, 40, 60, 60, 60):
-        now_ns = runtime.clock.timestamp_ns()
-        at_ns = strategy.take_recovery_request(now_ns)
-        assert at_ns is not None
-        requested.append(at_ns)
-        assert strategy.take_recovery_request(now_ns) is None
-        # New identical evidence must not reset the delay; after it expires the
-        # fourth and later attempts still run without replacing the generation.
-        runtime.venue({SYMBOL: "0.05"})
-        retry_ns = now_ns + delay_seconds * SECOND_NS
-        assert strategy.take_recovery_request(retry_ns - 1) is None
-        runtime.clock.set_time(retry_ns)
-        runtime.venue({SYMBOL: "0.05"})
-    assert len(set(requested)) == 7
-
-    # A genuine change in the discrepancy is new work, while agreement clears
-    # the delay so a later recurrence is recoverable immediately.
-    runtime.venue({SYMBOL: "0.06"})
-    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is not None
-    runtime.venue(HELD)
-    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
-    runtime.venue({SYMBOL: "0.06"})
-    runtime.venue({SYMBOL: "0.06"})
-    assert strategy.take_recovery_request(runtime.clock.timestamp_ns()) is not None
-
-
-def test_recovery_waits_for_fresh_successful_evidence_and_stops_with_its_generation() -> None:
-    runtime, _position, _stop, _take_profit = _protected_plan()
-    runtime.venue({SYMBOL: "0.05"})
-    runtime.venue({SYMBOL: "0.05"})
-    runtime.venue(None)
-    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
-    runtime.venue({SYMBOL: "0.05"})
-    runtime.advance(VENUE_STALE_AFTER_NS + SECOND_NS)
-    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
-    runtime.venue({SYMBOL: "0.05"})
-    runtime.strategy.on_stop()
-    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None
-
-
-def test_unclaimed_venue_position_never_requests_automatic_recovery() -> None:
-    runtime = unit_runtime(venue_reads=True)
-    runtime.venue({SYMBOL: "0.5"})
-    runtime.venue({SYMBOL: "0.5"})
-    assert runtime.strategy.take_recovery_request(runtime.clock.timestamp_ns()) is None

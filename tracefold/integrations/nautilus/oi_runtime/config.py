@@ -327,9 +327,9 @@ def build_oi_node_config(
             filter_unclaimed_external_orders=False,
             filter_position_reports=False,
             generate_missing_orders=False,
-            inflight_check_interval_ms=2_000,
-            inflight_check_threshold_ms=5_000,
-            inflight_check_retries=5,
+            # The SDK's finite in-flight budget invents UNKNOWN rejections and
+            # cancel verdicts. Exact native order recovery below owns these reads.
+            inflight_check_interval_ms=0,
             open_check_interval_secs=CONTINUOUS_CHECK_SECONDS,
             open_check_open_only=True,
             position_check_interval_secs=CONTINUOUS_CHECK_SECONDS,

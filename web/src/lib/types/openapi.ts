@@ -4313,10 +4313,6 @@ export interface components {
             observed_at_ns: number;
             /** Order Reject Reason */
             order_reject_reason?: string | null;
-            /** Original Exit Reason */
-            original_exit_reason?: string | null;
-            /** Original Terminal At Ns */
-            original_terminal_at_ns?: number | null;
             /** Plan Status */
             plan_status?: string | null;
             /** Pnl Known */

@@ -3,14 +3,15 @@
 The observations and plans are written by the production Strategy on a real Nautilus engine through
 the production bridge cycle (`tests/helpers/nautilus_oi_runtime_process.py`), never hand-built, where
 the scenario can be run: what makes this a read-model test rather than a fixture test is that the row
-it renders is folded from the exact summaries the production writer produces. Realized PnL is folded
-from the fill journal -- exit minus entry notional, signed, less every commission -- and is checked
-against Nautilus' own realized PnL for the same position.
+it renders is folded from the exact summaries the production writer produces. The offline engine
+provides no signed venue trades, so its ordinary fill journal is process audit only and the production
+read model must keep economic fields unknown.
 """
 
 from __future__ import annotations
 
 import time
+from contextlib import closing
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -26,6 +27,7 @@ from tests.nautilus_oi_runtime_fixtures import (
     MARKET,
     NOW_NS,
     SECOND_NS,
+    oi_profile,
     open_plan,
     quotes,
     seed_reconciled_position,
@@ -33,15 +35,20 @@ from tests.nautilus_oi_runtime_fixtures import (
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
 from tracefold.app.http.routes import trading as trading_routes
+from tracefold.app.nautilus.oi_runtime import write_terminal_plan
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.integrations.nautilus.oi_runtime.entry import deterministic_client_order_id
+from tracefold.integrations.nautilus.oi_runtime.journal import ObservationFactory
 from tracefold.platform.config.models import Settings
 from tracefold.trading.execution_contracts import ExecutionObservationV1
+from tracefold.trading.native_fills import NativeFill
 from tracefold.trading.storage.execution_stream import (
     prepare_execution_observations,
     prepare_operator_intent,
 )
 from tracefold.trading.storage.root import TradingRepository
 from tracefold.trading.storage.trade_plans import prepare_trade_plan
+from tracefold.trading.trade_plan import PlanOrderBinding, TradePlan
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -123,12 +130,7 @@ def _row(tmp_path: Path, entry_id: str = _SIGNAL_ID) -> dict[str, Any]:
     return next(item for item in _executions(tmp_path)["executions"] if item["entry_id"] == entry_id)
 
 
-def _nautilus_realized(runtime: PostgresRuntime) -> Decimal:
-    [position] = runtime.engine.cache.positions_closed()
-    return position.realized_pnl.as_decimal()
-
-
-def test_a_stopped_out_signal_is_one_closed_row_whose_pnl_is_folded_from_its_fills(tmp_path: Path) -> None:
+def test_an_offline_stop_keeps_the_plan_open_and_economics_unknown(tmp_path: Path) -> None:
     _seed_signal()
     runtime = _run(
         tape=[
@@ -139,32 +141,25 @@ def test_a_stopped_out_signal_is_one_closed_row_whose_pnl_is_folded_from_its_fil
 
     data = _executions(tmp_path)
     [row] = [item for item in data["executions"] if item["entry_id"] == _SIGNAL_ID]
-    assert (row["stage"], row["plan_status"], row["exit_reason"]) == ("closed", "closed", "stop_filled")
+    assert runtime.engine.cache.positions_closed()
+    assert (row["stage"], row["plan_status"], row["exit_reason"]) == ("protected", "open", None)
     assert (row["source"], row["case_id"], row["market_key"], row["direction"]) == ("signal", "case-1", MARKET, "long")
     assert row["disposition_reason"] == "accepted"
-    assert row["fill_quantity"] == "0.049"
-    assert Decimal(row["fill_avg_price"]) == Decimal(10_000)
-    assert Decimal(row["exit_price"]) == Decimal(9_700)
+    assert row["fill_quantity"] is None
+    assert row["fill_avg_price"] is None
+    assert row["exit_price"] is None
     assert Decimal(row["stop_trigger_price"]) == Decimal(9_800)
     assert Decimal(row["take_profit_trigger_price"]) == Decimal(10_200)
-    # Net of both commissions, exactly Nautilus' own realized PnL for the same position.
-    realized = Decimal(row["realized_pnl_usd"])
-    assert realized == _nautilus_realized(runtime)
-    assert realized == (Decimal(9_700) - Decimal(10_000)) * Decimal("0.049") - Decimal(row["fees_usd"])
-    assert row["pnl_known"] is True
-    assert row["entry_filled_at_ns"] < row["position_closed_at_ns"]
-    assert row["duration_ns"] == row["position_closed_at_ns"] - row["entry_filled_at_ns"]
+    assert row["realized_pnl_usd"] is None and row["fees_usd"] is None
+    assert row["pnl_known"] is False
     assert {"history_complete", "gap_reason", "order_status", "position_status"}.isdisjoint(row)
 
     totals = data["totals"]
-    assert (totals["closed_total"], totals["pnl_known_total"], totals["pnl_missing_total"]) == (1, 1, 0)
-    assert Decimal(totals["realized_known_total_usd"]) == realized
-    # The Runtime's clock is years ahead of this test's wall clock, so the close is not "today".
-    assert (totals["closed_today"], totals["realized_known_today_usd"]) == (0, None)
+    assert (totals["closed_total"], totals["pnl_known_total"], totals["pnl_missing_total"]) == (0, 0, 0)
 
 
 @pytest.mark.parametrize("exit_reason", ["take_profit", "time_exit"])
-def test_a_normal_exit_is_one_native_close_with_complete_pnl(tmp_path: Path, exit_reason: str) -> None:
+def test_offline_exits_do_not_supply_signed_native_economics(tmp_path: Path, exit_reason: str) -> None:
     _seed_signal(max_holding_ns=SECOND_NS if exit_reason == "time_exit" else 4 * 3_600 * SECOND_NS)
     if exit_reason == "take_profit":
         tape = [
@@ -178,13 +173,12 @@ def test_a_normal_exit_is_one_native_close_with_complete_pnl(tmp_path: Path, exi
     runtime = _run(tape=tape, profile=profile)
 
     row = _row(tmp_path)
-    assert (row["stage"], row["exit_reason"]) == ("closed", exit_reason)
-    assert Decimal(row["realized_pnl_usd"]) == _nautilus_realized(runtime)
-    assert row["duration_ns"] > 0
+    assert runtime.engine.cache.positions_closed()
+    assert (row["stage"], row["plan_status"], row["exit_reason"]) == ("protected", "open", None)
+    assert row["realized_pnl_usd"] is None and row["pnl_known"] is False
 
 
-def test_a_flatten_after_a_restart_closes_the_adopted_position_under_the_operators_reason(tmp_path: Path) -> None:
-    """The entry fill was journaled by one generation and the exit fill by the next; the fold spans both."""
+def test_flatten_after_restart_records_the_command_but_waits_for_native_terminal_evidence(tmp_path: Path) -> None:
 
     _seed_signal()
     _run(tape=quotes(9_999, 10_000, start_ns=NOW_NS, count=10))
@@ -192,9 +186,8 @@ def test_a_flatten_after_a_restart_closes_the_adopted_position_under_the_operato
     _run(tape=quotes(10_049, 10_051, start_ns=NOW_NS + 5 * SECOND_NS, count=20), seed=seed_reconciled_position)
 
     row = _row(tmp_path)
-    assert (row["stage"], row["exit_reason"]) == ("closed", "operator_flatten")
-    assert row["pnl_known"] is True
-    assert Decimal(row["exit_price"]) == Decimal(10_049)
+    assert (row["stage"], row["plan_status"], row["exit_reason"]) == ("protected", "open", None)
+    assert row["pnl_known"] is False and row["exit_price"] is None
     conn = connect_postgres_test(read_only=True)
     try:
         [command] = [
@@ -279,6 +272,68 @@ def _fill(identity: str, *, leg: str, price: str, at_ns: int, commission: str | 
     )
 
 
+def _native_trade(
+    plan: TradePlan,
+    *,
+    leg: str,
+    order_id: str,
+    trade_id: str,
+    price: str,
+    at_ns: int,
+    commission: str | None,
+) -> tuple[ExecutionObservationV1, ...]:
+    """A complete synthetic signed-order fixture for the read model's native-only fold."""
+    binding = PlanOrderBinding(
+        account_slot=plan.account_slot,
+        entry_id=plan.entry_id,
+        source=plan.source,
+        instrument_id=plan.instrument_id,
+        client_order_id=(
+            plan.entry_client_order_id
+            if leg == "entry"
+            else deterministic_client_order_id(namespace=oi_profile().namespace, entry_id=plan.entry_id, leg=leg).value
+        ),
+        leg=leg,
+        exit_reason="stop_filled" if leg == "stop" else "take_profit" if leg == "take_profit" else None,
+    )
+    fill = NativeFill(
+        account_slot=plan.account_slot,
+        environment="DEMO",
+        instrument="BTCUSDT",
+        trade_id=trade_id,
+        order_id=order_id,
+        side="BUY" if leg == "entry" else "SELL",
+        quantity=Decimal("0.049"),
+        price=Decimal(price),
+        occurred_at_ns=at_ns,
+    )
+    rows = fill.observation(
+        execution_strategy="oi_nautilus_v1",
+        observed_at_ns=at_ns,
+        commission=None if commission is None else Decimal(commission),
+        commission_currency=None if commission is None else "USDT",
+        binding=binding,
+    )
+    proof = ObservationFactory(plan.account_slot, "oi_nautilus_v1").create(
+        normalized_kind="native_order_result",
+        occurred_at_ns=at_ns,
+        observed_at_ns=at_ns,
+        native_identity_references=(order_id, trade_id),
+        summary={
+            "venue_environment": "DEMO",
+            "native_instrument": "BTCUSDT",
+            "venue_order_id": order_id,
+            "source": "signed_order_trades_v1",
+            "status": "FILLED",
+            "trade_count": 1,
+            "trade_digest": sha256(trade_id.encode()).hexdigest(),
+            "executed_quantity": "0.049",
+        },
+        event_identity=f"fixture:{order_id}",
+    )
+    return (*rows, proof)
+
+
 def _venue_funding(kind: str, *, at_ns: int, start_ns: int, end_ns: int) -> ExecutionObservationV1:
     summary: dict[str, str | int] = (
         {
@@ -314,12 +369,40 @@ def _venue_funding(kind: str, *, at_ns: int, start_ns: int, end_ns: int) -> Exec
 
 def test_net_requires_complete_signed_funding_coverage(tmp_path: Path) -> None:
     _seed_signal()
-    _run(
+    runtime = _run(
         tape=[
             *quotes(9_999, 10_000, start_ns=NOW_NS, count=10),
             *quotes(10_300, 10_301, start_ns=NOW_NS + 2 * SECOND_NS, count=10),
         ]
     )
+    [closed] = [
+        row.value
+        for row in runtime.journal.due(float("inf"))
+        if isinstance(row.value, TradePlan) and row.value.status == "closed"
+    ]
+    for observation in (
+        *_native_trade(
+            closed,
+            leg="entry",
+            order_id="301",
+            trade_id="311",
+            price="10000",
+            at_ns=closed.opened_at_ns,
+            commission="0.1",
+        ),
+        *_native_trade(
+            closed,
+            leg="take_profit",
+            order_id="302",
+            trade_id="312",
+            price="10300",
+            at_ns=closed.terminal_at_ns,
+            commission="0.2",
+        ),
+    ):
+        assert runtime.journal.offer(observation)
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        write_terminal_plan(repositories_for_connection(conn), closed, runtime.journal.terminal_dependencies(closed))
     initial = _row(tmp_path)
     assert initial["realized_pnl_usd"] is not None
     assert initial["net_pnl_usd"] is None
@@ -378,7 +461,7 @@ def test_realized_totals_count_a_plan_whose_fills_cannot_yield_a_result_as_missi
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Three closed plans: whole fills with fees, a fill with no commission (history), no exit fill."""
+    """Three closed rows: verified native costs, missing native cost, and audit-only fills."""
 
     # Freeze the read at UTC noon: a CI run crossing midnight must still test
     # three same-day closes rather than the wall clock's previous day.
@@ -395,7 +478,8 @@ def test_realized_totals_count_a_plan_whose_fills_cannot_yield_a_result_as_missi
             _seed_signal(
                 signal_id=identity, case_id=f"case-pnl-{index}", observed_at_ns=start, expires_at_ns=start + 10
             )
-            plan = open_plan(entry_id=identity, opened_at_ns=start + 1, created_at_ns=start).closed(
+            base_plan = open_plan(entry_id=identity, opened_at_ns=start + 1, created_at_ns=start)
+            plan = base_plan.closed(
                 reason="stop_filled" if exit_leg == "stop" else "venue_unknown",
                 terminal_at_ns=start + 20,
                 now_ns=start + 20,
@@ -405,6 +489,29 @@ def test_realized_totals_count_a_plan_whose_fills_cannot_yield_a_result_as_missi
             observations.append(_fill(identity, leg="entry", price="10000", at_ns=start + 1, commission=entry_fee))
             if exit_leg is not None:
                 observations.append(_fill(identity, leg=exit_leg, price="10100", at_ns=start + 19, commission="0.2"))
+            if index < 2:
+                observations.extend(
+                    _native_trade(
+                        base_plan,
+                        leg="entry",
+                        order_id=f"{index + 1}01",
+                        trade_id=f"{index + 1}11",
+                        price="10000",
+                        at_ns=start + 1,
+                        commission=entry_fee,
+                    )
+                )
+                observations.extend(
+                    _native_trade(
+                        base_plan,
+                        leg=exit_leg,
+                        order_id=f"{index + 1}02",
+                        trade_id=f"{index + 1}12",
+                        price="10100",
+                        at_ns=start + 19,
+                        commission="0.2",
+                    )
+                )
         with conn.transaction():
             repo.append_execution_observations(prepare_execution_observations(tuple(observations)))
     finally:

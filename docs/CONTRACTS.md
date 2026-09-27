@@ -111,7 +111,7 @@
 
 本地 `trading issue` 使用关闭的命令语法，必须有稳定 `--request-id` 和调用方封存的 `--requested-at-ns`，重试保留两者。它记录本地 OS 认证的意图，不证明交易所动作完成。
 
-`trading verify-execution` 要求精确 entry、account slot、environment；默认只读预览，`--apply` 才追加核实的原生证据。浏览器与 News 推送通道不拥有此权限。
+执行结果只从与 Plan 精确绑定的交易所原生成交计算。普通 fill 保留事件审计用途；缺少原生依据时数量与收益显示未知。Runtime 自动核验仍有责任的订单，不提供已关闭旧账的在线补正命令。
 
 ## 6. CLI 与配置
 

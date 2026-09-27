@@ -80,6 +80,31 @@ def test_recorded_entry_has_its_own_native_trade_and_actual_cost():
     account.query_algo_order.assert_not_awaited()
 
 
+def test_recorded_ark_missing_first_acceptance_keeps_exact_trade_and_fee():
+    recorded = json.loads((Path(__file__).parent / "fixtures/binance/ark_20260926_execution.json").read_text())
+    order = recorded["order"]
+    account = SimpleNamespace(
+        query_order=AsyncMock(return_value=msgspec.json.decode(msgspec.json.encode(order), type=BinanceOrder)),
+        query_user_trades=AsyncMock(
+            return_value=msgspec.json.decode(msgspec.json.encode([recorded["trade"]]), type=list[BinanceUserTrade])
+        ),
+    )
+    request = OrderEvidenceRequest(symbol="ARKUSDT", client_order_id=order["clientOrderId"])
+    evidence = asyncio.run(read_order_evidence(account, request=request, observed_at_ns=recorded["observed_at_ns"]))
+    assert evidence.complete and evidence.parent is None
+    assert evidence.order.orderId == 239721655
+    [trade] = evidence.history.trades
+    assert (trade.id, Decimal(trade.qty), Decimal(trade.price), Decimal(trade.commission)) == (
+        92447752,
+        Decimal("24"),
+        Decimal("0.2867"),
+        Decimal("0.00275232"),
+    )
+    account.query_order.assert_awaited_once_with(
+        symbol="ARKUSDT", order_id=None, orig_client_order_id=request.client_order_id, recv_window="60000"
+    )
+
+
 def test_cumulative_filled_with_no_trade_is_explicitly_incomplete():
     evidence = asyncio.run(read_order_evidence(_account(trades=[]), request=TP, observed_at_ns=OBSERVED_NS))
     assert evidence.order.status.value == "FILLED"

@@ -21,7 +21,6 @@ import pytest
 from tests.helpers.nautilus_oi_runtime_process import run_runtime_on_postgres
 from tests.helpers.published_signal_v3 import append_published_v3_signal
 from tests.nautilus_oi_runtime_fixtures import (
-    MARKET,
     NOW_NS,
     SECOND_NS,
     oi_profile,
@@ -156,7 +155,7 @@ def test_a_database_signal_becomes_one_committed_plan_one_order_and_its_protecti
         conn.close()
 
 
-def test_a_stop_out_ends_the_plan_durably_and_its_fill_folded_pnl_is_nautilus_own() -> None:
+def test_an_offline_stop_without_signed_native_trades_cannot_durably_end_the_plan() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repos = repositories_for_connection(conn)
@@ -170,23 +169,23 @@ def test_a_stop_out_ends_the_plan_durably_and_its_fill_folded_pnl_is_nautilus_ow
                 *quotes(9_700, 9_701, start_ns=NOW_NS + 2 * SECOND_NS, count=10),
             ],
         )
-        closed_pnl = [position.realized_pnl.as_decimal() for position in runtime.engine.cache.positions_closed()]
+        assert runtime.engine.cache.positions_closed()
 
         plan = _plan(conn)
-        assert (plan["status"], plan["exit_reason"]) == ("closed", "stop_filled")
+        assert (plan["status"], plan["exit_reason"]) == ("open", None)
         [row] = [
             item for item in repos.trading.console_executions(since_ns=0, limit=10) if item["entry_id"] == _SIGNAL_ID
         ]
-        assert row["plan_status"] == "closed"
-        assert Decimal(str(row["realized_pnl_usd"])) == closed_pnl[0]
-        assert Decimal(str(row["fees_usd"])) > 0
-        assert Decimal(str(row["exit_price"])) == Decimal(9_700)
+        assert row["plan_status"] == "open"
+        assert row["realized_pnl_usd"] is None
+        assert row["fees_usd"] is None
+        assert row["exit_price"] is None
         totals = repos.trading.console_realized_totals(account_slot=_ACCOUNT_SLOT, day_start_ns=0, day_end_ns=2**62)
-        assert Decimal(str(totals["realized_known_total_usd"])) == closed_pnl[0]
-        assert (totals["closed_total"], totals["pnl_known_total"], totals["pnl_missing_total"]) == (1, 1, 0)
-        # The stop-out is what the next generation's cooldown is keyed on.
+        assert (totals["closed_total"], totals["pnl_known_total"], totals["pnl_missing_total"]) == (0, 0, 0)
+        # The open Plan remains the next generation's exact recovery scope.
         inputs = load_runtime_inputs(repos, oi_profile(), now_ns=NOW_NS + 10 * SECOND_NS)
-        assert inputs.stop_exits == {MARKET: plan["terminal_at_ns"]}
+        assert [value.plan.entry_id for value in inputs.open_plans] == [_SIGNAL_ID]
+        assert inputs.stop_exits == {}
     finally:
         conn.close()
 
@@ -293,7 +292,7 @@ def test_a_refused_entry_is_not_submitted_and_its_signal_never_reads_accepted() 
         conn.close()
 
 
-def test_a_stop_out_in_the_database_cools_the_market_down_for_the_next_signal() -> None:
+def test_an_unverified_offline_stop_retains_exposure_responsibility_for_the_next_signal() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repos = repositories_for_connection(conn)
@@ -310,7 +309,7 @@ def test_a_stop_out_in_the_database_cools_the_market_down_for_the_next_signal() 
 
         run_runtime_on_postgres(repos, tape=quotes(9_999, 10_000, start_ns=NOW_NS + 10 * SECOND_NS, count=10))
 
-        assert ("signal_disposition", {"disposition": "post_stop_cooldown"}) in _kinds(conn, second)
+        assert ("signal_disposition", {"disposition": "exposure_already_present"}) in _kinds(conn, second)
         assert _rows(conn, "SELECT 1 FROM trading_trade_plans WHERE entry_id = %s", second) == []
     finally:
         conn.close()

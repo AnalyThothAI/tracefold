@@ -23,7 +23,6 @@ from typing import Any
 from uuid import uuid4
 
 import uvicorn
-from alembic.script import ScriptDirectory
 from loguru import logger
 from nautilus_trader.adapters.binance import (
     BINANCE,
@@ -47,7 +46,11 @@ from tracefold.app.nautilus.oi_runtime import (
 )
 from tracefold.app.process import create_probe_app, install_signal_handlers, remove_signal_handlers
 from tracefold.app.repository_session import RepositorySession, postgres_connection, repositories_for_connection
-from tracefold.integrations.nautilus.oi_runtime.binance import BinanceVenuePositions, OiBinanceExecClientFactory
+from tracefold.integrations.nautilus.oi_runtime.binance import (
+    BinanceVenuePositions,
+    OiBinanceExecClientFactory,
+    OiBinanceFuturesExecutionClient,
+)
 from tracefold.integrations.nautilus.oi_runtime.config import (
     BinanceRuntimeCredentials,
     OiExitPolicy,
@@ -61,7 +64,7 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
 from tracefold.integrations.nautilus.oi_runtime.funding import BinanceFundingIncome, watch_funding
 from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.observations import offer_native_evidence
-from tracefold.integrations.nautilus.oi_runtime.order_evidence import BinanceOrderEvidence
+from tracefold.integrations.nautilus.oi_runtime.order_evidence import BinanceOrderEvidence, OrderEvidenceRequest
 from tracefold.integrations.nautilus.oi_runtime.risk import account_equity_usd
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
@@ -71,7 +74,7 @@ from tracefold.integrations.nautilus.oi_runtime.venue import watch_venue
 from tracefold.platform.config.models import Settings, TradingExitPolicySettings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.postgres.client import postgres_health_check
-from tracefold.platform.postgres.migrations import alembic_config, latest_migration_version
+from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading.execution_contracts import EXECUTION_STRATEGY_ID
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
@@ -192,11 +195,7 @@ def run_nautilus(settings: Settings) -> None:
 
 
 def _require_current_schema(conn: Any) -> None:
-    """Refuse to become the account-slot owner against a schema this build cannot read.
-
-    Direction is the whole question (#598 D5-c): a database ahead of this image was migrated by a newer
-    deploy and is still readable; one behind it is missing migrations this code compiles against.
-    """
+    """The execution hard cut requires the exact schema shipped with this image."""
 
     image_head = latest_migration_version()
     health = postgres_health_check(conn, expected_migration_version=image_head)
@@ -204,25 +203,9 @@ def _require_current_schema(conn: Any) -> None:
         raise RuntimeFatal(f"oi_runtime_schema_probe_failed: {health.get('error')}: {health.get('detail')}")
     if health.get("ok"):
         return
-    database_head = health.get("migration_version")
-    if _database_precedes_image(database_head, image_head=image_head):
-        raise RuntimeFatal(f"oi_runtime_schema_head_mismatch: database={database_head} expected={image_head}")
-    logger.warning(
-        "Execution runtime starting against a forward-migrated database database={} image={}",
-        database_head,
-        image_head,
+    raise RuntimeFatal(
+        f"oi_runtime_schema_head_mismatch: database={health.get('migration_version')} expected={image_head}"
     )
-
-
-def _database_precedes_image(database_head: Any, *, image_head: str) -> bool:
-    """Is the live revision one this image's own history has already passed?"""
-
-    if not database_head:
-        return True
-    if database_head == image_head:
-        return False
-    scripts = ScriptDirectory.from_config(alembic_config())
-    return database_head in {script.revision for script in scripts.walk_revisions("base", image_head)}
 
 
 async def _run_active_runtime(
@@ -340,6 +323,7 @@ async def _run_generation(
         singleton_ready=lambda: singleton.acquired,
         venue_reads=True,
     )
+    execution_clients: list[OiBinanceFuturesExecutionClient] = []
     node = _build_active_node(
         journal=journal,
         profile=profile,
@@ -350,6 +334,7 @@ async def _run_generation(
         recovery_symbols=frozenset(
             value.plan.instrument_id.split(".", 1)[0].removesuffix("-PERP") for value in inputs.open_plans
         ),
+        on_execution_client=execution_clients.append,
     )
     node_task = asyncio.create_task(node.run_async(), name="oi-nautilus-node")
     bridge: OiRuntimeDatabaseBridge | None = None
@@ -357,10 +342,22 @@ async def _run_generation(
     writer: RuntimeStateWriter | None = None
     venue_task: asyncio.Task[None] | None = None
     funding_task: asyncio.Task[None] | None = None
-    recovery_task: asyncio.Task[bool] | None = None
     try:
         if not await _await_node_started(node=node, node_task=node_task, stop=stop):
             return
+        if len(execution_clients) != 1:
+            raise RuntimeFatal("oi_runtime_execution_client_ambiguous")
+        execution_client = execution_clients[0]
+        for value in inputs.open_plans:
+            plan = value.plan
+            if plan.status == "prepared" and value.signal is not None and not value.final_check_started:
+                continue
+            execution_client.seed_order_recovery(
+                OrderEvidenceRequest(
+                    symbol=plan.instrument_id.split(".", 1)[0].removesuffix("-PERP"),
+                    client_order_id=plan.entry_client_order_id,
+                )
+            )
         # The venue-truth read runs beside the node on the same loop, so every reading reaches the
         # Strategy on the thread that owns the Cache. It reads, and nothing else (#680 PR-3).
         venue = BinanceVenuePositions(environment=environment, credentials=credentials)
@@ -421,6 +418,10 @@ async def _run_generation(
             state = _runtime_state(profile=profile, view=None, now_ns=now_ns, base=state)
             try:
                 view = strategy.runtime_view(now_ns)
+                for symbol, client_order_id in strategy.recovery_candidates(now_ns):
+                    execution_client.seed_order_recovery(
+                        OrderEvidenceRequest(symbol=symbol, client_order_id=client_order_id)
+                    )
                 bridge.set_equity(account_equity_usd(cache=node.cache, account_id=profile.account_id), now_ns)
                 state = _runtime_state(profile=profile, view=view, now_ns=now_ns, base=state)
                 view_failure = None
@@ -429,29 +430,9 @@ async def _run_generation(
                     logger.opt(exception=exc).error("Execution runtime projection failed")
                 view_failure = type(exc).__name__
                 state = replace(state, account_projection_failure=view_failure)
-            if recovery_task is not None and recovery_task.done():
-                try:
-                    recovered = recovery_task.result()
-                    state = replace(state, recovery_result="succeeded" if recovered else "failed")
-                except Exception as exc:
-                    state = replace(state, recovery_result=f"failed_{type(exc).__name__}")
-                    logger.opt(exception=exc).error("OI Runtime native reconciliation failed")
-                recovery_task = None
-            if recovery_task is None and view_failure is None:
-                evidence_at_ns = strategy.take_recovery_request(now_ns)
-                if evidence_at_ns is not None:
-                    state = replace(
-                        state,
-                        recovery_attempted_at_ns=now_ns,
-                        recovery_result="running",
-                    )
-                    recovery_task = asyncio.create_task(
-                        asyncio.wait_for(
-                            node.kernel.exec_engine.reconcile_execution_state(timeout_secs=10.0),
-                            timeout=15.0,
-                        ),
-                        name="oi-native-reconciliation",
-                    )
+            execution_client.wake_order_recovery()
+            attempted_at_ns, recovery_result = execution_client.recovery_diagnostics()
+            state = replace(state, recovery_attempted_at_ns=attempted_at_ns, recovery_result=recovery_result)
             projector.offer(state)
             probe.publish(
                 _probe_payload(state)
@@ -467,10 +448,6 @@ async def _run_generation(
             with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=_HEARTBEAT_INTERVAL_SECONDS)
     finally:
-        if recovery_task is not None:
-            recovery_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await recovery_task
         if funding_task is not None:
             funding_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
@@ -634,6 +611,7 @@ def _build_active_node(
     strategy: OiNautilusStrategy,
     loop: asyncio.AbstractEventLoop,
     recovery_symbols: frozenset[str],
+    on_execution_client: Callable[[OiBinanceFuturesExecutionClient], None] | None = None,
     log_directory: Path | None = None,
 ) -> TradingNode:
     node = TradingNode(config=build_oi_node_config(profile, credentials, log_directory=log_directory), loop=loop)
@@ -661,6 +639,7 @@ def _build_active_node(
             symbols=recovery_symbols,
             sink=record_evidence,
             binding_lookup=strategy.order_binding,
+            on_client_created=on_execution_client,
         ),
     )
     node.build()
