@@ -73,7 +73,10 @@ the optional reader can load stored News Items only, not fetch arbitrary URLs.
 Generated calls use short reference aliases local to each request. Adapters map
 them back to the existing durable IDs without rewriting source text or quotes.
 The generated extraction envelope separates required claims from optional
-relation/support hints. Invalid or conflicting hints are diagnosed and omitted;
+relation/support hints. A resolution naming a question absent from the frozen input
+is also diagnosed and omitted: it cannot close a real gap or erase valid claims.
+Resolutions for supplied questions still require exact current-evidence citations.
+Invalid or conflicting relation/support hints are diagnosed and omitted;
 the existing understanding stage fills missing pairs. Core schema and citation
 errors still fail. No separate repair queue or alternate semantic document is
 created. An unknown mode gets one cached generated clarification during

@@ -13,7 +13,7 @@ from tests.news.test_news_event_update_judgments import MemoryCache
 from tests.news.test_news_event_update_notifications import TaskBackend
 from tests.news.test_news_event_updates_core import draft, material, prior_of, update_one
 from tracefold.news.updates import dspy_backend
-from tracefold.news.updates.contracts import Extraction, FrozenInput
+from tracefold.news.updates.contracts import Extraction, FrozenInput, OpenQuestion
 from tracefold.news.updates.dspy_backend import DspyCardComposer, DspyExtractor, GeneratedJudgments
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments, Question
 from tracefold.news.updates.notification import NotificationPlanner, ReaderSnapshot
@@ -218,3 +218,75 @@ def test_generated_judgment_maps_local_answers_to_original_cache_id(monkeypatch:
     )
     assert calls[0]["items"][0]["item_id"] == "q1"
     assert result.answers[0].item_id == "coverage:stable-hash"
+
+
+@pytest.mark.parametrize("unknown_ref", ["p1", "t1", "q99"])
+@pytest.mark.parametrize("with_claims", [False, True])
+def test_unknown_question_resolution_cannot_close_a_real_gap_or_discard_core(
+    monkeypatch: pytest.MonkeyPatch, unknown_ref: str, with_claims: bool
+) -> None:
+    first, extracted, _head = update_one()
+    extracted = extracted.model_copy(
+        update={"open_questions": (OpenQuestion(question="Who implements it?", slots=("a",)),)}
+    )
+    head = assemble_update(first, extracted, None, adopted_at_ms=STAMP + 10)
+    assert head is not None
+    gap = head.open_questions[0]
+    source = FrozenInput(
+        event_id=head.event_id,
+        revision=2,
+        lineage_id="later",
+        evidence=first.evidence,
+        prior=prior_of(head),
+        open_questions={gap.ref: gap},
+    )
+    claim = extracted.claims[0].model_dump(mode="json")
+    claim["citations"][0]["evidence_ref"] = "e1"
+    generated(
+        monkeypatch,
+        {
+            "claims": [claim] if with_claims else [],
+            "resolved_questions": [
+                {"question_ref": unknown_ref, "citations": [{"evidence_ref": "e1", "quote": first.evidence[0].text}]}
+            ],
+        },
+    )
+    analyzer = SemanticAnalyzer(
+        extractor=DspyExtractor(lambda: None, model_identity="fixture", topics={}),
+        judgments=NewsJudgments(generated=TaskBackend({}), cache=MemoryCache()),
+        topics=(),
+    )
+    value = asyncio.run(analyzer.extract(source, Budget.start(5)))
+    assert len(value.claims) == int(with_claims)
+    assert value.resolved_questions == ()
+    adopted = assemble_update(source, value, head, adopted_at_ms=STAMP + 20) or head
+    assert adopted.open_questions == (gap,)
+
+
+@pytest.mark.parametrize("grounded", [False, True])
+def test_supplied_question_resolution_still_requires_an_exact_current_citation(
+    monkeypatch: pytest.MonkeyPatch, grounded: bool
+) -> None:
+    from tracefold.news.updates.contracts import KnowledgeGap
+
+    source, reply = extraction_source()
+    gap = KnowledgeGap(question="Who implements it?", claim_refs=(source.prior[0].claim.ref,))
+    source = source.model_copy(update={"open_questions": {gap.ref: gap}})
+    reply["resolved_questions"] = [
+        {
+            "question_ref": "q1",
+            "citations": [{"evidence_ref": "e1", "quote": source.evidence[0].text if grounded else "Invented."}],
+        }
+    ]
+    generated(monkeypatch, reply)
+    analyzer = SemanticAnalyzer(
+        extractor=DspyExtractor(lambda: None, model_identity="fixture", topics={}),
+        judgments=NewsJudgments(generated=TaskBackend({}), cache=MemoryCache()),
+        topics=(),
+    )
+    if grounded:
+        value = asyncio.run(analyzer.extract(source, Budget.start(5)))
+        assert value.resolved_questions[0].question_ref == gap.ref
+    else:
+        with pytest.raises(ContractFault, match="news_resolution_not_grounded"):
+            asyncio.run(analyzer.extract(source, Budget.start(5)))
