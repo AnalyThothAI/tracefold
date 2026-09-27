@@ -1,893 +1,160 @@
-# PostgreSQL migrations
+# Database migrations and recovery boundaries
 
-PostgreSQL plus Alembic's single head is the only schema authority. Runtime
-processes never execute DDL.
+[Handbook](README.md) · [Operations](OPERATIONS.md) · [Schema reference](generated/db-schema.md)
 
-## Current baseline
+The current schema is the single Alembic chain under
+[versions](../tracefold/platform/postgres/alembic/versions/), rooted at
+`20260831_0340`. Applied revision files are part of upgrade/restore correctness;
+documentation cleanup must not delete or rewrite them. This page owns the current
+procedure, not a chronological transcript of every historical deployment.
 
-`20260831_0340` is the single Alembic root. The current head is
-`20260927_0405`; a fresh PostgreSQL 18 database applies the baseline and the
-linear forward-only revisions. The baseline creates
-application tables, sequences, views, indexes, functions, triggers,
-constraints, and only the structural singleton rows required on an empty
-cluster. Extensions remain the empty-PGDATA bootstrap's responsibility.
+## 1. Determine the actual source and database heads
 
-## News revision ownership and source chains (`20260927_0405`)
-
-This additive revision preserves all adopted documents, evidence identities and
-delivery receipts. It permits both immutable EventUpdate v1 history and new v2
-adoptions. The v2 content hash includes current structured knowledge, topic
-contributions and source versions, so a resolved question or corrected source
-cannot disappear as a false no-op.
-
-Item revisions gain a content digest, predecessor and monotonic local sequence.
-Existing revisions retain their IDs and bodies; metadata is backfilled in
-receipt-time/hash order, without claiming a previously unavailable provider edit
-sequence. Each Item gains an observation high-water mark. New revision identities
-chain to their predecessor, allowing A→B→A while ignoring older envelopes and
-repeated current content. GIN indexes support claim-target queries across Events
-in News and Trading; no new relationship ledger or worker is introduced.
-
-Stop Serve and Workers, retain a verified backup, apply the revision and start
-the matching image. This transactional backfill and index build uses a 5-second
-lock timeout and 300-second statement timeout; production-scale duration remains
-unmeasured. A failure rolls back. Downgrade refuses: restore the verified database
-and matching image together. The isolated migration regression verifies that
-existing documents, source bodies and revision IDs survive unchanged.
-
-## News EventUpdate cut (`20260926_0404`)
-
-News adopts exact EventUpdate revisions and notifies claim-scoped intents (#706).
-New News tables hold semantic work per Event (`news_semantic_work`, pending while
-`wanted_revision > done_revision`, at most three attempts per wanted revision),
-insert-only stage checkpoints and observations, insert-only adopted updates with
-one CAS head per Event, the judgment cache (14-day retention), the notification
-marker with its last plan and claim decisions, and later bodies of one provider
-record (`news_item_revisions`). Trading gets `trading_source_amendments`; the
-News outbox admits `source_update` beside `catalyst` and `oi`.
-
-`news_delivery_queue` and `news_deliveries` are now keyed by `intent_id`. Every
-existing row is backfilled with `news_identity('legacy_intent', [event_id, kind])`,
-the same value as the Python `legacy_intent_id`, and a CHECK keeps each legacy
-`first`/`followup` row on exactly that identity. State, card, receipt and history
-are unchanged and nothing is re-sent. An `update` intent carries its content
-revision, claim refs, key flag and the exact frozen body whose digest must equal
-`payload_sha256`; only an `update` row may be `ambiguous`. The review task view
-joins one reader delivery per Event across `first` and `update`. `news_verdicts`
-receives no new writes and keeps its rows.
-
-Stop Workers and serve, keep a verified backup, apply the revision, then start
-the matching image. The backfill rewrites each delivery row once under ACCESS
-EXCLUSIVE (5-second lock, 300-second statement limit); production row counts are
-tens of thousands and the duration at that scale is unmeasured. Failure rolls
-back atomically. Downgrade refuses; restore the verified pre-0404 backup and
-image to go back.
-
-## Native execution evidence cut (`20260926_0403`)
-
-The existing execution ledger now enforces native trade identity by account slot,
-venue environment, instrument and trade ID. Economic fills, costs and verified
-Plan associations are separate immutable facts; a terminal order receipt fixes
-its complete native trade set. Conflicting quantities, prices, times or order
-identities fail the whole append batch. Historical engine observations and Plan
-terminations are retained without assigning inferred UUIDs a native trade ID.
-
-The read model uses one evidence source per Plan. Once native evidence is
-associated, incomplete native sets stay incomplete; historical aggregate fills
-cannot fill their gaps. Complete evidence supplies actual exit purpose/time to
-the execution list, totals and post-stop cooldown. The original termination and
-verification time remain separately visible. Missing funding remains unknown.
-
-Stop writers and serve, retain a verified backup, apply the forward revision,
-then start matching Runtime, serve and web images together. The nullable columns
-need no row rewrite; the new partial indexes begin empty. This migration does
-not read the venue or apply historical corrections. Rollback requires restoring
-the verified database and matching images as one contract.
-
-## Runtime observation truth cut (`20260926_0402`)
-
-This forward revision adds separate failure and last-success clocks for account
-projection, convergence and venue reads, plus native recovery diagnostics. It
-widens protection to include `pending` and `unknown`. The one-time SQL
-conversion preserves current v2 account rows as v3 snapshots, marks their Plan
-association and protection unknown, and leaves Plans, controls and observations
-untouched. Application readers accept only v3 after the cut.
-
-Record a bounded `tracefold trading diagnose` sample and a verified backup;
-stop the Runtime and serve, apply the migration, then start the matching
-Runtime, serve and web images together. A pre-cut image cannot read the new
-account contract. Roll back only by restoring the verified pre-cut database and
-matching images while the venue account is authoritatively flat.
-
-## Single Binance connection cut (`20260925_0401`)
-
-Stop Analysis and Nautilus, reconcile open plans and venue orders, and keep a
-verified backup before upgrading. The migration refuses mixed active execution
-scopes in one account slot. It stores the existing opaque Nautilus namespace in
-the control row, retires unplanned old Signals, and removes mode columns from
-Signal, Plan and Runtime storage. Existing Plan, order and observation identities
-remain unchanged. No runtime reader accepts the old mode fields after this cut.
-
-Edit `config.yaml` before starting the new image: replace
-`trading.execution.mode` with `trading.execution.enabled` and optional
-`trading.execution.binance.environment` (`LIVE`, `DEMO`, `TESTNET`; omission uses
-the pinned SDK default). Remove `trading.analysis.data_environment` and
-`strategy_publication_enabled`. The configuration schema rejects those retired
-keys; there is no compatibility loader. Verify the selected connection and
-account slot with `tracefold config` and `tracefold trading status` before
-starting Nautilus. Do not change a slot's venue target while it has a Runtime
-state row; use a separately reviewed account slot for a different account.
-
-## Retired online shadow paths (`20260925_0400`)
-
-The online simulated fill and PnL producer is removed. Pending historical
-`shadow_simulation` evaluations become `unevaluable` with reason
-`online_shadow_retired`; completed historical rows and their source and archive
-references remain unchanged. This revision does not create a real fill, fee,
-funding, or realized PnL from a simulated result. Stop Analysis writers and
-retain the verified backup before applying the new image.
-
-## Trading Agent V3 cut (`20260925_0398`)
-
-This revision adds the final Attempt manifest and termination receipt, plus the
-requested and served model route on each model call. It renames the Signal
-indexes to current names and enforces V3 Signal, directed WATCH and V4 Decision
-contracts on new writes. The checks are `NOT VALID`: existing V1/V2 Signal and
-old WATCH/Decision rows remain in PostgreSQL for historical inspection. Current
-workers and Nautilus consume only the new contracts; old waiting WATCH rows are
-inert and are not converted into a new plan.
-
-Before switching images, stop new Analysis admission and reconcile active
-Signal plans with the venue. The current Nautilus process must not be replaced
-while a pre-V3 Signal plan is nonterminal; confirm the account and plan ledger
-under the existing Runtime's authority. Do not infer a fill, flatten an account
-or delete a historical row as part of this schema migration. Keep the verified
-pre-cut backup and use the normal forward recovery path if the cut fails.
-
-This squash is the operator-authorized exception recorded by issue #449. This
-source may merge or deploy only after every supported pre-cut database is
-advanced with the recorded old image to exact terminal head `20260831_0340`, a
-verified backup receipt is recorded, and the stopped-writer catalog cut passes.
-The terminal identity is then reused while revisions
-`20260818_0275` through `20260831_0339`, the old contents of `0340`, and the
-role/ACL bootstrap SQL were removed. An already-stamped database therefore
-does not replay baseline DDL or rewrite business rows. Git history and the
-recorded pre-cut image remain the recovery authority for a pre-baseline backup.
-
-The stopped-writer one-time catalog cut must rename `tracefold_owner` to
-`tracefold`, remove the Serve/Workers/Nautilus roles and their ACL/default-ACL
-entries, and preserve the terminal revision, normalized schema fingerprint,
-row counts, and business identity aggregates. Its mismatch preflight must run
-before catalog writes. The operator records the exact old SHA/image, backup,
-before/after identities, and startup smoke receipt; current source contains no
-cutover helper, old-role repair, fallback, dual head, or compatibility path.
-
-## Authoring contract
-
-After the baseline, every real schema or durable-data change is a new linear,
-forward-only revision. Published revisions are immutable; a correction is a
-new revision. A revision is warranted only for a table, column, view, index,
-function, trigger, constraint, or durable-data change—not for Python
-refactors, timeout values, presentation, or application identities.
-
-Every revision records:
-
-- why PostgreSQL must change and the current source revision;
-- lock level/order, statement and lock timeouts, estimated rows/bytes, and
-  rewrite or index-build behavior;
-- preflight, maintenance boundary, failure state, and roll-forward or verified
-  backup-restore path;
-- archive/current compatibility and the exact PostgreSQL 18 image used by its
-  evidence.
-
-Required evidence is a fresh database to head, head-to-head no-op, the smallest
-historical fixture affected, and bounded real-PostgreSQL checks for destructive,
-locking, or backfill behavior. Business processes remain behind the maintenance
-gate until migration succeeds. An irreversible downgrade is a verified backup
-restore, never invented reverse DDL.
-
-## Operator archive before a destructive revision
-
-A revision that deletes durable data refuses to run rather than deleting it for
-the operator. The revisions below expect the same archive
-step first: a `pg_dump` of the affected rows into `~/.tracefold/backups/`, taken
-after the writers are stopped by the canonical migration gate, so the dump and
-the database cannot diverge between the two.
-
-`20260903_0355` drops the six dead `trading_cases` columns and narrows three
-closed vocabularies. It counts the rows that still use a retired value and
-raises `trading_retired_values_present` with both totals if any exist. To
-upgrade such a database:
+Read the checked-out source head without a database call:
 
 ```bash
-pg_dump --data-only --table=trading_cases --table=trading_candidate_gate_decisions \
-  > ~/.tracefold/backups/pre-0355-trading-retired-values-$(date +%Y%m%d).sql
-
-# The admission ledger first: `trading_candidate_gate_decisions.case_id` references
-# `trading_cases`, so a `CASE_CREATED` row pointing at a retired-state Case would
-# otherwise refuse that Case's delete. Deleting only its retired *values* is not
-# enough, because the row that links it is `CASE_CREATED` and not itself retired.
-psql -c "DELETE FROM trading_candidate_gate_decisions
-          WHERE status = 'RESEARCH_ONLY'
-             OR stage IN ('capability', 'catalog', 'routing')
-             OR case_id IN (SELECT case_id FROM trading_cases
-                             WHERE state IN ('POLICY_REJECTED', 'INTENT_EMITTED', 'ORDER_PREPARED'))"
-psql -c "DELETE FROM trading_cases
-          WHERE state IN ('POLICY_REJECTED', 'INTENT_EMITTED', 'ORDER_PREPARED')"
+uv run python -c 'from tracefold.platform.postgres.migrations import latest_migration_version; print(latest_migration_version())'
 ```
 
-A retired-state Case can carry no Signal — `enforce_trading_case_signal_link`
-allows one only on `SIGNAL_EMITTED` — so the admission ledger is the only
-foreign key in the way.
-
-The dump is the only copy afterwards: the six columns' contents go with the
-columns, and `downgrade` refuses rather than inventing reverse DDL. Restore it
-into a scratch database to read an archived row. `20260901_0347` recorded the
-same step for the 22 execution tables it dropped, in
-`~/.tracefold/backups/pre-0347-retired-trading-tables-20260901.sql`.
-
-A Case that is still `PENDING` or `RUNNING` is not affected: those states
-survive, and the migration gate has already stopped the lane that would settle
-them.
-
-`20260903_0356` makes `account_slot` the execution identity. It renames
-`trading_execution_observations.runtime_profile_id` and
-`trading_operator_intents.target_profile_id` to `account_slot`, backfills their
-values and their `payload` keys from the activation ledger, folds
-`trading_execution_runtime_control_state` onto one row per slot, drops
-`trading_execution_runtime_state.runtime_profile_id`, `credential_ready` and
-`activation_ready`, and drops `trading_execution_profile_activations` and
-`trading_decision_runtime`. It refuses with
-`trading_folded_disposition_collisions` when two profiles on the same slot each
-hold a disposition Observation for the same Signal or Command, because after the
-fold those two rows are one key:
+Read the database's current migration status through its configured container:
 
 ```bash
-pg_dump --data-only --table=trading_execution_observations \
-  --table=trading_execution_profile_activations --table=trading_decision_runtime \
-  > ~/.tracefold/backups/pre-0356-trading-execution-identity-$(date +%Y%m%d).sql
-
-# Keep the newest disposition of each colliding pair and delete the rest; the
-# append-only trigger has to be lifted for that one statement, with every writer
-# already stopped by the canonical migration gate.
+docker compose exec -T workers tracefold db audit
 ```
 
-It also refuses with `trading_execution_identity_unmapped` when an Observation
-or Command names a profile that has no activation row, because that value has no
-account slot to become.
+The EventUpdate chain includes `20260926_0404` and
+`20260927_0405`. The source function and database status above remain authoritative
+if a later revision is added. Do not copy an old head into `alembic_version`, infer
+compatibility from a successful import, or start new writers before migration ends.
 
-**Two operator steps go with this revision.** Delete
-`trading.execution.profile_id` from `~/.tracefold/config.yaml` — strict settings
-validation refuses the retired key — and apply it with the Binance account flat:
-deterministic client order ids move from `tracefold:{profile_id}:{mode}` to
-`tracefold:{account_slot}:{mode}`, so an order opened under the old namespace can
-no longer be reclaimed by recovery.
+## 2. Supported upgrade sequence
 
-`20260903_0357` makes the contract the only validator. It drops the twelve
-JSON-shape CHECKs on `trading_execution_observations`, `trading_trade_signals`,
-`trading_operator_intents` and `trading_execution_runtime_state`, and with them
-the four functions they called (`trading_execution_metadata_valid`,
-`trading_execution_string_array_valid`,
-`trading_execution_market_key_array_valid`, `trading_jsonb_object_size`); no
-function named `trading_*` is left. What stays is what only the database can
-enforce: primary keys, foreign keys, NOT NULL, the enumerated value sets, the
-identity regexes, the clock inequalities and the append-only triggers. It also
-drops nine columns — `trading_execution_observations.payload_digest`,
-`trading_trade_signals.alpha_contract_sha256` and `evidence_sha256`,
-`trading_operator_intents.confirmation_identity`, and
-`trading_execution_runtime_state.singleton_ready`, `portfolio_ready`,
-`control_plane_ready`, `audit_ready` and `day_start_ready` — and removes the
-same keys from every stored `payload`, because the contracts forbid unknown keys
-and a row that still carried one could not be read back.
-`trading_cases.manifest_sha256` stays: Case idempotency is still stated with it.
-
-**#520 PR-B carries no revision but one operator step.** Delete
-`trading.control.console_write_token_file` from `~/.tracefold/config.yaml` if it
-is present — strict settings validation refuses the retired key — and drop the
-`trading_console_write_token` file from the Serve mount. The one Command POST now
-authenticates with the bootstrap `ws_token` as a bearer header. The
-`~/.tracefold/trading_console_write_token` file itself can be deleted once no
-compose file references it.
-
-```bash
-pg_dump --data-only --table=trading_execution_observations \
-  --table=trading_trade_signals --table=trading_operator_intents \
-  --table=trading_execution_runtime_state \
-  > ~/.tracefold/backups/pre-0357-trading-json-checks-$(date +%Y%m%d).sql
+```mermaid
+flowchart TB
+    Inspect["Inspect source, image,<br/>database head and account state"] --> Backup["Preserve matched recovery<br/>identity and verified backup"]
+    Backup --> Stop["Coordinate affected writers<br/>and independent Runtime"]
+    Stop --> Config["Validate exact operator config<br/>and removed field paths"]
+    Config --> Migrate["Apply the supported Alembic chain"]
+    Migrate --> Result{"Migration completed?"}
+    Result -->|"yes"| Start["Start matching application roles<br/>then explicitly manage Runtime"]
+    Result -->|"no"| Diagnose["Keep writers stopped<br/>inspect the specific revision"]
+    Start --> Check["Verify readiness and<br/>durable business progress"]
 ```
 
-The dump is the only copy afterwards: `downgrade` refuses, and the nine columns
-and their payload keys are gone from the live rows as well. No operator config
-step goes with it, and the account need not be flat.
-
-`20260904_0360` deletes the lane columns no rule reads (#537 PR-3):
-`trading_cases.attempt_count`, `lease_expires_at_ms`, `supplemental_source_keys`,
-`strategy_id`, `strategy_version` and `strategy_config_digest`;
-`trading_candidate_gate_decisions.release_revision`, `gate_version` and
-`gate_config_digest`; and `trading_trade_signals.alpha_metadata`, whose key is
-also removed from every stored `payload` for the reason `0357`'s were. The
-admission primary key narrows to `(source_key)`, with the rulebook backfilled
-into `evidence` first, and any duplicate source key collapsing to the row every
-reader already showed — `CASE_CREATED` first, then the newest evaluation. The
-Runtime projection's `routes` array becomes `routes_count`.
-
-```bash
-pg_dump --data-only --table=trading_cases \
-  --table=trading_candidate_gate_decisions --table=trading_trade_signals \
-  --table=trading_execution_runtime_state \
-  > ~/.tracefold/backups/pre-0360-trading-lane-columns-$(date +%Y%m%d).sql
-```
-
-It refuses nothing and needs no operator config step, but it changes the schema
-the execution Runtime writes, so `make up` refuses to apply it while the Nautilus
-container is running: `make runtime-build`, then `make runtime-down` with the
-account flat, then `make up`, then `make runtime-up`.
-
-`20260904_0361` deletes the Runtime identity ceremony (#537 PR-4):
-`trading_execution_runtime_state.runtime_release`, `config_sha256`,
-`runtime_revision`, `image_digest`, `credential_fingerprint` and
-`lifecycle_state`, with the seven CHECK constraints that only ever constrained
-them; and `trading_execution_observations.runtime_release`, whose key is also
-removed from every stored `payload` for the reason `0357`'s and `0360`'s were —
-`ExecutionObservationV1` forbids extra keys, so a payload that still carried it
-would stop materialising, including the day-start equity fact the Runtime reads
-back before it will size an entry.
-
-```bash
-pg_dump --data-only --table=trading_execution_observations \
-  --table=trading_execution_runtime_state \
-  > ~/.tracefold/backups/pre-0361-trading-runtime-identity-$(date +%Y%m%d).sql
-```
-
-It refuses nothing and needs no operator config step. Like `0360` it changes the
-schema the execution Runtime writes, so the order is `make runtime-build`, then
-`make runtime-down` with the account flat, then `make up`, then `make runtime-up`.
-The account must be flat for a second reason this time: a Runtime built from this
-revision derives its Nautilus instance id from `account_slot:mode` rather than
-from the configuration digest, and derives protection client order ids from the
-replacement generation alone, so a stop resting at the venue under an id an older
-build chose is not this build's and is refused as unowned exposure.
-
-`20260904_0362` deletes the two CHECKs that ordered a venue's clock against this
-host's (#544).
-
-`news_oi_signals_available_clock_check` asserted
-`available_at_ms >= observed_at_ms AND available_at_ms >= created_at_ms`. A frame
-stamped a few hundred milliseconds ahead was refused, `_store_frame` does not
-classify `psycopg.errors.CheckViolation`, and the News Workers process exited on
-it seven times in six hours on 2026-09-04.
-`news_market_liquidations_time_order` asserted `received_at_ms >= event_at_ms`
-over the same pair of clocks. It never fired, because `parse_liquidation` returned
-`None` for such a frame first — a guard that existed only to keep this CHECK
-quiet, and whose price was discarding a forced trade that had really happened.
-That guard is deleted in the same change; leaving the CHECK would have put the
-refusal straight back one layer down, as the same fatal `CheckViolation`.
-
-The revision archives nothing and refuses nothing: no row is read, written or
-revalidated, every stored row already satisfies both deleted predicates, and
-`news_market_liquidations` holds no rows at all. It needs no operator config step
-and no stopped writer — dropping a CHECK only widens what the table accepts, so a
-writer on the old schema stays correct against the new one — and it touches no
-table the execution Runtime writes, so `make up` alone applies it.
-
-Unlike the hard cuts around it, it has a real `downgrade`, because it deletes
-rules and not data. Each re-added CHECK is validated against every stored row, so
-a database that has since accepted an ahead-of-host fact refuses the downgrade
-rather than deleting that fact, which is the correct refusal and the reason to
-roll forward instead. The walk to base still stops at `20260904_0361`, one
-revision later, and rolls 0362's re-added CHECKs back with it.
-
-`20260904_0363` recreates `news_review_task_source_v1` so the verdict is joined
-to the evidence snapshot it judged (#548 PR-B.2). The view took the *newest*
-snapshot per Event and then required `s.evidence_version = v.evidence_version`
-against the newest model triage verdict. A member joining an existing Event
-appends a snapshot but does not re-run triage, so an Event with a `v2` snapshot
-and a `v1` verdict satisfied neither side and vanished from the view — with its
-verdict, its delivery and its accepted review. `freeze` projects that view while
-`load_case` reads the snapshot by version, so the two disagreed about the same
-accepted review; #534 lost four accepted Gold cases exactly this way. The
-snapshot lateral is now keyed to `v.evidence_version`, and
-`(event_id, evidence_version)` is that table's primary key, so it still yields at
-most one row and the view still yields at most one row per Event.
-
-The result is a strict superset of the old one: when the newest snapshot is the
-judged one, both forms select the same row byte for byte, and only the Events the
-old form dropped are added. It writes and reads no row, changes no column, index,
-constraint or other object, and restates the view's `security_barrier`. It
-archives nothing, refuses nothing, needs no operator config step and touches no
-table the execution Runtime writes, so `make up` alone applies it. Its
-`downgrade` restores the previous definition exactly: a rule changed, not a fact,
-so the reversal only makes the freeze blind again to reviews whose Event has
-since gained a member.
-
-`20260905_0364` adds `workers_runtime.capabilities`, a `jsonb` object keyed by
-capability name (#553 PR-3). Until that revision, `workers_runtime` could say
-only whether the Workers process was alive, which was enough while every
-business fault was fatal: a faulted Trading lane, an unconstructable push sender
-and an unassemblable News Program all ended as `lifecycle_state = 'failed'`. That
-PR stops those from killing the process, so the process now legitimately stays
-`running` beside one dead capability, and this column is where it says which. It
-is a defaulted column addition, compatible in both directions: a writer on the
-previous revision never names it and gets `'{}'`, which reads as "this runtime
-published no report" rather than as a fault. `downgrade` drops it and loses only
-the current process's report, which the next start republishes.
-
-`20260905_0365` makes a market observation a stored fact and stops the OI ledger
-depending on an Event (#553 PR-1). Four provider Strategies publish market
-observations and the schema could hold two of them. `news_oi_signals` was
-reachable only through `news_events`, so a recovery frame — which never reaches
-Triage — produced no row at all, and a frame the title deduper merged into
-another Event produced no row either; `news_market_liquidations` refused any
-venue outside `binance`/`hyperliquid`, discarding 13 of the 143 real liquidation
-reports in the retained window, and had no foreign key, so a purged Item left its
-liquidation behind as an unreachable orphan; Strategy 2026 had nowhere to be
-stored at all; and the frames' own business payload — `relatedAddress`,
-`strategy.metrics` — was dropped by the metadata whitelist before persistence.
-
-`news_items` gains `market_kind`, `market_source_strategy_id`,
-`market_parse_status`, `market_parse_error` and `provider_params`, with two
-CHECKs stating that the four market columns are one fact and that a `parsed` row
-carries no reason while a `raw` one always does. `news_oi_signals` loses its
-`news_events` foreign key and its write-only `learning_epoch`, gains
-`raw_instrument`, `provider`, `received_at_ms`, `measurement_definition` and
-`historical`, and gains the unique `(source_item_id, metric_version)` that makes
-one provider record one observation. `news_market_liquidations` loses the venue
-allowlist, renames `venue` to `source_venue` and makes it nullable, gains
-`provider`, `raw_instrument`, `source_strategy_id` and `available_at_ms`, and
-gains the item foreign key with `ON DELETE CASCADE` it never had.
-`news_market_smart_money` is new.
-
-Two bounded backfills follow. Every retained Item a market Strategy reported is
-classified by Strategy id and marked `raw / market_backfill_not_reparsed`, which
-is the honest state of a frame no parser has been run against and not the same
-claim as "the parser ran and the template did not match". Then every OI
-observation an Event had swallowed is reconstructed from `news_event_members`,
-which carries the exact `fact_id` each observation was admitted under — so the
-identity is the same sha256 the live path computes and a leader whose row already
-exists collides on the observation key and is left untouched. Reconstructed rows
-are flagged `historical`: their `observed_at_ms` and `received_at_ms` are the
-original provider and host stamps and their `available_at_ms` is the rebuild
-moment, because that is genuinely the first instant any consumer could read them.
-The live trading trigger set excludes them and every reader shows them.
-
-Writers must be stopped: the ledger gains a unique key the old writer does not
-know and the liquidation table renames a column the old writer names, so `make
-up`'s stop is the boundary this revision needs. `news_verdicts_current_judgment_check`
-is deliberately untouched — the market judgment branches it validates describe
-verdicts already written, and no new verdict of those origins is produced after
-this revision. `downgrade` is refused: the new columns and table hold evidence
-that exists nowhere else, so a mistake here is rolled forward.
-
-`20260906_0368` moves "the catalogue was refreshed at T" off every instrument row
-(#570 A11). `news_market_instruments.last_seen_ms` answered two questions with one
-number: when a refresh last saw a contract, which is what the status page reads,
-and when the contract's identity was observed. The first is a fact about a venue
-answering a complete catalogue, so recording it per row made every six-hourly
-refresh rewrite the whole table — the live audit measured 3 790 237 cumulative
-updates across 16 493 rows and 1.82 GB of WAL for it. The new
-`news_market_instrument_snapshot_state` holds that fact once per venue, seeded in
-this revision from `max(last_seen_ms)` per venue so the console reports the same
-instant across the cutover, and the column that stays on the row is renamed
-`observed_at_ms`, together with the NOT NULL constraint that still carried the
-old column's name. From this revision on, a row and the listing event written
-beside it carry the same observation time; the rows that already exist keep the
-stamp their last full refresh left, which is a real observation of that contract
-and is never later than its identity's. They are deliberately not backfilled —
-rewriting all 16 493 to make the two exactly equal today would cost the whole-table
-rewrite this revision exists to stop.
-
-`20260906_0369` gives the Robinhood Chain wallet tape its three tables (#572
-PR-1): `news_market_wallet_fills`, `news_market_wallet_roster` and the one-row
-`news_market_wallet_tape_state`. It touches nothing that already exists — no
-`ALTER TABLE`, no foreign key, no lock outside the three new relations — so no
-writer has to be stopped for it, and the `news-chain-tape` task it serves is off
-until an operator sets `news.chain_tape.enabled`.
-
-Two decisions in it are worth reading before the next revision touches these
-tables. Amounts are `numeric(78,0)` because a single 18-decimal balance overflows
-`bigint` at four tokens of supply and the rules these feed compare two such
-quantities exactly; `usd` is a separate nullable `numeric(38,10)` because it is a
-derived dollar figure, and NULL there means `unpriced` rather than zero. And the
-state row carries two positions, not one: `high_water_*` is what has been
-classified and deliberately lags the chain head by the log overlap so the tip is
-re-read, while `noise_through_*` is what has been counted and never lags — a fill
-re-read across turns collapses on its primary key, but a count has no key to
-collapse on. `downgrade` is refused: the public RPC keeps state for about ten
-minutes and the provider's own tape is missing about two thirds of its closes, so
-nothing can rebuild a dropped fill.
-
-Writers and readers must both be stopped: the previous writer names `last_seen_ms`
-and this one names `observed_at_ms` and the new table, so neither runs against the
-other's schema, and the previous-revision reader is the more visible half — Serve's
-`universe_summary()` selects `max(last_seen_ms)`, so a Serve process left running
-across this revision fails the whole `/api/news/status` route. `make up` stops Serve
-as well as Workers before migrating, which is the boundary this revision needs. `downgrade` is
-refused: the old name would come back meaning something narrower than it used to,
-and a reader computing `max(last_seen_ms)` would report the last catalogue change
-as the last catalogue refresh.
-
-`20260906_0370` runs the production smart-money parser once over the records an
-earlier revision could only store unparsed (#562). `20260905_0365` marked every
-retained Strategy 2026 Item `raw / market_backfill_not_reparsed`, which was the
-honest state of a frame no parser had been run against; the parser now exists,
-and #560 taught it the provider's own `K`/`M`/`B` on every dollar figure. All 112
-of those Items are position reports the current parser reads: 111 gain a
-`news_market_smart_money` fact and become `parsed`, and one `Withdraw` line is
-left `raw` under `smart_money_template_unmatched`, which is the answer the parser
-actually gives rather than a claim that none was asked.
-
-It imports `parse_smart_money` rather than freezing a copy of the template the
-way `20260905_0365` froze the OI one. The two revisions are making opposite
-statements: `0365` reconstructed what the provider sent in 2026 and a later
-parser generation must not silently change that reconstruction, while this one
-is asked for exactly the answer today's parser gives, and a second copy of the
-regex here could disagree with the one every live frame goes through. The
-exception is named file by file in `tests/architecture/test_backend_boundaries.py`.
-
-A reparse is parse evidence, not a new observation (#553 §3.1). The provider
-stamps, the source identity and the stored title are untouched; the rebuilt facts
-take the rebuild moment as `available_at_ms`, because that is the first instant
-any consumer could read them; and `market_notify_state` is deliberately not
-written, so all 112 stay `historical` and no track, delivery or trade appears.
-The fact identity is recomputed with the production extractor, so a later replay
-of the same provider record collides with the row already there instead of
-writing a second one. It archives nothing, refuses nothing, needs no operator
-config step and touches no table the execution Runtime writes, so `make up` alone
-applies it. `downgrade` is refused: the facts are the only structured record of
-those reports, and restoring `market_backfill_not_reparsed` would restate a claim
-that is false the moment the parser has run.
-
-`20260906_0371` deletes the notification state of a rule that no longer exists
-and the two columns whose only reader went with it (#582). An unstructured
-market record — one whose template no parser could prove — used to be the loop's
-fourth rule branch: its own group, its own track, and its own card outside every
-suppression rule. Production sent four such cards in the feature's whole life,
-and each interrupted a reader with a sentence nobody could act on, so the branch
-is gone; the record is still stored, still on the page, and now reads
-`not_alerted` / `unstructured_record_not_alerted`. The revision deletes those
-`family = 'raw'` track rows, tightens `news_market_tracks_family_check` to the
-three families that remain, and drops `current_action` / `current_position_side`
-— the newest observation, rewritten every turn for a smart-money side-change
-rule that #582 §3.1 replaces with a 24 h round measured against `anchor_action`.
-The observations and the delivery receipts are untouched: the first are facts and
-the second are evidence that a reader was told. Writers must be stopped, because
-code that still names the dropped columns fails against the new schema, and
-`make up` is that boundary. `downgrade` is refused: re-creating the deleted rows
-would put groups back on a page as though a card were still coming for them.
-
-`20260906_0372` turns the wallet tape into a market family a reader receives
-(#572 PR-2). It replaces `news_items_market_kind_check` so `market_kind` admits a
-fifth value, `wallet`, widens `news_market_tracks_family_check` to the three
-families `20260906_0371` left plus this one, and adds three tables:
-`news_market_wallet_events` (the derived observation, a cascade child of
-`news_items`), `news_market_wallet_checks` (every verification attempt against a
-sell) and `news_market_wallet_outcomes` (the +1h/+4h price a card is judged by).
-
-The CHECK is replaced rather than extended because a CHECK is a single
-expression; the swap validates the existing rows once, which at the measured
-12.7k market Items is one short scan under the revision's own 60 s statement
-timeout, and a writer on the previous code inserts no `wallet` row and is
-unaffected. The events table is a child of `news_items` on purpose: a wallet card
-is an ordinary market Item, so the notification loop, the delivery ledger, the
-detail route and retention all reach it with no second mechanism, and the typed
-fact dies with its Item exactly as the other three market facts do. Checks are
-keyed on the fill's own `(chain_id, tx_hash, log_index)` and are written even
-when they fail, because "how often was the public node's ten-minute state window
-still open" is a question only the failures answer — and it is the audit trail
-behind the `site_reported` basis a card prints when it was not. Outcomes are keyed
-on `delivery_key` rather than on an Item because the subject of a receipt is the
-card a reader received, and one card can speak for several observations.
-`downgrade` is refused: the events are the observations cards were sent for, and
-the fills they were derived from expire on a 90-day retention the derived rows do
-not share.
-
-`20260906_0373` admits the tape's four-hourly digest as a third kind of wallet
-observation (#572 PR-3). One `ALTER TABLE` on `news_market_wallet_events` carries
-three CHECK replacements — the kind vocabulary gains `digest`, the identity
-predicate stops assuming every observation has a subject address, and the window
-predicate states the digest's own rule beside the one it already had — and two
-indexes follow it.
-
-The identity predicate is where the digest differs in substance. An `exit` and a
-`crowding` observation are about a wallet and a token and must carry both; a
-digest is about four hours of a whole roster and carries neither, and it says so
-with two empty strings. The zero address would be a claim about an address, and
-two more nullable columns would express one kind's absence in the schema of every
-other kind, so the predicate now states the difference: a digest must have both
-empty, and every other kind must have both as real addresses. The two indexes are
-the two reads PR-3 adds — `ix_news_market_wallet_events_event_at` for the console
-page's time window, and a partial `ix_news_market_wallet_events_digest` for "when
-did the last digest end", six rows a day against thousands of cards. Neither
-question is a prefix of the table's two existing indexes, which lead with `wallet`
-and with `token`. `downgrade` is refused: a narrower kind vocabulary would leave
-digest rows the CHECK rejects, and dropping them would delete summaries readers
-were sent.
-
-The revision also adds one defaulted column to the one-row
-`news_market_wallet_tape_state`: `digest_attempted_at_ms`, when the tape last got
-as far as trying to write a digest, whether or not that write committed. It has
-to be durable and it cannot live on a digest row, because the case it exists for
-is exactly the one where no digest row was written — a persistently refused write
-would otherwise leave the window due and call the model again on every
-two-second turn. A non-volatile `DEFAULT` is a catalogue entry on PostgreSQL 11+,
-so the column is added without a rewrite, and the existing row reads `0`, which
-means the same thing an absent column meant.
-
-## Database development standard
-
-1. The deployment has one non-superuser application login, `tracefold`.
-   Process categories use stable `application_name` values, not database roles
-   or ACL matrices.
-2. Connections default to autocommit. Use a short explicit transaction only
-   for an atomic write or a stated consistent snapshot; keep provider, model,
-   file, broker, large-JSON, and hashing work outside it.
-3. One production statement has one owner. Runtime, audit, and tests reuse that
-   statement or builder instead of carrying approximate copies.
-4. Bind values. Compose dynamic identifiers with `psycopg.sql`.
-5. Page, claim, purge, and backfill operations have a hard limit, deterministic
-   order, tie-breaker, and maximum transaction/payload budget.
-6. Natural PK/UNIQUE identities plus `ON CONFLICT` or conditional writes own
-   idempotency; do not implement check-then-write races.
-7. Keep cross-process, cross-table, economic-state, and append-only database
-   invariants. Typed application models normally own single-process payload
-   shape; internal permission denial is not a business rule.
-8. Use typed columns for query, join, and order keys. JSONB is for bounded
-   payloads that must be versioned as a whole; do not duplicate the same truth
-   in scalar columns and an unconstrained payload.
-9. A new index names its production query, predicate/order, measured scale,
-   and write/storage cost. Zero scans are deletion evidence only after a reset
-   and a complete representative business window.
-10. A migration serves an actual schema or durable-data change. The current
-    role model adds no application GRANT matrix. Planned downtime prefers
-    ordinary transactional DDL over compatibility or dual reads.
-11. Performance claims compare the same revision, configuration, parameters,
-    and workload window across application, pool, and PostgreSQL evidence.
-12. Every view, trigger, function, gate, timeout, index, and projection names a
-    current correctness or measured-performance owner. Otherwise remove it. A
-    new database role first proves a distinct trust domain; a process name is
-    not sufficient justification.
-
-### 20260919_0384: News evidence inputs (#664)
-
-This revision stacks on #663's `20260919_0383`. Stop writers under the existing
-maintenance gate, back up and verify restore before applying. Nullable Item
-material columns and delivery bindings require metadata locks; the time-window
-index scans Events. The migration uses 5-second lock and 600-second statement
-limits and rolls back atomically on failure. The statement budget includes
-revalidating the historical judgment CHECK, which hashes full evidence JSON; the
-26,615-verdict production restore exceeded the initial 120-second budget. Existing payloads, snapshots,
-verdicts, deliveries and accepted reviews are retained; missing material/time is
-not backfilled. The verdict contract permits v11 and optional typed told fields
-while retaining validation of historical versions. No downgrade rewrites facts:
-roll forward or restore the verified backup. Deploy the matching v11 application
-and native state together; changing this file does not authorize deployment.
-
-
-### 20260920_0385: Local News evidence (#668)
-
-Adds v12 to the existing stored-judgment constraint and a GiST trigram index on
-`news_events.comparison_title`. The synthetic 25,001-row audit showed the old
-similarity plan reading 6,401 recent Events for 64 raw candidates. This index
-supports bounded nearest-title retrieval; it does not promise a production latency.
-All historical Program versions, frozen executions and the 0384 webpage table remain.
-
-Run behind the normal stopped-writer migration gate: `news_events` takes a SHARE
-lock while building the index, then `news_verdicts` takes ACCESS EXCLUSIVE while
-validating the replacement CHECK. Lock timeout is 5 seconds and statement timeout
-600 seconds. There is no row rewrite or backfill. Production index-build duration
-and ledger validation at production scale remain unmeasured. Failure rolls back
-atomically; recover by rolling forward or restoring a verified backup. Downgrade
-refuses. Remove the retired webpage configuration key before the new image starts.
-
-
-### 20260923_0390: News triage policy v17, no storyline budget
-
-Adds `news_triage_policy_v17` to the model, OI and degraded branches of
-`news_verdicts_current_judgment_check`. The owner withdrew the #504 D2
-per-storyline budget on 2026-09-23 (reversing #675 §6), so `decide()` no longer
-withholds an ordinary push as `storyline:<key>:budget`; removing a withhold
-changes decisions, so `TRIAGE_POLICY_VERSION` moves and every verdict of every
-origin is written under the new value. Old Workers keep writing v16, which the
-new CHECK still admits; new Workers write v17, which only the new CHECK admits,
-so the revision lands before the new image starts, as the ordinary `make up`
-order already does.
-
-The revision restates the predicate in place exactly as `0386` does: it reads
-`pg_get_constraintdef`, refuses a definition that does not name v16 or that
-already names v17, adds the new literal to the three policy lists, and re-adds
-the constraint. The liquidation branch carries its own policy version and is
-untouched. No column, index, function or row changes; the v12-v16 `:budget`
-verdicts stay as written.
-
-Run behind the normal stopped-writer migration gate: one ACCESS EXCLUSIVE drop
-and add on `news_verdicts`, lock timeout 5 seconds, statement timeout 1800
-seconds because ADD CONSTRAINT revalidates every row through the canonical-JSON
-sha256 predicate. `NOT VALID` plus `VALIDATE CONSTRAINT` does not shorten that
-here: every pending revision runs in one transaction and the `DROP CONSTRAINT`
-already holds ACCESS EXCLUSIVE until commit, and stopping at `NOT VALID` would
-carry an unvalidated CHECK into every later restatement read from the live
-definition. Failure rolls back atomically; recover by rolling forward or
-restoring a verified backup. Downgrade refuses. The matching image also drops
-`news.policy.storyline_budget_window_s` and `storyline_budget_max`: remove them
-from the operator config before the new image starts, or it refuses to start.
-
-### 20260922_0389: Nautilus owns execution state (#680 PR-1)
-
-Deletes the private account proof the Runtime no longer writes. The
-`reconciliation`, `readiness` and `audit_gap` observation kinds leave the kind
-CHECK together with their rows (about 95 % of `trading_execution_observations`);
-the append-only trigger is lifted for that one DELETE inside the revision and
-recreated before it commits. `trading_execution_runtime_state` drops
-`execution_safe`, `startup_reconciled`, `account_flat`,
-`reconciliation_observed_at_ns` and `facts_expire_at_ns`, clears the v1
-`account_snapshot` document, disarms every row with `runtime_stopped`, and restates
-its arming rule as `NOT entries_armed OR (alive AND NOT unexpected_exposure)` and
-its protection vocabulary as `not_applicable`/`protected`/`unprotected`.
-`trading_trade_plans` drops `history_gap_reason`, narrows `status` to
-`prepared`/`open`/`closed` and admits the `external` exit reason; its guard
-function is recreated without the history-gap branch and keeps frozen intent,
-terminal immutability and the open clock. The heartbeat, `started_at_ns`, the plan
-lifecycle columns and `signal_disposition` rows are untouched.
-
-Run with the Runtime stopped, the Binance account flat and every plan terminal
-(`make runtime-down`, `make up`, `make runtime-up`): a plan still carrying a
-retired status fails the status CHECK and rolls the whole revision back. One
-transaction, ACCESS EXCLUSIVE on the observation ledger, the runtime-state row
-and the plan table in that order, `lock_timeout=5s`, `statement_timeout=300s`; the
-DELETE leaves dead tuples for autovacuum and the column drops are catalog-only.
-Downgrade refuses; read a deleted proof row from the pre-0389 backup restored into
-a scratch database.
-
-### 20260925_0397: Retire Workers Trading watchdog ledger
-
-Drops `platform_watchdog_alerts` after the Workers Trading watchdog is removed.
-Trading plans, execution observations, Runtime state, News deliveries and
-Workers runtime state remain. A populated alert ledger raises
-`watchdog_alerts_present` before DDL. Under the stopped-Workers migration gate,
-archive and clear it before upgrading:
-
-```bash
-pg_dump --data-only --table=platform_watchdog_alerts \
-  > ~/.tracefold/backups/pre-0397-watchdog-alerts-$(date +%Y%m%d).sql
-psql -c "DELETE FROM platform_watchdog_alerts"
-```
-
-Downgrade recreates an empty table for the historical image and cannot recover
-the old notification timestamps without the pre-cut backup. Remove
-`trading.watchdog_enabled` from operator configuration before starting the new
-image because the strict config model no longer accepts it.
-
-### 20260922_0388: Workers watchdog alert ledger (#680 PR-2)
-
-Created `platform_watchdog_alerts`, one row per condition the Trading watchdog
-watched (six at the time): whether the condition was active, when its episode opened,
-when the operator was last told about it (`NULL` until a message got through), and
-since when an active condition had read clear. It existed so "already alerted"
-survives a Workers restart — Workers restarted 10–21 times a day in the #680 audit
-window, and memory-held state would re-page every active condition on each one and
-lose the recovery message for one that cleared meanwhile. It is platform-owned
-bookkeeping beside `workers_runtime`, written only by the Workers singleton; no
-business decision reads it.
-
-`CREATE TABLE` touches no existing relation, rewrites nothing and builds no index
-beyond the new primary key; `lock_timeout=5s`, `statement_timeout=30s`. It runs
-behind the normal stopped-writer migration gate like every revision. An older
-image never names the table. Downgrade drops it, which loses only which conditions
-were last alerted: the next pass re-alerts whatever is still active. Nothing in the
-execution Runtime reads or writes it, so it can be applied while a Runtime is up
-with `TRACEFOLD_MIGRATE_UNDER_RUNTIME=1`.
-
-### 20260922_0387: News judgment v3, editorial v4, review v8, policy v16 (#675 PR-2)
-
-Admits `news_judgment_v3`, `news_triage_policy_v16` and `news_semantic_program_v13`
-to `news_verdicts_current_judgment_check`, and binds each contract version to the
-verdict shape that wrote it through the new
-`news_current_verdict_contract_shape_valid`, which is deliberately not `STRICT`:
-a `STRICT` predicate returns NULL for a NULL argument, `... AND NULL` is NULL and
-a CHECK admits a row whose predicate is NULL, so a verdict with no
-`judgment_origin` would have passed the one clause written to refuse it. #675 §1
-deletes `TradeRelevanceV1`,
-`magnitude` and `audience` from the model's output and adds `fact_kind` and
-`evidence_ref`, so the verdict, the editorial envelope and the policy all move at
-once. Old Workers cannot write under the new CHECK and new Workers cannot write
-under the old one, so there is no overlap window.
-
-Seven predicates are replaced and three created, and every one of them states the
-shape the ledger already holds beside the new one. `news_current_triage_verdict_valid`
-admits the v2 key set (`magnitude`, `audience`) and the v3 key set (`fact_kind`,
-`evidence_ref`); `news_current_model_editorial_valid` admits `news_editorial_v4`
-beside v3 and v2, with the `taxonomy_status` triple extracted into
-`news_current_editorial_taxonomy_slot_valid` so v3 and v4 cannot drift apart;
-`news_current_told_trace_valid` makes a told entry's `magnitude` optional, because
-the ledger projects the verdict and the verdict has none -- and it is restated from
-the definition `20260919_0384` left in the database, not from the one `20260902_0350`
-wrote, because `0384` had already rewritten it in place to make `assets` and
-`provenance_status` optional and a fresh copy of the original text would drop both
-keys and refuse every told trace the current Workers write; the rubric moves to
-`news_review_v8` through its own dimension, `expected` and payload predicates beside
-the v6 and v7 ones, which are untouched. Two objects move because the code that
-writes them did: `news_review_task_source_v1` pinned `news_judgment_v2` on the
-lateral that picks an Event's newest model verdict, and
-`news_current_review_selection_valid` pinned `news_review_sampler_v3`. Without
-either, the whole review plane would answer `insufficient_evidence` and refuse
-every stored review.
-
-Nothing is rewritten. Every verdict, envelope, told trace and accepted review
-already in the ledger keeps validating under the predicate that describes it, and
-the read boundaries -- `storage.decisions.editorial_read_shape` and
-`storage.decisions.triage_verdict_read_shape` -- are what let one API schema serve
-both shapes.
-
-Run behind the normal stopped-writer migration gate: function and view replacement,
-then one ACCESS EXCLUSIVE constraint drop and add on `news_verdicts`, in one
-transaction, with `lock_timeout=5s` and `statement_timeout=1800s`. The ADD
-CONSTRAINT re-validates every verdict row through the canonical-JSON sha256
-predicate; production scale is the 30-day retention, low tens of thousands of rows.
-The revision refuses a constraint it does not recognize and refuses to run twice.
-Downgrade refuses; recover by roll-forward or verified backup restore.
-
-### 20260922_0386: News triage policy v15 (#675 PR-1)
-
-Adds `news_triage_policy_v15` to the model, OI and degraded branches of
-`news_verdicts_current_judgment_check`. `decide()` gains the #675 §3 decision
-table — three ordered rows that read the taxonomy axes, `source_authority`, the
-Event's count of independent member texts and the told ledger, and downgrade an
-already-resolved realtime push to `drop` — so `TRIAGE_POLICY_VERSION` moves and
-every verdict of every origin is written under the new value. Old Workers cannot
-write under the new CHECK and new Workers cannot write under the old one, so
-there is no overlap window.
-
-The revision restates the existing predicate in place, the way `0385` does,
-rather than retyping a 200-line expression shared by four judgment origins: it
-reads `pg_get_constraintdef`, refuses a definition that does not name v14 or that
-already names v15, adds the new literal to the three policy lists, and re-adds
-the constraint. The liquidation branch carries its own policy version and is
-untouched. No column, index or function changes; the new rule names are ordinary
-`override_rule` text and need no vocabulary change in the database.
-
-Run behind the normal stopped-writer migration gate: one ACCESS EXCLUSIVE drop
-and add on `news_verdicts`, lock timeout 5 seconds, statement timeout 1800
-seconds because ADD CONSTRAINT revalidates every row through the canonical-JSON
-sha256 predicate. No row rewrite, no backfill; verdicts written under v11-v14 keep
-validating and are not rewritten. Failure rolls back atomically; recover by
-rolling forward or restoring a verified backup. Downgrade refuses. The matching
-image also carries a new Program SHA, because the EventSemantics seed moved.
-
-
-### 20260925_0399: full wallet membership and continuous complete prefix (#697)
-
-Stop Workers and Serve before this hard cut. Back up the roster, tape state, fills,
-episodes, Items, tracks and deliveries; retain the matching old image/config for a verified
-restore. Remove the four retired roster ranking keys, then run the normal migration entry
-with the new image and start that image only. There is no mixed-writer compatibility period.
-Do not enable notifications or change their recipients as part of this migration.
-
-The migration archives historical roster statistics into `archived_source_statistics` before
-removing the ranking columns/constraint. It adds durable retry times/failure counts and separate
-blocked-receipt/enrichment diagnostics to the existing tape state, with no new task or table.
-Same-set updates preserve membership version and monitoring time.
-
-An old partial high-water cursor did not persist a provable safe log boundary. The migration
-archives that cursor as `pre_0399_cursor`, conservatively resumes at the preceding complete
-block and clears the suspect scanned cutoff. Complete but inconsistent encodings also clear
-the cutoff for re-establishment. This repair must precede normal monotonic coverage writes,
-otherwise an old oversized scanned position could survive forever. The collector must establish
-a new complete cutoff before positive conclusions; overlap re-reading and natural fill keys
-avoid duplicates. No derived marker, detection cutover, episode, intent or delivery identity is reset.
-
-Raw initial/send snapshots, frozen cards and receipts are unchanged. A single storage read
-projection drops only the three known retired member keys before strict current validation;
-unknown fields still fail. New writes contain only the current model. The roster statistics
-archive is historical evidence, not a second current ranking or monitoring path.
-
-DDL takes ACCESS EXCLUSIVE locks in roster-then-state order, with a 5-second lock timeout
-and 60-second statement timeout. The roster archive is a one-time row rewrite and the cursor
-repair affects one state row; test the archive cost against the deployment's roster history.
-All changes are transactional. An error rolls back; recovery is roll-forward or verified
-pre-migration backup restore, not a destructive downgrade.
-
-After restart, check a successful full-source refresh, current coverage and retry state,
-progress beyond the repaired cursor, and the episode/intent/delivery read model. A naturally
-occurring five-buyer event is not required for deployment diagnosis; deterministic PostgreSQL
-regressions exercise the positive and missing-sell notification paths. Implementation tests
-are not evidence of live endpoint capacity or production deployment.
+Use the supported [Makefile](../Makefile) deployment/migration entry from its
+permitted main checkout. Normal `make up` waits for migration exit zero before
+starting Serve, Workers and Analysis. The separate account owner is not restarted
+implicitly. A mismatched schema beneath a running Runtime is an operational
+boundary, not a warning to bypass with an environment flag.
+
+Before maintenance, identify what the venue actually holds. Stopping Nautilus is
+not an exit receipt, and an accepted flatten request is not confirmed flatness.
+Coordinate account management through the [execution runbook](OPERATIONS.md#5-trading-and-account-operations),
+then stop affected writers. Never assume a News-only code change makes its schema
+safe for another process that still runs an older contract.
+
+Validate config without exposing secrets. Strict settings reject removed fields,
+so remove only the documented key at its exact YAML path. `tracefold init` does not
+rewrite an existing config; `init --force` is not a migration tool. [Setup](SETUP.md)
+owns initialization and role-appropriate mounts.
+
+Record backup, source/image IDs, pre/post heads, migration result and restarted
+roles. Inspect readiness and the actual source/semantic/notification/account
+progress separately; a green HTTP endpoint does not verify all of them.
+
+## 3. EventUpdate cut: 0404 and 0405
+
+| Revision | Current contract established | Source |
+| --- | --- | --- |
+| `20260926_0404` | Item revisions, semantic work/checkpoints/observations, adopted EventUpdates/heads, notification work, intent-keyed delivery, public source updates and Trading amendments | [0404](../tracefold/platform/postgres/alembic/versions/20260926_0404_news_event_updates.py) |
+| `20260927_0405` | Source revision sequence/chain metadata, immutable v1 plus new v2 updates, indexed cross-Event claim targeting | [0405](../tracefold/platform/postgres/alembic/versions/20260927_0405_news_revision_ownership.py) |
+
+Both revisions are **forward-only**. Stop the affected Serve/Workers/Analysis
+roles, coordinate the independent Runtime as above, preserve a verified recovery
+backup and migrate before starting the matching image. The new source contracts
+and amendment reader must not be mixed with an old writer.
+
+Remove **`news.policy`** and **`llm.news_compiler_reflection`** from the operator
+config. Do not reinstate the old Program/GEPA/release/canary runtime to make a
+historical artifact executable. The current [ReviewDesk and calibration](modules/review.md)
+are separate retained capabilities.
+
+Historical verdicts, reviews and learning evidence are not synthesized into new
+claims. Existing sent receipts retain their real payload/history; unsent legacy
+work does not become a fresh current intent. Inspect the revision's exact data
+transformation, not an assumed one-to-one rewrite from old verdict to new update.
+
+The current [News guide](modules/news.md) owns input versus content revision,
+checkpoint identity, current source contribution and notification semantics.
+`retry-work` operates on exact failed work, not on the migration chain. A changed
+prompt or new image does not automatically relabel/recompute historical evidence.
+
+## 4. Older supported upgrades can require explicit preparation
+
+Some supported older revisions deliberately refuse unsafe data rather than silently
+coercing it. Read the failing revision's preflight before changing data. Important
+examples are:
+
+| Refusal / older boundary | Required interpretation |
+| --- | --- |
+| Retired Case/admission values at the `0355` hard cut | The revision names the incompatible rows. Archive the exact affected evidence before an authorized scoped removal; dependent admission rows must be handled before their Cases. Do not delete all current Cases or use CASCADE. |
+| Signal/entry-plan contract changes or an open plan | An old nonterminal execution intent may not be reinterpretable. Preserve and resolve the account/plan under its matching runtime before the coordinated cut. |
+| Runtime observation and connection cuts | The writer's image, runtime identity and snapshot schema must agree; older snapshots are not valid current evidence. |
+| Native execution evidence additions | New columns/coverage do not prove complete historical native fills, fees or funding. Verified history recovery is a separate bounded operation. |
+| Unknown/unsupported pre-baseline revision | Current source is not a general upgrader for arbitrary old backups. Use its recorded pre-cut source/image and original procedure first. |
+
+The source for the first example is
+[0355](../tracefold/platform/postgres/alembic/versions/20260903_0355_trading_case_dead_columns.py).
+Its executable check and the backup's matching historical documentation own the
+precise affected values. Do not carry the entire former schema or destructive
+repair SQL into a fresh-install guide.
+
+The named volume's `initdb` hook applies only to a genuinely new cluster. It is not
+a generic role-repair tool for an unknown restored database. Preserve the separate
+bootstrap/application credentials and restore using the appropriate recorded
+identity, never by blindly replacing grants or stamping the head.
+
+## 5. Failure and rollback
+
+A failing migration is not a reason to start readers/writers against the partial
+upgrade. Capture its revision, sanitized error, actual database head and transaction
+outcome. PostgreSQL transaction rollback and the revision's own deadlines determine
+what committed. Verify it rather than guessing from elapsed time or container exit.
+
+For a same-schema code rollback, the narrow `make deploy-image` operation checks
+image/source/database compatibility. For a forward-only schema cut, recovery
+requires the verified pre-cut backup and matching image in a coordinated restore;
+newer-source downgrade is intentionally unavailable. Do not use `alembic stamp`,
+manual `alembic_version` edits, empty migrations or compatibility aliases to hide
+an unperformed transformation.
+
+A backup that can be listed has not yet been proven restorable. Run the matching
+restore in an isolated database and verify its schema and relevant durable records.
+[Operations](OPERATIONS.md#6-backup-and-restore) owns dump handling and the isolated
+restore drill. A model evaluation or a replay of old paper trades is not a database
+restore check.
+
+## 6. Authoring and validating a new revision
+
+Use one revision with the correct `down_revision`; document why it exists, affected
+writers, required preflight, retained/deleted history, the acceptance predicate and
+roll-forward/rollback behavior. Run DDL through the migration's supplied connection;
+application processes must not introduce a second runtime-DDL path.
+
+Keep SQL and lock duration bounded with the repository's current migration deadline
+pattern. Explicitly check data before destructive transformations. Do not mask a
+wrong schema with broad `IF EXISTS`, fabricated defaults, a blanket CASCADE or
+rewritten historical receipts. A forward-only refusal can be correct, but it needs
+an actionable recovery boundary rather than an untested claim of reversibility.
+
+Relevant tests include [authoring contracts](../tests/contract/test_migration_authoring.py),
+[migration history](../tests/integration/test_migration_history.py),
+[EventUpdate storage](../tests/integration/test_news_event_update_store.py),
+[revision ownership](../tests/integration/test_news_revision_ownership.py), and
+[Trading public updates](../tests/integration/test_trading_analysis_public_updates.py).
+Use their isolated PostgreSQL resources, not the operator database.
+
+Regenerate [db-schema.md](generated/db-schema.md) only against an isolated database
+at the actual new head, using the procedure in [Generated references](generated/README.md)
+and [Testing](TESTING.md). Preserve generated constraints and ordering. A docs-only
+cleanup needs no new migration or schema regeneration.

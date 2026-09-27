@@ -9,7 +9,7 @@ Start here for repository work. The shared block is generated from
 ## System
 
 Tracefold has sibling News and Trading capabilities, a React console, and a
-PostgreSQL ledger. Serve and Workers share the application image; the optional
+PostgreSQL ledger. Serve, Workers, and Analysis share the application image; the optional
 Nautilus execution process has a separate image and lifecycle.
 
 ## Work on the requested outcome
@@ -49,7 +49,7 @@ Nautilus execution process has a separate image and lifecycle.
 
 | Concern | Owner |
 | --- | --- |
-| Current architecture and data flow | `docs/ARCHITECTURE.md`; `docs/agents/domain.md` |
+| Current architecture and data flow | `docs/README.md`; `docs/ARCHITECTURE.md`; `docs/modules/`; `docs/agents/domain.md` |
 | Design, local verification, generated outputs, completion | `docs/DEVELOPMENT.md` |
 | Issue scope and PR boundaries | `docs/agents/issue-tracker.md` |
 | CI jobs, resources, and reports | `docs/TESTING.md` and `.github/workflows/ci.yml` |

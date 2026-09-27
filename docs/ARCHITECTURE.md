@@ -1,502 +1,173 @@
 # Architecture
 
-Tracefold is a Python codebase with two sibling business capabilities, News and
-Trading, a React operator console, and PostgreSQL persistence. Serve and Workers
-share the application image. The optional Nautilus execution process has its own
-image and lifecycle; it is not a third business context or a News worker.
+[Handbook](README.md) · [News](modules/news.md) · [Trading](modules/trading.md) · [Execution](modules/execution.md)
 
-This document maps the current owners, data flow, and boundaries. Exact public
-fields belong to [Contracts](CONTRACTS.md) and [generated schemas](generated/README.md);
-operator procedures belong to [Operations](OPERATIONS.md); coding and verification
-policy belongs to [Development](DEVELOPMENT.md). Current source owns implementation
-constants, enabled tasks, and state transitions. Historical Issue plans explain
-past decisions but are not additional runtime or PR requirements.
+Tracefold is one codebase with **two business capabilities** and **four process
+roles**. PostgreSQL holds durable observed facts, adopted knowledge, work and
+receipts. External sources remain authoritative for their own evidence; the venue
+is authoritative for actual execution. A cache, model result or queue is not an
+alternative copy of business truth.
 
-## Data flow
+## 1. Process topology
 
-```text
-OpenNews Strategy WSS / history recovery
-  -> RabbitMQ raw handoff -> News admission -> PostgreSQL Item
-       |-- editorial: Event + evidence revision -> durable semantic work
-       |      -> News Agent -> adopted EventUpdate + public outbox
-       |      -> notification plan -> selected intent -> card -> actual receipt
-       |-- market: typed OI / liquidation / smart-money fact
-              |-- market notification rules -> durable intent -> sender -> outcome
-              `-- News trade-event outbox -> App relay -> Trading Trigger / Case
-
-Adopted EventUpdate -> same News trade-event outbox, independent of card delivery
-Trading Analysis process -> bounded market data -> frozen evidence -> Agent assessment
-  -> pure Decision -> optional TradeSignalV2 -> Nautilus final validity check
-  -> scoped TradePlan -> order / fill / protection / exit observations
-
-Tracked-wallet roster + chain receipts
-  -> wallet fill ledger -> net-buy detector -> episode + first notification intent
-  -> independent price observations
-
-Trading Signal + authenticated OperatorIntent
-  -> separate Nautilus Runtime -> venue / reconciliation -> ExecutionObservation
-
-PostgreSQL read projections -> Serve -> HTTP / React console
-                           `-> read-only CLI commands
+```mermaid
+flowchart TB
+    Browser["Browser"] --> Serve
+    Providers["News / roster /<br/>chain providers"] --> Workers
+    subgraph Application["Shared application image"]
+        Serve["Serve<br/>read-only HTTP + console"]
+        Workers["Workers<br/>News, market and wallets"]
+        Analysis["Analysis<br/>Trading research + WATCH"]
+    end
+    Workers <--> Broker[("RabbitMQ<br/>raw + semantic wake")]
+    Serve --> DB[("PostgreSQL")]
+    Workers <--> DB
+    Analysis <--> DB
+    Workers --> External["Model / quote /<br/>delivery adapters"]
+    Analysis --> External
+    DB <--> Runtime["Separate Nautilus image<br/>account-facing execution"]
+    Runtime <--> Venue["Configured Binance connection"]
 ```
 
-The editorial and market paths deliberately diverge at admission. A market
-measurement does not need an editorial Event, model verdict, learning cohort, or
-reader card before it can be stored or reach the Trading source projection.
-Trading analyzes only one verified target asset per source fact. The Agent sees
-a finite candidate menu; source text cannot provide order authority.
+[compose.yaml](../compose.yaml) owns service definitions and mounts.
+[Makefile](../Makefile) owns the application/migration sequence and separate
+Runtime lifecycle. One-shot broker policy and migration jobs prepare infrastructure;
+they are not additional business services. `make up` waits for migration completion
+before Serve/Workers/Analysis and does not restart Nautilus.
 
-The canonical Compose application path includes PostgreSQL, RabbitMQ, the one-shot
-broker-policy application, migration, Serve, and Workers. `make up` manages that
-application lifecycle; the separate `make runtime-*` targets manage execution.
-See [compose.yaml](../compose.yaml), [Makefile](../Makefile), and [Setup](SETUP.md).
-Changing News or Serve is not permission to restart an account-owning runtime.
-
-`tracefold init` generates operator defaults; `~/.tracefold/config.yaml` is the
-application configuration authority. Missing optional provider credentials are a
-capability state, not a reason to fabricate data. Inspect redacted configuration
-and actual capability status rather than infer operation from task construction.
-
-## Package map
-
-Production code is under `tracefold/`, without a `src/` parent:
-
-| Package | Responsibility |
-| --- | --- |
-| `tracefold.news` | Admission, editorial Events and EventUpdates, notification planning and delivery, review, market observations, wallet episodes, and `news_*` storage. |
-| `tracefold.trading` | Target, evidence, assessment and decision contracts, frozen Cases, scoped Signals, execution transport contracts, and `trading_*` storage. |
-| `tracefold.integrations` | Provider, broker, delivery, public-market, and Nautilus/Binance adapters. |
-| `tracefold.platform` | Configuration, PostgreSQL/Alembic, telemetry, identity, and bounded process resources. |
-| `tracefold.app` | Serve/Workers/Nautilus composition, HTTP/CLI adapters, database-port implementations, and News → Trading mapping. |
-
-The dependency direction is:
-
-```text
-app -> integrations + news + trading + platform
-integrations -> the relevant business contracts + platform
-news -> platform
-trading -> platform
-platform -> Python / third-party libraries
-```
-
-News and Trading neither import each other nor read the other's tables. Ordinary
-cross-package consumers use the business package's public value and port contracts.
-App composition and concrete integration collaborators use explicit internal owner
-imports where the architecture harness permits them; they do not enlarge public
-exports simply to construct an implementation. Package roots perform no runtime I/O.
-
-The retained card judge and calibration corpus measure reader copy; they do not
-decide the EventUpdate or change its program identity. The old optimization
-and release plane is no longer executable.
-
-`news_trade_events` is committed with each News OI fact or adopted public
-EventUpdate. The separate Analysis process dispatches an editorial
-`source_update` before target selection and records an idempotent Trading
-amendment without a new Trigger or Case. A `catalyst` selects a target through
-News' public instrument projection, commits a Trigger and initial Case, then
-confirms the News outbox row. A crash between those commits repeats safely.
-Neither domain imports or queries the other's internal tables.
-
-`tests/architecture/test_backend_boundaries.py` enforces the implemented dependency
-and SQL boundaries. Installed-distribution tests verify the wheel outside the checkout;
-a local import from the repository alone does not establish correct packaging.
-
-## Truth, control state, and derived state
-
-| Kind | Examples | Meaning |
+| Role | Composition entry | What it owns |
 | --- | --- | --- |
-| Source facts | Items, typed market observations, wallet fills and source provenance | What was observed and durably recorded, including explicit uncertainty. |
-| Decisions and receipts | Adopted EventUpdates, historical verdicts, accepted reviews, Signals, delivery outcomes, execution observations | What the named owner decided or actually observed, with its evidence and identity. |
-| Control state | Semantic work, notification work, retry scheduling, broker queues, runtime/capability status | Progress and authority, not an alternative copy of the business facts. |
-| Derived views | Event membership, quotes, reactions, current episode state, HTTP/React projections | Replaceable projections with an identified writer and freshness meaning. |
+| Serve | [serve_runtime.py](../tracefold/app/serve_runtime.py), [HTTP routes](../tracefold/app/http/routes/) | Persisted read projections and the bundled React console; no public mutation route. |
+| Workers | [entrypoint.py](../tracefold/app/workers/entrypoint.py), [task_contract.py](../tracefold/app/workers/task_contract.py) | Reception, admission, semantic and notification work, market review, wallet tasks and maintenance. |
+| Analysis | [trading_analysis.py](../tracefold/app/trading_analysis.py), [analysis_status.py](../tracefold/app/analysis_status.py) | Public-source relay, target mapping, fenced Cases, bounded Agent research, WATCH and research outcomes. |
+| Nautilus | [app/nautilus](../tracefold/app/nautilus/), [runtime Strategy](../tracefold/integrations/nautilus/oi_runtime/strategy.py) | Scoped entry, actual orders, protection, native evidence and venue reconciliation. |
 
-A model prediction is not a source fact. An accepted review is a recorded acceptance,
-not proof of independent human accuracy. A queued notification is not a delivery;
-a recorded command is not an accepted order or fill. Reconcile uncertain external
-writes with their provider or venue rather than infer success from a local intent.
+## 2. Package ownership and source navigation
 
-Current projections use stable business keys and identified writers. Preserve their
-fact lineage and avoid rewriting unchanged business payloads. Provider timestamps,
-host availability timestamps, and database timestamps describe different clocks;
-do not invent ordering between independent clocks or clamp a measured source time.
-
-News semantic observations bind frozen input, program and model identities.
-Adopted content revisions move only for substantive changes. Historical
-learning artifacts and Program epochs remain audit records, not a current
-release selector.
-
-## Transaction ownership
-
-The caller owns the transaction; repositories use its supplied connection and do
-not hide commits. Business database callbacks receive only their bounded repository
-capability, not a cross-context session or an escape hatch into App internals.
-
-Important atomic units include an admitted Item plus its editorial assignment or
-typed market fact; an adopted EventUpdate plus its public outbox and pending
-notification work; a planned intent and its exact receipt; a Case plus its admission
-record; a Signal plus its Case transition; and a complete wallet receipt's facts
-or derivation updates. Read the owning repository for the exact predicates.
-
-Provider, model, broker, filesystem, and other external I/O runs outside database
-transactions. Prepare expensive validation, canonical serialization, and hashes
-before the callback; materialize richer objects after it. Keep SQL, locks, row mapping,
-and immediate conditional-write checks bounded inside the transaction.
-
-Database and finite-operation adapters own native deadlines and physical resource
-permits. An asyncio timeout must not imply that an underlying operation has stopped
-or release its permit early. Preserve cancellation, completion, and retry semantics
-at the actual adapter boundary, rather than copying another timeout wrapper into a
-business loop. [Operations](OPERATIONS.md) and the relevant tests cover diagnosis.
-
-## External Data runtime contract
-
-External data is not a generic shared scheduler or an extra business capability.
-Different flows have different replay and loss semantics. The Workers stage annotations
-and architecture tests currently distinguish:
-
-| Class | Meaning |
-| --- | --- |
-| `durable_event` | Every admitted event matters; persist and recover idempotently. |
-| `latest_state` | The newest useful value matters; coalesce refresh work and retain explicit stale/unavailable state. |
-| `derived_work` | Bounded work can be rebuilt from durable facts and provider history. |
-| `signal_truth` | The Trading lane commits its durable engine-neutral decision and Case transition. |
-
-These annotations describe Workers business stages; they do not select providers or
-schedule tasks. External account/order authority belongs to the separate Runtime.
-It is not another `work_semantics` value to add to a News collector, and uncertain
-orders must not inherit an ordinary quote-refresh retry policy.
-
-### Canonical inventory
-
-Use the current composition rather than a hand-maintained table of provider counts,
-model names, refresh intervals, and historical tasks:
-
-| Flow | Current owner |
-| --- | --- |
-| OpenNews admission and editorial processing | `tracefold/news/pipeline/` and App News wiring |
-| Instruments, current quotes, Event reactions | News market-review owners and their provider adapters |
-| OI, liquidation, smart-money notifications | `tracefold/news/market_notifications.py` |
-| Wallet roster, receipts, net-buy detection, price sampling | App chain-tape wiring and its four independently supervised task declarations |
-| News/OI Trigger → Case → assessment → Decision | `tracefold/app/trading_analysis.py` and `tracefold/trading/engine/` |
-| Claim attempt and physical LM receipts, event WATCH, historical simulation records | Trading ledgers in `tracefold/trading/storage/analysis.py`; App performs bounded market/model I/O outside transactions |
-| Account, orders, protection, reconciliation | Nautilus (the Cache, reconciled with the venue), driven by the Runtime Strategy composed in `tracefold/app/nautilus/` |
-
-The code-owned limits still apply. Inspect their definitions and consumer tests when
-changing cadence or budgets; this map intentionally does not keep a second numerical
-configuration ledger.
-
-### Extension and extraction gates
-
-For a new flow, identify its authority, meaning, consumers, persistence/recovery needs,
-bounded I/O, and failure behavior. That design can be part of the implementing Issue
-or PR. Do not require a separate form for each item or an arbitrary number of providers
-before extracting a useful shared component. Equally, do not introduce a registry,
-base-worker hierarchy, or generic retry engine without an actual common responsibility.
-
-## Workers task set
-
-`tracefold/app/workers/task_contract.py` is the authoritative declaration of task
-names, capabilities, and whether a failure is foundational. App owns polling,
-cancellation, and supervision; business runners own their action and durable state.
-
-Reception, recovery, admission, and retention are foundational News tasks. Optional
-capabilities include editorial judgment, delivery, instrument/quote/reaction review,
-market notifications and the wallet tasks. Analysis has its own process and its
-own market/Agent budgets.
-The root also owns the probe and singleton/control work.
-
-The enabled wallet composition declares `news-wallet-roster`, `news-chain-tape`,
-`news-wallet-net-buy` and `news-wallet-prices`. There is no current wallet digest or
-single-wallet research task. A declared task is not proof that its capability is
-available or healthy; read composition status and actual durable progress.
-
-Unexpected errors in optional tasks are attributed to their capability while healthy
-siblings can continue. Foundational failures and shared infrastructure/ownership
-failures retain their root-level semantics. Do not turn one missing optional provider
-into a blanket denial of healthy read APIs, or hide a required ingestion failure
-behind a green readiness response.
-
-## Product flows
-
-### News
-
-Admission stores normalized provider Items and separates editorial from
-typed market facts. Editorial Items join same-kind Events. A new source body
-or member advances the Event's evidence revision and durable semantic work;
-exact retransmission is idempotent and near matching only recalls candidates.
-The existing `news.triage` queue runs the semantic worker. It freezes stored
-input, checkpoints extraction and judgments, and adopts an EventUpdate with a
-head compare-and-swap. Failed work stays visible, with bounded retries and
-Janitor repair.
-
-Frozen input carries each member's existing FactUnit extraction scope,
-recovered from its observed snapshots and attached to that Item's new
-evidence bodies. Whole-item sources remain whole-item inputs. A revision
-uses the old scope as a comparison target, never old character offsets to
-slice a changed body; only the frozen evidence is citable. Scope metadata
-participates in checkpoint identity. Related current claims are ranked
-against the new material before the existing eight-claim budget; Event
-recall queries and the history window are unchanged. Explicit provider
-cashtags survive ordinary-word collisions, while unknown per-asset types
-remain unknown rather than inheriting the Event's coarse asset class.
-
-The EventUpdate is the single editorial understanding owner: claims, mode,
-phase, time, evidence, source relations, changes, implications and gaps.
-Multiple claims can express different actions or conflicting evidence. The
-optional News-specific Jev endpoint answers narrow native judgments; the
-configured generative route remains the default and fallback. Similarity
-does not prove a fact has already been reported, and observation does not
-prove that a reader received it. [News topics and source
-authority](NEWS_TAXONOMY.md) describes the retained IPTC codebook and the
-per-source authority classifier.
-
-Adoption commits the update, public outbox and notification work together.
-NotificationPlanner separately compares each claim against the reader's
-actual sent bodies and current content rules. It records a named decision
-per claim. Only selected claims cause Chinese card generation and a stable
-delivery intent. Sending uses a frozen body, checks the current head and
-reader revision, and records the provider result. An unknown outcome is
-ambiguous and is not blindly retried. A card failure never retracts the
-semantic update or blocks the Trading outbox.
-
-The App relay maps a structured catalyst delta to Trading's existing
-candidate path. It maps a correction or source evidence update to a Trading
-amendment before target selection, without opening a fresh Case or extending
-the old trigger's freshness. Serve and the console expose adopted updates,
-claim-level reasons, processing progress and actual deliveries; old verdicts
-remain labeled historical. The old three-Predictor Program, four taxonomy
-axes, optimization and release plane are absent from current runtime.
-[News EventUpdate](design/news-event-updates.md) details these identities
-and cutover constraints.
-
-#### Price Review plane (#88, #304)
-
-News market review owns latest quote snapshots and versioned Event reactions.
-Quotes are current display state, not a tick-history ledger; reactions compare an
-Event anchor with a defined observation horizon and resolve a price contract by the
-judgment's typed market identity (`reaction_v2`): an equity subject measures against an
-equity contract or nothing, never the same-name coin. Their interpretation, source choice,
-coverage, and missing-data behavior belong to the owning versioned implementation.
-The independently bounded Workers loops perform provider I/O without holding a
-transaction and publish their derived views without changing editorial admission.
-
-### Why the quote source is REST and not a WebSocket
-
-The current News quote/reaction plane is bounded review and presentation work, not an
-order-book or tick-history trading feed. It uses public REST adapters and latest-state
-or historical-window semantics. Quotes are not another editorial truth source.
-A WebSocket may be appropriate for a different product requirement, but it must be
-justified by that consumer's latency and loss/recovery needs, not added because a
-historical manual declared one transport universally faster or permanently forbidden.
-
-## Trading core
-
-`tracefold.trading` is disabled by default and owns Trigger → Case → Decision →
-Signal, not account execution. Its implementation is separate from News
-classification and reader delivery.
-
-### The domain language
-
-| Term | Meaning |
-| --- | --- |
-| Trigger | One accepted News catalyst or OI fact with source identity, revision and target selection. |
-| Case | One fenced work item and its frozen source, target, market evidence, assessment and decision. |
-| Decision | Pure compilation of an Agent assessment and finite candidate menu, including NO_TRADE and WATCH. |
-| SignalV3 | A time-bounded, account-scoped entry suggestion with side, exit plan and price envelope; not an order or capital grant. |
-| OperatorIntent | An authenticated durable control request, not proof of Runtime acceptance. |
-| ExecutionObservation | A recorded Runtime/venue outcome, not a promised future fill. |
-
-### The one live path
-
-```text
-News OI fact or adopted editorial catalyst -> durable trade-event outbox
-  -> App relay -> Trading Trigger + initial Case
-  -> per-asset fenced claim -> bounded MarketDataPort reads -> frozen evidence
-  -> bounded Agent research + one structured selection -> pure Decision
-  -> NO_TRADE / WATCH / unpublished TRADE, or atomic published TradeSignalV3
-  -> separate Nautilus Runtime -> final validity check -> scoped TradePlan
-  -> venue order / fill / protection / exit observations
+```mermaid
+flowchart TD
+    App["app<br/>composition + interfaces"] --> News["news<br/>observed and editorial products"]
+    App --> Trading["trading<br/>research and execution contracts"]
+    App --> Adapters["integrations<br/>concrete external I/O"]
+    App --> Platform["platform<br/>infrastructure primitives"]
+    Adapters --> News
+    Adapters --> Trading
+    Adapters --> Platform
+    News --> Platform
+    Trading --> Platform
 ```
-An editorial `source_update` branches at App relay into a Trading source
-amendment. It does not create a new Trigger or Case or restart the path above.
 
-The default Agent policy does not publish Signals (`publish_signals: false`). Missing model
-configuration, incomplete evidence, invalid model output and an active NO_TRADE
-have distinct Case statuses. Long and short candidates share the same pure
-compiler. Neither News delivery nor RabbitMQ is an execution queue.
+There is no direct News-to-Trading import or internal-table read. App translates
+public contracts and supplies database capabilities. Integration adapters may use
+the explicit construction seams allowed by the architecture tests; that does not
+turn an adapter into another business owner. Package imports perform no runtime I/O.
 
-### Admission
-
-News freezes source provenance in its outbox. The App maps its public asset and
-instrument projection into Trading's versioned economic identity. Only one
-eligible primary asset can proceed; exclusions and unresolved native units
-terminate by name while retaining the input denominator. An accepted Trigger
-creates exactly one initial Case; a bounded WATCH may create a child Case with
-the same `entry_scope_id`. Per-asset advisory locks coordinate fact handoff,
-publication and the final Trading validity read. Claims use a fresh token and
-lease; late Agent responses cannot commit.
-
-### The Case and its manifest
-
-A Case freezes source identity, target mapping, knowledge cutoff, raw market
-results, feature values, brief, assessment and policy decision as content-addressed
-references. The market adapter shares closed bars and records physical request
-receipts; it does not decide trade eligibility. A successful SignalV2 insert,
-decision and Case transition are atomic. Source corrections/revocations and
-the Runtime's final validity check can prevent a later order without rewriting
-the frozen recommendation. Account risk, sizing and venue orders stay in Nautilus.
-
-### Runtime ownership
-
-Nautilus owns execution state (#680). Each fact has exactly one owner, and the Runtime keeps
-no parallel order or position state machine beside Nautilus:
-
-| Fact | The one owner | How it is kept |
+| Source area | Responsibility | Behavior guide |
 | --- | --- | --- |
-| Positions, open orders, fills | The venue; the in-process projection is the Nautilus Cache | Startup reconciliation (`reconciliation=True`, a lookback covering the oldest open Plan's creation time) rebuilds the Cache before the Strategy starts; the 5 s open-order and position checks keep it converged. PostgreSQL's open Plans supply a bounded symbol query scope when the Cache and venue are flat. Reconciliation applies only the venue's own orders and fills: it never generates one to match a position report (`generate_missing_orders=False`), and the Binance client's fill reports name each venue trade once. No Cache database: a restart is the same reconciliation a start is. |
-| Whether the Cache agrees with the venue | The venue's own positions, read by the Runtime | Signed `positionRisk` every 30 s. A failed read is unknown, never flat; a disagreement on two reads in a row is unexpected exposure. Detect-only. |
-| Trading intent (a plan) | `trading_trade_plans` | Written when the entry is admitted (before its order exists), when its position opens, and when it ends. Read back only as intent — instrument, direction, distances, maximum holding time — never as order or position state. |
-| Execution event log | `trading_execution_observations` | An append-only journal of verdicts, orders, fills (with the venue's commission) and positions, one row per transaction. |
-| Realized PnL | The fill journal | Exit minus entry notional, signed by direction, less every commission; folded by the read models. Not a Nautilus position field. |
-| Signals, operator Commands, control switches | PostgreSQL | Unchanged. |
-| Tradable universe | The Runtime's route catalogue, from Nautilus' Binance instrument provider | USDT-settled `PERPETUAL` contracts in `TRADING` status; `TRADIFI_PERPETUAL` is never routed. |
+| [news/pipeline](../tracefold/news/pipeline/) | Source intake, admission, semantic worker, delivery and maintenance | [News](modules/news.md) |
+| [news/events](../tracefold/news/events/), [updates](../tracefold/news/updates/) | Fact scope/grouping and versioned claim understanding/notification contracts | [News](modules/news.md) |
+| [news/storage](../tracefold/news/storage/) | News-owned facts, input work, updates, plans, receipts and read projections | [News](modules/news.md) |
+| [market notifications](../tracefold/news/market_notifications.py), [market_review](../tracefold/news/market_review/) | Typed observation notifications, catalogues, current quotes and Event reactions | [OI](modules/oi.md) |
+| [news/chain_tape](../tracefold/news/chain_tape/) | Roster, complete receipt prefix, fills, detection and price sampling | [Wallets](modules/wallets.md) |
+| [news/review](../tracefold/news/review/), [learning](../tracefold/news/learning/) | Retained ReviewDesk and card-judge calibration, not GEPA/release execution | [Review](modules/review.md) |
+| [trading/engine](../tracefold/trading/engine/), [storage](../tracefold/trading/storage/) | Pure plans/decisions and Trading-owned sources, Cases, amendments and execution records | [Trading](modules/trading.md) |
+| [app/news_updates.py](../tracefold/app/news_updates.py), [trading_analysis.py](../tracefold/app/trading_analysis.py) | Explicit cross-capability mapping and Analysis orchestration | [Trading](modules/trading.md) |
+| [app/trading_analyst.py](../tracefold/app/trading_analyst.py), [trading_tools.py](../tracefold/app/trading_tools.py) | Bounded read-only ReAct and attributable tool/model calls | [Trading](modules/trading.md) |
+| [integrations/nautilus](../tracefold/integrations/nautilus/) | The separate account-facing adapter and execution Strategy | [Execution](modules/execution.md) |
+| [platform](../tracefold/platform/), [integrations](../tracefold/integrations/), [app](../tracefold/app/) | Configuration, physical resources, ports, provider I/O, process and interface composition | [Platform](modules/platform.md) |
+| [web/src](../web/src/), [web/tests](../web/tests/) | Read-only feature-owned UI, queries, URL state and browser tests | [Frontend](FRONTEND.md) |
+| [tests](../tests/), [scripts](../scripts/), [notebooks](../notebooks/) | Verification, narrow utilities and explicitly offline/historical research | [Testing](TESTING.md), [Notebooks](../notebooks/README.md) |
 
-The Strategy converges the Cache on intent every five seconds, and on every fill and
-position event: a position whose entry order is terminal gets one reduce-only stop and
-one reduce-only take-profit on the mark price, a missing one is placed again, a position
-past its maximum holding time is closed, and when one of the Runtime's own closing legs
-closes a position the orders left on its instrument are canceled. Exposure no plan
-claims blocks new entries and is recorded; nothing is ever flattened because the picture
-is unclear. App supplies process, database and probe composition and never reads a
-private member of a Nautilus object. Every configured Binance connection uses
-the same execution path; a local command never becomes a fill without venue evidence.
+Source links are navigation, not a second specification of every helper. The owning
+module guide identifies its principal interfaces and executable tests. Exact public
+fields belong to [Contracts](CONTRACTS.md) and generated schemas.
 
-The Cache is not trusted alone (#680 PR-3). Nautilus 1.231.0 reconciliation could
-"repair" a disagreement by inventing a fill, and on 2026-09-23 it twice closed an open
-Demo position in the Cache while the venue still held it, after which the Strategy
-canceled the position's protection. So a close none of the Runtime's closing legs sent
-is only a Cache event: the stop, the take-profit and the plan stay until a venue read
-confirms the instrument flat, and until then the instrument is unexpected exposure.
-Reduce-only protection on an instrument with no Cache position is canceled only on a
-flat venue read. Entries need a venue read younger than two minutes that agrees with the
-Cache (`venue_unverified` otherwise). `/flatten account` closes, with reduce-only market
-orders, what the Cache holds and what only the venue holds. Inspect the Runtime's
-risk observations and Nautilus' rotated WARN/ERROR logs for exposure incidents.
+## 3. News-to-Trading handoff
 
-When Binance triggers a protective Algo order, its regular child order gets a new
-venue ID. The execution client checks the signed parent Algo receipt for that exact
-child ID, then updates Nautilus' cached order ID before replaying the child's real
-trades. An unmatched or incomplete receipt leaves the discrepancy unresolved (#699).
-On restart, the signed receipt also identifies a historical protective child in
-Nautilus' order report before replay. A closed Cache Position settles its open
-Plan with that leg's reason only when the Position's opening order matches the
-Plan entry and its closing order has a real fill.
-More than one distinct closing leg records `mixed_exit`; the final fill alone
-does not claim the entire exit.
+News adopts an EventUpdate independently of reader delivery. The public payload
+`news_public_update_v1` carries claims, changes, citations and their identities,
+not a model-generated ReaderCard.
 
-The pure Trading engine imports no adapter, database or Nautilus engine and has
-no order authority. The historical OI v5 Signal lane is not scheduled by Workers.
+```mermaid
+sequenceDiagram
+    participant N as News adoption
+    participant O as News public outbox
+    participant A as App relay
+    participant T as Trading repository
+    N->>O: Commit EventUpdate + public records<br/>+ notification work atomically
+    A->>O: Read unacknowledged record
+    alt Public payload kind is source_update
+        A->>T: Commit idempotent amendment<br/>before target selection
+    else Catalyst delta or OI source
+        A->>A: Resolve one eligible target
+        A->>T: Commit Trigger + initial Case<br/>or named admission exclusion
+    end
+    T-->>A: Durable receive succeeds
+    A->>O: Acknowledge exact record/payload identity
+    Note over A,O: A crash before acknowledgement can replay safely.<br/>There is no hidden cross-domain transaction.
+```
 
-### Failure semantics
+| Input | Trading meaning |
+| --- | --- |
+| Editorial `catalyst_delta` payload | New/changed published claims can qualify for target selection. The outer News trade-event catalyst lane is not a separate model or card event. |
+| Editorial `source_update` payload | An amendment to cited prior knowledge. No new Trigger/Case, fresh TTL, order cancellation or additional authority. |
+| Typed OI source | Independent numeric source contract and source-key validity; no editorial Event prerequisite. |
 
-A business refusal is different from a storage, process, or venue failure. Preserve
-transaction rollback and replayability instead of marking an input consumed because
-infrastructure failed. Unknown external order results require reconciliation, not
-blind resubmission. Recorded intent, Runtime acceptance, order acceptance, fill, and
-venue-proven flatness are separate facts in CLI, HTTP, and React views.
+A correction or real-world replacement can invalidate a still-unsubmitted entry
+by explicit cited claim refs, including cross-Event refs. It does not by itself
+close an existing position. Knowledge cutoffs and source availability remain part
+of the frozen research record. `possible_new` and restatement are not fabricated
+new catalysts. [Trading](modules/trading.md) owns the full Case/WATCH/Signal path.
 
-### OI research replay
+## 4. Durable ownership, not one overall Event state
 
-Offline OI corpus/replay research lives in [notebooks](../notebooks/README.md), outside
-the service's runtime imports and account authority. A backtest, local replay, or
-code test is not a live execution receipt or production profitability proof.
+```mermaid
+flowchart TB
+    Item["Item + source revisions"] --> Input["Semantic work<br/>wanted / done / lease / attempts"]
+    Input --> Observation["Checkpoints + semantic observation"]
+    Observation --> Head["Immutable EventUpdates<br/>and one adopted head"]
+    Head --> Public["Public outbox"]
+    Head --> Plan["Notification work + plan"]
+    Plan --> Intent["Selected intent + frozen body"]
+    Intent --> Receipt["Actual send ledger"]
+```
 
-### Runtime and cutover
+These are dependency/ownership edges, not unconditional success transitions. Input
+can finish without a changed head; the latest failed input preserves the previous
+head; a completed plan can coexist with a dead card. A notification receipt cannot
+be inferred from semantic success. [News](modules/news.md) documents each persisted
+axis and exact failed-work retry.
 
-The execution process has a separately built image and explicit `make runtime-*`
-commands. Application deployment must not implicitly restart it. Follow
-[Operations](OPERATIONS.md), [Security](SECURITY.md), and current readiness/account
-state for an authorized cutover. Disabled execution does not require live credentials.
-Do not infer a safe rollback from an old Issue receipt or a green unit test while a
-live account may still have exposure.
+For execution, PostgreSQL plans record intent; the venue and reconciled Nautilus
+Cache provide position/order evidence. A current account read, a Runtime heartbeat
+and native-fill completeness answer different questions. Unknown venue data is
+not flat, and a Signal is not a fill.
 
-## Market observations (#137, #553)
+## 5. Transactions, resource completion and supervision
 
-Market frames and editorial Events answer different questions. Admission stores a
-market Item and its typed fact without running editorial dedupe or semantics.
-Unknown or unparsable evidence remains visible with its raw data and parse reason;
-it must not be converted into a fabricated measurement.
+The caller owns each short transaction. Repositories operate on the supplied
+connection/capability and do not hide commits. Model/provider/filesystem I/O stays
+outside it; expensive preparation precedes the bounded SQL/lock/conditional-write
+portion. Native I/O permits remain held until the physical operation actually ends,
+not merely until an asyncio timeout is raised.
 
-### What is stored
+| Atomic boundary | Recovery ownership |
+| --- | --- |
+| Item evidence revision and semantic work | Stable source identities and current wanted revision; admission/redelivery remains inspectable. |
+| Frozen semantic lease/input | Owner token and per-revision attempts; a stale worker cannot settle a successor. |
+| Adopted update, public outbox and notification work | Head compare-and-swap and lease ownership; no card generation inside the commit. |
+| Trading decision, Case transition and eligible Signal | Claim/lease, source validity, scope and identity validation. |
+| Complete wallet receipt facts and progress | Continuous committed prefix, not the maximum observed block. |
+| External side effect | Persist intent first and actual provider outcome later; uncertain outcomes require specific reconciliation. |
 
-Items retain provider provenance and parsing state. Typed OI, liquidation,
-smart-money, and derived wallet observations have their own identities and consumers.
-OI publication time comes from the Item/source fact, not a required editorial Event
-that this path does not create. Retain independent observed/available/persisted clocks.
+[NewsPipeline.runners](../tracefold/news/pipeline/root.py) and
+[task_contract.py](../tracefold/app/workers/task_contract.py) declare the actual tasks.
+`news-semantic` consumes the retained `news.triage` queue. Foundational ingestion
+and shared database/ownership failures differ from a named optional capability
+fault. A task existing does not prove it is configured or making progress.
 
-### The parsers, and what is no longer beside them
-
-The owning parser translates an identified source contract into typed facts.
-Unmatched templates are explicit raw/failed-parse states. A new market observation
-does not become a duplicate merely because its symbol matches an earlier measurement.
-Parser, notification, and Trading admission decisions are separate responsibilities.
-
-### How it is read
-
-Market list/detail APIs read the persisted market projection. Parsing status and
-notification status remain separate: a parsed fact may legitimately be unsent.
-Exact fields and pagination belong to [Contracts](CONTRACTS.md), not an inferred
-editorial Event or copied frontend schema.
-
-### The market notification loop
-
-The market notification owner applies direct rules to durable observations, creates
-intents, and uses the shared delivery outcome semantics. Bounded display quote/context
-reads are optional presentation inputs, not prerequisites for fact admission or a
-second market policy. An unknown send is neither a delivered receipt nor permission
-to retry blindly. Optional notification failure must not erase the underlying facts.
-
-### The wallet tape (#572 PR-1)
-
-The tracked-trader provider supplies roster context; chain receipts supply fills.
-The tape records transaction/log identities, raw quantities, cash attribution, and
-roster provenance. Plain transfers are not automatically buys, and missing cash
-attribution is unknown pricing, not zero spend. Overlap and idempotency support
-re-reading, but a stored block hash alone does not implement full reorg repair or
-prove complete historic position coverage.
-
-### Concentrated wallet net-buy episodes (#641)
-
-The four independent tasks refresh the followed list, collect receipts, detect concentrated
-net-buy episodes, and sample prices. The refresh task owns every provider call to the roster site
-and publishes every unique valid address in a complete source response; the collector reads the last
-published version out of PostgreSQL and makes no roster call at all, so a slow or throttled provider
-cannot stop collection (#649 §5.1). Detection and first notification have no balance, bags, external
-quote, or model dependency. Complete transaction facts and derivation progress commit
-atomically. Membership versions change only with the address set; source statistics do not gate subscription.
-A single continuous receipt prefix owns both collection and detection cutoffs. Real missing receipts
-stop the turn and retry durably; optional metadata cannot block it. The detector calculates the one window from the same fill set,
-with explicit member coverage, pricing, and exclusion reasons.
-
-An episode retains an immutable first snapshot and an independently updated current
-snapshot. Its logical first notification uses the existing market intent/delivery
-owner. Before the first attempt, eligibility and freshness are checked against actual
-persisted state, and the evidence is re-evaluated by the detector's own pure function at the
-collector's committed cutoff `(scanned_block, scanned_log)`: facts inside that cutoff decide the
-report, facts above it never hold it back, and a card whose evidence is not yet derived is deferred
-with its own due time rather than skipped. The attempted payload then freezes. Price samples remain independent
-observations with target and actual times. Without a known trigger baseline, returns
-remain unknown rather than invented.
-
-The console reads `/api/news/wallets/events` and episode detail; the roster endpoint
-is auxiliary context. The old card API, single-wallet research, exit/crowding rules,
-and digest tasks are not the current product. See the
-[wallet cutover runbook](wallet-net-buy-cutover.md) for migration and validation.
-
-### Retention
-
-Apply the owning retention policy to source facts, projections, receipts, and historical learning
-evidence according to their actual lifetime and foreign-key lineage. Market facts do
-not gain editorial-review evidence merely by sharing `news_items`. Preserve required
-audit references; use current schema and retention code, not a
-manually counted table list or obsolete migration narrative.
+The architecture tests enforce [backend ownership](../tests/architecture/test_backend_boundaries.py)
+and [Trading boundaries](../tests/architecture/test_trading_boundaries.py).
+[Operations](OPERATIONS.md) owns diagnosis; [Migrations](MIGRATIONS.md) owns schema
+cuts; [Security](SECURITY.md) owns credentials and authority. Do not infer a new
+runtime gate or an extra business service from a historical issue's design vocabulary.

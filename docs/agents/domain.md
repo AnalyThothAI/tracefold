@@ -9,7 +9,7 @@ to persisted fact, decision, and actual consumer. Distinguish editorial News,
 market observations, wallet net-buy episodes, and Trading execution; their admission,
 retry, freshness, and completion meanings are not interchangeable.
 
-Use [Architecture](../ARCHITECTURE.md#package-map) for package boundaries.
+Use [Architecture](../ARCHITECTURE.md#2-package-ownership-and-source-navigation) for package boundaries.
 Ordinary cross-package consumers use the business package's public interfaces;
 App composition and concrete integrations may use the explicit internal owners
 allowed by the architecture tests. Do not expand public exports merely to wire an

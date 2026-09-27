@@ -62,7 +62,7 @@ commit. Keep database callbacks bounded and SQL-focused. Provider, model, broker
 filesystem, and other network I/O happen outside transactions, without holding a
 connection. Prepare expensive validation, canonical serialization, and hashes before
 the callback; materialize richer objects after it. See
-[transaction ownership](ARCHITECTURE.md#transaction-ownership).
+[transaction ownership](ARCHITECTURE.md#5-transactions-resource-completion-and-supervision).
 
 **SQL and migrations.** Parameterize values and compose dynamic identifiers with
 psycopg's SQL facilities. Reuse the actual production statement in query audits.
@@ -152,50 +152,30 @@ Pending, missing, cancelled, skipped, or failed required checks are not green.
 The deployment verifier requires successful main-push evidence for the exact final
 main SHA; a local run or PR-head result does not substitute for it.
 
-## News V3 evaluation seams
+## News EventUpdate verification and quality
 
-Keep code correctness and model quality distinct. Pytest can verify identity,
-serialization, policy, state, replay, budgets, and wiring; it does not establish
-that a candidate classifies or explains real news better.
+Keep code correctness and model quality distinct. Tests verify source revisions,
+input scope, citations, ownership, checkpoints, adoption, notification selection,
+side-effect receipts and public Trading amendments. Passing them does not establish
+that a model understands real stories accurately or improves trading returns.
 
-The native News Program has EventSemantics, Taxonomy, and ReaderCard predictors.
-`news learning run --target classification|understanding|explanation` optimizes one
-predictor per run with that target's metric, on that predictor's production primary
-endpoint (no fallback route, route deadline or breaker offline; production adds them).
-The candidate is a `news_program_state_v1` document with only the target predictor's
-native state moved. Reviews may label one task at a time; a dataset case is eligible
-for the targets its accepted labels cover. Diagnose whether a defect belongs to source
-evidence, entity identity, classification, reader explanation, novelty, deterministic
-policy, delivery, or evaluation before changing a prompt.
+[News](modules/news.md) owns the current Agent/notification path and its executable
+tests. [Review and calibration](modules/review.md) owns the retained ReviewDesk
+and fixed card-judge measurement. The former three-predictor Program, GEPA campaigns,
+optimizer metrics and release/canary commands are removed; do not import their old
+modules or present historical campaign commands as current development workflow.
 
-`tracefold/news/learning/supervision.py` owns accepted labels and per-dimension masks;
-`tracefold/news/learning/target_metrics.py` owns all three rulers and their Gold readers; the optimizer, baseline, release evaluator
-and composite production-action metric import it and none reimplement it. Each ruler
-returns a score, feedback, an `outcome` and its components. The outcome is what lets a
-report state a denominator: `scored`, the candidate's own `schema_failure`,
-`technical_failure` and `taxonomy_unavailable` at zero, and `no_gold`,
-`not_applicable`, `judge_unavailable` and `retrieval_miss` excluded from the mean and
-counted separately. Report `applicable_n`, `scored_n`, `failure_n` and each exclusion;
-a run whose `judge_unavailable` share exceeds `JUDGE_UNAVAILABLE_SHARE_MAX` (0.2) is an
-unavailable explanation evaluation, never a pass. GEPA is stricter: every planned metric call must
-produce a numeric score; a judge outage or missing score terminates the run before candidate selection.
-The metric judge shares the run budget with task and reflection, including format fallback calls.
+Diagnose the boundary before changing a prompt: source identity and scope, claim
+extraction, relation/support judgment, conditional adoption, reader coverage,
+selected copy, or actual receipt. A code change or model identity change does not
+automatically recompute processed evidence or reset exhausted revision work.
+Explicit scoped repair preserves immutable adoptions and actual delivery history.
 
-The explanation ruler's score is `F1(evidence_support, key_facts_covered)`, both asked
-of the metric judge. Measure that judge before trusting what it says: `news learning
-judge-calibration --model MODEL --out FILE` scores it against the fixed perturbation
-corpus and writes a receipt whose sha the metric receipt carries. `why_value` and
-`reference_why_zh` are never scored.
-
-Use [News taxonomy](NEWS_TAXONOMY.md), [review terminology](../CONTEXT.md), the
-owning `tracefold/news/program/` and `tracefold/news/learning/` code, and the relevant
-[operational commands](OPERATIONS.md). Read current CLI help for exact flags.
-Do not copy machine-specific models, historical experiment results, retired epoch
-numbers, or obsolete calibration gates into general development policy.
-Accepted reviews, held-out evaluation, and release decisions retain their explicit
-authority. A draft is not Gold; an optimizer improvement is not release approval;
-a code PR is not authorization to accept reviews, spend an unspecified model budget,
-promote a candidate, or perform live trades.
+Accepted reviews retain their actual reviewer and evidence. A draft is not an
+accepted review, calibration is not independent production validation, and a code
+PR does not authorize spending an unspecified model budget or live trading.
+Use [current CLI help](generated/cli-help.md) and [Operations](OPERATIONS.md) rather
+than machine-specific old invocations or retired epoch numbers.
 
 ## Database development
 
@@ -233,8 +213,9 @@ python3 scripts/check_mandatory_docs_links.py
 ```
 
 `make check-static` and the relevant CI jobs own the other drift checks. The link
-checker verifies local file targets, not every Markdown anchor or inline code path;
-review changed routes and section links as well. See [Testing](TESTING.md).
+checker verifies local file targets, Markdown heading anchors and reference links,
+including retained history; it does not validate arbitrary inline code paths or
+external sites. Review changed route semantics and code references as well. See [Testing](TESTING.md).
 
 ## Completion
 

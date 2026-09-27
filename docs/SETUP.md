@@ -1,599 +1,245 @@
 # Setup
 
-> **Scope.** Owns install, dev-loop, and deployment commands for both the Python service and the `web/` frontend. Runtime invariants live in `OPERATIONS.md`.
+[Handbook](README.md) · [Operations](OPERATIONS.md) · [Architecture](ARCHITECTURE.md)
 
-## Complete operator startup
+This page owns the normal installation and development paths. It is not a history
+of retired settings or a second copy of the News pipeline. Version-specific
+upgrade and recovery instructions belong to [Migrations](MIGRATIONS.md) and
+[Operations](OPERATIONS.md).
 
-Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose
-plugin, `curl`, and the [GitHub CLI](https://cli.github.com/); run
-`gh auth login --hostname github.com` and start the Docker daemon. From a fresh
-clone, run:
+## 1. Prerequisites
+
+Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose plugin,
+`curl` and [GitHub CLI](https://cli.github.com/). Start the Docker daemon and run
+`gh auth login --hostname github.com`. The current Makefile preflight checks these
+tools, authenticated repository access and the source/deployment identity.
+
+The project interpreter is pinned by [`.python-version`](../.python-version);
+[uv.lock](../uv.lock) owns resolved Python dependencies and
+[web/package-lock.json](../web/package-lock.json) owns the frontend lock.
+The Docker build includes the console; Node/npm on the host is needed for a
+frontend development loop, not to serve an already built application image.
+
+Use the normal primary checkout on `main` for the supported deployment path.
+The deployment checks bind the build to the expected clean, green `origin/main`
+identity. A task worktree is for isolated development, not a reason to bypass that
+boundary. [Worktrees](agents/worktrees.md) documents repository checkout handling.
+
+## 2. Fresh installation
 
 ```bash
+git clone git@github.com:AnalyThothAI/tracefold.git
+cd tracefold
 make up
 ```
 
-This is the canonical startup path. It preflights Git, `uv`, Docker, Compose,
-`curl`, an authenticated GitHub CLI, and daemon access; idempotently initializes
-the operator directory; builds one application image containing the React console and Python service;
-initializes PostgreSQL and its least-privilege roles on a fresh named volume;
-migrates to the current Alembic head; starts Serve and Workers; and waits for
-PostgreSQL, migration, both runtime readiness boundaries, and an HTML console.
-Any failed boundary makes the command return non-zero and directs the operator
-to `make logs`.
+The console is **http://127.0.0.1:8765/**. Check actual success before opening it:
 
 ```bash
-make status            # fail closed on infrastructure/runtime readiness
-make logs              # follow PostgreSQL, migration, Serve, and Workers logs
-make down              # stop containers; preserve config, passwords, and database data
+make status
+make logs
 ```
 
-The console is available at `http://127.0.0.1:8765/`. PostgreSQL, public HTTP,
-and Workers metrics/readiness are bound to loopback by default. `api.host` and
-`api.port` are that bind address and nothing else; the address a reader outside
-the host opens is `api.public_url`, which only the operator knows and which
-nothing defaults. It must be an absolute `http(s)` URL with no query or fragment
-(a trailing slash is dropped), and News market push cards link to it — left
-unset, they carry the item id and no button. See `OPERATIONS.md`. A second
-`make up` rebuilds the shared application image and deliberately recreates only
-the migration, Serve, and Workers containers so edits to the bind-mounted
-operator config take effect. The migration runs to completion first; Serve and
-Workers start only after its container exited 0, and a failed migration leaves
-them stopped with its last log lines printed. An already running PostgreSQL container is not
-recreated; the operator files and named-volume data remain in place.
-
-The optional Binance execution runtime is **not** part of this lifecycle. It has
-its own image (`tracefold-runtime:<sha>`) and its own targets —
-`make runtime-build`, `runtime-up`, `runtime-restart`, `runtime-status`,
-`runtime-logs`, `runtime-down` — so a News, Serve or Workers release cannot
-restart the process that owns a live account. `make up` never names it;
-`make down` stops it before stopping the remaining stack. See `OPERATIONS.md`.
-
-### Upgrading across a removed config key
-
-`NewsSettings` and the other config models are `extra="forbid"`, so a key that a
-release deletes does not become inert — it fails startup. When release notes
-retire a key, remove it from `~/.tracefold/config.yaml` **between** `git pull`
-and `make up`, or Serve and Workers refuse to start with `extra_forbidden`. The
-same file is bind-mounted read-only into the execution runtime, so the edit must
-also precede the next `make runtime-up`.
-
-There is no exception to that manual rule. `tracefold init` never rewrites the
-content of an existing config: the one-shot #433-C (`trading.order` /
-`trading.bindings`) and #449 (multi-login PostgreSQL) shape rewrites were
-deleted with #589 once every deployment had run them. A config still carrying a
-retired key now fails `Settings` validation, naming the key, at the next load.
-If applying the database migration directly, first run `uv run tracefold init`,
-then `uv run tracefold config`, and only then `make db-migrate`.
-
-`news.opennews_strategy_ids` is retired in #126. Which Strategies feed News is
-now decided in the OpenNews account, so delete the key and its list:
-
-```bash
-python3 - <<'EOF'
-import re, pathlib
-p = pathlib.Path.home() / ".tracefold" / "config.yaml"
-s = p.read_text()
-p.with_suffix(".yaml.bak").write_text(s)
-print(p.write_text(re.sub(r"^  opennews_strategy_ids:\n(?:  - .*\n)*", "", s, flags=re.M)))
-EOF
-uv run tracefold config   # parses before make up and the next make runtime-up
+```mermaid
+flowchart TB
+    Check["Preflight and source identity"] --> Init["Initialize operator files"]
+    Init --> Build["Build application image"]
+    Build --> Infra["PostgreSQL and RabbitMQ"]
+    Infra --> Policy["Apply broker policy"]
+    Policy --> Migrate["Run migration to completion"]
+    Migrate -->|"exit 0"| App["Start Serve, Workers and<br/>Analysis"]
+    App --> Verify["Required service, readiness<br/>and console checks"]
+    Migrate -->|"failure"| Stop["Leave application roles<br/>stopped; expose logs"]
 ```
 
-`trading.candidates.symbol_cooldown_seconds` and
-`trading.candidates.max_rank_in_window` are retired in #348. A per-symbol
-re-entry delay is what a lane needs when several positions can be open at once,
-and this lane holds one at a time for at most three minutes; a rank ceiling is
-selectivity, which the policy already owns. Delete either line if present:
+The exact orchestration is [Makefile](../Makefile) and [compose.yaml](../compose.yaml).
+The one-shot migration must complete successfully before application roles start.
+A failed command returns non-zero and names its boundary; do not interpret a
+partially running stack as a completed startup.
 
-```bash
-python3 - <<'EOF'
-import re, pathlib
-p = pathlib.Path.home() / ".tracefold" / "config.yaml"
-s = p.read_text()
-p.with_suffix(".yaml.bak").write_text(s)
-p.write_text(re.sub(r"^ *(symbol_cooldown_seconds|max_rank_in_window):.*\n", "", s, flags=re.M))
-EOF
-uv run tracefold config   # parses before make up and the next make runtime-up
-```
+A later `make up` rebuilds/recreates the application roles without unnecessarily
+recreating an already running PostgreSQL container. Operator files and named
+volumes persist. `make down` stops Nautilus first and then the remaining services;
+it does not delete data volumes. Do not add `docker compose down -v` to routine
+upgrade or troubleshooting instructions.
 
-Note the same key name lived under `news.oi.max_rank_in_window` until #458 removed the whole `news.oi` section; it was **not**
-retired — that one is the notification gate's rank and is unrelated to capital.
-The regex above is indentation-blind, so check the diff before `make up` if your
-file sets both.
+## 3. Initialization and configuration ownership
 
-`news.triage.deadline_seconds` is retired in #129. Remove that line from an
-existing `news.triage` mapping before `make up` and the next `make runtime-up`;
-keep `concurrency` and the optional whole-chain `circuit_failures` /
-`circuit_open_seconds`. The News Agent stage and model call budgets are
-code-owned; carrying the old key fails `extra="forbid"`.
-
-### Initialization semantics
-
-`make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
-`0700`, `logs/`, `cache/` and the durable `archive/`, one config with a locally generated API bearer
-token (`ws_token`) but no external credentials, two PostgreSQL password files,
-and empty Telegram and Binance execution placeholders:
+`make up` invokes `tracefold init`. The resulting operator directory is:
 
 ```text
-telegram_bot_token
-binance_usdm_api_key
-binance_usdm_api_secret
-postgres_password
-postgres_database_password
+~/.tracefold/
+  config.yaml
+  postgres_password
+  postgres_database_password
+  telegram_bot_token
+  binance_usdm_api_key
+  binance_usdm_api_secret
+  archive/
+  cache/
+  logs/
 ```
 
-The config, Telegram placeholders, and all password files are mode `0600`.
-Ordinary `tracefold init` preserves an existing config byte-for-byte, never
-rotates an existing password, and repairs the required permissions on every
-run. It rewrites no config content at all. `tracefold init --force` replaces
-only `config.yaml` with a newly generated default; it still preserves all
-existing PostgreSQL passwords. Back up intentional config changes before using
-`--force`.
+`config.yaml` is the only application configuration authority. Initialization
+creates a local API bearer token, no external credentials, and empty delivery/
+execution placeholders. Directories are private (`0700`); config/secret files
+use `0600`. The initializer preserves existing config contents and passwords
+while repairing required permissions.
 
-`tracefold init` is the sole default-config authority. There is no maintained
-static example or `.env` fallback. The generated default creates a local API
-token plus an empty `telegram_bot_token` placeholder but contains no live
-model, OpenNews, Feishu, or Telegram credential, points
-`news.broker.url` at the compose RabbitMQ service, and leaves News push
-disabled. Edit only the operator-owned
-`~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
-terminal output, docs, tests, and commits.
+**`tracefold init --force` replaces config.yaml with generated defaults.** It is
+not the ordinary upgrade command and does not rotate existing database passwords.
+Back up intentional operator choices before using it.
 
-The generated PostgreSQL DSN is a container-network address. The fresh-volume
-bootstrap runs only during PostgreSQL `initdb`: it creates the single
-non-superuser `tracefold` application LOGIN, assigns the public schema to it,
-creates the required extensions, and revokes the `tracefold_app` bootstrap
-login. Alembic, Serve, Workers, Nautilus, and CLI share that DSN and
-`postgres_database_password`; the bootstrap password remains separate and is
-never mounted into application containers. Unknown non-empty volumes are not
-reinterpreted or repaired by startup. A pre-baseline backup must first be
-restored with its recorded pre-cut source/image and advanced to the old terminal
-head before the #449 stopped-writer cutover.
-
-### Credential-dependent capabilities
-
-The credentials a live deployment can hold are exactly: the OpenNews token
-(`news.opennews_token`), the direct model triple (`llm.api_key`,
-`llm.base_url`, `llm.news_triage_model`, plus the optional
-`llm.news_reader_card`, `llm.news_triage_fallback`,
-`llm.news_reader_card_fallback`, and `llm.news_judgment` triples), the
-RabbitMQ URL (`news.broker.url`),
-the one push provider's configuration (`news.push.*`), the Binance execution
-pair, and the single PostgreSQL application password file. #528 deleted the
-Telegram control webhook and its secret; a config that still carries a
-`trading.control` block fails to load.
-
-The product process is usable without optional live credentials, but affected
-lanes report explicit degradation or unavailable evidence:
-
-- absent `news.opennews_token` keeps the News Receiver idle (`ingest.connected`
-  false, no incidents); a configured token is the whole News source setup —
-  which Strategies push is decided in the OpenNews account (#126);
-- absent or unreachable `news.broker.url` makes Workers fail startup while News
-  is enabled (the broker is the News transport plane);
-- an absent direct model triple (`llm.api_key`, `llm.base_url`,
-  `llm.news_triage_model`) leaves the semantic Agent unconfigured. Admission
-  remains durable, but semantic work stays pending until a configured Workers
-  process can run it; no negative verdict or delivery is fabricated;
-- News push remains off until `news.push.enabled: true` and exactly one provider
-  is complete: either a supported `news.push.feishu_webhook_url`, or a secure
-  Telegram bot-token file plus one private channel ID (`-100...`).
-
-`tracefold config` reports the effective file paths, configured booleans,
-broker `url_configured`, model names, watchlist symbols, the selected push
-provider, and credential/target configured booleans; it never prints Strategy
-IDs/counts, provider tokens, Telegram channel IDs, the broker URL, webhook URLs,
-signing secrets, or model keys.
-
-`news.push.feishu_signing_secret` is optional. When present, the Adapter adds
-the Feishu timestamp and signature. When absent, it sends the same compact
-interactive card unsigned, without `timestamp` or `sign`; the operator owns
-that reduced-authentication choice. Configuration diagnostics report only
-configured booleans. Feishu delivery has no model-credential dependency; the
-card is composed only after a notification plan selects adopted claims.
-Telegram delivery reads `news.push.telegram_bot_token_file` under the same
-regular-file, no-symlink, mode-`0600` policy as other provider files. The
-configured `telegram_chat_id` is either a channel Bot API ID beginning with
-`-100` or that channel's public `@name`, which are Telegram's own two ways of
-naming one channel. The adapter owns that rule and configuration only reads
-whatever the operator wrote, so neither a mistyped digit nor an `@name` stops
-the process from starting; a target of no known shape is reported as
-`news_delivery: unavailable` (#562 §5 rows 1, 8 and 11). Before the first send,
-Workers asks Telegram for the target metadata, verifies the exact ID (or, for an
-`@name`, that the channel answering still carries that name) is a channel, and
-verifies the bot is an administrator allowed to post. Every later provider
-response is checked against the numeric ID Telegram itself answered with.
-Invite links, personal chats, groups, and supergroups are rejected before the
-first message; a channel with a public `@name` is the operator's own publishing
-decision and is accepted. The optional `news.push.telegram_proxy_url` is how
-Workers reaches `api.telegram.org` from a host that cannot reach it directly:
-an `http://`, `https://`, `socks5://` or `socks5h://` URL with a host and no
-path. Unset means directly, and no environment variable substitutes for it --
-the adapter always supplies its own transport, which is exactly the case where
-httpx does not read `HTTPS_PROXY`. A URL of any other shape, or a SOCKS URL in
-a build without the `socksio` codec, is reported as `news_delivery:
-unavailable` beside a running process. It may carry credentials, so
-`tracefold config` reports only whether one is configured. Feishu and Telegram
-fields may not be configured together while push is enabled. An enabled but incomplete or insecure
-provider configuration is reported as `news_delivery: unavailable` with its
-reason, beside a running process that keeps receiving, admitting and triaging;
-it is not silently treated as disabled. Serve never mounts or reads the bot
-token, and reports delivery available only while Workers is running.
-
-The Compose deployment mounts exactly the generated
-`~/.tracefold/telegram_bot_token` file into Workers, so Compose deployments must
-use `telegram_bot_token_file: "telegram_bot_token"`. A directly launched local
-Workers process may point at a different operator-owned secure file, but that
-path is not automatically mounted by Compose.
-
-An operator configuration for live News uses the existing generated fields and
-the documented secure token file; do not add another config source or
-environment variable:
-
-```yaml
-llm:
-  api_key: "<operator model secret>"
-  base_url: "https://api.deepseek.com/v1"
-  news_triage_model: "deepseek-v4-flash"
-  # Optional provider-neutral request controls. Omit to use known-provider defaults.
-  request:
-    send_temperature: true
-    temperature: 0
-    structured_output: "json_object"
-    extra_body: {}
-  # Optional: omit this complete triple to compose selected cards on the Triage endpoint.
-  news_reader_card:
-    api_key: "<reader model secret>"
-    base_url: "https://reader.example/v1"
-    model: "reader-model"
-    request:
-      send_temperature: false
-      structured_output: "prompt_json"
-      extra_body: {}
-  # Optional all-or-none fallback route.
-  news_triage_fallback:
-    api_key: "<event fallback secret>"
-    base_url: "https://event-fallback.example/v1"
-    model: "event-fallback-model"
-  # Optional: requires news_triage_fallback; omit to alias its endpoint explicitly.
-  news_reader_card_fallback:
-    api_key: "<reader fallback secret>"
-    base_url: "https://reader-fallback.example/v1"
-    model: "reader-fallback-model"
-  # Optional, Trading-only Jev semantic tool. Supply all three or omit all.
-  # Current OpenRouter System One protocol; a direct Jev route uses the same
-  # fields with its own base_url, api_key and model when available.
-  trading_semantics:
-    api_key: "<operator OpenRouter secret>"
-    base_url: "https://openrouter.ai/api"
-    model: "<System One model id>"
-  # Optional, News-only Jev judgments (#706). Supply all three or omit all; unset,
-  # News judgments run on the generative News endpoints above. trading_semantics
-  # never enables it. Direct route: https://api.typesafe.ai with jev-1.13.0.
-  news_judgment:
-    api_key: "<operator OpenRouter secret>"
-    base_url: "https://openrouter.ai/api"
-    model: "jev-1.13"
-
-news:
-  enabled: true
-  # Which Strategies feed the pipeline is set in the OpenNews account, not here.
-  opennews_token: "<operator secret>"
-  broker:
-    url: "amqp://tracefold:<rabbitmq password>@rabbitmq:5672/"
-  push:
-    enabled: true
-    telegram_bot_token_file: "telegram_bot_token"
-    telegram_chat_id: -1001234567890
-    # Optional. Only when this host cannot reach api.telegram.org directly:
-    # telegram_proxy_url: "socks5h://127.0.0.1:1080"
-    # Alternative provider (do not configure both):
-    # feishu_webhook_url: "<Feishu v2 webhook>"
-    # feishu_signing_secret:
-  retention:
-    raw_days: 30                # an Item nobody judged is storage
-    judged_days: 365            # historical verdict/review evidence retention
-  venues:                       # instrument-universe snapshot; public catalogues, no credentials
-    enabled: true
-    binance: true
-    hyperliquid: true
-    okx: true
-    lighter: true                 # post-send exact market lookup and price anchors
-    bitget: true                  # post-send exact market lookup and price anchors
-    us_reference: true          # US listed-symbol directory (#91): tells the Gate a ticker is a stock, not tradeable here
-    snapshot_period_hours: 6.0
-  watchlist:
-    - {symbol: BTC}
-    - {symbol: ETH}
-    - {symbol: SOL}
-    - {symbol: NVDA}
-    - {symbol: TSLA}
-    - {symbol: COIN}
-```
-
-Use `prompt_json` for an OpenAI-compatible local/provider endpoint that rejects
-`response_format` but can follow an in-prompt JSON Schema. Set
-`send_temperature: false` when it rejects the temperature field. These controls
-are available on every endpoint block; they replace model-name or URL-specific
-compatibility hacks. In `auto`, DeepSeek uses JSON-object mode with thinking
-disabled. Explicit operator values take precedence. These request semantics enter
-`configured_endpoint_model_v3`, so two endpoints with different request contracts
-cannot reuse the same evidence cohort. A directly callable `qwen*:thinking` alias
-is sent unchanged without the ordinary Qwen disable override and uses
-`prompt_json`; no operator-side thinking flag is required.
-
-Gate admission and semantic processing are code-owned. Editorial items open
-Events, and each new evidence revision creates durable semantic work on the
-existing `news.triage` queue. The News Agent extracts claims, uses generated
-judgments or the optional News Jev endpoint, and adopts an EventUpdate before
-notification planning. The planner reads actual sent bodies and selects
-claim-level content; only a selected notification composes a card. Trading
-receives the adopted public update independently of card delivery. Recovery
-Items and typed market facts retain their separate paths. See
-[News EventUpdate](design/news-event-updates.md) for the current contracts.
-
-The former three-Predictor Program, GEPA/learning/release/canary commands, and
-`news.policy` settings are removed. Remove `llm.news_compiler_reflection` and
-the entire `news.policy` mapping from an existing config before starting the
-new image. `tracefold config` will reject either retired key. The historical
-Program epochs, verdicts and learning data remain audit records; they do not
-execute or supply a fallback runtime. A model-route change changes the current
-News program identity, while a semantic failure stays visible as unfinished
-work rather than a fabricated drop.
-
-Leave the signing field empty only when unsigned delivery is intentional. Do
-not commit the populated operator config. With `news.push.enabled: false`,
-Serve and Workers start without a provider and any delivery work settles
-`terminal/delivery_unavailable`. Once push is explicitly enabled, an incomplete
-or invalid provider configuration is a startup error for Workers; the requested
-delivery boundary is never silently discarded.
-
-The compose stack runs `rabbitmq:4-management` with the default user
-`tracefold` and password `${TRACEFOLD_RABBITMQ_PASSWORD:-tracefold}`; ports
-5672/15672 bind to `127.0.0.1`. The broker URL in `config.yaml` must match.
-Setting `news.enabled: false` leaves Workers with only the probe and control
-children and needs no RabbitMQ.
-
-There is no local allowlist to keep in step (#126): enabling a Strategy in the
-OpenNews dashboard starts feeding the pipeline, disabling it stops, and
-`/api/news/status` reports nothing about Strategies because Tracefold neither
-chooses nor filters them.
-
-Worker topology and all safety/resource budgets are code-owned. For real data,
-`config.yaml` must contain only the News credentials above; the `llm` block
-owns one all-or-none direct Triage triple (`api_key`, `base_url`,
-`news_triage_model`) and may own one all-or-none `news_reader_card` endpoint;
-an absent Reader endpoint inherits Triage. The optional fallback route has an
-all-or-none `news_triage_fallback` endpoint and may add an all-or-none
-`news_reader_card_fallback`; absent Reader fallback is an explicit alias of the
-EventSemantics fallback endpoint. Claim extraction and the generative News
-judgments use the Triage route; cards use the Reader route. The optional
-all-or-none `news_judgment` System One route moves the narrow News judgments to
-Jev and is independent of `trading_semantics`. There is no environment-variable
-credential path or inferred URL/model. Configs written before the GMGN lane removal must drop the
-`gmgn`, `upstream`, `providers.binance`, `api.heartbeat_interval`, and
-`api.replay_limit` keys, and configs written before the Analyst lane removal
-(#57) must drop `news.analyst.*` and `llm.news_analyst_model`; the schema
-rejects them. Before #160, also remove the retired policy-v9 action/priority
-keys (`escalate_magnitude`, `min_push_magnitude`,
-`min_watchlist_magnitude`, `unclear_push_min_magnitude`,
-`unclear_push_event_types`, `high_priority_escalates`,
-`noise_veto_max_magnitude`, `noise_veto_respects_gate_priority`, and
-`contested_push_min_magnitude`) and run `uv run tracefold config`; there are no
-aliases.
-
-The OpenNews Receiver authenticates one WSS and sends zero application
-subscription frames; the server pushes the account owner's `strategy.triggered`
-notifications and Tracefold publishes each accepted frame to RabbitMQ. A
-disconnect, broker backpressure, or process outage creates a typed incident;
-reconnect restores current WSS health and the official Strategy list/hits
-endpoints perform bounded idempotent recovery (recovered Items never deliver).
-Deduper and the semantic worker are broker consumers; Deliverer polls durable
-notification work and delivery intents. See `docs/ARCHITECTURE.md`
-and `docs/OPERATIONS.md` for the pipeline and diagnosis.
-
-Use `uv run tracefold config` to inspect the active config path and redacted
-enablement. Inspect serve through authenticated `/api/status` and workers
-through its internal health/readiness/metrics surface.
-
-Useful live-data smoke checks:
+There is no maintained static sample YAML or `.env` fallback. Read the generated
+file and the actual [typed settings](../tracefold/platform/config/models.py).
+Inspect paths and redacted values without printing raw credentials:
 
 ```bash
 uv run tracefold config
+uv run tracefold --help
+```
+
+Source code owns default values and accepted fields. Some resource budgets are
+explicit Analysis settings; others are fixed in their owning implementation.
+Do not copy an old exhaustive list of knobs or assume any undocumented key works.
+
+### Capabilities can be enabled separately
+
+| Capability | Configuration owner and expected behavior |
+| --- | --- |
+| News ingestion | `news.opennews_token` and `news.broker`; enabled source Strategies are chosen in the provider account, not a local strategy-ID allowlist. |
+| Editorial models | Complete `llm` generative endpoint settings, optional ReaderCard/fallback routes and optional News-specific `llm.news_judgment`; partial credentials are rejected. |
+| Notifications | `news.push`; disabled by default. Explicitly enabling an invalid provider configuration is not a successful delivery setup. |
+| Wallet episodes | Current wallet/chain settings and adapters; roster, receipt collection, detection and price evidence report separately. |
+| Trading analysis | `trading.enabled` and `trading.analysis`; disabled by default, with bounded market/model resource settings. |
+| Signal publication | `trading.analysis.publish_signals`; false by default and independent of whether research decisions exist. |
+| Execution | `trading.execution`, secure credential files and explicit runtime lifecycle; disabled by default. |
+
+Without optional credentials the corresponding capabilities are idle, unavailable
+or degraded; no fake feed or model answer is produced. Required shared infrastructure
+still matters: an enabled News transport cannot silently run without its broker.
+See the module guides for the resulting [News](modules/news.md),
+[wallet](modules/wallets.md) and [Trading](modules/trading.md) paths.
+
+## 4. Container addresses, mounts and public links
+
+The generated PostgreSQL DSN and broker URL use Compose-network addresses and are
+used as written. They are not automatically rewritten for a host-side CLI.
+Run database/broker diagnostics in an appropriate application container:
+
+```bash
 docker compose exec -T workers tracefold news bus-check
 docker compose exec -T workers tracefold db audit
 ```
 
-The first command confirms the real config paths. `news bus-check` proves the
-broker URL, declares the News topology idempotently, and prints per-queue
-message/consumer counts. `db audit` confirms the migration head, every current
-News table count, and that the schema holds exactly the declared table set. Source
-blocks, rate limits, and missing rows surface as explicit diagnostic results,
-not as fake facts.
+Fresh-volume `initdb` creates the application login and required extensions.
+The bootstrap password and ordinary database password are separate. Application
+roles share the application database login with role-specific composition and
+`application_name`; the bootstrap superuser credential is not an application mount.
+An unknown non-empty data volume is not silently repaired or reinterpreted.
 
-Live-data debugging starts the same way: first run `uv run tracefold config`
-and confirm `config_path` points at `~/.tracefold/config.yaml`. Report only
-paths, booleans, and diagnostic command status; do not paste the API token,
-model keys, provider passwords, or full config payloads into docs or chat.
+Bind mounts and secret exposure are explicitly role-scoped in Compose. Only
+Nautilus receives the Binance execution credential files. Analysis uses the
+configured connection identity and its own public-market/model adapters, not
+account-write credentials. See [Security](SECURITY.md).
 
-Alembic has one root: baseline `20260831_0340` and one head. A new empty
-PostgreSQL 18 database applies the baseline and every revision after it in
-order. [`MIGRATIONS.md`](MIGRATIONS.md) is the only place that names the head
-and what each revision did; this document does not restate that list, because a
-second copy of it is a copy that goes stale.
-Current source intentionally has no upgrade path from an earlier revision. To
-recover a pre-#449 backup, use the exact pre-cut image/source to restore and
-advance it to the old terminal `20260831_0340`, take a verified backup, perform
-the documented one-time role cutover, and only then deploy current source. See
-`OPERATIONS.md` and `MIGRATIONS.md`; do not improvise old-head repair SQL.
+Published bindings are declared in Makefile and Compose. Use an explicit Make
+command-line override for an intentional binding change; do not introduce an
+untracked Compose override or `.env` to create another deployment definition.
+Changing a published database binding can recreate its container, so treat it as
+an operational change, not a harmless UI preference.
 
-Retired routes return `404`; there is no compatibility alias.
+`api.host` / `api.port` describe a bind address. `api.public_url`, when set, is the
+operator's externally reachable absolute HTTP(S) URL for reader links; it is not
+guessed from that bind address. It must not contain query or fragment components.
+Public HTTP is read-only. Browser bootstrap/auth does not grant command authority.
 
-The full CLI surface is documented by `uv run tracefold --help`.
-Treat that output as the source of truth — do not enumerate commands
-here. A snapshot lives at `generated/cli-help.md`.
+## 5. Updating an existing installation
 
-## Container deployment
+Read the affected migration notes, preserve the operator config and take the
+backup appropriate to the change. Strict settings reject removed keys by name.
+Remove only the documented obsolete field at its correct YAML path; do not use
+old indentation-blind regex snippets to delete every similarly named key.
 
-`make up`, `make status`, `make logs`, and `make down`
-are the supported operator lifecycle. `make up` passes an existing
-`GITHUB_TOKEN` into the image
-build as a BuildKit secret; when unset, it uses `gh auth token` if available.
-Public dependencies need neither. The token is not stored in an image layer or
-application config.
+For the EventUpdate cut, remove the retired `news.policy` and
+`llm.news_compiler_reflection` fields at their exact paths. The forward-only
+0404/0405 schema changes and writer coordination are documented in [Migrations](MIGRATIONS.md).
 
-Compose bind-mounts only role-appropriate files from `~/.tracefold/`. Since the
-#449 single-login cutover every application process shares one `tracefold`
-credential and is distinguished by `application_name`; only the execution
-runtime additionally receives the two Binance secret files. PostgreSQL data is
-pinned to the `tracefold-postgres` named volume, and `make down` does not delete
-it.
+Validate configuration before restarting roles. A plain `tracefold init` does
+not rewrite old key shapes. A schema change underneath a running execution owner
+requires coordinated maintenance; do not bypass it simply to make `make up` pass.
+[Migrations](MIGRATIONS.md) owns the supported baseline/head and destructive-cut
+requirements. Pre-baseline backups need their recorded source/image and restore
+procedure, not improvised SQL against current main.
 
-Every published Compose binding is declared once in the Makefile, with Compose's
-own default, and exported from there:
-`TRACEFOLD_{POSTGRES,RABBITMQ,RABBITMQ_MGMT,API,WORKERS,NAUTILUS}_{HOST,PORT}`.
-There is no `.env` support and no operator-shell export step. Overriding a
-binding for one deployment is a command-line variable, and changing it
-permanently is a Makefile commit:
+For a same-schema exact-image replacement, use the narrow `make deploy-image`
+procedure in [Operations](OPERATIONS.md). It validates image/source/database
+compatibility and does not downgrade PostgreSQL or automatically replace the
+execution process. This page deliberately does not duplicate that runbook.
+
+## 6. Optional execution lifecycle
+
+Nautilus uses a separate `tracefold-runtime:<sha>` image. A News/frontend change
+must not restart the account owner implicitly. Its commands are:
 
 ```bash
-# publish PostgreSQL on a LAN address for this deployment only
-make up TRACEFOLD_POSTGRES_HOST=192.168.50.68 TRACEFOLD_POSTGRES_PORT=56533
+make runtime-build
+make runtime-status
+make runtime-logs
+# Only for an explicitly configured and authorized execution operation:
+make runtime-up
+make runtime-restart
+make runtime-down
 ```
 
-Exporting one of these in a shell for one command and not the next changes the
-rendered service definition, and Compose then recreates the container it belongs
-to — which is exactly how the database container used to be recreated by a
-forgotten `export`.
+There is one configured Binance connection, not an in-process Paper simulator.
+Environment selection and account authority are documented in
+[Execution](modules/execution.md), [Security](SECURITY.md), and [Operations](OPERATIONS.md).
+Starting research or following this installation guide does not authorize trading.
 
-`.python-version` pins the project interpreter to 3.13, the image's interpreter
-and the one the locked cp313 `nautilus_trader` wheel is built for; `make
-preflight` asserts it.
+## 7. Development loops
 
-The Nautilus dependency declares the oldest supported release in `pyproject.toml`.
-`uv.lock` records the resolved release and wheel hashes so builds of the same
-revision use the same trading engine. The image checks that its Python interpreter
-and Nautilus `TradingNode` import work; it does not enforce a second hard-coded
-Nautilus version. Updating the lock to a new major release requires adapting and
-verifying the Runtime against that release before building its image.
-
-The Binance execution runtime is deployed separately, from its own
-`tracefold-runtime:<sha>` image: `make runtime-build` (gated build),
-`make runtime-up` (`stop -t 90` then `up --no-build --force-recreate`),
-`make runtime-restart`, `make runtime-status`, `make runtime-logs`, and
-`make runtime-down`. Its `stop_grace_period` is 90 s so the worst-case shutdown
-completes without SIGKILL. `make up` never names it and `make down` refuses
-while it exists.
-
-Any CLI command that reaches PostgreSQL or RabbitMQ runs inside a container
-(`docker compose exec -T workers tracefold ...`). The configured DSN and broker
-URL are compose-network addresses and are used exactly as written.
-
-Fresh-volume bootstrap is an `initdb` hook, not a steady service or a generic
-role-repair mechanism. Normal startup consists of PostgreSQL, RabbitMQ
-(`rabbitmq:4-management`, data on the `tracefold-rabbitmq` volume, AMQP and
-management ports bound to `127.0.0.1`), the one-shot migration service, and
-separate Serve/Workers runtimes; Workers waits for the broker health check. `make status` returns
-non-zero for a failed/missing migration, stopped or unhealthy required
-container, failed Serve or Workers readiness endpoint, or missing HTML console.
-It intentionally does not make business-data freshness part of readiness. Use
-`make logs` for the bounded startup evidence named by a failure.
-
-The preflight verifies `uv`, the Docker CLI, Compose plugin, `curl`, an
-authenticated GitHub CLI, and daemon access before a build starts. GitHub is
-used to bind deployment to the exact green `origin/main` commit. If the daemon
-is unavailable, start Docker Desktop or grant this shell access to the Docker
-socket, then rerun `make up`.
-
-`make deploy-image IMAGE_ID=sha256:<64 lowercase hex>` is the narrow
-database-compatible image rollback/redeployment path. Run it only from the
-primary checkout on `main`, and pass the full ID of an image already present in
-the local Docker image store; tags, short IDs, registry digest references, and
-an `IMAGE_ID` inherited only from the environment are refused. The checkout
-must have no tracked/staged changes, must equal local `origin/main`, and must
-have no `.env`, untracked Compose override, or untracked Alembic revision; an
-unrelated untracked research artifact is not a deployment input. The target
-inspects the local ID and requires the image, source, and live database Alembic
-heads to match (therefore rejecting every image on a different schema head
-mismatch), then validates that the target can parse the active config without
-printing it. It injects that exact ID as `TRACEFOLD_IMAGE_DIGEST`, stops Serve
-and Workers, and recreates migration, Serve, and Workers with `--no-build`; it never touches the execution runtime.
-Before running `make status-app`, it verifies every recreated container image,
-Workers readiness identity, and the linked active/runtime-deployment receipt.
-It never downgrades PostgreSQL. See `OPERATIONS.md` for the receipt lookup and
-rollback runbook. Normal `make up` still builds and deploys the current checkout
-and ignores this exact-image override.
-
-The official PostgreSQL 18 Bookworm image preloads `pg_stat_statements` with
-query IDs enabled. Use `tracefold db health`, supported audit/query-audit and
-status/metrics surfaces, the SQL in `OPERATIONS.md`, and `docker compose logs`
-for diagnosis. Compose has no custom PostgreSQL build, auxiliary observability
-services, host log mount, or HTML-report path.
-
-## Explicit development loops
-
-The container workflow is the fresh-clone onboarding path. It is not equivalent
-to starting only `tracefold serve`: the complete product also requires a
-current PostgreSQL schema, one Workers runtime, and a built or proxied console.
-
-For frontend-only development, keep the complete stack running and start Vite
-against its loopback API:
+Use an isolated task checkout and preserve unrelated changes. For frontend work,
+keep an intentionally managed backend stack available and run:
 
 ```bash
-make up
 cd web
 npm ci
-npm run dev          # Vite console with API proxy to 127.0.0.1:8765
+npm run dev
 ```
 
-For an intentional host-process backend loop, first provision the single
-`tracefold` application login and set `storage.postgres.dsn` in
-`~/.tracefold/config.yaml` to a database address reachable from the host. The
-DSN is used exactly as written — nothing rewrites a compose host name to a
-published loopback port any more (#537 D1). This is for development against an already prepared database;
-it does not bootstrap a blank cluster. Then use separate terminals:
+[Vite configuration](../web/vite.config.ts) proxies API requests to the local
+backend. The console uses HTTP and persisted read models, not a hidden live
+WebSocket subscription. [Frontend](FRONTEND.md) owns the detailed frontend workflow.
+
+A host-process backend loop is an explicit alternative, not another default
+installation path. Provision a separate development database/broker, set addresses
+reachable from the host, and avoid running duplicate owners against production
+state. After installing dependencies and migrating that development database:
 
 ```bash
-# one-time dependency/schema preparation
-make sync
-cd web && npm ci && cd ..
+uv sync --frozen
 uv run tracefold db migrate
-
-# terminal 1
+# Run intentionally enabled process roles in separate terminals:
 uv run tracefold serve
-
-# terminal 2
 uv run tracefold workers
-
-# terminal 3
+uv run tracefold analysis
+# In another terminal:
 cd web && npm run dev
 ```
 
-Developer checks remain separate from startup:
+Do not run this block sequentially expecting foreground processes to return.
+Execution remains independently managed, not a required development terminal.
+
+## 8. Verification and diagnosis
 
 ```bash
-make install-hooks
-uv run pytest
-uv run ruff check .
-uv run python -m compileall tracefold tests
-cd web && npm run typecheck && npm run lint
+make check
+make test-fast
 ```
 
-`make install-hooks` uses Git's standard repository hook directory. If any
-`core.hooksPath` override is active, it prints the single command that clears
-that override instead of adding custom-path installation logic. After a
-successful install it verifies that the executable hook belongs to this
-repository's Git common directory. The hooks reuse the locked
-Ruff toolchain and run ESLint/Prettier only on staged frontend files. They are
-fast local feedback, not merge or release evidence.
-
-Other frontend commands are:
-
-```bash
-cd web
-npm run build        # production bundle
-npm run preview      # serve the build locally
-```
-
-See `FRONTEND.md` for architecture and component conventions.
+These are development checks, not deployment commands. [Testing](TESTING.md)
+names resource-backed CI lanes; [Operations](OPERATIONS.md) explains service status,
+queue state, business progress and backups. For startup failures, inspect the
+failed boundary before changing config or deleting data. Report redacted paths,
+boolean states and error codes, never credentials or full operator config.

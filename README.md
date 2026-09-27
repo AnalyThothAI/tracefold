@@ -1,155 +1,118 @@
 # Tracefold
 
-Tracefold is an evidence-first market research and trading system. **News** turns
-provider input into durable editorial and market facts, classifications, reader
-cards, and wallet net-buy episodes. **Trading** consumes a public OI projection,
-freezes Cases, and produces engine-neutral Signals. The optional Nautilus Runtime
-owns execution separately. A React console and HTTP/CLI surfaces expose persisted
-facts, decisions, and outcomes.
+**Evidence-first news research, market observations and separately controlled trading.**
 
-News and Trading are sibling capabilities, not one another's implementation layer.
-Provider frames, model predictions, submitted commands, and UI state are not substitutes
-for durable evidence or actual delivery/execution outcomes.
+Tracefold records provider messages and on-chain receipts, understands incremental
+news changes, explains what is new, and exposes the evidence in a read-only React
+console. Trading researches eligible catalysts and OI observations; an independent
+Nautilus process owns execution against the configured Binance connection.
 
-## Architecture
+A source report, adopted claim, selected notification, sent receipt, trading decision
+and venue fill are different facts. The system preserves those boundaries instead
+of treating a model answer or an accepted command as proof of an external result.
 
-```text
-OpenNews -> RabbitMQ -> News admission -> PostgreSQL
-                         |-- editorial Events -> Program -> decision -> delivery
-                         `-- market facts -> notifications
-                                          `-> App OI mapper -> Trading Case / Signal
+## Capabilities
 
-Wallet roster + chain receipts -> fill ledger -> net-buy episodes -> notification
-                                                `-> independent price samples
+| Area | What runs | Guide |
+| --- | --- | --- |
+| News | Incremental claim extraction, versioned EventUpdates, evidence relationships, notification planning and on-demand cards | [News](docs/modules/news.md) |
+| Market observations | Deterministic OI/liquidation/smart-money parsing and grouped notifications, independent of editorial News | [OI](docs/modules/oi.md) |
+| Wallets | Followed-address roster, receipt-backed fills, concentrated net-buy episodes and separate price observations | [Wallets](docs/modules/wallets.md) |
+| Trading Analysis | One eligible target, frozen evidence, bounded read-only ReAct research, TRADE / NO_TRADE / WATCH and optional Signal publication | [Trading](docs/modules/trading.md) |
+| Execution | Scoped plans, actual orders/fills, protection, reconciliation and native economics | [Execution](docs/modules/execution.md) |
+| Review | ReviewDesk and bounded card-judge calibration | [Review](docs/modules/review.md) |
 
-Signal + authenticated control -> separate Nautilus Runtime -> venue / reconciliation
+## Architecture at a glance
 
-PostgreSQL projections -> Serve -> HTTP / React
-                      `-> read-only CLI commands
+```mermaid
+flowchart TB
+    Inputs["News providers and<br/>chain receipts"] --> News["Workers<br/>News and market facts"]
+    News --> Facts[("PostgreSQL<br/>facts, updates and receipts")]
+    News --> Reader["Independent notification<br/>planning and delivery"]
+    Facts --> Analysis["Analysis<br/>Trading research"]
+    Analysis --> Facts
+    Facts --> Serve["Serve<br/>read-only API and console"]
+    Facts --> Runtime["Optional Nautilus<br/>execution owner"]
+    Runtime <--> Venue["Configured Binance connection"]
+    Runtime --> Facts
 ```
 
-```text
-tracefold/
-  news/           editorial pipeline, market facts, wallet episodes, learning/release
-  trading/        OI admission, frozen Cases, Alpha, Signals, execution transport
-  integrations/   provider, broker, delivery, market, and Nautilus/Binance adapters
-  platform/       configuration, PostgreSQL/Alembic, telemetry, bounded resources
-  app/            Serve/Workers/Runtime composition, HTTP, CLI, cross-context mapping
-```
-
-Serve and Workers share the application image. The account-owning execution Runtime
-has a separate image and lifecycle. Neither business package imports the other or
-reads its tables; App performs the explicit handoff. See [Architecture](docs/ARCHITECTURE.md)
-for the implemented boundaries and current data flow.
+There are **two business capabilities** (`news`, `trading`) and **four process
+roles** (`serve`, `workers`, `analysis`, `nautilus`). Serve, Workers and Analysis
+share the application image. Nautilus has a separate image and lifecycle.
+[Architecture](docs/ARCHITECTURE.md) maps processes, package owners, durable state
+and the public News-to-Trading handoff.
 
 ## Start the application
 
-Prerequisites: Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose
-plugin, and `curl`. On macOS, start Docker Desktop first. From the checkout:
+Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose plugin,
+`curl` and [GitHub CLI](https://cli.github.com/). Start Docker and authenticate GitHub
+CLI for the existing repository/deployment preflight. From the permitted main checkout:
 
 ```bash
+gh auth login --hostname github.com
+git clone git@github.com:AnalyThothAI/tracefold.git
+cd tracefold
 make up
 ```
 
-This initializes operator files without overwriting existing choices, builds the
-application image containing Python and the React console, starts PostgreSQL and
-RabbitMQ, applies broker policy and migrations, and starts Serve and Workers.
-A failed required startup boundary returns non-zero and can be inspected with logs.
-Open `http://127.0.0.1:8765/` after successful startup.
+Open **http://127.0.0.1:8765/** after startup succeeds.
+
+`make up` initializes operator files, builds the Python/React image, starts
+PostgreSQL/RabbitMQ, applies broker policy and migrations, then starts Serve,
+Workers and Analysis. It preserves existing operator choices and persistent data.
+It does **not** start or restart Nautilus. A failed required boundary returns non-zero.
 
 ```bash
-make status  # inspect required application and configured execution readiness
-make logs    # follow logs; Ctrl-C does not stop the services
-make down    # stop application containers without deleting PostgreSQL data
+make status-app
+make logs
+make down  # stops execution first as well; preserves data volumes
 ```
 
-A subsequent `make up` rebuilds the application and recreates the application roles,
-not a running PostgreSQL container. Data volumes and operator configuration persist.
-Generated defaults contain no live provider/model/delivery credentials; optional
-capabilities report disabled, unavailable, or degraded states rather than fake data.
-Add operator settings to `~/.tracefold/config.yaml` and rerun `make up` as appropriate.
-An explicitly enabled but invalid delivery configuration is not a successful setup.
-
-### Optional execution Runtime
-
-Execution is disabled by default. Its independent lifecycle is:
+The application config is **`~/.tracefold/config.yaml`**, generated by `tracefold init`.
+There is no repository-local credential file or `.env` fallback. Defaults contain
+no external provider/model/delivery credentials. An empty feed without a source is
+expected, not a reason to fabricate demo data. Trading, Signal publication and
+execution have explicit independent settings; execution is disabled by default.
 
 ```bash
-make runtime-build
-make runtime-up
-make runtime-status
-make runtime-logs
-make runtime-restart
-make runtime-down
-```
-
-These are lifecycle commands, not a recommendation to enable live trading.
-`make up` does not restart the execution Runtime; `make down` stops it first.
-Use the [Operations](docs/OPERATIONS.md) and [Security](docs/SECURITY.md) procedures
-for the configured Binance connection and any authorized activation or cutover.
-The current Signal lane is OI-based; arbitrary editorial explanations do not
-implicitly become implemented trading strategies.
-
-### Operator configuration
-
-```text
-~/.tracefold/config.yaml
-~/.tracefold/telegram_bot_token
-~/.tracefold/postgres_password
-~/.tracefold/postgres_database_password
-~/.tracefold/logs/
-~/.tracefold/cache/
-```
-
-The operator directory is private (`0700`) and secret/config files use `0600`.
-`tracefold init` owns generated defaults. Keep live credentials out of repository
-files, examples, logs, and PRs; the Telegram token belongs in its dedicated file.
-Inspect redacted configuration and available commands with:
-
-```bash
-uv run tracefold config
+uv run tracefold config  # redacted configuration, never raw secrets
 uv run tracefold --help
 ```
 
-For the standard Compose deployment, database/broker addresses in the active config
-are Compose-network addresses. Run those operational commands inside Workers:
+Follow [Setup](docs/SETUP.md) for credential-dependent capabilities, mounts and
+container versus host addresses. [Operations](docs/OPERATIONS.md) owns diagnostics,
+exact failed-work retries, backups and explicit execution lifecycle actions.
 
-```bash
-docker compose exec workers tracefold news bus-check
-docker compose exec workers tracefold db audit
+## Navigate and develop
+
+```text
+tracefold/news/          Items, EventUpdates, market facts, delivery and review
+tracefold/trading/       Research contracts, pure policy, Cases and execution contracts
+tracefold/integrations/  Provider, broker, delivery, market and Nautilus adapters
+tracefold/platform/      Configuration, PostgreSQL, physical resources and telemetry
+tracefold/app/           Process composition, HTTP/CLI and cross-capability mapping
+web/                    Read-only React workbench and frontend tests
+notebooks/              Offline research, preserved inputs and historical experiments
 ```
 
-Do not assume automatic host-address rewriting. Development tests instead use their
-explicit isolated resources. See [Setup](docs/SETUP.md) for detailed installation
-and configuration, [CLI help](docs/generated/cli-help.md) for command grammar, and
-[OpenAPI](docs/generated/openapi.json) for HTTP fields.
+The [handbook](docs/README.md) routes each question to one maintained owner. Module
+guides link directly to implementation and tests rather than duplicating every
+function's docstring in an automatically expanded manual. [Generated contracts](docs/generated/README.md)
+own the exact CLI/API/database shapes.
 
-## Development
+```bash
+uv sync --frozen
+make check
+make test-fast
+```
 
-Start with the requested observable outcome and the affected owner. A complete change
-normally belongs in one cohesive PR, including callers, tests, documentation, generated
-outputs, and obsolete-path removal. Use an Issue when durable scope or coordination is
-needed, not as a mandatory precondition for a bounded fix.
+Use focused tests while editing and the appropriate resource-backed lanes for the
+change. [Development](docs/DEVELOPMENT.md), [Testing](docs/TESTING.md) and
+[Frontend](docs/FRONTEND.md) describe those workflows. Coding-agent entry points
+are [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md).
 
-Run focused checks while editing and broaden according to risk. `make test-fast`
-is a broad hermetic checkpoint; `make test-ci` is the complete local preflight when
-that scope is useful or explicitly required, not an automatic prerequisite for PR
-submission. The remote required CI plan is unchanged by local check selection.
-See [Development](docs/DEVELOPMENT.md) and [Issues/PRs](docs/agents/issue-tracker.md).
-
-| Need | Owner |
-| --- | --- |
-| Coding-agent entry points | [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md) |
-| Architecture and flow | [Architecture](docs/ARCHITECTURE.md) |
-| API, CLI, config contracts | [Contracts](docs/CONTRACTS.md) |
-| Setup and operations | [Setup](docs/SETUP.md), [Operations](docs/OPERATIONS.md) |
-| Local verification and CI | [Development](docs/DEVELOPMENT.md), [Testing](docs/TESTING.md) |
-| UI boundaries | [Frontend](docs/FRONTEND.md) |
-| Migrations and authority | [Migrations](docs/MIGRATIONS.md), [Security](docs/SECURITY.md) |
-| Review language and taxonomy | [CONTEXT.md](CONTEXT.md), [News taxonomy](docs/NEWS_TAXONOMY.md) |
-
-## Non-goals
-
-No duplicate business truth in queues or caches, hidden provider/model calls in read
-APIs, automatic execution authority from a news model's answer, repository-local live
-credentials, or compatibility aliases for replaced internal implementation paths.
+The former three-predictor News Program and its GEPA/release/canary execution are
+not current capabilities. Historical studies remain in Git or their explicitly
+historical research workspace, not mixed into the operating handbook. A test or
+research return is not proof of production model quality, execution or profitability.
