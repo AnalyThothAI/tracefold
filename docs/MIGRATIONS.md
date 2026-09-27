@@ -4,7 +4,20 @@
 
 当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`。已应用的迁移文件属于升级与恢复证据，**不是可随过时文档一起删除的文件**。
 
-## 1. 确认源、镜像与数据库版本
+<details>
+<summary><strong>本页目录</strong></summary>
+
+1. [确认源、镜像与数据库版本](#section-确认源镜像与数据库版本)
+2. [正常升级顺序](#section-正常升级顺序)
+3. [EventUpdate 的 0404 / 0405 切换](#section-eventupdate-的-0404--0405-切换)
+4. [基线之前的备份与严格拒绝](#section-基线之前的备份与严格拒绝)
+5. [回退不是数据库降级](#section-回退不是数据库降级)
+6. [迁移验证与提交证据](#section-迁移验证与提交证据)
+
+</details>
+
+<a id="section-确认源镜像与数据库版本"></a>
+## 01 · 确认源、镜像与数据库版本
 
 读取检出源码的 head，不访问数据库：
 
@@ -20,10 +33,21 @@ docker compose exec -T workers tracefold db audit
 
 当前代码 head 为 `20260927_0406`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
-## 2. 正常升级顺序
+<a id="section-正常升级顺序"></a>
+## 02 · 正常升级顺序
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
 flowchart TD
+    accTitle: 协调数据库升级
+    accDescr: 先确认版本、备份与账户，再协调写进程和校验配置。迁移成功后恢复匹配应用，独立决定 Runtime 恢复；失败时保持写进程停止。
     Inspect["核实源、镜像、数据库与账户"] --> Backup["保存配套身份和可验证备份"]
     Backup --> Writers["协调受影响写进程<br/>含独立 Runtime"]
     Writers --> Config["校验配置与确切删除字段"]
@@ -32,15 +56,26 @@ flowchart TD
     Success -->|"是"| Start["启动匹配应用并验证进度"]
     Success -->|"否"| Diagnose["保持写进程停止<br/>诊断具体 revision"]
     Start --> Runtime["显式决定 Runtime 恢复"]
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class Inspect,Backup,Writers,Config,Migrate,Success,Start,Diagnose store;
+class Runtime execution;
 ```
 
-使用主检出目录的受支持 Make 工作流。`make up` 等迁移结束后启动 Serve、Workers 和 Analysis；不自动重启独立账户所有者。运行中 Runtime 与待迁移 schema 不匹配时，不以环境标志绕过检查。
+*操作视图 · “迁移成功”指实际退出结果；停止 Runtime 不是账户平仓回执。*
+
+使用管理该实例的检出目录及统一 Make 工作流，核对项目、配置目录与端口；隔离开发实例不共享生产写进程。`make up` 等迁移结束后启动 Serve、Workers 和 Analysis；不自动重启独立账户所有者。运行中 Runtime 与待迁移 schema 不匹配时，不以环境标志绕过检查。
 
 停 Runtime 不等于账户平仓。维护前先知道交易所实际持仓、保护与订单归属，必要操作按[执行 runbook](OPERATIONS.md#trading-operations)执行并核实结果，再协调写进程。
 
 普通 `init` 保留配置；`init --force` 不是迁移工具。严格设置报出旧字段时，仅删除其确切 YAML 路径，保留其他 operator 选择。
 
-## 3. EventUpdate 的 0404 / 0405 切换
+<a id="section-eventupdate-的-0404--0405-切换"></a>
+## 03 · EventUpdate 的 0404 / 0405 切换
 
 | Revision | 建立的当前契约 | 源码 |
 | --- | --- | --- |
@@ -64,7 +99,8 @@ flowchart TD
 
 迁移不是整库重新分析。保留的 legacy verdict / historical review 只具有其原来含义；也不能把旧静态 Program 资产重新挂回运行时以掩盖切换缺口。
 
-## 4. 基线之前的备份与严格拒绝
+<a id="section-基线之前的备份与严格拒绝"></a>
+## 04 · 基线之前的备份与严格拒绝
 
 基线之前的备份需要其记录的源码 / 镜像和对应恢复流程。当前 main 的单链不能无条件接续一个未知历史库；不要手工 stamp、猜字段或先启动新 Writers 再补 schema。
 
@@ -72,7 +108,8 @@ flowchart TD
 
 文档清理保留这类仍可能影响恢复的边界，但不把所有一次性事故 SQL 复制成通用日常步骤。
 
-## 5. 回退不是数据库降级
+<a id="section-回退不是数据库降级"></a>
+## 05 · 回退不是数据库降级
 
 `make deploy-image` 只用于源码 / 镜像 / 数据库 schema 兼容的本地精确镜像替换，不能反转 0404 / 0405。需要恢复旧 schema 时，使用匹配备份与镜像，在隔离环境验证后再安排切换。
 
@@ -80,10 +117,15 @@ flowchart TD
 
 [备份命令与恢复演练](OPERATIONS.md#backup)由运维页维护。归档可列目录仅证明 dump 可读，真正恢复与升级演练需要隔离数据库和相应验证。
 
-## 6. 迁移验证与提交证据
+<a id="section-迁移验证与提交证据"></a>
+## 06 · 迁移验证与提交证据
 
 新增 revision 时至少确认：迁移链单头、从受支持前驱可升级、已有数据处理明确、约束与查询符合新语义、应用启动顺序正确。不要修改已发布 revision 来逃避新增迁移。
 
 生成的 [db-schema.md](generated/db-schema.md)来自隔离且已迁移到目标 head 的数据库，不通过生产库 introspection 更新。相关真实资源测试由[测试指南](TESTING.md)的 migration / postgres lane 承担。
 
 运维记录保存备份身份、源 / 镜像、迁移前后 head、执行结果、实际恢复角色，以及 News / Analysis / Runtime 各自的后续进展。一个绿色 HTTP 探针不证明迁移后全部业务已经闭环。
+
+---
+
+[返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#数据库迁移与恢复边界)

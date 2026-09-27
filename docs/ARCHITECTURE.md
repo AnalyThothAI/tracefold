@@ -6,26 +6,84 @@ Tracefold 是一个代码仓库、两个业务域、四种进程角色。**News 
 
 本页是当前系统地图。细节以链接的源码和模块手册为准；箭头表达调用或数据依赖，不代表跨系统事务或无条件成功。
 
-## 1. 进程与部署拓扑
+<details>
+<summary><strong>本页目录</strong></summary>
+
+1. [架构图谱](#section-架构图谱)
+2. [进程与部署拓扑](#section-进程与部署拓扑)
+3. [包依赖与源码导航](#section-包依赖与源码导航)
+4. [三类输入不是同一条流水线](#section-三类输入不是同一条流水线)
+5. [News → Trading：先持久接收，再确认来源](#section-news--trading先持久接收再确认来源)
+6. [数据归属与独立状态轴](#section-数据归属与独立状态轴)
+7. [事务、恢复与外部副作用](#section-事务恢复与外部副作用)
+8. [验证与文档边界](#section-验证与文档边界)
+
+</details>
+
+<a id="atlas"></a>
+<a id="section-架构图谱"></a>
+## 01 · 架构图谱
+
+**先选视图，再读箭头。** 同一系统可以有部署、依赖、数据和时序四种不同投影；它们不能相互替代。
+
+| 视图 | 回答的问题 | 深入阅读 |
+| :--- | :--- | :--- |
+| [部署拓扑](#deployment) | 哪些进程运行，谁访问数据库与账户？ | [安装配置](SETUP.md) · [Platform](modules/platform.md) |
+| [包依赖](#packages) | 代码依赖沿什么方向，领域在哪里隔离？ | [源码责任地图](#source-map) |
+| [跨域时序](#handoff) | News 何时成为 Trading 的持久来源？ | [研究链路](modules/trading.md) |
+| [数据归属](#ownership) | 输入、知识、通知与研究各保存什么？ | [News 状态](modules/news.md#state) |
+| [权限与执行](SECURITY.md#model-authority) | 模型可以做什么，谁拥有账户权限？ | [Execution](modules/execution.md) |
+
+**图例。** 方框为进程、模块或产物，圆柱为持久存储或队列，菱形为实际条件分支；节点中的文字始终是语义依据。青绿表示信息产品，靛蓝表示交易研究，橙色表示账户执行，灰色表示共享存储或运行基础；颜色不代表成功、可信度或风险等级。
+
+每张图的图注单独定义箭头。依赖图的箭头是 import 方向；数据图是产物关系；时序图的虚线是回复，**不能统一解释成“只读”**。节点边框为虚线时表示外部来源，不意味着接口没有副作用。
+
+<a id="deployment"></a>
+<a id="section-进程与部署拓扑"></a>
+## 02 · 进程与部署拓扑
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+    subGraphTitleMargin:
+      top: 12
+      bottom: 12
+---
 flowchart TB
-    Browser["浏览器"] --> Serve
-    Providers["新闻源 / 地址名单<br/>链上 RPC"] --> Workers
-    subgraph Application["共用应用镜像"]
-        Serve["Serve<br/>HTTP 查询与静态工作台"]
-        Workers["Workers<br/>新闻、市场与钱包任务"]
-        Analysis["Analysis<br/>交易研究与 WATCH"]
+    accTitle: 部署拓扑
+    accDescr: 四种进程角色分别运行。Serve 只读 PostgreSQL；Workers 使用 RabbitMQ 与 News 记录；Analysis 管理 Trading 研究；独立 Nautilus 连接账户。
+    Browser["浏览器<br/>只读工作台"] -->|HTTP| Serve
+    Sources["新闻源 · 名单 · 链上 RPC"] --> Workers
+    subgraph APP["应用镜像 · 三种独立进程角色"]
+        Serve["Serve<br/>API 与静态资源"]
+        Analysis["Analysis<br/>研究与 WATCH"]
+        Workers["Workers<br/>News 与市场观察"]
     end
-    Workers <--> Broker[("RabbitMQ<br/>原始消息 / 语义唤醒")]
-    Serve --> DB[("PostgreSQL<br/>业务事实与可恢复工作")]
-    Workers <--> DB
-    Analysis <--> DB
-    Workers --> Model["模型 / 公共行情<br/>通知适配器"]
-    Analysis --> Model
-    Runtime["独立 Nautilus 镜像<br/>账户执行进程"] <--> DB
-    Runtime <--> Venue["配置指定的 Binance 连接"]
+    Serve -->|只读查询| DB[("PostgreSQL<br/>事实、工作与回执")]
+    Analysis <-->|Trading 研究记录| DB
+    Workers <-->|News 记录| DB
+    Workers <-->|原始记录 / 唤醒| MQ[("RabbitMQ")]
+    DB <-->|Signal / 执行记录| Runtime["Nautilus<br/>独立镜像与生命周期"]
+    Runtime <-->|账户操作 / 原生证据| Venue["配置指定的 Binance 连接"]
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class Browser,Sources,Venue external;
+class APP,Serve,DB,MQ store;
+class Workers news;
+class Analysis research;
+class Runtime execution;
 ```
+
+*部署视图 · 连线说明角色与依赖的访问关系；同一应用镜像不等于同一进程或相同权限。模型、公共行情和通知适配的职责见下表。*
 
 | 角色 | 实际入口 | 拥有的职责 | 不承担的职责 |
 | --- | --- | --- | --- |
@@ -36,24 +94,62 @@ flowchart TB
 
 [compose.yaml](../compose.yaml)定义镜像、依赖、挂载与探针；[Makefile](../Makefile)提供薄命令入口，[scripts/deploy.py](../scripts/deploy.py)统一持锁、启动、迁移等待、镜像和就绪验收。[make/checks.mk](../make/checks.mk)只拥有开发验证，不进入服务启动链路。`rabbitmq-policy`、`migrate` 是一次性准备作业，不是额外业务服务。`make up` 等迁移成功后启动应用角色，Nautilus 始终单独管理。
 
+### 外部访问不是所有角色共享
+
+| 角色 | 主要外部访问 | 账户订单写权限 |
+| :--- | :--- | :--- |
+| Serve | 持久化读模型和本地静态 / 冻结材料 | 无 |
+| Workers | 新闻源、名单、链上 RPC、新闻模型、公共行情与通知提供商 | 无 |
+| Analysis | 研究模型、受限公共市场证据 | 无 |
+| Nautilus | 配置指定连接的账户、订单和原生历史 | 由实际配置、作用域和执行检查控制 |
+
+> [!NOTE]
+> `make up` 管理应用角色；是否启用其中的模型或研究能力由配置决定。独立 Runtime 的启动与账户权限不由应用首页或 News 模型决定。
+
 <a id="2-package-ownership-and-source-navigation"></a>
 <a id="packages"></a>
-## 2. 包依赖与源码导航
+<a id="section-包依赖与源码导航"></a>
+## 03 · 包依赖与源码导航
 
 ```mermaid
-flowchart TD
-    App["app<br/>装配、接口与跨域映射"] --> News["news：信息产品"]
-    App --> Trading["trading：研究与执行契约"]
-    App --> Integrations["integrations：外部系统适配"]
-    App --> Platform["platform：物理基础设施"]
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
+flowchart TB
+    accTitle: 包依赖方向
+    accDescr: App 装配业务域与外部适配，Integrations 依赖业务端口，News 与 Trading 分别依赖 Platform，兄弟域不相互导入。
+    App["app<br/>装配、接口、跨域映射"] --> Integrations["integrations<br/>具体外部适配"]
+    App --> News["news<br/>信息产品与端口"]
+    App --> Trading["trading<br/>研究、执行契约与端口"]
+    App --> Platform["platform<br/>配置、资源、数据库基础设施"]
     Integrations --> News
     Integrations --> Trading
     Integrations --> Platform
     News --> Platform
     Trading --> Platform
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class App,Integrations,Platform store;
+class News news;
+class Trading research;
 ```
 
+*依赖视图 · 箭头为允许的代码依赖方向，不是消息流。News 与 Trading 之间没有直接箭头。*
+
 **News 与 Trading 不直接导入对方内部实现，也不直接查询对方内部表。** App 将公开值对象映射为另一侧需要的契约。适配器在架构测试允许的装配接缝使用具体实现，不因此获得另一套业务决策权。模块导入阶段不执行运行时 I/O。
+
+<a id="source-map"></a>
+<details>
+<summary><strong>展开源码责任地图</strong></summary>
 
 | 目录或入口 | 当前职责 | 行为文档 |
 | --- | --- | --- |
@@ -73,7 +169,10 @@ flowchart TD
 | [web/src](../web/src/)、[web/tests](../web/tests/) | 只读工作台、路由、查询和浏览器验证 | [前端](FRONTEND.md) |
 | [scripts](../scripts/)、[tests](../tests/)、[notebooks](../notebooks/) | 生成与维护、验证、独立离线研究 | [开发](DEVELOPMENT.md)、[测试](TESTING.md) |
 
-## 3. 三类输入不是同一条流水线
+</details>
+
+<a id="section-三类输入不是同一条流水线"></a>
+## 04 · 三类输入不是同一条流水线
 
 | 输入 | News 的处理 | 下游 |
 | --- | --- | --- |
@@ -84,10 +183,23 @@ flowchart TD
 OI 不先通过编辑型新闻模型；钱包首报不先经过 LLM 或价格收益评估。三者共用必要基础设施和发送适配，但不共用一套虚构的“总评分”或 Event 状态。
 
 <a id="handoff"></a>
-## 4. News → Trading：先持久接收，再确认来源
+<a id="section-news--trading先持久接收再确认来源"></a>
+## 05 · News → Trading：先持久接收，再确认来源
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  sequence:
+    mirrorActors: false
+    messageMargin: 28
+    actorMargin: 40
+    wrap: true
+---
 sequenceDiagram
+    accTitle: News 到 Trading 的可靠交接
+    accDescr: News 原子保存更新、公开记录和通知工作；App 按 source_update 或催化与 OI 分派；Trading 持久接收后才确认 News 记录。
+    autonumber
     participant N as News 采用事务
     participant O as News 公开 outbox
     participant A as App relay
@@ -105,6 +217,8 @@ sequenceDiagram
     Note over A,T: 中途崩溃允许重放，接收必须幂等
 ```
 
+*时序视图 · 编号帮助定位调用顺序；回复虚线不表示只读。News 与 Trading 的提交、broker 确认各有边界。*
+
 采用的编辑型内容通过 `news_public_update_v1` 发布，由 [public.py](../tracefold/news/updates/public.py)从命题、变更与引用生成，**不是把卡片正文喂给另一个 Agent**。
 
 | 公开类型 | 消费语义 |
@@ -115,21 +229,44 @@ sequenceDiagram
 
 修订按显式 claim refs 指向旧知识，可能跨 Event。它可以让尚未提交的入场以 `source_corrected` 被拒绝，但本身没有处理现有仓位的权限。冻结 Case 的知识截止时间不会被后来修订改写。
 
-## 5. 数据归属与独立状态轴
+<a id="ownership"></a>
+<a id="section-数据归属与独立状态轴"></a>
+## 06 · 数据归属与独立状态轴
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
 flowchart TB
-    Item["来源 Item 与修订"] --> Work["语义工作<br/>wanted / done / owner / lease"]
-    Work --> Checkpoint["检查点与语义观察"]
-    Checkpoint --> Update["不可变 EventUpdate<br/>与当前 adopted head"]
-    Update --> Public["公开 outbox"]
-    Update --> Plan["通知工作与命题级计划"]
-    Plan --> Intent["通知意图与冻结正文"]
-    Intent --> Receipt["真实发送账本"]
-    Public --> Case["Trading Trigger / Case"]
-    Case --> Signal["可选 Signal"]
-    Signal --> Execution["执行意图与真实执行证据"]
+    accTitle: 知识与下游记录的所有权
+    accDescr: 来源修订进入语义工作与知识。通知保存精确正文及回执。公开 outbox 将可研究来源交给 Case，将 source_update 交给来源修订记录。
+    Input["Item 与来源修订"] --> Work["语义工作<br/>输入版本、租约、预算"]
+    Work --> Observation["检查点与语义观察"]
+    Observation --> Knowledge[("不可变 EventUpdate<br/>当前 adopted head")]
+    Knowledge --> Notification["通知计划与稳定 intent"]
+    Notification --> Receipt[("冻结正文与发送账本")]
+    Knowledge --> Public["公开 outbox"]
+    Public -->|catalyst_delta / OI| Case["Trading Trigger / Case"]
+    Public -->|source_update| Amendment["来源修订<br/>不创建新 Case"]
+    Case --> Decision["研究决策与可选 Signal"]
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class Input,Work,Observation,Knowledge,Receipt store;
+class Notification news;
+class Public news;
+class Case,Amendment,Decision research;
 ```
+
+*数据视图 · 箭头表示产物关系，不是数据库外键。source_update 不创建新 Case；此图止于研究与通知，账户证据另见 Execution。*
 
 这是**概念数据关系**，不是物理外键 ER 图。精确表、列和约束见[数据库生成参考](generated/db-schema.md)。
 
@@ -146,7 +283,8 @@ flowchart TB
 
 <a id="5-transactions-resource-completion-and-supervision"></a>
 <a id="transactions"></a>
-## 6. 事务、恢复与外部副作用
+<a id="section-事务恢复与外部副作用"></a>
+## 07 · 事务、恢复与外部副作用
 
 | 边界 | 当前恢复机制 |
 | --- | --- |
@@ -162,8 +300,13 @@ flowchart TB
 
 物理操作与调用方超时也不是一回事：阻塞线程或数据库请求未真正结束时，资源许可不能提前释放。[平台文档](modules/platform.md)解释资源所有权、Workers 任务和故障隔离。
 
-## 7. 验证与文档边界
+<a id="section-验证与文档边界"></a>
+## 08 · 验证与文档边界
 
 [后端边界测试](../tests/architecture/test_backend_boundaries.py)与[Trading 边界测试](../tests/architecture/test_trading_boundaries.py)约束依赖方向。模块手册链接可执行行为测试；[契约](CONTRACTS.md)维护接口语义；[运维](OPERATIONS.md)维护实际操作。
 
 旧类名、队列名或目录名可能保留历史拼写，例如 `news.triage` 与 `oi_runtime`。它们不能证明旧的三预测器 Program、OI 专属下单通道或 Paper 模拟器仍在运行。当前能力由实际装配与调用路径决定。
+
+---
+
+[返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#系统架构)

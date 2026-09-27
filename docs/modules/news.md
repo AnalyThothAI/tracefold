@@ -4,46 +4,75 @@
 
 News 不只是“把标题交给模型打分”。当前编辑型链路以 **来源修订 → 冻结输入 → 命题理解 → EventUpdate 采用 → 独立通知** 为主线。它分别保存来源说了什么、系统理解了什么、读者实际收到什么。
 
-## 1. 职责与源码入口
+| 模块速览 | 说明 |
+| :--- | :--- |
+| **定位** | 信息产品 / 编辑型新闻 |
+| **运行位置** | Workers · news-semantic 与独立通知续接 |
+| **输入 → 产物** | 来源 Item、修订、冻结证据与 prior claims → EventUpdate、逐命题通知计划、实际回执、公开 outbox |
 
-| 所有者 | 主要职责 |
-| --- | --- |
-| [receiver.py](../../tracefold/news/pipeline/receiver.py)、[recovery.py](../../tracefold/news/pipeline/recovery.py) | 接收 OpenNews，记录中断与有界恢复，将原始输入交给 broker |
-| [admission.py](../../tracefold/news/pipeline/admission.py) | 区分来源契约，保存 Item、确定性拆分和 Event 归组，提交证据与语义工作 |
-| [events](../../tracefold/news/events/) | FactUnit 范围、grounding、准入、身份、标题 / token / MinHash 候选匹配 |
-| [semantic.py](../../tracefold/news/pipeline/semantic.py) | 消费语义唤醒，领取版本工作、执行尝试、退避、熔断与失败结算 |
-| [updates/service.py](../../tracefold/news/updates/service.py) | `NewsAgent` 编排、采用与可选补读；`Notifications` 独立续接 |
-| [semantics.py](../../tracefold/news/updates/semantics.py)、[judgment.py](../../tracefold/news/updates/judgment.py) | 引文校验、命题比较、有限问题、内容组装 |
-| [dspy_backend.py](../../tracefold/news/updates/dspy_backend.py) | DSPy 抽取、中文文案、生成式判断与原生有限选项判断 |
-| [notification.py](../../tracefold/news/updates/notification.py) | 逐命题通知规则、实际正文覆盖比较、稳定意图与冻结卡片 |
-| [event_update_store.py](../../tracefold/news/storage/event_update_store.py)、[event_updates.py](../../tracefold/news/storage/event_updates.py) | 短事务、检查点、不可变更新、head 条件采用、计划和发送账本 |
-| [public.py](../../tracefold/news/updates/public.py) | 从已采用知识生成公开更新，不依赖读者卡片 |
-| [delivery.py](../../tracefold/news/pipeline/delivery.py)、[maintenance.py](../../tracefold/news/pipeline/maintenance.py) | 通知轮询、真实投递、补唤醒与有界保留清理 |
+> [!IMPORTANT]
+> 理解、采用和通知分别完成。通知失败不回滚知识；卡片也不是 Trading 的事实来源。
 
-## 2. 端到端数据流
+[通知判断](#notification) · [输入身份](#input) · [Agent](#agent) · [状态恢复](#state)
+
+<details>
+<summary><strong>本页目录</strong></summary>
+
+1. [端到端数据流](#section-端到端数据流)
+2. [一条 News 为什么可能对应多个 Event](#section-一条-news-为什么可能对应多个-event)
+3. [NewsAgent 到底做了什么](#section-newsagent-到底做了什么)
+4. [主题、来源与知识版本](#section-主题来源与知识版本)
+5. [状态必须分三层理解](#section-状态必须分三层理解)
+6. [什么决定一条新闻是否推送](#section-什么决定一条新闻是否推送)
+7. [一个具体更新例子](#section-一个具体更新例子)
+8. [验证与排障入口](#section-验证与排障入口)
+9. [源码责任地图](#section-源码责任地图)
+10. [常见误解](#section-常见误解)
+
+</details>
+
+<a id="section-端到端数据流"></a>
+## 01 · 端到端数据流
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
 flowchart TB
-    Raw["OpenNews 原始记录"] --> Queue["RabbitMQ：news.raw"]
+    accTitle: 编辑型 News 端到端链路
+    accDescr: 来源契约区分类型化市场观察与编辑型消息。编辑型消息持久保存证据和语义工作，经消息唤醒后增量采用知识，再独立续接通知与 Trading 公开交接。
+    Source["OpenNews 原始记录"] --> Queue[("RabbitMQ · news.raw")]
     Queue --> Contract{"来源契约"}
-    Contract -->|"市场报告"| Market["类型化市场观察<br/>不创建编辑型 Event"]
-    Contract -->|"编辑型消息"| Scope["来源修订 / FactUnit 范围"]
-    Scope --> Admission["准入与候选归组"]
-    Admission --> Evidence["Item、Event、证据快照<br/>与 wanted input revision"]
-    Evidence --> Wake["news.triage 唤醒<br/>news-semantic 消费"]
-    Wake --> Agent["NewsAgent<br/>抽取 → 有界判断 → 采用"]
-    Agent --> Update["EventUpdate 与 adopted head"]
-    Update --> Public["公开 outbox<br/>独立交给 Trading"]
-    Update --> Notify["通知计划 → 意图 → 中文卡片"]
-    Notify --> Receipt["实际发送结果与精确正文"]
-    Update --> UI["Event 详情与新闻流"]
-    Receipt --> UI
+    Contract -->|市场报告| Market["类型化市场观察<br/>独立解析与通知"]
+    Contract -->|编辑型消息| Admit["修订、范围与归组<br/>保存 Item / Event / 证据"]
+    Admit --> Work[("PostgreSQL · 语义工作<br/>wanted revision / lease")]
+    Work -->|news.triage 唤醒| Agent["NewsAgent<br/>增量抽取、判断与条件采用"]
+    Agent --> Update[("EventUpdate / head")]
+    Update --> Public["公开 outbox<br/>独立 Trading 交接"]
+    Update --> Notify["通知计划与卡片<br/>实际正文与发送回执"]
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class Source external;
+class Queue,Work,Update store;
+class Contract,Market,Admit,Agent,Public,Notify news;
 ```
+
+*数据流 · 圆柱表示持久队列或账本；采用、公开转交和发送是不同边界。市场分支不经过编辑型 Agent。*
 
 PostgreSQL 保存可恢复工作；RabbitMQ 的语义消息只是唤醒。准入事务先提交，再发布唤醒并记录发布状态；进程在这几步之间崩溃，由维护任务重新唤醒。它不是 PostgreSQL 与 RabbitMQ 共享一个事务。
 
 <a id="input"></a>
-## 3. 一条 News 为什么可能对应多个 Event
+<a id="section-一条-news-为什么可能对应多个-event"></a>
+## 02 · 一条 News 为什么可能对应多个 Event
 
 ### Item、FactUnit、Event 与 Claim
 
@@ -77,10 +106,23 @@ Claim ref 指向一个命题或真实世界中的一次发生。新增支持、�
 原始市场报告走单独的 `admit_market_item`：保存 Item 与解析结果，不创建伪 Event，不走编辑型 Gate / MinHash / 语义链路。
 
 <a id="agent"></a>
-## 4. NewsAgent 到底做了什么
+<a id="section-newsagent-到底做了什么"></a>
+## 03 · NewsAgent 到底做了什么
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  sequence:
+    mirrorActors: false
+    messageMargin: 28
+    actorMargin: 40
+    wrap: true
+---
 sequenceDiagram
+    accTitle: NewsAgent 的增量采用
+    accDescr: 领取版本与租约后读取检查点；只对新增材料抽取和理解，保存观察并按 head 条件采用；可选补读不撤销已提交结果。
+    autonumber
     participant W as SemanticWorker
     participant D as NewsStore
     participant A as NewsAgent
@@ -101,6 +143,8 @@ sequenceDiagram
         A->>D: 保留一次补读名额并附加可用材料
     end
 ```
+
+*时序 · 展示一次能够采用的正常尝试。缓存命中、无变化、重试与 head 冲突会改变实际调用数量。*
 
 ### 冻结输入与增量范围
 
@@ -146,7 +190,8 @@ sequenceDiagram
 系统只能读冻结输入提供的目标，由实际 `ExistingSourceReader` 实现提供材料。它不是任意网页浏览器、shell 或自主搜索 Agent。一条 lineage 通过持久 reservation 限制一次补读，重试不能获得新名额；失败不能撤销已经提交的 EventUpdate、公开 outbox 或通知工作。
 
 <a id="topics-and-cited-source-authority"></a>
-## 5. 主题、来源与知识版本
+<a id="section-主题来源与知识版本"></a>
+## 04 · 主题、来源与知识版本
 
 [topics.py](../../tracefold/news/updates/topics.py)维护 IPTC 导航主题，最多保留三个，不同时保留冗余父子主题。当前 v2 将主题归属到命题并从有效命题汇总，避免已失效内容长期污染 Event 标签。
 
@@ -156,7 +201,8 @@ sequenceDiagram
 
 <a id="state"></a>
 <a id="5-work-progress-and-recovery"></a>
-## 6. 状态必须分三层理解
+<a id="section-状态必须分三层理解"></a>
+## 05 · 状态必须分三层理解
 
 | 层次 | 记录什么 | 典型情况 |
 | --- | --- | --- |
@@ -167,7 +213,13 @@ sequenceDiagram
 下面是**恢复过程的概念状态图**，不是完整数据库枚举：
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+---
 stateDiagram-v2
+    accTitle: 语义工作的恢复状态
+    accDescr: 新证据产生待处理工作，领取租约后可采用、无变化或失败；可恢复错误及精确版本恢复重新进入待处理。
     [*] --> Pending: 新证据提交工作
     Pending --> Owned: 成功领取版本与租约
     Owned --> Adopted: 采用有实质变化的知识
@@ -179,6 +231,8 @@ stateDiagram-v2
     Failed --> Pending: 精确版本人工恢复
 ```
 
+*概念状态 · 标签帮助理解工作结果，不是新增 Event.status，也不把“采用”当成“已发送”。*
+
 `/api/news/status` 分别报告可领取的 `semantic_pending`、等待调度的 `semantic_deferred`、持有有效租约的 `semantic_in_progress` 和终结的 `semantic_failed_exhausted`。耗尽工作不再计为可运行 pending；这些是有界工作集的状态计数，不是模型调用数。
 
 最终尝试仍持有有效 lease 时，Janitor 不能将它判为耗尽；只有崩溃且 lease 已过期的最后尝试才应被终结。旧版本的延后 / 失败结算不能消耗新版本预算，也不能推迟后继工作。
@@ -186,7 +240,8 @@ stateDiagram-v2
 没有模型配置时，Worker 可以确认 broker 唤醒但保留 PostgreSQL 中待处理工作；这不代表已完成理解。更换模型、提示词或镜像不会自动重放所有已处理证据，也不自动重置耗尽预算。
 
 <a id="notification"></a>
-## 7. 什么决定一条新闻是否推送
+<a id="section-什么决定一条新闻是否推送"></a>
+## 06 · 什么决定一条新闻是否推送
 
 决定者是 **`NotificationPlanner.plan`**，输入是已采用 EventUpdate、读者观察名单、实际已发送正文及未决发送状态。它为**每条 Claim**给出 `notify` / `not_notified` / `deferred` 与具名原因，不输出一个隐含的全局“重要性分数”。
 
@@ -208,21 +263,69 @@ stateDiagram-v2
 
 `key` 是展示上的重点标记：特定内容类型、重点主题以及有效支撑来源共同决定。它不是另一轮必须通过的发送审批，也不是仓位权重。
 
+### 选择：哪些命题需要通知
+
 ```mermaid
-flowchart TD
-    Update["已采用知识与读者快照"] --> Rules["逐命题内容、时效与失效检查"]
-    Rules --> Blocked{"是否存在重叠未决发送"}
-    Blocked -->|"是"| Deferred["相关命题暂缓"]
-    Blocked -->|"否"| Coverage["比较实际 sent 正文覆盖"]
-    Coverage --> Selected{"是否有待通知命题"}
-    Selected -->|"否"| No["记录具名不通知原因"]
-    Selected -->|"是"| Intent["保留稳定 intent"]
-    Intent --> Copy["只生成所选命题的中文卡片"]
-    Copy --> Freeze["冻结正文与摘要"]
-    Freeze --> Check["发送前复查 head、读者与所有权"]
-    Check --> Send["事务外发送"]
-    Send --> Ledger["记录精确实际结果"]
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
+flowchart TB
+    accTitle: 逐命题通知选择
+    accDescr: 逐命题检查后，未决重叠发送暂缓，其余命题比较实际 sent 正文覆盖；产物是具名不通知或明确选中集合。
+    Snapshot["已采用知识 + 读者快照"] --> Rules["逐命题内容、时效、失效检查"]
+    Rules --> Overlap{"重叠发送未决？"}
+    Overlap -->|是| Defer["暂缓相关命题"]
+    Overlap -->|否| Coverage["比较实际 sent 正文覆盖"]
+    Coverage --> Select{"有待通知命题？"}
+    Select -->|否| Hold["具名不通知原因"]
+    Select -->|是| Selected["选中命题与计划身份"]
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class Snapshot,Rules,Overlap,Defer,Coverage,Select,Hold,Selected news;
 ```
+
+*决策视图 · 同一计划可以包含不同命题结果；选中仍不等于已发送。*
+
+### 发送：从意图到实际结果
+
+```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
+flowchart TB
+    accTitle: 通知意图到实际发送
+    accDescr: 由选中计划保留稳定 intent，生成并冻结文案。发送前复查 head、读者与所有权，不满足时重规划；满足时在事务外发送并保存实际回执。
+    Plan["选中命题与计划身份"] --> Intent["保留稳定 intent"]
+    Intent --> Copy["生成所选文案<br/>冻结正文与摘要"]
+    Copy --> Check{"head、读者、所有权<br/>仍符合发送条件？"}
+    Check -->|否| Replan["停止本次发送<br/>返回现有重规划路径"]
+    Check -->|是| Send["事务外发送"]
+    Send --> Ledger[("精确正文与实际结果<br/>sent / not_sent / ambiguous")]
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class Plan,Intent,Copy,Check,Replan,Send news;
+class Ledger store;
+```
+
+*发送视图 · 复查不通过就停止本次发送；结果不明不能当作已证明未发送。*
 
 ### 正文、回执与重试
 
@@ -234,7 +337,8 @@ CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精�
 
 通知计划失败、文案生成失败、发送失败是三个边界。精确恢复命令及限制见[运维指南](../OPERATIONS.md#news-retry)；任何已有发送账本的 intent 都不能通过 `retry-work` 随意重开。
 
-## 8. 一个具体更新例子
+<a id="section-一个具体更新例子"></a>
+## 07 · 一个具体更新例子
 
 以下是**说明流程的虚构消息**，不是测试执行结果，也不承诺模型一定作出正确判断。
 
@@ -248,7 +352,8 @@ CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精�
 
 T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻结的研究 Case，也不会自动平掉账户现有仓位。
 
-## 9. 验证与排障入口
+<a id="section-验证与排障入口"></a>
+## 08 · 验证与排障入口
 
 先定位 `event_id`、来源修订、wanted / done、content revision、intent，再看[输入范围](../../tests/news/test_news_update_input_scope.py)、[语义 Worker](../../tests/news/test_news_semantic_worker.py)、[通知规则](../../tests/news/test_news_event_update_notifications.py)以及[修订存储](../../tests/integration/test_news_revision_ownership.py)、[EventUpdate 存储](../../tests/integration/test_news_event_update_store.py)、[发送集成](../../tests/integration/test_news_update_delivery.py)。
 
@@ -257,3 +362,40 @@ T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻
 代码测试证明状态、身份、引用与副作用边界；真实新闻理解质量仍需独立复核。保留的[ReviewDesk / 校准](review.md)不是自动优化发布系统。
 
 [Issue 717 固定窗口与离线回放记录](../reports/issue-717-hourly-comparison-2026-09-27.md)保存 #718 对重复命题、实际发送与延时的历史比较。它不是本手册整理时重新执行的生产测试，也没有测得部署后的模型调用次数与延时改善。
+
+<a id="section-源码责任地图"></a>
+## 09 · 源码责任地图
+
+| 所有者 | 主要职责 |
+| --- | --- |
+| [receiver.py](../../tracefold/news/pipeline/receiver.py)、[recovery.py](../../tracefold/news/pipeline/recovery.py) | 接收 OpenNews，记录中断与有界恢复，将原始输入交给 broker |
+| [admission.py](../../tracefold/news/pipeline/admission.py) | 区分来源契约，保存 Item、确定性拆分和 Event 归组，提交证据与语义工作 |
+| [events](../../tracefold/news/events/) | FactUnit 范围、grounding、准入、身份、标题 / token / MinHash 候选匹配 |
+| [semantic.py](../../tracefold/news/pipeline/semantic.py) | 消费语义唤醒，领取版本工作、执行尝试、退避、熔断与失败结算 |
+| [updates/service.py](../../tracefold/news/updates/service.py) | `NewsAgent` 编排、采用与可选补读；`Notifications` 独立续接 |
+| [semantics.py](../../tracefold/news/updates/semantics.py)、[judgment.py](../../tracefold/news/updates/judgment.py) | 引文校验、命题比较、有限问题、内容组装 |
+| [dspy_backend.py](../../tracefold/news/updates/dspy_backend.py) | DSPy 抽取、中文文案、生成式判断与原生有限选项判断 |
+| [notification.py](../../tracefold/news/updates/notification.py) | 逐命题通知规则、实际正文覆盖比较、稳定意图与冻结卡片 |
+| [event_update_store.py](../../tracefold/news/storage/event_update_store.py)、[event_updates.py](../../tracefold/news/storage/event_updates.py) | 短事务、检查点、不可变更新、head 条件采用、计划和发送账本 |
+| [public.py](../../tracefold/news/updates/public.py) | 从已采用知识生成公开更新，不依赖读者卡片 |
+| [delivery.py](../../tracefold/news/pipeline/delivery.py)、[maintenance.py](../../tracefold/news/pipeline/maintenance.py) | 通知轮询、真实投递、补唤醒与有界保留清理 |
+
+<a id="section-常见误解"></a>
+## 10 · 常见误解
+
+<details>
+<summary><strong>展开常见问题</strong></summary>
+
+**有 EventUpdate，为什么没有卡片？**
+
+知识采用不等待文案。继续看逐命题计划、intent 和实际发送账本；来源数量增加也不必然产生新的通知。
+
+**新来源复述同一说法，是否必然再推送？**
+
+不必然。来源可以只增加证据；重复抑制看实际已发正文的完整覆盖，而非 Event 名称或相似标题。
+
+</details>
+
+---
+
+[返回文档中心](../README.md) · [架构图谱](../ARCHITECTURE.md#atlas) · [返回顶部](#news增量新闻理解与独立通知)

@@ -1,43 +1,63 @@
-# News Event detail design review
+# News 详情页：阅读与交互设计记录
 
-Issue [#722](https://github.com/AnalyThothAI/tracefold/issues/722) follows the claim-count
-and repeated-change explanation in [#720](https://github.com/AnalyThothAI/tracefold/issues/720),
-delivered by [PR #721](https://github.com/AnalyThothAI/tracefold/pull/721).
-The [interactive HTML prototype](news-event-detail-prototype.html) was prepared before
-editing the React page. It uses sample content based on one Event, so its shell and
-market values are illustrative rather than a live data view.
+[文档中心](../README.md) · [前端架构](../FRONTEND.md) · [News 模块](../modules/news.md)
 
-## Reading task
+**先读当前内容，再解释通知，最后展开历史与处理记录。**
 
-The reader should be able to answer four questions in order: what happened in this
-Event, how many current claims it contains, why a notification was or was not sent,
-and which source supports each claim. Historical comparisons remain inspectable
-without appearing as more current claims. Rolling quotes should not look like the
-Event's measured market response.
+> [!NOTE]
+> 这是 #722 对应的设计与预览记录，不是实时监控页面。原型使用基于一个 Event 的示例内容；截图保留当时的视图与数值，不代表当前运行结果。
 
-## Interaction decisions
+## 背景与阅读目标
 
-- Start with the headline, outcome and a short count of current claims and sources.
-- Place each current claim in one numbered reading unit with its first citation.
-  Disclose historical comparisons, structured fields and further citations inside
-  that unit. A change badge describes a relation; it is not another current claim.
-- Keep the notification reason next to the content on desktop and directly after it
-  on a narrow viewport. Link each decision back to its claim and retain the full
-  processing record below.
-- Use a small page directory to reach sources, processing and market data. Source
-  relations and disagreements remain visible and the full source text is disclosed.
-- Separate current rolling quotes from the Event anchored reaction. The existing
-  shared shell and tokens determine final application details.
+这次调整承接 [#720](https://github.com/AnalyThothAI/tracefold/issues/720) 的命题数量与重复变化解释，相关记录见 [#722](https://github.com/AnalyThothAI/tracefold/issues/722) 和 [PR #721](https://github.com/AnalyThothAI/tracefold/pull/721)。[交互原型](news-event-detail-prototype.html)先于 React 页面修改准备；最终应用仍使用已有 shell 和设计 token。
 
-## Review images
+| 阅读顺序 | 页面需要回答 |
+| :--- | :--- |
+| **01 当前内容** | 发生了什么，当前共有多少条命题？ |
+| **02 通知判断** | 为什么通知或没有通知，原因对应哪条命题？ |
+| **03 来源证据** | 每个说法由哪份材料支持，有哪些关系或分歧？ |
+| **04 历史与观察** | 历史比较、处理记录和市场观察如何查看？ |
 
-|                                    | Desktop, 1440 px                                              | Mobile, 390 px                                              |
-| ---------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------- |
-| Prototype                          | ![Desktop prototype](news-event-detail-prototype-desktop.png) | ![Mobile prototype](news-event-detail-prototype-mobile.png) |
-| React preview with live Event data | ![Desktop preview](news-event-detail-preview-desktop.png)     | ![Mobile preview](news-event-detail-preview-mobile.png)     |
+## 交互决定
 
-The preview images show the local Vite app reading the existing Serve API for Event
-`cf4ba24aa1221d9e5c03580685d0328184b5349cc8495db7d74824833e34a70d`.
-They record a moment in time; the Event and quotes may change later. The React
-preview keeps the full workbench chrome and renders the API's actual labels, which
-accounts for visible differences from the prototype.
+每条当前命题只出现为一个编号阅读单元，带首个引用；历史比较、结构化字段与更多引文在该命题内部展开。变化标签描述关系，不能被当成新增的一条当前命题。
+
+通知理由在桌面上紧邻内容，在窄屏上放在内容之后，并回链到相应命题。页面目录连接来源、处理记录与市场数据，完整原文与分歧仍然可查看。
+
+当前滚动报价与 Event 锚定的价格反应分开呈现，避免将两种时间口径混为一个收益指标。
+
+## 原型与实际预览
+
+先看宽屏阅读节奏，再检查窄屏的信息顺序。截图是已有审阅证据，不能用原型图冒充运行截图。
+
+<details>
+<summary><strong>桌面 · 1440 px</strong></summary>
+
+**交互原型**
+
+![新闻详情桌面原型，示例内容用于检查阅读顺序](news-event-detail-prototype-desktop.png)
+
+**React 预览**
+
+![新闻详情 React 桌面历史预览，包含真实 API 标签与工作台外壳](news-event-detail-preview-desktop.png)
+
+</details>
+
+<details>
+<summary><strong>窄屏 · 390 px</strong></summary>
+
+**交互原型**
+
+![新闻详情窄屏原型，检查内容与通知的上下顺序](news-event-detail-prototype-mobile.png)
+
+**React 预览**
+
+![新闻详情 React 窄屏历史预览](news-event-detail-preview-mobile.png)
+
+</details>
+
+原记录中的 React 截图由本地 Vite 应用读取已有 Serve API，Event ID 为 `cf4ba24aa1221d9e5c03580685d0328184b5349cc8495db7d74824833e34a70d`。完整工作台外壳与 API 实际标签会造成它与原型的差别；Event、报价与文案之后都可能变化。本轮文档整理没有重新访问该生产 Event 或测量页面性能。
+
+---
+
+继续阅读：[前端数据与状态](../FRONTEND.md) · [新闻通知语义](../modules/news.md#notification)
