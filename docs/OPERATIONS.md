@@ -1243,8 +1243,10 @@ native control future remain process-fatal. This retry does not apply to
 general control writes whose commit outcome could be ambiguous.
 
 Serve owns one read pool of seven with ordinary/control admission `6/1`,
-50 ms permit wait, 250 ms checkout, one-second statement timeout, JIT off,
-parallel gather off, and 8 MiB work memory. Connections and ordinary requests
+50 ms permit wait, 250 ms checkout, two-second statement timeout, JIT off,
+parallel gather off, and 8 MiB work memory. The statement budget accommodates
+full-history feed counts measured at about 0.8–1.3 seconds over 35k events;
+it does not change request admission or Workers budgets. Connections and ordinary requests
 default to read-only. The sole authenticated Trading Command POST opens a
 semaphore-bounded short-lived write connection outside that pool; every other
 HTTP route remains read-only. `tracefold news review submit` opens a short-lived connection under the
