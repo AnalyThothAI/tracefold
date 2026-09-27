@@ -1,4 +1,4 @@
-"""Told ledger, market fact writes, verdicts, and delivery settlement persistence."""
+"""Reader history, market fact writes, and delivered-card settlement persistence."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ LEGACY_DELIVERY_KINDS: Final = ("first", "followup")
 
 
 def legacy_intent_id(event_id: str, kind: str) -> str:
-    """The delivery identity of a legacy `first`/`followup` card (#706).
+    """The historical identity of a `first`/`followup` card (#706).
 
     Migration `20260926_0404` backfilled exactly this value with `news_identity('legacy_intent', ...)` and
     its CHECK holds every legacy row to it, so a legacy `(event_id, kind)` pair still names one intent.
@@ -44,9 +44,7 @@ def legacy_intent_id(event_id: str, kind: str) -> str:
     return identity("legacy_intent", event_id, kind)
 
 
-# The legacy `first`/`followup` intents are retired at the #706 cutover. A pending one is never sent
-# through the old verdict path: it is marked dead with this reason, in place, where an operator can read
-# it. Settled legacy rows stay the ledger they are and keep their edit reconciliation by intent id.
+# Migration 0406 marks pending historical intents dead; settled receipts remain readable.
 LEGACY_INTENT_RETIRED: Final = "legacy_intent_retired"
 
 _READER_HISTORY_PROJECTION = """
@@ -585,193 +583,6 @@ class DecisionStorage:
             ),
         )
 
-    def insert_verdict(
-        self,
-        *,
-        event_id: str,
-        stage: str,
-        policy_version: str,
-        judgment_contract_version: str,
-        judgment_origin: str,
-        rule_baseline_decision: str,
-        final_decision: str,
-        override_rule: str | None,
-        throttled_by: str | None,
-        verdict: Mapping[str, Any],
-        verdict_json: str | None = None,
-        model_editorial: Mapping[str, Any] | None,
-        model_editorial_json: str | None = None,
-        judgment_sha256: str,
-        runtime_manifest_sha: str,
-        model: str | None,
-        program_version: str,
-        program_sha256: str,
-        degraded: bool,
-        error_code: str | None,
-        trace: Mapping[str, Any],
-        trace_json: str | None = None,
-        evidence_version: int,
-        evidence_sha256: str,
-        focus_fact_id: str,
-        now_ms: int,
-    ) -> bool:
-        cursor = self.conn.execute(
-            """
-            INSERT INTO news_verdicts (
-              event_id, stage, policy_version, judgment_contract_version, judgment_origin,
-              rule_baseline_decision, final_decision, override_rule,
-              throttled_by, verdict, editorial, scored_judgment_sha256, runtime_manifest_sha,
-              model, program_version, program_sha256, degraded, error_code, trace, created_at_ms,
-              evidence_version, evidence_sha256, focus_fact_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s,
-                      %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-            """,
-            (
-                event_id,
-                stage,
-                policy_version,
-                judgment_contract_version,
-                judgment_origin,
-                rule_baseline_decision,
-                final_decision,
-                override_rule,
-                throttled_by,
-                verdict_json if verdict_json is not None else _dumps(dict(verdict)),
-                (
-                    model_editorial_json
-                    if model_editorial_json is not None
-                    else (_dumps(dict(model_editorial)) if model_editorial is not None else None)
-                ),
-                judgment_sha256,
-                runtime_manifest_sha,
-                model,
-                program_version,
-                program_sha256,
-                bool(degraded),
-                error_code,
-                trace_json if trace_json is not None else _dumps(dict(trace)),
-                int(now_ms),
-                int(evidence_version),
-                evidence_sha256,
-                focus_fact_id,
-            ),
-        )
-        return bool(cursor.rowcount)
-
-    def get_verdict(self, *, event_id: str, stage: str, policy_version: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = %s AND policy_version = %s "
-            "AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')",
-            (event_id, stage, policy_version),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def latest_verdict(self, *, event_id: str, stage: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = %s "
-            "AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3') "
-            "ORDER BY created_at_ms DESC LIMIT 1",
-            (event_id, stage),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def mark_verdict_published(self, *, event_id: str, stage: str, policy_version: str, now_ms: int) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_verdicts SET published_at_ms = %s
-             WHERE event_id = %s AND stage = %s AND policy_version = %s
-               AND judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3') AND published_at_ms IS NULL
-            """,
-            (int(now_ms), event_id, stage, policy_version),
-        )
-        return bool(cursor.rowcount)
-
-    def retire_legacy_delivery_intents(self, *, now_ms: int) -> int:
-        """Dead-letter every still-pending legacy intent with an explicit reason; nothing is sent for them."""
-
-        cursor = self.conn.execute(
-            """
-            UPDATE news_delivery_queue
-               SET state = 'dead', error_code = %s, settled_at_ms = %s, updated_at_ms = %s
-             WHERE state = 'pending' AND kind IN ('first', 'followup')
-            """,
-            (LEGACY_INTENT_RETIRED, int(now_ms), int(now_ms)),
-        )
-        return int(cursor.rowcount or 0)
-
-    def delivery_claim(self, *, event_id: str, kind: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM news_delivery_queue WHERE intent_id = %s",
-            (legacy_intent_id(event_id, kind),),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def begin_delivery(
-        self, *, event_id: str, kind: str, card: Mapping[str, Any], now_ms: int, history_context_json: str | None = None
-    ) -> str:
-        """Returns 'new' when this process owns the send, otherwise the existing state."""
-
-        intent_id = legacy_intent_id(event_id, kind)
-        row = self.conn.execute(
-            """
-            WITH provided AS (SELECT %s::jsonb AS context), supplied AS (
-              SELECT CASE WHEN s.event_id IS NULL THEN context ELSE context || jsonb_build_object(
-                'comparison_title', s.snapshot #> '{card,comparison_title}',
-                'comparison_fingerprint', s.snapshot #> '{card,comparison_fingerprint}',
-                'dedupe_family', s.snapshot #> '{card,dedupe_family}') END AS context
-              FROM provided LEFT JOIN news_event_evidence_snapshots s
-                ON s.event_id=context->>'event_id'
-               AND s.evidence_version=(context->>'evidence_version')::integer
-            ), bound AS (
-              SELECT CASE WHEN context IS NULL THEN NULL ELSE
-                context || jsonb_build_object('canonical_assets', COALESCE((
-                  SELECT jsonb_agg(symbol ORDER BY symbol) FROM (
-                    SELECT DISTINCT COALESCE(a.base_symbol, raw.symbol) AS symbol
-                    FROM jsonb_array_elements_text(context->'canonical_assets') raw(symbol)
-                    LEFT JOIN news_symbol_aliases a ON a.alias=raw.symbol
-                  ) resolved
-                ), '[]'::jsonb)) END AS context FROM supplied
-            )
-            INSERT INTO news_deliveries (
-              intent_id, event_id, kind, state, card, attempted_at_ms, created_at_ms, history_context
-            )
-            SELECT %s, %s, %s, 'sending', %s::jsonb, %s, %s, context FROM bound
-            ON CONFLICT (intent_id) DO NOTHING
-            RETURNING state
-            """,
-            (history_context_json, intent_id, event_id, kind, _dumps(dict(card)), int(now_ms), int(now_ms)),
-        ).fetchone()
-        if row is not None:
-            return "new"
-        existing = self.conn.execute("SELECT state FROM news_deliveries WHERE intent_id = %s", (intent_id,)).fetchone()
-        return str(existing["state"]) if existing else "new"
-
-    def settle_delivery(
-        self,
-        *,
-        event_id: str,
-        kind: str,
-        state: str,
-        receipt: Mapping[str, Any] | None,
-        error_code: str | None,
-        now_ms: int,
-    ) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_deliveries SET state = %s, receipt = %s::jsonb, error_code = %s, settled_at_ms = %s
-             WHERE intent_id = %s AND state = 'sending'
-            """,
-            (
-                state,
-                _dumps(dict(receipt)) if receipt is not None else None,
-                error_code,
-                int(now_ms),
-                legacy_intent_id(event_id, kind),
-            ),
-        )
-        return bool(cursor.rowcount)
-
     def begin_delivery_edit(
         self,
         *,
@@ -891,12 +702,6 @@ class DecisionStorage:
             ),
         )
         return bool(cursor.rowcount)
-
-    def delivery(self, *, event_id: str, kind: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM news_deliveries WHERE intent_id = %s", (legacy_intent_id(event_id, kind),)
-        ).fetchone()
-        return dict(row) if row else None
 
     def terminalize_interrupted_deliveries(self, *, now_ms: int) -> int:
         """A send nobody settled is ambiguous. A legacy card becomes `terminal`; an update intent is held

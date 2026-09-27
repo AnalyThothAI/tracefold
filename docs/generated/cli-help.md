@@ -256,8 +256,8 @@ positional arguments:
   {queue,evidence,submit,external-miss}
     queue               open the deterministic operator review queue
     evidence            show the task-scoped evidence view
-    submit              append and accept one event rubric judgment
-    external-miss       append an external miss and its rubric
+    submit              append feedback for one notification decision
+    external-miss       append an external miss and short feedback
 
 options:
   -h, --help            show this help message and exit

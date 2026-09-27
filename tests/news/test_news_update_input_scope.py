@@ -51,7 +51,7 @@ def test_member_scopes_preserve_whole_sources_and_do_not_scope_other_members(mon
     assert source.evidence[0].text == BODY
     assert source.evidence[1].text == "Only the NEAR network is affected."
     calls = generated(monkeypatch, {"claims": []})
-    asyncio.run(DspyExtractor(lambda: None, model_identity="test", topics={}).extract(source, extract_only=False))
+    asyncio.run(DspyExtractor(lambda: None, model_identity="test", topics={}).extract(source))
     sent = json.loads(calls[0]["evidence_json"])
     assert sent["extraction_scopes"][0]["evidence_ref"] == sent["evidence"][0]["ref"] == "e1"
     assert sent["extraction_scopes"][0]["context"] == "Exchange bulletin"

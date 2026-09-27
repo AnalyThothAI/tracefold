@@ -99,16 +99,13 @@ PLAN_REASON_ZH: Final[dict[str, str]] = {
 }
 CLAIM_DECISION_ZH: Final[dict[str, str]] = {"notify": "通知", "not_notified": "不通知", "deferred": "暂缓"}
 CLAIM_REASON_ZH: Final[dict[str, str]] = {
-    "watchlist_hit": "命中关注列表",
+    "editor_notify": "编辑判断值得通知",
+    "editor_key": "编辑判断为重点",
+    "editor_feed_only": "仅进入信息流",
+    "attention_unavailable_default_notify": "编辑判断暂不可用，按普通通知",
+    "protected_listing": "上币公告",
     "large_daily_move": "商品/指数日内大幅波动",
-    "actionable_content": "具体动作或数据",
     "retired": "已撤回的命题",
-    "mode_commentary": "仅表态或观点",
-    "mode_promotion": "推广",
-    "mode_forecast": "预测",
-    "mode_unknown": "表达方式未知",
-    "content_schedule": "日程",
-    "price_report_without_basis": "纯价格播报，未给出依据",
     "stale_source": "来源已过时",
     "covered_by_sent_receipt": "已送达内容已覆盖",
     "send_outcome_unresolved": "重叠发送的结果未定",
@@ -411,6 +408,9 @@ def plan_view(plan: NotificationPlan, *, statements: Mapping[str, str]) -> dict[
         "key": plan.key,
         "update_ref": plan.update_ref,
         "reader_revision": plan.reader_revision,
+        "decision_ref": plan.record_ref,
+        "assessment_status": plan.assessment_status,
+        "assessment_error_code": plan.assessment_error_code,
         "claim_decisions": [
             {
                 "claim_ref": row.claim_ref,
@@ -419,7 +419,7 @@ def plan_view(plan: NotificationPlan, *, statements: Mapping[str, str]) -> dict[
                 "decision": row.decision,
                 "decision_zh": _zh(CLAIM_DECISION_ZH, row.decision),
                 "reason": row.reason,
-                "reason_zh": _zh(CLAIM_REASON_ZH, row.reason),
+                "reason_zh": row.reason_zh or _zh(CLAIM_REASON_ZH, row.reason),
             }
             for row in plan.claim_decisions
         ],

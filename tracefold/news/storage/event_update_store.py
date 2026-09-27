@@ -11,10 +11,18 @@ import secrets
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
+from ..source_contracts import classify_source_contracts
 from ..updates.contracts import EventUpdate, Evidence, Extraction, FrozenInput, PublicUpdate, ReadTarget
 from ..updates.judgment import Answer
 from ..updates.notification import FrozenCard, NotificationPlan, ReaderSnapshot
-from ..updates.ports import IntentLease, NotificationSnapshot, SemanticCheckpoint, SemanticObservation, SendOutcome
+from ..updates.ports import (
+    IntentLease,
+    NotificationSnapshot,
+    PlanCommit,
+    SemanticCheckpoint,
+    SemanticObservation,
+    SendOutcome,
+)
 from ..updates.service import clock_ms
 from .event_updates import (
     INTENT_LEASE_MS,
@@ -189,6 +197,26 @@ class PgNewsStore:
         if material is None:
             return None
         update = EventUpdate.model_validate(material["head"])
+        listing_scopes = [
+            row
+            for row in material.get("listing_members", ())
+            if any(
+                contract.source_contract_family == "listing_v1"
+                for contract in classify_source_contracts(row.get("provider_metadata") or {})
+            )
+        ]
+        evidence_items = {item.ref: item for item in update.evidence}
+        listing_refs = tuple(
+            claim.ref
+            for claim in update.claims
+            if any(
+                citation.evidence_ref in evidence_items
+                and evidence_items[citation.evidence_ref].source.record_id == str(scope["item_id"])
+                and citation.quote in str(scope["fact_text"])
+                for citation in claim.citations
+                for scope in listing_scopes
+            )
+        )
         reader = ReaderSnapshot(
             channel=channel,
             revision=str(material["revision"]),
@@ -201,10 +229,22 @@ class PgNewsStore:
             blocked_claim_refs=tuple(material["blocked"]),
             invalidated_claim_refs=tuple(material["invalidated"]),
             watch_symbols=self.watch_symbols,
+            protected_listing_claim_refs=listing_refs,
         )
         return NotificationSnapshot(update=update, reader=reader)
 
-    async def atomic_record_plan(self, plan: NotificationPlan) -> IntentLease | None:
+    async def lookup_notification_decision(
+        self, event_id: str, channel: str, input_digest: str
+    ) -> NotificationPlan | None:
+        document = await self.db.read(
+            "news_update_decision_lookup",
+            lambda repos: repos.news.lookup_notification_decision(
+                event_id=event_id, channel=channel, input_digest=input_digest
+            ),
+        )
+        return None if document is None else NotificationPlan.model_validate(document)
+
+    async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
         token = self.lease_token()
         plan_json = plan.model_dump_json()
         now_ms = self.clock()
@@ -220,13 +260,20 @@ class PgNewsStore:
             ),
         )
         if reserved is None:
-            return None
+            return PlanCommit(recorded=False)
+        effective = NotificationPlan.model_validate(reserved["plan"])
+        if reserved["intent_id"] is None:
+            return PlanCommit(recorded=True, effective_plan=effective)
         frozen = reserved["frozen_card"]
-        return IntentLease(
-            intent_id=str(reserved["intent_id"]),
-            lease_token=token,
-            plan=plan,
-            card=None if frozen is None else FrozenCard.model_validate(frozen),
+        return PlanCommit(
+            recorded=True,
+            effective_plan=effective,
+            lease=IntentLease(
+                intent_id=str(reserved["intent_id"]),
+                lease_token=token,
+                plan=effective,
+                card=None if frozen is None else FrozenCard.model_validate(frozen),
+            ),
         )
 
     async def save_card(self, lease: IntentLease, card: FrozenCard) -> FrozenCard:

@@ -30,7 +30,7 @@ _UPDATE_PENDING_SQL: Final = (
     "(sw.wanted_revision > COALESCE(sw.done_revision, 0) AND sw.last_outcome IS DISTINCT FROM 'failed')"
     " OR (h.event_id IS NOT NULL AND (nw.event_id IS NULL"
     f" OR (nw.state = 'pending' AND nw.attempts < {NOTIFICATION_ATTEMPTS_MAX})"
-    " OR (nw.state = 'done' AND COALESCE(nw.plan ->> 'action', '') IN ('notify', 'unresolved'))))"
+    " OR (nw.state = 'done' AND COALESCE(nd.plan ->> 'action', '') IN ('notify', 'unresolved'))))"
 )
 _PENDING_CORE_SQL: Final = (
     "COALESCE(d.state = 'sending', false)"
@@ -423,6 +423,7 @@ def _feed_joins_sql(*, bulk_deliveries: bool = False) -> str:
           LEFT JOIN news_event_update_heads h ON h.event_id = e.event_id
           LEFT JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
           LEFT JOIN news_notification_work nw ON nw.event_id = e.event_id AND nw.channel = 'news'
+          LEFT JOIN news_notification_decisions nd ON nd.decision_ref = nw.decision_ref
           {delivery_join}
           LEFT JOIN (
             SELECT DISTINCT ON (owed.event_id) owed.event_id, owed.state, owed.error_code
@@ -474,8 +475,8 @@ def feed_page_sql(where_sql: str) -> str:
                    ORDER BY position LIMIT 1)
                ) AS update_claim_headline,
                nw.state AS notification_state, nw.attempts AS notification_attempts,
-               nw.plan ->> 'action' AS notification_action,
-               nw.plan -> 'claim_decisions' AS notification_claim_decisions,
+               nd.plan ->> 'action' AS notification_action,
+               nd.plan -> 'claim_decisions' AS notification_claim_decisions,
                d.kind AS delivery_kind, d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms,
                d.error_code AS delivery_error_code, d.plan_key AS delivery_plan_key,
                CASE WHEN d.kind = 'update' AND d.state = 'sent'

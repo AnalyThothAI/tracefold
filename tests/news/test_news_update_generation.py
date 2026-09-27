@@ -12,6 +12,7 @@ import pytest
 from tests.news.test_news_event_update_judgments import MemoryCache
 from tests.news.test_news_event_update_notifications import TaskBackend
 from tests.news.test_news_event_updates_core import draft, material, prior_of, update_one
+from tests.support.news_attention import NotifyAll
 from tracefold.news.updates import dspy_backend
 from tracefold.news.updates.contracts import (
     Citation,
@@ -23,13 +24,45 @@ from tracefold.news.updates.contracts import (
     Quantity,
     Source,
 )
-from tracefold.news.updates.dspy_backend import DspyCardComposer, DspyExtractor, GeneratedJudgments
+from tracefold.news.updates.dspy_backend import (
+    DspyAttentionAssessor,
+    DspyCardComposer,
+    DspyExtractor,
+    GeneratedJudgments,
+)
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments, Question
 from tracefold.news.updates.notification import NotificationPlanner, ReaderSnapshot
 from tracefold.news.updates.public import public_updates
 from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update
 
 STAMP = 1_790_405_000_000
+
+
+def test_attention_assesses_all_candidates_in_one_physical_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    _source, _extraction, update = update_one()
+    claims = (update.claims[0], update.claims[0].model_copy(update={"ref": "cl:second"}))
+    calls = generated(
+        monkeypatch,
+        {
+            "decisions": [
+                {"claim_ref": "c1", "disposition": "notify", "reason_zh": "具体更新"},
+                {"claim_ref": "c2", "disposition": "feed_only", "reason_zh": "无新增事实"},
+            ]
+        },
+    )
+    assessor = DspyAttentionAssessor(lambda: None, model_identity="fixture")
+    answer = asyncio.run(
+        assessor.assess(
+            claims,
+            sources={item.ref: item.source for item in update.evidence},
+            watch_symbols=("BTC",),
+        )
+    )
+    assert len(calls) == 1
+    assert [row.claim_ref for row in answer.decisions] == [claim.ref for claim in claims]
+    request = json.loads(calls[0]["candidates_json"])
+    assert [row["ref"] for row in request["claims"]] == ["c1", "c2"]
+    assert request["watch_symbols"] == ["BTC"]
 
 
 def generated(monkeypatch: pytest.MonkeyPatch, reply: Any) -> list[dict[str, Any]]:
@@ -104,9 +137,7 @@ def test_conflicting_duplicate_support_hints_are_recomputed_not_last_answer_wins
         {"slot": "a", "evidence_ref": "e1", "relation": value} for value in ("supports", "refutes", "supports")
     ]
     generated(monkeypatch, reply)
-    value = asyncio.run(
-        DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source, extract_only=False)
-    )
+    value = asyncio.run(DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source))
     assert len(value.claims) == 1 and value.supports == ()
 
 
@@ -134,13 +165,11 @@ def test_link_only_empty_extraction_adopts_without_public_delta_or_card(monkeypa
     evidence = material("Read full report here: https://example.org/report")
     source = FrozenInput(event_id="link", revision=1, lineage_id="link", evidence=(evidence,))
     generated(monkeypatch, {"claims": []})
-    value = asyncio.run(
-        DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source, extract_only=False)
-    )
+    value = asyncio.run(DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source))
     head = assemble_update(source, value, None, adopted_at_ms=STAMP + 10)
     assert head is not None and head.claims == () and head.open_questions == ()
     assert public_updates(head, semantic_completed_at_ms=STAMP + 5) == ()
-    planner = NotificationPlanner(NewsJudgments(generated=TaskBackend({}), cache=MemoryCache()))
+    planner = NotificationPlanner(NewsJudgments(generated=TaskBackend({}), cache=MemoryCache()), NotifyAll())
     plan = asyncio.run(
         planner.plan(
             head, ReaderSnapshot(channel="news", revision="test", receipts=()), Budget.start(5), now_ms=STAMP + 20
@@ -177,13 +206,13 @@ def test_mode_is_clarified_and_cached_before_adoption_never_in_notification(
         head = assemble_update(source, first, None, adopted_at_ms=STAMP + 1)
         assert head is not None
         count = len(backend.calls)
-        plan = await NotificationPlanner(judgments).plan(
+        plan = await NotificationPlanner(judgments, NotifyAll()).plan(
             head,
             ReaderSnapshot(channel="news", revision="test", receipts=()),
             Budget.start(5),
             now_ms=STAMP + 2,
         )
-        assert plan.action == ("notify" if answer == "decision" else "no_notification")
+        assert plan.action == "notify"
         assert len(backend.calls) == count
 
     asyncio.run(run())
@@ -393,9 +422,7 @@ def test_grounded_optional_details_keep_their_claim_slots_and_read_target(monkey
         {"slots": ["a"], "channel": "supply", "explanation": "If implemented.", "origin": "system_hypothesis"}
     ]
     generated(monkeypatch, reply)
-    value = asyncio.run(
-        DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source, extract_only=False)
-    )
+    value = asyncio.run(DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source))
     assert value.open_questions[0].target_ref == target.ref
     assert value.open_questions[0].slots == ("a",)
     assert value.implications[0].slots == ("a",)

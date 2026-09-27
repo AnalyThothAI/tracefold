@@ -388,7 +388,7 @@ def test_gate_admission_rules() -> None:
     assert macro.admission == "candidate" and macro.asset_class == "macro" and macro.queue_priority == "high"
     housing = evaluate_gate(GateInput(title="TABLE-U.S. July housing starts fall 12.4%", engine_type="news", **base))
     assert housing.asset_class == "macro"
-    # Law-firm templates are vetoed even when the provider grounded the ticker; real class-action news is not.
+    # Law-firm solicitations reach editorial selection like other source items.
     pr = evaluate_gate(
         GateInput(
             title="Exelixis (EXEL) Securities Investigation Notice - Levi & Korsinsky",
@@ -396,7 +396,7 @@ def test_gate_admission_rules() -> None:
             **{**base, "coins": ({"symbol": "EXEL", "grade": "A"},)},
         )
     )
-    assert pr.admission == "suppressed_pr_template" and pr.pr_template
+    assert pr.admission == "candidate"
     lawsuit = evaluate_gate(
         GateInput(
             title="Tesla faces class action over Autopilot claims",
@@ -1306,10 +1306,10 @@ def test_golden_replay_on_real_sample() -> None:
     report = replay_hits(hits, watchlist_symbols=frozenset({"BTC", "ETH", "NVDA"}), instrument_classes=None)
     counts = report["counts"]
     assert counts["items"] == len({h["id"] for h in hits})
-    # Levi & Korsinsky template PRs must not merge (ticker veto) and are vetoed at the Gate
+    # Distinct law-firm solicitations remain separate candidates for editorial selection.
     levi = [h for h in hits if "Levi & Korsinsky" in str(h.get("text"))]
     assert len(levi) >= 3
-    assert counts.get("admission:suppressed_pr_template", 0) >= len(levi)
+    assert counts.get("admission:candidate", 0) >= len(levi)
     assert "admission:suppressed_ungrounded" not in counts and "admission:suppressed_ungrounded_meme" not in counts
     # 'reply <url>' items with distinct slugs must not collapse into one event
     replies = [h for h in hits if str(h.get("text", "")).lower().startswith("reply http")]
@@ -1363,9 +1363,9 @@ def test_gate_expectations_over_the_recall_corpus() -> None:
             if case.get("title_startswith") and not event["title"].startswith(case["title_startswith"]):
                 failures.append(f"{case['match']!r}: title {event['title'][:60]!r}")
     assert failures == []
-    # Head-line numbers the hard cut is accountable for: most items reach Triage, templates never do.
+    # Most source items reach semantic understanding, including solicitation templates.
     assert report["candidate_share_of_items"] >= 0.7
-    assert report["counts"].get("admission:suppressed_pr_template", 0) >= 8
+    assert report["counts"].get("admission:suppressed_pr_template", 0) == 0
 
 
 def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -> None:

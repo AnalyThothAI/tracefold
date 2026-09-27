@@ -924,7 +924,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "watchlist_hit" | "large_daily_move" | "actionable_content" | "retired" | "mode_commentary" | "mode_promotion" | "mode_forecast" | "mode_unknown" | "content_schedule" | "price_report_without_basis" | "stale_source" | "covered_by_sent_receipt" | "send_outcome_unresolved";
+            reason: "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "protected_listing" | "large_daily_move" | "retired" | "stale_source" | "covered_by_sent_receipt" | "send_outcome_unresolved";
             /**
              * Reason Zh
              * @default
@@ -2289,8 +2289,18 @@ export interface components {
              * @default
              */
             action_zh: string;
+            /** Assessment Error Code */
+            assessment_error_code?: string | null;
+            /**
+             * Assessment Status
+             * @default skipped
+             * @enum {string}
+             */
+            assessment_status: "available" | "unavailable" | "skipped";
             /** Claim Decisions */
             claim_decisions?: components["schemas"]["NewsClaimDecisionData"][];
+            /** Decision Ref */
+            decision_ref?: string | null;
             /**
              * Key
              * @default false

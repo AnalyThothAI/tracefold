@@ -11,6 +11,7 @@ from tracefold.platform.config.loader import load_settings
 def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.review.desk import (
+        DecisionFeedbackSubmission,
         DeskQuery,
         EventRubricSubmission,
         ExternalMissSubmission,
@@ -62,8 +63,12 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
                 submission = ExternalMissSubmission.model_validate(payload)
                 data = desk.submit(None, submission, principal=principal, idempotency_key=key)
             else:
-                submission = EventRubricSubmission.model_validate(payload)
                 task = TaskRef(task_id=str(args.task), task_version=str(args.version))
+                submission = (
+                    DecisionFeedbackSubmission.model_validate(payload)
+                    if task.task_id.startswith("dec.")
+                    else EventRubricSubmission.model_validate(payload)
+                )
                 data = desk.submit(task, submission, principal=principal, idempotency_key=key)
         return 0, {"ok": True, "data": data}
     except (ValueError, PermissionError) as exc:

@@ -96,6 +96,7 @@
 | `content_revision` | 已采用知识版本，不等于模型调用次数或推送次数 |
 | `claim_ref` / evidence ref | 命题、引文与更正目标的稳定引用，不用裸标题代替 |
 | notification intent | 针对读者与精确内容的稳定发送意图 |
+| notification decision | 不可变的编辑输入、逐命题选择、模型状态与结果；工作和意图引用其身份 |
 | 冻结正文 / 实际发送账本 | 谁可能收到什么、结果是否已明确 |
 
 新采用内容使用 `news_event_update_v2`；旧 v1 保留原始内容。Event 详情可保留 `legacy_verdict` 作为历史读取，但 UI、公开 outbox 与新 Agent 不由旧 verdict 合成新 Claim。
@@ -110,7 +111,7 @@
 
 `state_change|new_quantity|level_crossed|period_record|quantified_flow|official_measure|statement|recap|schedule|promotion`
 
-它不是新 Claim 的完整语义模型。新流程将 `mode`、`phase`、`content_kind` 与命题关系分别表达；不能把旧 `statement` 一律删掉来判断当前通知。
+它不是新 Claim 的完整语义模型。Jev 抽取同时给出 `mode`、`phase`、`content_kind` 与逐命题主题；通知判断独立于这些字段的硬编码分类，不能把旧 `statement` 一律删掉。
 
 <a id="section-市场钱包与价格"></a>
 ## 04 · 市场、钱包与价格

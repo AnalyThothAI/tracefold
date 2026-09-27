@@ -1,24 +1,27 @@
-"""One reader selection owner: explicit content rules, stable intents and actual delivered-text coverage.
+"""One reader selection owner: editorial choice, stable intents and actual delivered-text coverage.
 
 The planner reads adopted EventUpdate content and the reader's actual receipts. Every claim gets one named
-decision. Content rules are explicit and ordered; there is no statement drop, headline-similarity veto,
+decision. There is no statement drop, headline-similarity veto,
 same-story count, ticker requirement or importance score. The only reason a plan stays pending is an
 overlapping send whose outcome is not settled.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal, Protocol
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
-from .contracts import Claim, ContentKind, EventUpdate, Exact, Mode, Source, current_evidence
+from .attention import BRIEF_IDENTITY, AttentionAssessor, Disposition, assessment_input
+from .contracts import Claim, EventUpdate, Exact, Source
 from .identity import canonical_json, digest, identity
-from .judgment import Budget, NewsJudgments, Question
-from .topics import KEY_TOPIC_CODES
+from .judgment import Budget, ContractFault, NewsJudgments, ProviderUnavailable, Question
+from .judgment import error_code as bounded_error_code
 
 SOURCE_MAX_AGE_MS: Final = 12 * 60 * 60_000
 
@@ -26,53 +29,40 @@ PlanAction = Literal["notify", "no_notification", "unresolved"]
 PlanReason = Literal["uncovered_claims", "send_outcome_unresolved", "no_uncovered_actionable_claims"]
 ClaimDecisionValue = Literal["notify", "not_notified", "deferred"]
 ClaimReason = Literal[
-    # notify: the admission path of a claim no sent receipt fully covers
-    "watchlist_hit",
+    "editor_notify",
+    "editor_key",
+    "editor_feed_only",
+    "attention_unavailable_default_notify",
+    "protected_listing",
     "large_daily_move",
-    "actionable_content",
-    # not_notified
     "retired",
-    "mode_commentary",
-    "mode_promotion",
-    "mode_forecast",
-    "mode_unknown",
-    "content_schedule",
-    "price_report_without_basis",
     "stale_source",
     "covered_by_sent_receipt",
     # deferred: an overlapping sending/ambiguous intent must settle first
     "send_outcome_unresolved",
 ]
 REASON_DECISIONS: Final[dict[ClaimReason, ClaimDecisionValue]] = {
-    "watchlist_hit": "notify",
+    "editor_notify": "notify",
+    "editor_key": "notify",
+    "editor_feed_only": "not_notified",
+    "attention_unavailable_default_notify": "notify",
+    "protected_listing": "notify",
     "large_daily_move": "notify",
-    "actionable_content": "notify",
     "retired": "not_notified",
-    "mode_commentary": "not_notified",
-    "mode_promotion": "not_notified",
-    "mode_forecast": "not_notified",
-    "mode_unknown": "not_notified",
-    "content_schedule": "not_notified",
-    "price_report_without_basis": "not_notified",
     "stale_source": "not_notified",
     "covered_by_sent_receipt": "not_notified",
     "send_outcome_unresolved": "deferred",
 }
-_MODE_REASONS: Final[dict[Mode, ClaimReason]] = {
-    "commentary": "mode_commentary",
-    "promotion": "mode_promotion",
-    "forecast": "mode_forecast",
+EDITOR_REASONS: Final[dict[Disposition, ClaimReason]] = {
+    "notify": "editor_notify",
+    "key": "editor_key",
+    "feed_only": "editor_feed_only",
 }
-# The kinds whose whole claim is a market move. An observed one must state a basis beyond the number.
-PRICE_REPORT_KINDS: Final[frozenset[ContentKind]] = frozenset({"level_crossed", "period_record", "quantified_flow"})
 # The owner's one exception (#675 §7): a same-day move this large is itself the fact, but only where a whole
 # market moved. A single stock is excluded by its market, never by the size of the move.
 PRICE_MOVE_EXCEPTION_PERCENT: Final = Decimal(5)
 PRICE_MOVE_EXCEPTION_MARKETS: Final[frozenset[str]] = frozenset({"commodity", "index"})
 _PERCENT_UNITS: Final[frozenset[str]] = frozenset({"%", "pct", "percent"})
-# A key update is a state change or an authority's measure in a key topic family, corroborated.
-KEY_CONTENT_KINDS: Final[frozenset[ContentKind]] = frozenset({"state_change", "official_measure"})
-KEY_MIN_INDEPENDENT_ORIGINS: Final = 2
 
 
 NOTIFICATION_ATTEMPTS_MAX: Final = 3
@@ -106,12 +96,14 @@ class ReaderSnapshot(Exact):
     invalidated_claim_refs: tuple[str, ...] = ()
     # The reader's code-owned watchlist, as canonical upper-case base symbols supplied by the store.
     watch_symbols: tuple[str, ...] = ()
+    protected_listing_claim_refs: tuple[str, ...] = ()
 
 
 class ClaimDecision(Exact):
     claim_ref: str
     decision: ClaimDecisionValue
     reason: ClaimReason
+    reason_zh: str | None = None
 
     @model_validator(mode="after")
     def check_reason(self) -> ClaimDecision:
@@ -131,6 +123,12 @@ class NotificationPlan(Exact):
     channel: str
     purpose: Literal["news_update"] = "news_update"
     reader_revision: str
+    assessment_status: Literal["available", "unavailable", "skipped"] = "skipped"
+    assessment_error_code: str | None = None
+    assessment_identity: str | None = None
+    assessment_input_digest: str | None = None
+    assessment_input: dict[str, object] | None = None
+    decision_ref: str | None = None
 
     @property
     def selected_claim_refs(self) -> tuple[str, ...]:
@@ -145,6 +143,16 @@ class NotificationPlan(Exact):
         if self.action != "notify" or not self.selected_claim_refs:
             raise ValueError("news_non_notification_has_no_intent")
         return identity("intent", self.update_ref, sorted(self.selected_claim_refs), self.channel, self.purpose)
+
+    @property
+    def record_ref(self) -> str:
+        return self.decision_ref or identity(
+            "notification_decision",
+            self.update_ref,
+            self.channel,
+            self.assessment_input_digest
+            or digest(self.model_dump(mode="json", exclude={"reader_revision", "decision_ref"})),
+        )
 
     @model_validator(mode="after")
     def check_action(self) -> NotificationPlan:
@@ -194,31 +202,6 @@ class CardComposer(Protocol):
         ...
 
 
-def market_move(claim: Claim, mode: Mode) -> bool:
-    """An observed market move: the class whose basis the planner asks about.
-
-    A decision, commitment or guidance that carries an amount (a Treasury buyback, a rate path) is an
-    action, not a quote wearing a level.
-    """
-
-    return mode == "observation" and claim.fields.content_kind in PRICE_REPORT_KINDS
-
-
-def content_reason(claim: Claim, mode: Mode) -> ClaimReason:
-    """The admission reason for a claim of a known mode that is not a market move, or why it is not notified.
-
-    Rules in order: a commentary, promotion or forecast mode; a schedule. A market move is decided by
-    `market_reason` from its judged basis.
-    """
-
-    reason = _MODE_REASONS.get(mode)
-    if reason is not None:
-        return reason
-    if claim.fields.content_kind == "schedule":
-        return "content_schedule"
-    return "actionable_content"
-
-
 def large_daily_move(claim: Claim) -> bool:
     """A structured percentage move of at least the exception size on a commodity or index primary."""
 
@@ -236,55 +219,12 @@ def large_daily_move(claim: Claim) -> bool:
     return False
 
 
-def market_reason(claim: Claim, basis: str | None) -> ClaimReason:
-    """A market move with a stated basis is notified; a bare quote only under the owner's exception.
-
-    An unresolved basis is content uncertainty, not a verdict: it does not withhold the claim.
-    """
-
-    if basis == "quote_only":
-        return "large_daily_move" if large_daily_move(claim) else "price_report_without_basis"
-    return "actionable_content"
-
-
-def watchlist_hit(claim: Claim, watch_symbols: frozenset[str]) -> bool:
-    return any(
-        asset.role == "primary" and asset.symbol.strip().upper() in watch_symbols for asset in claim.fields.assets
-    )
-
-
-def corroborated(claim: Claim, update: EventUpdate) -> bool:
-    """Two supporting sources of distinct origin, or one supporting source of a named authority.
-
-    Origin falls back to the publisher when ingestion did not know it. Reports and copies do not count:
-    only a `supports` relationship is corroboration.
-    """
-
-    evidence = {item.ref: item for item in update.evidence}
-    active = {item.ref for item in current_evidence(update.evidence).values()}
-    supporting = [
-        evidence[row.evidence_ref].source
-        for row in update.evidence_relations
-        if row.claim_ref == claim.ref and row.relation == "supports" and row.evidence_ref in active
-    ]
-    if any(source.source_authority != "unknown" for source in supporting):
-        return True
-    origins = {source.origin_id or source.publisher_id for source in supporting}
-    return len(origins) >= KEY_MIN_INDEPENDENT_ORIGINS
-
-
-def is_key(claim: Claim, update: EventUpdate) -> bool:
-    if claim.fields.content_kind not in KEY_CONTENT_KINDS:
-        return False
-    topics = update.topics if update.schema_version == "news_event_update_v1" else claim.topics
-    if not set(topics) & KEY_TOPIC_CODES:
-        return False
-    return corroborated(claim, update)
-
-
 class NotificationPlanner:
-    def __init__(self, judgments: NewsJudgments, *, source_max_age_ms: int = SOURCE_MAX_AGE_MS) -> None:
+    def __init__(
+        self, judgments: NewsJudgments, assessor: AttentionAssessor, *, source_max_age_ms: int = SOURCE_MAX_AGE_MS
+    ) -> None:
         self.judgments = judgments
+        self.assessor = assessor
         self.source_max_age_ms = source_max_age_ms
 
     async def plan(
@@ -294,155 +234,116 @@ class NotificationPlanner:
         budget: Budget,
         *,
         now_ms: int,
+        reuse: Callable[[str], Awaitable[NotificationPlan | None]] | None = None,
     ) -> NotificationPlan:
-        """One named decision per claim, in rule order.
+        """Filter fact/delivery constraints, then ask one editor about remaining ordinary claims."""
 
-        Retired claims; the watchlist guard; adopted mode (unknown stays mode_unknown); schedule;
-        a market move without a stated basis; a stale source (corrections and
-        conflicts exempt); an unsettled overlapping send (deferred); full coverage by an actually sent
-        receipt. A claim no rule removed is notified.
-        """
-
-        decisions: dict[str, ClaimReason] = {}
-        admitted: dict[str, ClaimReason] = {}
+        reasons: dict[str, ClaimReason] = {}
+        explanations: dict[str, str | None] = {}
         retired = (
             set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(reader.invalidated_claim_refs)
         )
-        watch = frozenset(symbol.strip().upper() for symbol in reader.watch_symbols)
-        # Explicit corrections must not inherit a TTL refreshed by a model run.
-        # They can nevertheless inform readers about an old report: not an entry signal.
         corrections = {change.current_ref for change in update.changes if change.kind in {"correction", "conflict"}}
-
-        def stale(claim: Claim) -> bool:
-            too_old = now_ms - claim.first_available_at_ms > self.source_max_age_ms
-            return self.source_max_age_ms > 0 and too_old and claim.ref not in corrections
-
-        market: list[Claim] = []
+        candidates: list[Claim] = []
+        protected: set[str] = set(reader.protected_listing_claim_refs)
         for claim in update.claims:
             if claim.ref in retired:
-                decisions[claim.ref] = "retired"
-            elif watchlist_hit(claim, watch):
-                # The objective guard: a reader's own asset is a candidate whatever its mode or content,
-                # still subject to staleness and to what the reader actually received.
-                admitted[claim.ref] = "watchlist_hit"
-            elif claim.fields.mode == "unknown" and stale(claim):
-                # No model call can rescue a stale source; do not pay for a re-ask.
-                decisions[claim.ref] = "stale_source"
-            elif claim.fields.mode == "unknown":
-                decisions[claim.ref] = "mode_unknown"
-            elif market_move(claim, claim.fields.mode):
-                market.append(claim)
+                reasons[claim.ref] = "retired"
+            elif (
+                self.source_max_age_ms > 0
+                and now_ms - claim.first_available_at_ms > self.source_max_age_ms
+                and claim.ref not in corrections
+            ):
+                reasons[claim.ref] = "stale_source"
+            elif claim.ref in reader.blocked_claim_refs:
+                reasons[claim.ref] = "send_outcome_unresolved"
             else:
-                self._admit(claim, content_reason(claim, claim.fields.mode), decisions, admitted)
-        bases = await self._market_bases(update, tuple(claim for claim in market if not stale(claim)), budget)
-        for claim in market:
-            if stale(claim):
-                decisions[claim.ref] = "stale_source"
+                candidates.append(claim)
+        covered = await self._fully_covered(tuple(candidates), reader, budget)
+        ordinary: list[Claim] = []
+        for claim in candidates:
+            if claim.ref in covered:
+                reasons[claim.ref] = "covered_by_sent_receipt"
+            elif claim.ref in protected:
+                reasons[claim.ref] = "protected_listing"
+            elif claim.fields.mode == "observation" and large_daily_move(claim):
+                reasons[claim.ref] = "large_daily_move"
             else:
-                self._admit(claim, market_reason(claim, bases.get(claim.ref)), decisions, admitted)
+                ordinary.append(claim)
 
-        by_ref = {claim.ref: claim for claim in update.claims}
-        blocked = set(reader.blocked_claim_refs)
-        coverage_candidates: list[Claim] = []
-        for ref in admitted:
-            claim = by_ref[ref]
-            if stale(claim):
-                decisions[ref] = "stale_source"
-            elif ref in blocked:
-                # A new intent must not blindly repeat an unsettled external send; not received either.
-                decisions[ref] = "send_outcome_unresolved"
-            else:
-                coverage_candidates.append(claim)
-        covered = await self._fully_covered(tuple(coverage_candidates), reader, budget)
-        for claim in coverage_candidates:
-            decisions[claim.ref] = "covered_by_sent_receipt" if claim.ref in covered else admitted[claim.ref]
+        evidence = {item.ref: item.source for item in update.evidence}
+        material = json.loads(
+            canonical_json(
+                {
+                    "update": update,
+                    "candidate": assessment_input(
+                        tuple(ordinary), sources=evidence, watch_symbols=reader.watch_symbols
+                    ),
+                    "reader_receipts": reader.receipts,
+                    "preselection": reasons,
+                    "assessor_identity": self.assessor.identity,
+                }
+            )
+        )
+        fingerprint = digest(material)
+        if reuse is not None:
+            previous = await reuse(fingerprint)
+            if previous is not None:
+                return previous.model_copy(update={"reader_revision": reader.revision})
+        status: Literal["available", "unavailable", "skipped"] = "skipped"
+        error_code = None
+        if ordinary:
+            try:
+                async with asyncio.timeout(min(budget.remaining() / 3, 20.0)):
+                    assessment = await self.assessor.assess(
+                        tuple(ordinary), sources=evidence, watch_symbols=reader.watch_symbols
+                    )
+                selected = {row.claim_ref: row for row in assessment.decisions}
+                if set(selected) != {claim.ref for claim in ordinary}:
+                    raise ProviderUnavailable("news_attention_refs_invalid")
+                for claim in ordinary:
+                    row = selected[claim.ref]
+                    reasons[claim.ref] = EDITOR_REASONS[row.disposition]
+                    explanations[claim.ref] = row.reason_zh
+                status = "available"
+            except (ProviderUnavailable, ContractFault, ValidationError, TimeoutError) as exc:
+                if budget.remaining() <= 0:
+                    raise TimeoutError("news_notification_stage_expired") from exc
+                status = "unavailable"
+                error_code = bounded_error_code(exc, default="news_attention")
+                for claim in ordinary:
+                    reasons[claim.ref] = "attention_unavailable_default_notify"
 
         rows = tuple(
             ClaimDecision(
                 claim_ref=claim.ref,
-                decision=REASON_DECISIONS[decisions[claim.ref]],
-                reason=decisions[claim.ref],
+                decision=REASON_DECISIONS[reasons[claim.ref]],
+                reason=reasons[claim.ref],
+                reason_zh=explanations.get(claim.ref),
             )
             for claim in update.claims
         )
-        selected = [by_ref[row.claim_ref] for row in rows if row.decision == "notify"]
-        action: PlanAction
-        reason: PlanReason
-        if selected:
-            action = "notify"
-            reason = "uncovered_claims"
+        if any(row.decision == "notify" for row in rows):
+            action: PlanAction = "notify"
+            reason: PlanReason = "uncovered_claims"
         elif any(row.decision == "deferred" for row in rows):
-            action = "unresolved"
-            reason = "send_outcome_unresolved"
+            action, reason = "unresolved", "send_outcome_unresolved"
         else:
-            action = "no_notification"
-            reason = "no_uncovered_actionable_claims"
+            action, reason = "no_notification", "no_uncovered_actionable_claims"
         return NotificationPlan(
             action=action,
             reason=reason,
             update_ref=update.ref,
             claim_decisions=rows,
-            key=any(is_key(claim, update) for claim in selected),
+            key=any(row.reason == "editor_key" for row in rows),
             channel=reader.channel,
             reader_revision=reader.revision,
+            assessment_status=status,
+            assessment_error_code=error_code,
+            assessment_identity=self.assessor.identity if ordinary else BRIEF_IDENTITY,
+            assessment_input_digest=fingerprint,
+            assessment_input=material,
         )
-
-    @staticmethod
-    def _admit(
-        claim: Claim,
-        reason: ClaimReason,
-        decisions: dict[str, ClaimReason],
-        admitted: dict[str, ClaimReason],
-    ) -> None:
-        if REASON_DECISIONS[reason] == "notify":
-            admitted[claim.ref] = reason
-        else:
-            decisions[claim.ref] = reason
-
-    def _cited_questions(self, update: EventUpdate, claims: tuple[Claim, ...]) -> tuple[Question, ...]:
-        evidence = {item.ref: item for item in update.evidence}
-        return tuple(
-            Question(
-                item_id=claim.ref,
-                payload_json=canonical_json(
-                    {
-                        "claim": claim,
-                        "evidence": [evidence[citation.evidence_ref] for citation in claim.citations],
-                    }
-                ),
-            )
-            for claim in claims
-        )
-
-    async def _market_bases(
-        self,
-        update: EventUpdate,
-        claims: tuple[Claim, ...],
-        budget: Budget,
-    ) -> dict[str, str | None]:
-        """What each observed market move states beyond its number, asked once for all of them.
-
-        The configured judgment backend answers (a native Choice when Jev is configured). An unresolved or
-        unavailable answer gets one targeted generated re-ask; what stays unresolved is `None`.
-        """
-
-        if not claims:
-            return {}
-        questions = self._cited_questions(update, claims)
-        answers = {row.item_id: row for row in await self.judgments.judge("market_basis", questions, budget)}
-
-        def settled(ref: str) -> str | None:
-            row = answers.get(ref)
-            if row is None or row.status != "available" or row.value in {None, "unresolved"}:
-                return None
-            return str(row.value)
-
-        bases = {claim.ref: settled(claim.ref) for claim in claims}
-        pending = tuple(question for question in questions if bases[question.item_id] is None)
-        if pending:
-            answers = {row.item_id: row for row in await self.judgments.reask("market_basis", pending, budget)}
-            bases.update({question.item_id: settled(question.item_id) for question in pending})
-        return bases
 
     async def _fully_covered(
         self,

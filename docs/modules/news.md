@@ -13,6 +13,20 @@ News 不只是“把标题交给模型打分”。当前编辑型链路以 **来
 > [!IMPORTANT]
 > 理解、采用和通知分别完成。通知失败不回滚知识；卡片也不是 Trading 的事实来源。
 
+| 所有者 | 主要职责 |
+| --- | --- |
+| [receiver.py](../../tracefold/news/pipeline/receiver.py)、[recovery.py](../../tracefold/news/pipeline/recovery.py) | 接收 OpenNews，记录中断与有界恢复，将原始输入交给 broker |
+| [admission.py](../../tracefold/news/pipeline/admission.py) | 区分来源契约，保存 Item、确定性拆分和 Event 归组，提交证据与语义工作 |
+| [events](../../tracefold/news/events/) | FactUnit 范围、grounding、准入、身份、标题 / token / MinHash 候选匹配 |
+| [semantic.py](../../tracefold/news/pipeline/semantic.py) | 消费语义唤醒，领取版本工作、执行尝试、退避、熔断与失败结算 |
+| [updates/service.py](../../tracefold/news/updates/service.py) | `NewsAgent` 编排、采用与可选补读；`Notifications` 独立续接 |
+| [semantics.py](../../tracefold/news/updates/semantics.py)、[judgment.py](../../tracefold/news/updates/judgment.py) | 引文校验、命题比较、有限问题、内容组装 |
+| [dspy_backend.py](../../tracefold/news/updates/dspy_backend.py) | DSPy 抽取、中文文案、生成式判断与原生有限选项判断 |
+| [notification.py](../../tracefold/news/updates/notification.py)、[attention.py](../../tracefold/news/updates/attention.py) | 已采用命题的编辑判断、实际正文覆盖、稳定意图与冻结卡片 |
+| [event_update_store.py](../../tracefold/news/storage/event_update_store.py)、[event_updates.py](../../tracefold/news/storage/event_updates.py) | 短事务、检查点、不可变更新、head 条件采用、计划和发送账本 |
+| [public.py](../../tracefold/news/updates/public.py) | 从已采用知识生成公开更新，不依赖读者卡片 |
+| [delivery.py](../../tracefold/news/pipeline/delivery.py)、[maintenance.py](../../tracefold/news/pipeline/maintenance.py) | 通知轮询、真实投递、补唤醒与有界保留清理 |
+
 [通知判断](#notification) · [输入身份](#input) · [Agent](#agent) · [状态恢复](#state)
 
 <details>
@@ -158,19 +172,18 @@ sequenceDiagram
 
 | 步骤 | 模型承担的工作 | 代码承担的工作 |
 | --- | --- | --- |
-| 抽取 | 找到命题、条件、数量、资产角色、时间信息和引文 | 检查结构、精确引文、可见引用与输入范围 |
-| 理解 | 判断 `mode`、`phase`、`content_kind` | 限定合法值，保留不确定性，不因日期到来就推断动作完成 |
+| 抽取与理解 | 同次给出命题、条件、数量、资产角色、时间、引文、`mode`、`phase`、`content_kind` 与逐命题主题 | 检查结构、精确引文、可见引用、输入范围和合法值 |
 | 比较 | 判断命题等价、补充、更正、替代及证据支撑关系 | 排除已能证明的数字 / 语气矛盾，验证目标 refs 与候选身份 |
-| 组织 | 提议主题、影响机制与未解问题 | 验证支持关系；区分事实与条件性推论；延续未被显式改变的知识 |
+| 组织 | 提议影响机制与未解问题 | 验证支持关系；区分事实与条件性推论；延续未被显式改变的知识 |
 | 采用 | 不直接写数据库 | 组装 EventUpdate，保存观察，检查 owner / lease / head 后条件采用 |
 
-当前判断任务包括 `mode`、`phase`、`content_kind`、`relation`、`support`、`coverage`、`topic`、`next_read`、`impact_channel`、`market_basis`。后四类并不意味着每条消息全部调用；`coverage` 属于通知续接，而非语义采用的必经审批。
+当前独立判断任务包括 `relation`、`support`、`coverage`、`next_read`。`coverage` 属于通知续接，而非语义采用的必经审批；并非每条消息都需要全部任务。
 
 可选原生判断通过 DSPy 的有限输出类型连接 Jev / System One。未配置该后端时使用生成式判断；已成功缓存的答案不再找另一个模型投票。失败回退、批次与缓存身份由 [judgment.py](../../tracefold/news/updates/judgment.py)及 [DSPy 适配](../../tracefold/news/updates/dspy_backend.py)控制。
 
 ### 模型到底调用几次，为什么有延时
 
-**不是固定三个 DSPy 节点，也不是一个 Event 只调用一次模型。** 一次语义尝试可能包含抽取、多个判断批次、缓存命中、回退，以及采用冲突后的缺失关系补算。通知还可能调用市场依据 / 已发正文覆盖判断和中文文案生成；没有选中命题时无需生成卡片。
+**不是固定三个 DSPy 节点，也不是一个 Event 只调用一次模型。** 一次语义尝试可能包含抽取、多个关系判断批次、缓存命中、回退，以及采用冲突后的缺失关系补算。Jev 抽取同时给出 mode、phase、content_kind 和每条命题的主题，不再对同一输入重复执行原生分类。通知阶段先比较实际已发正文覆盖，再对剩余普通命题进行一次 AttentionAssessor 判断；若有命题选中，再生成中文卡片。
 
 | 预算 | 当前代码值 | 解释 |
 | --- | --- | --- |
@@ -243,25 +256,27 @@ stateDiagram-v2
 <a id="section-什么决定一条新闻是否推送"></a>
 ## 06 · 什么决定一条新闻是否推送
 
-决定者是 **`NotificationPlanner.plan`**，输入是已采用 EventUpdate、读者观察名单、实际已发送正文及未决发送状态。它为**每条 Claim**给出 `notify` / `not_notified` / `deferred` 与具名原因，不输出一个隐含的全局“重要性分数”。
+决定者是 **`NotificationPlanner.plan`**，输入是已采用 EventUpdate、读者观察名单、实际已发送正文及未决发送状态。它为**每条 Claim**给出 `notify` / `not_notified` / `deferred` 与具名原因，不输出一个隐含的全局“重要性分数”。有效且未覆盖的普通命题交给单次 AttentionAssessor，按[编辑简报](../../tracefold/news/updates/editorial_brief.txt)分别给出 `notify`、`key` 或 `feed_only`。
 
 | 判断顺序与情况 | 当前行为 |
 | --- | --- |
 | 命题已退休、替代或被跨 Event 修订失效 | `retired`，不通知 |
-| 主要资产命中读者观察名单 | 作为候选，绕过一般 mode / 内容限制；仍检查过期、覆盖和未决发送 |
-| mode 未知、评论、推广、预测，或日程内容 | 按具体原因不通知，不把它们包装成无限重试 |
-| 观察型市场数字 | 判断原文是否提供超出数字的依据；单纯报价通常不通知 |
+| 主要资产命中读者观察名单 | 告知编辑判断以提高相关性；不能单独强制通知 |
+| 评论、推广、预测、日程或数字 | 由编辑判断具体信息量；不能用固定类型或评分门槛代替 |
 | 大幅市场变化例外 | 商品或指数主要资产的结构化百分比达到 5% 例外；不是所有个股涨 5% 都推送 |
 | 来源过期 | 默认超过首次可用时间 12 小时不通知；明确 correction / conflict 有例外，不给交易来源续期 |
 | 重叠发送正在进行或结果不明 | `send_outcome_unresolved`，暂缓相关命题 |
 | 实际已发送正文完整覆盖 | `covered_by_sent_receipt`，不重复通知；部分覆盖不等于完整覆盖 |
-| 尚未被上述规则排除 | 选中命题并生成稳定通知意图 |
+| 尚未被上述规则排除 | 编辑逐命题选择；本地调用不可用时具名记录并默认普通通知 |
 
-来源更正、未知市场依据和观察名单都有明确分支，不能把上表简化成一个统一“新闻相关性 gate”。准确规则顺序与例外以 [notification.py](../../tracefold/news/updates/notification.py)为准。
+更正保留来源时效例外；上币公告与商品/指数至少 5% 的结构化日变化保留保护分支。准确规则顺序与例外以 [notification.py](../../tracefold/news/updates/notification.py)为准。
 
-控制台将 `commentary` 显示为“表态或观点”，指没有具体动作、数值或新观察的陈述。原因后面的 `×N` 统计具有该原因的命题数，不是评论条数或来源报道数。
+控制台显示逐命题判断原因；原因后面的 `×N` 统计具有该原因的命题数，不是报道数。
 
-`key` 是展示上的重点标记：特定内容类型、重点主题以及有效支撑来源共同决定。它不是另一轮必须通过的发送审批，也不是仓位权重。
+`key` 是编辑判断的重点展示标记，不是另一轮发送审批或仓位权重。
+
+离线重放和显式真实模型对照使用 [eval_news_attention.py](../../scripts/eval_news_attention.py)；
+本次有限样本的调用数、结果及测量范围见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
 
 ### 选择：哪些命题需要通知
 
@@ -276,12 +291,13 @@ config:
 ---
 flowchart TB
     accTitle: 逐命题通知选择
-    accDescr: 逐命题检查后，未决重叠发送暂缓，其余命题比较实际 sent 正文覆盖；产物是具名不通知或明确选中集合。
+    accDescr: 逐命题检查后，未决重叠发送暂缓，其余命题比较实际 sent 正文覆盖并由编辑判断；产物是具名不通知或明确选中集合。
     Snapshot["已采用知识 + 读者快照"] --> Rules["逐命题内容、时效、失效检查"]
     Rules --> Overlap{"重叠发送未决？"}
     Overlap -->|是| Defer["暂缓相关命题"]
     Overlap -->|否| Coverage["比较实际 sent 正文覆盖"]
-    Coverage --> Select{"有待通知命题？"}
+    Coverage --> Editor["普通命题一次编辑判断"]
+    Editor --> Select{"有待通知命题？"}
     Select -->|否| Hold["具名不通知原因"]
     Select -->|是| Selected["选中命题与计划身份"]
 
@@ -290,7 +306,7 @@ flowchart TB
     classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
     classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
     classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
-class Snapshot,Rules,Overlap,Defer,Coverage,Select,Hold,Selected news;
+class Snapshot,Rules,Overlap,Defer,Coverage,Editor,Select,Hold,Selected news;
 ```
 
 *决策视图 · 同一计划可以包含不同命题结果；选中仍不等于已发送。*
@@ -335,7 +351,7 @@ CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精�
 
 计划采用和发送前会核对 head 与 reader revision。正文冻结后不因后台新材料到来而改写已开始的发送。适配器区分 `sent`、`not_sent`、`ambiguous`；只有已证明未发送且可重试的结果才按原意图重试。结果不明不能伪装成功，也不能直接再发一份。
 
-通知计划失败、文案生成失败、发送失败是三个边界。精确恢复命令及限制见[运维指南](../OPERATIONS.md#news-retry)；任何已有发送账本的 intent 都不能通过 `retry-work` 随意重开。
+每次判断保存不可变决策输入与逐命题结果，通知工作和 intent 引用该决策；同一输入重试复用结果。模型不可用的默认通知会记录状态和错误码，不将数据库、配置或外层期限故障伪装成编辑判断。通知计划失败、文案生成失败、发送失败是三个边界。精确恢复命令及限制见[运维指南](../OPERATIONS.md#news-retry)；任何已有发送账本的 intent 都不能通过 `retry-work` 随意重开。
 
 <a id="section-一个具体更新例子"></a>
 ## 07 · 一个具体更新例子

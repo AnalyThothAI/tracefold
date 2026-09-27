@@ -8,7 +8,13 @@ from importlib.resources import files
 from typing import Any
 
 from tracefold.app.system_one import SystemOneConnection, SystemOneReceipt
-from tracefold.news.updates.dspy_backend import DspyCardComposer, DspyExtractor, GeneratedJudgments, NativeJudgments
+from tracefold.news.updates.dspy_backend import (
+    DspyAttentionAssessor,
+    DspyCardComposer,
+    DspyExtractor,
+    GeneratedJudgments,
+    NativeJudgments,
+)
 from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import NATIVE_OPERATION_SECONDS, JudgmentCache, NewsJudgments
 from tracefold.news.updates.notification import NotificationPlanner
@@ -193,7 +199,14 @@ def compose_news_updates(
         agent=NewsAgent(store, analyzer, program_identity=program_identity, source_reader=source_reader),
         judgments=analyzer.judgments,
         # The Deliverer owns the provider side and hands its sender to each notification turn.
-        notifications=Notifications(store, NotificationPlanner(analyzer.judgments), DspyCardComposer(card_lm_factory)),
+        notifications=Notifications(
+            store,
+            NotificationPlanner(
+                analyzer.judgments,
+                DspyAttentionAssessor(card_lm_factory, model_identity=card_model_identity),
+            ),
+            DspyCardComposer(card_lm_factory),
+        ),
         program_identity=program_identity,
         judgment_connection=connection,
     )

@@ -13,10 +13,11 @@ from functools import lru_cache
 from typing import Any, Final
 
 import dspy  # type: ignore[import-untyped]
-from dspy.adapters.types.decision import Choice, Noul  # type: ignore[import-untyped]
+from dspy.adapters.types.decision import Choice  # type: ignore[import-untyped]
 from pydantic import Field, ValidationError
 from typesafe_sdk import TypeSafeAPIConnectionError, TypeSafeAPIError, TypeSafeAPIResponseValidationError
 
+from .attention import BRIEF, BRIEF_IDENTITY, AttentionAssessment, assessment_input
 from .contracts import (
     Claim,
     DraftClaim,
@@ -84,8 +85,7 @@ Scopes are task metadata, not evidence: cite exact spans only from the supplied 
 Prior claims are context, not new raw evidence. When focus_claim_refs is supplied, process only the
 provided changed material affecting that focus; do not regenerate unaffected Event history.
 Always classify content_kind with the supplied definitions; it reads the content, not the reader's interest.
-If extract_only is true, return mode=unknown, phase=null, empty claim topics, and no relations/supports: the configured
-native backend owns those judgments. Otherwise fuse those judgments into this extraction using the supplied
+Fuse mode, phase, content kind, per-claim topics, relations and supports into this extraction using the supplied
 definitions and only supplied prior refs and evidence refs; do not ask whether the reader should be notified.
 Use only the supplied short reference aliases for evidence, prior claims, gaps and read targets.
 Model slot IDs are temporary. Do not invent stable claim/content/intent IDs. Topics must come from the
@@ -245,7 +245,6 @@ class ExtractSignature(dspy.Signature):  # type: ignore[misc]
     evidence_json: str = dspy.InputField(
         desc="Frozen current evidence, prior claim candidates and allowed read targets."
     )
-    extract_only: bool = dspy.InputField(desc="True delegates all narrow judgments to the native decision backend.")
     field_definitions: dict[str, dict[str, str]] = dspy.InputField(
         desc="Definitions of the mode, phase and content_kind options."
     )
@@ -262,6 +261,36 @@ class CopySignature(dspy.Signature):  # type: ignore[misc]
         desc="Only selected adopted claims with short reference aliases, exact citations and source provenance."
     )
     result: CardCopy = dspy.OutputField(desc="A Chinese headline and exactly one section per selected claim.")
+
+
+class AttentionSignature(dspy.Signature):  # type: ignore[misc]
+    candidates_json: str = dspy.InputField(desc="Adopted, valid, uncovered claims and cited provenance.")
+    result: AttentionAssessment = dspy.OutputField(desc="Exactly one disposition per supplied claim reference.")
+
+
+class DspyAttentionAssessor:
+    def __init__(self, lm_factory: Callable[[], Any], *, model_identity: str) -> None:
+        self.lm_factory = lm_factory
+        self.identity = identity(
+            "news_attention", BRIEF_IDENTITY, model_identity, AttentionAssessment.model_json_schema()
+        )
+
+    async def assess(
+        self, claims: tuple[Claim, ...], *, sources: Mapping[str, Source], watch_symbols: tuple[str, ...]
+    ) -> AttentionAssessment:
+        aliases = {claim.ref: f"c{index}" for index, claim in enumerate(claims, 1)}
+        material = assessment_input(claims, sources=sources, watch_symbols=watch_symbols)
+        material["claims"] = _references(material["claims"], aliases)
+        prediction = await _generate(
+            AttentionSignature.with_instructions(BRIEF), self.lm_factory(), candidates_json=canonical_json(material)
+        )
+        assessment = AttentionAssessment.model_validate(prediction.result)
+        refs = {alias: ref for ref, alias in aliases.items()}
+        if {row.claim_ref for row in assessment.decisions} != set(refs):
+            raise ProviderUnavailable("news_attention_refs_invalid")
+        return AttentionAssessment(
+            decisions=tuple(row.model_copy(update={"claim_ref": refs[row.claim_ref]}) for row in assessment.decisions)
+        )
 
 
 class GeneratedAnswer(Exact):
@@ -387,13 +416,12 @@ class DspyExtractor:
             self.topics,
         )
 
-    async def extract(self, source: FrozenInput, *, extract_only: bool) -> Extraction:
+    async def extract(self, source: FrozenInput) -> Extraction:
         aliases = _input_aliases(source)
         result = await _generate(
             ExtractSignature.with_instructions(EXTRACTION_INSTRUCTION),
             self.lm_factory(),
             evidence_json=canonical_json(_references(source.model_dump(mode="json"), aliases)),
-            extract_only=extract_only,
             field_definitions=FIELD_DEFINITIONS,
             topic_codebook=self.topics,
         )
@@ -491,11 +519,7 @@ class GeneratedJudgments:
         )
 
     async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
-        criteria: dict[str, object]
-        if task == "topic":
-            criteria = {"question": TASK_QUESTIONS[task], "answer": "A Boolean: whether the topic applies."}
-        else:
-            criteria = {"question": TASK_QUESTIONS[task], "options": OPTIONS[task]}
+        criteria: dict[str, object] = {"question": TASK_QUESTIONS[task], "options": OPTIONS[task]}
         aliases = {item.item_id: f"q{index}" for index, item in enumerate(items, 1)}
         prediction = await _generate(
             GeneratedJudgmentSignature.with_instructions(JUDGMENT_INSTRUCTION),
@@ -531,7 +555,7 @@ def native_signature(task: Task, batch_size: int, shared_context: bool, question
     if shared_context:
         fields["context"] = (dict[str, Any], dspy.InputField(desc="Shared frozen input for every item."))
     fields["items"] = (list[dict[str, Any]], dspy.InputField(desc="An ordered list of independent task payloads."))
-    value_type = Noul if task == "topic" else Choice[OPTIONS[task]]
+    value_type = Choice[OPTIONS[task]]
     shared = " Use inputs.context as the shared input." if shared_context else ""
     for slot in range(batch_size):
         description = (
@@ -582,12 +606,9 @@ class NativeJudgments:
             native = getattr(prediction, f"answer_{slot}")
             # Retain provider probabilities as evidence; no combined confidence
             # and no confidence threshold for notification/trading.
-            probabilities = None
-            if task == "topic" and native.probability is not None:
-                probabilities = {"true": native.probability, "false": 1 - native.probability}
-            elif task != "topic":
-                probabilities = native.probabilities
             answers.append(
-                Answer(item_id=item.item_id, value=native.value, backend=self.identity, probabilities=probabilities)
+                Answer(
+                    item_id=item.item_id, value=native.value, backend=self.identity, probabilities=native.probabilities
+                )
             )
         return BatchResult(answers=tuple(answers))

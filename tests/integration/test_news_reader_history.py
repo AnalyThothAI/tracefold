@@ -10,6 +10,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support import news_novelty_sequences as sequences
 from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instrument_storage import InstrumentsRepository
@@ -105,7 +106,7 @@ def _persist_triage_verdict(
         "told": [],
         "told_count": 0,
     }
-    assert repos.news.insert_verdict(
+    assert legacy_news(repos.news).insert_verdict(
         event_id=event_id,
         stage="triage",
         policy_version=policy_version,
@@ -158,7 +159,7 @@ def _persist_sent_triage_card(
         headline_zh=headline_zh,
     )
     event = repos.news.event_card(event_id)
-    verdict = repos.news.latest_verdict(event_id=event_id, stage="triage")
+    verdict = legacy_news(repos.news).latest_verdict(event_id=event_id, stage="triage")
     bound = {
         key: event.get(key)
         for key in ("storyline_key", "comparison_title", "comparison_fingerprint", "dedupe_family", "grounded_assets")
@@ -166,12 +167,12 @@ def _persist_sent_triage_card(
     bound.update({key: verdict["verdict"].get(key) for key in ("direction", "headline_zh", "why_zh", "assets")})
     bound["canonical_assets"] = _canonical_assets(repos, [symbol])
     assert (
-        repos.news.begin_delivery(
+        legacy_news(repos.news).begin_delivery(
             event_id=event_id, kind="first", card={}, now_ms=at_ms - 1, history_context_json=json.dumps(bound)
         )
         == "new"
     )
-    assert repos.news.settle_delivery(
+    assert legacy_news(repos.news).settle_delivery(
         event_id=event_id,
         kind="first",
         state=state,

@@ -18,10 +18,7 @@ Task = Literal[
     "relation",
     "support",
     "coverage",
-    "topic",
     "next_read",
-    "impact_channel",
-    "market_basis",
 ]
 QUESTION_VERSION: Final = "news_questions_v3"
 # The per-claim readings the native backend owns when it is configured.
@@ -36,10 +33,7 @@ TASK_QUESTIONS: Final[dict[Task, str]] = {
     "relation": "How does the current claim relate to the previous claim?",
     "support": "How does this material relate to this exact claim?",
     "coverage": "How much of this claim does the actually delivered text cover?",
-    "topic": "Does this navigation topic apply to at least one of the shared claims?",
     "next_read": "Would reading this supplied target resolve the stated gap?",
-    "impact_channel": "Do the cited claims support this proposed mechanism as a conditional implication?",
-    "market_basis": "Beyond the number itself, what does the cited text state about this observed market move?",
 }
 
 OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
@@ -152,21 +146,6 @@ OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
         ("no_useful_read", "No useful additional read is supported by the supplied gap/target."),
         ("unresolved", "The usefulness of this read is uncertain."),
     ),
-    "impact_channel": (
-        ("applicable", "The supplied mechanism is supported as a conditional implication by the cited claims."),
-        ("not_applicable", "The proposed mechanism is not supported by these claims."),
-        ("unresolved", "Applicability is not established."),
-    ),
-    # Replaces the retired keyword vocabulary of #675's price-report rule: whether an observed market move
-    # states a fact the reader can use beyond the number. A bare quote is the class that rule withheld.
-    "market_basis": (
-        ("level_crossed", "The text names a threshold or level the price or rate crossed, reclaimed or lost."),
-        ("period_record", "The text says it is the highest, lowest, largest or first of a named period."),
-        ("depeg_or_physical", "A pegged asset left its peg, or the figure is a physical-supply price such as freight."),
-        ("quantified_flow", "The text quantifies an amount that moved: liquidated, deposited, withdrawn, net flow."),
-        ("quote_only", "Only a price or percentage change, with no threshold, record, peg or quantified flow."),
-        ("unresolved", "The cited text does not establish which of these it is."),
-    ),
 }
 
 # An operation timeout for one native request. It is an engineering budget, not a service SLA; each batch
@@ -175,9 +154,6 @@ NATIVE_OPERATION_SECONDS: Final = 2.0
 # Packing budget for the tasks that are split into batches.
 DEFAULT_BATCH_SIZE: Final = 8
 MAX_BATCH_SIZE: Final = 32
-# Tasks answered in one request over one shared context. The topic codebook asks every topic about the same
-# claims, so repeating the claims per question would only multiply input.
-SINGLE_REQUEST_TASKS: Final[frozenset[Task]] = frozenset({"topic"})
 MAX_QUESTIONS_PER_REQUEST: Final = 64
 
 
@@ -297,10 +273,6 @@ class NewsJudgments:
     def batches(self, task: Task, items: tuple[Question, ...]) -> tuple[tuple[Question, ...], ...]:
         if not items:
             return ()
-        if task in SINGLE_REQUEST_TASKS:
-            if len(items) > MAX_QUESTIONS_PER_REQUEST:
-                raise ContractFault("news_single_request_too_large")
-            return (items,)
         return tuple(items[start : start + self.batch_size] for start in range(0, len(items), self.batch_size))
 
     async def judge(
@@ -424,8 +396,5 @@ class NewsJudgments:
             if answer.status == "unavailable":
                 if answer.value is not None:
                     raise ContractFault("news_unavailable_answer_has_value")
-            elif task == "topic":
-                if type(answer.value) is not bool:
-                    raise ContractFault("news_topic_boolean_required")
             elif answer.value not in choices:
                 raise ContractFault("news_judgment_option_invalid")

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test, seed_current_news_evidence
+from tests.support.news_attention import NotifyAll
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore
@@ -290,7 +291,9 @@ class Turns:
 
     def __init__(self, pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> None:
         judgments = NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db))
-        self.service = Notifications(pg, NotificationPlanner(judgments), composer or Composer(), clock=clock)
+        self.service = Notifications(
+            pg, NotificationPlanner(judgments, NotifyAll()), composer or Composer(), clock=clock
+        )
         self.sender = sender
 
     async def process(self, event_id: str, channel: str) -> str:
@@ -363,10 +366,11 @@ async def adopt_next(
 
 
 def notify_plan(head: EventUpdate, revision: str, *, deferred: tuple[str, ...] = ()) -> NotificationPlan:
+    input_snapshot = {"update": head.model_dump(mode="json"), "fixture": "notify", "deferred": deferred}
     decisions = tuple(
         ClaimDecision(claim_ref=claim.ref, decision="deferred", reason="send_outcome_unresolved")
         if claim.ref in deferred
-        else ClaimDecision(claim_ref=claim.ref, decision="notify", reason="actionable_content")
+        else ClaimDecision(claim_ref=claim.ref, decision="notify", reason="editor_notify")
         for claim in head.claims
     )
     return NotificationPlan(
@@ -376,6 +380,8 @@ def notify_plan(head: EventUpdate, revision: str, *, deferred: tuple[str, ...] =
         claim_decisions=decisions,
         channel="news",
         reader_revision=revision,
+        assessment_input_digest=digest(input_snapshot),
+        assessment_input=input_snapshot,
     )
 
 
@@ -768,6 +774,7 @@ def test_a_notification_turn_sends_once_and_keeps_the_exact_receipt() -> None:
     assert ledger["kind"] == "update" and ledger["state"] == "sent"
     assert ledger["intent_id"] == card.intent_id and ledger["body"] == card.body
     assert ledger["payload_sha256"] == card.payload_sha256 == digest(card.body)
+    assert ledger["decision_ref"] == sql("SELECT decision_ref FROM news_notification_work")[0]["decision_ref"]
     assert ledger["claim_refs"] == [head.claims[0].ref] and ledger["content_revision"] == head.content_revision
     assert ledger["receipt"]["provider_message_id"] == "41"
     # The provider's own receipt is kept beside it: what the Telegram enrichment edit is fenced by.
@@ -776,9 +783,12 @@ def test_a_notification_turn_sends_once_and_keeps_the_exact_receipt() -> None:
     assert FrozenCard.model_validate(ledger["card"]) == card and ledger["card"]["headline_zh"] == card.headline_zh
     assert ledger["history_context"]["headline_zh"] == card.headline_zh
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
-    work = sql("SELECT state, plan FROM news_notification_work")[0]
+    work = sql("""SELECT w.state,COALESCE(d.plan,w.plan) AS plan FROM news_notification_work w
+                      LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref""")[0]
     assert work["state"] == "done"
-    assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["actionable_content"]
+    assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["editor_notify"]
+    reviewed = sql("SELECT delivery_state,delivery_body FROM news_notification_review_tasks_v1")[0]
+    assert reviewed == {"delivery_state": "sent", "delivery_body": card.body}
     # Done for this head: a second turn has no work and never resends.
     assert asyncio.run(notifications(pg, clock, sender).process(EVENT, "news")) == "no_work"
     assert len(sender.cards) == 1
@@ -794,7 +804,7 @@ def test_two_planners_reserve_one_intent_without_resetting_it() -> None:
     async def race() -> list[Any]:
         return list(await asyncio.gather(pg.atomic_record_plan(plan), pg.atomic_record_plan(plan)))
 
-    leases = asyncio.run(race())
+    leases = [result.lease for result in asyncio.run(race())]
     assert sum(lease is not None for lease in leases) == 1
     winner = next(lease for lease in leases if lease is not None)
     queued = sql(
@@ -821,7 +831,7 @@ def test_a_turn_that_dies_after_reserving_is_reclaimed_after_its_lease() -> None
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    orphan = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision)))
+    orphan = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).lease
     assert orphan is not None
     clock.now_ms += 120_001
     assert asyncio.run(pg.pending_notification_events("news", 10)) == (EVENT,)
@@ -838,7 +848,7 @@ def test_the_janitor_holds_an_unsettled_update_send_ambiguous_and_releases_its_r
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
     plan = notify_plan(head, snapshot.reader.revision)
-    lease = asyncio.run(pg.atomic_record_plan(plan))
+    lease = asyncio.run(pg.atomic_record_plan(plan)).lease
     assert lease is not None
     body = "关税\n\n机构加征关税"
     card = FrozenCard(
@@ -879,7 +889,7 @@ def test_a_reader_ledger_change_is_a_version_race_that_leaves_work_pending() -> 
         """,
         (legacy_intent_id("ev-legacy", "first"), clock.now_ms - 5_000, clock.now_ms - 5_000, clock.now_ms - 5_000),
     )
-    assert asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))) is None
+    assert not asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).recorded
     assert sql("SELECT state, plan FROM news_notification_work WHERE event_id = %s", (EVENT,))[0] == {
         "state": "pending",
         "plan": None,
@@ -906,9 +916,12 @@ def test_deferred_claims_keep_notification_pending_beside_the_reserved_intent() 
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
     plan = notify_plan(head, snapshot.reader.revision, deferred=(head.claims[1].ref,))
-    lease = asyncio.run(pg.atomic_record_plan(plan))
+    lease = asyncio.run(pg.atomic_record_plan(plan)).lease
     assert lease is not None and lease.card is None
-    work = sql("SELECT state, attempts, plan FROM news_notification_work")[0]
+    work = sql(
+        "SELECT w.state,w.attempts,COALESCE(d.plan,w.plan) AS plan FROM news_notification_work w "
+        "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
+    )[0]
     assert work["state"] == "pending" and work["attempts"] == 1
     assert {row["decision"] for row in work["plan"]["claim_decisions"]} == {"notify", "deferred"}
 
@@ -954,7 +967,10 @@ def test_an_ambiguous_send_is_held_and_blocks_its_claims() -> None:
     sender = Sender("sent")
     assert asyncio.run(notifications(pg, clock, sender).process(EVENT, "news")) == "unresolved"
     assert sender.cards == []
-    work = sql("SELECT state, attempts, plan FROM news_notification_work")[0]
+    work = sql(
+        "SELECT w.state,w.attempts,COALESCE(d.plan,w.plan) AS plan FROM news_notification_work w "
+        "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
+    )[0]
     assert work["state"] == "pending" and work["attempts"] == 1
     assert work["plan"]["claim_decisions"][0]["reason"] == "send_outcome_unresolved"
     assert sql("SELECT state FROM news_deliveries")[0]["state"] == "ambiguous"
@@ -966,7 +982,7 @@ def test_begin_send_rechecks_the_head_and_keeps_the_frozen_card_for_the_same_ide
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
     plan = notify_plan(head, snapshot.reader.revision)
-    lease = asyncio.run(pg.atomic_record_plan(plan))
+    lease = asyncio.run(pg.atomic_record_plan(plan)).lease
     assert lease is not None
     card = FrozenCard(
         intent_id=lease.intent_id,
@@ -1035,7 +1051,7 @@ def test_card_failure_releases_the_lease_and_the_third_is_dead() -> None:
     for attempt in range(1, 4):
         snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
         assert snapshot is not None
-        lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision)))
+        lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).lease
         assert lease is not None
         asyncio.run(pg.record_card_failure(lease, error_code="TimeoutError"))
         queued = sql("SELECT state, attempts, lease_token FROM news_delivery_queue")[0]
@@ -1071,7 +1087,7 @@ def test_a_no_notification_plan_is_final_for_the_head_and_retires_an_unsent_rese
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision)))
+    lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).lease
     assert lease is not None
     asyncio.run(pg.record_card_failure(lease, error_code="TimeoutError"))
     clock.now_ms += 5 * 60_000
@@ -1082,17 +1098,22 @@ def test_a_no_notification_plan_is_final_for_the_head_and_retires_an_unsent_rese
         reason="no_uncovered_actionable_claims",
         update_ref=head.ref,
         claim_decisions=tuple(
-            ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="mode_commentary")
+            ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="editor_feed_only")
             for claim in head.claims
         ),
         channel="news",
         reader_revision=snapshot.reader.revision,
+        assessment_input_digest=digest({"update": head.model_dump(mode="json"), "fixture": "silent"}),
+        assessment_input={"update": head.model_dump(mode="json"), "fixture": "silent"},
     )
-    assert asyncio.run(pg.atomic_record_plan(silent)) is None
+    assert asyncio.run(pg.atomic_record_plan(silent)).recorded
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
-    work = sql("SELECT state, reader_revision, plan FROM news_notification_work")[0]
+    work = sql(
+        "SELECT w.state,w.reader_revision,COALESCE(d.plan,w.plan) AS plan FROM news_notification_work w "
+        "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
+    )[0]
     assert work["state"] == "done" and work["reader_revision"] == snapshot.reader.revision
-    assert work["plan"]["claim_decisions"][0]["reason"] == "mode_commentary"
+    assert work["plan"]["claim_decisions"][0]["reason"] == "editor_feed_only"
     assert asyncio.run(pg.notification_snapshot(EVENT, "news")) is None
 
 
@@ -1211,7 +1232,7 @@ def test_old_notification_failure_cannot_change_new_head_work(phase: str) -> Non
                 raise RuntimeError("old card failed")
 
         planner = NotificationPlanner(
-            NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db))
+            NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db)), NotifyAll()
         )
         service = Notifications(
             pg,
@@ -1334,7 +1355,7 @@ def test_card_recovery_reuses_unsent_intent_and_never_reopens_sent_or_ambiguous(
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
     plan = notify_plan(head, snapshot.reader.revision)
-    lease = asyncio.run(pg.atomic_record_plan(plan))
+    lease = asyncio.run(pg.atomic_record_plan(plan)).lease
     assert lease is not None
     sql("UPDATE news_delivery_queue SET attempts=3")
     asyncio.run(pg.record_card_failure(lease, error_code="bad_copy"))
@@ -1364,7 +1385,7 @@ def test_card_recovery_refuses_any_existing_send_ledger(state: str) -> None:
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision)))
+    lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).lease
     assert lease is not None
     from tracefold.news.updates.notification import freeze_card
 

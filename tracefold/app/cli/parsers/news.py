@@ -47,13 +47,13 @@ def add_news_commands(
         action="store_true",
         help="show only the pinned TaskRef and source evidence, excluding the agent answer and reviews",
     )
-    review_submit = review_subcommands.add_parser("submit", help="append and accept one event rubric judgment")
+    review_submit = review_subcommands.add_parser("submit", help="append feedback for one notification decision")
     review_submit.add_argument("task")
     review_submit.add_argument("--version", required=True)
     review_submit.add_argument("--file", required=True)
     review_submit.add_argument("--reviewer", required=True, help="actual reviewer principal persisted on the review")
     review_submit.add_argument("--idempotency-key", default="")
-    review_external = review_subcommands.add_parser("external-miss", help="append an external miss and its rubric")
+    review_external = review_subcommands.add_parser("external-miss", help="append an external miss and short feedback")
     review_external.add_argument("--file", required=True)
     review_external.add_argument("--idempotency-key", default="")
     news_learning = news_subcommands.add_parser(

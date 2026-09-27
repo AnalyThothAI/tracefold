@@ -522,6 +522,7 @@ export function newsProcessingFixture(overrides: Partial<NewsProcessing> = {}): 
       plan: {
         action: "notify",
         action_zh: "通知",
+        assessment_status: "available",
         claim_decisions: [
           {
             claim_ref: CLAIM_25,
@@ -535,8 +536,8 @@ export function newsProcessingFixture(overrides: Partial<NewsProcessing> = {}): 
             claim_ref: CLAIM_50,
             decision: "notify",
             decision_zh: "通知",
-            reason: "actionable_content",
-            reason_zh: "具体动作或数据",
+            reason: "editor_key",
+            reason_zh: "编辑判断为重点",
             statement: "Agency raises the steel import tariff to 50%.",
           },
         ],

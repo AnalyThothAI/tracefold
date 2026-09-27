@@ -383,7 +383,7 @@ class LeaderExtractor:
 
     identity = "leader-extractor-test"
 
-    async def extract(self, source: FrozenInput, *, extract_only: bool) -> Extraction:
+    async def extract(self, source: FrozenInput) -> Extraction:
         claims = tuple(
             DraftClaim(
                 slot=f"s{index}",

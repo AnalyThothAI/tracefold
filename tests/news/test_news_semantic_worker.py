@@ -352,7 +352,7 @@ class ScriptedBackend:
 class UnusedExtractor:
     identity = "unused-extractor"
 
-    async def extract(self, source: FrozenInput, *, extract_only: bool) -> Extraction:
+    async def extract(self, source: FrozenInput) -> Extraction:
         raise AssertionError("the analyzer is given the extraction")
 
 

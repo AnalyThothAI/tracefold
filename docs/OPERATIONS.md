@@ -102,7 +102,7 @@ docker compose exec -T workers tracefold news retry-work \
   --event EVENT_ID --kind notification --revision CONTENT_REVISION
 ```
 
-这针对失败的通知工作，不等于“忽略已发正文再发一次”。明确的 `no_notification` 不是技术故障：先看逐命题的 retired、stale、coverage、mode 等原因。
+这针对失败的通知工作，不等于“忽略已发正文再发一次”。明确的 `no_notification` 不是技术故障：先看不可变决策引用、逐命题的 `retired`、`stale_source`、实际正文覆盖或 `editor_feed_only`。`attention_unavailable_default_notify` 带模型不可用状态和错误码；数据库、配置及整个通知阶段超时仍是失败工作。
 
 ### 卡片生成失败
 

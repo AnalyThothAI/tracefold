@@ -87,6 +87,7 @@
 | `body` | `TEXT` | True | `None` |
 | `payload_sha256` | `TEXT` | True | `None` |
 | `plan_key` | `BOOLEAN` | True | `None` |
+| `decision_ref` | `TEXT` | True | `None` |
 
 ## `news_delivery_queue`
 
@@ -108,6 +109,7 @@
 | `plan_key` | `BOOLEAN` | True | `None` |
 | `frozen_card` | `JSONB` | True | `None` |
 | `lease_token` | `TEXT` | True | `None` |
+| `decision_ref` | `TEXT` | True | `None` |
 
 ## `news_event_assets`
 
@@ -725,6 +727,48 @@
 | `total_tokens` | `INTEGER` | True | `None` |
 | `provider_cost_microusd` | `BIGINT` | True | `None` |
 
+## `news_notification_decisions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `decision_ref` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | False | `None` |
+| `update_ref` | `TEXT` | False | `None` |
+| `channel` | `TEXT` | False | `None` |
+| `input_digest` | `TEXT` | True | `None` |
+| `input_snapshot` | `JSONB` | False | `None` |
+| `plan` | `JSONB` | False | `None` |
+| `origin` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_notification_external_feedback`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `review_id` | `TEXT` | False | `None` |
+| `snapshot_id` | `TEXT` | False | `None` |
+| `reviewer` | `TEXT` | False | `None` |
+| `idempotency_key` | `TEXT` | False | `None` |
+| `request_sha` | `TEXT` | False | `None` |
+| `should_push` | `TEXT` | False | `None` |
+| `note` | `TEXT` | False | `''::text` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_notification_feedback`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `review_id` | `TEXT` | False | `None` |
+| `decision_ref` | `TEXT` | False | `None` |
+| `claim_ref` | `TEXT` | False | `None` |
+| `task_version` | `TEXT` | False | `None` |
+| `reviewer` | `TEXT` | False | `None` |
+| `idempotency_key` | `TEXT` | False | `None` |
+| `request_sha` | `TEXT` | False | `None` |
+| `should_push` | `TEXT` | False | `None` |
+| `note` | `TEXT` | False | `''::text` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_notification_work`
 
 | Column | Type | Nullable | Default |
@@ -738,6 +782,7 @@
 | `attempts` | `INTEGER` | False | `0` |
 | `next_attempt_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `decision_ref` | `TEXT` | True | `None` |
 
 ## `news_oi_signals`
 

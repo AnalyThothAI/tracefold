@@ -1,20 +1,9 @@
-"""The operator-facing ReviewDesk: human review of what News actually sent (#112, #706).
-
-Callers see virtual review tasks, evidence views, and append-only receipts. They do not know how Events,
-verdicts, delivery truth, sampling strata, or accepted corrections are joined. Ordinary Event tasks are
-deterministic and content-addressed; opening a queue never writes. A task's reader receipt is the Event's
-earliest sent News intent, a legacy `first` card or an `update`.
-
-Since #706 a review states no taxonomy and there is no candidate, pairwise or release plane to review.
-The task source is still `news_review_task_source_v1`, which pairs each Event with its legacy model verdict,
-so only Events that carry one are offered; the `news_review_v8` row contract it writes under still names
-the two retired taxonomy keys, and `_V8_NO_TAXONOMY` states them as absent.
-"""
+"""ReviewDesk for immutable News notification decisions and historical Event reviews."""
 
 from __future__ import annotations
 
 import base64
-import copy
+import binascii
 import difflib
 import hashlib
 import json
@@ -130,20 +119,6 @@ _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
     "why_support": "triage_prompt",
     "why_value": "triage_prompt",
 }
-# The `news_review_v8` row contract (the database CHECK) requires both keys on every rubric payload. #706
-# deleted the taxonomy a reviewer could state, so every new row states it as absent and human-authored.
-_V8_NO_TAXONOMY: Final[dict[str, Any]] = {
-    "taxonomy": None,
-    "taxonomy_review": {
-        "label_source": "human",
-        "draft_author": "",
-        "review_role": "primary",
-        "adjudicates_review_id": "",
-        "draft_taxonomy": None,
-    },
-}
-
-
 # The card dimensions an explanation block is evidence about. It is supervision for the copy, so a
 # submission that carries one without judging any copy dimension is describing nothing.
 EXPLANATION_DIMENSIONS: Final[frozenset[str]] = frozenset(
@@ -407,6 +382,15 @@ class EventRubricSubmission(BaseModel):
         return self
 
 
+class DecisionFeedbackSubmission(BaseModel):
+    """A reviewer labels the usefulness of one claim at the frozen decision input."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["decision_feedback"] = "decision_feedback"
+    should_push: Literal["should_push", "should_hold", "uncertain"]
+    note: str = Field(default="", max_length=2_000)
+
+
 class ExternalMissSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -415,10 +399,12 @@ class ExternalMissSubmission(BaseModel):
     title: str = Field(min_length=1, max_length=1_000)
     body: str = Field(default="", max_length=REVIEW_BODY_TEXT_MAX)
     occurred_at_ms: int = Field(ge=0)
-    rubric: EventRubricSubmission
+    feedback: DecisionFeedbackSubmission
 
 
-ReviewSubmission = EventRubricSubmission | ExternalMissSubmission
+DECISION_REVIEW_VERSION: Final = "news_attention_review_v1"
+DECISION_READER_CONTRACT_VERSION: Final = "reader_attention_v1"
+ReviewSubmission = EventRubricSubmission | ExternalMissSubmission | DecisionFeedbackSubmission
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,6 +517,78 @@ def _active_agent_statement() -> ReviewReadStatement:
     )
 
 
+def _decision_task_ref(row: Mapping[str, Any]) -> TaskRef:
+    task_id = f"dec.{row['decision_ref']}.{row['claim_ref']}"
+    return TaskRef(
+        task_id=task_id,
+        task_version=_sha(
+            {
+                "contract": DECISION_REVIEW_VERSION,
+                "decision_ref": row["decision_ref"],
+                "claim_ref": row["claim_ref"],
+                "input_snapshot": row["input_snapshot"],
+                "claim_decision": row["claim_decision"],
+            }
+        ),
+    )
+
+
+def _parse_decision_task_id(value: str) -> tuple[str, str]:
+    parts = value.split(".")
+    if (
+        len(parts) != 3
+        or parts[0] != "dec"
+        or not parts[1].startswith("notification_decision:")
+        or not parts[2].startswith("cl:")
+    ):
+        raise ValueError("news_review_task_id_invalid")
+    return parts[1], parts[2]
+
+
+def _decision_task_public(row: Mapping[str, Any], accepted: Mapping[str, Any] | None) -> dict[str, Any]:
+    ref = _decision_task_ref(row)
+    plan = dict(row["plan"])
+    claim = dict(row["claim"])
+    decision = dict(row["claim_decision"])
+    stratum = (
+        "attention_unavailable"
+        if plan.get("assessment_status") == "unavailable"
+        else "feed_only"
+        if decision.get("reason") == "editor_feed_only"
+        else "key"
+        if decision.get("reason") == "editor_key"
+        else "notify"
+        if decision.get("decision") == "notify"
+        else "not_notified"
+    )
+    return {
+        "task_id": ref.task_id,
+        "task_version": ref.task_version,
+        "mode": "decision",
+        "event_id": row["event_id"],
+        "update_ref": row["update_ref"],
+        "decision_ref": row["decision_ref"],
+        "claim_ref": row["claim_ref"],
+        "opened_at_ms": row["created_at_ms"],
+        "headline": claim.get("statement") or "",
+        "final_decision": decision.get("decision"),
+        "reason": decision.get("reason"),
+        "reason_zh": decision.get("reason_zh"),
+        "assessment_status": plan.get("assessment_status"),
+        "assessment_error_code": plan.get("assessment_error_code"),
+        "reader_receipt": {
+            "state": row.get("delivery_state") or row.get("queue_state"),
+            "body": row.get("delivery_body"),
+            "payload_sha256": row.get("delivery_sha256"),
+            "settled_at_ms": row.get("settled_at_ms"),
+            "error_code": row.get("delivery_error_code"),
+        },
+        "selection": {"stratum": stratum, "selection_version": "news_attention_selection_v1"},
+        "review_status": "accepted" if accepted is not None else "pending",
+        "accepted_review": None if accepted is None else dict(accepted),
+    }
+
+
 class ReviewDesk:
     """One narrow interface for HTTP, CLI, dataset freeze, and tests."""
 
@@ -541,13 +599,38 @@ class ReviewDesk:
     def open(self, query: DeskQuery, *, principal: Principal) -> dict[str, Any]:
         self._require_principal(principal)
         if query.view == "queue":
+            if not query.task.startswith("evt."):
+                return self._open_decision_queue(query)
             return self._open_queue(query)
         if query.view == "coverage":
-            return self._coverage(query)
+            return self._decision_coverage(query)
         return self._market(query)
 
     def evidence(self, task: TaskRef, *, principal: Principal, source_only: bool = False) -> dict[str, Any]:
         self._require_principal(principal)
+        if task.task_id.startswith("dec."):
+            decision_ref, claim_ref = _parse_decision_task_id(task.task_id)
+            row = self._decision_row(decision_ref, claim_ref)
+            if row is None:
+                raise ValueError("news_review_task_not_found")
+            if _decision_task_ref(row).task_version != task.task_version:
+                raise ValueError("news_review_task_version_conflict")
+            snapshot = dict(row["input_snapshot"])
+            if source_only:
+                payload = {
+                    "schema": "tracefold.news.review_decision_source_only.v1",
+                    "task": task.model_dump(mode="json"),
+                    "claim": row["claim"],
+                    "evidence": snapshot.get("update", {}).get("evidence", []),
+                }
+                return {**payload, "projection_sha256": canonical_sha(payload)}
+            accepted = self._decision_feedback(decision_ref, claim_ref)
+            return {
+                "task": _decision_task_public(row, accepted),
+                "evidence": snapshot,
+                "agent": {"decision": row["claim_decision"], "assessment": row["plan"]},
+                "disclosure": {"outcome_revealed": True, "pairing": "unpaired", "dataset_role": "discovery"},
+            }
         if task.task_id.startswith("evt."):
             event_id, evidence_version = _parse_event_task_id(task.task_id)
             virtual = self._event_task(event_id, evidence_version=evidence_version)
@@ -555,12 +638,12 @@ class ReviewDesk:
                 raise ValueError("news_review_task_not_found")
             if virtual.task_version != task.task_version:
                 raise ValueError("news_review_task_version_conflict")
-            row = virtual.row
+            legacy_row = virtual.row
             accepted = self._latest_accepted(virtual)
             if source_only:
-                return source_only_event_projection(row)
+                return source_only_event_projection(legacy_row)
             reactions = PriceRepository(self._conn).event_reactions(event_id)
-            trace = dict(row.get("trace") or {})
+            trace = dict(legacy_row.get("trace") or {})
             return {
                 "task": _task_public(virtual, accepted=accepted),
                 "disclosure": {
@@ -569,15 +652,15 @@ class ReviewDesk:
                     "dataset_role": "discovery",
                     "market_revealed": accepted is not None,
                 },
-                "evidence": row["evidence_snapshot"],
+                "evidence": legacy_row["evidence_snapshot"],
                 "agent": {
-                    "verdict": row.get("verdict"),
-                    "final_decision": row.get("final_decision"),
-                    "override_rule": row.get("override_rule"),
-                    "throttled_by": row.get("throttled_by"),
-                    "degraded": bool(row.get("degraded")),
-                    "cohort": _cohort(row),
-                    "agent_cohort": _agent_identity(row),
+                    "verdict": legacy_row.get("verdict"),
+                    "final_decision": legacy_row.get("final_decision"),
+                    "override_rule": legacy_row.get("override_rule"),
+                    "throttled_by": legacy_row.get("throttled_by"),
+                    "degraded": bool(legacy_row.get("degraded")),
+                    "cohort": _cohort(legacy_row),
+                    "agent_cohort": _agent_identity(legacy_row),
                     "trace": {
                         "input_sha256": trace.get("input_sha256"),
                         "input_text": trace.get("input_text"),
@@ -586,18 +669,18 @@ class ReviewDesk:
                         "policy": trace.get("policy") or {},
                         "agent_assignment": trace.get("agent_assignment") or {},
                     },
-                    "verifier_flags": _verifier_flags(row),
+                    "verifier_flags": _verifier_flags(legacy_row),
                 },
-                "reader_receipt": _receipt_public(row),
+                "reader_receipt": _receipt_public(legacy_row),
                 "market_reactions": reactions if accepted is not None else [],
                 "accepted_review": accepted,
-                "duplicate_hints": self._duplicate_hints(row),
-                "rubric": _rubric_contract(row),
+                "duplicate_hints": self._duplicate_hints(legacy_row),
+                "rubric": _rubric_contract(legacy_row),
                 "versions": {
                     "rubric": REVIEW_RUBRIC_VERSION,
                     "reader_contract": READER_CONTRACT_VERSION,
                     "reader_contract_sha256": READER_CONTRACT_SHA256,
-                    "evidence_sha256": row["evidence_sha256"],
+                    "evidence_sha256": legacy_row["evidence_sha256"],
                 },
             }
         raise ValueError("news_review_task_kind_unsupported")
@@ -658,9 +741,10 @@ class ReviewDesk:
                 "submission": submission.model_dump(mode="json"),
             }
         )
-        existing = self._idempotent_receipt(principal.subject, key, request_sha=request_sha)
-        if existing is not None:
-            return existing
+        if task is not None and task.task_id.startswith("dec."):
+            if not isinstance(submission, DecisionFeedbackSubmission):
+                raise ValueError("news_review_submission_kind_mismatch")
+            return self._submit_decision(task, submission, principal=principal, key=key, request_sha=request_sha)
         if isinstance(submission, ExternalMissSubmission):
             if task is not None:
                 raise ValueError("news_review_external_miss_task_not_allowed")
@@ -672,15 +756,192 @@ class ReviewDesk:
             )
         if task is None:
             raise ValueError("news_review_task_required")
-        if task.task_id.startswith("evt.") and isinstance(submission, EventRubricSubmission):
-            return self._submit_event(
-                task,
-                submission,
-                principal=principal,
-                idempotency_key=key,
-                idempotency_request_sha=request_sha,
-            )
+        if task.task_id.startswith("evt."):
+            raise ValueError("news_review_legacy_task_read_only")
         raise ValueError("news_review_submission_kind_mismatch")
+
+    def _decision_row(self, decision_ref: str, claim_ref: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """SELECT * FROM news_notification_review_tasks_v1
+                WHERE decision_ref=%s AND claim_ref=%s AND origin='editorial_v1'""",
+            (decision_ref, claim_ref),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def _decision_feedback(self, decision_ref: str, claim_ref: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """SELECT review_id,reviewer,should_push,note,created_at_ms
+                 FROM news_notification_feedback
+                WHERE decision_ref=%s AND claim_ref=%s
+                ORDER BY created_at_ms DESC,review_id DESC LIMIT 1""",
+            (decision_ref, claim_ref),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def _open_decision_queue(self, query: DeskQuery) -> dict[str, Any]:
+        if query.task:
+            decision_ref, claim_ref = _parse_decision_task_id(query.task)
+            row = self._decision_row(decision_ref, claim_ref)
+            rows = [] if row is None else [row]
+        else:
+            filters = ["origin='editorial_v1'", "created_at_ms >= %s", "created_at_ms < %s"]
+            params: list[Any] = [self._now_ms - query.hours * 3_600_000, self._now_ms]
+            if query.event:
+                filters.append("event_id=%s")
+                params.append(query.event)
+            if query.cohort:
+                filters.append("plan->>'assessment_identity'=%s")
+                params.append(query.cohort)
+            if query.cursor:
+                try:
+                    cursor = json.loads(base64.urlsafe_b64decode(query.cursor.encode()))
+                    stamp, decision_ref, claim_ref = cursor
+                    filters.append("(created_at_ms,decision_ref,claim_ref)<(%s,%s,%s)")
+                    params.extend((int(stamp), str(decision_ref), str(claim_ref)))
+                except (ValueError, TypeError, IndexError, binascii.Error) as exc:
+                    raise ValueError("news_review_cursor_invalid") from exc
+            params.append(min(2_000, query.limit * 20 + 20))
+            rows = [
+                dict(row)
+                for row in self._conn.execute(
+                    f"""SELECT * FROM news_notification_review_tasks_v1 WHERE {" AND ".join(filters)}
+                        ORDER BY created_at_ms DESC,decision_ref DESC,claim_ref DESC LIMIT %s""",  # noqa: S608
+                    tuple(params),
+                ).fetchall()
+            ]
+        selected = []
+        for row in rows:
+            accepted = self._decision_feedback(str(row["decision_ref"]), str(row["claim_ref"]))
+            task = _decision_task_public(row, accepted)
+            if query.stratum and task["selection"]["stratum"] != query.stratum:
+                continue
+            if query.status == "pending" and accepted is not None:
+                continue
+            if query.status == "accepted" and accepted is None:
+                continue
+            selected.append(task)
+            if len(selected) > query.limit:
+                break
+        page = selected[: query.limit]
+        cursor = None
+        if len(selected) > query.limit and page:
+            last = page[-1]
+            cursor = base64.urlsafe_b64encode(
+                json.dumps([last["opened_at_ms"], last["decision_ref"], last["claim_ref"]]).encode()
+            ).decode()
+        counts: dict[str, int] = {}
+        for task in page:
+            name = task["selection"]["stratum"]
+            counts[name] = counts.get(name, 0) + 1
+        return {
+            "view": "queue",
+            "status": "ready" if page else "insufficient_evidence",
+            "reader_contract_version": DECISION_READER_CONTRACT_VERSION,
+            "rubric_version": DECISION_REVIEW_VERSION,
+            "tasks": page,
+            "next_cursor": cursor,
+            "counts": counts,
+        }
+
+    def _decision_coverage(self, query: DeskQuery) -> dict[str, Any]:
+        row = self._conn.execute(
+            """SELECT count(*) AS claims,
+                      count(*) FILTER (WHERE task.claim_decision->>'decision'='notify') AS selected,
+                      count(*) FILTER (WHERE task.claim_decision->>'reason'='editor_feed_only') AS feed_only,
+                      count(*) FILTER (WHERE task.plan->>'assessment_status'='unavailable') AS attention_unavailable,
+                      count(*) FILTER (WHERE task.delivery_state='sent') AS sent,
+                      count(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM news_notification_feedback f
+                         WHERE f.decision_ref=task.decision_ref AND f.claim_ref=task.claim_ref
+                      )) AS reviewed
+                 FROM news_notification_review_tasks_v1 task
+                WHERE task.origin='editorial_v1' AND task.created_at_ms >= %s AND task.created_at_ms < %s""",
+            (self._now_ms - query.hours * 3_600_000, self._now_ms),
+        ).fetchone()
+        counts = {
+            name: int(row[name])
+            for name in ("claims", "selected", "feed_only", "attention_unavailable", "sent", "reviewed")
+        }
+        return {
+            "view": "coverage",
+            "status": "ready",
+            "counts": counts,
+            "rubric_version": DECISION_REVIEW_VERSION,
+            "reader_contract_version": DECISION_READER_CONTRACT_VERSION,
+        }
+
+    def _submit_decision(
+        self,
+        task: TaskRef,
+        submission: DecisionFeedbackSubmission,
+        *,
+        principal: Principal,
+        key: str,
+        request_sha: str,
+    ) -> dict[str, Any]:
+        existing = self._conn.execute(
+            """SELECT review_id,request_sha FROM news_notification_feedback
+                WHERE reviewer=%s AND idempotency_key=%s""",
+            (principal.subject, key),
+        ).fetchone()
+        if existing is not None:
+            if existing["request_sha"] != request_sha:
+                raise ValueError("news_review_idempotency_conflict")
+            return {
+                "idempotent": True,
+                "receipt": {
+                    "review_id": existing["review_id"],
+                    "acceptance_id": existing["review_id"],
+                    "task_id": task.task_id,
+                    "task_version": task.task_version,
+                },
+                "next_task": None,
+                "updated_queue_counts": {},
+            }
+        decision_ref, claim_ref = _parse_decision_task_id(task.task_id)
+        row = self._decision_row(decision_ref, claim_ref)
+        if row is None:
+            raise ValueError("news_review_task_not_found")
+        if _decision_task_ref(row).task_version != task.task_version:
+            raise ValueError("news_review_task_version_conflict")
+        review_id = _sha(
+            {
+                "decision_ref": decision_ref,
+                "claim_ref": claim_ref,
+                "reviewer": principal.subject,
+                "idempotency_key": key,
+                "request_sha": request_sha,
+            }
+        )
+        self._conn.execute(
+            """INSERT INTO news_notification_feedback
+                (review_id,decision_ref,claim_ref,task_version,reviewer,idempotency_key,
+                 request_sha,should_push,note,created_at_ms)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                review_id,
+                decision_ref,
+                claim_ref,
+                task.task_version,
+                principal.subject,
+                key,
+                request_sha,
+                submission.should_push,
+                submission.note,
+                self._db_now_ms(),
+            ),
+        )
+        return {
+            "idempotent": False,
+            "receipt": {
+                "review_id": review_id,
+                "acceptance_id": review_id,
+                "task_id": task.task_id,
+                "task_version": task.task_version,
+            },
+            "next_task": None,
+            "updated_queue_counts": {},
+        }
 
     def _open_queue(self, query: DeskQuery) -> dict[str, Any]:
         if query.task:
@@ -897,104 +1158,6 @@ class ReviewDesk:
         row = self._conn.execute(statement.sql, statement.params).fetchone()
         return _virtual_task(row) if row is not None else None
 
-    def _submit_event(
-        self,
-        task_ref: TaskRef,
-        submission: EventRubricSubmission,
-        *,
-        principal: Principal,
-        idempotency_key: str,
-        idempotency_request_sha: str,
-    ) -> dict[str, Any]:
-        event_id, evidence_version = _parse_event_task_id(task_ref.task_id)
-        task = self._event_task(event_id, evidence_version=evidence_version)
-        if task is None:
-            raise ValueError("news_review_task_not_found")
-        if task.task_version != task_ref.task_version:
-            raise ValueError("news_review_task_version_conflict")
-        previous = self._latest_accepted(task)
-        _require_grounded_source_spans(submission, _evidence_text(dict(task.row.get("evidence_snapshot") or {})))
-        owner = submission.first_bad_owner or _derive_owner(submission)
-        created_at = self._db_now_ms()
-        payload = {**submission.model_dump(mode="json"), **copy.deepcopy(_V8_NO_TAXONOMY)}
-        payload["reviewed_source"] = {
-            **dict(task.row),
-            "verdict_evidence_version": dict(task.row.get("trace") or {}).get("evidence_version"),
-            "focus_fact_id": dict(dict(task.row.get("evidence_snapshot") or {}).get("focus_fact") or {}).get("fact_id"),
-        }
-        review_id = _sha(
-            {
-                "kind": "judgment",
-                "task_id": task.task_id,
-                "task_version": task.task_version,
-                "reviewer": principal.subject,
-                "idempotency_key": idempotency_key,
-                "payload": payload,
-            }
-        )
-        accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
-        # The sampling reason never decides acceptance eligibility (#504 D7): a `high_reaction` task was chosen
-        # because of a post-event price move, but the reviewer labels `should_push` from the evidence alone, so
-        # its accepted review is corpus truth like any other stratum's.
-        #
-        # Nor does the running bundle (#651 §9). Eligibility is a property of the *evidence*: a frozen,
-        # release-eligible observed snapshot is replayable whichever Program answered it, and which arm
-        # happened to be deployed that hour says nothing about whether the reviewer read the same words.
-        # The arm is recorded as provenance on the frozen case instead.
-        release_eligible = bool(task.row.get("evidence_release_eligible"))
-        self._conn.execute(
-            """
-            INSERT INTO news_reviews (
-              review_id, idempotency_key, idempotency_request_sha, review_kind, subject_kind, task_id, task_version,
-              event_id, evidence_version, rubric_version, reader_contract_version, reviewer,
-              should_push, dimensions, novelty, first_bad_owner, evidence_refs,
-              expected_correction, note, selection, payload, supersedes_review_id,
-              release_eligible, created_at_ms
-            ) VALUES (
-              %s, %s, %s, 'judgment', 'event', %s, %s, %s, %s, %s, %s, %s,
-              %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s
-            )
-            """,
-            (
-                review_id,
-                idempotency_key,
-                idempotency_request_sha,
-                task.task_id,
-                task.task_version,
-                event_id,
-                evidence_version,
-                REVIEW_RUBRIC_VERSION,
-                READER_CONTRACT_VERSION,
-                principal.subject,
-                submission.should_push,
-                _json(payload["dimensions"]),
-                _json({} if submission.novelty is None else submission.novelty.model_dump(mode="json")),
-                owner,
-                _json(submission.evidence_refs),
-                submission.expected_correction,
-                submission.note,
-                _json(task.selection),
-                _json(payload),
-                previous["review_id"] if previous else None,
-                release_eligible,
-                created_at,
-            ),
-        )
-        self._append_acceptance(
-            acceptance_id=accepted_id,
-            judgment_id=review_id,
-            task_id=task.task_id,
-            task_version=task.task_version,
-            subject_kind="event",
-            event_id=event_id,
-            evidence_version=evidence_version,
-            external_snapshot_id=None,
-            principal=principal,
-            created_at_ms=created_at,
-            release_eligible=release_eligible,
-        )
-        return self._submission_receipt(review_id, accepted_id, task=task, idempotent=False)
-
     def _submit_external(
         self,
         submission: ExternalMissSubmission,
@@ -1003,6 +1166,27 @@ class ReviewDesk:
         idempotency_key: str,
         idempotency_request_sha: str,
     ) -> dict[str, Any]:
+        existing = self._conn.execute(
+            """SELECT review_id,snapshot_id,created_at_ms,request_sha
+                 FROM news_notification_external_feedback
+                WHERE reviewer=%s AND idempotency_key=%s""",
+            (principal.subject, idempotency_key),
+        ).fetchone()
+        if existing is not None:
+            if existing["request_sha"] != idempotency_request_sha:
+                raise ValueError("news_review_idempotency_conflict")
+            return {
+                "idempotent": True,
+                "receipt": {
+                    "review_id": existing["review_id"],
+                    "acceptance_id": existing["review_id"],
+                    "external_snapshot_id": existing["snapshot_id"],
+                    "task_id": f"external.{existing['snapshot_id']}",
+                    "created_at_ms": existing["created_at_ms"],
+                },
+                "next_task": None,
+                "updated_queue_counts": {},
+            }
         created_at = self._db_now_ms()
         if submission.occurred_at_ms > created_at:
             raise ValueError("news_review_external_miss_future")
@@ -1021,32 +1205,16 @@ class ReviewDesk:
         evidence_sha = _sha(evidence)
         snapshot_id = _sha({"evidence_sha256": evidence_sha, "creator": principal.subject})
         task_id = f"external.{snapshot_id}"
-        task_version = _sha(
-            {
-                "task": REVIEW_TASK_VERSION,
-                "snapshot_id": snapshot_id,
-                "rubric": REVIEW_RUBRIC_VERSION,
-                "reader_contract": READER_CONTRACT_VERSION,
-            }
-        )
-        rubric = submission.rubric
-        _require_grounded_source_spans(rubric, _evidence_text({"title": submission.title, "body": submission.body}))
-        owner = rubric.first_bad_owner or _derive_owner(rubric, external=True)
-        payload = {**rubric.model_dump(mode="json"), **copy.deepcopy(_V8_NO_TAXONOMY)}
+        feedback = submission.feedback
         review_id = _sha(
             {
-                "kind": "external_miss_judgment",
+                "kind": "notification_external_feedback",
                 "snapshot_id": snapshot_id,
                 "reviewer": principal.subject,
                 "idempotency_key": idempotency_key,
-                "payload": payload,
+                "request_sha": idempotency_request_sha,
             }
         )
-        accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
-        # The operator's own snapshot is the evidence, and it is written in this transaction, so it is
-        # eligible by construction. It used to be gated on the running epoch (#651 §9 removes that): a
-        # miss the system never saw is not evidence about a bundle in the first place.
-        release_eligible = True
         self._conn.execute(
             """
             INSERT INTO news_external_miss_snapshots (
@@ -1068,124 +1236,34 @@ class ReviewDesk:
                 created_at,
             ),
         )
-        selection = {"stratum": "eventless_miss", "sampling_probability": 1.0, "reason": "operator_created"}
         self._conn.execute(
             """
-            INSERT INTO news_reviews (
-              review_id, idempotency_key, idempotency_request_sha, review_kind, subject_kind, task_id, task_version,
-              external_snapshot_id, rubric_version, reader_contract_version, reviewer,
-              should_push, dimensions, novelty, first_bad_owner, evidence_refs,
-              expected_correction, note, selection, payload, release_eligible, created_at_ms
-            ) VALUES (
-              %s, %s, %s, 'judgment', 'external_miss', %s, %s, %s, %s, %s, %s,
-              %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s
-            )
+            INSERT INTO news_notification_external_feedback
+              (review_id,snapshot_id,reviewer,idempotency_key,request_sha,should_push,note,created_at_ms)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 review_id,
+                snapshot_id,
+                principal.subject,
                 idempotency_key,
                 idempotency_request_sha,
-                task_id,
-                task_version,
-                snapshot_id,
-                REVIEW_RUBRIC_VERSION,
-                READER_CONTRACT_VERSION,
-                principal.subject,
-                rubric.should_push,
-                _json(rubric.dimensions),
-                _json({} if rubric.novelty is None else rubric.novelty.model_dump(mode="json")),
-                owner,
-                _json(rubric.evidence_refs),
-                rubric.expected_correction,
-                rubric.note,
-                _json(selection),
-                _json(payload),
-                release_eligible,
+                feedback.should_push,
+                feedback.note,
                 created_at,
             ),
-        )
-        self._append_acceptance(
-            acceptance_id=accepted_id,
-            judgment_id=review_id,
-            task_id=task_id,
-            task_version=task_version,
-            subject_kind="external_miss",
-            event_id=None,
-            evidence_version=None,
-            external_snapshot_id=snapshot_id,
-            principal=principal,
-            created_at_ms=created_at,
-            release_eligible=release_eligible,
         )
         return {
             "idempotent": False,
             "receipt": {
                 "review_id": review_id,
-                "acceptance_id": accepted_id,
+                "acceptance_id": review_id,
                 "external_snapshot_id": snapshot_id,
                 "task_id": task_id,
-                "task_version": task_version,
                 "created_at_ms": created_at,
             },
             "next_task": None,
             "updated_queue_counts": {},
-        }
-
-    def _append_acceptance(
-        self,
-        *,
-        acceptance_id: str,
-        judgment_id: str,
-        task_id: str,
-        task_version: str,
-        subject_kind: str,
-        event_id: str | None,
-        evidence_version: int | None,
-        external_snapshot_id: str | None,
-        principal: Principal,
-        created_at_ms: int,
-        release_eligible: bool,
-    ) -> None:
-        self._conn.execute(
-            """
-            INSERT INTO news_reviews (
-              review_id, review_kind, subject_kind, task_id, task_version, event_id, evidence_version,
-              external_snapshot_id, rubric_version, reader_contract_version, reviewer,
-              accepts_review_id, release_eligible, created_at_ms
-            ) VALUES (%s, 'acceptance', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                acceptance_id,
-                subject_kind,
-                task_id,
-                task_version,
-                event_id,
-                evidence_version,
-                external_snapshot_id,
-                REVIEW_RUBRIC_VERSION,
-                READER_CONTRACT_VERSION,
-                principal.subject,
-                judgment_id,
-                release_eligible,
-                created_at_ms,
-            ),
-        )
-
-    def _submission_receipt(
-        self, review_id: str, acceptance_id: str, *, task: _VirtualTask, idempotent: bool
-    ) -> dict[str, Any]:
-        queue = self._open_queue(DeskQuery(status="pending", limit=1))
-        tasks = list(queue.get("tasks") or [])
-        return {
-            "idempotent": idempotent,
-            "receipt": {
-                "review_id": review_id,
-                "acceptance_id": acceptance_id,
-                "task_id": task.task_id,
-                "task_version": task.task_version,
-            },
-            "next_task": tasks[0] if tasks else None,
-            "updated_queue_counts": dict(queue.get("counts") or {}),
         }
 
     def _latest_accepted(self, task: _VirtualTask) -> dict[str, Any] | None:
@@ -1227,33 +1305,6 @@ class ReviewDesk:
             return None
         stable_sha = str(row.get("stable_sha") or "")
         return stable_sha if _is_sha256(stable_sha) else None
-
-    def _idempotent_receipt(self, reviewer: str, idempotency_key: str, *, request_sha: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM news_review_records_v1 WHERE reviewer = %s AND idempotency_key = %s",
-            (reviewer, idempotency_key),
-        ).fetchone()
-        if row is None:
-            return None
-        if str(row.get("idempotency_request_sha") or "") != request_sha:
-            raise ValueError("news_review_idempotency_conflict")
-        acceptance = self._conn.execute(
-            "SELECT review_id FROM news_review_records_v1 WHERE review_kind = 'acceptance' AND accepts_review_id = %s",
-            (row["review_id"],),
-        ).fetchone()
-        return {
-            "idempotent": True,
-            "receipt": {
-                "review_id": row["review_id"],
-                "acceptance_id": acceptance["review_id"] if acceptance else None,
-                "task_id": row["task_id"],
-                "task_version": row["task_version"],
-                "external_snapshot_id": row.get("external_snapshot_id"),
-                "created_at_ms": row["created_at_ms"],
-            },
-            "next_task": None,
-            "updated_queue_counts": {},
-        }
 
     def _db_now_ms(self) -> int:
         row = self._conn.execute(
@@ -1767,6 +1818,7 @@ __all__ = [
     "READER_CONTRACT_TEXT",
     "READER_CONTRACT_VERSION",
     "REVIEW_RUBRIC_VERSION",
+    "DecisionFeedbackSubmission",
     "DeskQuery",
     "EventRubricSubmission",
     "ExplanationCorrectionV1",

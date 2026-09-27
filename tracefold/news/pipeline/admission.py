@@ -1125,7 +1125,12 @@ def _member_result(
             or member_score >= _STRONG_MEMBER_SCORE
             or (bool(reporting_origin) and reporting_origin != str(row["leader_origin"] or ""))
         )
-    if row and admission not in _REGATE_ADMISSIONS and gate.admission == "candidate" and stronger:
+    if (
+        row
+        and admission not in _REGATE_ADMISSIONS
+        and gate.admission == "candidate"
+        and (stronger or admission == "suppressed_pr_template")
+    ):
         repos.news.upgrade_event_admission(
             event_id=event_id,
             admission="candidate",

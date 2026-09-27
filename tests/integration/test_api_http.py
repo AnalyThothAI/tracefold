@@ -16,6 +16,7 @@ from tests.support.news_legacy import (
     legacy_editorial,
     legacy_taxonomy,
 )
+from tests.support.news_legacy_storage import legacy_news
 from tracefold.app import serve_database as serve_database_module
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
@@ -459,7 +460,7 @@ def _write_model_verdict(
             "told_count": 0,
         }
         with repos.transaction():
-            assert repos.news.insert_verdict(
+            assert legacy_news(repos.news).insert_verdict(
                 event_id=event_id,
                 stage="triage",
                 policy_version=policy_version,

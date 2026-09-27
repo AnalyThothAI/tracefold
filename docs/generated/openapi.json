@@ -1841,16 +1841,13 @@
           },
           "reason": {
             "enum": [
-              "watchlist_hit",
+              "editor_notify",
+              "editor_key",
+              "editor_feed_only",
+              "attention_unavailable_default_notify",
+              "protected_listing",
               "large_daily_move",
-              "actionable_content",
               "retired",
-              "mode_commentary",
-              "mode_promotion",
-              "mode_forecast",
-              "mode_unknown",
-              "content_schedule",
-              "price_report_without_basis",
               "stale_source",
               "covered_by_sent_receipt",
               "send_outcome_unresolved"
@@ -5466,12 +5463,44 @@
             "title": "Action Zh",
             "type": "string"
           },
+          "assessment_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assessment Error Code"
+          },
+          "assessment_status": {
+            "default": "skipped",
+            "enum": [
+              "available",
+              "unavailable",
+              "skipped"
+            ],
+            "title": "Assessment Status",
+            "type": "string"
+          },
           "claim_decisions": {
             "items": {
               "$ref": "#/components/schemas/NewsClaimDecisionData"
             },
             "title": "Claim Decisions",
             "type": "array"
+          },
+          "decision_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Ref"
           },
           "key": {
             "default": false,
