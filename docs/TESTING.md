@@ -1,134 +1,108 @@
-# Testing and CI implementation
+# 测试、CI 与验证证据
 
-[Development](DEVELOPMENT.md#risk-tiered-local-verification) owns local check
-selection. This document describes current commands, resources, and remote evidence;
-it does not add another approval process or require every local task to run every lane.
+[手册](README.md) · [开发验证选择](DEVELOPMENT.md#risk-tiered-local-verification) · [生成参考](generated/README.md)
 
-## Fixed full CI implementation
+本页描述当前测试实现、所需资源和证据范围，不新增一套审批流程。**测试命令成功、远程必需 CI 通过、部署健康和真实业务正确，是不同结论。**
 
-[The workflow](../.github/workflows/ci.yml) runs the same required plan for PRs targeting
-`main`, main pushes, release events, and manual dispatches. It currently has no path,
-draft, or commit-message exclusion. Pull-request concurrency cancels older runs for
-the same PR. A cancelled run is not successful evidence.
+<a id="fixed-full-ci-implementation"></a>
+## 1. 当前固定 CI 分工
 
-| Job | Make target | Resources | Native results |
+[ci.yml](../.github/workflows/ci.yml)对面向 main 的 PR、main push、release 和手动触发使用当前固定计划，没有按路径、draft 或提交文字排除。PR 并发规则会取消同一 PR 的旧运行；取消不是成功证据。
+
+| Job | Make target | 资源 | 主要原生结果 |
 | --- | --- | --- | --- |
 | `quality-static` | `ci-quality-static` | Python | `junit-quality-static.xml` |
 | `python-hermetic` | `ci-python-hermetic` | Python | `junit-python-hermetic.xml` |
-| `postgres-behavior` | `ci-postgres-behavior` | PostgreSQL, RabbitMQ | `junit-postgres-behavior.xml`, `junit-migration.xml` |
-| `runtime-broker` | `ci-runtime-broker` | PostgreSQL, RabbitMQ, disposable restartable broker | `junit-runtime-broker.xml` |
-| `deploy-e2e` | `ci-deploy-e2e` | PostgreSQL, Node, Docker/Testcontainers | `junit-deploy-e2e.xml` |
-| `frontend` | `ci-frontend` | PostgreSQL, RabbitMQ, Node, Chromium | `junit-frontend-python.xml`, `junit-test-integrity.xml`, `vitest-architecture.json`, `vitest-unit.json`, `playwright-golden-paths.json`, `playwright.json` |
+| `postgres-behavior` | `ci-postgres-behavior` | PostgreSQL、RabbitMQ | `junit-postgres-behavior.xml`、`junit-migration.xml` |
+| `runtime-broker` | `ci-runtime-broker` | PostgreSQL、RabbitMQ、可重启的一次性 broker | `junit-runtime-broker.xml` |
+| `deploy-e2e` | `ci-deploy-e2e` | PostgreSQL、Node、Docker / Testcontainers | `junit-deploy-e2e.xml` |
+| `frontend` | `ci-frontend` | PostgreSQL、RabbitMQ、Node、Chromium | Python / harness JUnit、Vitest 与 Playwright JSON |
 
-`postgres-behavior` also walks migrations and checks the generated database schema
-against a scratch database. `frontend` includes external code generation, harness
-integrity checks, Vitest, the viewport interaction suite, and full-stack browser
-smoke. The [Makefile](../Makefile) owns exact selections and report names; use it
-rather than a historical node-count inventory when investigating coverage.
+`postgres-behavior` 包含迁移行走与隔离数据库 schema 文档校验；`frontend` 包含外部 codegen、harness 完整性、Vitest、视口交互和 full-stack browser smoke。具体 test selection 和报告名由 [Makefile](../Makefile)拥有，不在手册保留会漂移的测试数量表。
 
-Each job checks out `TESTED_SHA` (PR HEAD for a pull request), verifies that checkout,
-and installs locked dependencies as needed. Jobs have isolated resources. Required
-Python, Vitest, and Playwright runs emit native reports under `artifacts/test-results/`;
-`scripts/require_test_reports.py` rejects empty, missing, or non-green required results.
-Do not silently update snapshots or use focus, skips, expected failures, or retries
-to convert incomplete coverage into a successful required run.
+每个 job 检出并验证 `TESTED_SHA`，PR 使用其 HEAD，按锁文件安装需要的依赖并隔离资源。必需结果写入 `artifacts/test-results/`，由 [require_test_reports.py](../scripts/require_test_reports.py)拒绝缺失、空或不通过的结果。
 
-The `ci-gate` job succeeds only when every required job reports `success`. Repository
-rules are remote configuration, so inspect their current enforcement before an
-authorized merge instead of relying on a copied ruleset name, bypass list, or merge
-method in prose. `scripts/require_main_ci.py` separately checks successful main-push
-workflow evidence for the exact deployment SHA. PR-head results do not attest a
-later squash commit.
+`ci-gate` 需要所有必需 job success。仓库分支规则是远程设置，执行已授权合并时要核实其实际状态；不在文档复制某个会过期的规则名或绕过名单。部署前 [require_main_ci.py](../scripts/require_main_ci.py)另外验证精确 main push SHA，PR head 的绿灯不自动证明合并后的新 SHA。
 
-There is no required coverage-percentage gate. `make coverage` measures on demand;
-required lanes do not pay for a coverage tracer. Historical timing measurements,
-old job splits, and previous test counts remain in their Issues and workflow runs,
-not as present-tense inventories in this manual.
+当前没有必需的覆盖率百分比 gate；`make coverage` 按需测量，必需 lane 不额外承担 tracer 开销。历史运行时间与旧拆分保存在对应 Issue / run，不是当前容量承诺。
 
-## Local lane implementation
+<a id="local-lane-implementation"></a>
+## 2. 本地入口与证明范围
 
-Use focused pytest or frontend commands during development. The common entry points
-are available through `make help`:
-
-| Command | Scope |
+| 命令 | 主要覆盖 |
 | --- | --- |
-| `make check-static` | Static quality, pure generated/router drift, documentation file links, compilation. |
-| `make check` | Static checks plus the hermetic architecture/contract selection. |
-| `make test` / `make test-fast` | Broad hermetic Python regression; no real DB or broker. |
-| `make test-integration` | Real dependency integration, excluding separately selected slow/scheduled tests. |
-| `make test-deploy` | Deployment and operations lifecycle. |
-| `make test-e2e` | Running service boundary. |
-| `make test-golden` | Broker-driven Workers → PostgreSQL → HTTP path. |
-| `make test-browser-smoke` | Production backend/static/bootstrap path in Chromium. |
-| `make test-visual` | The viewport interaction lane also selected by CI. |
-| `make test-slow` | Explicit slow process and harness diagnostics. |
-| `make test-scheduled` | Production-duration diagnostics outside required merge evidence. |
-| `make test-ci` | All current fixed owners, serially, with reports and required isolated resources. |
-| `make coverage` | On-demand measurement of hermetic Python coverage. |
+| `make check-static` | 静态质量、纯生成 / router 漂移、文档链接、编译 |
+| `make check` | 静态检查与 hermetic 架构 / 契约选择 |
+| `make test` / `make test-fast` | 广泛的隔离 Python 回归，不连接真实 DB / broker |
+| `make test-integration` | 真实依赖的行为接缝，排除另行选择的慢 / 定时诊断 |
+| `make test-deploy` | 部署与运维生命周期 |
+| `make test-e2e` | 运行中服务边界 |
+| `make test-golden` | broker 驱动 Workers → PostgreSQL → HTTP |
+| `make test-browser-smoke` | 生产后端、静态资源、bootstrap 与 Chromium |
+| `make test-visual` | 当前 CI 也选择的视口交互测试 |
+| `make test-slow` | 明确的慢进程 / harness 诊断 |
+| `make test-scheduled` | 生产时长诊断，不属于必需合并证明 |
+| `make test-ci` | 串行执行当前固定分工，需要全部隔离资源与报告 |
+| `make coverage` | 按需 Python 覆盖率测量 |
 
-A successful local full preflight is useful evidence, not merge or deployment
-authorization. Select it according to the changed risk; do not run it after every
-edit or require it merely to open a PR. Do not rerun subsets of a successful superset
-on unchanged relevant inputs just to populate a checklist.
+开发中先运行改动相关的 pytest / 前端测试，再按共享影响扩展。不能仅从 `test-fast` 名字推断它等于完整 CI；本地完整 preflight 通过也不授权合并或部署。
 
-### Resource isolation
+## 3. 真实资源必须隔离
 
-PostgreSQL tests clone a migrated baseline into private test databases where
-appropriate; migration-history tests use a separate empty database. Broker tests have
-no default broker: on an operator host `127.0.0.1:5672` is the live deployment, so a run
-declares a disposable one with `TRACEFOLD_TEST_AMQP_URL`, plus
-`TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL` when it is not on the default port (the harness
-refuses to guess `15672` for another port). Broker restart tests additionally require
-`TRACEFOLD_TEST_RABBITMQ_CONTAINER`. A local disposable broker:
+PostgreSQL 行为测试按 harness 在迁移基线上克隆隔离数据库；迁移历史测试使用单独空库。显式配置 `TRACEFOLD_TEST_POSTGRES_DSN`，不要把生产 DSN 临时塞进测试变量来绕过资源缺失。
+
+RabbitMQ 测试没有默认 broker。运维主机上的 `127.0.0.1:5672` 可能就是线上部署，必须显式提供 `TRACEFOLD_TEST_AMQP_URL`，管理接口不是默认端口时还要提供 `TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL`；需要重启 broker 的测试另需 `TRACEFOLD_TEST_RABBITMQ_CONTAINER`。
+
+以下是**一次性测试资源示例**，先确认名称和端口未被其他任务使用：
 
 ```bash
-docker run -d --rm --name tracefold-test-rabbitmq -p 127.0.0.1:45672:5672 \
+docker run -d --rm --name tracefold-test-rabbitmq \
+  -p 127.0.0.1:45672:5672 -p 127.0.0.1:45673:15672 \
   -e RABBITMQ_DEFAULT_USER=tracefold -e RABBITMQ_DEFAULT_PASS=tracefold \
   rabbitmq:4.3.5-management-alpine
 export TRACEFOLD_TEST_AMQP_URL=amqp://tracefold:tracefold@127.0.0.1:45672/
-export TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL=http://$(docker inspect -f \
-  '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' tracefold-test-rabbitmq):15672
+export TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL=http://127.0.0.1:45673
 export TRACEFOLD_TEST_RABBITMQ_CONTAINER=tracefold-test-rabbitmq
 ```
 
-Without a declaration, broker tests skip locally. Required CI and full preflight
-treat missing required resources as failure, not a skip.
+先等该测试 broker 就绪，再运行相应测试；清理时只删除自己创建的资源。固定本次被测树和资源配置，不让并发任务共享会被迁移、清空或重启的同一个资源。
 
-Keep the tested local tree and resource configuration stable during a run. Do not
-share a destructive database or restartable broker between concurrent owners.
-A local environment without a resource can still run independent pure checks and
-prepare a PR, but cannot claim to have verified that resource's behavior.
+本地没有声明资源时，某些测试会跳过；必需 CI 与完整 preflight 把缺失必需资源视为失败。跳过不构成该接缝已验证的证明，但不影响继续运行其他纯检查。
 
-### Generated artifacts and documentation
-
-`make check-static` runs the CLI-help, RabbitMQ-definitions, and agent-router drift
-checks. The generated database schema requires PostgreSQL and is checked by its
-resource-owning CI job. OpenAPI and TypeScript checks also have their maintained
-contract/codegen owners; inspect the actual Make selections when changing them.
-
-For router/document edits, the pure starting point is:
+## 4. 文档与生成物检查
 
 ```bash
-python3 scripts/sync_agent_router.py --check
 python3 scripts/check_mandatory_docs_links.py
+python3 scripts/sync_agent_router.py --check
+uv run python scripts/regen_cli_help.py --check
 ```
 
-The documentation link script checks local file existence. It does not establish
-that every anchor, command, architectural claim, or backticked path is correct.
-Review those against their owning headings and implementation. The existing
-`tests/architecture/test_docs_surface.py` additionally checks router synchronization
-and the hermetic Make surfaces; do not add tests that freeze the wording or length
-of an agent instruction as a product invariant.
+链接检查包括本地文件、Markdown / 显式锚点、引用式链接和编码路径；它**不证明**远程网址可用、命令实际执行成功、架构语义准确、代码块闭合或图形布局美观。
 
-### Changing the test system
+[文档表面测试](../tests/architecture/test_docs_surface.py)检查共享入口同步与纯 Make 选择；[文档导航测试](../tests/architecture/test_documentation_navigation.py)检查嵌套文档、中文锚点、引用链接、模块入口以及从首页可达的手册。不要加入固定段落文字或文档行数的脆弱断言来代替行为检查。
 
-Improve a slow or redundant test at the risk mechanism it covers. A change to test
-selection, retry behavior, or required jobs must explain retained coverage and be
-validated at the affected harness boundary. The current fixed plan can be improved
-in an explicitly scoped change; this document does not make it immutable.
+### Mermaid 与 Markdown
 
-Libraries, coverage, mutation testing, or other diagnostic tools may be evaluated
-inside the current task when useful. They do not require an automatic separate
-Issue per detector, and their presence alone does not prove a production seam.
-Do not silently move a required risk into an optional diagnostic or weaken an
-acceptance test merely to obtain green CI.
+新增或修改图时，先核对节点是否实际存在、箭头的含义及事务边界，再提取 Mermaid 代码块进行解析和实际渲染。查看主要图的中文字体、节点裁切、连线交叉和适合阅读的尺寸；解析通过不等于图已可读。
+
+可以在独立临时工具目录使用 Mermaid CLI，不必为纯文档渲染向生产应用引入 npm 依赖或新文档站。图形工具输出作为检查证据；可编辑的 `.md` 中 Mermaid 仍是文档源。
+
+同时检查代码围栏是否闭合，避免一个旧 bash fence 让后半篇手册都显示成脚本。不要执行文档中标注为写操作、部署或账户操作的示例来“测试 Markdown”。
+
+### 数据库与 HTTP 生成物
+
+OpenAPI 与前端类型由实际 contract / codegen owner 验证。数据库 schema 生成需要**已迁移到正确 head 的隔离数据库**；不设置显式测试 DSN 时生成器可能读取 operator 配置，禁止用生产数据库完成文档更新。
+
+纯中文改写不更改生成 CLI、OpenAPI 或数据库字段；需要刷新时按[生成参考](generated/README.md)运行正确生成器。`make docs-generated` 包含真实数据库 introspection，不是无资源的 Markdown 格式化命令。
+
+## 5. 前端验证分层
+
+`npm run typecheck` 验证类型；`npm run lint` 包含 ESLint 和架构测试；`npm run test:unit` 覆盖纯模型、组件与路由；`npm run build:checked` 验证类型并构建。
+
+Mock API 浏览器场景证明交互逻辑，不证明真实服务 bootstrap、静态资源和数据库接缝；`npm run test:e2e:full-stack` 专门承担实际栈边界。视觉改动需查看加载、空数据、错误、窄屏、导航及控制台，不用一张正常首页截图替代全部验收。
+
+## 6. 修改测试体系与提交结果
+
+改善慢或冗余测试时，从它实际覆盖的风险入手。修改选择、重试、资源或必需 job 时说明覆盖如何保留，并验证受影响 harness；不要把必需行为悄悄搬到可选诊断，也不要用 focus、无理由 skip / xfail 或自动更新快照取得绿色。
+
+提交报告写精确命令、被测版本、通过 / 失败 / 跳过数量和未运行范围。标出远程 CI 当前状态，不把“提交了测试”“开始执行”和“运行通过”混为一谈。临时工具和测试数据不应污染产品依赖、operator 配置或其他 worktree。

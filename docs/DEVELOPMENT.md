@@ -1,238 +1,125 @@
-# Development
+# 开发指南
 
-This document owns repository design guidance, local verification, and completion.
-[Architecture](ARCHITECTURE.md) describes the implemented system;
-[Testing](TESTING.md) describes the actual test and CI wiring. Detailed runtime
-contracts belong to their implementation and the relevant operator manual, not to
-a second set of global coding-agent instructions.
+[手册](README.md) · [架构](ARCHITECTURE.md) · [测试](TESTING.md) · [worktree](agents/worktrees.md) · [Issue / PR](agents/issue-tracker.md)
 
-## Specify the behavior first
+以一个可观察、可验证的结果为单位完成改动。先读受影响实现与测试，再修改对应文档；不为了遵守一套流程把小问题拆成许多新服务、gate、Issue 或兼容层。
 
-Understand the requested outcome and the affected owner before changing code.
-A clear user request or PR discussion can specify a bounded change; use a GitHub
-Issue for durable product scope or coordination when needed. Record material
-changes to an existing agreement in that Issue or PR. Do not require a separate
-planning ticket, approval cycle, or document for every non-trivial edit.
-
-State what the user should observe and how it will be checked. Include migration,
-cutover, or authority requirements when the change actually has them. Follow
-[Issue and PR scope](agents/issue-tracker.md): one complete outcome is normally one
-PR, not one PR per file, layer, checklist item, or red/green test cycle. Break down
-the work internally without turning that breakdown into mandatory delivery slices.
-
-Before adding another worker, table, score, or abstraction, trace the current input,
-owner, persisted state, and consumer. Extend the existing owner when its lifecycle
-and responsibility fit. Extract a shared component when it reduces real duplication
-or isolates a meaningful boundary. There is no provider-count, file-count, or
-line-count quota that decides good design.
-
-## Package design
-
-News and Trading are sibling capabilities. Neither imports the other or accesses
-the other's tables. Their package roots expose stable value and port contracts;
-`tracefold.app` composes implementations and maps the two sides explicitly.
-App and integration collaborators may use the concrete internal owners permitted
-by `tests/architecture/test_backend_boundaries.py`; ordinary feature callers do not
-turn those collaborators into public APIs. Within a capability, use direct relative
-imports rather than routing back through its public root.
-
-Keep roots declarative and imports free of runtime work. Prefer cohesive modules
-named for the responsibility they own. Follow the current architecture harness,
-while evaluating design changes on behavior and dependency direction, not arbitrary
-size counters. Avoid forwarding-only modules, redundant managers, one-implementation
-internal interfaces, and frameworks built for hypothetical future consumers.
-A meaningful abstraction or library does not need a separate detector-by-detector
-Issue before it can be evaluated in the current authorized change.
-
-## Architecture coding rules
-
-**Ownership.** News owns `news_*`; Trading owns `trading_*`. Business mutations live
-behind named repository methods in the owner. App supplies composition and process
-facts rather than a competing business policy or cross-context SQL transaction.
-
-**Ports and mappings.** A capability owns the narrow interface it needs. App adapts
-it to process resources without leaking App-specific methods through untyped objects.
-Choose the smallest explicit row/value shape that fits: a `TypedDict`, frozen
-dataclass, or validating model as appropriate. Do not pass an unstructured dictionary
-across a domain boundary to avoid naming the contract, or build a DTO framework to
-wrap every local call.
-
-**Transactions.** The caller owns transaction scope; a repository does not hide a
-commit. Keep database callbacks bounded and SQL-focused. Provider, model, broker,
-filesystem, and other network I/O happen outside transactions, without holding a
-connection. Prepare expensive validation, canonical serialization, and hashes before
-the callback; materialize richer objects after it. See
-[transaction ownership](ARCHITECTURE.md#5-transactions-resource-completion-and-supervision).
-
-**SQL and migrations.** Parameterize values and compose dynamic identifiers with
-psycopg's SQL facilities. Reuse the actual production statement in query audits.
-List public projection columns explicitly. Follow [Migrations](MIGRATIONS.md) for
-schema changes; preserve genuine cross-process, economic, and append-only invariants.
-
-**Hard cuts.** Internal Python paths are not external compatibility contracts.
-Update callers, tests, documentation, and generated artifacts together, and remove
-the replaced internal path. Public APIs and persisted data require an explicit
-migration decision; do not destroy real data or silently change stored meaning in
-the name of deleting compatibility code.
-
-**Identity and guards.** Program, execution-envelope, schema, and policy changes
-may invalidate stored evidence. Inspect the owning identity calculation and tests
-before changing a pin; do not blindly re-pin a failing digest. When simplifying a
-guard, identify the risk it actually protects and retain or replace that mechanism's
-evidence. Do not retain a redundant gate merely because an old Issue once requested
-it, or add a separate approval gate just to remove one. Secrets, permission checks,
-transaction/concurrency guarantees, and uncertain external order outcomes are not
-optional process ceremony.
-
-## Tests
-
-Test observable behavior at the boundary whose failure matters. Reuse existing
-checks when they exercise that risk. A mock can isolate unrelated dependencies;
-it cannot prove the behavior of the database, broker, process, browser, or order
-adapter it replaces. Avoid tests that merely mirror private call choreography,
-source wording, arbitrary file sizes, or a historical inventory.
-
-### Risk-tiered local verification
-
-This policy selects local checks; it is not a mandatory staircase of test suites.
-Read-only analysis can finish with sourced findings without running unrelated tests.
-
-During editing, use the smallest command that can disprove the current change.
-At the final checkpoint, cover the affected seams and broaden when impact is shared
-or uncertain. A checkpoint is not a reason to stop implementing the rest of the
-already-authorized outcome.
-
-| Changed risk | Useful local evidence |
-| --- | --- |
-| Documentation, comments, or spelling | Affected link/surface checks; the owning generator and drift check for generated text. |
-| Mechanical rename or formatting | Touched static checks and behavior checks where imports or behavior can change. |
-| Local Python behavior | Focused regression and neighboring behavior; broader hermetic checks when shared impact warrants them. |
-| Shared contracts, serialization, or domain logic | Affected contract tests and broad hermetic regression, normally `make test-fast`. |
-| Database, broker, or process semantics | Tests crossing that real boundary with isolated resources. |
-| Frontend behavior | Affected tests, lint/type checks, build as relevant, and the browser seam for interaction changes. |
-| Shared fixtures, test selection, CI, packaging, or deployment code | Validate the changed harness/build/lifecycle and affected consumers; use complete `make test-ci` when full-plan interaction is the risk. |
-| Order authority, schema, or security semantics | Direct evidence for the changed authority or invariant; production exercise only when explicitly required and authorized. |
-
-`make test-fast` is a broad hermetic checkpoint, not an edit loop.
-`make test-ci` runs the whole fixed plan locally and needs all its isolated resources.
-Use it for appropriate cross-system confidence or explicit task acceptance, not as
-an automatic prerequisite for every PR, shared-fixture edit, or documentation change.
-Remote required CI remains required regardless of the local selection. When a needed
-check cannot run locally, state what remains unverified and use the actual remote
-result rather than blocking independent work or fabricating a local pass.
-
-For a **bug fix**, capture the smallest reproducer and observe failure before the
-fix and success after it when practical. When the pre-fix run is unavailable, say
-so; an after-only test is regression coverage, not observed failure-to-pass evidence.
-For a **refactor**, demonstrate preserved observable behavior; do not invent a bug
-just to fill an F2P field. For **new behavior**, check the intended result and adjacent
-regressions. Documentation changes do not need a synthetic behavior failure.
-
-Record commands and actual outcomes: `PASS`, `FAIL`, `PARTIAL`, or `NOT RUN`.
-Explain significant gaps and changed acceptance semantics, without turning routine
-fixture corrections into separate approval tickets. A failed attempt is not a pass;
-a diagnostic rerun is not forbidden after investigation or repair. Do not use
-retries, skips, or modified expectations to hide an unresolved defect.
-
-Reuse successful local evidence for an unchanged tested tree and relevant inputs.
-Rerun when later edits, dependencies, generated artifacts, environment, or unresolved
-risk affect it. A broader successful command covers the subsets it actually ran;
-do not repeat them merely to fill a template. Remote status, however, belongs to
-its exact tested commit: an earlier PR green does not attest a new HEAD or squash SHA.
-
-### CI and release evidence
-
-The current workflow runs a fixed full plan and exposes `ci-gate`; its implementation
-is documented in [Testing](TESTING.md#fixed-full-ci-implementation). This is a current
-implementation, not a permanent prohibition on improving CI in an explicitly scoped
-change. Changing prose does not change workflow behavior or repository enforcement.
-
-Inspect required checks and repository rules when an authorized merge is requested.
-Pending, missing, cancelled, skipped, or failed required checks are not green.
-The deployment verifier requires successful main-push evidence for the exact final
-main SHA; a local run or PR-head result does not substitute for it.
-
-## News EventUpdate verification and quality
-
-Keep code correctness and model quality distinct. Tests verify source revisions,
-input scope, citations, ownership, checkpoints, adoption, notification selection,
-side-effect receipts and public Trading amendments. Passing them does not establish
-that a model understands real stories accurately or improves trading returns.
-
-[News](modules/news.md) owns the current Agent/notification path and its executable
-tests. [Review and calibration](modules/review.md) owns the retained ReviewDesk
-and fixed card-judge measurement. The former three-predictor Program, GEPA campaigns,
-optimizer metrics and release/canary commands are removed; do not import their old
-modules or present historical campaign commands as current development workflow.
-
-Diagnose the boundary before changing a prompt: source identity and scope, claim
-extraction, relation/support judgment, conditional adoption, reader coverage,
-selected copy, or actual receipt. A code change or model identity change does not
-automatically recompute processed evidence or reset exhausted revision work.
-Explicit scoped repair preserves immutable adoptions and actual delivery history.
-
-Accepted reviews retain their actual reviewer and evidence. A draft is not an
-accepted review, calibration is not independent production validation, and a code
-PR does not authorize spending an unspecified model budget or live trading.
-Use [current CLI help](generated/cli-help.md) and [Operations](OPERATIONS.md) rather
-than machine-specific old invocations or retired epoch numbers.
-
-## Database development
-
-PostgreSQL and Alembic's single head own the schema. The deployment's application
-login is `tracefold`; process attribution uses `application_name`. Runtime code does
-not execute DDL. Use an isolated test database, not the operator's deployment.
-
-Keep transactions short, queries bounded, ordering deterministic, and idempotency
-based on the appropriate natural key, unique constraint, or conditional write.
-Indexes should serve an identified query and be justified by its plan and workload,
-not by a copied historical row-count target. Refer to [Migrations](MIGRATIONS.md) and
-[Testing](TESTING.md#local-lane-implementation) for migration and resource setup.
-
-## Generated contracts
-
-Edit the owner and regenerate its output in the same change. Inspect the diff;
-do not hand-edit a generated file to make a drift check green.
-
-| Output | Source / update command |
-| --- | --- |
-| Shared blocks in `AGENTS.md` and `CLAUDE.md` | `docs/agents/shared-router.md`; `python3 scripts/sync_agent_router.py --write` |
-| CLI help | Production parser; `uv run python scripts/regen_cli_help.py` |
-| OpenAPI and frontend API types | Python HTTP schema; `make regen-contract` |
-| Database schema document | A disposable PostgreSQL database at Alembic head; `uv run python scripts/regen_db_schema.py` |
-| RabbitMQ definitions | News broker policy; `uv run python scripts/regen_rabbitmq_definitions.py` |
-
-Set `TRACEFOLD_TEST_POSTGRES_DSN` to the isolated database for DB generation; without
-it the generator reads the operator config. The DB must already be at Alembic head.
-Pure router and link checks need only Python; do not bootstrap the whole application
-to run them:
+## 1. 开始前确认范围
 
 ```bash
+git status --short --branch
+git rev-parse HEAD
+git worktree list
+```
+
+复用已分配且合适的任务 checkout；涉及并行开发、未提交修改或部署目录时使用独立 worktree。只读调查不要求创建分支。通过 GitHub connector 修改时同样使用独立分支与已知 base SHA，不假装做过本地测试。
+
+项目的 Python 解释器由 `.python-version` 固定，依赖由锁文件管理：
+
+```bash
+uv sync --frozen
+```
+
+只有前端相关工作才需要安装前端依赖；只有真实依赖测试才需要准备对应隔离资源。不要为了运行一个文档检查先重启整套部署。
+
+## 2. 代码应该放在哪里
+
+| 要改变的行为 | 首选位置 |
+| --- | --- |
+| 新闻来源范围、归组与证据 | `news/events`、`news/pipeline` |
+| 命题理解、采用与通知 | `news/updates` 及其 News storage |
+| 市场 / 钱包确定性规则 | 对应 market、chain_tape 领域逻辑，不复制进 UI |
+| 交易计划、特征与编译 | `trading/engine` 的纯逻辑 |
+| 持久 Case / 执行记录 | `trading/storage` |
+| 外部 provider、交易所或传输 | `integrations`，通过已有业务端口装配 |
+| 进程、HTTP / CLI、跨域映射 | `app` |
+| 配置、数据库物理资源、可观测性 | `platform` |
+| 页面阅读与交互 | feature-owned 前端 API / model / state / UI |
+
+完整的源码入口见[架构地图](ARCHITECTURE.md#packages)。News 与 Trading 不导入对方内部实现、不直接访问对方表；App 映射公开契约。新增 helper 不自动需要一个新包或抽象接口，先判断是否真的存在独立所有权与变化原因。
+
+## 3. 保持事实、政策和副作用分离
+
+| 层次 | 设计要求 |
+| --- | --- |
+| 原始事实 | 保存来源、时钟、身份、修订与未知，不因模型答案改变 |
+| 派生结果 | 明确输入和版本，能够说明如何重算；不冒充原始事实 |
+| 业务政策 | 一个具名所有者；规则、默认与例外不在 CLI / UI / Worker 各复制一次 |
+| 外部副作用 | 有稳定身份、持久意图、实际结果与恢复边界 |
+| 展示 | 读取已有事实与决策，不隐藏模型调用、数据写入或账户命令 |
+
+一个内部重命名或替换应同时修改调用方、测试和文档，并删除被替代路径。没有实际外部兼容需求时不保留旧 alias、双配置和临时并行实现；有持久历史或真实外部契约时明确版本，不重写原始证据。
+
+不要把“缺数据”“内容不确定”“模型失败”“不值得通知”“不交易”和“账户不可核实”压成一个失败码。保留对用户下一步有用的原因，也不为每个小分支创建第二套状态机。
+
+## 4. 事务与资源完成
+
+调用方拥有短事务，仓储不隐藏 commit。SQL、必要锁和条件更新放在事务内；模型、网络、文件读取、昂贵转换与哈希在事务外。跨 PostgreSQL、RabbitMQ、模型和交易所的步骤不能假装是一笔原子事务。
+
+外部提交必须考虑“调用超时但结果未明”。稳定身份帮助重放，实际副作用由适配器证据与对账确认。不能通过无限重试、补一个成功值或提前释放仍在执行的资源来得到表面闭环。
+
+资源许可应跟随真实操作完成，而非仅跟随等待协程取消。具体能力与超时所有者见[平台](modules/platform.md)和[事务边界](ARCHITECTURE.md#transactions)。
+
+<a id="risk-tiered-local-verification"></a>
+## 5. 按改动风险选择本地验证
+
+| 改动 | 优先验证 | 何时扩大 |
+| --- | --- | --- |
+| 文档、导航、共享 Agent 指引 | 本地链接 / 锚点、入口同步、文档导航测试、Mermaid 渲染 | 文档修改了公开参数或接口清单时加对应契约检查 |
+| 纯业务函数 | 相关单元测试、边界和错误输入 | 影响共享契约或多模块调用方时扩大回归 |
+| 查询、约束、事务或迁移 | 隔离 PostgreSQL 行为与迁移测试 | 涉及进程顺序、升级或生产资源时加部署验证 |
+| broker、重试、租约与恢复 | 独立 RabbitMQ / PostgreSQL 接缝与进程测试 | 跨角色链路改变时加 golden path |
+| 前端类型与派生 | TypeScript、架构、单元 / 组件 | 路由 / 布局 / 会话变化时加实际浏览器检查 |
+| 模型工具或 proposal 契约 | 确定性替身、输入 / 引用 / 预算 / 失败路径 | 明确需要质量评估时单独记录真实模型与数据协议 |
+| 执行与对账 | 作用域、订单身份、原生证据与恢复测试 | 真实账户操作必须另有明确授权，测试不能自动升级为实盘 |
+
+常用纯检查：
+
+```bash
+make check
+make test-fast
+```
+
+它们不是所有任务每次必跑的仪式；修改范围已由更小检查充分覆盖时，可报告精确结果与未验证项。一个成功的完整集合已经覆盖未变化的子集时，不必为填清单反复运行相同测试。
+
+真实资源测试、CI 选择和报告定义由[测试指南](TESTING.md)维护。缺少某个资源仅限制对应证明；不能假装通过，也不阻止独立修订和 PR 准备。
+
+## 6. 生成契约与文档同步
+
+| 发生变化 | 更新什么 |
+| --- | --- |
+| HTTP schema / route | OpenAPI、前端生成类型与 `CONTRACTS.md` 接口语义 |
+| CLI parser / help | 生成 CLI 帮助及对应操作步骤 |
+| Alembic schema | 隔离目标数据库上的结构生成物、迁移说明 |
+| RabbitMQ definitions / policy | 由实际生成器刷新并校验，不直接编辑派生 JSON |
+| Agent 共享约定 | 先改 `docs/agents/shared-router.md`，再同步两个根入口 |
+| 模块行为 / 所有权 | 更新唯一对应模块手册；首页和总架构保持索引职责 |
+
+```bash
+python3 scripts/sync_agent_router.py --write
 python3 scripts/sync_agent_router.py --check
 python3 scripts/check_mandatory_docs_links.py
 ```
 
-`make check-static` and the relevant CI jobs own the other drift checks. The link
-checker verifies local file targets, Markdown heading anchors and reference links,
-including retained history; it does not validate arbitrary inline code paths or
-external sites. Review changed route semantics and code references as well. See [Testing](TESTING.md).
+纯文字中文化不需要刷新未改变的 API 或数据库快照。生成方法与资源约束见[生成参考](generated/README.md)。不要对生产库运行 schema generator 来完成一份文档 PR。
 
-## Completion
+文档应包含实际入口、输入输出、状态与失败恢复、测试证据链接。架构图表达当前实现；规划中的方案必须明确标识，不与已存在节点混画。概念关系图不标成真实外键 ER 图，概念状态图不冒充完整数据库枚举。
 
-Complete the requested outcome, not merely the first implementation slice.
-Implementation includes affected callers, tests, documentation, generated outputs,
-and removal of obsolete internal paths. Report verification limits honestly.
-A missing permission or resource blocks its dependent step, not independent work.
+## 7. 测试本身也需要可信
 
-A requested **PR** is delivered when the reviewed change and its evidence are in an
-open PR; report pending or failed CI and do not call it merge-ready without checking.
-A requested **merge** additionally requires authorization, the actual required checks
-on current HEAD, and confirmation that the merge happened. A requested **deployment**
-requires its separate authorization, exact-main CI evidence, the operational procedure,
-and any explicitly required live acceptance. Implementation alone does not require
-an unrelated rollout or grant permission to operate a live account.
+不通过删断言、无理由 skip / xfail、自动更新快照、重试直到绿或静默移出必需 lane 来掩盖失败。改动测试系统时说明原风险如何继续覆盖，并验证相应 harness，而不是冻结一套永远不能改善的 CI 拆分。
 
-Use [task checkouts](agents/worktrees.md) for isolation and resource boundaries.
-Do not repeatedly ask permission for routine edits, checks, and repairs already
-within scope. Ask or stop only at the genuinely unresolved decision or unauthorized
-action, after completing independent authorized work.
+真实模型评估与确定性契约测试是不同证明。固定合成语料上的评审器分数，不证明当前真实新闻质量、人工一致性或交易收益。研究结果必须说明样本、时间、版本和未知。
+
+可以评估有价值的新工具，但不因一个技能模板自动要求创建独立 Issue、读取全部手册或运行所有检测器。工具服务于当前结果，不重新定义授权与交付范围。
+
+<a id="completion"></a>
+## 8. 完成与交付
+
+一个完整变更包括受影响实现、调用方、测试、文档、必要生成物和旧路径删除。默认形成一个可审阅的 PR；只有独立交付、回滚、分阶段迁移或真实审阅困难时才拆分，并写清依赖与完成条件。
+
+提交说明应回答：**改了什么、为什么、依据哪个版本、实际运行了哪些检查、还不能证明什么**。有治理 Issue 时链接它；没有也不必为了模板补建一套票据层级。
+
+PR 可以在远程 CI 等待时提交，但不能把 pending 说成通过。授权合并前核实当前 HEAD 的必需检查及仓库规则；PR HEAD 的测试不证明后续 squash commit 的部署身份。部署和生产验收是另一个明确边界。
+
+提交 PR 不意味着允许合并、部署、数据库变更、接受模型复核或真实账户操作。保留其他任务的工作树与用户未提交修改；只有明确授权后才清理相应任务资源。

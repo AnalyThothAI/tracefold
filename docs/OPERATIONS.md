@@ -1,514 +1,211 @@
-# Operations
+# 运维与故障定位
 
-[Handbook](README.md) · [Setup](SETUP.md) · [Architecture](ARCHITECTURE.md) · [Migrations](MIGRATIONS.md)
+[手册](README.md) · [安装](SETUP.md) · [迁移](MIGRATIONS.md) · [News](modules/news.md) · [Execution](modules/execution.md)
 
-This runbook covers the running EventUpdate application and its separate execution
-process. Module guides explain the algorithms; this page explains what to inspect
-and which operational action changes state. Commands below are examples, not a
-request to run maintenance, spend model credits or operate an account.
+先明确**哪个版本、哪个角色、哪个工作身份、哪种副作用**出了问题，再执行恢复。探针成功不能替代消息推进、语义采用、实际发送或账户对账。
 
-## 1. Start with read-only evidence
+本页命令是操作手册，不是自动执行脚本。带写入、副作用或账户操作的命令必须在对应授权范围内运行。
+
+<a id="diagnostics"></a>
+## 1. 先做有界诊断
+
+在管理该部署的主检出目录执行：
 
 ```bash
+git rev-parse HEAD
+docker compose ps --all
 make status-app
-make status
-make logs
-uv run tracefold config
-docker compose exec -T workers tracefold news bus-check
+docker compose logs --tail=100 workers analysis serve
+curl -fsS http://127.0.0.1:8765/readyz
+curl -fsS http://127.0.0.1:8766/readyz
+```
+
+端口有显式调整时使用实际绑定。仓库 HEAD、正在运行的镜像 ID 和 Runtime manifest 不一定相同；诊断记录要保留各自身份，不能只报“main 最新版”。
+
+| 检查 | 说明 |
+| --- | --- |
+| `make status-app` | 应用容器、基础依赖、迁移退出、Serve / Workers 就绪与工作台 |
+| `make status` | 还包含独立 Runtime；没有运行该可选角色时不能据此断言新闻应用失败 |
+| `make logs` | 主应用 / 基础服务日志；Analysis 可单独 `docker compose logs analysis` |
+| `make runtime-status` / `make runtime-logs` | 独立执行角色，不等于账户已平仓或收益已齐全 |
+| `tracefold config` | 脱敏配置，不自动测试全部外部服务 |
+| `tracefold db audit` | schema / role / catalog 有界审计，不是全表精确计数 |
+
+```bash
+docker compose exec -T workers tracefold db health
 docker compose exec -T workers tracefold db audit
+docker compose exec -T workers tracefold news bus-policy verify
 docker compose exec -T analysis tracefold trading status
-docker compose exec -T analysis tracefold trading cases --limit 20
 ```
 
-`config` prints redacted configuration. The standard config uses Compose-network
-addresses, so database/broker commands run inside their application container.
-Do not copy raw config, token files or secret URLs into an incident report.
-`bus-check` can declare the expected topology idempotently; it is diagnostic but
-not a claim that no broker metadata could change.
+不要把 `db audit --deep` 或 `db query-audit --analyze` 视作同样轻量：前者进行精确计数，后者真实执行查询。只读不等于没有资源成本。
 
-| Question | Evidence to inspect | Not established by it |
+## 2. 按边界判断问题
+
+| 现象 | 首先核查 | 不应直接做 |
 | --- | --- | --- |
-| Are required application roles healthy? | `make status-app`, service logs and readiness | News freshness, model quality or delivered cards |
-| Is a capability usable? | Named capability state and error | Merely seeing its task constructed |
-| Was a source processed? | Item revision, wanted/done input, semantic attempt and adopted head | Old verdict counts or a healthy HTTP process |
-| Was the reader notified? | Plan, intent, frozen body and actual receipt | A completed plan or pending queue row |
-| Was a source analyzed for trading? | Public update/amendment, target selection, Case attempt and decision | A bullish card or a notification threshold |
-| Did an account execute? | Runtime, signed venue evidence and attributed fills | A recorded command or published Signal |
+| 工作台空白 / 404 | Serve 镜像内静态资源、URL、bootstrap、浏览器错误 | 重跑 News 模型 |
+| 容器运行但 readiness 失败 | schema head、角色所有权、原生控制操作、基础依赖 | 关闭检查强行报告健康 |
+| 原始输入停滞 | provider token、接收 / 恢复状态、broker 连接 | 增加通知阈值或模型并发 |
+| 输入在增加，语义无进展 | wanted / done、lease、provider breaker、模型配置与具名失败 | 删除 Event 或重放整库 |
+| 已有 EventUpdate 但未推送 | 通知计划原因、读者覆盖、intent 与真实结果 | 把知识版本直接改成 sent |
+| 钱包没有警报 | 名单、完整前缀、每地址规则排除、episode 与发送复查 | 先加社交模型或另一套排名门槛 |
+| 有研究建议但无订单 | publish_status、Signal 作用域、Runtime 处理和账户事实 | 从 UI 强造订单状态 |
+| 提示未认领敞口 | 实际 venue 持仓、订单 / 计划身份及对账新鲜度 | 清空计划或为了变绿自动 flatten |
 
-Serve and the console are read-only. Browser bootstrap does not grant command,
-review acceptance, model publication or account authority.
+Workers 的基础 / 可选任务监督和资源槽位见[Platform](modules/platform.md)。先判断是 provider 的可恢复错误，还是任务本身 faulted，二者恢复方式不同。
 
-## 2. Application and execution lifecycles
-
-`make up` is the supported application deployment, not a command to run from an
-arbitrary feature worktree. Its [Makefile](../Makefile) preflight checks the tools,
-repository/source identity and required successful main-push CI evidence. It
-initializes operator files, builds the app image, starts infrastructure, applies
-broker policy, waits for migration exit zero, then starts Serve, Workers and
-Analysis. A failed migration leaves these application roles stopped.
-
-```bash
-make up
-make status-app
-make logs
-```
-
-Nautilus has its own image and explicit lifecycle:
-
-```bash
-make runtime-status
-make runtime-logs
-# Explicit execution lifecycle actions, not part of ordinary application work:
-make runtime-build
-make runtime-up
-make runtime-restart
-make runtime-down
-```
-
-`make up` does not restart Nautilus. `make down` stops it before the remaining
-stack and preserves volumes/configuration. Stopping a process does **not** prove
-that its venue position is flat. A running account must be assessed before a
-maintenance window; use [Execution](modules/execution.md) and [Security](SECURITY.md).
-Do not delete a volume or reset operator config to diagnose startup failures.
-
-A schema-changing deployment must coordinate all affected writers, including
-Analysis and the account owner. The runtime/migration check is not an optional
-shortcut to disable. Follow [Migrations](MIGRATIONS.md); a green unit test is not
-permission to migrate under active exposure.
-
-### Same-schema image replacement
-
-`make deploy-image IMAGE_ID=sha256:<full-local-image-id>` is the supported narrow
-replacement path. It requires a local complete image ID, the approved clean main
-checkout and matching source/image/database schema. The target validates the
-active config and recreates the application roles without building or downgrading
-the database. It does not replace the independent execution image. Read its
-failure before taking another action; an old tag is not a valid schema rollback.
-
-When explicitly authorized to merge, give the squash commit an explicit summary.
-Concatenated branch history can accidentally retain a CI-suppression instruction.
-Confirm the resulting main SHA has a successful **push-triggered** CI run before
-deployment. A PR-head result or manually dispatched run does not substitute for
-that exact main-push evidence. [Testing](TESTING.md) owns the required lanes.
-
-## 3. News: identify the failed version before retrying
+<a id="3-news-identify-the-failed-version-before-retrying"></a>
+<a id="news-retry"></a>
+## 3. News：先找失败版本，再恢复
 
 ```bash
 docker compose exec -T workers tracefold news why EVENT_ID
-docker compose exec -T workers tracefold news retry-work --help
 ```
 
-Use the actual Event ID in place of `EVENT_ID`. Inspect the wanted/done input
-revisions, lease and attempt, last error, adopted content revision, notification
-plan and exact intent. The [News guide](modules/news.md#5-work-progress-and-recovery)
-explains the independent state dimensions.
+结合 Event 详情读取这些身份：**来源修订、wanted / done 输入版本、语义 owner / lease / attempt、当前 content revision、通知工作、intent 与发送账本**。不要只凭 UI 上一个“失败”标签选重试命令。
 
-| State | Expected behavior | Appropriate next step |
-| --- | --- | --- |
-| Models unavailable / no semantic agent | Wake can be acknowledged while durable work remains pending | Correct the named capability configuration; do not fabricate a verdict |
-| Transient failure below budget | Existing durable backoff and Janitor wake own the next attempt | Check the error and due time before intervening |
-| Final semantic attempt still holds a live lease | It is still owned work, not exhausted failure | Do not reclaim it or reset another worker's budget |
-| Final attempt crashed and its lease expired | Janitor exposes exhausted work as failed | Fix the cause, then retry that exact input revision if authorized |
-| Latest input failed, previous head exists | Last valid EventUpdate remains readable | Do not erase the head or describe it as successful latest processing |
-| Notification planning exhausted | Current plan work is visibly failed independently of card state | Retry only the current failed content revision |
-| Card generation exhausted before any send ledger exists | Dead unsent intent remains attributable | Retry its exact content revision and intent |
-| A send exists with unknown/terminal outcome | Receipt history must be preserved | Investigate provider evidence; `retry-work` cannot reopen it |
+生成错误区分 `news_generation_output_truncated`、`news_generation_output_empty`、`news_generation_output_schema_invalid`。配置了请求契约具有实质差异的 fallback 时，允许一次替代回答；否则显式失败，不重复同一请求消耗全部预算。引用与配置错误立即失败；provider 限流、超时、服务端或传输错误保留有界恢复。先修正具体输出 / 配置原因，再决定是否精确恢复。
 
-The explicit commands are version-scoped:
+状态接口将可领取、等待调度、有效租约和耗尽失败分别记录为 `semantic_pending`、`semantic_deferred`、`semantic_in_progress`、`semantic_failed_exhausted`，不要把最后一类解释成即将自动运行的积压。
+
+### 语义失败
 
 ```bash
-# Failed semantic input: revision is the wanted input's integer revision.
+# 写操作：替换为诊断返回的精确 Event 与 wanted input revision
 docker compose exec -T workers tracefold news retry-work \
   --event EVENT_ID --kind semantic --revision INPUT_REVISION
+```
 
-# Exhausted notification planner: revision is the adopted content revision.
+只恢复对应失败工作版本，保留事实、检查点和发送回执。不是更换模型后的全库重跑，也不续期原始来源。最终尝试仍持有有效 lease 时，不能把它当作已经耗尽并手工抢占。
+
+### 通知计划失败
+
+```bash
+# 写操作：指定当前失败的 content revision
 docker compose exec -T workers tracefold news retry-work \
   --event EVENT_ID --kind notification --revision CONTENT_REVISION
-
-## Worker ownership
-
-`tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
-It wires one root `TaskGroup`; its due loops and dispositions are private
-implementation details. Configuration cannot invent workers, owners, resource
-lanes, or concurrency. An unknown child exception is a process failure, not an
-individual-worker degraded state. The typed recurring business-DB overrun
-below is the one resource-specific local recovery rule.
-
-```text
-tracefold serve
-  -> read-only pool max 7 (6 ordinary + 1 control) -> HTTP/static
-
-tracefold workers
-  -> one singleton advisory lock and runtime_id
-  -> one DB pool min 2 / max 8 / max_waiting 3
-     (1 singleton lock + 2 business + 4 News lane + 1 control)
-  -> one pinned singleton session / business DB executor 2 / News DB lane 4 /
-     control DB executor 1
-  -> finite external-operation executor 3
-  -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
-     and the News consumer tasks (news-receiver, news-recovery, news-deduper,
-     news-semantic, news-deliverer, news-janitor); the bounded polling loops
-     (news-instruments, and with venues enabled news-quotes, news-reactions);
-     workers-control
 ```
 
-Quote plan/store and the wallet tape use ordinary
-business permits. Event Reaction and the Janitor keep the one-slot
-heavy-business gate over the same pool, so heavy work is serialized without
-blocking display quote progress or consuming the four News hot-path slots. The
-Quote provider calls are
-bounded to 12 mandatory current source groups (concurrency 4, 10 s deadline)
-plus at most two post-store Binance day reads; its 20 s cadence is start-based,
-non-overlapping, and does not catch up. Reactions remain bounded to 32 merged
-candle requests per 60 s turn with concurrency 4. None of these loops holds a
-database connection while calling out.
+这针对失败的通知工作，不等于“忽略已发正文再发一次”。明确的 `no_notification` 不是技术故障：先看逐命题的 retired、stale、coverage、mode 等原因。
 
-Every News consumer turn is one short idempotent transaction; provider and
-model work happens with no database connection held. There is no generic
-scheduler, projection frontier, EDF coordinator, model arbiter, database wake
-plane, startup rebuild, phased load shifting, or configurable concurrency
-beyond `news.triage.concurrency`.
+### 卡片生成失败
 
-The control child distinguishes the pinned singleton session from its pooled
-heartbeat write. Loss of the pinned advisory-lock session remains immediately
-fatal. A precise transient PostgreSQL admission, timeout, pool-checkout, or
-connection error from the idempotent heartbeat write is retried after 250 ms;
-after 15 seconds the stale heartbeat makes readiness false without killing the
-root, and recovery restores readiness. Invariant failures and an unfinished
-native control future remain process-fatal. This retry does not apply to
-general control writes whose commit outcome could be ambiguous.
-
-Serve owns one read pool of seven with ordinary/control admission `6/1`,
-50 ms permit wait, 250 ms checkout, two-second statement timeout, JIT off,
-parallel gather off, and 8 MiB work memory. The statement budget accommodates
-full-history feed counts measured at about 0.8–1.3 seconds over 35k events;
-it does not change request admission or Workers budgets. Connections and ordinary requests
-default to read-only. The sole authenticated Trading Command POST opens a
-semaphore-bounded short-lived write connection outside that pool; every other
-HTTP route remains read-only. `tracefold news review submit` opens a short-lived connection under the
-same `tracefold` login and uses one ordinary short transaction. Database
-append-only triggers and business constraints—not an internal role ACL—protect
-the review facts. Workers owns the exact pool/lane topology
-above. Finite provider/filesystem operations share the three-slot
-external capability; the OpenNews WSS socket remains a long-lived async root
-child outside it. Only the owning source seam may map an outer
-finite-operation overrun into its existing durable failure policy. A typed
-recurring business-DB overrun remains local to its natural loop; its occupied
-permit remains bound to the native future and the loop retries on its normal
-cadence. Control-DB, model, cleanup, and unclassified overruns remain
-process-fatal. Classification uses the typed physical capability carried by
-the exception, never an operation-name or error-string prefix. A caller timeout
-never releases a resource permit before the underlying future actually
-completes; three stuck source futures therefore exhaust the shared external
-capability even though the root heartbeat can remain healthy. Diagnose that
-state from the resource-active/admission metrics and domain status. If an
-underlying thread never returns, process exit is the only universal release
-authority.
-
-Each Worker DB session is exactly one bounded transaction. One transaction-local
-setup statement installs the application name, statement/transaction deadlines,
-JIT, parallel-gather, and work-memory policy for that transaction. PostgreSQL
-restores those settings when the transaction exits, so pooling needs no reset
-round trip. Every SQL statement and multi-statement repository operation is
-therefore covered by the native database deadline; the async caller adds only a
-bounded completion grace. An unfinished recurring business future is reported
-to its loop as the typed local overrun above; every other unfinished capability
-keeps the fatal policy. The default transaction deadline is the statement
-deadline plus five seconds so a native statement cancellation has the same
-bounded cleanup allowance as the Worker future; explicit per-operation
-transaction deadlines remain authoritative.
-
-The measured transaction is the true outer scope: setup, the capability-limited
-callback, and commit or rollback produce one duration/outcome observation.
-Callbacks receive only their News/Price/Instrument/Trading repositories. They
-do not receive a raw connection and do not run provider I/O, Pydantic, hashing,
-canonicalization, compression, large Python work, or backoff while PostgreSQL
-is idle in transaction.
-
-News consumers use a dedicated four-slot News DB lane
-(`WorkerDatabase.run_news`: its own executor and gate, separate from the two
-business slots) for short idempotent transactions; each message is one
-transaction of a few milliseconds. `consume()` handles up to `prefetch`
-messages concurrently with a per-message ack, so `news.triage.concurrency`
-(default 4) is real concurrency and the only News concurrency knob;
-single-active queues use prefetch 1. When the News lane cannot admit a message
-the consumer raises `DeferError` and the message requeues uncounted through
-the retry lane. Delivery restart reconciliation likewise waits out a typed
-admission `DeferError` before claiming; statement overruns and unknown faults
-remain process-fatal.
-
-News has no projection lease: the broker's single-active-consumer and
-per-message ack are the fences on `news.raw` and `news.triage`, and on the
-delivery lane it is the row the claim holds with `FOR UPDATE SKIP LOCKED`,
-leased until its next due time (#598 D2).
-
-`/metrics` exposes low-cardinality worker transaction and shared capability
-resource signals. Use shared resource and PostgreSQL activity/lock evidence for
-diagnosis; CPU alone is not a root-cause claim.
-
-News Feed search adds
-`tracefold_news_search_requests_total{mode="asset|text",result="nonzero|zero"}`
-and `tracefold_news_search_duration_seconds{mode="asset|text"}`. They record
-successful first-page requests only; cursor pages are excluded, while repeated
-browser polling remains repeated operational load. These counters are not
-distinct user-search or user-session analytics. Labels never carry the raw
-query, symbol, resolved identity, route, or user-controlled text.
-
-News durable-event boundaries add the following bounded metrics. `stage`,
-`outcome`, `queue`, `reason_class`, `cause`, and `budget` are closed code-owned
-sets; Event/message/incident/Strategy IDs are log fields, never labels.
-
-```text
-tracefold_news_handoff_pending{stage}
-tracefold_news_handoff_oldest_age_seconds{stage}
-tracefold_news_handoff_repair_total{stage,outcome}
-tracefold_news_handoff_expired_total{stage}
-tracefold_news_rabbitmq_consumer_fatal_total{queue,reason_class}
-tracefold_news_rabbitmq_publish_failure_total{reason_class}
-tracefold_news_opennews_incident_open{provider,cause}
-tracefold_news_opennews_incident_oldest_age_seconds{provider,cause}
-tracefold_news_opennews_recovery_turn_total{outcome}
-tracefold_news_opennews_recovery_provider_calls_total
-tracefold_news_opennews_recovery_published_messages_total
-tracefold_news_opennews_recovery_budget_exhaustion_total{budget}
+```bash
+# 写操作：仅适用于当前版本、尚未发送的失败 intent
+docker compose exec -T workers tracefold news retry-work \
+  --event EVENT_ID --kind card --revision CONTENT_REVISION --intent INTENT_ID
 ```
 
-`handoff_expired_total` is a Gauge despite its compatibility name: expiry is a
-current marker-plus-age projection, not a durable transition that can be
-incremented once. Counting it on each Janitor scan would manufacture growth.
-The pending and expired gauges are each capped at 1,000 rows per stage; their
-partial-index scans are bounded even when retained expired audit facts grow.
+必须精确到 intent。已经进入任何发送账本的意图不能通过此命令重开；包括 terminal 或 ambiguous。卡片失败和 planner 失败预算不同，不为恢复文案顺手重置整个通知工作。
 
-## Durable state and transaction rules
+| 发送结果 | 操作原则 |
+| --- | --- |
+| 已证明 `sent` | 以实际正文作为读者覆盖，不重新发送 |
+| 已证明 `not_sent` | 按发送 owner 的错误分类和有限重试规则处理 |
+| `ambiguous` / 结果未知 | 先核实外部结果；不能伪造成功，也不盲重试 |
 
-- PostgreSQL facts/control rows plus the durable broker queues are the only
-  recovery sources.
-- Every News write is idempotent by key; the broker owns retry, buffering, and
-  the dead-letter lane.
-- Success writes the current model and acknowledges the exact message in one
-  application-owned transaction.
-- Provider/network/filesystem I/O occurs outside DB transactions.
-- Current rows use stable keys and skip unchanged payload writes.
+模型、endpoint、提示词或镜像改变不会自动重置失败预算。语义完成、知识采用与通知完成的区别见[News 状态](modules/news.md#state)。
 
-## First checks
-
-For missing or stale live data:
-
-1. run `uv run tracefold config`;
-2. check `/healthz` and `/readyz`;
-3. inspect authenticated `/api/status`, then `/api/news/status`;
-4. run `docker compose exec -T workers tracefold news bus-check` for per-queue depths;
-5. run `docker compose exec -T workers tracefold news why <event_id>` for one Event's whole chain;
-6. trace one stable target from fact -> Event row -> API.
-
-| Symptom | Inspect first |
-|---|---|
-| no API row | current key and publication state |
-| idle worker with expected work | durable target plus due/lease fields |
-| stale row after a run | fact watermark, payload hash, zero-write comparison |
-| growing queue | claim size, lease expiry, retry budget, terminal events |
-| repeated source failure | target error state and deterministic terminal policy |
-| readiness 503 | DB liveness and startup schema/composition |
-| status degraded, readiness 200 | expected runtime/product separation |
-
-The separate loopback Workers probe answers two questions, not one. `ok` is
-basic readiness: this process still owns PostgreSQL, its schema and its
-singleton session. `capabilities` is a separate object keyed by capability name
--- `news_ingestion`, `news_editorial`, `news_delivery`, `news_instruments`,
-`news_quotes`, `news_reactions`, `market_notifications` -- each with a `state` of
-`running`, `faulted`, `unavailable` or `disabled` and the reason that put it
-there. The same object is persisted on `workers_runtime.capabilities` and
-republished on `/api/status` under `runtime.workers_runtime.capabilities`, and
-the console prints it as the **Workers 能力** card on 流水线状态 (`/news/status`),
-so an operator sees a stopped lane without opening the loopback probe
-(#553 PR-3). A stale runtime row publishes no report: a process that stopped
-answering is not evidence that its lanes are still running.
-
-An unexpected program error in one *optional* business task stops that task,
-records its capability `faulted` with the failure that stopped it, and leaves
-every other task running. Nothing restarts it: recovery is an operator restart
-after the fix, which is why a `faulted` capability is a page-worthy fact even
-while readiness stays 200. Analysis has its own process and its status is
-reported on `/api/trading/status`; Workers does not own its lifecycle. A push sender that cannot be constructed from the
-current configuration reports `news_delivery` `unavailable` with the
-configuration reason, the Deliverer settles those Events `delivery_unavailable`
-rather than presenting them as sent, and `/api/news/status` reports
-`delivery.delivery_available` false; correct the configuration and restart.
-
-News reception, admission and retention -- `news-receiver`, `news-recovery`,
-`news-deduper`, `news-janitor` -- are **not** optional. They are the information
-entry every other capability reads, so a program error there still fails the
-root and the container restart that has always healed it still happens, rather
-than becoming a permanent ingestion outage behind a 200 readiness.
-
-Shared foundation failures are unchanged and still fail the root: PostgreSQL
-unavailable, a schema that is not the code's head, a lost singleton session, an
-unfinished native control future, and a graceful deadline overrun. A PostgreSQL
-failure raised while a capability is being composed is also not confined: it
-says the database failed, not that one Program is wrong.
-
-A classified live broker incident or Recovery transient
-is recoverable work, not a crashed task: Workers readiness stays up while
-`/api/news/status` names the open incident or closed-pending recovery state as
-`reason=recovery_pending|recovery_transient`, retains the typed error code, and
-remains degraded.
-
-## Domain traces
-
-### Editorial News EventUpdate (#706)
-
-```text
-OpenNews -> RabbitMQ news.raw -> admission -> Item / Event / evidence revision
-           -> durable semantic work -> RabbitMQ news.triage
-           -> NewsAgent extraction + judgments -> adopted EventUpdate
-                  |                              |
-                  v                              v
-           public outbox                   notification work
-           -> App relay                    -> claim-level plan
-           -> Trading catalyst or          -> selected intent -> card -> sender
-              source amendment             -> exact receipt / ambiguous state
-```
-
-These commands are writes. They refuse mismatched/nonfailed targets rather than
-turning them into a new work item. Semantic retry preserves checkpoints and
-immutable observations/adoptions. Card retry does not erase any existing send
-ledger row, including `sending`, `sent`, `ambiguous` or `terminal`, and does not
-reset an independently exhausted planner budget. A new prompt/model identity
-does not automatically replay completed evidence or reset failures.
-
-Failure/defer updates are revision-scoped: an older notification or card failure
-must not consume or postpone a successor's work. Do not replace the supported
-operation with manual SQL resetting every attempt counter.
-
-Generated output faults appear as `news_generation_output_truncated`,
-`news_generation_output_empty` or `news_generation_output_schema_invalid`.
-Truncation and schema faults may use one configured fallback with a meaningfully
-different contract; without one they fail visibly instead of repeating the same
-request. Reference and configuration faults fail immediately. Provider rate
-limits, timeouts, server and transport failures retain bounded recovery.
-`/api/news/status` separates runnable pending, scheduled retry, active lease
-and exhausted failure counts for semantic work.
-
-## 4. Broker, OI and wallet diagnosis
-
-RabbitMQ carries raw input and semantic wake work. The queue name `news.triage`
-is retained, but the Workers task is `news-semantic`. Editorial notification work
-and receipts are in PostgreSQL; there is no current `news.deliver` queue to repair.
-The [broker policy](../tracefold/news/broker_policy.py) owns retry/dead-letter
-semantics and topology; historical queue migration recipes are not normal operation.
+### Broker 与死信
 
 ```bash
 docker compose exec -T workers tracefold news bus-check
 docker compose exec -T workers tracefold news dlq inspect --limit 20
+```
+
+`bus-check` 包含拓扑声明，不应称为纯只读 GET。死信检查也经过 broker 消费接缝，先确认目标 broker 与命令行为。`dlq replay` 会重新投递，`dlq purge` 会删除消息；均不能代替 PostgreSQL 中精确工作版本的恢复。
+
+当前 `news.triage` 只负责唤醒语义 Worker；通知不是靠清空某个旧 delivery queue 就能重新开始。
+
+## 4. 市场与钱包定位
+
+```bash
+docker compose exec -T workers tracefold news instruments summary
+docker compose exec -T workers tracefold news instruments resolve --symbol SYMBOL
 docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 10
 ```
 
-DLQ inspection is different from replay or purge. Replay re-enters the pipeline
-and may produce effects according to the recorded input; purge destroys evidence.
-Neither is a routine harmless way to make a queue count zero. Diagnose the exact
-source contract, schema or handler error first.
+目录 `snapshot` 是外部读取并写目录的维护操作，不与 `summary` 混用。OI 问题沿**来源 → 解析 → 类型化事实 → 分组 / intent → relay**检查；报价 / Reaction 的缺失不能解释成 OI 为零。
 
-For [OI](modules/oi.md), follow Item parsing status → typed observation → notification
-group/anchor → send outcome, and independently public outbox → Trading Case. A
-provider-format change can stop parsing while original Items continue to arrive.
-Do not route OI measurements through editorial deduplication or infer entry
-eligibility from whether a follow-up card was suppressed.
+钱包沿**已发布名单 → 完整回执前缀 → 净买入资格 → episode → 发送时复查 → 实际回执**检查。价格采样另看目标与实际观察时间，不能拿迟到报价补成触发当时的价格。
 
-For [wallets](modules/wallets.md), follow roster publication → complete receipt
-prefix → fill/cash attribution → detector window → episode → send-time evidence.
-The largest observed block is not proof of a continuous complete prefix. Price
-sampling and a slow roster provider must not be confused with first-alert evidence.
-
-## 5. Trading and account operations
+<a id="5-trading-and-account-operations"></a>
+<a id="trading-operations"></a>
+## 5. Trading 与账户操作
 
 ```bash
-docker compose exec -T analysis tracefold trading gate --limit 20
+docker compose exec -T analysis tracefold trading cases --limit 20
 docker compose exec -T analysis tracefold trading signals --limit 20
-docker compose exec -T analysis tracefold trading commands --limit 20
+docker compose exec -T analysis tracefold trading gate --limit 20
 docker compose exec -T analysis tracefold trading observations --limit 20
+docker compose exec -T analysis tracefold trading commands --limit 20
+make runtime-status
 ```
 
-A `source_update` is an amendment, not a missing Trigger: it creates no Case or
-fresh TTL. A valid TRADE decision can remain unpublished. WATCH needs a new bounded
-conditional analysis rather than immediately ordering on a bar crossing. See
-[Trading](modules/trading.md) for the public source and state contracts.
+`trading diagnose` 提供有界只读执行诊断；检查实际配置和探针地址，不把 host loopback 自动当作另一个容器。
 
-The only local operator ingress is `tracefold trading issue`, authenticated by
-OS identity. Inspect its grammar before use:
+### 显式本地操作意图
+
+公开 HTTP 没有下单 / 控制 POST。`trading issue` 使用本地 OS 身份与关闭的命令语法，保存意图而不是声称动作已完成。只有在明确授权该操作时才运行。例如暂停新入场：
 
 ```bash
-docker compose exec -T workers tracefold trading issue --help
+# 写操作：一次请求生成一次身份；网络不确定时保留这两个值重试
+request_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+requested_at_ns="$(python3 -c 'import time; print(time.time_ns())')"
+docker compose exec -T nautilus tracefold trading issue '/pause maintenance' \
+  --request-id "$request_id" --requested-at-ns "$requested_at_ns"
 ```
 
-A submitted request must have a stable request ID and caller-sealed nanosecond
-timestamp, both preserved on retries. Recording intent is not Runtime acceptance
-or a venue receipt. `/pause` prevents new entries; `/flatten account` requests
-reduce-only closes and pauses entry, but acceptance is not proof of flatness.
-`/halt` is sticky for that Runtime lifetime; do not assume `/resume` clears it.
-Never resume or restart simply to remove a diagnostic warning.
+`/pause` 不平仓；`/flatten account` 是 reduce-only 平仓并暂停的请求，必须继续核实 venue 结果；`/halt` 在本次 Runtime 生命周期内具有粘性，不能假设 `/resume` 可清除。新 account slot 也不天然代表 paused。
 
-A newly enabled account slot without prior control history is not guaranteed to
-start paused. Review its actual activation/control contract and venue state before
-starting execution. Unexpected or unclaimed exposure requires evidence, not automatic
-flattening. Keep existing protection until the owning recovery path establishes
-what the venue holds.
+### 原生执行历史核验
 
-`trading diagnose` and `trading verify-execution` are distinct from ordinary
-persisted reads: the latter reads signed historical venue evidence. It requires an
-exact entry ID, account slot and environment; preview is the default and `--apply`
-appends verified evidence. Use the authorized credential-bearing runtime context,
-not a Workers container with missing Binance mounts. Inspect:
+仅在持有相应凭据的 Runtime 环境，对精确历史 Plan 执行：
 
 ```bash
-docker compose exec -T nautilus tracefold trading verify-execution --help
+# 签名外部读取：ENVIRONMENT 替换为该连接实际 LIVE / DEMO / TESTNET
+docker compose exec -T nautilus tracefold trading verify-execution \
+  --entry-id ENTRY_ID --account-slot ACCOUNT_SLOT --environment ENVIRONMENT
 ```
 
-Incomplete fills, commissions or funding stay explicitly incomplete. Do not repair
-an account result by importing an unrelated environment's history, inventing a
-fill, changing a Plan's ownership or folding research returns into realized PnL.
+默认预览；显式 `--apply` 才追加核实证据。核对账户、环境、父子订单与真实成交，不合成数量 / 价格，也不让最后一个平仓腿覆盖整笔退出原因。该操作不是新闻排障的常规步骤。
 
-## 6. Backup and restore
+<a id="deployment"></a>
+## 6. 部署与独立 Runtime
 
-A named Docker volume is persistence, not a backup. Before a destructive migration,
-coordinate writers and account state as required, record the source/image and
-schema identity, and take an operator-owned dump. For the standard Compose database:
+正常应用升级使用 `make up`；同 schema 的精确本地镜像替换使用：
+
+```bash
+# 部署操作：完整本地 sha256 镜像 ID，先核实与源 / 数据库 head 兼容
+make deploy-image IMAGE_ID=sha256:FULL_LOCAL_IMAGE_ID
+```
+
+它不构建新镜像、不降级 PostgreSQL、不自动替换执行进程。必须验证应用真正运行的镜像和 Workers 报告的身份，而不是只看命令返回。
+
+`make runtime-build`、`runtime-up`、`runtime-restart`、`runtime-down` 分别负责执行镜像和生命周期。应用 / 前端发布不能隐式重启账户所有者。schema 变化时按[迁移指南](MIGRATIONS.md)协调 Runtime 和其他写进程，不使用环境标志绕过不兼容检查。
+
+<a id="6-backup-and-restore"></a>
+<a id="backup"></a>
+## 7. 备份与恢复
+
+备份必须配套保存源 SHA、镜像 ID、数据库 head 和操作配置的安全副本。以下命令读取数据库并将 dump 保存到受限目录；不会打印密码：
 
 ```bash
 umask 077
 mkdir -p "$HOME/.tracefold/backups"
 backup="$HOME/.tracefold/backups/tracefold-$(date -u +%Y%m%dT%H%M%SZ).dump"
 docker compose exec -T postgres sh -eu -c \
-  'PGPASSWORD="$(cat /run/secrets/postgres_database_password)" exec pg_dump -U tracefold -d tracefold --format=custom' \
-  > "$backup"
+  'PGPASSWORD="$(cat /run/secrets/postgres_database_password)" exec pg_dump -U tracefold -d tracefold --format=custom' > "$backup"
 docker compose exec -T postgres pg_restore --list < "$backup"
 ```
 
-Check command exit codes and retain the matching image/config recovery information
-securely. A listable dump is only an initial integrity check. Prove restoration in
-an isolated database using the matching schema/source and a permitted test identity;
-never restore over the operating database as a test. No numeric RPO/RTO or automatic
-PITR guarantee is implemented by these commands.
+`pg_restore --list` 只验证归档可读取，不证明完整可恢复。`make postgres-restore-drill` 使用隔离资源做恢复演练，实际资源要求以 Makefile 和 [restore_drill.py](../tracefold/platform/postgres/restore_drill.py)为准。
 
-`make postgres-restore-drill` is the supported isolated drill; inspect its test
-resource configuration in [Testing](TESTING.md) and
-[restore_drill.py](../tracefold/platform/postgres/restore_drill.py). Restore verification checks database evidence and needs no model calls or
-model-release operation. A rollback across a forward-only cut needs a restored backup
-and matching image, not a migration stamp or downgraded code over the newer schema.
+恢复前停止或隔离会写入目标数据库的进程，先在隔离环境恢复与验证，再按备份版本的兼容路径升级。旧镜像不能靠改 `alembic_version` 假装兼容新 schema；新代码也不能无条件解释 baseline 以前的数据库。
 
-## 7. Database performance, retention and incident records
+## 8. 故障记录应包含什么
 
-Start with `db health`, bounded `db audit` and process logs. Default audit counts
-can be estimates; an exact/deep audit is a separately requested heavier operation.
-`db query-audit --help` describes bounded query diagnosis. An analyzed query really
-executes against its data even when it is read-only, so its load and timing must
-be considered. Inspect query/index plans before copying old tuning constants.
+记录角色 / 版本、观察时间、工作身份、具名错误、重试或外部结果、做了什么和剩余未知。日志、备份和截图不泄露 token / key / 带密码 URL。调查中的一次性能样本必须附数据规模与测量条件，不能写成长期架构承诺。
 
-[Maintenance](../tracefold/news/pipeline/maintenance.py), owner repositories and
-migration constraints own retention. Source evidence, active lineage, immutable
-adoptions, actual receipts and rebuildable caches have different lifetimes. Do
-not bypass append-only protections or delete unrecognized tables from an old list.
-
-Record the source/image identity, exact IDs/revisions, observed times, sanitized
-errors, performed actions and their receipts in the incident or PR. Historical
-incidents belong in Git/issue history, not appended indefinitely to this current
-runbook. Unit tests and synthetic replays are not production-health evidence.
+能证明修复的是**同一身份下的后续进展与真实结果**，不是删除失败记录、重复启动进程或让状态页暂时变绿。

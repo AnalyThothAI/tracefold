@@ -1,140 +1,116 @@
-# OI and market observations
+# OI 与类型化市场观察
 
-[Handbook](../README.md) · [News](news.md) · [Trading](trading.md)
+[手册](../README.md) · [News](news.md) · [行情复盘](market-review.md) · [Trading](trading.md)
 
-OI is a typed **News market observation consumed by Trading**, not a third
-business package or a synonym for the execution process. Source parsing, reader
-notification and trading eligibility are three independent responsibilities.
+OI（未平仓量）是 **News 保存的类型化市场观察，Trading 可以独立消费它**。它不是第三个业务包，不等于多头方向，也不等于执行进程。解析、读者通知与交易准入是三个不同决定。
 
-## 1. Source-to-consumer flow
+## 1. 模块入口
+
+| 实现 | 职责 |
+| --- | --- |
+| [source_contracts.py](../../tracefold/news/source_contracts.py) | 识别提供商来源契约，不凭任意标题猜测 measurement 含义 |
+| [admission.py](../../tracefold/news/pipeline/admission.py) | 市场分支保存 Item 与类型化事实，不创建编辑型 Event |
+| [oi_signals.py](../../tracefold/news/oi_signals.py)、[oi_contracts.py](../../tracefold/news/oi_contracts.py) | OI 格式解析、单位、窗口与来源语义 |
+| [liquidations.py](../../tracefold/news/liquidations.py)、[smart_money.py](../../tracefold/news/smart_money.py) | 清算、大户报告各自的结构化解释 |
+| [market_contracts.py](../../tracefold/news/market_contracts.py)、[storage/market.py](../../tracefold/news/storage/market.py) | 市场读模型、持久记录与通知组 |
+| [market_notifications.py](../../tracefold/news/market_notifications.py) | 分组身份、确定性决策、到期工作、冻结发送与结果 |
+
+## 2. 从来源到两个独立消费者
 
 ```mermaid
 flowchart TB
-    Frame["Identified provider frame"] --> Route["Source-contract classifier"]
-    Route --> Parse["Deterministic OI / liquidation<br/>/ smart-money parser"]
-    Parse --> Item["Persist Item and parsing<br/>status"]
-    Parse -->|"valid measurement"| Fact["Persist typed fact"]
-    Item --> API["Market list and detail APIs"]
-    Fact --> Rules["Grouped notification rules"]
-    Rules --> Intent["Notification intent"]
-    Intent --> Send["Actual delivery receipt"]
-    Fact -->|"OI public source"| Outbox["news_trade_events"]
-    Outbox --> Target["App target selection"]
-    Target --> Case["Trading Case and fresh market<br/>research"]
+    Frame["已识别来源的原始记录"] --> Parse["确定性格式解析"]
+    Parse --> Item["Item 与解析状态"]
+    Parse -->|"有效测量"| Fact["类型化市场事实"]
+    Item --> API["市场列表与详情"]
+    Fact --> Group["分组与通知节奏"]
+    Group --> Intent["通知意图与精确发送结果"]
+    Fact -->|"OI 公开来源"| Outbox["公开交易来源 outbox"]
+    Outbox --> Analysis["目标选择与 Trading Case"]
 ```
 
-There is **no editorial Event, Gate/Triage model verdict or taxonomy prerequisite**
-on this path. Unknown contracts and failed parses remain readable source records;
-they do not become fabricated zero measurements. See
-[source_contracts.py](../../tracefold/news/source_contracts.py),
-[admission.py](../../tracefold/news/pipeline/admission.py), and
-[market_contracts.py](../../tracefold/news/market_contracts.py).
+此路径没有编辑型 Event、语义模型、四轴 taxonomy 或模型新闻价值判断。未知来源契约与解析失败保留原始记录和具名原因，不能转成 OI 为零的假测量。
 
-## 2. What the OI parser actually knows
+## 3. OI 解析器知道什么
 
-[oi_signals.py](../../tracefold/news/oi_signals.py) parses the provider's fixed-format
-message, for example:
+下面仅为格式说明，不是实时行情：
 
 ```text
 TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%
 ```
 
-This is a parser illustration, not current market data. The optional provider
-suffix `N times in 24h` is accepted, but does not replace locally derived recurrence.
-
-| Stored value | Meaning and limitation |
+| 字段 | 含义与边界 |
 | --- | --- |
-| `symbol`, `raw_instrument` | Normalized grouping token and original provider spelling; neither alone proves an executable venue route. |
-| `direction`, `oi_change_bps` | Provider-reported rise/fall and percentage converted to integer basis points. |
-| `oi_value_usd` | Parsed provider notional value, including K/M/B units; not a verified contract count. |
-| `whale_long_profit_bps` | The provider's named percentage, not aggregate dollar PnL, profitable-account count or proof all smart-money accounts profit. |
-| `whale_oi_ratio_bps` | The provider's ratio with its recorded source meaning, not an invented position snapshot. |
-| Measurement/source versions | Provenance binding for interpreting this row later; changed semantics require a new version. |
+| `symbol` / `raw_instrument` | 归组符号与提供商原始名称；不证明某交易所存在可执行合约 |
+| `direction` / `oi_change_bps` | 提供商报告的增减方向与基点变化；4.55% 对应 455 bps |
+| `oi_value_usd` | 解析 K / M / B 单位后的提供商名义金额，不是已验证合约张数 |
+| `whale_long_profit_bps` | 提供商命名的百分比；不是美元收益、盈利账户数量或全体大户的盈亏 |
+| `whale_oi_ratio_bps` | 保留来源定义的占比；不能由此补造持仓快照 |
+| measurement / source 版本 | 绑定当时采用的解析与计量含义，语义改变必须版本化 |
 
-For the recognized `oi_v1` source-contract family, `oi_source_contract` binds the
-measurement window to **300,000 ms**. The number is justified by the identified
-provider contract, not by text parsing or the interval between arrivals. An
-unproven identity yields an explicit unknown contract/window. Do not apply the
-five-minute interpretation to any news text mentioning OI.
+来源被识别为 `oi_v1` 契约族时，测量窗口绑定为 **300,000 毫秒（5 分钟）**。这是来源契约给出的解释，不是根据两条消息的到达间隔猜测。任意新闻提到 OI，并不自动拥有这个窗口。
 
-Percentages use integer basis points with decimal rounding; a 4.55% example becomes
-455 bps. The parser cannot establish whether dollar OI rose because of price,
-contract quantities or both. Nor does “OI Rise” establish a long trade. Historical OI studies do not establish a current entry rule. Trading requires
-its own frozen source and market evidence.
+可选的 `N times in 24h` 后缀能被接受，但不替代本地记录推导的重复观察。百分比使用十进制舍入后转基点。美元 OI 的变化可能涉及价格与数量变化，单凭这段文本无法拆分，更不能推出应该做多。
 
-## 3. Grouping and notification policy
+## 4. 分组通知的确定性规则
 
-The sole owner is [market_notifications.py](../../tracefold/news/market_notifications.py):
-`group_identity` identifies comparable measurements, `decide_group` chooses work,
-and `MarketNotificationLoop` claims/sends/settles that work. Every observation is
-persisted even when it does not earn another card.
+`group_identity` 决定哪些测量可比较，`decide_group` 决定本轮是否需要通知，`MarketNotificationLoop` 领取、发送并结算。**每条观察均先保存，不发卡不等于丢数据。**
 
-For OI, the current code starts a round with a first card and considers a follow-up
-when direction changes or absolute change reaches twice the anchor. The anchor is
-the observation covered by the preceding card, not a continuously moving maximum.
-A four-hour gap between live observations resets the round. These are notification
-cadence rules, **not entry filters, a backtest result or an optimal trading strategy**.
-Exact constants belong to the source owner.
+| 家族 | 当前通知逻辑 | 不应套用的逻辑 |
+| --- | --- | --- |
+| OI | 每轮首报；方向改变或绝对变化达到前一通知锚点的两倍时跟进；观察间隔达到 4 小时重开一轮 | 不把通知阈值当交易入场过滤器 |
+| 清算 | 首报立即；后续以发送尝试开始时间锚定 60 秒窗口，有新记录才跟进 | 不让持续到达的记录无限延后窗口 |
+| 大户报告 | 按账户、标的和日级主题组织首报 / 收尾 | 不再每次成交都用一个新的短窗口发送 |
+| 钱包 | 使用净买入 detector 已达标的 episode，再进行发送时证据检查 | 不复制 OI 倍数阈值 |
+| 原始未结构化记录 | 保存并可读，不自动建立第四套“兜底评分” | 不用零值伪装成功解析 |
 
 ```mermaid
 flowchart TD
-    O["Next persisted OI observation"] --> Pending{"Open notification intent?"}
-    Pending -->|"yes"| Merge["Merge coverage; do not create<br/>another intent"]
-    Pending -->|"no"| First{"No anchor or quiet reset?"}
-    First -->|"yes"| New["First-card intent"]
-    First -->|"no"| Change{"Direction changed or absolute<br/>change doubled?"}
-    Change -->|"yes"| Follow["Follow-up intent"]
-    Change -->|"no"| Hold["Persist observation and named<br/>hold reason"]
+    O["新 OI 观察已保存"] --> Pending{"同组有未开始的通知意图"}
+    Pending -->|"有"| Merge["合并覆盖，不新增第二张卡"]
+    Pending -->|"没有"| First{"首次或达到静默重开间隔"}
+    First -->|"是"| New["首报意图"]
+    First -->|"否"| Change{"变向或达到锚点两倍"}
+    Change -->|"是"| Follow["跟进意图"]
+    Change -->|"否"| Hold["保留观察与暂不通知原因"]
 ```
 
-For example, after a sent 6% card, 9% alone is below twice its anchor and 13% can
-qualify. If 6%, 9% and 13% all arrive before the first send starts, they can be
-covered by one pending card instead. The model does not decide these comparisons.
+锚点是上一通知覆盖的观察，不是不断上移的最大值。例如 6% 的卡已经发送，9% 仍不足两倍，13% 可以触发跟进。如果 6%、9%、13% 在第一张卡开始发送前一起到达，则可合并为一张，不应为了凑例子强造两张卡。
 
-Liquidations use their own time-window grouping, smart-money reports their own
-account/instrument rounds, and wallet episodes the detector's already-qualified
-snapshot. Raw/unstructured records are stored and readable, not automatically pushed.
-Do not copy OI thresholds into these other families.
+## 5. 发送生命周期与恢复
 
-## 4. Durable notification outcomes
+市场通知保留自己的状态：`pending`、`sending`、`sent`、`failed`、`unknown`、`unavailable`。不要强行把它和编辑型 News 的 adapter outcome 枚举合成同一个字段。
 
-The current market delivery vocabulary is `pending`, `sending`, `sent`, `failed`,
-`unknown`, `unavailable`. `pending` means work exists, not that a reader saw it.
-Optional quote/news context enriches a card but does not establish the measurement.
-A send attempt freezes the chosen payload and settles against the adapter result.
-Provably-not-sent retryable failures use the existing bounded retry policy;
-unknown outcomes do not become blind retries.
+```mermaid
+sequenceDiagram
+    participant L as MarketNotificationLoop
+    participant D as PostgreSQL
+    participant P as 通知提供商
+    L->>D: 归组观察，保存到期意图
+    L->>D: 领取意图，验证证据并冻结正文
+    L->>P: 在事务外发送
+    P-->>L: 成功、可证明未发出、或未知
+    L->>D: 保存实际结果与下一次到期时间
+```
 
-Parsing state, grouped notification state and Trading Case state remain distinct
-in [market API contracts](../CONTRACTS.md). A perfectly valid OI observation can be
-held from another notification and independently analyzed by Trading.
+同一组至多保留一个尚未开始的意图；重试沿用稳定 `delivery_key`，不是每次生成一个新身份。当前可证明未发送的可重试错误最多三次实际尝试，间隔由代码返回 5 秒、30 秒并写入 due time，不在事务里 sleep。
 
-## 5. The Trading handoff
+上个进程留下的 `sending` 不能被当作已发送或确定失败，必须保留未知结果。行情、相关新闻上下文属于可选卡片补充，不成为原始测量的真实性依据。
 
-News commits the public OI fact handoff. `AnalysisRunner.relay_once` resolves a
-single eligible target and records an idempotent Trading Trigger/initial Case,
-then acknowledges the exact News outbox payload. Target mapping, native units,
-source revision and knowledge time are recorded, not guessed from a short ticker.
+## 6. OI 如何进入 Trading
 
-Trading reads bounded market evidence and selects from its current plan menu.
-The retired OI-only deterministic signal lane is not scheduled by Workers. Names
-such as `integrations/nautilus/oi_runtime` remain implementation paths, not proof
-that an old OI rank/cooldown strategy is still the live admission mechanism.
+News 保存公开来源；`AnalysisRunner.relay_once` 解析单一合格目标、原生单位与映射来源，幂等保存 Trigger / Case 后确认相同 outbox payload。是否再发一张市场卡，与是否进行这次研究相互独立。
 
-## 6. Troubleshooting by boundary
+Trading 读取自己的有界市场证据并选择当前计划菜单。旧 OI 专用确定性 signal lane 不再由 Workers 调度；`oi_runtime` 这个历史目录名不能用来推断仍有另一套 OI 交易策略。
 
-| Observation | Next evidence to inspect |
+## 7. 排障与验证
+
+| 现象 | 顺序检查 |
 | --- | --- |
-| Provider frames arrive but typed rows stop | Exact source identity, raw title, parser version and `oi_template_unmatched`/other parse reason. |
-| Similar frames disappear | Item identities and redelivery versus distinct measurement; market frames must not enter editorial near-duplicate grouping. |
-| Typed fact exists but no card | Group anchor, open intent, follow-up reason, delivery configuration and actual send result. |
-| Card exists but no Case | Public trade-event outbox, relay status and named target-selection exclusion. |
-| Case exists but no Signal | Assessment/decision, publication setting, expiry or source supersession; not the notification threshold. |
+| 源消息在增加，类型化 OI 不增加 | 来源身份、原始标题、解析版本和 `oi_template_unmatched` 等原因 |
+| 看似重复消息消失 | 原始身份是重投还是新测量；是否错误走编辑型近似去重 |
+| 事实存在但没卡 | 分组锚点、待发送意图、暂不通知原因、配置与实际发送结果 |
+| 有卡没有 Case | outbox、relay 接收 / 排除结果、经济身份映射 |
+| 有 Case 没 Signal | 决策、发布设置、截止时间和来源修订，而非 OI 通知倍数 |
 
-Use [market-path boundary tests](../../tests/architecture/test_news_market_path_boundaries.py),
-[market notifications](../../tests/integration/test_news_market_notifications.py),
-[market read model](../../tests/integration/test_news_market_read_model.py),
-[Analysis runner](../../tests/integration/test_trading_analysis_runner.py), and
-[Trading strategy tests](../../tests/trading/test_oi_price_strategy.py) to follow
-executable contracts. Historical OI research remains under
-[notebooks](../../notebooks/README.md), outside runtime imports and account authority.
+验证入口：[市场路径边界](../../tests/architecture/test_news_market_path_boundaries.py)、[通知集成](../../tests/integration/test_news_market_notifications.py)、[市场读模型](../../tests/integration/test_news_market_read_model.py)、[Analysis runner](../../tests/integration/test_trading_analysis_runner.py)。历史研究见 [notebooks](../../notebooks/README.md)，不是当前在线收益承诺。

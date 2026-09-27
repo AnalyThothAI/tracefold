@@ -1,41 +1,37 @@
-# Generated contract references
+# 生成契约参考
 
-[Handbook](../README.md) · [Contracts](../CONTRACTS.md)
+[手册](../README.md) · [公开契约](../CONTRACTS.md) · [测试](../TESTING.md)
 
-Generated outputs below are derived from executable contracts, not hand-edited.
-This README is their maintained navigation and regeneration procedure.
+本目录由可执行契约生成精确参考。**这个 README 是人工维护的中文导航，下面的输出不是手工翻译或修改的说明书。** 标识符、列名、CLI 语法与顺序保持生成器原样。
 
-| Output | Authority | Generator |
+| 输出 | 权威来源 | 生成器 |
 | --- | --- | --- |
-| [cli-help.md](cli-help.md) | Actual CLI parsers/help | `scripts/regen_cli_help.py` |
-| [openapi.json](openapi.json) | Mounted FastAPI routes and response schemas | `scripts/regen_openapi.py` |
-| [db-schema.md](db-schema.md) | Isolated migrated PostgreSQL schema and catalog introspection | `scripts/regen_db_schema.py` |
+| [cli-help.md](cli-help.md) | 实际 CLI parser 和 help | `scripts/regen_cli_help.py` |
+| [openapi.json](openapi.json) | 实际挂载的 FastAPI routes / schemas | `scripts/regen_openapi.py` |
+| [db-schema.md](db-schema.md) | 隔离且已迁移数据库的 schema / catalog | `scripts/regen_db_schema.py` |
 
-## Regenerate only the changed contract
+## 只刷新发生变化的契约
 
 ```bash
 uv run python scripts/regen_cli_help.py --check
 make regen-contract
 ```
 
-`regen-contract` also owns committed frontend OpenAPI types. For database docs,
-explicitly set `TRACEFOLD_TEST_POSTGRES_DSN` to an **isolated database already at
-the correct head**, then run `uv run python scripts/regen_db_schema.py`. Without
-that explicit test DSN the generator can read operator config; do not use it
-against production merely to edit documentation.
+`--check` 校验帮助漂移，不重写输出；`regen-contract` 同时更新提交的前端 OpenAPI 类型，需要其实际生成依赖。纯文档措辞变化不要求运行所有生成器。
 
-`make docs-generated` includes database introspection and therefore requires the
-same prepared isolated resource. Preserve the generated ordering and constraints;
-a changed hand-written guide is not a reason to rewrite a schema snapshot.
-[Testing](../TESTING.md) owns the associated resource-backed verification.
-
-## Documentation-only checks
+数据库文档必须显式设置 `TRACEFOLD_TEST_POSTGRES_DSN`，指向**已经迁移到正确 head 的隔离数据库**，再运行：
 
 ```bash
-python scripts/check_mandatory_docs_links.py
-python scripts/sync_agent_router.py --check
+uv run python scripts/regen_db_schema.py
 ```
 
-These commands need no database, model, account or documentation service. Source
-navigation belongs in [Architecture](../ARCHITECTURE.md) and the module guides;
-there is no separate generated function catalog to keep synchronized.
+未设置显式测试 DSN 时，生成器可能读取 operator 配置。不要为了编辑文档连接生产库。`make docs-generated` 同样包含数据库 introspection，需要预先准备隔离资源；它不是普通 Markdown 格式化。
+
+## 文档自身的纯检查
+
+```bash
+python3 scripts/check_mandatory_docs_links.py
+python3 scripts/sync_agent_router.py --check
+```
+
+以上不需要模型、账户或数据库。源码导航与模块责任放在[系统架构](../ARCHITECTURE.md)和模块手册，不再生成第二份无人维护的全函数清单。
