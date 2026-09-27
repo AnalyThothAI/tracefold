@@ -1,52 +1,37 @@
-# Issue 717: News one-hour baseline and offline replay
+# Issue 717：固定一小时基线与离线回放
 
-Source: [Issue 717](https://github.com/AnalyThothAI/tracefold/issues/717).
-All production reads below used a read-only PostgreSQL transaction. No production
-row was changed and the candidate code was not deployed for this comparison.
+[News 手册](../modules/news.md) · [Issue 717](https://github.com/AnalyThothAI/tracefold/issues/717)
 
-## Fixed observation window
+本文保留 #718 合并时的源证据与回放记录。下述原始调查对生产库使用只读 PostgreSQL 事务，没有修改生产行，也没有为此次比较部署候选代码。**本次中文文档整理没有重新执行这些生产查询或离线实验。**
 
-2026-09-27 **14:02:27.742–15:02:27.742 UTC** (`adopted_at_ms >=
-1790517747742 AND adopted_at_ms < 1790521347742`). The window was fixed before
-the implementation replay. Counts include adopted EventUpdates, not raw Items.
+## 1. 固定观察窗口
 
-| Measure | Production baseline | Candidate offline replay | Interpretation |
+2026-09-27 **14:02:27.742–15:02:27.742 UTC**，即 `adopted_at_ms >= 1790517747742 AND adopted_at_ms < 1790521347742`。窗口在实施回放之前固定，计数对象为已采用 EventUpdate，不是原始 Item。
+
+| 指标 | 生产基线 | 候选离线回放 | 解释 |
 | --- | ---: | ---: | --- |
-| Adopted revisions / Events | 52 / 45 | Same 52 inputs | No admission or Event identity change. |
-| Claim slots across adopted documents | 104 | 102 for the two affected revisions; other revisions unchanged | Each of the two duplicate revisions loses one redundant ref. |
-| Extra Claims with identical structured fields | 2 in 2 revisions (0.038/revision) | 0 in those 2 revisions | This is a duplicate proxy, not a semantic identity oracle. |
-| Evidence relations in the two affected revisions | 26 + 14 | 26 + 14 | Source relationships survive ref reuse. |
-| Public catalyst rows for the two affected revisions | 2 | 0 | Repeated propositions stop being republished as new catalysts. Source updates remain. |
-| Semantic observations | 52 | Not measured live | Candidate replay starts from persisted understanding. |
-| Evidence snapshot to semantic completion | P50 14.738 s; P95 66.703 s, n=52 | Not measured live | Latest snapshot creation at or before completion is the start proxy; it includes queue and model time. |
-| Adoption to sent provider receipt | P50 31.041 s; P95 87.472 s, n=28 | Not measured live | Joined update revision to actual `news_deliveries` sent receipt. |
-| Selected refs in sent cards | 49 across 28 sent intents; one card selected two Claims with identical fields | That affected update replays with one ref | The card itself was not regenerated or resent offline. |
-| Judgment cache writes | 1,420 | Not measured live | Cache writes are **not** generation calls. |
+| 已采用修订 / Event | 52 / 45 | 相同 52 个输入 | 准入和 Event 身份未改变 |
+| 已采用文档中的 Claim 槽位 | 104 | 102；只修改两个受影响修订，其余不变 | 两个重复修订各减少一个冗余 ref |
+| 结构化字段完全相同的额外 Claim | 2 个，位于 2 个修订；0.038 / 修订 | 这两个修订中为 0 | 这是重复筛查代理，不是语义身份真值 |
+| 两个受影响修订的证据关系 | 26 + 14 | 26 + 14 | ref 复用保留来源关系 |
+| 两个受影响修订的公开 catalyst 行 | 2 | 0 | 重复命题不再发布为新催化；source update 保留 |
+| 语义观察数 | 52 | 未测量线上结果 | 候选回放从持久理解结果开始 |
+| 证据快照至语义完成 | P50 14.738 s；P95 66.703 s；n=52 | 未测量线上结果 | 起点取完成前最近快照创建时间，包含队列与模型耗时 |
+| 采用至提供商 sent 回执 | P50 31.041 s；P95 87.472 s；n=28 | 未测量线上结果 | 按 update revision 关联实际 `news_deliveries` sent 回执 |
+| 已发卡片中的选中 refs | 28 个 sent intent 共 49 个；一张卡选择了两个字段相同 Claim | 受影响 update 回放后只保留一个 ref | 离线没有重新生成或发送卡片 |
+| judgment cache 写入数 | 1,420 | 未测量线上结果 | 缓存写入次数**不是**生成调用次数 |
 
-The production database and worker logs do not provide a reliable count of
-generation calls per adopted revision, so that requested metric is unmeasured.
-There were no newly failed terminal semantic rows in the fixed hour. At
-15:14:50 UTC, the current ledger contained one exhausted `news_generation_output_contract_invalid`
-revision (`attempts=3`, wanted 2, done 1). The old pending query counted it as
-pending; the candidate query classifies it as `semantic_failed_exhausted=1`,
-`semantic_pending=0`, `semantic_deferred=0`.
+生产数据库和 Worker 日志没有提供可靠的“每个已采用修订的生成调用数”，因此该指标未测量。固定窗口内没有新产生的终结语义失败行。
 
-## Wider duplicate replay
+在 **15:14:50 UTC** 的账本中，有一个耗尽的 `news_generation_output_contract_invalid` 修订：`attempts=3`、wanted 2、done 1。旧 pending 查询把它计为积压；候选查询将其归为 `semantic_failed_exhausted=1`、`semantic_pending=0`、`semantic_deferred=0`。
 
-A read-only scan of the preceding 24 hours found seven adopted revisions whose
-Claim arrays gained 14 extra entries with exactly equal structured fields.
-The original Issue audit identified one further duplicate revision with
-different structured fields. Its two source texts and their complete citation
-quotes are identical, while the second reading omitted an earlier quantity
-and the relation model returned `unrelated`. The narrow repeated-source rule
-also reuses that Claim. For each revision, the replay used its persisted
-understanding, preceding EventUpdate head, adopted evidence and relation refs.
-Unrelated referenced priors were supplied as placeholders only to preserve
-their ref for assembly; the
-replay evaluated local `equivalent` relations against the actual prior head.
-It did not call a model, rewrite the ledger or resend a card.
+## 2. 扩大的重复命题回放
 
-| Event prefix / input revision | Prior Claims | Original Claims | Replayed Claims | Evidence links, original → replay | Public kind, original → replay |
+对此前 24 小时的只读扫描发现：七个已采用修订共新增了 14 个结构化字段完全相同的额外 Claim。原 Issue 另识别出一个字段不完全相同的重复修订：两份源文本与完整引文一致，第二次理解遗漏了先前数量，关系模型返回 `unrelated`。窄范围的完整同源规则也能复用该 Claim。
+
+每次回放使用持久理解结果、前一 EventUpdate head、已采用证据与关系 refs。无关的被引用 prior 只用占位对象保留引用；本地 `equivalent` 关系针对真实旧 head 评估。回放没有调用模型、改写账本或重发卡片。
+
+| Event 前缀 / input revision | 原 head Claim | 原更新 Claim | 回放 Claim | 证据关系：原 → 回放 | 公开类型：原 → 回放 |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `4c237c35ae73` / 2 | 13 | 14 | 13 | 26 → 26 | catalyst + source → source |
 | `5607de8273ee` / 2 | 3 | 5 | 3 | 6 → 6 | catalyst + source → source |
@@ -57,31 +42,16 @@ It did not call a model, rewrite the ledger or resend a card.
 | `c4fcaa49882a` / 4 | 3 | 6 | 3 | 12 → 12 | catalyst → source |
 | `d676f6debe4d` / 2 | 7 | 8 | 7 | 14 → 14 | catalyst + source → source |
 
-The five BUG-D revisions named in the original Issue audit go from **10 extra
-Claim refs → 0**. Across all eight replayed revisions, **15 extra refs → 0**,
-with every revision retaining the original number of evidence relations.
-Seven false catalyst projections disappear.
-The last and first rows above are the two revisions in the fixed hour. Exact
-structured-field equality is a screening proxy: a genuine A→B→A occurrence can
-share fields, so the result relies on the persisted local equivalent relations
-and the separate reversal regression test.
+原 Issue 审计命名的五个 BUG-D 修订从 **10 个额外 Claim ref → 0**；全部八个回放修订从 **15 个额外 ref → 0**，每个修订保留原有证据关系数量。七个错误的新 catalyst 投影消失。表格首行和末行是固定一小时窗口中的两个修订。
 
-## Reader copy and failure recovery
+结构化字段完全相同只是筛查代理：真实 A → B → A 转换也可能重现同样字段。因此该结论依赖持久本地等价关系以及单独的反转回归测试，不意味着“字段一样就能合并全部事件”。
 
-The 10:37:24 UTC sent BUG-C card (outside the fixed hour) rendered a Persian
-Claim about publishing photos of a second captured US drone as a second sunk
-US submarine. Its adopted `statement`, structured `object` and citation quote
-refer to `زهپاد` (drone), with quantity 2. The candidate composer now receives
-only that selected claim's statement, fields, exact quote and minimal source
-identity, and its instruction explicitly preserves object, action, quantity,
-attribution and phase. The frozen regression checks this input contract and a
-faithful scripted rendering. A live model output after deployment remains to be
-observed; the scripted test does not prove that every model response is factual.
+## 3. 卡片保真与失败恢复
 
-Truncation is now classified from the provider response's structured
-`finish_reason=length`, and no raw response sample is logged. A distinct
-configured fallback can answer once; without one, a deterministic output or
-reference fault fails the revision on its first attempt. Transient provider
-failures still use the existing bounded retry path. Unit tests cover these
-branches. Production effects on failure rate, model calls and P50/P95 require
-an equal-length post-deployment window with the same definitions.
+固定窗口外 **10:37:24 UTC** 发送的 BUG-C 卡片，把波斯语 Claim 中“公布第二架被捕获美国无人机的照片”写成了“第二艘被击沉的美国潜艇”。其已采用 `statement`、结构化 `object` 和引文均指向 `زهپاد`（无人机），数量为 2。
+
+候选 composer 只接收选中 Claim 的 statement、fields、精确引文和最少来源身份，指令明确要求保留对象、动作、数量、归因与阶段。冻结回归验证输入契约以及忠实的脚本文案；**部署后的真实模型输出仍待观察，脚本测试不证明所有模型回答都正确。**
+
+截断通过提供商结构化 `finish_reason=length` 分类，不再记录原始响应片段。配置了实质不同的 fallback 时可补答一次；没有这样的路由时，固定输出契约或引用错误在首次尝试显式失败。临时 provider 失败仍走原有有界重试。单元测试覆盖这些分支。
+
+对失败率、模型调用次数及 P50 / P95 的生产改善，仍需部署后采用**相同时长、相同指标定义**的窗口比较。本文没有给出这些尚未测得的结论。

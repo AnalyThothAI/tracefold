@@ -1,206 +1,180 @@
-# Setup
+# 安装与配置
 
-[Handbook](README.md) · [Operations](OPERATIONS.md) · [Architecture](ARCHITECTURE.md)
+[手册](README.md) · [系统架构](ARCHITECTURE.md) · [运维](OPERATIONS.md) · [数据库迁移](MIGRATIONS.md)
 
-This page owns the normal installation and development paths. It is not a history
-of retired settings or a second copy of the News pipeline. Version-specific
-upgrade and recovery instructions belong to [Migrations](MIGRATIONS.md) and
-[Operations](OPERATIONS.md).
+推荐使用仓库的 **Make + Docker Compose** 启动完整应用。应用配置只有 `~/.tracefold/config.yaml` 一份；前后端一起构建，Nautilus 执行角色独立管理。
 
-## 1. Prerequisites
+## 1. 前置条件
 
-Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose plugin,
-`curl` and [GitHub CLI](https://cli.github.com/). Start the Docker daemon and run
-`gh auth login --hostname github.com`. The current Makefile preflight checks these
-tools, authenticated repository access and the source/deployment identity.
+| 工具 | 用途 |
+| --- | --- |
+| Git、Make | 获取代码与执行仓库工作流 |
+| [uv](https://docs.astral.sh/uv/) | 使用锁文件与项目 Python 3.13；宿主机默认 Python 不必作为项目解释器 |
+| Docker 与 Compose 插件 | 构建应用、运行 PostgreSQL / RabbitMQ 和各进程 |
+| curl | 就绪与工作台检查 |
+| [GitHub CLI](https://cli.github.com/) | 登录、构建访问与精确 main CI 验证 |
+| Node / npm | 仅本地前端开发需要；运行已构建应用镜像不要求宿主机单独启动 Vite |
 
-The project interpreter is pinned by [`.python-version`](../.python-version);
-[uv.lock](../uv.lock) owns resolved Python dependencies and
-[web/package-lock.json](../web/package-lock.json) owns the frontend lock.
-The Docker build includes the console; Node/npm on the host is needed for a
-frontend development loop, not to serve an already built application image.
+解释器以 [.python-version](../.python-version)为准，Python 依赖以 [uv.lock](../uv.lock)为准，前端以 [package-lock.json](../web/package-lock.json)为准。Docker daemon 必须已启动，当前终端必须能访问它。
 
-Use the normal primary checkout on `main` for the supported deployment path.
-The deployment checks bind the build to the expected clean, green `origin/main`
-identity. A task worktree is for isolated development, not a reason to bypass that
-boundary. [Worktrees](agents/worktrees.md) documents repository checkout handling.
+macOS 使用具备这些工具的终端；Windows 开发建议在已配置 Docker 访问的 WSL Linux shell 中使用同一套命令。不要把工作树的 `.git` 文件替换成目录，或让 Windows 与 WSL 的绝对 Git 路径相互污染。
 
-## 2. Fresh installation
+## 2. 首次启动
 
 ```bash
-git clone git@github.com:AnalyThothAI/tracefold.git
+gh auth login --hostname github.com
+gh repo clone AnalyThothAI/tracefold
 cd tracefold
 make up
 ```
 
-The console is **http://127.0.0.1:8765/**. Check actual success before opening it:
+访问 **http://127.0.0.1:8765/**。使用符合源码与 CI 检查的干净 `main` 主检出目录运行部署；任务 worktree 用于开发，不是跳过检查的理由。
+
+```mermaid
+flowchart TD
+    Preflight["工具、源码身份与 main CI"] --> Init["初始化用户配置与文件"]
+    Init --> Build["构建应用镜像与前端"]
+    Build --> Infra["启动 PostgreSQL / RabbitMQ"]
+    Infra --> Policy["应用 RabbitMQ 策略"]
+    Policy --> Migrate["执行一次性迁移并等待结束"]
+    Migrate --> Result{"退出码为 0"}
+    Result -->|"是"| App["启动 Serve / Workers / Analysis"]
+    Result -->|"否"| Stop["保留应用停止状态并报告失败"]
+    App --> Ready["验证应用、探针与静态工作台"]
+```
+
+[Makefile](../Makefile)不仅调用 Compose，还等待迁移进程真正退出。不能仅因为 `depends_on` 或部分容器 running 就宣布启动成功。再次 `make up` 会构建并更新应用角色，不应该无故重建已有数据库容器。
 
 ```bash
-make status
+make status-app
+docker compose logs --tail=100 analysis
 make logs
 ```
 
-```mermaid
-flowchart TB
-    Check["Preflight and source identity"] --> Init["Initialize operator files"]
-    Init --> Build["Build application image"]
-    Build --> Infra["PostgreSQL and RabbitMQ"]
-    Infra --> Policy["Apply broker policy"]
-    Policy --> Migrate["Run migration to completion"]
-    Migrate -->|"exit 0"| App["Start Serve, Workers and<br/>Analysis"]
-    App --> Verify["Required service, readiness<br/>and console checks"]
-    Migrate -->|"failure"| Stop["Leave application roles<br/>stopped; expose logs"]
-```
+**`make status-app` 检查应用栈；`make status` 还会检查可选执行 Runtime。** 没有启用 Runtime 时，不用后者的非零结果判断整个新闻应用启动失败。
 
-The exact orchestration is [Makefile](../Makefile) and [compose.yaml](../compose.yaml).
-The one-shot migration must complete successfully before application roles start.
-A failed command returns non-zero and names its boundary; do not interpret a
-partially running stack as a completed startup.
+## 3. 初始化生成什么
 
-A later `make up` rebuilds/recreates the application roles without unnecessarily
-recreating an already running PostgreSQL container. Operator files and named
-volumes persist. `make down` stops Nautilus first and then the remaining services;
-it does not delete data volumes. Do not add `docker compose down -v` to routine
-upgrade or troubleshooting instructions.
-
-## 3. Initialization and configuration ownership
-
-`make up` invokes `tracefold init`. The resulting operator directory is:
+`make up` 自动调用 `tracefold init`；也可以在首次启动前执行 `make init`，先查看和编辑配置。
 
 ```text
 ~/.tracefold/
-  config.yaml
-  postgres_password
-  postgres_database_password
-  telegram_bot_token
-  binance_usdm_api_key
-  binance_usdm_api_secret
-  archive/
-  cache/
-  logs/
+├── config.yaml
+├── postgres_password
+├── postgres_database_password
+├── telegram_bot_token
+├── binance_usdm_api_key
+├── binance_usdm_api_secret
+├── archive/
+├── cache/
+└── logs/
 ```
 
-`config.yaml` is the only application configuration authority. Initialization
-creates a local API bearer token, no external credentials, and empty delivery/
-execution placeholders. Directories are private (`0700`); config/secret files
-use `0600`. The initializer preserves existing config contents and passwords
-while repairing required permissions.
+初始化生成本地 API bearer 和数据库密码，不会生成可用的外部新闻、模型或交易所凭据。推送 / 执行文件是待填写的占位文件。目录权限为 `0700`，配置与密钥文件为 `0600`。
 
-**`tracefold init --force` replaces config.yaml with generated defaults.** It is
-not the ordinary upgrade command and does not rotate existing database passwords.
-Back up intentional operator choices before using it.
+已有配置内容和数据库密码保留，必要权限会修正。**`tracefold init --force` 会把 config.yaml 替换为生成默认值，不是升级命令，也不会轮换既有数据库密码。** 不要用它处理一个不认识的字段错误。
 
-There is no maintained static sample YAML or `.env` fallback. Read the generated
-file and the actual [typed settings](../tracefold/platform/config/models.py).
-Inspect paths and redacted values without printing raw credentials:
+应用配置不从当前目录读取，不维护另一份手写 `config.example.yaml`，也没有 `.env` fallback。生成配置与[类型化设置](../tracefold/platform/config/models.py)共同解释当前支持的字段。
 
 ```bash
 uv run tracefold config
 uv run tracefold --help
 ```
 
-Source code owns default values and accepted fields. Some resource budgets are
-explicit Analysis settings; others are fixed in their owning implementation.
-Do not copy an old exhaustive list of knobs or assume any undocumented key works.
+`config` 输出脱敏值与路径；不要为了排障直接打印所有原始文件。
 
-### Capabilities can be enabled separately
+## 4. 按能力配置，而不是一次开启所有功能
 
-| Capability | Configuration owner and expected behavior |
-| --- | --- |
-| News ingestion | `news.opennews_token` and `news.broker`; enabled source Strategies are chosen in the provider account, not a local strategy-ID allowlist. |
-| Editorial models | Complete `llm` generative endpoint settings, optional ReaderCard/fallback routes and optional News-specific `llm.news_judgment`; partial credentials are rejected. |
-| Notifications | `news.push`; disabled by default. Explicitly enabling an invalid provider configuration is not a successful delivery setup. |
-| Wallet episodes | Current wallet/chain settings and adapters; roster, receipt collection, detection and price evidence report separately. |
-| Trading analysis | `trading.enabled` and `trading.analysis`; disabled by default, with bounded market/model resource settings. |
-| Signal publication | `trading.analysis.publish_signals`; false by default and independent of whether research decisions exist. |
-| Execution | `trading.execution`, secure credential files and explicit runtime lifecycle; disabled by default. |
+| 能力 | 配置入口 | 初始状态与注意事项 |
+| --- | --- | --- |
+| News 接收 | `news.enabled`、`news.opennews_token`、`news.broker` | News 默认 enabled，但没有外部 token 不会产生来源数据 |
+| 编辑型模型 | `llm.api_key`、`llm.base_url`、`llm.news_triage_model` | 完整一组；字段名保留历史拼写，但当前调用 EventUpdate Agent |
+| 中文卡片路由 | `llm.news_reader_card` 及对应 fallback | 可选独立完整 endpoint；未配置时按实际装配复用默认生成能力 |
+| News 有界原生判断 | `llm.news_judgment` | 可选完整 `api_key / base_url / model`，不从 Trading 路由推断 |
+| 新闻 / 市场推送 | `news.push` | 默认关闭；Feishu / Telegram 各需自身有效目的地与凭据 |
+| 钱包净买入 | `news.chain_tape` | 默认关闭；名单、RPC、规则与后续价格能力分开诊断 |
+| Trading Analysis | `trading.enabled`、`trading.analysis` | 默认关闭；需要研究模型和有界市场证据 |
+| Signal 发布 | `trading.analysis.publish_signals` | 默认 false；有研究决策也可以不发布 |
+| 账户执行 | `trading.execution` | 默认关闭；另配连接、凭据、风险并显式管理 Runtime |
 
-Without optional credentials the corresponding capabilities are idle, unavailable
-or degraded; no fake feed or model answer is produced. Required shared infrastructure
-still matters: an enabled News transport cannot silently run without its broker.
-See the module guides for the resulting [News](modules/news.md),
-[wallet](modules/wallets.md) and [Trading](modules/trading.md) paths.
+以下是**合并到生成配置中的字段示例，不是完整配置文件**；占位值必须替换，未填写前不要期待模型或新闻正常工作：
 
-## 4. Container addresses, mounts and public links
+```yaml
+news:
+  opennews_token: "<你的新闻源凭据>"
+  push:
+    enabled: false
 
-The generated PostgreSQL DSN and broker URL use Compose-network addresses and are
-used as written. They are not automatically rewritten for a host-side CLI.
-Run database/broker diagnostics in an appropriate application container:
+llm:
+  api_key: "<你的模型端点凭据>"
+  base_url: "https://your-model-endpoint.example/v1"
+  news_triage_model: "<端点实际提供的模型名称>"
 
-```bash
-docker compose exec -T workers tracefold news bus-check
-docker compose exec -T workers tracefold db audit
+trading:
+  enabled: false
 ```
 
-Fresh-volume `initdb` creates the application login and required extensions.
-The bootstrap password and ordinary database password are separate. Application
-roles share the application database login with role-specific composition and
-`application_name`; the bootstrap superuser credential is not an application mount.
-An unknown non-empty data volume is not silently repaired or reinterpreted.
+启用的来源 Strategy 在提供商账户管理，不是本地维护一个过时的 ID 白名单。模型 endpoint 组只填一部分会被拒绝；当前 News fallback 与 ReaderCard fallback 也有明确配置依赖，按 Settings 错误路径修正，不复制旧 YAML。
 
-Bind mounts and secret exposure are explicitly role-scoped in Compose. Only
-Nautilus receives the Binance execution credential files. Analysis uses the
-configured connection identity and its own public-market/model adapters, not
-account-write credentials. See [Security](SECURITY.md).
+推送无效可能只使 delivery capability unavailable；模型缺失、行情不可用和钱包尚未形成完整监控窗口分别展示，不能用一条“服务未启动”概括。空数据不是自动注入模拟内容的理由。
 
-Published bindings are declared in Makefile and Compose. Use an explicit Make
-command-line override for an intentional binding change; do not introduce an
-untracked Compose override or `.env` to create another deployment definition.
-Changing a published database binding can recreate its container, so treat it as
-an operational change, not a harmless UI preference.
+## 5. 网络、端口与挂载
 
-`api.host` / `api.port` describe a bind address. `api.public_url`, when set, is the
-operator's externally reachable absolute HTTP(S) URL for reader links; it is not
-guessed from that bind address. It must not contain query or fragment components.
-Public HTTP is read-only. Browser bootstrap/auth does not grant command authority.
+| 服务 | 默认宿主机绑定 | 容器内含义 |
+| --- | --- | --- |
+| PostgreSQL | `127.0.0.1:56532` | `postgres:5432` |
+| RabbitMQ AMQP | `127.0.0.1:5672` | `rabbitmq:5672` |
+| RabbitMQ 管理 | `127.0.0.1:15672` | 管理接口，不是应用 HTTP |
+| Serve / 工作台 | `127.0.0.1:8765` | 只读 API 与生产静态资源 |
+| Workers 探针 | `127.0.0.1:8766` | Workers 存活、就绪与指标 |
+| Nautilus 探针 | `127.0.0.1:8767` | 仅独立 Runtime 运行时可用 |
 
-## 5. Updating an existing installation
+[compose.yaml](../compose.yaml)与 Makefile 拥有全部实际绑定。Analysis 也有自己的容器健康检查，不应凭空假设还有一个公开端口。
 
-Read the affected migration notes, preserve the operator config and take the
-backup appropriate to the change. Strict settings reject removed keys by name.
-Remove only the documented obsolete field at its correct YAML path; do not use
-old indentation-blind regex snippets to delete every similarly named key.
+生成的 PostgreSQL DSN 和 broker URL 使用容器网络地址，系统不会为宿主机 CLI 自动改写。因此数据库与 broker 诊断应在具备这些地址和挂载的容器内执行：
 
-For the EventUpdate cut, remove the retired `news.policy` and
-`llm.news_compiler_reflection` fields at their exact paths. The forward-only
-0404/0405 schema changes and writer coordination are documented in [Migrations](MIGRATIONS.md).
+```bash
+docker compose exec -T workers tracefold db audit
+docker compose exec -T workers tracefold news bus-policy verify
+```
 
-Validate configuration before restarting roles. A plain `tracefold init` does
-not rewrite old key shapes. A schema change underneath a running execution owner
-requires coordinated maintenance; do not bypass it simply to make `make up` pass.
-[Migrations](MIGRATIONS.md) owns the supported baseline/head and destructive-cut
-requirements. Pre-baseline backups need their recorded source/image and restore
-procedure, not improvised SQL against current main.
+初始数据库的 bootstrap 密码与应用用户密码不同。应用角色使用普通应用登录，以装配能力、事务设置和 `application_name` 区分用途；不向 Serve / Workers / Analysis 挂载 bootstrap 超级用户凭据。
 
-For a same-schema exact-image replacement, use the narrow `make deploy-image`
-procedure in [Operations](OPERATIONS.md). It validates image/source/database
-compatibility and does not downgrade PostgreSQL or automatically replace the
-execution process. This page deliberately does not duplicate that runbook.
+只有 Nautilus 挂载 Binance 执行密钥。Analysis 使用公共市场 / 模型适配和连接身份，不应为研究顺手获得账户写凭据。
 
-## 6. Optional execution lifecycle
+改变端口请使用 Makefile 明确支持的命令行变量，不加入另一个未跟踪的 Compose override 或 `.env`。数据库绑定改变可能导致容器重建，应作为运维变更处理。
 
-Nautilus uses a separate `tracefold-runtime:<sha>` image. A News/frontend change
-must not restart the account owner implicitly. Its commands are:
+`api.host` / `api.port` 是监听地址；`api.public_url` 是读者可访问的绝对 HTTP(S) 链接基础地址，不能有 query / fragment，不从 `0.0.0.0` 或 loopback 猜出来。对公网开放工作台前阅读[安全边界](SECURITY.md)。
+
+## 6. 升级已有安装
+
+先确认源版本、镜像和数据库 head，保存配置与适用备份，再处理确切的已删除字段。EventUpdate 切换删除了 `news.policy` 与 `llm.news_compiler_reflection`；钱包双窗口的 `news.chain_tape.rules.net_buy_fast_n` 也不再支持。
+
+只删除对应 YAML 路径，不批量清除所有同名 key。普通 `init` 保留旧配置，`init --force` 不是迁移工具。0404 / 0405 的前向切换与协调写进程要求见[迁移指南](MIGRATIONS.md)。
+
+已有 Runtime 运行时，不能在其持有账户的同时随意改变数据库契约。`make up` 不会替你重启执行进程；精确镜像替换的范围见[运维](OPERATIONS.md#deployment)。
+
+## 7. 可选执行生命周期
 
 ```bash
 make runtime-build
 make runtime-status
 make runtime-logs
-# Only for an explicitly configured and authorized execution operation:
-make runtime-up
-make runtime-restart
-make runtime-down
 ```
 
-There is one configured Binance connection, not an in-process Paper simulator.
-Environment selection and account authority are documented in
-[Execution](modules/execution.md), [Security](SECURITY.md), and [Operations](OPERATIONS.md).
-Starting research or following this installation guide does not authorize trading.
+`runtime-build` 生成 `tracefold-runtime:<sha>` 镜像。真正的 `runtime-up`、`runtime-restart`、`runtime-down` 是独立、显式的执行生命周期操作；是否有交易权限取决于实际配置、作用域和账户状态，不取决于是否完成了本安装指南。
 
-## 7. Development loops
+没有内置 Paper 模拟器；`trading.execution.binance.environment` 指定原生适配器目标，`LIVE` / `DEMO` / `TESTNET` 也必须配合相应凭据。不要假设未设置环境就一定是测试连接。
 
-Use an isolated task checkout and preserve unrelated changes. For frontend work,
-keep an intentionally managed backend stack available and run:
+## 8. 本地开发
+
+在[独立 worktree](agents/worktrees.md)安装锁定 Python 依赖：
+
+```bash
+uv sync --frozen
+```
+
+前端开发使用有意配置的后端：
 
 ```bash
 cd web
@@ -208,38 +182,14 @@ npm ci
 npm run dev
 ```
 
-[Vite configuration](../web/vite.config.ts) proxies API requests to the local
-backend. The console uses HTTP and persisted read models, not a hidden live
-WebSocket subscription. [Frontend](FRONTEND.md) owns the detailed frontend workflow.
+需要进程级调试时，先配置**隔离的**数据库 / broker，再在分别管理的终端运行 `uv run tracefold serve`、`uv run tracefold workers`、`uv run tracefold analysis`。不要在生产 Workers 正占有相同数据库时再启动另一个所有者。
 
-A host-process backend loop is an explicit alternative, not another default
-installation path. Provision a separate development database/broker, set addresses
-reachable from the host, and avoid running duplicate owners against production
-state. After installing dependencies and migrating that development database:
+开发服务器与生产镜像路径不是同一验证证据。提交前按[开发指南](DEVELOPMENT.md)与[测试指南](TESTING.md)选择检查，不让每个文档改动都启动完整部署。
+
+## 9. 停止
 
 ```bash
-uv sync --frozen
-uv run tracefold db migrate
-# Run intentionally enabled process roles in separate terminals:
-uv run tracefold serve
-uv run tracefold workers
-uv run tracefold analysis
-# In another terminal:
-cd web && npm run dev
+make down
 ```
 
-Do not run this block sequentially expecting foreground processes to return.
-Execution remains independently managed, not a required development terminal.
-
-## 8. Verification and diagnosis
-
-```bash
-make check
-make test-fast
-```
-
-These are development checks, not deployment commands. [Testing](TESTING.md)
-names resource-backed CI lanes; [Operations](OPERATIONS.md) explains service status,
-queue state, business progress and backups. For startup failures, inspect the
-failed boundary before changing config or deleting data. Report redacted paths,
-boolean states and error codes, never credentials or full operator config.
+先停止 Nautilus，再停止应用与依赖；保留配置和数据卷。不要把 `docker compose down -v` 加入日常升级或排障步骤。进程停止也不表示交易所仓位自动关闭。

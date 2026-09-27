@@ -1,55 +1,41 @@
-# Issues and pull requests
+# Issue、PR 与协作标签
 
-Use GitHub in `AnalyThothAI/tracefold` for durable requests and review. Use the
-connected GitHub tools or an available `gh` CLI; neither tool is mandatory.
-Resolve an ambiguous number as an Issue or PR before acting on it.
+[手册](../README.md) · [开发](../DEVELOPMENT.md) · [worktree](worktrees.md)
 
-## Scope before bureaucracy
+使用 `AnalyThothAI/tracefold` 的 GitHub 记录持久需求与审阅。可使用已连接工具或可用的 `gh`，不强制某一种客户端。编号含义不清时先读取，确认是 Issue 还是 PR 后再修改。
 
-A clear user request or an existing PR discussion is sufficient to implement a
-bounded change. Create or update an Issue when the work needs a durable product
-specification, coordination, unresolved decisions, or tracking beyond the PR.
-Do not create a duplicate Issue merely because a skill expects a ticket.
+## 先确定结果，不增加不必要手续
 
-For a substantive Issue, state the problem, observable outcome, affected owners,
-and acceptance evidence. Add constraints, non-goals, migration, or rollout details
-only when they matter. Read the relevant discussion before changing an existing
-agreement. Keep material decisions in that Issue or the implementing PR, rather
-than copying the same plan into several trackers and documents.
+明确用户请求或已有 PR 讨论可以授权有界实现。只有需要持久产品规格、多人协调、未决选择或跨 PR 跟踪时才创建 / 更新 Issue；不要因技能模板需要票据而复制一份已有任务。
 
-## Default: one complete outcome, one PR
+实质 Issue 应说明问题、可观察结果、受影响模块和验收证据；约束、非目标、迁移与发布仅在确有影响时加入。修改既有方案前阅读相关讨论，把重要决定保存在该 Issue 或实现 PR，不到处复制相同计划。
 
-A cohesive change includes implementation, affected callers, tests, documentation,
-generated outputs, and deletion of replaced internal paths. Frontend, backend,
-schema, and tests are not separate PRs merely because they are separate directories.
-Likewise, a checklist, TDD cycle, investigation step, or task in a plan is not a PR
-boundary. Continue through the requested outcome rather than stopping after its
-first small slice.
+## 默认一个完整结果，一个 PR
 
-Split when parts can genuinely be reviewed, delivered, or rolled back independently,
-when a migration requires staged rollout, or when size makes reliable review
-impractical. Explain the reason, dependencies, and completion condition. There is
-no mandatory PR count, line limit, or maximum number of files. Do not fragment a
-hard cut into temporary compatibility layers solely to make smaller diffs.
+实现、前后端调用方、schema、测试、文档、生成物和旧路径清理可以共同组成一个完整 PR。目录不同、TDD 步骤、调查阶段或 checklist 项目不是自动拆分理由。
 
-Sub-issues, maps, dependencies, assignments, and labels are optional coordination
-tools for genuinely independent work. Do not automatically create a `/wayfinder`
-map, claim a ticket as the session's first write, or limit execution to the first
-unassigned child. Existing project coordination still matters when applicable;
-implementation authorization and scope come from the actual request.
+真正可独立审阅、交付、回滚的变化，分阶段迁移，或规模影响可靠审阅时可以拆分，并说明依赖与完成条件。没有强制 PR 数量、行数或文件数上限；不要为了缩小 diff 引入临时双写、兼容 alias 和残留旧路径。
 
-## PR delivery
+子 Issue、依赖、分配和地图是可选协调工具，不默认创建 `/wayfinder` 图，不把“认领票据”当会话第一项必需写操作，也不把实现限制为第一个未分配子任务。实际授权仍以当前请求为准。
 
-Use the [PR template](../../.github/pull_request_template.md) as a short review aid:
-what changed, why, and how it was checked. Link a governing Issue when one exists;
-otherwise put the request and acceptance summary in the PR. Omit irrelevant
-fields instead of filling a checklist with invented evidence or repeated `N/A`.
+## PR 交付
 
-Report meaningful contract changes and verification gaps. A PR can be submitted
-while CI is pending; only an authorized merge depends on the required checks for
-its current HEAD. PR submission, merge, deployment, and production acceptance are
-separate outcomes.
+[PR 模板](../../.github/pull_request_template.md)是简短审阅辅助：改了什么、为什么、如何验证。有治理 Issue 就链接；没有就在 PR 描述请求和验收范围。省略无关字段，不填虚构检查结果或重复的 `N/A`。
 
-Close an Issue only when its stated outcome is met, or explain another disposition.
-Use `Closes #N` only for full completion; partial work should describe what remains.
-[Triage labels](triage-labels.md) assist coordination and are not permission gates.
+报告重要契约变化、真实检查与剩余未知。CI 等待期间可以提交 PR；只有执行已授权合并时才需要核对当前 HEAD 必需检查和仓库规则。提交、合并、部署和生产验收不是同一完成状态。
+
+`Closes #N` 只用于完成整个对应结果。部分实现说明剩余事项；关闭 Issue 需确实满足范围，或说明不再实施的原因。
+
+## 标签只描述协调状态
+
+优先使用仓库已有标签，不因为缺少标签创建 / 分配而阻塞清楚的实现任务。
+
+| 标签 | 含义 |
+| --- | --- |
+| `needs-triage` | 范围或优先级需要评估 |
+| `needs-info` | 存在确实阻止下一步的具体未决问题 |
+| `ready-for-agent` | 任务已足够明确，可继续实现 |
+| `ready-for-human` | 需要真实的人类决定、权限或当前无法自动完成的动作 |
+| `wontfix` | 不实施，并明确说明原因 |
+
+标签不授权变更，也不决定 AI 能否实现。某个工具或资源缺失应指出具体受阻步骤，不把整个任务泛化为“只能人工实现”。不修改无关标签，不复制另一套技能仓库工作流。

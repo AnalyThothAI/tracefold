@@ -1,204 +1,164 @@
-# Trading Analysis: source, Case, decision and Signal
+# Trading Analysis：从公开事实到受限交易研究
 
-[Handbook](../README.md) · [Architecture](../ARCHITECTURE.md) ·
-[Execution](execution.md) · [OI](oi.md)
+[手册](../README.md) · [系统架构](../ARCHITECTURE.md) · [News](news.md) · [Execution](execution.md)
 
-Trading Analysis owns an auditable research decision for one eligible target. It
-is a separate process from News Workers and from the account-owning Nautilus
-Runtime. It does not import News internals, place orders or treat a delivered
-reader card as execution permission.
+Trading Analysis 回答：“基于当时可见的来源和市场证据，是否选择当前代码允许的某个入场计划？”它不直接下单，也不依赖新闻卡片是否发送。**Agent 负责研究与选择，纯编译器负责契约约束，Runtime 才拥有账户操作权限。**
 
-## 1. Implementation map
+## 1. 入口与所有者
 
-| Owner | Responsibility |
+| 实现 | 职责 |
 | --- | --- |
-| [app/trading_analysis.py](../../tracefold/app/trading_analysis.py) | `AnalysisRunner`: source relay, claims, frozen frame preparation, Agent calls, settlement, WATCH and research outcome sampling. |
-| [app/trading_analyst.py](../../tracefold/app/trading_analyst.py) | `TradeAnalyst`: one native DSPy ReAct agent, bounded physical calls, structured proposal and narrow correction path. |
-| [app/trading_tools.py](../../tracefold/app/trading_tools.py) | Read-only evidence tools, knowledge-cutoff enforcement and optional claim assessment. |
-| [engine/target.py](../../tracefold/trading/engine/target.py) | Eligible target and economic identity selection. |
-| [engine/features.py](../../tracefold/trading/engine/features.py), [marketdata.py](../../tracefold/trading/engine/marketdata.py) | Typed evidence, feature meaning and market-data contracts. |
-| [engine/brief.py](../../tracefold/trading/engine/brief.py), [plans.py](../../tracefold/trading/engine/plans.py), [policy.py](../../tracefold/trading/engine/policy.py) | Frozen brief, finite plan menu, validated proposal and pure decision compilation. |
-| [storage/analysis.py](../../tracefold/trading/storage/analysis.py) | Triggers, fenced Cases, attempts, model-call receipts, decision/publication and WATCH state. |
-| [execution_contracts.py](../../tracefold/trading/execution_contracts.py) | Current `TradeSignalV3`, scoped entry/exit envelope and operator/execution contracts. |
-| [analysis_files.py](../../tracefold/app/analysis_files.py), [analysis_status.py](../../tracefold/app/analysis_status.py) | Content-addressed evidence archives and process status. |
+| [app/trading_analysis.py](../../tracefold/app/trading_analysis.py) | `AnalysisRunner`：可靠转交、Case 调度、证据冻结、WATCH、研究结果 |
+| [app/trading_analyst.py](../../tracefold/app/trading_analyst.py) | `TradeAnalyst`：原生 DSPy ReAct、调用预算和物理请求账本 |
+| [app/trading_tools.py](../../tracefold/app/trading_tools.py) | 只读 Case 工具、可见证据、引用与访问限制 |
+| [app/analysis_files.py](../../tracefold/app/analysis_files.py) | 冻结研究材料与文件身份 |
+| [engine/target.py](../../tracefold/trading/engine/target.py) | 经济身份与原生合约目标选择 |
+| [engine/features.py](../../tracefold/trading/engine/features.py)、[brief.py](../../tracefold/trading/engine/brief.py) | 将原始来源和市场证据变成可审计特征、简报 |
+| [engine/plans.py](../../tracefold/trading/engine/plans.py)、[policy.py](../../tracefold/trading/engine/policy.py) | 内容寻址的有限计划、引用校验与纯决策编译 |
+| [storage/analysis.py](../../tracefold/trading/storage/analysis.py) | Trigger、Case、租约、决策、WATCH、来源修订与原子结算 |
+| [execution_contracts.py](../../tracefold/trading/execution_contracts.py)、[storage/execution_stream.py](../../tracefold/trading/storage/execution_stream.py) | Signal / 操作意图 / 执行观察的严格交接 |
 
-The pure engine has no provider, database or Nautilus order dependency. App supplies
-I/O and maps public News values into Trading's own contracts.
+`trading/engine` 不调用模型、网络或数据库；App 按显式端口装配 I/O。Analysis 是独立进程，不是 News Workers 的一条可选函数调用。
 
-## 2. The complete live research path
+## 2. 研究链路
 
 ```mermaid
-flowchart TD
-    Source["News public outbox: editorial<br/>catalyst or OI fact"] --> Select["Resolve one eligible target<br/>and source revision"]
-    Select --> Excluded["Named exclusion with input<br/>provenance"]
-    Select --> Trigger["Commit idempotent Trigger and<br/>initial Case"]
-    Trigger --> Claim["Per-asset fenced claim with<br/>token and lease"]
-    Claim --> Evidence["Bounded market reads; freeze<br/>source, cutoff and evidence"]
-    Evidence --> Menu["Build finite candidate plan<br/>menu"]
-    Menu --> Agent["DSPy ReAct with read-only<br/>tools"]
-    Agent --> Proposal["One selected plan or null;<br/>visible evidence references"]
-    Proposal --> Compile["Pure validation and decision<br/>compiler"]
-    Compile --> No["NO_TRADE"]
-    Compile --> Watch["WATCH"]
-    Compile --> Trade["TRADE"]
-    Trade --> Publish{"Publication enabled and still<br/>valid?"}
-    Publish -->|"no"| Unpublished["Decision retained; publication<br/>reason recorded"]
-    Publish -->|"yes"| Signal["Atomic TradeSignalV3 and Case<br/>transition"]
-    Signal --> Runtime["Separate Nautilus final<br/>validity check"]
+flowchart TB
+    Source["News 公开更新 / 类型化 OI"] --> Relay["App relay：按类型分派"]
+    Relay -->|"source_update"| Amendment["幂等保存来源修订<br/>不创建新 Case"]
+    Relay -->|"可研究来源"| Target["选择单一经济目标与合约映射"]
+    Target --> Admission["持久 Trigger / Case<br/>或具名排除"]
+    Admission --> Freeze["冻结来源、知识截止与市场证据"]
+    Freeze --> Plans["纯逻辑生成有限计划菜单"]
+    Plans --> Agent["DSPy ReAct<br/>有界只读研究"]
+    Agent --> Compile["校验 proposal、引用与计划身份"]
+    Compile --> Decision["保存 TRADE / NO_TRADE / WATCH"]
+    Decision --> Watch["有界条件观察"]
+    Decision --> Publish["满足发布条件的 TradeSignalV3"]
+    Publish --> Runtime["独立执行进程"]
+    Decision --> UI["决策列表与冻结回放"]
 ```
 
-A timeout in target lookup is not an acknowledgement of the source. Trigger commit
-precedes News acknowledgement; replay across that gap is intentional and idempotent.
-Malformed public payloads have a named rejection outcome rather than silently
-entering an alternative compatibility path. Source amendments are dispatched
-before target selection and do not create a Trigger or initial Case.
+<a id="editorial-catalyst-versus-source-amendment"></a>
+## 3. 催化增量与来源修订
 
-### Editorial catalyst versus source amendment
+编辑型 News 通过 `news_public_update_v1` 提供已采用的变化命题、精确引文、前驱 / 受影响引用、首次可用与语义完成时钟。该契约由知识生成，不读卡片的 headline / why 作为替代事实。
 
-The public editorial schema is **`news_public_update_v1`**, emitted from adopted
-EventUpdates by [public.py](../../tracefold/news/updates/public.py) and mapped by
-[app/news_updates.py](../../tracefold/app/news_updates.py). Reader-card text is not
-its authority. Historical `headline`/`why` payloads are rejected on this path,
-not silently interpreted as the current structured contract.
+| 来源 | `relay_once` 的处理 |
+| --- | --- |
+| `catalyst_delta` | 从变化命题的主要资产中选合格目标；不是把所有提到的资产都拿来交易 |
+| `source_update` | **先于目标选择**保存 Trading amendment；不产生 Trigger / 新 Case / 新 TTL |
+| OI | 保留原生 measurement、来源窗口与 source-key 身份，独立匹配交易目标 |
 
-| Public kind | Trading treatment | What it must not do |
+旧式仅有 headline / why 的催化 payload 不被当前编辑型公开更新路径接受。多个合格主要资产同时出现时，应保留歧义排除，而非随机选一个。目标不存在、被配置排除、单位不明确或来源已过期都需要具名结果。
+
+News 和 Trading 的事务独立：先持久接收，再确认相同 outbox 身份和 payload。中间崩溃可能重放，由幂等身份避免重复 Case；它不是跨域共享一次数据库提交。
+
+修订可指向另一 Event 的旧 Claim。研究只读取知识截止前可知的材料；后来的修订作为新事实保留，不重写已冻结的历史。运行时可据显式更正拒绝尚未提交的入场，但 source_update 自身不拥有撤单、平仓或刷新入场有效期的权力。
+
+## 4. 一个 Case 冻结什么
+
+| 材料 | 用途 |
+| --- | --- |
+| 来源身份与首次可用时间 | 确定根的有效期，避免模型完成时间给旧来源续期 |
+| 经济资产、原生合约、单位与映射摘要 | 防止同名币、倍数合约或错误环境被混用 |
+| 知识截止时间与历史来源 / 修订 | 明确当时允许看到哪些事实 |
+| 原始市场数据及覆盖信息 | 可复算特征，缺失保持缺失 |
+| 特征、简报与可引用证据 refs | 区分观察、派生计算和研究结论 |
+| 有限 EntryPlan 菜单 | 限定可选方向、条件、时效与退出规则 |
+| 工具调用、模型请求、proposal 与最终决策 | 保留实际研究路径与失败边界 |
+
+`FrameReader.prepare` 将原始行情端口映射为 Trading 自己的冻结材料。读 API 的 Case replay 是读取这些记录，**不是重新请求行情或重新跑模型**。
+
+## 5. Agent 有哪些工具
+
+| 工具 | 允许做什么 | 不允许做什么 |
 | --- | --- | --- |
-| `catalyst_delta` | Select from changed claims' primary assets; persist an eligible Trigger/Case with public update identity and first-availability time. | Treat restatement or unresolved `possible_new` as a fresh catalyst merely because new prose arrived. |
-| `source_update` | Record an idempotent amendment in `trading_source_amendments`, before target selection. | Create a new Trigger/Case, refresh the original TTL, cancel an existing venue order or grant new account authority. |
+| `get_event_context` | 按有界主题和时间范围读取 Case 可知的历史事件 | 任意扩展历史或读取知识截止后的更正 |
+| `get_market_snapshot` | 读取允许的数据集与窗口，形成可引用市场证据 | 无限制行情下载或取得订单写权限 |
+| `read_evidence` | 按可见 ref 和有界片段读取已授权材料 | 任意文件、SQL、shell、跨 Case 私有内容 |
+| 可选 `assess_claims` | 对明确命题和事实 refs 做有界判断 | 创建一个独立拥有交易批准权的“第二 Agent” |
 
-Corrections, refutations/evidence amendments and real-world replacements preserve
-explicit target claim refs, including cross-Event refs. Final entry checks can
-reject a still-unsubmitted entry as `source_corrected`. This is source validity,
-not a new Agent approval or an automatic flatten operation. Amendment/supersession
-reads retain the knowledge-time cutoff; OI keeps its separate source-key scope.
-An immutable historical Case is not rewritten after a later correction.
+调用账本区分逻辑工具步骤与物理模型请求。物理请求开始前登记，完成后记录 token、时钟、费用或未知结果；无法确定的费用不能填成零。模型异常、工具异常、证据不足、合法 NO_TRADE 是不同结果。
 
-## 3. What the Agent can and cannot do
+所有循环受 Case 所有权、模型超时、输入 / 输出大小、调用并发与成本边界约束。修正非法 proposal 的流程也必须有界，不能靠无上限“再试一次”获得一个看似合规的答案。
 
-```mermaid
-flowchart LR
-    Brief["Frozen target, source, cutoff<br/>and plan menu"] --> React["TradeAnalyst: DSPy ReAct"]
-    React --> Context["get_event_context"]
-    React --> Snapshot["get_market_snapshot"]
-    React --> Read["read_evidence"]
-    React --> Claims["assess_claims: optional<br/>semantic judgment"]
-    Context --> Evidence["Bounded, attributable evidence<br/>records"]
-    Snapshot --> Evidence
-    Read --> Evidence
-    Claims --> Evidence
-    Evidence --> React
-    React --> Proposal["Typed proposal with visible<br/>refs"]
-    Proposal --> Policy["Pure compiler"]
-```
+## 6. 计划不是模型随意生成的参数
 
-The tools are read-only. There is no `buy`, `sell`, unrestricted SQL, arbitrary
-network tool or account command in this menu. Tool output and source text are
-untrusted evidence, not instructions that can grant new authority.
+当前 `entry_plan_v1` 由代码构造，模型从当次可见菜单选择 `plan_id` 或不交易。计划包含来源版本、映射摘要、引用、方向、参考价、时效、条件与退出策略。
 
-The Agent chooses a visible `plan_id` or null, cites supporting/opposing evidence
-and states limitations. Optional Jev/System One claim assessment produces a
-separately attributable judgment; it is neither compulsory nor a second order
-approver. Tool-record references and judgment references have different meanings.
+| 计划类型 | 语义 |
+| --- | --- |
+| `immediate_entry_v1` | 在剩余有效期内提出即时入场；仍需 Runtime 的最终账户与来源检查 |
+| `closed_bar_cross_v1` | 等待已收盘 1 分钟 K 线按方向穿越价格条件；匹配后创建条件子 Case |
 
-The physical-call ledger records request start before external I/O and outcome
-when known. A Case can contain several ReAct/tool/extraction calls; one Case is not
-one model request. Unknown token cost is recorded as unknown rather than zero.
-A limited correction path handles named correctable proposal/reference errors;
-it does not transform a model failure into a positive decision.
+当前 [plans.py](../../tracefold/trading/engine/plans.py)的退出参数是代码政策，不是 Agent 的自由建议：取连续 16 根 1 分钟 K 线，计算既定 ATR14；止损距离按 `2 × ATR14 / 参考收盘价` 换成基点并向上取整，约束在 **100–1,000 bps**；止盈距离为止损的两倍；最长持有 **14,400 秒**。缺少连续有效 K 线时不制造默认计划。
 
-## 4. Freeze and concurrency semantics
+计划入场有效期不超过根到期时间，并受参考 K 线后 **120 秒**窗口约束。根 TTL 的默认配置为 **600 秒**。这些分别是来源、入场计划和持仓期限，不能相互替代，更不能在模型重试或 WATCH 触发后不断续期。
 
-A Case records source identity/revision, selected target mapping, root validity,
-knowledge cutoff, raw market evidence, features, brief/menu, assessment and decision.
-Content-addressed artifacts preserve what was actually read; a later console read
-must not rerun the model or fetch fresh data into the historical decision.
+纯编译器检查所选计划确实存在、方向和引用有效、proposal 契约合法，再生成最终 action。它不需要网络，也不会从一个自由文本“看多”直接构造账户订单。
 
-`claim_analysis_case` and settlement use a token and lease. Settlement additionally
-checks root/work deadlines and relevant per-asset coordination. An old worker's
-late answer cannot commit just because it knows the Case ID. Publication checks
-newer/superseding source evidence and binds the same Case, decision, scope, target,
-mapping digest, direction and selected plan.
+<a id="state"></a>
+## 7. Case、结果与发布状态
 
-The principal settlement states are:
+| 维度 | 示例 | 回答什么 |
+| --- | --- | --- |
+| Case `state` | `PENDING`、`RUNNING`、`DONE`、`SIGNAL_EMITTED`、`FAILED`、`EXCLUDED` | 这次持久工作处于哪里 |
+| `analysis_status` | 待分析、成功、排除、过期或具名失败 | 分析是否真正执行以及如何结束 |
+| `action` | `TRADE`、`NO_TRADE`、`WATCH` | 有效分析作出了什么决策 |
+| `publish_status` | 是否发布及未发布原因 | 决策是否形成可消费 Signal |
 
-```mermaid
-stateDiagram-v2
-    [*] --> PENDING: accepted initial Case
-    [*] --> EXCLUDED: admission cannot proceed
-    PENDING --> RUNNING: valid claim
-    PENDING --> EXCLUDED: expires before work
-    RUNNING --> DONE: decision without published Signal
-    RUNNING --> SIGNAL_EMITTED: decision and valid Signal commit together
-    RUNNING --> FAILED: analysis ends without decision
-```
+`TRADE` 可以因为发布关闭或有效性条件不满足而未发布；`NO_TRADE` 是合法决策，不是系统失败；`WATCH` 不是已成交。不能用一个字段替代全部过程。
 
-This diagram summarizes admission and settlement, not every lease-recovery SQL
-branch. `state`, `analysis_status`, decision `action` and `publish_status` are
-separate axes. For example, a valid TRADE with publication disabled is not a
-Signal, and an infrastructure failure is not the Agent deciding NO_TRADE.
+Case 领取绑定 claim token、lease 和根期限。超时或失去所有权的旧任务不能覆盖新的完成结果；模型开始 / 完成记录、证据冻结和最终决策必须指向同一次尝试。未知失败不能被伪装为“不交易，所以安全完成”。
 
-## 5. WATCH is observation followed by another decision
+## 8. WATCH 如何结束
 
 ```mermaid
 sequenceDiagram
-    participant A as Initial analysis
-    participant D as PostgreSQL
-    participant W as WATCH observer
-    participant M as Closed-bar market evidence
-    participant C as Conditional child analysis
-    A->>D: Commit WATCH decision and condition
-    W->>D: Claim waiting observation
-    W->>M: Read the required closed 1m bar
-    M-->>W: Condition evidence or missing/missed state
-    alt Condition satisfied while source and root remain valid
-        W->>D: Mark triggered and create bounded child Case
-        C->>D: Claim child, preserve entry scope and root<br/>expiry
-        C->>C: Research parent's direction immediate plan or<br/>NO_TRADE
-        C->>D: Commit new decision and optional Signal
-    else Condition not satisfied
-        W->>D: Retain waiting, expire or cancel with reason
+    participant A as 初始分析
+    participant D as Trading 存储
+    participant W as closed-bar 观察器
+    participant C as 条件子 Case
+    A->>D: 保存 WATCH 与 code-owned crossing plan
+    W->>D: 读取仍有效的条件
+    W->>W: 检查已收盘 K 线与有向穿越
+    alt 未匹配且未过期
+        W->>D: 保存观察进度
+    else 条件已匹配
+        W->>D: 原子记录匹配与子 Case
+        D->>C: 沿用根期限、作用域和既定方向
+        C->>C: 重新冻结允许证据，受限分析
+        C->>D: 即时计划或 NO_TRADE，不递归 WATCH
+    else 取消或过期
+        W->>D: 结束观察，不发布订单
     end
 ```
 
-The initial `closed_bar_cross_v1` selection does not place an order when crossed.
-The child must analyze again, uses the same entry scope and cannot create another
-recursive WATCH. No new root TTL is granted to revive an old catalyst. The durable
-watch vocabulary includes `waiting`, `triggered`, `cancelled` and `expired`.
+WATCH 保存 waiting / triggered / cancelled / expired 的观察语义。穿越由前一根与当前已收盘价判定，不拿尚未收盘的瞬时价格直接执行。条件匹配只是研究触发，不是交易所下单动作。
 
-## 6. The Signal is a recommendation, not capital authority
+## 9. Signal 的权限边界
 
-Current publication uses **`TradeSignalV3`**, not V1/V2. Its identity binds Case,
-decision, account slot, entry scope, asset, native route and mapping digest. It
-also carries direction, observed/expiry clocks, exit plan and an explicit immediate
-or activated-condition entry envelope. The Signal's expiry cannot outlive its root.
+`TradeSignalV3` 绑定账户槽位、entry scope、目标和映射摘要、Case / decision、方向、计划与根约束的截止时间。发布策略、有效来源、数据库原子结算与 Runtime 接受都是独立边界。
 
-`publish_signals` defaults to false. Even when true, the Runtime performs the final
-validity and account/venue checks before an order. Position sizing and protective
-orders are execution responsibilities. The analysis menu's deterministic exit
-parameters are code-owned, not free-form Agent inventions.
+默认 `trading.enabled=false`、`trading.analysis.publish_signals=false`、`trading.execution.enabled=false` 分别控制分析能力、Signal 发布和执行。开启模型配置不会隐式开启账户。
 
-Research price-path outcomes, historical simulation and native execution outcomes
-are different denominators. A hypothetical profitable decision is not a venue fill
-or a strategy profitability proof. Exact-image historical replay must not issue
-retrospective Signals, refresh an expired root or mutate old decisions.
+Runtime 仍需读取准确的 Binance connection、账户状态、风险、保护与并发条件。News 通知命中观察名单、标记 key 或 OI 数字很大，都不能跨越这条权限边界。
 
-## 7. Diagnose in order
+## 10. 研究结果与真实执行收益
 
-| Question | Durable evidence |
-| --- | --- |
-| Was the source offered? | News outbox identity, payload digest and relay acknowledgement/rejection. |
-| Was a target eligible? | Trigger target selection or named exclusion, including mapping provenance. |
-| Did analysis run? | Case claim/attempt and physical model-call records, not just process uptime. |
-| What did it decide? | Frozen menu, validated proposal, compiler reason and action. |
-| Why no Signal? | Publication disabled/blocked/superseded/expired outcome, separately from action. |
-| Did it execute? | Runtime acceptance and signed venue/native execution evidence; see [Execution](execution.md). |
+`label_once` 与根研究采样保存规定期限下的价格路径，不依赖模型最终是否选 TRADE。它们支持复盘选择与遗漏，但不是交易所成交事实。
 
-Relevant tests: [analyst](../../tests/trading/test_trading_analyst.py),
-[tools](../../tests/trading/test_trading_tools.py),
-[analysis storage](../../tests/integration/test_trading_analysis_storage.py),
-[runner](../../tests/integration/test_trading_analysis_runner.py),
-[public updates and amendments](../../tests/integration/test_trading_analysis_public_updates.py),
-[Signal V3 scope](../../tests/integration/test_trading_signal_v3_scope.py), and
-[execution stream](../../tests/integration/test_trading_execution_stream.py).
-[Operations](../OPERATIONS.md) retains the actual status/control commands and
-[Contracts](../CONTRACTS.md) the exact read/write API shapes.
+真实收益必须由原生成交、手续费、资金费率和覆盖状态组成。历史导入、研究重放和重新分析不能刷新 Signal TTL、覆盖原 Case 或给过去交易补一个虚构成交。详细归属见[执行文档](execution.md)。
+
+## 11. 排障与验证
+
+```bash
+docker compose exec -T analysis tracefold trading status
+docker compose exec -T analysis tracefold trading cases --limit 20
+docker compose exec -T analysis tracefold trading gate --limit 20
+```
+
+排查顺序：来源公开记录 → relay 接收 / 排除 → Case 领取 → 冻结证据 → 物理模型账本 → proposal / compiler → action → publish_status → Runtime 实际处理。新闻推送阈值不是这条链路的答案。
+
+验证入口：[领域边界](../../tests/architecture/test_trading_boundaries.py)、[计划与策略](../../tests/trading/test_oi_price_strategy.py)、[Analysis runner](../../tests/integration/test_trading_analysis_runner.py)、[分析存储](../../tests/integration/test_trading_analysis_storage.py)、[公开来源修订](../../tests/integration/test_trading_analysis_public_updates.py)、[Signal 作用域](../../tests/integration/test_trading_signal_v3_scope.py)。

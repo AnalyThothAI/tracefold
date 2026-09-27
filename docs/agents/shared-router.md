@@ -1,66 +1,44 @@
-# Shared agent router
+# AI 开发共享指引
 
-Canonical source for the shared block in `AGENTS.md` and `CLAUDE.md`.
-Edit this file, then run `python3 scripts/sync_agent_router.py --write`.
-The existing drift check keeps the two entry points synchronized.
+[手册](../README.md) · [开发指南](../DEVELOPMENT.md) · [Issue / PR](issue-tracker.md) · [worktree](worktrees.md)
+
+本文件是根目录 `AGENTS.md` 与 `CLAUDE.md` 共享内容的唯一来源。修改后执行 `python3 scripts/sync_agent_router.py --write`；现有漂移检查负责同步，不手工维护三份相同规则。
 
 <!-- BEGIN SHARED AGENT ROUTER -->
 
-## System
+## 系统
 
-Tracefold has sibling News and Trading capabilities, a React console, and a
-PostgreSQL ledger. Serve, Workers, and Analysis share the application image; the optional
-Nautilus execution process has a separate image and lifecycle.
+Tracefold 包含 News 与 Trading 两个业务域、React 工作台和 PostgreSQL 账本。Serve、Workers、Analysis 共用应用镜像；可选 Nautilus 执行进程使用独立镜像与生命周期。
 
-## Work on the requested outcome
+## 围绕当前请求完成结果
 
-- Read the affected implementation and tests, then the relevant document section.
-  Do not read every linked manual or invoke every available skill before editing.
-- Prefer one cohesive PR that completes the requested outcome, including its tests,
-  documentation, generated outputs, and removal of obsolete internal paths. Split
-  only for independently useful changes or a concrete review, rollout, or rollback
-  reason; implementation steps and checkpoints are not automatically separate PRs.
-- Use the existing task checkout/branch or an isolated worktree as appropriate.
-  Preserve unrelated changes. A local worktree is not required for connector-only
-  edits. See `docs/agents/worktrees.md`.
-- A clear user request can authorize implementation. Use an Issue for durable scope
-  or coordination when needed, not as a prerequisite for every fix. Record material
-  decisions in the existing Issue or PR; do not create a ticket hierarchy by default.
-- Run checks that exercise the changed risk; broaden for shared or uncertain impact.
-  Report what actually ran and what remains unverified. Missing resources block the
-  affected check, not independent editing, inspection, or PR preparation.
-- Continue authorized work through verification and repairs. Opening a requested PR
-  does not authorize merging, deployment, live trading, or accepting model reviews.
+- 先读受影响实现与测试，再读对应文档；不在每次编辑前遍历所有手册或调用全部技能。
+- 默认用一个完整 PR 交付同一结果，包括调用方、测试、文档、必要生成物与旧路径删除。只有真正独立的审阅、交付、回滚或迁移原因才拆分；实施步骤不自动成为 PR 边界。
+- 复用合适的任务 checkout / branch，必要时使用独立 worktree；保留其他任务和用户未提交修改。仅使用 connector 编辑不要求创建本地 worktree，见 `docs/agents/worktrees.md`。
+- 明确用户请求可以授权实现。Issue 用于需要持久规格或协调的工作，不是每次修复的前置审批；重要决定保存在已有 Issue 或实现 PR，不默认建立票据层级。
+- 根据改动风险选择检查，共享影响不确定时扩大验证。报告实际执行和未验证范围；缺少某项资源只阻止相应证明，不阻止独立编辑、调查或 PR 准备。
+- 已授权工作应继续完成必要验证与修复。提交 PR 不授权合并、部署、实盘交易或接受模型复核。
 
-## Boundaries to preserve
+## 必须保留的边界
 
-- News and Trading own their respective facts and tables. Neither imports or reads
-  through the other; `tracefold.app` maps their public contracts and composes them.
-- PostgreSQL facts and durable decisions are not interchangeable with provider
-  frames, model predictions, queues, caches, or UI projections. External execution
-  results must be reconciled with the venue, not inferred from a local request.
-- Keep transactions short and external I/O outside them. Internal renames are hard
-  cuts: update consumers and remove obsolete aliases and duplicate paths together.
-- Keep secrets out of source, logs, examples, and PRs. Do not replace required tests
-  with skips or report pending CI as passing. Preserve actual data, permission,
-  concurrency, and order-authority controls while simplifying unnecessary process.
+- News 与 Trading 各自拥有事实和表，不导入或查询兄弟域内部；`tracefold.app` 映射公开契约并装配两者。
+- PostgreSQL 事实和持久决策不能被 provider frame、模型预测、队列、缓存或 UI 投影替代。外部执行结果以交易所证据和对账确认，不从本地请求推断。
+- 保持短事务，外部 I/O 在事务外；内部重命名采用完整替换，同步更新消费者并删除旧 alias 与重复路径。
+- 不将真实秘密写入源码、日志、示例或 PR；不以跳过测试代替必需证明，不把 pending CI 说成通过。简化流程时保留真实数据、权限、并发与账户控制。
 
-## Where to look
+## 按任务查找
 
-| Concern | Owner |
+| 关注点 | 唯一维护入口 |
 | --- | --- |
-| Current architecture and data flow | `docs/README.md`; `docs/ARCHITECTURE.md`; `docs/modules/`; `docs/agents/domain.md` |
-| Design, local verification, generated outputs, completion | `docs/DEVELOPMENT.md` |
-| Issue scope and PR boundaries | `docs/agents/issue-tracker.md` |
-| CI jobs, resources, and reports | `docs/TESTING.md` and `.github/workflows/ci.yml` |
-| API, CLI, configuration, and schemas | `docs/CONTRACTS.md`; `docs/generated/` |
-| Frontend | `docs/FRONTEND.md` |
-| Installation, operations, migrations, or authority | The affected section of `docs/SETUP.md`, `docs/OPERATIONS.md`, `docs/MIGRATIONS.md`, or `docs/SECURITY.md` |
-| Research notebooks | `notebooks/README.md` |
+| 当前架构与数据流 | `docs/README.md`、`docs/ARCHITECTURE.md`、`docs/modules/` |
+| 设计、本地验证、生成物与完成 | `docs/DEVELOPMENT.md` |
+| Issue 范围、PR 边界与标签 | `docs/agents/issue-tracker.md` |
+| CI、资源与报告 | `docs/TESTING.md`、`.github/workflows/ci.yml` |
+| HTTP、CLI、配置与 schema | `docs/CONTRACTS.md`、`docs/generated/` |
+| 前端 | `docs/FRONTEND.md` |
+| 安装、运维、迁移与权限 | `docs/SETUP.md`、`docs/OPERATIONS.md`、`docs/MIGRATIONS.md`、`docs/SECURITY.md` 的相关章节 |
+| 离线研究 | `notebooks/README.md` |
 
-These are task routes, not a mandatory reading sequence. Verify suspected drift
-against the current implementation and the requested behavior; fix the owning
-document instead of adding a competing rule. Historical Issue plans and optional
-tool skills do not override the current task's scope or imply extra approval gates.
+这些是任务导航，不是强制阅读顺序。发现漂移时对照当前实现和请求，修复真正的所有者文档，不再添加竞争规则。历史 Issue 方案和可选工具技能不能覆盖当前任务范围，也不增加隐式审批。
 
 <!-- END SHARED AGENT ROUTER -->

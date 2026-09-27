@@ -1,160 +1,87 @@
-# Database migrations and recovery boundaries
+# 数据库迁移与恢复边界
 
-[Handbook](README.md) · [Operations](OPERATIONS.md) · [Schema reference](generated/db-schema.md)
+[手册](README.md) · [运维](OPERATIONS.md#backup) · [结构参考](generated/db-schema.md)
 
-The current schema is the single Alembic chain under
-[versions](../tracefold/platform/postgres/alembic/versions/), rooted at
-`20260831_0340`. Applied revision files are part of upgrade/restore correctness;
-documentation cleanup must not delete or rewrite them. This page owns the current
-procedure, not a chronological transcript of every historical deployment.
+当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`。已应用的迁移文件属于升级与恢复证据，**不是可随过时文档一起删除的文件**。
 
-## 1. Determine the actual source and database heads
+## 1. 确认源、镜像与数据库版本
 
-Read the checked-out source head without a database call:
+读取检出源码的 head，不访问数据库：
 
 ```bash
 uv run python -c 'from tracefold.platform.postgres.migrations import latest_migration_version; print(latest_migration_version())'
 ```
 
-Read the database's current migration status through its configured container:
+读取实际数据库状态：
 
 ```bash
 docker compose exec -T workers tracefold db audit
 ```
 
-The EventUpdate chain includes `20260926_0404` and
-`20260927_0405`. The source function and database status above remain authoritative
-if a later revision is added. Do not copy an old head into `alembic_version`, infer
-compatibility from a successful import, or start new writers before migration ends.
+代码链包含 `20260926_0404` 与 `20260927_0405`；若之后增加迁移，以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
-## 2. Supported upgrade sequence
+## 2. 正常升级顺序
 
 ```mermaid
-flowchart TB
-    Inspect["Inspect source, image,<br/>database head and account state"] --> Backup["Preserve matched recovery<br/>identity and verified backup"]
-    Backup --> Stop["Coordinate affected writers<br/>and independent Runtime"]
-    Stop --> Config["Validate exact operator config<br/>and removed field paths"]
-    Config --> Migrate["Apply the supported Alembic chain"]
-    Migrate --> Result{"Migration completed?"}
-    Result -->|"yes"| Start["Start matching application roles<br/>then explicitly manage Runtime"]
-    Result -->|"no"| Diagnose["Keep writers stopped<br/>inspect the specific revision"]
-    Start --> Check["Verify readiness and<br/>durable business progress"]
+flowchart TD
+    Inspect["核实源、镜像、数据库与账户"] --> Backup["保存配套身份和可验证备份"]
+    Backup --> Writers["协调受影响写进程<br/>含独立 Runtime"]
+    Writers --> Config["校验配置与确切删除字段"]
+    Config --> Migrate["通过受支持入口执行迁移"]
+    Migrate --> Success{"迁移成功退出"}
+    Success -->|"是"| Start["启动匹配应用并验证进度"]
+    Success -->|"否"| Diagnose["保持写进程停止<br/>诊断具体 revision"]
+    Start --> Runtime["显式决定 Runtime 恢复"]
 ```
 
-Use the supported [Makefile](../Makefile) deployment/migration entry from its
-permitted main checkout. Normal `make up` waits for migration exit zero before
-starting Serve, Workers and Analysis. The separate account owner is not restarted
-implicitly. A mismatched schema beneath a running Runtime is an operational
-boundary, not a warning to bypass with an environment flag.
+使用主检出目录的受支持 Make 工作流。`make up` 等迁移结束后启动 Serve、Workers 和 Analysis；不自动重启独立账户所有者。运行中 Runtime 与待迁移 schema 不匹配时，不以环境标志绕过检查。
 
-Before maintenance, identify what the venue actually holds. Stopping Nautilus is
-not an exit receipt, and an accepted flatten request is not confirmed flatness.
-Coordinate account management through the [execution runbook](OPERATIONS.md#5-trading-and-account-operations),
-then stop affected writers. Never assume a News-only code change makes its schema
-safe for another process that still runs an older contract.
+停 Runtime 不等于账户平仓。维护前先知道交易所实际持仓、保护与订单归属，必要操作按[执行 runbook](OPERATIONS.md#trading-operations)执行并核实结果，再协调写进程。
 
-Validate config without exposing secrets. Strict settings reject removed fields,
-so remove only the documented key at its exact YAML path. `tracefold init` does not
-rewrite an existing config; `init --force` is not a migration tool. [Setup](SETUP.md)
-owns initialization and role-appropriate mounts.
+普通 `init` 保留配置；`init --force` 不是迁移工具。严格设置报出旧字段时，仅删除其确切 YAML 路径，保留其他 operator 选择。
 
-Record backup, source/image IDs, pre/post heads, migration result and restarted
-roles. Inspect readiness and the actual source/semantic/notification/account
-progress separately; a green HTTP endpoint does not verify all of them.
+## 3. EventUpdate 的 0404 / 0405 切换
 
-## 3. EventUpdate cut: 0404 and 0405
-
-| Revision | Current contract established | Source |
+| Revision | 建立的当前契约 | 源码 |
 | --- | --- | --- |
-| `20260926_0404` | Item revisions, semantic work/checkpoints/observations, adopted EventUpdates/heads, notification work, intent-keyed delivery, public source updates and Trading amendments | [0404](../tracefold/platform/postgres/alembic/versions/20260926_0404_news_event_updates.py) |
-| `20260927_0405` | Source revision sequence/chain metadata, immutable v1 plus new v2 updates, indexed cross-Event claim targeting | [0405](../tracefold/platform/postgres/alembic/versions/20260927_0405_news_revision_ownership.py) |
+| `20260926_0404` | Item 修订、语义工作 / 检查点 / 观察、EventUpdate 与 head、通知工作、intent 发送、公开更新与 Trading amendment | [0404](../tracefold/platform/postgres/alembic/versions/20260926_0404_news_event_updates.py) |
+| `20260927_0405` | 来源修订顺序 / 前驱、保留不可变 v1 与新 v2、跨 Event claim 定位索引 | [0405](../tracefold/platform/postgres/alembic/versions/20260927_0405_news_revision_ownership.py) |
 
-Both revisions are **forward-only**. Stop the affected Serve/Workers/Analysis
-roles, coordinate the independent Runtime as above, preserve a verified recovery
-backup and migrate before starting the matching image. The new source contracts
-and amendment reader must not be mixed with an old writer.
+这两次切换是前向迁移，不提供通过旧卡片 / verdict 伪造新 Claim 的降级路径。旧 v1 保留原始 hash 与语义，新内容才使用 v2；不得批量改历史 JSON 让它“看起来都是最新版本”。
 
-Remove **`news.policy`** and **`llm.news_compiler_reflection`** from the operator
-config. Do not reinstate the old Program/GEPA/release/canary runtime to make a
-historical artifact executable. The current [ReviewDesk and calibration](modules/review.md)
-are separate retained capabilities.
+### 配套检查
 
-Historical verdicts, reviews and learning evidence are not synthesized into new
-claims. Existing sent receipts retain their real payload/history; unsent legacy
-work does not become a fresh current intent. Inspect the revision's exact data
-transformation, not an assumed one-to-one rewrite from old verdict to new update.
-
-The current [News guide](modules/news.md) owns input versus content revision,
-checkpoint identity, current source contribution and notification semantics.
-`retry-work` operates on exact failed work, not on the migration chain. A changed
-prompt or new image does not automatically relabel/recompute historical evidence.
-
-## 4. Older supported upgrades can require explicit preparation
-
-Some supported older revisions deliberately refuse unsafe data rather than silently
-coercing it. Read the failing revision's preflight before changing data. Important
-examples are:
-
-| Refusal / older boundary | Required interpretation |
+| 边界 | 要确认的内容 |
 | --- | --- |
-| Retired Case/admission values at the `0355` hard cut | The revision names the incompatible rows. Archive the exact affected evidence before an authorized scoped removal; dependent admission rows must be handled before their Cases. Do not delete all current Cases or use CASCADE. |
-| Signal/entry-plan contract changes or an open plan | An old nonterminal execution intent may not be reinterpretable. Preserve and resolve the account/plan under its matching runtime before the coordinated cut. |
-| Runtime observation and connection cuts | The writer's image, runtime identity and snapshot schema must agree; older snapshots are not valid current evidence. |
-| Native execution evidence additions | New columns/coverage do not prove complete historical native fills, fees or funding. Verified history recovery is a separate bounded operation. |
-| Unknown/unsupported pre-baseline revision | Current source is not a general upgrader for arbitrary old backups. Use its recorded pre-cut source/image and original procedure first. |
+| 配置 | 删除已退役 `news.policy`、`llm.news_compiler_reflection` 的确切路径 |
+| 原始证据 | 来源正文修订与前驱不丢失，不把相同正文的再次出现当旧版本重投 |
+| 语义工作 | wanted / done、owner / lease、耗尽结算与新版本预算隔离 |
+| 知识 | EventUpdate 不可变，head 不倒退，未变的命题 / 问题保留 |
+| 通知 | 旧实际回执继续约束读者覆盖；不因 schema 迁移重复推送 |
+| Trading | 旧公开 payload 与新契约明确区分；来源更正不制造新 TTL |
 
-The source for the first example is
-[0355](../tracefold/platform/postgres/alembic/versions/20260903_0355_trading_case_dead_columns.py).
-Its executable check and the backup's matching historical documentation own the
-precise affected values. Do not carry the entire former schema or destructive
-repair SQL into a fresh-install guide.
+迁移不是整库重新分析。保留的 legacy verdict / historical review 只具有其原来含义；也不能把旧静态 Program 资产重新挂回运行时以掩盖切换缺口。
 
-The named volume's `initdb` hook applies only to a genuinely new cluster. It is not
-a generic role-repair tool for an unknown restored database. Preserve the separate
-bootstrap/application credentials and restore using the appropriate recorded
-identity, never by blindly replacing grants or stamping the head.
+## 4. 基线之前的备份与严格拒绝
 
-## 5. Failure and rollback
+基线之前的备份需要其记录的源码 / 镜像和对应恢复流程。当前 main 的单链不能无条件接续一个未知历史库；不要手工 stamp、猜字段或先启动新 Writers 再补 schema。
 
-A failing migration is not a reason to start readers/writers against the partial
-upgrade. Capture its revision, sanitized error, actual database head and transaction
-outcome. PostgreSQL transaction rollback and the revision's own deadlines determine
-what committed. Verify it rather than guessing from elapsed time or container exit.
+个别已记录的严格切换会拒绝不兼容行，例如 [0355](../tracefold/platform/postgres/alembic/versions/20260903_0355_trading_case_dead_columns.py)。应先阅读该 revision 的拒绝原因并归档确切受影响记录；只有明确授权的数据处理才可按外键顺序操作。不能为了通过迁移执行全表清空或任意 `CASCADE`。
 
-For a same-schema code rollback, the narrow `make deploy-image` operation checks
-image/source/database compatibility. For a forward-only schema cut, recovery
-requires the verified pre-cut backup and matching image in a coordinated restore;
-newer-source downgrade is intentionally unavailable. Do not use `alembic stamp`,
-manual `alembic_version` edits, empty migrations or compatibility aliases to hide
-an unperformed transformation.
+文档清理保留这类仍可能影响恢复的边界，但不把所有一次性事故 SQL 复制成通用日常步骤。
 
-A backup that can be listed has not yet been proven restorable. Run the matching
-restore in an isolated database and verify its schema and relevant durable records.
-[Operations](OPERATIONS.md#6-backup-and-restore) owns dump handling and the isolated
-restore drill. A model evaluation or a replay of old paper trades is not a database
-restore check.
+## 5. 回退不是数据库降级
 
-## 6. Authoring and validating a new revision
+`make deploy-image` 只用于源码 / 镜像 / 数据库 schema 兼容的本地精确镜像替换，不能反转 0404 / 0405。需要恢复旧 schema 时，使用匹配备份与镜像，在隔离环境验证后再安排切换。
 
-Use one revision with the correct `down_revision`; document why it exists, affected
-writers, required preflight, retained/deleted history, the acceptance predicate and
-roll-forward/rollback behavior. Run DDL through the migration's supplied connection;
-application processes must not introduce a second runtime-DDL path.
+数据库恢复可能改变本地已记录事实，但不会撤销交易所已发生的订单或成交。账户侧必须独立对账；不能通过恢复旧数据库让系统“忘记”已有风险。
 
-Keep SQL and lock duration bounded with the repository's current migration deadline
-pattern. Explicitly check data before destructive transformations. Do not mask a
-wrong schema with broad `IF EXISTS`, fabricated defaults, a blanket CASCADE or
-rewritten historical receipts. A forward-only refusal can be correct, but it needs
-an actionable recovery boundary rather than an untested claim of reversibility.
+[备份命令与恢复演练](OPERATIONS.md#backup)由运维页维护。归档可列目录仅证明 dump 可读，真正恢复与升级演练需要隔离数据库和相应验证。
 
-Relevant tests include [authoring contracts](../tests/contract/test_migration_authoring.py),
-[migration history](../tests/integration/test_migration_history.py),
-[EventUpdate storage](../tests/integration/test_news_event_update_store.py),
-[revision ownership](../tests/integration/test_news_revision_ownership.py), and
-[Trading public updates](../tests/integration/test_trading_analysis_public_updates.py).
-Use their isolated PostgreSQL resources, not the operator database.
+## 6. 迁移验证与提交证据
 
-Regenerate [db-schema.md](generated/db-schema.md) only against an isolated database
-at the actual new head, using the procedure in [Generated references](generated/README.md)
-and [Testing](TESTING.md). Preserve generated constraints and ordering. A docs-only
-cleanup needs no new migration or schema regeneration.
+新增 revision 时至少确认：迁移链单头、从受支持前驱可升级、已有数据处理明确、约束与查询符合新语义、应用启动顺序正确。不要修改已发布 revision 来逃避新增迁移。
+
+生成的 [db-schema.md](generated/db-schema.md)来自隔离且已迁移到目标 head 的数据库，不通过生产库 introspection 更新。相关真实资源测试由[测试指南](TESTING.md)的 migration / postgres lane 承担。
+
+运维记录保存备份身份、源 / 镜像、迁移前后 head、执行结果、实际恢复角色，以及 News / Analysis / Runtime 各自的后续进展。一个绿色 HTTP 探针不证明迁移后全部业务已经闭环。

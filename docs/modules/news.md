@@ -1,313 +1,257 @@
-# News: incremental evidence, adopted knowledge and reader delivery
+# News：增量新闻理解与独立通知
 
-[Handbook](../README.md) · [Architecture](../ARCHITECTURE.md) · [OI](oi.md) · [Review](review.md)
+[手册](../README.md) · [系统架构](../ARCHITECTURE.md) · [OI](oi.md) · [交易研究](trading.md) · [排障](../OPERATIONS.md#news-retry)
 
-Editorial News has one current understanding product: **EventUpdate**. It records
-claims, evidence relationships, changes, implications and open questions. Semantic
-processing, reader notification and the public Trading handoff are separate paths.
-This page is their canonical behavior/identity reference; no second design document
-or taxonomy manual overrides it.
+News 不只是“把标题交给模型打分”。当前编辑型链路以 **来源修订 → 冻结输入 → 命题理解 → EventUpdate 采用 → 独立通知** 为主线。它分别保存来源说了什么、系统理解了什么、读者实际收到什么。
 
-## 1. Objects and implementation owners
+## 1. 职责与源码入口
 
-| Object / owner | Responsibility |
+| 所有者 | 主要职责 |
 | --- | --- |
-| [Admission](../../tracefold/news/pipeline/admission.py), [events](../../tracefold/news/storage/events.py) | Preserve original Items, source identity, FactUnit focus, Event membership and new evidence revisions. |
-| [Source/fact helpers](../../tracefold/news/events/), [source contracts](../../tracefold/news/source_contracts.py) | Deterministic source routing, extraction scope, grounding and candidate grouping. |
-| [SemanticWorker](../../tracefold/news/pipeline/semantic.py) | Consume `news.triage` as task `news-semantic`, claim durable input work and attribute bounded failures. |
-| [NewsAgent](../../tracefold/news/updates/service.py), [SemanticAnalyzer](../../tracefold/news/updates/semantics.py) | Incremental extraction/understanding, checkpoints, observations, assembly and conditional adoption. |
-| [Typed update contracts](../../tracefold/news/updates/contracts.py), [judgments](../../tracefold/news/updates/judgment.py) | Exact claim, evidence, source, time, relationship and model-answer meanings. |
-| [DSPy adapters](../../tracefold/news/updates/dspy_backend.py) | Structured extraction, generated/native narrow judgments and selected-card composition. |
-| [NotificationPlanner](../../tracefold/news/updates/notification.py), [Notifications](../../tracefold/news/updates/service.py) | Compare actual reader coverage, select claim refs, compose/freeze a card and settle its send. |
-| [Storage](../../tracefold/news/storage/event_updates.py), [port adapter](../../tracefold/news/storage/event_update_store.py) | Revision/lease predicates, immutable adoptions, notification state, receipts and scoped retry. |
-| [Delivery loop](../../tracefold/news/pipeline/delivery.py), [App composition](../../tracefold/app/workers/wiring/news.py) | Existing supervised polling, provider adaptation and role wiring. |
-| [Public facts](../../tracefold/news/updates/public.py), [App mapping](../../tracefold/app/news_updates.py) | Deterministic card-independent public updates for Trading. |
-| [Update read model](../../tracefold/news/update_view.py) | Present adopted content, input progress, planning and actual delivery separately. |
+| [receiver.py](../../tracefold/news/pipeline/receiver.py)、[recovery.py](../../tracefold/news/pipeline/recovery.py) | 接收 OpenNews，记录中断与有界恢复，将原始输入交给 broker |
+| [admission.py](../../tracefold/news/pipeline/admission.py) | 区分来源契约，保存 Item、确定性拆分和 Event 归组，提交证据与语义工作 |
+| [events](../../tracefold/news/events/) | FactUnit 范围、grounding、准入、身份、标题 / token / MinHash 候选匹配 |
+| [semantic.py](../../tracefold/news/pipeline/semantic.py) | 消费语义唤醒，领取版本工作、执行尝试、退避、熔断与失败结算 |
+| [updates/service.py](../../tracefold/news/updates/service.py) | `NewsAgent` 编排、采用与可选补读；`Notifications` 独立续接 |
+| [semantics.py](../../tracefold/news/updates/semantics.py)、[judgment.py](../../tracefold/news/updates/judgment.py) | 引文校验、命题比较、有限问题、内容组装 |
+| [dspy_backend.py](../../tracefold/news/updates/dspy_backend.py) | DSPy 抽取、中文文案、生成式判断与原生有限选项判断 |
+| [notification.py](../../tracefold/news/updates/notification.py) | 逐命题通知规则、实际正文覆盖比较、稳定意图与冻结卡片 |
+| [event_update_store.py](../../tracefold/news/storage/event_update_store.py)、[event_updates.py](../../tracefold/news/storage/event_updates.py) | 短事务、检查点、不可变更新、head 条件采用、计划和发送账本 |
+| [public.py](../../tracefold/news/updates/public.py) | 从已采用知识生成公开更新，不依赖读者卡片 |
+| [delivery.py](../../tracefold/news/pipeline/delivery.py)、[maintenance.py](../../tracefold/news/pipeline/maintenance.py) | 通知轮询、真实投递、补唤醒与有界保留清理 |
 
-An Item ID, source revision occurrence, semantic input revision, adopted content
-revision, claim ref and delivery intent ID identify different things. No clock or
-hash can be substituted for another solely because both increase or look unique.
-
-## 2. End-to-end data flow
+## 2. 端到端数据流
 
 ```mermaid
 flowchart TB
-    Raw["Source arrival<br/>and raw broker handoff"] --> Route["Classify source contract"]
-    Route -->|"market"| Market["Typed fact or explicit parse failure<br/>separate OI/market path"]
-    Route -->|"editorial"| Admit["Item + Event membership<br/>+ evidence revision + semantic work"]
-    Admit --> Claim["Claim lease and freeze exact input"]
-    Claim --> Extract["Extract unprocessed material<br/>reuse exact checkpoints"]
-    Extract --> Understand["Bounded relationship/support judgments<br/>preserve uncertainty"]
-    Understand --> Adopt["Assemble and conditionally adopt<br/>immutable EventUpdate"]
-    Adopt --> Public["Public catalyst_delta / source_update"]
-    Public --> Trading["App relay to Trading"]
-    Adopt --> Planner["Per-claim notification plan"]
-    Planner -->|"selected"| Card["On-demand CardComposer<br/>frozen intent body"]
-    Planner -->|"no selection"| NoCard["Understanding remains available"]
-    Card --> Send["Head / reader revision preflight<br/>then provider send"]
-    Send --> Receipt["Actual outcome and body digest"]
+    Raw["OpenNews 原始记录"] --> Queue["RabbitMQ：news.raw"]
+    Queue --> Contract{"来源契约"}
+    Contract -->|"市场报告"| Market["类型化市场观察<br/>不创建编辑型 Event"]
+    Contract -->|"编辑型消息"| Scope["来源修订 / FactUnit 范围"]
+    Scope --> Admission["准入与候选归组"]
+    Admission --> Evidence["Item、Event、证据快照<br/>与 wanted input revision"]
+    Evidence --> Wake["news.triage 唤醒<br/>news-semantic 消费"]
+    Wake --> Agent["NewsAgent<br/>抽取 → 有界判断 → 采用"]
+    Agent --> Update["EventUpdate 与 adopted head"]
+    Update --> Public["公开 outbox<br/>独立交给 Trading"]
+    Update --> Notify["通知计划 → 意图 → 中文卡片"]
+    Notify --> Receipt["实际发送结果与精确正文"]
+    Update --> UI["Event 详情与新闻流"]
+    Receipt --> UI
 ```
 
-Adoption commits the update, public outbox and notification work together. It does
-not wait for Chinese copy or a provider send. Failed copy/delivery cannot retract
-already adopted semantics or prevent the independently committed public handoff.
-An OI measurement does not enter this editorial chain; see [OI](oi.md).
+PostgreSQL 保存可恢复工作；RabbitMQ 的语义消息只是唤醒。准入事务先提交，再发布唤醒并记录发布状态；进程在这几步之间崩溃，由维护任务重新唤醒。它不是 PostgreSQL 与 RabbitMQ 共享一个事务。
 
-## 3. Input scope, identities and current source contributions
+<a id="input"></a>
+## 3. 一条 News 为什么可能对应多个 Event
 
-**Source revision occurrence is not content equality.** An Item-local sequence and
-predecessor distinguish A → B → A from an exact retransmission of current A. The
-receiver's immutable observation clock orders local arrivals. Publication time is
-not a provider edit version; a later arrival of older text is a local observation,
-not proof that the upstream author restored it.
+### Item、FactUnit、Event 与 Claim
 
-**FactUnit scope is deterministic, not another Agent.**
-[facts.py](../../tracefold/news/events/facts.py) splits only sufficiently clear,
-contiguous explicitly numbered material, retaining shared lead context. A clock
-such as `10:30` is not a story number. Other inputs remain whole-item material.
-A changed body uses the old extraction scope as a comparison target, never old
-character offsets to slice a newly edited body. Only the frozen supplied evidence
-can be cited.
-
-**Grouping recalls candidates; it does not decide claim equivalence.** Exact keys,
-source-artifact identity and bounded token/MinHash near matching operate within the
-source/Event contract. Related prior claims are ranked against new material before
-their budget is applied. A shared name, same ticker or high text similarity alone
-is not proof that two propositions are equivalent or already reported.
-
-**Only unprocessed material is extracted in a turn.** Existing adopted claims and
-questions remain comparison context. Successful no-claim material still records its
-analyzed evidence refs, so a new member does not trigger repeated extraction of all
-old bodies. Several arrivals while an owner is working can coalesce into the next
-wanted revision.
-
-**Current contribution is one version per source record.** Old and corrected
-attribution for the same source cannot be counted as independent corroboration.
-Source replacement can remove its former support/authority even when its new body
-yields no claim. Missing support judgment becomes unresolved, not invented refutation.
-Historical evidence remains available for attribution, not duplicate support.
-
-Grounding still uses structured provider candidates, explicit cashtags and the
-existing collision/commodity rules in [gate.py](../../tracefold/news/events/gate.py)
-and [grounding.py](../../tracefold/news/events/grounding.py). The model identifies
-typed primary versus mentioned assets. An unknown asset type remains unknown;
-text grounding, catalogue existence and a verified executable native route are
-three different questions.
-
-## 4. Agent work, deterministic assembly and source authority
-
-| Stage | What the model may answer | What remains code-owned |
+| 对象 | 含义 | 不能混淆的身份 |
 | --- | --- | --- |
-| Extraction | Claims, supported conditions/timing, exact source-language citations and optional hints | Input scope, available refs, schema/citation validation and durable checkpoint identity |
-| Understanding | Mode, phase, content kind, relation, support, topic and other narrow questions | Task options, input/model cache key, bounded batches, uncertainty and adoption rules |
-| Reader planning | Actual sent-body coverage and other grounded narrow readings | Per-claim selection reasons, overlap handling, revision preflight and intent identity |
-| Card composition | Chinese explanation for the selected adopted claims | Selection itself, source refs, no-link/plain-text contract, frozen payload and send outcome |
+| Item | 一条提供商记录；保留原始内容与来源信息 | 不等于某一条模型命题 |
+| Item revision | 同一记录后续观察到的正文版本，带修订顺序和前驱 | 不等于正文哈希；A → B → A 是三个版本出现 |
+| FactUnit | 从一个明确编号汇总中切出的独立输入范围 | 不等于“每句话都拆成一个 Event” |
+| Event | 准入层维护的一组相关来源证据 | 不保证只包含一个 Claim，也不是全局故事百科 |
+| Claim | 带字段、资产角色、原文引文与稳定引用的命题 | 不等于标题、卡片或一个 ticker |
+| EventUpdate | 一次已采用的知识版本，包含命题、关系、变更与问题 | 不等于一次模型请求或一次推送 |
 
-These are native DSPy boundaries in `dspy_backend.py`, not the retired fixed
-three-predictor Program. The default judgments are generated. An optional
-`llm.news_judgment` route uses the existing Jev/System One SDK with DSPy Choice/Noul.
-Successful native answers are reused, not voted on by another model; an unavailable
-native batch can use its corresponding generated fallback. Cache identity includes
-the task, exact input and model identity.
+[extract_fact_units](../../tracefold/news/events/facts.py)只拆**至少三个连续、显式编号块**的高置信度汇总。未编号引言作为共享上下文；不满足该结构时保持一个整体输入。时间、金额和一般段落不应被当作编号列表拆分。
 
-**Physical call count is variable.** Checkpoint/cache hits, multiple claim/prior
-comparisons, missing answers, optional stored-source reading and whether any card
-is selected all affect calls. Stage and physical-call budgets remain in the service
-and judgment owners. A configured model name or a logical step count is not a receipt
-of how many requests actually ran.
+因此，“一条提供商消息 → 多个 FactUnit → 多个 Event”在当前实现中是有条件的；与此同时，**一个 EventUpdate 本身可以包含多条 Claim**。系统没有让 LLM 自由把每句话扩张成一个独立 Event。
 
-Generated requests use short local aliases mapped back to durable refs. Invalid
-core claims/citations fail. Invalid optional relationship/support/gap proposals
-are diagnosed and omitted without erasing valid claims or existing questions.
-Resolving an actually supplied question still requires grounded citations. One
-cached clarification of unknown mode belongs to understanding, not notification;
-unresolved mode remains unknown. Unknown comparisons can yield `possible_new`,
-not a fabricated catalyst.
+更新已有消息时，系统按既有范围及修订关系读取证据，不把旧正文的字符偏移硬套在新正文上。必须保留命题引文对应的确切来源版本。
 
-Assembly carries unaffected claims, implications and questions forward. Omission
-is not an instruction to retract a claim or close a question. Explicit grounded
-resolution or retirement of its underlying claim is needed. New documents use
-`news_event_update_v2`; original v1 documents retain their immutable identity.
+### 命题身份不随每次关系变化重建
 
-A Claim ref identifies a proposition or real-world occurrence. New support,
-source, cross-Event conflict or correction relations can change the adopted
-update without creating another ref. Explicit state transitions, including
-A → B → A, retain distinct occurrences. The assembly preserves relation and
-evidence deltas when it reuses a ref. When two feeds carry an identical complete
-cited source text, a same-Event Claim can also be reused despite an `unrelated`
-relation reading, provided its statement matches, no new quantity or occurrence
-transition appears, and the structured identity guards find no mismatch.
+Claim ref 指向一个命题或真实世界中的一次发生。新增支持、来源、跨 Event 冲突或更正关系可以改变 EventUpdate，但不必创建另一个 ref；组装时仍保留关系和证据增量。显式 A → B → A 的状态转换则保留不同发生身份，不能因为字段重新相等就吞掉最后一次动作。
 
-The optional extra read chooses only a supplied stored News target, with one durable
-reservation per lineage. It is not arbitrary browsing, a general tool loop, or an
-opportunity to reset its budget after a retry. Its failure cannot undo adoption.
+对于同一 Event 中两路来源携带完全一致的被引全文，即使关系模型误判为 `unrelated`，只有命题 statement 相同、没有新增数量 / 发生转换，且结构化身份检查无冲突时，才允许窄范围复用旧 Claim。它不是只凭相似标题跨 Event 去重。
 
-### Topics and cited source authority
+### 准入与候选归组不是语义裁决
 
-[updates/topics.py](../../tracefold/news/updates/topics.py) pins the IPTC Media Topics
-codebook used for navigation/presentation. An update may carry up to three known
-qcodes, without simultaneously selecting a broad parent and pinned descendant.
-Topics are contributed by active claims; retired/superseded claims do not keep a
-stale topic alive. Topics do not collapse the update into one semantic event type.
+[Gate](../../tracefold/news/events/gate.py)与[准入](../../tracefold/news/pipeline/admission.py)负责确定性证据、grounded assets、队列优先级及具名排除。来源标签、显式 cashtag、交易标的目录与规则匹配各有作用；并非所有实体都由一次模型调用凭空产生。
 
-[taxonomy.py](../../tracefold/news/taxonomy.py) now owns **cited source authority**,
-not the removed four-axis taxonomy. It uses structured source names/handles and
-HTTP hostname boundaries, not fuzzy text or a strategy ID. Values are
-`regulatory_filing`, `issuer_first_party`, `reputable_secondary` and `unknown`.
-Authority attaches to a cited Source, not a rank inherited by an entire Event.
-A source can establish that it made a claim without verifying a third-party
-allegation or future outcome. Independent support remains a separate relationship.
+精确身份和有界近似匹配用于找到可能归到一起的输入。强事实如 ticker、数字及 token 兼容性可以阻止错误合并；MinHash、标题相似或同一个资产只能帮助召回，**不能证明两个命题相同**。真正的等价、补充、更正与阶段变化在 Claim 层判断。
 
-## 5. Work progress and recovery
+原始市场报告走单独的 `admit_market_item`：保存 Item 与解析结果，不创建伪 Event，不走编辑型 Gate / MinHash / 语义链路。
 
-```mermaid
-stateDiagram-v2
-    [*] --> Pending: wanted input exceeds done
-    Pending --> Owned: claim + freeze input
-    Owned --> Waiting: bounded transient defer
-    Waiting --> Owned: due and claimable
-    Owned --> Completed: record consumed input
-    Owned --> Failed: owned final failure
-    Owned --> Expired: lease expires
-    Expired --> Pending: attempts remain
-    Expired --> Failed: final attempt exhausted
-```
-
-These labels explain work predicates; they are **not** a new `Event.status` enum.
-`news_semantic_work` owns wanted/done revision, owner token, attempts, due time and
-lease. The last valid EventUpdate head remains independent. Completing unchanged
-input advances progress without inventing another content revision.
-
-Checkpoint identity hashes the full frozen input and comparison context, not just
-body text. Extraction/understanding checkpoints and semantic observations are
-insert-only. Adoption checks the owned lease and head compare-and-swap. An older
-observation cannot move a newer head backward. A still-owned older revision may
-finish while newer work waits without spending or clearing the newer budget.
-
-Final-attempt exhaustion is exposed only after its lease expires, never while its
-worker still owns a valid lease. Current failure/defer writes for notification and
-card work also name the content revision; stale failures cannot postpone a successor.
-These predicates are in [event_updates.py](../../tracefold/news/storage/event_updates.py).
-
-Generated output faults distinguish truncated, empty and schema-invalid responses.
-A configured route with a meaningfully different contract may answer once; fixed
-contract or reference faults do not consume identical semantic retries. Transient
-provider failures retain the bounded retry path. `/api/news/status` counts runnable
-`semantic_pending`, scheduled `semantic_deferred`, active `semantic_in_progress`
-and terminal `semantic_failed_exhausted` separately.
-
-| Independent dimension | What to inspect |
-| --- | --- |
-| Semantic input | Wanted/done revision, lease, attempts, next attempt and failure code |
-| Adopted knowledge | Immutable update observations/content and current head |
-| Notification planning | Current content revision, plan action/reasons and planner retry budget |
-| Card and external result | Exact intent, frozen payload, generation attempts and actual send ledger |
-
-No agent configured can leave durable input pending even when its wake was
-acknowledged. Janitor repairs due wake work and exposes crashed exhausted attempts.
-A semantic failure is not “no news value”; a plan with no selection is not an outage;
-a completed planner with a dead card is not a successful notification.
-
-`news retry-work` reopens only its exact failed target. Semantic retry takes the
-wanted input revision; notification retry takes the current exhausted content
-revision; card retry additionally requires a dead **unsent** intent. Any existing
-send ledger blocks card reopening, including terminal or ambiguous results.
-Card retry does not reset an independently exhausted planner. Prompt deployment
-does not trigger historical replay. Exact commands belong to
-[Operations](../OPERATIONS.md#3-news-identify-the-failed-version-before-retrying).
-
-## 6. Reader coverage, selection and actual delivery
-
-The planner compares claims against **actual sent bodies**. It recalls candidates
-using explicit antecedents and current claims/source-language quotes, then ranks
-receipts before applying the bounded model budget. An old leader title is only a
-fallback; the newest card from another Event can omit an earlier sent proposition.
-Similarity, selected IDs or an in-flight intent do not prove the reader was told.
-
-Only full coverage suppresses a proposition as already received. Partial coverage
-is not full; in-flight/ambiguous sends block overlap without being successful
-receipts. Commentary, promotion, forecast, schedule-only material, unsupported
-price reports, stale sources, watchlist exceptions and unknown mode have explicit
-claim-level reasons. Unknown mode is not an indefinite quality-approval queue.
-`key` is a presentation flag requiring the implemented change/topic/corroboration
-conditions, not proof of truth or permission to trade.
+<a id="agent"></a>
+## 4. NewsAgent 到底做了什么
 
 ```mermaid
 sequenceDiagram
-    participant P as Notification planner
-    participant D as PostgreSQL
-    participant C as CardComposer
-    participant S as Sender
-    P->>D: Read adopted update and reader revision
-    P->>P: Grounded per-claim coverage and selection
-    P->>D: Record plan and reserve exact intent
-    alt Claims selected and no frozen card yet
-        P->>C: Compose only selected claims and sources
-        C-->>P: Validated Chinese body
-        P->>D: Freeze payload and digest
+    participant W as SemanticWorker
+    participant D as NewsStore
+    participant A as NewsAgent
+    participant M as DSPy 适配器
+    W->>D: 领取 wanted revision、owner token 和 lease
+    W->>A: 传入冻结输入与尝试边界
+    A->>D: 读取该工作身份的检查点
+    alt 抽取检查点不存在
+        A->>M: 抽取新证据的结构化命题与引文
+        A->>D: 保存抽取检查点
     end
-    P->>D: Check head and reader revision before send
-    P->>S: Send outside transaction
-    S-->>P: sent, proved not_sent or ambiguous
-    P->>D: Persist exact provider outcome and body
+    A->>M: 仅执行未完成的有界理解与比较
+    A->>D: 保存理解检查点和语义观察
+    A->>D: 校验所有权与 head，原子采用知识版本
+    D-->>A: 同时记录公开 outbox 与通知工作
+    A->>D: 结算当前输入版本
+    opt 有明确问题、允许目标且剩余预算足够
+        A->>D: 保留一次补读名额并附加可用材料
+    end
 ```
 
-The stable intent binds adopted content and selected refs. Sending rechecks the
-head and reader revision, including explicit cross-Event correction/replacement
-targets even when the card's own head stayed unchanged. Frozen copy is not silently
-rewritten during send.
+### 冻结输入与增量范围
 
-CardComposer receives only the selected Claim refs, statements, structured fields,
-exact citation quotes and minimal provenance. It must preserve object, action,
-quantity, attribution and phase in Chinese copy. The frozen-card checks still
-validate refs and shape; a scripted regression does not establish live model
-accuracy.
+冻结输入绑定 Event、输入修订、证据范围、prior claims、候选关系、来源时钟以及程序 / 模型身份。抽取只看尚未被已采用知识处理的新材料；旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
 
-A proved retryable `not_sent` can reuse the intent under its existing budget.
-`ambiguous` is not blindly resent. Sender outcomes, persisted ledger states and
-queue states are different contracts: a terminal external failure may leave a
-`dead` queue record that is **not** eligible for unsent-card recovery because its
-send ledger already exists.
+“读过但没有命题”的材料也必须记入处理证据。否则同一段空内容会不断进入下一轮。没有新证据或没有实质变化，可以推进 done，而不制造新的内容版本。
 
-## 7. Example: commitment, repetition, execution and correction
+来源修订使用**本地观察顺序、修订序号和前驱**，不把提供商发布时间猜成可靠的编辑版本号。同一来源的新旧正文可以同时作为历史证据保存，但当前支撑判断只采用该来源的当前贡献，不能把转载或同源修订算成多个独立证实。
 
-Suppose a source reports “Acme will open a plant if approval arrives.” The adopted
-claim retains the commitment, condition and supported time precision; it does not
-establish an operating plant. A second source repeating it can add attributable
-evidence without another catalyst or another fully covered notification.
+### 抽取、判断与采用各司其职
 
-A later report that the plant actually opened can establish a real-world/phase
-change. An explicit retraction of the original report is instead a correction.
-News adopts these distinctions independently of card generation.
-[public.py](../../tracefold/news/updates/public.py) emits a `catalyst_delta` for
-qualifying changed claims or `source_update` for a published ancestor amendment.
-Restatement and unresolved `possible_new` are not manufactured fresh catalysts.
+| 步骤 | 模型承担的工作 | 代码承担的工作 |
+| --- | --- | --- |
+| 抽取 | 找到命题、条件、数量、资产角色、时间信息和引文 | 检查结构、精确引文、可见引用与输入范围 |
+| 理解 | 判断 `mode`、`phase`、`content_kind` | 限定合法值，保留不确定性，不因日期到来就推断动作完成 |
+| 比较 | 判断命题等价、补充、更正、替代及证据支撑关系 | 排除已能证明的数字 / 语气矛盾，验证目标 refs 与候选身份 |
+| 组织 | 提议主题、影响机制与未解问题 | 验证支持关系；区分事实与条件性推论；延续未被显式改变的知识 |
+| 采用 | 不直接写数据库 | 组装 EventUpdate，保存观察，检查 owner / lease / head 后条件采用 |
 
-[Trading](trading.md) records amendments before target selection, without a new
-Case or TTL. It can refuse a not-yet-submitted entry against a corrected cited
-proposition; the amendment is not an account-close command. This example is
-illustrative, not an observed news item or execution receipt.
+当前判断任务包括 `mode`、`phase`、`content_kind`、`relation`、`support`、`coverage`、`topic`、`next_read`、`impact_channel`、`market_basis`。后四类并不意味着每条消息全部调用；`coverage` 属于通知续接，而非语义采用的必经审批。
 
-## 8. Verification entry points
+可选原生判断通过 DSPy 的有限输出类型连接 Jev / System One。未配置该后端时使用生成式判断；已成功缓存的答案不再找另一个模型投票。失败回退、批次与缓存身份由 [judgment.py](../../tracefold/news/updates/judgment.py)及 [DSPy 适配](../../tracefold/news/updates/dspy_backend.py)控制。
 
-The feed read side in [feed.py](../../tracefold/news/storage/feed.py) and
-[feed_sql.py](../../tracefold/news/storage/feed_sql.py) shares representative-receipt
-ordering between the page and its counts: sent receipts take precedence, then
-creation time and intent identity. The bounded page uses per-Event lookups; counts
-select representative receipts in one ledger pass rather than sorting one lookup
-for every retained Event. A count is not the number of notification attempts.
+### 模型到底调用几次，为什么有延时
 
+**不是固定三个 DSPy 节点，也不是一个 Event 只调用一次模型。** 一次语义尝试可能包含抽取、多个判断批次、缓存命中、回退，以及采用冲突后的缺失关系补算。通知还可能调用市场依据 / 已发正文覆盖判断和中文文案生成；没有选中命题时无需生成卡片。
 
-[Input scope](../../tests/news/test_news_update_input_scope.py),
-[semantic worker](../../tests/news/test_news_semantic_worker.py),
-[revision ownership](../../tests/integration/test_news_revision_ownership.py),
-[update store](../../tests/integration/test_news_event_update_store.py),
-[semantic pipeline](../../tests/integration/test_news_semantic_pipeline.py),
-[notification decisions](../../tests/news/test_news_event_update_notifications.py),
-[delivery](../../tests/integration/test_news_update_delivery.py), and
-[Trading amendments](../../tests/integration/test_trading_analysis_public_updates.py)
-exercise different boundaries. Test success does not establish model accuracy,
-production notification quality, provider completeness or trading profitability.
+| 预算 | 当前代码值 | 解释 |
+| --- | --- | --- |
+| 语义阶段 | 120 秒 | 一次 `NewsAgent.process` 的共享截止时间 |
+| 通知模型阶段 | 60 秒 | 计划与卡片生成共享，不把外部发送等待算成同一次模型阶段 |
+| 生成调用预算常量 | 60 秒 | 具体适配使用的调用边界；不等于端到端保证 |
+| 采用冲突尝试 | 2 次 | 处理 head 变化，不无条件重做已完成的抽取 |
 
-The [Issue 717 one-hour baseline and offline replay](../reports/issue-717-hourly-comparison-2026-09-27.md)
-records the source-backed duplicate, delivery and latency comparison before deployment.
+数值来自 [service.py](../../tracefold/news/updates/service.py)。它们是上限，不是实际耗时、服务级别承诺或性能实测。排查延时需要拆开：**入队等待 → DB 领取 → 模型物理调用 → 判断 / 回退 → 采用 → 通知等待 → 发送**。把总耗时都称为“Agent 慢”无法定位根因。
+
+提供商失败与内容不确定不同：非最终尝试中，关键关系 / 支撑判断无法取得会进入持久重试；最终尝试允许按契约保存 unresolved / `possible_new`，不能伪造“没有新闻价值”。程序错误和非法核心输出仍是失败。
+
+生成输出具体区分 `news_generation_output_truncated`、`news_generation_output_empty` 与 `news_generation_output_schema_invalid`。已配置的 fallback 只有请求契约有实质差异时才可补答一次；固定契约或引用错误不再消耗相同请求的多轮语义重试。临时限流、超时、服务端和传输错误仍走有界恢复。错误日志记录错误类别与长度，不记录原始模型响应片段。
+
+### 可选补读的边界
+
+系统只能读冻结输入提供的目标，由实际 `ExistingSourceReader` 实现提供材料。它不是任意网页浏览器、shell 或自主搜索 Agent。一条 lineage 通过持久 reservation 限制一次补读，重试不能获得新名额；失败不能撤销已经提交的 EventUpdate、公开 outbox 或通知工作。
+
+<a id="topics-and-cited-source-authority"></a>
+## 5. 主题、来源与知识版本
+
+[topics.py](../../tracefold/news/updates/topics.py)维护 IPTC 导航主题，最多保留三个，不同时保留冗余父子主题。当前 v2 将主题归属到命题并从有效命题汇总，避免已失效内容长期污染 Event 标签。
+
+[taxonomy.py](../../tracefold/news/taxonomy.py)保留来源权威类别，例如 `regulatory_filing`、`issuer_first_party`、`reputable_secondary` 与 `unknown`，依据已识别的来源身份。来源权威不是对其引用的第三方说法进行独立核验，更不是交易指令。
+
+新写入使用 `news_event_update_v2`；旧 v1 保留其原始内容和哈希。旧四轴 taxonomy、旧 Program 的 `fact_kind` 输出不是新 Claim 契约。历史 verdict / ReviewDesk 词表仅保留明确的历史读取语义。
+
+<a id="state"></a>
+<a id="5-work-progress-and-recovery"></a>
+## 6. 状态必须分三层理解
+
+| 层次 | 记录什么 | 典型情况 |
+| --- | --- | --- |
+| 语义工作 | wanted / done 输入版本、owner、lease、attempt、due 和错误 | 最新输入待处理、暂缓或失败；最后一次尝试仍可能合法运行 |
+| 已采用知识 | 不可变 EventUpdate、content revision、当前 head | 无实质变化不增加 head；失败不删除上一有效版本 |
+| 读者结果 | 通知工作、逐命题计划、intent、冻结文案与发送账本 | 不通知、生成失败、等待发送、已发送或结果不明 |
+
+下面是**恢复过程的概念状态图**，不是完整数据库枚举：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: 新证据提交工作
+    Pending --> Owned: 成功领取版本与租约
+    Owned --> Adopted: 采用有实质变化的知识
+    Owned --> Unchanged: 无新增实质变化
+    Owned --> Pending: 可恢复失败且预算剩余
+    Owned --> Failed: 已结算失败或最终租约过期
+    Adopted --> [*]
+    Unchanged --> [*]
+    Failed --> Pending: 精确版本人工恢复
+```
+
+`/api/news/status` 分别报告可领取的 `semantic_pending`、等待调度的 `semantic_deferred`、持有有效租约的 `semantic_in_progress` 和终结的 `semantic_failed_exhausted`。耗尽工作不再计为可运行 pending；这些是有界工作集的状态计数，不是模型调用数。
+
+最终尝试仍持有有效 lease 时，Janitor 不能将它判为耗尽；只有崩溃且 lease 已过期的最后尝试才应被终结。旧版本的延后 / 失败结算不能消耗新版本预算，也不能推迟后继工作。
+
+没有模型配置时，Worker 可以确认 broker 唤醒但保留 PostgreSQL 中待处理工作；这不代表已完成理解。更换模型、提示词或镜像不会自动重放所有已处理证据，也不自动重置耗尽预算。
+
+<a id="notification"></a>
+## 7. 什么决定一条新闻是否推送
+
+决定者是 **`NotificationPlanner.plan`**，输入是已采用 EventUpdate、读者观察名单、实际已发送正文及未决发送状态。它为**每条 Claim**给出 `notify` / `not_notified` / `deferred` 与具名原因，不输出一个隐含的全局“重要性分数”。
+
+| 判断顺序与情况 | 当前行为 |
+| --- | --- |
+| 命题已退休、替代或被跨 Event 修订失效 | `retired`，不通知 |
+| 主要资产命中读者观察名单 | 作为候选，绕过一般 mode / 内容限制；仍检查过期、覆盖和未决发送 |
+| mode 未知、评论、推广、预测，或日程内容 | 按具体原因不通知，不把它们包装成无限重试 |
+| 观察型市场数字 | 判断原文是否提供超出数字的依据；单纯报价通常不通知 |
+| 大幅市场变化例外 | 商品或指数主要资产的结构化百分比达到 5% 例外；不是所有个股涨 5% 都推送 |
+| 来源过期 | 默认超过首次可用时间 12 小时不通知；明确 correction / conflict 有例外，不给交易来源续期 |
+| 重叠发送正在进行或结果不明 | `send_outcome_unresolved`，暂缓相关命题 |
+| 实际已发送正文完整覆盖 | `covered_by_sent_receipt`，不重复通知；部分覆盖不等于完整覆盖 |
+| 尚未被上述规则排除 | 选中命题并生成稳定通知意图 |
+
+来源更正、未知市场依据和观察名单都有明确分支，不能把上表简化成一个统一“新闻相关性 gate”。准确规则顺序与例外以 [notification.py](../../tracefold/news/updates/notification.py)为准。
+
+`key` 是展示上的重点标记：特定内容类型、重点主题以及有效支撑来源共同决定。它不是另一轮必须通过的发送审批，也不是仓位权重。
+
+```mermaid
+flowchart TD
+    Update["已采用知识与读者快照"] --> Rules["逐命题内容、时效与失效检查"]
+    Rules --> Blocked{"是否存在重叠未决发送"}
+    Blocked -->|"是"| Deferred["相关命题暂缓"]
+    Blocked -->|"否"| Coverage["比较实际 sent 正文覆盖"]
+    Coverage --> Selected{"是否有待通知命题"}
+    Selected -->|"否"| No["记录具名不通知原因"]
+    Selected -->|"是"| Intent["保留稳定 intent"]
+    Intent --> Copy["只生成所选命题的中文卡片"]
+    Copy --> Freeze["冻结正文与摘要"]
+    Freeze --> Check["发送前复查 head、读者与所有权"]
+    Check --> Send["事务外发送"]
+    Send --> Ledger["记录精确实际结果"]
+```
+
+### 正文、回执与重试
+
+CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精确引用和最少来源身份，而非完整来源全文或整个知识文档。中文表达必须保留对象、动作、数量、归因与阶段；标题压缩也不能把“宣称”写成“核实”、把“宣布”写成“已经实施”。冻结卡片仍检查 refs 与形状；约束和脚本回归不证明真实模型每次都翻译正确。
+
+“选中了某条 Claim”不证明卡片正文完整表达了它。未来的覆盖判断读的是**实际发出的精确正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记。
+
+计划采用和发送前会核对 head 与 reader revision。正文冻结后不因后台新材料到来而改写已开始的发送。适配器区分 `sent`、`not_sent`、`ambiguous`；只有已证明未发送且可重试的结果才按原意图重试。结果不明不能伪装成功，也不能直接再发一份。
+
+通知计划失败、文案生成失败、发送失败是三个边界。精确恢复命令及限制见[运维指南](../OPERATIONS.md#news-retry)；任何已有发送账本的 intent 都不能通过 `retry-work` 随意重开。
+
+## 8. 一个具体更新例子
+
+以下是**说明流程的虚构消息**，不是测试执行结果，也不承诺模型一定作出正确判断。
+
+| 输入时刻 | 来源变化 | 应阅读的系统事实 |
+| --- | --- | --- |
+| T0 | 公司甲宣布工厂将在下月投产 | Claim 是“宣布未来行动”，不是“已经完成投产”；EventUpdate 保存引文和阶段 |
+| T1 | 另一媒体复述同一公告 | 可能增加来源证据；命题等价不自动产生新的交易催化；已发正文完整覆盖时不重复通知 |
+| T2 | 原记录增加“首期产能为 10 万件” | 保存 Item 修订并抽取新增范围；形成可定位的新增数量 / 条件，独立判断是否通知 |
+| T3 | 公司更正为“5 万件” | 更正明确指向旧 claim refs；保留原有历史，生成适用的 source_update |
+| T4 | 公司宣布实际投产 | 这是动作阶段的新证据，不能仅凭日历到达就提前推断 |
+
+T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻结的研究 Case，也不会自动平掉账户现有仓位。
+
+## 9. 验证与排障入口
+
+先定位 `event_id`、来源修订、wanted / done、content revision、intent，再看[输入范围](../../tests/news/test_news_update_input_scope.py)、[语义 Worker](../../tests/news/test_news_semantic_worker.py)、[通知规则](../../tests/news/test_news_event_update_notifications.py)以及[修订存储](../../tests/integration/test_news_revision_ownership.py)、[EventUpdate 存储](../../tests/integration/test_news_event_update_store.py)、[发送集成](../../tests/integration/test_news_update_delivery.py)。
+
+前端通过新闻流与 Event 详情读取这些维度；历史 verdict 明确标为 `legacy_verdict`，不能由 UI 合成新命题。列表计数与卡片成功率、语义采用率的分母不同，不应混算。
+
+代码测试证明状态、身份、引用与副作用边界；真实新闻理解质量仍需独立复核。保留的[ReviewDesk / 校准](review.md)不是自动优化发布系统。
+
+[Issue 717 固定窗口与离线回放记录](../reports/issue-717-hourly-comparison-2026-09-27.md)保存 #718 对重复命题、实际发送与延时的历史比较。它不是本手册整理时重新执行的生产测试，也没有测得部署后的模型调用次数与延时改善。
