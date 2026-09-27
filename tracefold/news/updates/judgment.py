@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol
@@ -210,6 +211,15 @@ class ConfigurationFault(RuntimeError):
 
 class ContractFault(ValueError):
     """The response cannot satisfy the declared task; not a no-news decision."""
+
+
+_ERROR_CODE = re.compile(r"^[a-z0-9_:.]{1,160}$")
+
+
+def error_code(exc: BaseException, *, default: str) -> str:
+    """Keep a bounded code; never persist arbitrary provider/library exception text."""
+    text = str(exc)
+    return text if _ERROR_CODE.fullmatch(text) else f"{default}:{type(exc).__name__}"
 
 
 @dataclass(frozen=True, slots=True)

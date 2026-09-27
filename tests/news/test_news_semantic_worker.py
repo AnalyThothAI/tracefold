@@ -14,7 +14,7 @@ import dspy
 import pytest
 
 from tracefold.news.bus import Q_TRIAGE, BusMessage, PermanentError, TransientError
-from tracefold.news.pipeline.semantic import PROVIDER_OUTAGE_CAUSE, SemanticWorker, error_code
+from tracefold.news.pipeline.semantic import PROVIDER_OUTAGE_CAUSE, SemanticWorker
 from tracefold.news.storage.event_updates import SEMANTIC_ATTEMPTS_MAX, EventUpdateConflict, SemanticLease
 from tracefold.news.updates import dspy_backend
 from tracefold.news.updates.contracts import (
@@ -37,6 +37,7 @@ from tracefold.news.updates.judgment import (
     ProviderUnavailable,
     Question,
     Task,
+    error_code,
 )
 from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update
 

@@ -187,7 +187,7 @@ class SemanticAnalyzer:
         # The whole codebook is one native request; refuse a codebook that cannot be one.
         if len(topics) > MAX_QUESTIONS_PER_REQUEST:
             raise ValueError("news_topic_codebook_too_large")
-        self.identity = identity("semantic", "event_update_v1", extractor.identity, judgments.identity, topics)
+        self.identity = identity("semantic", "event_understanding_v2", extractor.identity, judgments.identity, topics)
 
     async def extract(self, source: FrozenInput, budget: Budget) -> Extraction:
         async with asyncio.timeout(budget.remaining()):
@@ -216,8 +216,41 @@ class SemanticAnalyzer:
         if self.judgments.native is not None and not rebase_only:
             result = await self._claim_readings(source, result, budget)
             result = await self._topics(result, budget)
+        if not rebase_only:
+            result = await self._clarify_modes(source, result, budget)
         result = await self._relations(source, result, budget, final_attempt=final_attempt)
         return await self._supports(source, result, budget, final_attempt=final_attempt)
+
+    async def _clarify_modes(self, source: FrozenInput, extraction: Extraction, budget: Budget) -> Extraction:
+        """One cached clarification belongs to understanding, never to reader selection."""
+        evidence = {item.ref: item for item in source.evidence}
+        pending = tuple(
+            Question(
+                item_id=claim.slot,
+                payload_json=canonical_json(
+                    {
+                        "claim": claim,
+                        "evidence": [evidence[citation.evidence_ref] for citation in claim.citations],
+                    }
+                ),
+            )
+            for claim in extraction.claims
+            if claim.fields.mode == "unknown"
+        )
+        if not pending:
+            return extraction
+        answers = {row.item_id: row for row in await self.judgments.reask("mode", pending, budget)}
+        claims = []
+        for claim in extraction.claims:
+            answer = answers.get(claim.slot)
+            if answer is not None and answer.status == "available":
+                values = claim.model_dump(mode="json")
+                values["fields"]["mode"] = answer.value
+                claims.append(DraftClaim.model_validate(values))
+            else:
+                claims.append(claim)
+        # Unknown/unavailable is settled content uncertainty, not a new retry lifecycle.
+        return _replace(extraction, claims=tuple(claims))
 
     async def _claim_readings(self, source: FrozenInput, extraction: Extraction, budget: Budget) -> Extraction:
         """The native backend owns mode, phase and content kind for each claim."""

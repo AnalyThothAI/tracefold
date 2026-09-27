@@ -256,12 +256,14 @@ def test_a_failed_plan_spends_one_bounded_attempt_and_touches_nothing_else() -> 
 
     clock = Clock()
 
-    def unknown_mode(source: FrozenInput) -> Extraction:
-        return Extraction(claims=(_claim(source.evidence[0], "a", mode="unknown"),))
+    def market_report(source: FrozenInput) -> Extraction:
+        claim = _claim(source.evidence[0], "a", mode="observation")
+        fields = claim.fields.model_copy(update={"content_kind": "level_crossed"})
+        return Extraction(claims=(claim.model_copy(update={"fields": fields}),))
 
-    head = _adopt(clock, StubAnalyzer(unknown_mode))
+    head = _adopt(clock, StubAnalyzer(market_report))
     provider = Provider()
-    rig = Rig(provider, clock=clock, backend=TaskBackend({"mode": "not-a-mode"}))
+    rig = Rig(provider, clock=clock, backend=TaskBackend({"market_basis": "not-a-basis"}))
 
     for attempt in range(1, 4):
         rig.advance()
@@ -281,12 +283,12 @@ class FlakyComposer(Composer):
         super().__init__()
         self.failures = failures
 
-    async def compose(self, claims: tuple[Any, ...]) -> CardCopy:
+    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
         if self.failures:
             self.calls += 1
             self.failures -= 1
             raise ProviderUnavailable("news_generation_LMRateLimitError")
-        return await Composer.compose(self, claims)
+        return await Composer.compose(self, claims, sources=sources)
 
 
 def test_a_card_failure_retries_only_that_intents_card() -> None:
@@ -302,7 +304,7 @@ def test_a_card_failure_retries_only_that_intents_card() -> None:
     # One card attempt spent; nothing sent; the semantic head and the public outbox are untouched.
     (queued,) = _queue()
     assert (queued["state"], queued["attempts"], queued["lease_token"]) == ("pending", 1, None)
-    assert queued["error_code"] == "ProviderUnavailable" and queued["frozen_card"] is None
+    assert queued["error_code"] == "news_card:ProviderUnavailable" and queued["frozen_card"] is None
     assert _ledger() == [] and provider.sent == []
     assert asyncio.run(rig.store.head(EVENT)) == head
     assert sql("SELECT kind, source_revision, acknowledged_at_ms FROM news_trade_events") == outbox_before
@@ -327,7 +329,7 @@ def test_a_head_that_changes_before_the_send_retires_the_unsent_reservation() ->
     class AdoptingComposer(Composer):
         """While the card model writes copy, the Event gets a newer adopted head."""
 
-        async def compose(self, claims: tuple[Any, ...]) -> CardCopy:
+        async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
             if self.calls == 0:
                 source = FrozenInput(
                     event_id=EVENT,
@@ -342,7 +344,7 @@ def test_a_head_that_changes_before_the_send_retires_the_unsent_reservation() ->
                 store = PgNewsStore(ThreadedDb(), clock=clock)
                 adopted, _update = await adopt_next(store, head, source, extraction_for(source))
                 assert adopted
-            return await Composer.compose(self, claims)
+            return await Composer.compose(self, claims, sources=sources)
 
     rig = Rig(provider, composer=AdoptingComposer(), clock=clock)
 

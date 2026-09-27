@@ -230,7 +230,7 @@ class Composer:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def compose(self, claims: tuple[Any, ...]) -> CardCopy:
+    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
         self.calls += 1
         return CardCopy(
             headline_zh="机构对钢铁进口加征关税",
@@ -1018,3 +1018,97 @@ def test_a_no_notification_plan_is_final_for_the_head_and_retires_an_unsent_rese
     assert work["state"] == "done" and work["reader_revision"] == snapshot.reader.revision
     assert work["plan"]["claim_decisions"][0]["reason"] == "mode_commentary"
     assert asyncio.run(pg.notification_snapshot(EVENT, "news")) is None
+
+
+def test_snapshot_recalls_later_claim_beyond_legacy_leader_bands() -> None:
+    pg, db, clock = store()
+    adopted_head(pg, clock)
+    leader = "Cryptocurrency prices remain stable across global markets"
+    sql("UPDATE news_events SET comparison_title = %s WHERE event_id = %s", (leader, EVENT))
+
+    def sent_first(event_id: str, title: str, body: str) -> None:
+        seed_event(event_id, title=title, fingerprint=event_id, at_ms=STAMP - 21_600_000)
+        context = {
+            "comparison_title": title,
+            "headline_zh": body,
+            "why_zh": body,
+            "dedupe_family": "general",
+            "comparison_fingerprint": event_id,
+        }
+        sql(
+            """
+            INSERT INTO news_deliveries
+              (intent_id, event_id, kind, state, card, receipt, attempted_at_ms,
+               settled_at_ms, created_at_ms, history_context)
+            VALUES (%s, %s, 'first', 'sent', %s::jsonb, '{}'::jsonb, %s, %s, %s, %s::jsonb)
+            """,
+            (
+                legacy_intent_id(event_id, "first"),
+                event_id,
+                json.dumps({"header": {"title": {"content": body}}}),
+                STAMP - 18_000_000,
+                STAMP - 18_000_000,
+                STAMP - 18_000_000,
+                json.dumps(context),
+            ),
+        )
+
+    for index in range(35):
+        sent_first(f"leader-noise-{index}", leader, "市场价格保持稳定")
+    sent_first("actual-tariff", TEXT, "机构已宣布百分之二十五钢铁进口关税")
+    history = asyncio.run(
+        db.read("test_history", lambda repos: repos.news.reader_history(event_id=EVENT, now_ms=clock()))
+    )
+    assert "actual-tariff" not in {row.event_id for row in history.told_source_rows}
+    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    assert snapshot is not None
+    assert len(snapshot.reader.receipts) == 16
+    assert snapshot.reader.receipts[0].intent_id == legacy_intent_id("actual-tariff", "first")
+
+
+def test_snapshot_keeps_earlier_incremental_receipt_and_excludes_future_and_deleted() -> None:
+    pg, _db, clock = store()
+    adopted_head(pg, clock)
+    seed_event("incremental", title=TEXT, fingerprint="incremental")
+
+    def sent_update(key: str, body: str, at_ms: int, *, deleted: bool = False) -> str:
+        intent = identity("intent", key)
+        sql(
+            """
+            INSERT INTO news_deliveries
+              (intent_id, event_id, kind, state, card, receipt, attempted_at_ms,
+               settled_at_ms, created_at_ms, history_context, content_revision,
+               claim_refs, body, payload_sha256, plan_key, delete_state,
+               delete_evidence, delete_reason, delete_attempted_at_ms, delete_settled_at_ms)
+            VALUES (%s, 'incremental', 'update', 'sent', '{}'::jsonb, '{}'::jsonb,
+                    %s, %s, %s, %s::jsonb, %s, '["historical-claim"]'::jsonb, %s, %s, false, %s,
+                    %s::jsonb, %s, %s, %s)
+            """,
+            (
+                intent,
+                at_ms,
+                at_ms,
+                at_ms,
+                json.dumps({"comparison_title": TEXT}),
+                digest(key),
+                body,
+                digest(body),
+                "deleted" if deleted else None,
+                "{}" if deleted else None,
+                "test deletion" if deleted else None,
+                at_ms if deleted else None,
+                at_ms if deleted else None,
+            ),
+        )
+        return intent
+
+    old = sent_update("A", "机构宣布关税", STAMP + 1)
+    latest = sent_update("B", "生效日期为下月", STAMP + 2)
+    future = sent_update("future", "还没发送的消息", clock() + 1)
+    removed = sent_update("removed", "已经删除的消息", STAMP + 3, deleted=True)
+    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    assert snapshot is not None
+    receipts = {row.intent_id: row.body for row in snapshot.reader.receipts}
+    assert receipts[old] == "机构宣布关税"
+    assert receipts[latest] == "生效日期为下月"
+    assert future not in receipts and removed not in receipts

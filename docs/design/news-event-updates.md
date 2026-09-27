@@ -64,7 +64,23 @@ One EventUpdate can contain several claims with separate mode, phase, timing,
 assets and citations. Claims retain stable Event-local refs across revisions;
 changes name prior refs and distinguish real new actions from correction,
 conflict or evidence changes. Unknown comparisons become `possible_new`, not a
-fabricated catalyst. Source relations and attributions are retained separately
+fabricated catalyst. The extractor preserves the source's speaker, conditions and
+supported time precision; a publication/observation clock does not establish when
+the underlying event happened. A link or the act of sharing an interview/report
+does not itself manufacture a domain claim. Empty claims are a normal result;
+the optional reader can load stored News Items only, not fetch arbitrary URLs.
+
+Generated calls use short reference aliases local to each request. Adapters map
+them back to the existing durable IDs without rewriting source text or quotes.
+The generated extraction envelope separates required claims from optional
+relation/support hints. Invalid or conflicting hints are diagnosed and omitted;
+the existing understanding stage fills missing pairs. Core schema and citation
+errors still fail. No separate repair queue or alternate semantic document is
+created. An unknown mode gets one cached generated clarification during
+understanding, before adoption. A still-unknown/unavailable answer remains
+unknown; notification planning does not reinterpret it.
+
+Source relations and attributions are retained separately
 from a claim's quoted spans. A publisher's authority describes the cited source;
 it does not verify an allegation or future outcome.
 
@@ -98,12 +114,25 @@ bounded by the lesser of two seconds and the remaining stage time.
 
 The planner decides each adopted claim by named reason. It handles commentary,
 promotion, forecast, schedule-only material, unsupported price reports, stale
-sources, watchlist matches, and actual previously sent coverage. Unknown mode
-gets one bounded clarification; failure is `mode_unknown`. Only a full match to
+sources, watchlist matches, and actual previously sent coverage. An adopted
+unknown mode has reason `mode_unknown` unless the watchlist exception applies;
+it does not leave the plan waiting for a quality approval. Only a full match to
 the actual sent body suppresses a claim. An in-flight or ambiguous send blocks
 overlapping claims without pretending the reader received them. `key` (⚡)
 requires a state change or official measure in a key topic family with sufficient
 source corroboration; it changes presentation, not fact authority.
+
+Receipt recall merges the existing history candidates with a bounded search
+using current active claims and their source-language quotes. The original
+leader title is only a fallback when there are no active claim queries, so a
+later member's subject cannot lose to a stale leader. Selection ranks individual
+sent receipts together: explicit claim/antecedent links, then text relevance,
+then recency. The 16-receipt model budget is applied after ranking. Older cards
+from another Event remain candidates because its newest incremental card may
+omit previously sent facts. Original comparison titles supplement delivered
+body text for cross-language recall, but neither similarity nor selected claim
+IDs prove coverage. The existing log records candidate counts, ranked IDs,
+scores and truncation; future, deleted and unsent copy is excluded.
 
 Explicit correction and real-world replacement targets are derived from adopted
 changes, including changes in other Events. They participate in the reader
@@ -113,8 +142,11 @@ an indexed query over the existing ledger, with no second mutable relationship
 authority.
 
 The selected claim refs and adopted update define a stable `intent_id`.
-CardComposer runs only for that selection and freezes its Chinese body. The
-sender rechecks the head and reader revision before sending, stores the exact
+CardComposer runs only for that selection, with its cited source provenance, and
+freezes its Chinese body. Its instruction matches the existing no-link/plain
+text contract. A contract failure retains its bounded specific error code;
+generation parse failures log a bounded response sample and the output stage.
+The sender rechecks the head and reader revision before sending, stores the exact
 body, digest, provider message ID and outcome, and retries a proved `not_sent`
 with the same intent. An unknown outcome remains `ambiguous` and is not blindly
 resent. Card or send failure does not retract the adopted update or public
@@ -146,7 +178,12 @@ Serve exposes adopted update revisions, source relations, processing state,
 claim-level plan reasons and exact delivery outcomes. Legacy verdicts remain
 historical records under `legacy_verdict`; they are not converted into claims.
 The React console renders the current update and processing state and no longer
-filters on the retired four-axis taxonomy.
+filters on the retired four-axis taxonomy. Input progress (wanted/done/lease),
+adopted knowledge (head and immutable revisions), and delivery outcome remain
+separate. A no-change input may advance done without changing the head revision.
+A failed latest input keeps the last valid head. A completed notification plan
+can have a dead card intent; only the sent receipt establishes delivery success.
+These are projections of existing records, not a fourth overall Event status.
 
 ## Cutover and limits
 
@@ -162,7 +199,10 @@ and [Setup](../SETUP.md) for the operational sequence.
 
 The old three-Predictor Program, taxonomy axes, GEPA/learning/release/canary
 plane, progression review and their CLI entry points are removed from current
-execution. Historical database rows remain for audit. The retained ReviewDesk
+execution. Changing a program/adapter identity does not automatically recompute
+already processed evidence or reset exhausted work. Historical corrections need
+an explicit scoped repair that preserves immutable adoptions and actual receipts;
+deploying a new prompt does not rewrite them. Historical database rows remain for audit. The retained ReviewDesk
 reviews new intents; card judge calibration remains. This cut does not prove
 model accuracy, notification volume, lower cost, or trading performance. The
 production-window replay in #706 is diagnostic evidence, not a merge gate or a

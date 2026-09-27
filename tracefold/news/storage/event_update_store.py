@@ -192,7 +192,12 @@ class PgNewsStore:
         reader = ReaderSnapshot(
             channel=channel,
             revision=str(material["revision"]),
-            receipts=select_receipts(event_id, material["band_event_ids"], material["receipt_rows"]),
+            receipts=select_receipts(
+                update,
+                material["receipt_queries"],
+                material["receipt_rows"],
+                invalidated=material["invalidated"],
+            ),
             blocked_claim_refs=tuple(material["blocked"]),
             invalidated_claim_refs=tuple(material["invalidated"]),
             watch_symbols=self.watch_symbols,

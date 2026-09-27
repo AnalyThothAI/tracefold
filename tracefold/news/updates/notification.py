@@ -9,12 +9,13 @@ overlapping send whose outcome is not settled.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal, Protocol
 
 from pydantic import Field, model_validator
 
-from .contracts import Claim, ContentKind, EventUpdate, Exact, Mode, current_evidence
+from .contracts import Claim, ContentKind, EventUpdate, Exact, Mode, Source, current_evidence
 from .identity import canonical_json, digest, identity
 from .judgment import Budget, NewsJudgments, Question
 from .topics import KEY_TOPIC_CODES
@@ -61,17 +62,6 @@ _MODE_REASONS: Final[dict[Mode, ClaimReason]] = {
     "commentary": "mode_commentary",
     "promotion": "mode_promotion",
     "forecast": "mode_forecast",
-}
-# Answers a mode re-ask may settle on. `unknown` is deliberately absent.
-_KNOWN_MODES: Final[dict[str, Mode]] = {
-    "observation": "observation",
-    "decision": "decision",
-    "commitment": "commitment",
-    "conditional_threat": "conditional_threat",
-    "guidance": "guidance",
-    "forecast": "forecast",
-    "commentary": "commentary",
-    "promotion": "promotion",
 }
 # The kinds whose whole claim is a market move. An observed one must state a basis beyond the number.
 PRICE_REPORT_KINDS: Final[frozenset[ContentKind]] = frozenset({"level_crossed", "period_record", "quantified_flow"})
@@ -196,7 +186,7 @@ class FrozenCard(Exact):
 
 
 class CardComposer(Protocol):
-    async def compose(self, claims: tuple[Claim, ...]) -> CardCopy:
+    async def compose(self, claims: tuple[Claim, ...], *, sources: Mapping[str, Source]) -> CardCopy:
         """Chinese copy for exactly the selected claims. The caller bounds the call with asyncio.timeout."""
         ...
 
@@ -304,8 +294,8 @@ class NotificationPlanner:
     ) -> NotificationPlan:
         """One named decision per claim, in rule order.
 
-        Retired claims; the watchlist guard; mode (an unknown mode gets one generated re-ask, then
-        `mode_unknown`); schedule; a market move without a stated basis; a stale source (corrections and
+        Retired claims; the watchlist guard; adopted mode (unknown stays mode_unknown); schedule;
+        a market move without a stated basis; a stale source (corrections and
         conflicts exempt); an unsettled overlapping send (deferred); full coverage by an actually sent
         receipt. A claim no rule removed is notified.
         """
@@ -324,7 +314,6 @@ class NotificationPlanner:
             too_old = now_ms - claim.first_available_at_ms > self.source_max_age_ms
             return self.source_max_age_ms > 0 and too_old and claim.ref not in corrections
 
-        unknown_mode: list[Claim] = []
         market: list[Claim] = []
         for claim in update.claims:
             if claim.ref in retired:
@@ -337,18 +326,11 @@ class NotificationPlanner:
                 # No model call can rescue a stale source; do not pay for a re-ask.
                 decisions[claim.ref] = "stale_source"
             elif claim.fields.mode == "unknown":
-                unknown_mode.append(claim)
+                decisions[claim.ref] = "mode_unknown"
             elif market_move(claim, claim.fields.mode):
                 market.append(claim)
             else:
                 self._admit(claim, content_reason(claim, claim.fields.mode), decisions, admitted)
-        for claim, mode in await self._reask_modes(update, tuple(unknown_mode), budget):
-            if mode == "unknown":
-                decisions[claim.ref] = "mode_unknown"
-            elif market_move(claim, mode):
-                market.append(claim)
-            else:
-                self._admit(claim, content_reason(claim, mode), decisions, admitted)
         bases = await self._market_bases(update, tuple(claim for claim in market if not stale(claim)), budget)
         for claim in market:
             if stale(claim):
@@ -458,29 +440,6 @@ class NotificationPlanner:
             answers = {row.item_id: row for row in await self.judgments.reask("market_basis", pending, budget)}
             bases.update({question.item_id: settled(question.item_id) for question in pending})
         return bases
-
-    async def _reask_modes(
-        self,
-        update: EventUpdate,
-        claims: tuple[Claim, ...],
-        budget: Budget,
-    ) -> list[tuple[Claim, Mode]]:
-        """One targeted generated re-ask of `mode` for exactly the claims that stayed unknown.
-
-        An answer that is still unknown or unavailable is recorded as `mode_unknown`, so the plan completes
-        rather than retrying content uncertainty for ever.
-        """
-
-        if not claims:
-            return []
-        answers = await self.judgments.reask("mode", self._cited_questions(update, claims), budget)
-        modes: list[tuple[Claim, Mode]] = []
-        for claim, answer in zip(claims, answers, strict=True):
-            mode: Mode = "unknown"
-            if answer.status == "available" and answer.value in _KNOWN_MODES:
-                mode = _KNOWN_MODES[str(answer.value)]
-            modes.append((claim, mode))
-        return modes
 
     async def _fully_covered(
         self,

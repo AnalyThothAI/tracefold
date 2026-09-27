@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Final, Literal, Protocol
@@ -19,7 +18,7 @@ from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientErr
 from ..storage.event_updates import SEMANTIC_ATTEMPTS_MAX, EventUpdateConflict, SemanticLeaseLost
 from ..telemetry import NewsWorkSemantics
 from ..updates.contracts import SemanticLease
-from ..updates.judgment import ConfigurationFault, ContractFault, ProviderUnavailable
+from ..updates.judgment import ConfigurationFault, ContractFault, ProviderUnavailable, error_code
 from .runtime import NewsDatabasePort
 
 log = logging.getLogger("tracefold.news")
@@ -31,7 +30,6 @@ SEMANTIC_LEASE_MS: Final = 180_000
 TURNS_PER_WAKE: Final = 3
 # The durable incident a sustained provider outage opens; the Console already reads this cause.
 PROVIDER_OUTAGE_CAUSE: Final = "triage_circuit_open"
-_CODE = re.compile(r"^[a-z0-9_:.]{1,160}$")
 
 TurnOutcome = Literal["adopted", "unchanged", "newer_head", "deferred", "failed"]
 
@@ -77,13 +75,6 @@ class ProviderBreaker:
     def record_success(self) -> None:
         self.failures = 0
         self.open_until_ms = 0
-
-
-def error_code(exc: BaseException, *, default: str) -> str:
-    """A bounded, code-shaped reason; free text from a provider or a library is never stored."""
-
-    text = str(exc)
-    return text if _CODE.fullmatch(text) else f"{default}:{type(exc).__name__}"
 
 
 class SemanticWorker:

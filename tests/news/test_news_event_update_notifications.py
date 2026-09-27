@@ -270,42 +270,29 @@ def test_concrete_acts_intents_threats_and_guidance_are_notified(mode: str) -> N
     assert plan.action == "notify"
 
 
-def test_unknown_mode_is_reasked_once_by_the_generated_backend_not_a_native_vote() -> None:
+def test_unknown_mode_is_not_reinterpreted_by_notification() -> None:
     generated = TaskBackend({"mode": "decision"})
     native = TaskBackend({"mode": "commentary"}, identity="native")
     plan = run_plan(single(mode="unknown"), generated=generated, native=native)
-    assert only_reason(plan) == "actionable_content"
-    assert [call[0] for call in generated.calls] == ["mode"]
-    assert native.calls == []
-
-
-@pytest.mark.parametrize(
-    ("answer", "expected"),
-    [("unknown", "mode_unknown"), ("promotion", "mode_promotion"), (None, "mode_unknown")],
-)
-def test_a_mode_that_stays_uncertain_completes_the_plan(answer: str | None, expected: str) -> None:
-    generated = TaskBackend({} if answer is None else {"mode": answer})
-    plan = run_plan(single(mode="unknown"), generated=generated)
-    assert only_reason(plan) == expected
-    # Content uncertainty completes the plan; it is never left pending for another retry.
+    assert only_reason(plan) == "mode_unknown"
     assert plan.action == "no_notification"
     assert plan.deferred_claim_refs == ()
+    assert generated.calls == native.calls == []
 
 
-def test_a_stale_claim_of_unknown_mode_is_not_reasked() -> None:
+def test_a_stale_claim_of_unknown_mode_needs_no_judgment() -> None:
     generated = TaskBackend({"mode": "decision"})
     plan = run_plan(single(mode="unknown"), generated=generated, now_ms=STAMP + 13 * HOUR_MS)
     assert only_reason(plan) == "stale_source"
     assert generated.calls == []
 
 
-def test_a_retried_plan_reuses_the_reasked_mode() -> None:
-    generated = TaskBackend({"mode": "unknown"})
+def test_replanning_does_not_create_a_second_mode_owner() -> None:
+    generated = TaskBackend({"mode": "decision"})
     judgments = NewsJudgments(generated=generated, cache=MemoryCache())
     update = single(mode="unknown")
-    run_plan(update, judgments=judgments)
-    run_plan(update, judgments=judgments)
-    assert len(generated.calls) == 1
+    assert run_plan(update, judgments=judgments) == run_plan(update, judgments=judgments)
+    assert generated.calls == []
 
 
 # ------------------------------------------------------------------ content kind

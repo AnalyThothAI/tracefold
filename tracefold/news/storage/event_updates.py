@@ -15,11 +15,14 @@ Identity rules owned here:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final, Literal, cast
 
 from ..evidence import query_for
 from ..models import MarketAsset, market_type_of
+from ..reader_history import SIMILAR_TITLE_MAX, TARGETED_HISTORY_WINDOW_MS
+from ..similarity import trigram_similarity
 from ..taxonomy import source_authority
 from ..updates.contracts import (
     EventUpdate,
@@ -37,6 +40,8 @@ from .decisions import DecisionStorage
 from .evidence import EvidenceStorage
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
+
+log = logging.getLogger("tracefold.news")
 
 NEWS_CHANNEL: Final = "news"
 SEMANTIC_ATTEMPTS_MAX: Final = 3
@@ -193,30 +198,63 @@ def delivered_text(row: Mapping[str, Any]) -> DeliveredText | None:
     )
 
 
+def receipt_queries(
+    update: EventUpdate,
+    comparison_title: str,
+    invalidated: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Source-language and adopted-claim views; later members need not match the leader title."""
+    inactive = set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(invalidated)
+    queries: list[str] = []
+    for claim in update.claims:
+        if claim.ref in inactive:
+            continue
+        queries.extend((claim.statement, " ".join((claim.fields.subject, claim.fields.action, claim.fields.object))))
+        queries.extend(citation.quote for citation in claim.citations)
+    return tuple(dict.fromkeys(text.strip() for text in (queries or [comparison_title]) if text.strip()))
+
+
 def select_receipts(
-    event_id: str,
-    band_event_ids: Sequence[str],
+    update: EventUpdate,
+    queries: Sequence[str],
     rows: Sequence[Mapping[str, Any]],
     *,
+    invalidated: Iterable[str] = (),
     limit: int = RECEIPT_RECALL_MAX,
 ) -> tuple[DeliveredText, ...]:
-    """The Event's own sent intents first, newest first; then the newest receipt of each band Event.
+    """Rank actual receipts together before budgeting; an incremental card never replaces earlier copy.
 
-    Band order is the existing reader-history order (targeted, title similarity, recent).
+    Explicit claim/antecedent references rank first, then content relevance and recency. Neither same
+    Event nor asset-band membership is a coverage verdict. Only the planner reads the sent body for that.
     """
-
-    own: list[DeliveredText] = []
-    newest: dict[str, DeliveredText] = {}
-    for row in rows:  # already newest first
+    inactive = set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(invalidated)
+    refs = {ref for claim in update.claims if claim.ref not in inactive for ref in (claim.ref, *claim.antecedent_refs)}
+    ranked = []
+    seen: set[str] = set()
+    for row in rows:
         receipt = delivered_text(row)
-        if receipt is None:
+        if receipt is None or receipt.intent_id in seen:
             continue
-        if row["event_id"] == event_id:
-            own.append(receipt)
-        else:
-            newest.setdefault(str(row["event_id"]), receipt)
-    band = [newest[value] for value in dict.fromkeys(band_event_ids) if value in newest]
-    return tuple([*own, *band][:limit])
+        seen.add(receipt.intent_id)
+        context = row.get("history_context") or {}
+        views = (receipt.body, str(context.get("comparison_title") or ""), str(context.get("headline_zh") or ""))
+        score = max((trigram_similarity(query, view) for query in queries for view in views if view), default=0.0)
+        linked = bool(refs.intersection(row.get("claim_refs") or ()))
+        ranked.append((-int(linked), -score, -int(receipt.received_at_ms or 0), receipt.intent_id, receipt))
+    ranked.sort(key=lambda row: row[:4])
+    log.info(
+        "news_receipt_recall",
+        extra={
+            "event_id": update.event_id,
+            "candidate_count": len(ranked),
+            "limit": limit,
+            "ranked": [
+                {"intent_id": row[3], "linked": bool(-row[0]), "score": -row[1], "selected": index < limit}
+                for index, row in enumerate(ranked[: limit * 2])
+            ],
+        },
+    )
+    return tuple(row[4] for row in ranked[:limit])
 
 
 def _item_text(item: Mapping[str, Any]) -> str:
@@ -1034,9 +1072,18 @@ class EventUpdateStorage:
         ledger = cast(DecisionStorage, self).reader_history_revision(now_ms=now_ms)
         history = cast(DecisionStorage, self).reader_history(event_id=event_id, now_ms=now_ms)
         band = [row.event_id for row in history.told_source_rows]
+        event = self.conn.execute(
+            "SELECT comparison_title FROM news_events WHERE event_id = %s", (event_id,)
+        ).fetchone()
+        queries = receipt_queries(
+            EventUpdate.model_validate(head),
+            str(event["comparison_title"] or "") if event else "",
+            invalidated,
+        )
         rows = self.conn.execute(
             """
-            SELECT intent_id, event_id, kind, body, payload_sha256, settled_at_ms, receipt, card, history_context
+            SELECT intent_id, event_id, kind, body, payload_sha256, settled_at_ms,
+                   receipt, card, history_context, claim_refs
               FROM news_deliveries
              WHERE event_id = ANY(%s) AND kind IN ('first', 'update') AND state = 'sent'
                AND delete_state IS DISTINCT FROM 'deleted'
@@ -1045,13 +1092,40 @@ class EventUpdateStorage:
             """,
             ([event_id, *band], int(now_ms)),
         ).fetchall()
+        # The legacy bands use the leader. Recall content from later members directly at receipt
+        # granularity too; rank all bands again outside this read before the final model budget.
+        relevant = (
+            self.conn.execute(
+                """
+            SELECT d.intent_id, d.event_id, d.kind, d.body, d.payload_sha256, d.settled_at_ms,
+                   d.receipt, d.card, d.history_context, d.claim_refs
+              FROM news_deliveries d
+              CROSS JOIN LATERAL (
+                SELECT max(GREATEST(
+                    similarity(COALESCE(d.history_context ->> 'comparison_title', ''), q),
+                    similarity(COALESCE(d.history_context ->> 'headline_zh', ''), q),
+                    similarity(COALESCE(d.body, d.history_context ->> 'why_zh', ''), q)
+                )) AS score FROM unnest(%s::text[]) AS q
+              ) relevance
+             WHERE d.kind IN ('first', 'update') AND d.state = 'sent'
+               AND d.delete_state IS DISTINCT FROM 'deleted'
+               AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
+               AND relevance.score > 0
+             ORDER BY relevance.score DESC, d.settled_at_ms DESC, d.intent_id
+             LIMIT %s
+            """,
+                (list(queries), int(now_ms) - TARGETED_HISTORY_WINDOW_MS, int(now_ms), SIMILAR_TITLE_MAX),
+            ).fetchall()
+            if queries
+            else []
+        )
         return {
             "head": head,
             "blocked": blocked,
             "invalidated": invalidated,
             "revision": reader_revision(now_ms, ledger, blocked, watch_symbols, invalidated),
-            "band_event_ids": band,
-            "receipt_rows": [dict(row) for row in rows],
+            "receipt_queries": queries,
+            "receipt_rows": [dict(row) for row in (*rows, *relevant)],
         }
 
     def record_notification_plan(

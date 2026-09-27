@@ -104,7 +104,7 @@ class Composer:
         self.error = error
         self.calls = 0
 
-    async def compose(self, claims: tuple[Any, ...]) -> CardCopy:
+    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
         self.calls += 1
         if self.error is not None:
             raise self.error
@@ -171,7 +171,7 @@ def test_a_failed_card_spends_only_its_intents_card_attempt() -> None:
     with pytest.raises(ProviderUnavailable):
         _turn(store, Planner(_plan(update)), Composer(error=ProviderUnavailable("rate limited")), sender)
 
-    assert store.calls == [("record_plan", "notify"), ("card_failure", "ProviderUnavailable")]
+    assert store.calls == [("record_plan", "notify"), ("card_failure", "news_card:ProviderUnavailable")]
     assert sender.cards == []
 
 
@@ -180,14 +180,14 @@ def test_copy_that_cannot_be_frozen_is_a_card_failure_too() -> None:
     store = Store(update)
 
     class UnsafeComposer(Composer):
-        async def compose(self, claims: tuple[Any, ...]) -> CardCopy:
+        async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
             self.calls += 1
             return copy_for(_plan(update), "看 https://evil.example 的标题")
 
     with pytest.raises(ValueError, match="news_card_copy_unsafe"):
         _turn(store, Planner(_plan(update)), UnsafeComposer(), Sender())
 
-    assert store.calls[-1] == ("card_failure", "ValueError")
+    assert store.calls[-1] == ("card_failure", "news_card_copy_unsafe")
 
 
 def test_a_frozen_card_is_reused_rather_than_composed_again() -> None:

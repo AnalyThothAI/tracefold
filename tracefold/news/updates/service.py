@@ -10,7 +10,7 @@ from typing import Final
 
 from .contracts import EventUpdate, Extraction, FrozenInput, PriorClaim, ReadTarget, SemanticLease
 from .identity import canonical_json, identity
-from .judgment import Budget, ContractFault, ProviderUnavailable, Question
+from .judgment import Budget, ContractFault, ProviderUnavailable, Question, error_code
 from .notification import CardComposer, FrozenCard, NotificationPlanner, freeze_card
 from .ports import (
     ExistingSourceReader,
@@ -288,12 +288,14 @@ class Notifications:
         try:
             selected = tuple(claim for claim in update.claims if claim.ref in plan.selected_claim_refs)
             async with asyncio.timeout(budget.remaining()):
-                copy = await self.composer.compose(selected)
+                cited = {citation.evidence_ref for claim in selected for citation in claim.citations}
+                sources = {item.ref: item.source for item in update.evidence if item.ref in cited}
+                copy = await self.composer.compose(selected, sources=sources)
             frozen = freeze_card(plan, update, copy)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await self.store.record_card_failure(lease, error_code=type(exc).__name__)
+            await self.store.record_card_failure(lease, error_code=error_code(exc, default="news_card"))
             raise
         return await self.store.save_card(lease, frozen)
 

@@ -144,7 +144,7 @@ def test_cross_event_correction_invalidates_frozen_unsent_card():
     plan = notify_plan(head, snapshot.reader.revision)
     lease = asyncio.run(pg.atomic_record_plan(plan))
     assert lease is not None
-    copy = asyncio.run(Composer().compose(head.claims))
+    copy = asyncio.run(Composer().compose(head.claims, sources={}))
     card = freeze_card(plan, head, copy)
     asyncio.run(pg.save_card(lease, card))
     seed_event("correction", fingerprint="correction")
