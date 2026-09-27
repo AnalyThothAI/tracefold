@@ -290,3 +290,54 @@ def test_supplied_question_resolution_still_requires_an_exact_current_citation(
     else:
         with pytest.raises(ContractFault, match="news_resolution_not_grounded"):
             asyncio.run(analyzer.extract(source, Budget.start(5)))
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_detail"),
+    [
+        ("open_questions", {"question": "What changed?", "slots": ["t1", "t3"]}),
+        ("open_questions", {"question": "What changed?", "slots": ["a"], "target_ref": "t999"}),
+        ("open_questions", {"question": "What changed?", "slots": []}),
+        (
+            "implications",
+            {"slots": ["t1"], "channel": "supply", "explanation": "Conditional.", "origin": "system_hypothesis"},
+        ),
+        ("implications", {"slots": ["a"], "channel": "supply", "explanation": "Conditional.", "origin": "invalid"}),
+    ],
+)
+@pytest.mark.parametrize("with_claims", [False, True])
+def test_invalid_optional_detail_cannot_fail_valid_or_empty_core(
+    monkeypatch: pytest.MonkeyPatch, field: str, bad_detail: dict[str, Any], with_claims: bool
+) -> None:
+    source, reply = extraction_source()
+    if not with_claims:
+        reply["claims"] = []
+    reply[field] = [bad_detail]
+    generated(monkeypatch, reply)
+    analyzer = SemanticAnalyzer(
+        extractor=DspyExtractor(lambda: None, model_identity="fixture", topics={}),
+        judgments=NewsJudgments(generated=TaskBackend({}), cache=MemoryCache()),
+        topics=(),
+    )
+    value = asyncio.run(analyzer.extract(source, Budget.start(5)))
+    assert len(value.claims) == int(with_claims)
+    assert getattr(value, field) == ()
+
+
+def test_grounded_optional_details_keep_their_claim_slots_and_read_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tracefold.news.updates.contracts import ReadTarget
+
+    source, reply = extraction_source()
+    target = ReadTarget(ref="news_item:stored", action="read_current_artifact", description="Stored statement")
+    source = source.model_copy(update={"read_targets": (target,)})
+    reply["open_questions"] = [{"question": "What changed?", "slots": ["a"], "target_ref": "t1"}]
+    reply["implications"] = [
+        {"slots": ["a"], "channel": "supply", "explanation": "If implemented.", "origin": "system_hypothesis"}
+    ]
+    generated(monkeypatch, reply)
+    value = asyncio.run(
+        DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source, extract_only=False)
+    )
+    assert value.open_questions[0].target_ref == target.ref
+    assert value.open_questions[0].slots == ("a",)
+    assert value.implications[0].slots == ("a",)

@@ -73,7 +73,9 @@ the optional reader can load stored News Items only, not fetch arbitrary URLs.
 Generated calls use short reference aliases local to each request. Adapters map
 them back to the existing durable IDs without rewriting source text or quotes.
 The generated extraction envelope separates required claims from optional
-relation/support hints. A resolution naming a question absent from the frozen input
+relation/support hints and optional gap/implication proposals. Proposals with invalid
+claim slots or unsupplied read targets are diagnosed and omitted, preserving existing
+gaps. A resolution naming a question absent from the frozen input
 is also diagnosed and omitted: it cannot close a real gap or erase valid claims.
 Resolutions for supplied questions still require exact current-evidence citations.
 Invalid or conflicting relation/support hints are diagnosed and omitted;
