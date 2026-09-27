@@ -13,7 +13,16 @@ from tests.news.test_news_event_update_judgments import MemoryCache
 from tests.news.test_news_event_update_notifications import TaskBackend
 from tests.news.test_news_event_updates_core import draft, material, prior_of, update_one
 from tracefold.news.updates import dspy_backend
-from tracefold.news.updates.contracts import Extraction, FrozenInput, OpenQuestion
+from tracefold.news.updates.contracts import (
+    Citation,
+    Claim,
+    ClaimFields,
+    Extraction,
+    FrozenInput,
+    OpenQuestion,
+    Quantity,
+    Source,
+)
 from tracefold.news.updates.dspy_backend import DspyCardComposer, DspyExtractor, GeneratedJudgments
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments, Question
 from tracefold.news.updates.notification import NotificationPlanner, ReaderSnapshot
@@ -198,6 +207,55 @@ def test_card_aliases_decode_and_only_cited_provenance_is_passed(monkeypatch: py
     assert sent[0]["claim_ref"] == "c1"
     assert sent[0]["citations"][0]["quote"] == source.evidence[0].text
     assert sent[0]["citations"][0]["source"]["publisher_id"] == "wire"
+    assert set(sent[0]) == {"claim_ref", "statement", "fields", "citations"}
+    assert set(sent[0]["citations"][0]["source"]) == {"publisher_id", "attribution", "origin_id"}
+
+
+def test_bug_c_frozen_claim_gives_composer_the_exact_drone_and_capture_fact(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Frozen from the sent 2026-09-27 Persian Fars claim that was rendered as
+    # a "second sunk US submarine" despite saying "second captured US drone".
+    quote = "تصاویر دومین زهپاد شکارشدهٔ ارتش تروریستی آمریکا در تنگهٔ هرمز"
+    claim = Claim(
+        ref="cl:bug-c",
+        statement="فارس اعلام کرد که تصاویر دومین زهپاد شکارشدهٔ ارتش تروریستی آمریکا در تنگهٔ هرمز منتشر شده است.",
+        fields=ClaimFields(
+            subject="خبرگزاری فارس",
+            action="اعلام انتشار تصاویر دومین زهپاد شکارشدهٔ ارتش تروریستی آمریکا در تنگهٔ هرمز",
+            object=quote,
+            mode="observation",
+            phase="completed",
+            polarity="affirmative",
+            quantities=(Quantity(name="نوبت زهپاد شکارشده", value="2", unit="فروند"),),
+            content_kind="state_change",
+        ),
+        citations=(Citation(evidence_ref="ev:bug-c", quote=quote),),
+        first_available_at_ms=STAMP,
+    )
+    calls = generated(
+        monkeypatch,
+        {
+            "headline_zh": "法尔斯通讯社称发布第二架被捕获美军无人机的照片",
+            "lines": [
+                {"claim_ref": "c1", "text_zh": "法尔斯通讯社称，已发布在霍尔木兹海峡被捕获的第二架美军无人机照片。"}
+            ],
+        },
+    )
+    result = asyncio.run(
+        DspyCardComposer(lambda: None).compose(
+            (claim,),
+            sources={
+                "ev:bug-c": Source(
+                    publisher_id="fars", artifact_id="report", artifact_revision="1", first_available_at_ms=STAMP
+                )
+            },
+        )
+    )
+    selected = json.loads(calls[0]["selected_claims_json"])
+    assert selected[0]["citations"][0]["quote"] == quote
+    assert selected[0]["fields"]["object"] == quote
+    assert selected[0]["fields"]["quantities"][0]["value"] == "2"
+    assert result.lines[0].claim_ref == claim.ref
+    assert "无人机" in result.lines[0].text_zh and "潜艇" not in result.lines[0].text_zh
 
 
 def test_card_cannot_name_an_unselected_alias(monkeypatch: pytest.MonkeyPatch) -> None:
