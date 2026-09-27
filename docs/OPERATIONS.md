@@ -878,6 +878,12 @@ actor. The deployment verifier requires the fixed workflow's successful main
 push run for the resulting main SHA; PR evidence does not attest that new SHA.
 See [Testing and CI implementation](TESTING.md#fixed-full-ci-implementation).
 
+Give the squash commit an explicit release summary when merging. GitHub's default
+concatenation of branch commit messages can carry an old CI-skip directive into
+`main`, suppressing its required push run even when the final PR HEAD passed.
+Confirm that the resulting main SHA has a push-triggered CI run before deploying;
+a manually dispatched run does not satisfy the deployment verifier.
+
 The target accepts no tag, short ID or registry reference. It never builds or
 pulls, never touches the execution runtime, and it checks the checkout, Compose
 inputs, active config, three migration heads, deployment lock, recreated
