@@ -4,43 +4,108 @@
 
 Trading Analysis 回答：“基于当时可见的来源和市场证据，是否选择当前代码允许的某个入场计划？”它不直接下单，也不依赖新闻卡片是否发送。**Agent 负责研究与选择，纯编译器负责契约约束，Runtime 才拥有账户操作权限。**
 
-## 1. 入口与所有者
+| 模块速览 | 说明 |
+| :--- | :--- |
+| **定位** | 交易能力 / 只读研究 |
+| **运行位置** | 独立 Analysis 进程 |
+| **输入 → 产物** | News 公开催化 / OI、冻结来源与市场证据 → Case、TRADE / NO_TRADE / WATCH、可选 TradeSignalV3 |
 
-| 实现 | 职责 |
-| --- | --- |
-| [app/trading_analysis.py](../../tracefold/app/trading_analysis.py) | `AnalysisRunner`：可靠转交、Case 调度、证据冻结、WATCH、研究结果 |
-| [app/trading_analyst.py](../../tracefold/app/trading_analyst.py) | `TradeAnalyst`：原生 DSPy ReAct、调用预算和物理请求账本 |
-| [app/trading_tools.py](../../tracefold/app/trading_tools.py) | 只读 Case 工具、可见证据、引用与访问限制 |
-| [app/analysis_files.py](../../tracefold/app/analysis_files.py) | 冻结研究材料与文件身份 |
-| [engine/target.py](../../tracefold/trading/engine/target.py) | 经济身份与原生合约目标选择 |
-| [engine/features.py](../../tracefold/trading/engine/features.py)、[brief.py](../../tracefold/trading/engine/brief.py) | 将原始来源和市场证据变成可审计特征、简报 |
-| [engine/plans.py](../../tracefold/trading/engine/plans.py)、[policy.py](../../tracefold/trading/engine/policy.py) | 内容寻址的有限计划、引用校验与纯决策编译 |
-| [storage/analysis.py](../../tracefold/trading/storage/analysis.py) | Trigger、Case、租约、决策、WATCH、来源修订与原子结算 |
-| [execution_contracts.py](../../tracefold/trading/execution_contracts.py)、[storage/execution_stream.py](../../tracefold/trading/storage/execution_stream.py) | Signal / 操作意图 / 执行观察的严格交接 |
+> [!IMPORTANT]
+> Agent 只能研究和选择菜单中的计划。Signal 发布、账户受理和成交都是独立结果。
 
-`trading/engine` 不调用模型、网络或数据库；App 按显式端口装配 I/O。Analysis 是独立进程，不是 News Workers 的一条可选函数调用。
+[Case 状态](#state) · [来源修订](#editorial-catalyst-versus-source-amendment) · [执行](execution.md)
 
-## 2. 研究链路
+<details>
+<summary><strong>本页目录</strong></summary>
+
+1. [研究链路](#section-研究链路)
+2. [催化增量与来源修订](#section-催化增量与来源修订)
+3. [一个 Case 冻结什么](#section-一个-case-冻结什么)
+4. [Agent 有哪些工具](#section-agent-有哪些工具)
+5. [计划不是模型随意生成的参数](#section-计划不是模型随意生成的参数)
+6. [Case、结果与发布状态](#section-case结果与发布状态)
+7. [WATCH 如何结束](#section-watch-如何结束)
+8. [Signal 的权限边界](#section-signal-的权限边界)
+9. [研究结果与真实执行收益](#section-研究结果与真实执行收益)
+10. [排障与验证](#section-排障与验证)
+11. [源码责任地图](#section-源码责任地图)
+12. [常见误解](#section-常见误解)
+
+</details>
+
+<a id="section-研究链路"></a>
+## 01 · 研究链路
+
+### 来源接收与准入
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
 flowchart TB
-    Source["News 公开更新 / 类型化 OI"] --> Relay["App relay：按类型分派"]
-    Relay -->|"source_update"| Amendment["幂等保存来源修订<br/>不创建新 Case"]
-    Relay -->|"可研究来源"| Target["选择单一经济目标与合约映射"]
-    Target --> Admission["持久 Trigger / Case<br/>或具名排除"]
-    Admission --> Freeze["冻结来源、知识截止与市场证据"]
-    Freeze --> Plans["纯逻辑生成有限计划菜单"]
-    Plans --> Agent["DSPy ReAct<br/>有界只读研究"]
-    Agent --> Compile["校验 proposal、引用与计划身份"]
-    Compile --> Decision["保存 TRADE / NO_TRADE / WATCH"]
-    Decision --> Watch["有界条件观察"]
-    Decision --> Publish["满足发布条件的 TradeSignalV3"]
-    Publish --> Runtime["独立执行进程"]
-    Decision --> UI["决策列表与冻结回放"]
+    accTitle: Trading 的来源接收与准入
+    accDescr: source_update 只保存修订。催化与 OI 经过单一目标选择后得到具名排除或持久 Trigger 与 Case。
+    Source["News 公开来源"] --> Relay{"App relay 分派"}
+    Relay -->|source_update| Amendment["幂等保存来源修订<br/>不创建新 Case"]
+    Relay -->|catalyst_delta / OI| Target["选择单一目标与合约映射"]
+    Target --> Admission{"准入结果"}
+    Admission -->|排除| Excluded["保存具名排除与依据"]
+    Admission -->|接受| Case[("持久 Trigger / Case")]
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class Source external;
+class Relay,Amendment,Target,Admission,Excluded research;
+class Case store;
 ```
 
+*接收视图 · 持久接收后才确认 News 来源；source_update 不产生新的研究根。*
+
+### 冻结研究与可选发布
+
+```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
+flowchart TB
+    accTitle: 冻结研究、决策与可选发布
+    accDescr: Case 冻结证据并提供代码生成的有限菜单，Agent 研究后经契约编译保存决策。WATCH 进入有界子研究，TRADE 另行检查发布条件。
+    Case["领取 Case 并冻结证据"] --> Plans["代码生成有限计划菜单"]
+    Plans --> Agent["DSPy ReAct · 只读研究"]
+    Agent --> Compile["校验 proposal、引用与计划"]
+    Compile --> Decision{"保存研究决策"}
+    Decision -->|NO_TRADE| No["保留研究结果"]
+    Decision -->|WATCH| Watch["条件观察<br/>有界子 Case"]
+    Decision -->|TRADE| Publication{"允许且仍可发布？"}
+    Publication -->|否| Unpublished["保存未发布原因"]
+    Publication -->|是| Signal["TradeSignalV3<br/>交给独立 Runtime"]
+
+    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
+    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
+    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
+class Case,Plans,Agent,Compile,Decision,No,Watch,Publication,Unpublished,Signal research;
+```
+
+*研究视图 · NO_TRADE、WATCH、未发布决策与 Signal 各自有记录；此图不代表订单受理或成交。*
+
 <a id="editorial-catalyst-versus-source-amendment"></a>
-## 3. 催化增量与来源修订
+<a id="section-催化增量与来源修订"></a>
+## 02 · 催化增量与来源修订
 
 编辑型 News 通过 `news_public_update_v1` 提供已采用的变化命题、精确引文、前驱 / 受影响引用、首次可用与语义完成时钟。该契约由知识生成，不读卡片的 headline / why 作为替代事实。
 
@@ -56,7 +121,8 @@ News 和 Trading 的事务独立：先持久接收，再确认相同 outbox 身�
 
 修订可指向另一 Event 的旧 Claim。研究只读取知识截止前可知的材料；后来的修订作为新事实保留，不重写已冻结的历史。运行时可据显式更正拒绝尚未提交的入场，但 source_update 自身不拥有撤单、平仓或刷新入场有效期的权力。
 
-## 4. 一个 Case 冻结什么
+<a id="section-一个-case-冻结什么"></a>
+## 03 · 一个 Case 冻结什么
 
 | 材料 | 用途 |
 | --- | --- |
@@ -70,7 +136,8 @@ News 和 Trading 的事务独立：先持久接收，再确认相同 outbox 身�
 
 `FrameReader.prepare` 将原始行情端口映射为 Trading 自己的冻结材料。读 API 的 Case replay 是读取这些记录，**不是重新请求行情或重新跑模型**。
 
-## 5. Agent 有哪些工具
+<a id="section-agent-有哪些工具"></a>
+## 04 · Agent 有哪些工具
 
 | 工具 | 允许做什么 | 不允许做什么 |
 | --- | --- | --- |
@@ -83,7 +150,8 @@ News 和 Trading 的事务独立：先持久接收，再确认相同 outbox 身�
 
 所有循环受 Case 所有权、模型超时、输入 / 输出大小、调用并发与成本边界约束。修正非法 proposal 的流程也必须有界，不能靠无上限“再试一次”获得一个看似合规的答案。
 
-## 6. 计划不是模型随意生成的参数
+<a id="section-计划不是模型随意生成的参数"></a>
+## 05 · 计划不是模型随意生成的参数
 
 当前 `entry_plan_v1` 由代码构造，模型从当次可见菜单选择 `plan_id` 或不交易。计划包含来源版本、映射摘要、引用、方向、参考价、时效、条件与退出策略。
 
@@ -99,7 +167,8 @@ News 和 Trading 的事务独立：先持久接收，再确认相同 outbox 身�
 纯编译器检查所选计划确实存在、方向和引用有效、proposal 契约合法，再生成最终 action。它不需要网络，也不会从一个自由文本“看多”直接构造账户订单。
 
 <a id="state"></a>
-## 7. Case、结果与发布状态
+<a id="section-case结果与发布状态"></a>
+## 06 · Case、结果与发布状态
 
 | 维度 | 示例 | 回答什么 |
 | --- | --- | --- |
@@ -112,10 +181,23 @@ News 和 Trading 的事务独立：先持久接收，再确认相同 outbox 身�
 
 Case 领取绑定 claim token、lease 和根期限。超时或失去所有权的旧任务不能覆盖新的完成结果；模型开始 / 完成记录、证据冻结和最终决策必须指向同一次尝试。未知失败不能被伪装为“不交易，所以安全完成”。
 
-## 8. WATCH 如何结束
+<a id="section-watch-如何结束"></a>
+## 07 · WATCH 如何结束
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  sequence:
+    mirrorActors: false
+    messageMargin: 28
+    actorMargin: 40
+    wrap: true
+---
 sequenceDiagram
+    accTitle: WATCH 的有界子研究
+    accDescr: 初始研究保存 WATCH。观察器读取已收盘 K 线，匹配后原子创建同根、同作用域的条件子 Case，重新分析且不递归 WATCH。
+    autonumber
     participant A as 初始分析
     participant D as Trading 存储
     participant W as closed-bar 观察器
@@ -135,9 +217,12 @@ sequenceDiagram
     end
 ```
 
+*时序 · 穿越只是另一次研究的触发，不是下单；子 Case 不获得新的根有效期。*
+
 WATCH 保存 waiting / triggered / cancelled / expired 的观察语义。穿越由前一根与当前已收盘价判定，不拿尚未收盘的瞬时价格直接执行。条件匹配只是研究触发，不是交易所下单动作。
 
-## 9. Signal 的权限边界
+<a id="section-signal-的权限边界"></a>
+## 08 · Signal 的权限边界
 
 `TradeSignalV3` 绑定账户槽位、entry scope、目标和映射摘要、Case / decision、方向、计划与根约束的截止时间。发布策略、有效来源、数据库原子结算与 Runtime 接受都是独立边界。
 
@@ -145,13 +230,15 @@ WATCH 保存 waiting / triggered / cancelled / expired 的观察语义。穿越�
 
 Runtime 仍需读取准确的 Binance connection、账户状态、风险、保护与并发条件。News 通知命中观察名单、标记 key 或 OI 数字很大，都不能跨越这条权限边界。
 
-## 10. 研究结果与真实执行收益
+<a id="section-研究结果与真实执行收益"></a>
+## 09 · 研究结果与真实执行收益
 
 `label_once` 与根研究采样保存规定期限下的价格路径，不依赖模型最终是否选 TRADE。它们支持复盘选择与遗漏，但不是交易所成交事实。
 
 真实收益必须由原生成交、手续费、资金费率和覆盖状态组成。历史导入、研究重放和重新分析不能刷新 Signal TTL、覆盖原 Case 或给过去交易补一个虚构成交。详细归属见[执行文档](execution.md)。
 
-## 11. 排障与验证
+<a id="section-排障与验证"></a>
+## 10 · 排障与验证
 
 ```bash
 docker compose exec -T analysis tracefold trading status
@@ -162,3 +249,40 @@ docker compose exec -T analysis tracefold trading gate --limit 20
 排查顺序：来源公开记录 → relay 接收 / 排除 → Case 领取 → 冻结证据 → 物理模型账本 → proposal / compiler → action → publish_status → Runtime 实际处理。新闻推送阈值不是这条链路的答案。
 
 验证入口：[领域边界](../../tests/architecture/test_trading_boundaries.py)、[计划与策略](../../tests/trading/test_oi_price_strategy.py)、[Analysis runner](../../tests/integration/test_trading_analysis_runner.py)、[分析存储](../../tests/integration/test_trading_analysis_storage.py)、[公开来源修订](../../tests/integration/test_trading_analysis_public_updates.py)、[Signal 作用域](../../tests/integration/test_trading_signal_v3_scope.py)。
+
+<a id="section-源码责任地图"></a>
+## 11 · 源码责任地图
+
+| 实现 | 职责 |
+| --- | --- |
+| [app/trading_analysis.py](../../tracefold/app/trading_analysis.py) | `AnalysisRunner`：可靠转交、Case 调度、证据冻结、WATCH、研究结果 |
+| [app/trading_analyst.py](../../tracefold/app/trading_analyst.py) | `TradeAnalyst`：原生 DSPy ReAct、调用预算和物理请求账本 |
+| [app/trading_tools.py](../../tracefold/app/trading_tools.py) | 只读 Case 工具、可见证据、引用与访问限制 |
+| [app/analysis_files.py](../../tracefold/app/analysis_files.py) | 冻结研究材料与文件身份 |
+| [engine/target.py](../../tracefold/trading/engine/target.py) | 经济身份与原生合约目标选择 |
+| [engine/features.py](../../tracefold/trading/engine/features.py)、[brief.py](../../tracefold/trading/engine/brief.py) | 将原始来源和市场证据变成可审计特征、简报 |
+| [engine/plans.py](../../tracefold/trading/engine/plans.py)、[policy.py](../../tracefold/trading/engine/policy.py) | 内容寻址的有限计划、引用校验与纯决策编译 |
+| [storage/analysis.py](../../tracefold/trading/storage/analysis.py) | Trigger、Case、租约、决策、WATCH、来源修订与原子结算 |
+| [execution_contracts.py](../../tracefold/trading/execution_contracts.py)、[storage/execution_stream.py](../../tracefold/trading/storage/execution_stream.py) | Signal / 操作意图 / 执行观察的严格交接 |
+
+`trading/engine` 不调用模型、网络或数据库；App 按显式端口装配 I/O。Analysis 是独立进程，不是 News Workers 的一条可选函数调用。
+
+<a id="section-常见误解"></a>
+## 12 · 常见误解
+
+<details>
+<summary><strong>展开常见问题</strong></summary>
+
+**TRADE 为什么可能没有 Signal？**
+
+action 和 publish_status 独立。发布关闭或来源失效时，决策与未发布原因仍会保留。
+
+**WATCH 条件匹配后是否立即下单？**
+
+不会。先创建同根、同作用域的条件子 Case 重新研究，再经过独立的发布和执行边界。
+
+</details>
+
+---
+
+[返回文档中心](../README.md) · [架构图谱](../ARCHITECTURE.md#atlas) · [返回顶部](#trading-analysis从公开事实到受限交易研究)

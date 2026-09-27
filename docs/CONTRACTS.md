@@ -4,7 +4,21 @@
 
 本页维护**公开接口的意义、边界与当前入口**。精确字段、参数、枚举与约束由代码及生成物维护，不在这里复制另一份完整 schema。
 
-## 1. 事实来源
+<details>
+<summary><strong>本页目录</strong></summary>
+
+1. [事实来源](#section-事实来源)
+2. [当前 HTTP 接口](#section-当前-http-接口)
+3. [News：输入、知识与通知身份](#section-news输入知识与通知身份)
+4. [市场、钱包与价格](#section-市场钱包与价格)
+5. [Trading、操作与执行](#section-trading操作与执行)
+6. [CLI 与配置](#section-cli-与配置)
+7. [时间、缺失与版本规则](#section-时间缺失与版本规则)
+
+</details>
+
+<a id="section-事实来源"></a>
+## 01 · 事实来源
 
 | 契约 | 权威来源 | 生成 / 验证 |
 | --- | --- | --- |
@@ -18,7 +32,8 @@
 
 生成物保留机器标识和源语法；文档中文化不改变 JSON 字段、CLI 参数、错误码或协议版本。
 
-## 2. 当前 HTTP 接口
+<a id="section-当前-http-接口"></a>
+## 02 · 当前 HTTP 接口
 
 公开 `/api/*` **全部只读**，通过 [router.py](../tracefold/app/http/router.py)挂载。Serve 数据库 pool 也保持只读，不为一个已删控制页面保留隐藏写能力。
 
@@ -51,7 +66,8 @@
 
 页面通过有界 HTTP 查询 / 轮询读取，缓存和 ETag 不能替代 freshness。某字段为 null、记录不存在、源数据陈旧、部分结果与请求失败都必须按契约区分。
 
-### 已移除的路由
+<details>
+<summary><strong>历史参考：已移除的路由</strong></summary>
 
 以下不是可调用兼容入口，应返回未找到而不是重定向到一个假功能：
 
@@ -67,7 +83,10 @@
 
 该标记块供现有契约测试区分当前路由与历史路径；删除接口时同步更新正文、生成物与调用方，不保留漂移的备用路径。
 
-## 3. News：输入、知识与通知身份
+</details>
+
+<a id="section-news输入知识与通知身份"></a>
+## 03 · News：输入、知识与通知身份
 
 | 身份 | 契约意义 |
 | --- | --- |
@@ -93,7 +112,8 @@
 
 它不是新 Claim 的完整语义模型。新流程将 `mode`、`phase`、`content_kind` 与命题关系分别表达；不能把旧 `statement` 一律删掉来判断当前通知。
 
-## 4. 市场、钱包与价格
+<a id="section-市场钱包与价格"></a>
+## 04 · 市场、钱包与价格
 
 | 契约 | 语义限制 |
 | --- | --- |
@@ -105,7 +125,8 @@
 
 符号必须结合资产类别与交易所原生身份。基础币符号、股票 ticker、倍数合约和 USDT / USDC 市场不能靠字符串相等推断经济等价。
 
-## 5. Trading、操作与执行
+<a id="section-trading操作与执行"></a>
+## 05 · Trading、操作与执行
 
 `TradeSignalV3`、`OperatorIntentV1` 和 Runtime observation 的身份与作用域由执行契约定义，模型不能自由添加未知字段来绕过编译器。Signal 绑定 Case / decision、计划、映射、账户槽位、entry scope 与截止时间。
 
@@ -113,7 +134,8 @@
 
 执行结果只从与 Plan 精确绑定的交易所原生成交计算。普通 fill 保留事件审计用途；缺少原生依据时数量与收益显示未知。Runtime 自动核验仍有责任的订单，不提供已关闭旧账的在线补正命令。
 
-## 6. CLI 与配置
+<a id="section-cli-与配置"></a>
+## 06 · CLI 与配置
 
 | CLI 组 | 当前职责 |
 | --- | --- |
@@ -127,8 +149,13 @@
 
 未知配置 key 按 Settings 拒绝。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。业务配置只有 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`；Compose 可读取 `.env` 持久化项目、路径和端口，但 Settings 不把它作为业务字段回退。
 
-## 7. 时间、缺失与版本规则
+<a id="section-时间缺失与版本规则"></a>
+## 07 · 时间、缺失与版本规则
 
 来源发布时间、本地首次收到、语义完成、实际发送、市场目标 / 观察时间与交易所成交时间是不同的时钟。字段名包含 `_ms` 或 `_ns` 时按对应单位处理，不能把 model completion 当作新的 source first-available。
 
 不可变记录的新语义需要新版本；缓存和 UI 投影可重建，不可以反过来改写旧事实。缺失收益、未知发送结果与未完成 provider 请求必须显式表示。端到端重放依靠稳定身份和可检查条件，不宣称所有外部副作用天然 exactly-once。
+
+---
+
+[返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#公开契约与接口参考)

@@ -1,67 +1,83 @@
-# Tracefold 中文手册
+# Tracefold 文档中心
 
-[项目首页](../README.md) · [安装配置](SETUP.md) · [系统架构](ARCHITECTURE.md) · [运维排障](OPERATIONS.md)
+**从整体设计进入，沿一条业务路径读到源码与验证。**
 
-本手册以**同一检出版本的源码、契约和测试**为依据。它说明系统如何工作，不把历史 Issue 方案、旧部署结果或模型输出当作当前实现。部署镜像可能与仓库版本不同，排障时先确认版本。
+[项目首页](../README.md)　/　[架构图谱](ARCHITECTURE.md#atlas)　/　[开始运行](SETUP.md)　/　[故障定位](OPERATIONS.md)
 
-## 按目标阅读
+---
 
-| 你要完成什么 | 推荐路径 |
-| --- | --- |
-| 第一次运行项目 | [安装与配置](SETUP.md) → [应用状态检查](OPERATIONS.md#diagnostics) |
-| 理解整个系统 | [系统架构](ARCHITECTURE.md) → 下方模块手册 → 对应源码入口 |
-| 理解新闻为什么推送或不推送 | [新闻链路](modules/news.md) → [命题级通知决策](modules/news.md#notification) → [按版本恢复](OPERATIONS.md#news-retry) |
-| 理解 OI、行情和钱包的区别 | [市场观察](modules/oi.md) → [行情与复盘](modules/market-review.md) → [钱包净买入](modules/wallets.md) |
-| 理解交易建议与真实成交 | [交易研究](modules/trading.md) → [执行与对账](modules/execution.md) |
-| 修改代码并提交 PR | [开发指南](DEVELOPMENT.md) → [测试指南](TESTING.md) → [worktree](agents/worktrees.md) |
-| 升级、恢复或处理账户异常 | [运维](OPERATIONS.md) → [数据库迁移](MIGRATIONS.md) → [安全与权限](SECURITY.md) |
+## 选择你的阅读路径
+
+| 开始使用 | 理解与开发 |
+| :--- | :--- |
+| **部署与配置**<br/>了解前置条件、默认能力、容器地址与持久数据。<br/>[安装配置](SETUP.md) → [状态检查](OPERATIONS.md#diagnostics) | **架构与代码审查**<br/>先区分进程、包依赖与数据所有权，再沿模块定位实现。<br/>[系统地图](ARCHITECTURE.md) → [模块手册](#modules) → [契约](CONTRACTS.md) |
+| **日常运维与恢复**<br/>按角色、版本与工作身份诊断，不用重跑整库代替精确恢复。<br/>[运维排障](OPERATIONS.md) → [迁移恢复](MIGRATIONS.md) → [权限](SECURITY.md) | **功能开发与验证**<br/>理解行为所有者，修改调用方，选择能验证本次风险的测试。<br/>[开发指南](DEVELOPMENT.md) → [测试分层](TESTING.md) → [协作约定](agents/issue-tracker.md) |
+
+> [!NOTE]
+> 手册描述**同一检出版本的源码**。线上镜像、历史报告和当前 main 可能不同；排障前确认源 SHA、镜像与数据库版本。尚未合并的设计不是已实现能力。
 
 <a id="modules"></a>
 ## 模块手册
 
-| 模块 | 负责的问题 | 主要源码 |
-| --- | --- | --- |
-| [News：新闻理解与通知](modules/news.md) | Item 如何形成 Event、EventUpdate？谁决定通知？失败与修订如何恢复？ | `news/pipeline`、`news/events`、`news/updates`、`news/storage` |
-| [OI 与市场观察](modules/oi.md) | 数字如何解析？观察如何分组？通知与交易研究如何解耦？ | `news/oi_signals.py`、`news/market_notifications.py` |
-| [Market Review：行情与事件复盘](modules/market-review.md) | 标的身份、当前报价、新闻后价格反应如何分别计算？ | `news/market_review`、`integrations/venues` |
-| [Wallets：链上净买入](modules/wallets.md) | 名单、回执、完整前缀、窗口与首报如何闭环？ | `news/chain_tape`、钱包存储与契约 |
-| [Trading Analysis：交易研究](modules/trading.md) | Source → Case → Agent → 决策 → WATCH / Signal | `trading/engine`、`trading/storage`、`app/trading_*` |
-| [Execution：执行与对账](modules/execution.md) | 谁下单？如何保护仓位、归属成交、恢复真实执行历史？ | `integrations/nautilus`、`app/nautilus` |
-| [Review：复核与校准](modules/review.md) | 什么是已接受复核？当前保留哪些评估工具？ | `news/review`、`news/learning` |
-| [Platform：基础设施与装配](modules/platform.md) | 配置、数据库、资源、适配器和 Workers 监督如何协作？ | `platform`、`integrations`、`app` |
-| [Frontend：只读工作台](FRONTEND.md) | 路由、查询、页面状态与证据展示如何组织？ | `web/src`、`web/tests` |
+### 信息产品 · 理解、观察与通知
 
-每份模块文档按“职责与边界 → 源码入口 → 数据流 → 状态与失败 → 验证入口”组织。流程图中的步骤不自动等于数据库枚举；概念关系图也不冒充物理外键图。
+| 模块 | 读完后能回答 | 主要入口 |
+| :--- | :--- | :--- |
+| [**News**](modules/news.md) | 多来源如何形成知识版本？哪些命题被通知？修订和失败如何恢复？ | `news/pipeline` · `news/updates` |
+| [**OI 与市场观察**](modules/oi.md) | 测量如何解析和分组？为什么通知阈值不等于交易过滤？ | `news/oi_signals.py` · `news/market_notifications.py` |
+| [**Wallets**](modules/wallets.md) | 完整回执如何支撑同窗口净买入？首次与当前快照有什么区别？ | `news/chain_tape` |
+| [**Market Review**](modules/market-review.md) | 同名资产如何区分？当前报价和新闻后价格反应如何计算？ | `news/market_review` |
+| [**Review**](modules/review.md) | 哪些评审已经接受？校准能证明什么、不能证明什么？ | `news/review` · `news/learning` |
 
-## 系统与工程参考
+### 交易能力 · 研究与真实执行
 
-| 文档 | 唯一维护职责 |
-| --- | --- |
-| [ARCHITECTURE](ARCHITECTURE.md) | 进程、依赖方向、状态归属、跨域交接和事务边界 |
-| [SETUP](SETUP.md) | 首次运行、默认配置、容器网络与开发启动 |
-| [CONTRACTS](CONTRACTS.md) | 公开接口语义、当前 HTTP 路由、读写边界 |
-| [OPERATIONS](OPERATIONS.md) | 诊断命令、精确重试、执行运维、备份恢复 |
-| [MIGRATIONS](MIGRATIONS.md) | Schema 升级、前置条件、不可逆切换与恢复 |
-| [SECURITY](SECURITY.md) | 凭据、访问、模型工具与账户操作权限 |
-| [DEVELOPMENT](DEVELOPMENT.md) | 设计原则、最小验证、生成物与交付标准 |
-| [TESTING](TESTING.md) | 当前测试命令、CI 分工、资源隔离和证据限制 |
-| [生成参考](generated/README.md) | CLI 帮助、OpenAPI、数据库结构的生成入口 |
+| 模块 | 读完后能回答 | 主要入口 |
+| :--- | :--- | :--- |
+| [**Trading Analysis**](modules/trading.md) | 来源如何进入 Case？Agent 可读什么？WATCH 和 Signal 如何产生？ | `trading/engine` · `app/trading_*` |
+| [**Execution**](modules/execution.md) | 谁拥有订单权限？如何保护、对账和归属真实成交？ | `integrations/nautilus` · `app/nautilus` |
 
-## 代码协作与历史研究
+### 运行与呈现 · 基础设施和只读工作台
 
-AI 开发入口由[共享指引](agents/shared-router.md)同步至根目录 `AGENTS.md` 和 `CLAUDE.md`。[Issue / PR 约定](agents/issue-tracker.md)负责范围与标签，[worktree 约定](agents/worktrees.md)负责隔离。业务架构只在本手册及对应模块维护，不另设一份重复的领域规则。
+| 模块 | 读完后能回答 | 主要入口 |
+| :--- | :--- | :--- |
+| [**Platform**](modules/platform.md) | 配置、短事务、物理资源和任务监督如何配合？ | `platform` · `app` · `integrations` |
+| [**Frontend**](FRONTEND.md) | URL、查询缓存、页面与证据展示各由谁负责？ | `web/src` · `web/tests` |
 
-[CONTEXT.md](../CONTEXT.md)解释复核术语；[notebooks](../notebooks/README.md)区分可用离线工具和历史实验。冻结数据、已应用迁移和原始回执不能因为“清理旧文档”被改写或删除。过时方案与一次性调查从 Git / Issue 历史检索，不作为当前使用步骤继续堆放。
+模块页统一提供**职责摘要 → 主流程 → 数据与状态 → 恢复和验证 → 源码入口**。详细时序和特殊规则留在对应模块，不把整个系统挤成一张图。
 
-## 如何维护这份手册
+## 直接定位一个问题
 
-修改实现时更新对应模块的入口、输入输出、状态与失败语义，并附实际源码和测试链接。首页只做入口，架构页只做系统地图，模块页解释行为，运维页写操作，生成物保存精确语法。跨页引用优先于复制。
+| 问题 | 入口 |
+| :--- | :--- |
+| 新闻为什么不推送？ | [逐命题通知](modules/news.md#notification) · [精确版本恢复](OPERATIONS.md#news-retry) |
+| 一条消息为什么有多个 Event？ | [输入范围与身份](modules/news.md#input) |
+| 模型究竟调用几次？ | [NewsAgent 与预算](modules/news.md#agent) |
+| 有 TRADE 决策为什么没有成交？ | [研究状态](modules/trading.md#state) · [执行与对账](modules/execution.md) |
+| 账户状态未知与未认领敞口怎么读？ | [账户操作边界](OPERATIONS.md#trading-operations) |
+| 文档图如何修改并验证？ | [写作与图表规范](DEVELOPMENT.md#documentation-design) · [渲染检查](TESTING.md#diagrams) |
 
-文档正文使用中文，公开标识符、错误码、路径与命令保留原样。Mermaid 使用小型流程图、时序图或状态图；提交前验证语法并实际渲染，避免把许多不相关状态挤成一张大图。
+## 工程与操作参考
 
-```bash
-python3 scripts/check_mandatory_docs_links.py
-python3 scripts/sync_agent_router.py --check
-```
+| 运行与维护 | 开发与契约 |
+| :--- | :--- |
+| [安装与配置](SETUP.md)<br/>首次启动、能力配置、地址和挂载 | [系统架构](ARCHITECTURE.md)<br/>进程、包依赖、数据所有权与跨域时序 |
+| [运维排障](OPERATIONS.md)<br/>具名诊断、精确恢复、备份与独立 Runtime | [公开契约](CONTRACTS.md)<br/>接口入口、身份、版本与缺失含义 |
+| [数据库迁移](MIGRATIONS.md)<br/>升级前提、前向切换与配套恢复 | [开发指南](DEVELOPMENT.md)<br/>所有者、变更范围、文档设计与交付 |
+| [安全与权限](SECURITY.md)<br/>秘密、浏览器、模型工具与账户权限 | [测试与 CI](TESTING.md)<br/>当前测试分工、隔离资源和证明范围 |
 
-链接检查覆盖本地文件、Markdown 锚点与引用式链接，但不能证明远程链接可用、命令执行成功、图形布局美观或业务部署健康。完整验证分工见[测试指南](TESTING.md)。
+精确命令与机器契约：[**生成参考**](generated/README.md)。
+
+<details>
+<summary><strong>协作、设计记录与历史研究</strong></summary>
+
+AI 开发入口由[共享指引](agents/shared-router.md)同步至 [AGENTS.md](../AGENTS.md) 与 [CLAUDE.md](../CLAUDE.md)。[Issue / PR](agents/issue-tracker.md)负责协作范围，[worktree](agents/worktrees.md)负责隔离；它们不另造一套业务规则。
+
+[本轮视觉审阅样张](design/handbook-visual-review.md) · [复核术语](../CONTEXT.md) · [News 详情设计记录](design/news-event-detail.md) · [Issue 717 固定窗口报告](reports/issue-717-hourly-comparison-2026-09-27.md) · [离线研究工作区](../notebooks/README.md)
+
+设计截图和报告保留其时间、来源与验证限制。冻结数据、已应用迁移、原始回执不能因清理文档被改写；过时方案从 Git / Issue 历史检索，不继续作为当前操作步骤堆放。
+
+</details>
+
+---
+
+**一个问题，一个维护入口。** 修改实现时更新对应模块；首页负责导航，架构页负责系统地图，运维页负责操作，生成物负责精确语法。详见[文档维护](DEVELOPMENT.md#documentation-design)。

@@ -4,7 +4,23 @@
 
 推荐使用仓库的 **Make + Docker Compose** 启动完整应用。业务配置只有 `TRACEFOLD_HOME/config.yaml` 一份，默认仍为 `~/.tracefold/config.yaml`；前后端一起构建，Nautilus 执行角色独立管理。
 
-## 1. 前置条件
+<details>
+<summary><strong>本页目录</strong></summary>
+
+1. [前置条件](#section-前置条件)
+2. [首次启动](#section-首次启动)
+3. [初始化生成什么](#section-初始化生成什么)
+4. [按能力配置，而不是一次开启所有功能](#section-按能力配置而不是一次开启所有功能)
+5. [网络、端口与挂载](#section-网络端口与挂载)
+6. [升级已有安装](#section-升级已有安装)
+7. [可选执行生命周期](#section-可选执行生命周期)
+8. [本地开发](#section-本地开发)
+9. [停止](#section-停止)
+
+</details>
+
+<a id="section-前置条件"></a>
+## 01 · 前置条件
 
 | 工具 | 用途 |
 | --- | --- |
@@ -21,7 +37,8 @@
 
 macOS 使用具备这些工具的终端；Windows 开发建议在已配置 Docker 访问的 WSL Linux shell 中使用同一套命令。不要把工作树的 `.git` 文件替换成目录，或让 Windows 与 WSL 的绝对 Git 路径相互污染。
 
-## 2. 首次启动
+<a id="section-首次启动"></a>
+## 02 · 首次启动
 
 ```bash
 git clone https://github.com/AnalyThothAI/tracefold.git
@@ -34,7 +51,17 @@ make up
 访问 **http://127.0.0.1:8765/**。生产使用审阅后的干净源码；`make verify-main-ci` 是显式发布来源核验，不是服务恢复的联网依赖。开发 worktree 必须使用独立项目名、配置目录和宿主机端口，不能共享生产写进程。
 
 ```mermaid
+---
+config:
+  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
 flowchart TD
+    accTitle: 镜像内初始化与应用启动
+    accDescr: 项目锁保护构建与初始化，先验证配置和运行时 schema 兼容，再启动基础设施，等待迁移成功后启动应用。独立 Nautilus 不由此自动重启。
     Lock["项目级 OS 锁"] --> Build["构建镜像并读取不可变 ID"]
     Build --> Init["镜像内初始化、配置与运行时清单验证"]
     Init --> Window["活动执行进程的 schema 兼容检查"]
@@ -45,7 +72,12 @@ flowchart TD
     Result -->|"是"| App["启动 Serve / Workers / Analysis"]
     Result -->|"否"| Stop["保留应用停止状态并报告失败"]
     App --> Ready["验证应用、探针与静态工作台"]
+
+    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
+class Lock,Build,Init,Window,Infra,Policy,Migrate,Result,App,Stop,Ready store;
 ```
+
+*操作视图 · 配置由选定镜像校验；迁移成功指实际退出码。此图不包含独立账户执行的启动授权。*
 
 [Makefile](../Makefile)是薄命令入口；[scripts/deploy.py](../scripts/deploy.py)等待迁移进程真正退出，再以 `--no-deps` 启动应用。不能仅因为 `depends_on` 或部分容器 running 就宣布启动成功。再次 `make up` 会构建并更新应用角色，不应该无故重建已有数据库容器。
 
@@ -69,7 +101,8 @@ make logs
 
 所有 Make 生命周期命令使用相同的显式 Compose 文件、项目目录和 `.env`，包括日志、状态、shell 与停止操作。不自动发现其他 Compose override。`make topology` 只输出脱敏拓扑，不打印可能含凭据的完整 Compose 文档。
 
-## 3. 初始化生成什么
+<a id="section-初始化生成什么"></a>
+## 03 · 初始化生成什么
 
 `make up` 在选定镜像内、以宿主操作者 UID/GID 调用 `tracefold init`；也可以在首次启动前执行 `make init`，先查看和编辑配置。
 
@@ -99,7 +132,9 @@ make help
 
 `config` 输出脱敏值与路径；不要为了排障直接打印所有原始文件。
 
-## 4. 按能力配置，而不是一次开启所有功能
+<a id="capabilities"></a>
+<a id="section-按能力配置而不是一次开启所有功能"></a>
+## 04 · 按能力配置，而不是一次开启所有功能
 
 | 能力 | 配置入口 | 初始状态与注意事项 |
 | --- | --- | --- |
@@ -134,7 +169,8 @@ trading:
 
 推送无效可能只使 delivery capability unavailable；模型缺失、行情不可用和钱包尚未形成完整监控窗口分别展示，不能用一条“服务未启动”概括。空数据不是自动注入模拟内容的理由。
 
-## 5. 网络、端口与挂载
+<a id="section-网络端口与挂载"></a>
+## 05 · 网络、端口与挂载
 
 | 服务 | 默认宿主机绑定 | 容器内含义 |
 | --- | --- | --- |
@@ -174,7 +210,8 @@ Compose 读取 `.env`；业务 Settings 不读取它。显式 Make 参数 / shel
 
 `api.host` / `api.port` 是监听地址；`api.public_url` 是读者可访问的绝对 HTTP(S) 链接基础地址，不能有 query / fragment，不从 `0.0.0.0` 或 loopback 猜出来。对公网开放工作台前阅读[安全边界](SECURITY.md)。
 
-## 6. 升级已有安装
+<a id="section-升级已有安装"></a>
+## 06 · 升级已有安装
 
 先确认源版本、镜像和数据库 head，保存配置与适用备份，再处理确切的已删除字段。EventUpdate 切换删除了 `news.policy` 与 `llm.news_compiler_reflection`；钱包双窗口的 `news.chain_tape.rules.net_buy_fast_n` 也不再支持。
 
@@ -186,7 +223,8 @@ Compose 读取 `.env`；业务 Settings 不读取它。显式 Make 参数 / shel
 
 只读 `tracefold runtime-manifest` 替代历史数据库 genesis 命令，报告不可变镜像和 News 程序清单。未提交的开发构建标记为 `-dirty`，不伪装成已提交源码；生产应使用审阅后的干净来源。
 
-## 7. 可选执行生命周期
+<a id="section-可选执行生命周期"></a>
+## 07 · 可选执行生命周期
 
 ```bash
 make runtime-build
@@ -198,7 +236,8 @@ make runtime-logs
 
 没有内置 Paper 模拟器；`trading.execution.binance.environment` 指定原生适配器目标，`LIVE` / `DEMO` / `TESTNET` 也必须配合相应凭据。不要假设未设置环境就一定是测试连接。
 
-## 8. 本地开发
+<a id="section-本地开发"></a>
+## 08 · 本地开发
 
 在[独立 worktree](agents/worktrees.md)安装锁定 Python 依赖：
 
@@ -218,7 +257,8 @@ npm run dev
 
 开发服务器与生产镜像路径不是同一验证证据。提交前按[开发指南](DEVELOPMENT.md)与[测试指南](TESTING.md)选择检查，不让每个文档改动都启动完整部署。
 
-## 9. 停止
+<a id="section-停止"></a>
+## 09 · 停止
 
 ```bash
 make down
@@ -227,3 +267,7 @@ make down
 先停止 Nautilus，再停止应用与依赖；保留配置和数据卷。不要把 `docker compose down -v` 加入日常升级或排障步骤。进程停止也不表示交易所仓位自动关闭。
 
 保留的离线迁移和历史研究工具及其调用时机见 [scripts 工具归属](../scripts/README.md)。普通启动不会执行批量重标注、归档搬迁、历史研究或全局 CLI 安装。
+
+---
+
+[返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#安装与配置)

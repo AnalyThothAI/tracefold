@@ -4,8 +4,21 @@
 
 本页描述当前测试实现、所需资源和证据范围，不新增一套审批流程。**测试命令成功、远程必需 CI 通过、部署健康和真实业务正确，是不同结论。**
 
+<details>
+<summary><strong>本页目录</strong></summary>
+
+1. [当前固定 CI 分工](#section-当前固定-ci-分工)
+2. [本地入口与证明范围](#section-本地入口与证明范围)
+3. [真实资源必须隔离](#section-真实资源必须隔离)
+4. [文档与生成物检查](#section-文档与生成物检查)
+5. [前端验证分层](#section-前端验证分层)
+6. [修改测试体系与提交结果](#section-修改测试体系与提交结果)
+
+</details>
+
 <a id="fixed-full-ci-implementation"></a>
-## 1. 当前固定 CI 分工
+<a id="section-当前固定-ci-分工"></a>
+## 01 · 当前固定 CI 分工
 
 [ci.yml](../.github/workflows/ci.yml)对面向 main 的 PR、main push、release 和手动触发使用当前固定计划，没有按路径、draft 或提交文字排除。PR 并发规则会取消同一 PR 的旧运行；取消不是成功证据。
 
@@ -27,7 +40,8 @@
 当前没有必需的覆盖率百分比 gate；`make coverage` 按需测量，必需 lane 不额外承担 tracer 开销。历史运行时间与旧拆分保存在对应 Issue / run，不是当前容量承诺。
 
 <a id="local-lane-implementation"></a>
-## 2. 本地入口与证明范围
+<a id="section-本地入口与证明范围"></a>
+## 02 · 本地入口与证明范围
 
 | 命令 | 主要覆盖 |
 | --- | --- |
@@ -47,7 +61,8 @@
 
 开发中先运行改动相关的 pytest / 前端测试，再按共享影响扩展。不能仅从 `test-fast` 名字推断它等于完整 CI；本地完整 preflight 通过也不授权合并或部署。
 
-## 3. 真实资源必须隔离
+<a id="section-真实资源必须隔离"></a>
+## 03 · 真实资源必须隔离
 
 PostgreSQL 行为测试按 harness 在迁移基线上克隆隔离数据库；迁移历史测试使用单独空库。显式配置 `TRACEFOLD_TEST_POSTGRES_DSN`，不要把生产 DSN 临时塞进测试变量来绕过资源缺失。
 
@@ -69,7 +84,8 @@ export TRACEFOLD_TEST_RABBITMQ_CONTAINER=tracefold-test-rabbitmq
 
 本地没有声明资源时，某些测试会跳过；必需 CI 与完整 preflight 把缺失必需资源视为失败。跳过不构成该接缝已验证的证明，但不影响继续运行其他纯检查。
 
-## 4. 文档与生成物检查
+<a id="section-文档与生成物检查"></a>
+## 04 · 文档与生成物检查
 
 ```bash
 python3 scripts/check_mandatory_docs_links.py
@@ -81,6 +97,7 @@ uv run python scripts/regen_cli_help.py --check
 
 [文档表面测试](../tests/architecture/test_docs_surface.py)检查共享入口同步与纯 Make 选择；[文档导航测试](../tests/architecture/test_documentation_navigation.py)检查嵌套文档、中文锚点、引用链接、模块入口以及从首页可达的手册。不要加入固定段落文字或文档行数的脆弱断言来代替行为检查。
 
+<a id="diagrams"></a>
 ### Mermaid 与 Markdown
 
 新增或修改图时，先核对节点是否实际存在、箭头的含义及事务边界，再提取 Mermaid 代码块进行解析和实际渲染。查看主要图的中文字体、节点裁切、连线交叉和适合阅读的尺寸；解析通过不等于图已可读。
@@ -89,20 +106,43 @@ uv run python scripts/regen_cli_help.py --check
 
 同时检查代码围栏是否闭合，避免一个旧 bash fence 让后半篇手册都显示成脚本。不要执行文档中标注为写操作、部署或账户操作的示例来“测试 Markdown”。
 
+| 检查层 | 要保留的证据 |
+| :--- | :--- |
+| 导航与语法 | 本地链接 / 锚点检查、代码围栏闭合、details 标签配对、生成入口同步 |
+| 图表渲染 | 提取本次 Markdown 中全部 Mermaid，记录实际渲染器版本、退出码与产物数量 |
+| 可访问性 | SVG 包含可读标题与说明，颜色以外仍有节点文字、形状和图注 |
+| 明暗与尺寸 | 本次新增或修改的图表在明 / 暗主题中渲染；抽查受影响页面的宽屏与窄屏阅读效果 |
+| 证明限制 | 本地预览不冒充 GitHub 托管渲染；静态文档检查不证明模型、数据库或实际账户正确 |
+
+已有 Mermaid CLI 时可直接渲染一份带图 Markdown：
+
+```bash
+# 输出目录放在仓库外；本机 Puppeteer / Chromium 配置按实际环境提供
+mmdc -i docs/ARCHITECTURE.md -o /tmp/tracefold-architecture.md -e svg -j 1
+```
+
+优先单并发或分批渲染，避免纯文档任务挤占开发主机。浏览器崩溃、只生成部分图片不算全量通过；修复后重跑受影响集合。临时预览 CSS 与截图仅是审阅证据，不成为另一套产品文档站。
+
 ### 数据库与 HTTP 生成物
 
 OpenAPI 与前端类型由实际 contract / codegen owner 验证。数据库 schema 生成需要**已迁移到正确 head 的隔离数据库**；不设置显式测试 DSN 时生成器可能读取 operator 配置，禁止用生产数据库完成文档更新。
 
 纯中文改写不更改生成 CLI、OpenAPI 或数据库字段；需要刷新时按[生成参考](generated/README.md)运行正确生成器。`make docs-generated` 包含真实数据库 introspection，不是无资源的 Markdown 格式化命令。
 
-## 5. 前端验证分层
+<a id="section-前端验证分层"></a>
+## 05 · 前端验证分层
 
 `npm run typecheck` 验证类型；`npm run lint` 包含 ESLint 和架构测试；`npm run test:unit` 覆盖纯模型、组件与路由；`npm run build:checked` 验证类型并构建。
 
 Mock API 浏览器场景证明交互逻辑，不证明真实服务 bootstrap、静态资源和数据库接缝；`npm run test:e2e:full-stack` 专门承担实际栈边界。视觉改动需查看加载、空数据、错误、窄屏、导航及控制台，不用一张正常首页截图替代全部验收。
 
-## 6. 修改测试体系与提交结果
+<a id="section-修改测试体系与提交结果"></a>
+## 06 · 修改测试体系与提交结果
 
 改善慢或冗余测试时，从它实际覆盖的风险入手。修改选择、重试、资源或必需 job 时说明覆盖如何保留，并验证受影响 harness；不要把必需行为悄悄搬到可选诊断，也不要用 focus、无理由 skip / xfail 或自动更新快照取得绿色。
 
 提交报告写精确命令、被测版本、通过 / 失败 / 跳过数量和未运行范围。标出远程 CI 当前状态，不把“提交了测试”“开始执行”和“运行通过”混为一谈。临时工具和测试数据不应污染产品依赖、operator 配置或其他 worktree。
+
+---
+
+[返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#测试ci-与验证证据)

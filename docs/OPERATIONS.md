@@ -6,8 +6,23 @@
 
 本页命令是操作手册，不是自动执行脚本。带写入、副作用或账户操作的命令必须在对应授权范围内运行。
 
+<details>
+<summary><strong>本页目录</strong></summary>
+
+1. [先做有界诊断](#section-先做有界诊断)
+2. [按边界判断问题](#section-按边界判断问题)
+3. [News：先找失败版本，再恢复](#section-news先找失败版本再恢复)
+4. [市场与钱包定位](#section-市场与钱包定位)
+5. [Trading 与账户操作](#section-trading-与账户操作)
+6. [部署与独立 Runtime](#section-部署与独立-runtime)
+7. [备份与恢复](#section-备份与恢复)
+8. [故障记录应包含什么](#section-故障记录应包含什么)
+
+</details>
+
 <a id="diagnostics"></a>
-## 1. 先做有界诊断
+<a id="section-先做有界诊断"></a>
+## 01 · 先做有界诊断
 
 在管理该部署的主检出目录执行：
 
@@ -38,7 +53,8 @@ docker compose exec -T analysis tracefold trading status
 
 不要把 `db audit --deep` 或 `db query-audit --analyze` 视作同样轻量：前者进行精确计数，后者真实执行查询。只读不等于没有资源成本。
 
-## 2. 按边界判断问题
+<a id="section-按边界判断问题"></a>
+## 02 · 按边界判断问题
 
 | 现象 | 首先核查 | 不应直接做 |
 | --- | --- | --- |
@@ -55,7 +71,8 @@ Workers 的基础 / 可选任务监督和资源槽位见[Platform](modules/platf
 
 <a id="3-news-identify-the-failed-version-before-retrying"></a>
 <a id="news-retry"></a>
-## 3. News：先找失败版本，再恢复
+<a id="section-news先找失败版本再恢复"></a>
+## 03 · News：先找失败版本，再恢复
 
 ```bash
 docker compose exec -T workers tracefold news why EVENT_ID
@@ -116,7 +133,8 @@ docker compose exec -T workers tracefold news dlq inspect --limit 20
 
 当前 `news.triage` 只负责唤醒语义 Worker；通知不是靠清空某个旧 delivery queue 就能重新开始。
 
-## 4. 市场与钱包定位
+<a id="section-市场与钱包定位"></a>
+## 04 · 市场与钱包定位
 
 ```bash
 docker compose exec -T workers tracefold news instruments summary
@@ -130,7 +148,8 @@ docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 1
 
 <a id="5-trading-and-account-operations"></a>
 <a id="trading-operations"></a>
-## 5. Trading 与账户操作
+<a id="section-trading-与账户操作"></a>
+## 05 · Trading 与账户操作
 
 ```bash
 docker compose exec -T analysis tracefold trading cases --limit 20
@@ -173,7 +192,8 @@ psql -X -d "$TRACEFOLD_POSTGRES_DSN" -v ON_ERROR_STOP=1 \
 SQL 只删除目标账户旧 Plan、执行观察、手动意图、最终入场核验及派生 Runtime 快照；已发布 Signal 保留为 Case 证据并全数退休，避免删除 Plan/处置后重新可执行。手动意图必须全部过期，脚本才允许删除，以免旧请求重试恢复可执行性。保留现有 pause/halt 与稳定 namespace。旧 RabbitMQ 投递或其他待发送工作必须在停写阶段清理并核对晚到消息；脚本不触及 broker。重启后核对当前外部风险、Cache、Plan 保护、PG 原生结果以及旧 Signal/命令未重放，再验收一笔新生命周期。未完成这些现场回执时不得宣称硬切已完成。
 
 <a id="deployment"></a>
-## 6. 部署与独立 Runtime
+<a id="section-部署与独立-runtime"></a>
+## 06 · 部署与独立 Runtime
 
 正常升级使用 `make up`。根 Makefile 只负责公开命令，[scripts/deploy.py](../scripts/deploy.py)持有项目级 OS 锁、验证配置、按顺序迁移并验收；[compose.yaml](../compose.yaml)拥有服务、挂载和关闭预算。迁移非零退出时，应用保持停止，不把 `depends_on` 或容器 running 当作成功。
 
@@ -202,7 +222,8 @@ make runtime-down
 
 <a id="6-backup-and-restore"></a>
 <a id="backup"></a>
-## 7. 备份与恢复
+<a id="section-备份与恢复"></a>
+## 07 · 备份与恢复
 
 备份必须配套保存源 SHA、镜像 ID、数据库 head 和操作配置的安全副本。以下命令读取数据库并将 dump 保存到受限目录；不会打印密码：
 
@@ -219,8 +240,13 @@ docker compose exec -T postgres pg_restore --list < "$backup"
 
 恢复前停止或隔离会写入目标数据库的进程，先在隔离环境恢复与验证，再按备份版本的兼容路径升级。旧镜像不能靠改 `alembic_version` 假装兼容新 schema；新代码也不能无条件解释 baseline 以前的数据库。
 
-## 8. 故障记录应包含什么
+<a id="section-故障记录应包含什么"></a>
+## 08 · 故障记录应包含什么
 
 记录角色 / 版本、观察时间、工作身份、具名错误、重试或外部结果、做了什么和剩余未知。日志、备份和截图不泄露 token / key / 带密码 URL。调查中的一次性能样本必须附数据规模与测量条件，不能写成长期架构承诺。
 
 能证明修复的是**同一身份下的后续进展与真实结果**，不是删除失败记录、重复启动进程或让状态页暂时变绿。
+
+---
+
+[返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#运维与故障定位)
