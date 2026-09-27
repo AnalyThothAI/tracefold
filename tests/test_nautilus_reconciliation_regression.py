@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock
 import msgspec
 import pytest
 from nautilus_trader.adapters.binance import BINANCE, BinanceLiveExecClientFactory
+from nautilus_trader.adapters.binance.common.schemas.account import BinanceOrder, BinanceUserTrade
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.error import BinanceClientError
 from nautilus_trader.cache.cache import Cache
@@ -1248,6 +1249,125 @@ def test_duplicate_recovery_notifications_share_one_backoff_and_do_not_request_s
     runtime.loop.run_until_complete(_open_order_check(runtime))
     assert len(runtime.venue.trade_requests) == before
     assert runtime.open_positions() == _HELD
+
+
+def test_submitted_entry_without_first_acceptance_recovers_exact_native_fill(
+    account: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = account(seed_existing=False)
+    runtime.client._instrument_provider.add(INSTRUMENT)
+    order = runtime.strategy.order_factory.market(
+        instrument_id=APT, order_side=OrderSide.BUY, quantity=Quantity.from_str("1188.3"), client_order_id=ENTRY_ID
+    )
+    runtime.cache.add_order(order, None, ClientId(BINANCE))
+    order.apply(TestEventStubs.order_submitted(order, account_id=runtime.account_id, ts_event=FILL_NS - 300_000_000))
+    runtime.cache.update_order(order)
+    assert order.venue_order_id is None
+    raw_order = _binance_order(ENTRY_ORDER_ID, ENTRY_ID.value, "BUY", "0.8394", FILL_MS)
+    raw_trades = [_trade(trade_id, ENTRY_ORDER_ID, "BUY", qty, FILL_MS) for trade_id, qty in ENTRY_TRADES]
+    monkeypatch.setattr(
+        runtime.client._futures_http_account,
+        "query_order",
+        AsyncMock(return_value=msgspec.json.decode(msgspec.json.encode(raw_order), type=BinanceOrder)),
+    )
+    monkeypatch.setattr(
+        runtime.client._futures_http_account,
+        "query_user_trades",
+        AsyncMock(return_value=msgspec.json.decode(msgspec.json.encode(raw_trades), type=list[BinanceUserTrade])),
+    )
+
+    async def recover() -> bool:
+        consumer = asyncio.create_task(runtime.engine._run_evt_queue())
+        try:
+            evidence = await runtime.client._read_order_evidence(runtime.client._request_for_order(order))
+            applied = await runtime.client._apply_order_evidence(evidence)
+            await asyncio.sleep(0.05)
+            return applied
+        finally:
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    assert runtime.loop.run_until_complete(recover())
+    assert order.venue_order_id == VenueOrderId(str(ENTRY_ORDER_ID))
+    assert order.filled_qty.as_decimal() == Decimal("1188.3")
+    assert {identity.value for identity in order.trade_ids} == {str(value[0]) for value in ENTRY_TRADES}
+    assert runtime.strategy.filled == [ENTRY_ID.value, ENTRY_ID.value]
+    assert runtime.loop.run_until_complete(recover())
+    assert runtime.strategy.filled == [ENTRY_ID.value, ENTRY_ID.value]
+
+
+def test_adapter_retries_unknown_order_without_new_ws_or_open_list(
+    account: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = account(seed_existing=False)
+    runtime.client._instrument_provider.add(INSTRUMENT)
+    order = runtime.strategy.order_factory.market(
+        instrument_id=APT, order_side=OrderSide.BUY, quantity=Quantity.from_str("1188.3"), client_order_id=ENTRY_ID
+    )
+    runtime.cache.add_order(order, None, ClientId(BINANCE))
+    order.apply(TestEventStubs.order_submitted(order, account_id=runtime.account_id, ts_event=FILL_NS - 300_000_000))
+    runtime.cache.update_order(order)
+    calls = 0
+
+    async def unavailable(_request: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("signed read unavailable")
+
+    monkeypatch.setattr(runtime.client, "_read_order_evidence", unavailable)
+
+    async def retry() -> None:
+        runtime.client.wake_order_recovery()
+        await asyncio.gather(*list(runtime.client._tasks))
+
+    for attempt in range(7):
+        runtime.loop.run_until_complete(retry())
+        assert calls == attempt + 1
+        assert len(runtime.client._order_recovery) == 1
+        runtime.client.wake_order_recovery()
+        assert calls == attempt + 1
+        for recovery in runtime.client._order_recovery.values():
+            recovery.next_attempt = 0
+    assert order.status == OrderStatus.SUBMITTED
+
+
+def test_ledger_sink_refusal_keeps_only_ledger_work_after_cache_application(
+    account: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tracefold.integrations.nautilus.oi_runtime.order_evidence import BinanceOrderEvidence, OrderEvidenceRequest
+
+    runtime = account(seed_existing=False)
+    accepted = False
+    reads = 0
+    request = OrderEvidenceRequest(symbol="APTUSDT", client_order_id=ENTRY_ID.value)
+    evidence = BinanceOrderEvidence(
+        request=request, parent=None, order=None, history=None, observed_at_ns=runtime.clock.timestamp_ns()
+    )
+
+    def sink(_evidence: Any) -> bool:
+        return accepted
+
+    async def read(_request: Any) -> Any:
+        nonlocal reads
+        reads += 1
+        runtime.client._record_native_evidence(evidence)
+        return evidence
+
+    runtime.client._evidence_sink = sink
+    monkeypatch.setattr(runtime.client, "_read_order_evidence", read)
+    monkeypatch.setattr(runtime.client, "_apply_order_evidence", AsyncMock(return_value=True))
+    runtime.client.seed_order_recovery(request)
+    runtime.loop.run_until_complete(asyncio.gather(*list(runtime.client._tasks)))
+
+    assert reads == 1
+    assert runtime.client._order_recovery == {}
+    assert len(runtime.client._pending_ledger) == 1
+    assert runtime.client.recovery_diagnostics()[1] == "pending_ledger"
+
+    accepted = True
+    runtime.client.wake_order_recovery()
+    assert runtime.client._pending_ledger == {}
+    assert reads == 1
 
 
 def test_recorded_inj_signed_chain_closes_exactly_121_3_with_native_trade_and_fee(

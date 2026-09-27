@@ -180,8 +180,7 @@ def test_concurrent_cost_and_fill_cannot_disagree_about_native_order_identity():
         assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == 1
 
 
-@pytest.mark.parametrize("original_reason", ["venue_unknown", "stop_filled"])
-def test_recorded_inj_native_result_corrects_projection_without_rewriting_original_plan(original_reason):
+def test_recorded_inj_native_result_and_terminal_transition_are_one_durable_unit():
     import asyncio
     import json
     from pathlib import Path
@@ -194,7 +193,7 @@ def test_recorded_inj_native_result_corrects_projection_without_rewriting_origin
     from nautilus_trader.adapters.binance.futures.schemas.account import BinanceFuturesAlgoOrder
 
     from tests.helpers.published_signal_v3 import append_published_v3_signal
-    from tracefold.app.nautilus.oi_runtime import write_journal_row
+    from tracefold.app.nautilus.oi_runtime import write_journal_row, write_terminal_plan
     from tracefold.app.repository_session import repositories_for_connection
     from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
     from tracefold.integrations.nautilus.oi_runtime.observations import offer_native_evidence
@@ -204,16 +203,26 @@ def test_recorded_inj_native_result_corrects_projection_without_rewriting_origin
     from tracefold.trading.trade_plan import TradePlan
 
     fixture = json.loads((Path(__file__).parents[1] / "fixtures/binance/inj_20260925_execution.json").read_text())
-    plan = TradePlan.model_validate_json(json.dumps(fixture["original_plan"] | {"exit_reason": original_reason}))
-    original = ExecutionObservationV1.model_validate(fixture["original_entry_observation"])
-    observed_ns = 1790380800_000000000
+    raw = fixture["original_plan"]
+    plan = TradePlan.model_validate_json(
+        json.dumps(
+            raw
+            | {
+                "status": "open",
+                "terminal_at_ns": None,
+                "exit_reason": None,
+                "updated_at_ns": raw["opened_at_ns"],
+            }
+        )
+    )
+    closed = plan.closed(reason="take_profit", terminal_at_ns=1790338365075_000000, now_ns=1790338365075_000000)
+    legacy_fill = ExecutionObservationV1.model_validate(fixture["original_entry_observation"])
     journal = ExecutionJournal(factory=ObservationFactory(plan.account_slot, "oi_nautilus_v1"))
     with closing(connect_postgres_test(read_only=False)) as conn:
         repo = TradingRepository(conn)
+        session = repositories_for_connection(conn)
         with conn.transaction():
             repo.ensure_execution_runtime_control_state(plan.account_slot, now_ns=plan.created_at_ns)
-        # Only the foreign-key scaffold is generated. Plan, original observation,
-        # and native receipts below are the actual incident's recorded payloads.
         append_published_v3_signal(
             repo,
             signal_id=plan.entry_id,
@@ -223,12 +232,13 @@ def test_recorded_inj_native_result_corrects_projection_without_rewriting_origin
         )
         with conn.transaction():
             assert repo.insert_trade_plan(prepare_trade_plan(plan))
-        write_journal_row(repositories_for_connection(conn), original)
-        raw_before = conn.execute(
-            "SELECT payload FROM trading_execution_observations WHERE event_id=%s", (original.event_id,)
-        ).fetchone()["payload"]
+        write_journal_row(session, legacy_fill)
+        assert repo.execution_result(entry_id=plan.entry_id)["fill_quantity"] is None
+        with pytest.raises(ValueError, match="trade_plan_terminal_entry_evidence_pending"):
+            write_terminal_plan(session, closed, ())
+        assert TradePlan.model_validate(repo.trade_plan(plan.entry_id)) == plan
 
-        def evidence(index):
+        for index in (0, 1):
             order = msgspec.json.decode(msgspec.json.encode(fixture["orders"][index]), type=BinanceOrder)
             parent = msgspec.json.decode(msgspec.json.encode(fixture["algo"]), type=BinanceFuturesAlgoOrder)
             trades = msgspec.json.decode(msgspec.json.encode([fixture["trades"][index]]), type=list[BinanceUserTrade])
@@ -243,94 +253,101 @@ def test_recorded_inj_native_result_corrects_projection_without_rewriting_origin
                 venue_order_id=order.orderId,
                 conditional_type=None if index == 0 else "TAKE_PROFIT_MARKET",
             )
-            return asyncio.run(read_order_evidence(account, request=request, observed_at_ns=observed_ns))
-
-        def offer(index):
-            proof = evidence(index)
+            proof = asyncio.run(read_order_evidence(account, request=request, observed_at_ns=1790380800_000000000))
             binding = PlanOrderBinding(
                 account_slot=plan.account_slot,
                 entry_id=plan.entry_id,
                 source=plan.source,
                 instrument_id=plan.instrument_id,
-                client_order_id=proof.request.client_order_id,
+                client_order_id=request.client_order_id,
                 leg="entry" if index == 0 else "take_profit",
                 exit_reason=None if index == 0 else "take_profit",
             )
             assert offer_native_evidence(
-                journal, proof, environment=BinanceEnvironment.DEMO, observed_at_ns=observed_ns, binding=binding
+                journal,
+                proof,
+                environment=BinanceEnvironment.DEMO,
+                observed_at_ns=1790380800_000000000,
+                binding=binding,
             )
 
-        def drain(*, omit=()):
-            for queued in journal.due(float("inf")):
-                if queued.value.normalized_kind in omit:
-                    continue
-                write_journal_row(repositories_for_connection(conn), queued.value)
-                journal.written(queued, queued.value)
-
-        def projected():
-            return next(
-                row for row in repo.console_executions(since_ns=0, limit=10) if row["entry_id"] == plan.entry_id
-            )
-
-        assert projected()["realized_pnl_usd"] is None
-        assert bool(repo.recent_stop_exits(account_slot=plan.account_slot, since_ns=0)) == (
-            original_reason == "stop_filled"
-        )
-        offer(1)
-        drain()
-        # The old inferred BUY and the newly proved SELL cannot be folded together.
-        partial = projected()
-        assert partial["fill_quantity"] is None
-        assert partial["realized_pnl_usd"] is None
-        assert partial["result_evidence_source"] is None
-        offer(0)
-        candidate_json = json.dumps([queued.value.model_dump(mode="json") for queued in journal.due(float("inf"))])
-        before_count = conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"]
-        with conn.transaction():
-            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            preview = repo.preview_execution_evidence(entry_id=plan.entry_id, payload_json=candidate_json)
-        assert conn.execute("SELECT count(*) AS n FROM trading_execution_observations").fetchone()["n"] == before_count
-        assert Decimal(preview["realized_pnl_usd"]) == Decimal("19.087768")
-        drain(omit=("native_order_result", "native_fill_cost"))
-        assert projected()["realized_pnl_usd"] is None
-        drain(omit=("native_fill_cost",))
-        # Complete native executions can prove time/purpose before late fees.
-        assert projected()["exit_reason"] == "take_profit"
-        assert projected()["realized_pnl_usd"] is None
-        drain()
-        verified = projected()
-        assert verified == preview
-        assert Decimal(verified["fill_quantity"]) == Decimal("121.3")
-        assert Decimal(verified["fees_usd"]) == Decimal("0.805432")
-        assert Decimal(verified["realized_pnl_usd"]) == Decimal("19.087768")
-        assert verified["funding_usd"] is None
-        assert verified["net_pnl_usd"] is None
-        assert verified["position_closed_at_ns"] == 1790338365075_000000
-        assert verified["exit_reason"] == "take_profit"
-        assert verified["original_exit_reason"] == original_reason
-        assert verified["original_terminal_at_ns"] == plan.terminal_at_ns
-        assert verified["result_evidence_source"] == "signed_native_trades"
-        assert verified["result_verified_at_ns"] == observed_ns
-        assert repo.recent_stop_exits(account_slot=plan.account_slot, since_ns=0) == {}
-        totals = repo.console_realized_totals(
-            account_slot=plan.account_slot, day_start_ns=1790338365000_000000, day_end_ns=1790338366000_000000
-        )
-        assert totals["closed_today"] == 1
-        assert Decimal(totals["realized_known_today_usd"]) == Decimal("19.087768")
-        offer(0)
-        offer(1)
-        drain()
-        assert projected() == verified
+        dependencies = journal.terminal_dependencies(closed)
+        assert len(dependencies) == 8
+        # An interrupted transaction leaves the open Plan and zero native facts.
+        with pytest.raises(RuntimeError, match="simulated_pg_interrupt"), conn.transaction():
+            write_terminal_plan(session, closed, dependencies)
+            raise RuntimeError("simulated_pg_interrupt")
         assert TradePlan.model_validate(repo.trade_plan(plan.entry_id)) == plan
         assert (
             conn.execute(
-                "SELECT payload FROM trading_execution_observations WHERE event_id=%s", (original.event_id,)
-            ).fetchone()["payload"]
-            == raw_before
+                "SELECT count(*) AS n FROM trading_execution_observations WHERE normalized_kind='native_fill'"
+            ).fetchone()["n"]
+            == 0
         )
+        write_terminal_plan(session, closed, dependencies)
+        result = repo.execution_result(entry_id=plan.entry_id)
+        assert TradePlan.model_validate(repo.trade_plan(plan.entry_id)) == closed
+        assert Decimal(result["fill_quantity"]) == Decimal("121.3")
+        assert Decimal(result["fees_usd"]) == Decimal("0.805432")
+        assert Decimal(result["realized_pnl_usd"]) == Decimal("19.087768")
+        assert result["exit_reason"] == "take_profit"
+        assert result["result_evidence_source"] == "signed_native_trades"
+        assert result["position_closed_at_ns"] == closed.terminal_at_ns
+        assert repo.recent_stop_exits(account_slot=plan.account_slot, since_ns=0) == {}
+        write_terminal_plan(session, closed, dependencies)
         assert (
             conn.execute(
                 "SELECT count(*) AS n FROM trading_execution_observations WHERE normalized_kind='native_fill'"
             ).fetchone()["n"]
             == 2
         )
+
+
+def test_pre_submit_refusal_closes_with_disposition_and_no_invented_trade():
+    import json
+    from pathlib import Path
+
+    from tests.helpers.published_signal_v3 import append_published_v3_signal
+    from tracefold.app.nautilus.oi_runtime import write_terminal_plan
+    from tracefold.app.repository_session import repositories_for_connection
+    from tracefold.integrations.nautilus.oi_runtime.journal import ExecutionJournal, ObservationFactory
+    from tracefold.trading.storage.trade_plans import prepare_trade_plan
+    from tracefold.trading.trade_plan import TradePlan
+
+    raw = json.loads((Path(__file__).parents[1] / "fixtures/binance/inj_20260925_execution.json").read_text())[
+        "original_plan"
+    ]
+    plan = TradePlan.model_validate_json(
+        json.dumps(raw | {"status": "prepared", "opened_at_ns": None, "terminal_at_ns": None, "exit_reason": None})
+    )
+    closed = plan.closed(reason="not_submitted", terminal_at_ns=plan.created_at_ns + 1, now_ns=plan.created_at_ns + 1)
+    journal = ExecutionJournal(factory=ObservationFactory(plan.account_slot, "oi_nautilus_v1"))
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repo = TradingRepository(conn)
+        session = repositories_for_connection(conn)
+        with conn.transaction():
+            repo.ensure_execution_runtime_control_state(plan.account_slot, now_ns=plan.created_at_ns)
+        append_published_v3_signal(
+            repo,
+            signal_id=plan.entry_id,
+            case_id=plan.case_id,
+            observed_at_ns=plan.created_at_ns - 1,
+            expires_at_ns=plan.entry_expires_at_ns,
+        )
+        with conn.transaction():
+            repo.insert_trade_plan(prepare_trade_plan(plan))
+        with pytest.raises(ValueError, match="trade_plan_terminal_disposition_pending"):
+            write_terminal_plan(session, closed, ())
+        disposition = journal.factory.create(
+            normalized_kind="signal_disposition",
+            occurred_at_ns=closed.terminal_at_ns,
+            observed_at_ns=closed.terminal_at_ns,
+            signal_id=plan.entry_id,
+            summary={"disposition": "market_unavailable"},
+        )
+        assert journal.offer(disposition)
+        dependencies = journal.terminal_dependencies(closed)
+        assert [row.value.event_id for row in dependencies] == [disposition.event_id]
+        write_terminal_plan(session, closed, dependencies)
+        assert TradePlan.model_validate(repo.trade_plan(plan.entry_id)) == closed
+        assert repo.execution_result(entry_id=plan.entry_id)["fill_quantity"] is None

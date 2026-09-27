@@ -157,17 +157,20 @@ docker compose exec -T nautilus tracefold trading issue '/pause maintenance' \
 
 `/pause` 不平仓；`/flatten account` 是 reduce-only 平仓并暂停的请求，必须继续核实 venue 结果；`/halt` 在本次 Runtime 生命周期内具有粘性，不能假设 `/resume` 可清除。新 account slot 也不天然代表 paused。
 
-### 原生执行历史核验
+### #719 一次性执行基线硬切
 
-仅在持有相应凭据的 Runtime 环境，对精确历史 Plan 执行：
+切换前保存脱敏 ARK/INJ 取证与可恢复备份，记录部署 SHA、账户槽位、环境及 Binance 当前仓位、普通单、Algo 单和在途请求。暂停新经济指令并按明确现场授权处理真实敞口；PG 的 closed 不证明场所已平。停旧 Runtime、会重投执行输入的生产者及其他 writer，复核场所后升级匹配的镜像和 schema。
+
+审查 [一次性 SQL](../scripts/issue719_execution_hard_cut.sql) 的账户范围和影响行数，在停写、备份可用且场所风险已处置时才运行：
 
 ```bash
-# 签名外部读取：ENVIRONMENT 替换为该连接实际 LIVE / DEMO / TESTNET
-docker compose exec -T nautilus tracefold trading verify-execution \
-  --entry-id ENTRY_ID --account-slot ACCOUNT_SLOT --environment ENVIRONMENT
+: "${TRACEFOLD_POSTGRES_DSN:?set the reviewed target PostgreSQL DSN}"
+psql -X -d "$TRACEFOLD_POSTGRES_DSN" -v ON_ERROR_STOP=1 \
+  -v account_slot=binance_usdm_primary -v expected_connection=DEMO \
+  -f scripts/issue719_execution_hard_cut.sql
 ```
 
-默认预览；显式 `--apply` 才追加核实证据。核对账户、环境、父子订单与真实成交，不合成数量 / 价格，也不让最后一个平仓腿覆盖整笔退出原因。该操作不是新闻排障的常规步骤。
+SQL 只删除目标账户旧 Plan、执行观察、手动意图、最终入场核验及派生 Runtime 快照；已发布 Signal 保留为 Case 证据并全数退休，避免删除 Plan/处置后重新可执行。手动意图必须全部过期，脚本才允许删除，以免旧请求重试恢复可执行性。保留现有 pause/halt 与稳定 namespace。旧 RabbitMQ 投递或其他待发送工作必须在停写阶段清理并核对晚到消息；脚本不触及 broker。重启后核对当前外部风险、Cache、Plan 保护、PG 原生结果以及旧 Signal/命令未重放，再验收一笔新生命周期。未完成这些现场回执时不得宣称硬切已完成。
 
 <a id="deployment"></a>
 ## 6. 部署与独立 Runtime

@@ -15,7 +15,6 @@ Nautilus 是当前系统唯一的账户执行进程。它消费严格作用域�
 | [journal.py](../../tracefold/integrations/nautilus/oi_runtime/journal.py)、[observations.py](../../tracefold/integrations/nautilus/oi_runtime/observations.py) | 计划与可归属执行观察 |
 | [order_evidence.py](../../tracefold/integrations/nautilus/oi_runtime/order_evidence.py) | 订单身份、条件单父子关联及证据恢复 |
 | [trade_history.py](../../tracefold/integrations/nautilus/oi_runtime/trade_history.py)、[funding.py](../../tracefold/integrations/nautilus/oi_runtime/funding.py) | 原生成交与资金费率历史 |
-| [app/nautilus/history.py](../../tracefold/app/nautilus/history.py) | 有界历史核验与显式应用入口 |
 | [trading/stages.py](../../tracefold/trading/stages.py)、[app/execution_status.py](../../tracefold/app/execution_status.py) | 基于记录派生执行阶段与只读账户状态 |
 
 `oi_runtime` 是目录历史命名，不表示它只执行 OI，也不能证明存在另一套 Workers 内置交易引擎。当前没有进程内 Paper 撮合器；执行使用配置指定的 Binance `LIVE` / `DEMO` / `TESTNET` 连接。
@@ -104,7 +103,7 @@ Binance 条件单触发后，父级 Algo 订单与普通子订单可能使用不
 
 多个平仓执行腿可以有不同原因和价格。汇总结果不能只把最后一次回调当整笔退出原因。手续费、资金费率和成交覆盖分别记录；部分历史仍应显示不完整。
 
-`trading verify-execution` 用于有界签名历史核验，要求精确 entry、账户槽位和环境。默认预览，显式 `--apply` 才追加核实证据。它不是日常页面查询，也不能用另一个环境的历史去修补当前账户。
+Runtime 只核验当前风险和持久非终态 Plan 的精确订单。原生订单、成交、费用及绑定进入同一 PG 账本；一笔成交终结所需的待写依据与 Plan 终态在同一事务提交。查询缺少原生事实时保留未知，不回退普通 fill。
 
 ## 7. 操作意图不是操作结果
 

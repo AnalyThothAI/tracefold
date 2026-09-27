@@ -51,7 +51,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260927_0405"
+HEAD = "20260927_0406"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -258,6 +258,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260927_0405",
         "20260926_0404",
         "20260926_0403",
         "20260926_0402",
@@ -518,9 +519,13 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="news_revision_ownership_forward_only"):
+    with pytest.raises(RuntimeError, match="execution_hard_cut_retirement_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260927_0405")
+    with pytest.raises(RuntimeError, match="news_revision_ownership_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260927_0405"
     command.stamp(config, "20260926_0403")
     with pytest.raises(RuntimeError, match="native_fill_identity_forward_only"):
         command.downgrade(config, "base")

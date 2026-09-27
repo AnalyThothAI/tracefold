@@ -199,8 +199,6 @@ describe("TradingPage", () => {
             executions: [
               tradingExecutionRowFixture({
                 exit_reason: "take_profit",
-                original_exit_reason: "venue_unknown",
-                original_terminal_at_ns: 1790345174088448789,
                 position_closed_at_ns: 1790338365075000000,
                 result_evidence_source: "signed_native_trades",
                 result_verified_at_ns: 1790380800000000000,
@@ -219,9 +217,6 @@ describe("TradingPage", () => {
     expect(within(detail).getByText("退出原因").nextSibling).toHaveTextContent("止盈退出");
     expect(within(detail).getByText("结果来源").nextSibling).toHaveTextContent(
       "交易所原生成交已核验",
-    );
-    expect(within(detail).getByText("原始终结记录").nextSibling).toHaveTextContent(
-      "未观察到平仓过程",
     );
     expect(within(detail).getByText("实际退出时间").nextSibling?.textContent).not.toEqual(
       within(detail).getByText("核验时间").nextSibling?.textContent,

@@ -83,8 +83,6 @@ _STRATEGY_ID = "OI-RUNTIME"
 _CALLBACK_BATCH = 16
 _PUMP_INTERVAL_MS = 100
 _CONVERGE_INTERVAL_NS = int(CONTINUOUS_CHECK_SECONDS * 1_000_000_000)
-_RECOVERY_INITIAL_DELAY_NS = 5_000_000_000
-_RECOVERY_MAX_DELAY_NS = 60_000_000_000
 # The venue refusing a protective order because its trigger is already crossed (`-2021 Order would
 # immediately trigger`). The stop or take-profit condition is then already met, so the position is
 # closed at market under that leg's reason instead of retrying a trigger that can never rest.
@@ -149,13 +147,6 @@ class RuntimeView:
     venue_read_started_at_ns: int | None
     venue_read_completed_at_ns: int | None
     venue_read_failure: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class _RecoveryBackoff:
-    signature: tuple[str, Decimal, Decimal]
-    delay_ns: int
-    next_attempt_ns: int
 
 
 @dataclass(slots=True)
@@ -253,12 +244,12 @@ class OiNautilusStrategy(Strategy):
         self._awaiting_final: dict[str, RuntimeEntryRequest] = {}
         self._final_requested: set[str] = set()
         self._final_retry_at_ns: dict[str, int] = {}
-        # A persisted final check may have been followed by a venue submission before the
-        # previous process died. A missing cache order is not proof that submission failed.
+        # A committed manual entry can also have been submitted before a crash.
+        # Neither input type may infer non-submission from a cold Cache.
         self._submission_unknown: set[str] = {
             value.plan.entry_id
             for value in inputs.open_plans
-            if value.plan.status == "prepared" and value.signal is not None and value.final_check_started
+            if value.plan.status == "prepared" and (value.signal is None or value.final_check_started)
         }
         for value in inputs.open_plans:
             if value.plan.status == "prepared" and value.signal is not None and not value.final_check_started:
@@ -269,8 +260,6 @@ class OiNautilusStrategy(Strategy):
         self._converge_due_ns = 0
         self._convergence_checked_at_ns: int | None = None
         self._convergence_failure: str | None = None
-        self._recovery_requested_read_ns = 0
-        self._recovery_attempts: dict[str, _RecoveryBackoff] = {}
         self._day_start = day_start
         self._day_start_lock = Lock()
         # Venue truth (#680 PR-3). The latest successful read and the last failure's name; the read the
@@ -280,6 +269,7 @@ class OiNautilusStrategy(Strategy):
         self._venue: VenueReading | None = None
         self._venue_failure: str | None = None
         self._venue_judged_at_ns = 0
+        self._recovery_candidate_read_ns = 0
         self._venue_suspect: dict[str, str] = {}
         self._venue_mismatch: dict[str, str] = {}
         # When something last moved on an instrument, by this process's clock: a read that began before
@@ -929,6 +919,10 @@ class OiNautilusStrategy(Strategy):
         binding, leg = self._order_context(event.client_order_id, event.instrument_id)
         plan = None if binding is None else self._plans.get(binding.entry_id)
         reason = str(getattr(event, "reason", "") or "")
+        # Nautilus' local in-flight budget can emit UNKNOWN without a venue
+        # verdict. It cannot close a Plan or dispose a submitted input.
+        if reason.upper() == "UNKNOWN":
+            return
         self._observations.order(
             correlation=self._correlation(binding),
             client_order_id=event.client_order_id.value,
@@ -1155,7 +1149,12 @@ class OiNautilusStrategy(Strategy):
         own = [position for position in positions if position_claimed(position, plan, self.id)]
         unexpected.extend(f"ownership:{position.id.value}" for position in positions if position not in own)
         if plan.entry_id in self._submission_unknown:
-            if entry is None and not own:
+            local_unknown = (
+                entry is not None
+                and entry.status == OrderStatus.REJECTED
+                and str(getattr(entry.last_event, "reason", "")).upper() == "UNKNOWN"
+            )
+            if (entry is None or local_unknown) and not own:
                 unexpected.append(f"submission_unknown:{plan.entry_client_order_id}")
                 return
             self._submission_unknown.discard(plan.entry_id)
@@ -1164,8 +1163,7 @@ class OiNautilusStrategy(Strategy):
         if not own:
             if entry_working or (entry is not None and not entry.is_closed) or positions:
                 return
-            never_opened = plan.opened_at_ns is None and entry is not None and entry.filled_qty.as_decimal() == 0
-            if not never_opened and not self._venue_confirms_flat(instrument_id, now_ns):
+            if not self._venue_confirms_flat(instrument_id, now_ns):
                 # The Cache is flat and the venue has not said so: the plan and every order resting for
                 # it stay, and the instrument is named until a venue read settles it (#680 PR-3).
                 unexpected.append(f"unconfirmed_close:{instrument_id.value}")
@@ -1243,7 +1241,13 @@ class OiNautilusStrategy(Strategy):
         open or may have been, and its close happened where this Runtime could not see it.
         """
 
-        if plan.opened_at_ns is None and entry is not None and entry.filled_qty.as_decimal() == 0:
+        if (
+            plan.opened_at_ns is None
+            and entry is not None
+            and entry.filled_qty.as_decimal() == 0
+            and entry.status in {OrderStatus.REJECTED, OrderStatus.DENIED, OrderStatus.CANCELED, OrderStatus.EXPIRED}
+            and str(getattr(entry.last_event, "reason", "") or "").upper() != "UNKNOWN"
+        ):
             reason = str(getattr(entry.last_event, "reason", "") or "")
             refused = entry.status in {OrderStatus.REJECTED, OrderStatus.DENIED}
             self._close_plan(plan, "not_submitted", terminal_at_ns=now_ns, now_ns=now_ns)
@@ -1253,9 +1257,9 @@ class OiNautilusStrategy(Strategy):
                 {"venue_reason": bounded_text(reason)} if reason else {},
             )
             return
-        traded = plan.opened_at_ns is not None or (entry is not None and entry.filled_qty.as_decimal() > 0)
-        self._close_plan(plan, "venue_unknown", terminal_at_ns=now_ns, now_ns=now_ns)
-        self._dispose_owed(plan, "accepted" if traded else "entry_outcome_unknown")
+        # A flat read says nothing about an older, possibly submitted order's
+        # result. The adapter's exact native recovery must settle that identity.
+        self._submission_unknown.add(plan.entry_id)
 
     def _ensure_protection(self, plan: TradePlan, position: Any, orders: list[Any], now_ns: int) -> None:
         closing_side = OrderSide.SELL if position.is_long else OrderSide.BUY
@@ -1413,57 +1417,6 @@ class OiNautilusStrategy(Strategy):
             self._venue = reading
             self._converge_due_ns = 0
 
-    def take_recovery_request(self, now_ns: int) -> int | None:
-        """Retry fresh, attributable discrepancies with bounded delay in this generation."""
-
-        reading = self._fresh_venue(now_ns)
-        if (
-            self._stopped
-            or reading is None
-            or self._venue_failure is not None
-            or self._convergence_failure is not None
-            or self._convergence_checked_at_ns is None
-            or reading.completed_at_ns <= self._recovery_requested_read_ns
-        ):
-            return None
-        # Oldest attempted instrument first: a busy first symbol must not
-        # consume every account-wide single-flight recovery opportunity.
-        for symbol in sorted(
-            self._venue_mismatch,
-            key=lambda symbol: (
-                self._recovery_attempts[symbol].next_attempt_ns - self._recovery_attempts[symbol].delay_ns
-                if symbol in self._recovery_attempts
-                else 0
-            ),
-        ):
-            instrument_id = self._venue_instruments().get(symbol)
-            if instrument_id is None:
-                continue
-            candidates = [plan for plan in self._plans.values() if plan.instrument_id == instrument_id.value]
-            if len(candidates) != 1:
-                continue
-            venue_quantity = reading.quantity(symbol)
-            if venue_quantity and (
-                (venue_quantity > 0 and candidates[0].direction != "long")
-                or (venue_quantity < 0 and candidates[0].direction != "short")
-            ):
-                continue
-            cached_positions = self.cache.positions_open(instrument_id=instrument_id)
-            if any(not position_claimed(position, candidates[0], self.id) for position in cached_positions):
-                continue
-            cache_quantity = sum(position.signed_decimal_qty() for position in cached_positions)
-            signature = (candidates[0].entry_id, venue_quantity, cache_quantity)
-            previous = self._recovery_attempts.get(symbol)
-            delay_ns = _RECOVERY_INITIAL_DELAY_NS
-            if previous is not None and previous.signature == signature:
-                if now_ns < previous.next_attempt_ns:
-                    continue
-                delay_ns = min(previous.delay_ns * 2, _RECOVERY_MAX_DELAY_NS)
-            self._recovery_attempts[symbol] = _RecoveryBackoff(signature, delay_ns, now_ns + delay_ns)
-            self._recovery_requested_read_ns = reading.completed_at_ns
-            return reading.completed_at_ns
-        return None
-
     def _touch(self, instrument_id: InstrumentId) -> None:
         self._activity_ns[instrument_id] = self._now_ns()
 
@@ -1482,6 +1435,46 @@ class OiNautilusStrategy(Strategy):
         """Entries need a fresh venue read that agreed with the Cache on every instrument."""
 
         return self._venue_reads and (self._fresh_venue(now_ns) is None or bool(self._venue_suspect))
+
+    def recovery_candidates(self, now_ns: int) -> tuple[tuple[str, str], ...]:
+        """Name only persisted, uniquely owned orders behind a confirmed venue mismatch.
+
+        The adapter owns reads and retries. A mismatch by itself cannot establish
+        ownership of an unrelated venue position or an unsubmitted order.
+        """
+
+        reading = self._fresh_venue(now_ns)
+        if reading is None or reading.completed_at_ns <= self._recovery_candidate_read_ns:
+            return ()
+        self._recovery_candidate_read_ns = reading.completed_at_ns
+        candidates: set[tuple[str, str]] = set()
+        for symbol in self._venue_mismatch:
+            plans = [
+                plan
+                for plan in self._plans.values()
+                if self._venue_symbol(InstrumentId.from_str(plan.instrument_id)) == symbol
+            ]
+            if len(plans) != 1:
+                continue
+            plan = plans[0]
+            venue_quantity = reading.quantity(symbol)
+            if venue_quantity and (venue_quantity > 0) != (plan.direction == "long"):
+                continue
+            instrument_id = InstrumentId.from_str(plan.instrument_id)
+            claimed = any(
+                position_claimed(position, plan, self.id)
+                for position in self.cache.positions_open(instrument_id=instrument_id)
+            )
+            if not claimed and not venue_quantity:
+                continue
+            candidates.add((symbol, plan.entry_client_order_id))
+            for binding in self._order_bindings.values():
+                if binding.entry_id != plan.entry_id or binding.leg == "entry":
+                    continue
+                order = self.cache.order(ClientOrderId(binding.client_order_id))
+                if order is not None and order.strategy_id == self.id and order.account_id == self._profile.account_id:
+                    candidates.add((symbol, binding.client_order_id))
+        return tuple(sorted(candidates))
 
     def _venue_confirms_flat(self, instrument_id: InstrumentId, now_ns: int) -> bool:
         """Does the venue itself say this instrument holds nothing, as of after its last activity?
@@ -1539,9 +1532,6 @@ class OiNautilusStrategy(Strategy):
             else:
                 suspects[symbol] = finding
         self._venue_suspect = suspects
-        self._recovery_attempts = {
-            symbol: attempt for symbol, attempt in self._recovery_attempts.items() if symbol in self._venue_mismatch
-        }
 
     def _venue_symbol(self, instrument_id: InstrumentId) -> str:
         """The venue's spelling of an instrument (`APTUSDT` for `APTUSDT-PERP.BINANCE`)."""

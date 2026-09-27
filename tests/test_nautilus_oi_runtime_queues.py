@@ -14,6 +14,7 @@ from tracefold.integrations.nautilus.oi_runtime.journal import (
     day_start_baseline_from_observation,
 )
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
+from tracefold.trading.native_fills import NativeFill
 
 
 def _client(**bounds: int) -> ExecutionSignalClient:
@@ -114,6 +115,34 @@ def test_the_journal_is_fifo_deduplicates_an_identical_offer_and_refuses_past_it
     assert journal.offer(second)
     assert not journal.offer(third)
     assert [row.value for row in journal.due(0.0)] == [first, second]
+
+
+def test_a_full_journal_keeps_native_evidence_and_the_input_disposition() -> None:
+    journal = ExecutionJournal(factory=_factory(), max_rows=1)
+    assert journal.offer(_observation(1))
+    [native] = NativeFill(
+        account_slot=oi_profile().account_slot,
+        environment="DEMO",
+        instrument="ARKUSDT",
+        trade_id="92447752",
+        order_id="239721655",
+        side="BUY",
+        quantity=Decimal("24"),
+        price=Decimal("0.2867"),
+        occurred_at_ns=NOW_NS + 2,
+    ).observation(execution_strategy="oi_nautilus_v1", observed_at_ns=NOW_NS + 2)
+    disposition = _factory().create(
+        normalized_kind="signal_disposition",
+        occurred_at_ns=NOW_NS + 3,
+        observed_at_ns=NOW_NS + 3,
+        signal_id="1" * 64,
+        summary={"disposition": "venue_rejected"},
+        event_identity="disposition-1",
+    )
+
+    assert journal.offer(native)
+    assert journal.offer(disposition)
+    assert [row.value for row in journal.due(0.0)] == [_observation(1), native, disposition]
 
 
 def test_a_failing_row_waits_out_its_backoff_while_every_row_behind_it_keeps_flowing() -> None:

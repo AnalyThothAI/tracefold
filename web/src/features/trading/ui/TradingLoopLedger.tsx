@@ -210,16 +210,6 @@ function ExecutionDetail({
                 <dt>核验时间</dt>
                 <dd>{nsClock(row.result_verified_at_ns)}</dd>
               </div>
-              <div>
-                <dt>原始终结记录</dt>
-                <dd>
-                  {EXIT_REASON_ZH[row.original_exit_reason ?? ""] ??
-                    row.original_exit_reason ??
-                    "未记录"}
-                  {" · "}
-                  {nsClock(row.original_terminal_at_ns)}
-                </dd>
-              </div>
             </>
           ) : null}
         </dl>

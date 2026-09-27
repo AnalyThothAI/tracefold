@@ -1,21 +1,8 @@
-"""The execution runtime asserts the schema direction before it becomes the account-slot owner.
+"""The hard-cut execution image requires an exact schema before owning the account slot.
 
-#537 PR-2 took the `migrate: service_completed_successfully` edge off the `nautilus` service so that
-a News broker outage, or a one-shot migration container that has not been rerun since the last boot,
-can never be what keeps the process holding a live Binance position from coming back. The
-replacement reads `alembic_version`, which proves what the database is rather than that some
-migration ran during this boot.
-
-Head *equality* then proved one revision too much (#598 D5-c). The application and the runtime are
-deployed separately on purpose -- `make up` migrates, `make runtime-up` does not -- so the ordinary
-release order leaves the live database ahead of a runtime image that reads it perfectly well, and
-the equality check turned that into a refusal to restart the process holding an open position. What
-the runtime cannot survive is the other direction, a database missing migrations this build was
-compiled against, so ancestry of the code head is what these tests pin.
-
-What a refusal must cost is the rest of the point. An image that cannot read the schema takes no
-advisory lock and constructs no `TradingNode`: taking the lock would lock a healthy image out of
-its own account slot, and building the node would open credentials against a schema it cannot read.
+A mismatch, whether older or unrecognized newer, stops before the account lock and
+before construction of the Binance node. Deployment must switch the matching
+schema and image together after execution writers are stopped.
 """
 
 from __future__ import annotations
@@ -104,35 +91,18 @@ def test_a_database_behind_this_image_stops_the_runtime_before_it_takes_the_acco
     assert conn.statements[:2] == ["SELECT 1 AS ok", "SELECT version_num FROM alembic_version LIMIT 1"]
 
 
-def test_a_database_ahead_of_this_image_lets_the_runtime_start(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The forward-migrated database a normal release produces, which the equality check refused.
-
-    `make up` applies the new revisions; the runtime keeps running its own image until an operator
-    chooses `make runtime-up`. Restarting that image -- the one holding the open position -- must
-    not be the thing the check stops. A revision this image has never heard of can only have been
-    written by a newer deploy, so it is ahead, and the runtime proceeds past the probe.
-    """
-
+def test_a_database_ahead_of_this_image_is_refused_before_the_account_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _arrange(monkeypatch, migration_version="29991231_9999")
+    with pytest.raises(RuntimeError, match="oi_runtime_schema_head_mismatch"):
+        nautilus_root.run_nautilus(_paper_settings())
+    assert not any("pg_try_advisory_lock" in statement for statement in conn.statements)
 
-    # Past the schema probe, `run_nautilus` goes on to the account-slot lock, which this connection
-    # deliberately cannot serve. Reaching that statement at all is the proof the probe let it by.
+
+def test_an_exact_schema_reaches_the_account_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _arrange(monkeypatch, migration_version=latest_migration_version())
     with pytest.raises(AssertionError, match="unexpected statement before the schema head was proven"):
         nautilus_root.run_nautilus(_paper_settings())
-
-    assert conn.statements[:2] == ["SELECT 1 AS ok", "SELECT version_num FROM alembic_version LIMIT 1"]
     assert any("pg_try_advisory_lock" in statement for statement in conn.statements)
-
-
-def test_the_direction_test_is_ancestry_and_not_string_inequality() -> None:
-    head = latest_migration_version()
-
-    assert nautilus_root._database_precedes_image(None, image_head=head) is True
-    assert nautilus_root._database_precedes_image("", image_head=head) is True
-    assert nautilus_root._database_precedes_image(head, image_head=head) is False
-    assert nautilus_root._database_precedes_image(_revision_this_image_has_already_passed(), image_head=head) is True
-    # Not in this image's history at all: a newer deploy wrote it, so it is ahead.
-    assert nautilus_root._database_precedes_image("29991231_9999", image_head=head) is False
 
 
 def test_an_unmigrated_database_is_a_head_mismatch_not_a_silent_start(

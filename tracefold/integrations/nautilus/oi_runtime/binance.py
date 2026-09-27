@@ -71,6 +71,7 @@ _POSITION_READ_RECV_WINDOW_MS = "60000"
 
 @dataclass(slots=True)
 class _OrderRecovery:
+    request: OrderEvidenceRequest
     next_attempt: float = 0
     delay: float = 5
     task: asyncio.Task[None] | None = None
@@ -91,7 +92,12 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
         self._recovery_symbols = set(recovery_symbols)
         self._evidence_sink = evidence_sink
         self._binding_lookup = binding_lookup
-        self._order_recovery: dict[OrderEvidenceRequest, _OrderRecovery] = {}
+        # The venue ID can appear after the first read; it must not create a
+        # second retry stream for the same logical order.
+        self._order_recovery: dict[tuple[str, str], _OrderRecovery] = {}
+        self._pending_ledger: dict[tuple[str, str], BinanceOrderEvidence | BinanceTradeHistory] = {}
+        self._recovery_attempted_at_ns: int | None = None
+        self._recovery_result: str | None = None
         self._evidence_reads: dict[tuple[str, str], asyncio.Task[BinanceOrderEvidence]] = {}
         self._evidence_slots = asyncio.Semaphore(2)
 
@@ -141,33 +147,77 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
         self._record_native_evidence(evidence)
         return evidence
 
-    def _record_native_evidence(self, evidence: BinanceOrderEvidence | BinanceTradeHistory) -> None:
-        if self._evidence_sink is not None and not self._evidence_sink(evidence):
-            self._log.error("native_execution_evidence_not_queued: durable history recovery remains pending")
+    def _record_native_evidence(self, evidence: BinanceOrderEvidence | BinanceTradeHistory) -> bool:
+        if self._evidence_sink is None:
+            return True
+        key = (
+            (evidence.request.symbol, evidence.request.client_order_id)
+            if isinstance(evidence, BinanceOrderEvidence)
+            else (evidence.symbol, f"history:{evidence.order_id}:{id(evidence)}")
+        )
+        if not self._evidence_sink(evidence):
+            self._pending_ledger[key] = evidence
+            self._log.error("native_execution_evidence_not_queued: ledger work remains pending")
+            return False
+        self._pending_ledger.pop(key, None)
+        return True
+
+    def wake_order_recovery(self) -> None:
+        """Stateless root heartbeat; this adapter alone owns retries and backoff."""
+        for key, evidence in tuple(self._pending_ledger.items()):
+            if self._evidence_sink is not None and self._evidence_sink(evidence):
+                self._pending_ledger.pop(key, None)
+        for order in self._cache.orders_inflight():
+            if order.account_id == self.account_id:
+                self._schedule_order_recovery(self._request_for_order(order))
+        for recovery in tuple(self._order_recovery.values()):
+            self._schedule_order_recovery(recovery.request)
+
+    def seed_order_recovery(self, request: OrderEvidenceRequest) -> None:
+        """Register one persisted submitted entry without assuming it exists in Cache."""
+        self._schedule_order_recovery(request)
+
+    def recovery_diagnostics(self) -> tuple[int | None, str | None]:
+        return self._recovery_attempted_at_ns, self._recovery_result
 
     def _schedule_order_recovery(self, request: OrderEvidenceRequest) -> None:
         # Duplicate WS/open-list observations do not refresh the retry budget.
         # The native client owns task cancellation when its generation stops.
         if request.conditional_type is not None:
             request = replace(request, parent_algo_id=None, venue_order_id=None)
-        recovery = self._order_recovery.get(request)
+        key = (request.symbol, request.client_order_id)
+        recovery = self._order_recovery.get(key)
         if recovery is None:
             if len(self._order_recovery) >= 64:
                 self._log.error("Native order recovery scope budget exhausted")
                 return
-            recovery = self._order_recovery[request] = _OrderRecovery()
+            recovery = self._order_recovery[key] = _OrderRecovery(request=request)
+        elif request.venue_order_id is not None or request.parent_algo_id is not None:
+            recovery.request = request
         if recovery.task is not None and not recovery.task.done():
             return
         if self._loop.time() < recovery.next_attempt:
             return
         recovery.next_attempt = self._loop.time() + recovery.delay
         recovery.delay = min(60, recovery.delay * 2)
-        recovery.task = self.create_task(self._recover_native_order(request))
+        self._recovery_attempted_at_ns = self._clock.timestamp_ns()
+        self._recovery_result = "running"
+        recovery.task = self.create_task(self._recover_native_order(key))
 
-    async def _recover_native_order(self, request: OrderEvidenceRequest) -> None:
-        evidence = await self._read_order_evidence(request)
-        if await self._apply_order_evidence(evidence):
-            self._order_recovery.pop(request, None)
+    async def _recover_native_order(self, key: tuple[str, str]) -> None:
+        try:
+            evidence = await self._read_order_evidence(self._order_recovery[key].request)
+            applied = await self._apply_order_evidence(evidence)
+            if applied:
+                self._order_recovery.pop(key, None)
+                self._recovery_result = "pending_ledger" if key in self._pending_ledger else "succeeded"
+            else:
+                self._recovery_result = "pending"
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            self._recovery_result = f"failed_{type(exc).__name__}"
+            self._log.error(f"Native order recovery deferred {key}: {type(exc).__name__}")
 
     async def _apply_order_evidence(self, evidence: BinanceOrderEvidence) -> bool:
         request = evidence.request
@@ -195,10 +245,11 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
             return False
         order = self._cache.order(ClientOrderId(request.client_order_id))
         if (
-            order.venue_order_id != VenueOrderId(str(evidence.order.orderId))
+            (order.venue_order_id is not None and order.venue_order_id != VenueOrderId(str(evidence.order.orderId)))
             or order.account_id != self.account_id
             or order.instrument_id != self._get_cached_instrument_id(evidence.order.symbol)
             or order.side.name != evidence.order.side.value
+            or order.quantity.as_decimal() != Decimal(evidence.order.origQty)
         ):
             raise ValueError("binance_order_application_identity_conflict")
         applied = sum(
@@ -224,7 +275,13 @@ class OiBinanceFuturesExecutionClient(BinanceFuturesExecutionClient):
         status.add_fill_reports([self._native_fill_report(trade) for trade in evidence.history.trades])
         self._send_mass_status_report(status)
         deadline = self._loop.time() + 2
-        while order.filled_qty.as_decimal() != Decimal(evidence.order.executedQty):
+        expected_ids = {str(trade.id) for trade in evidence.history.trades}
+        expected_venue = VenueOrderId(str(evidence.order.orderId))
+        while (
+            order.venue_order_id != expected_venue
+            or {identity.value for identity in order.trade_ids} != expected_ids
+            or order.filled_qty.as_decimal() != Decimal(evidence.order.executedQty)
+        ):
             if self._loop.time() >= deadline:
                 return False
             await asyncio.sleep(0.01)
@@ -565,6 +622,7 @@ class OiBinanceExecClientFactory(LiveExecClientFactory):
     recovery_symbols: frozenset[str] = frozenset()
     evidence_sink: Callable[[BinanceOrderEvidence | BinanceTradeHistory], bool] | None = None
     binding_lookup: Callable[[str], PlanOrderBinding | None] | None = None
+    on_client_created: Callable[[OiBinanceFuturesExecutionClient], None] | None = None
 
     @classmethod
     def with_evidence_sink(
@@ -573,6 +631,7 @@ class OiBinanceExecClientFactory(LiveExecClientFactory):
         symbols: frozenset[str],
         sink: Callable[[BinanceOrderEvidence | BinanceTradeHistory], bool],
         binding_lookup: Callable[[str], PlanOrderBinding | None],
+        on_client_created: Callable[[OiBinanceFuturesExecutionClient], None] | None = None,
     ) -> type[OiBinanceExecClientFactory]:
         return type(
             "OiBinanceRuntimeExecClientFactory",
@@ -581,6 +640,7 @@ class OiBinanceExecClientFactory(LiveExecClientFactory):
                 "recovery_symbols": symbols,
                 "evidence_sink": staticmethod(sink),
                 "binding_lookup": staticmethod(binding_lookup),
+                "on_client_created": staticmethod(on_client_created),
             },
         )
 
@@ -619,7 +679,7 @@ class OiBinanceExecClientFactory(LiveExecClientFactory):
             config=config.instrument_provider,
             venue=config.venue,
         )
-        return OiBinanceFuturesExecutionClient(
+        execution_client = OiBinanceFuturesExecutionClient(
             loop=loop,
             client=client,
             msgbus=msgbus,
@@ -638,6 +698,9 @@ class OiBinanceExecClientFactory(LiveExecClientFactory):
             evidence_sink=cls.evidence_sink,
             binding_lookup=cls.binding_lookup,
         )
+        if cls.on_client_created is not None:
+            cls.on_client_created(execution_client)
+        return execution_client
 
 
 class BinanceVenuePositions:

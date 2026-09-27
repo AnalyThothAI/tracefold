@@ -458,6 +458,19 @@ def test_restart_after_final_check_keeps_unknown_submission_open_without_resendi
     assert runtime.strategy.runtime_view(runtime.clock.timestamp_ns()).unexpected_exposure is True
 
 
+def test_manual_restart_keeps_a_committed_unknown_submission_open() -> None:
+    plan = open_plan(opened_at_ns=None).model_copy(update={"source": "manual", "case_id": None})
+    runtime = unit_runtime(open_plans=(OpenPlan(plan, disposition_pending=True),), venue_reads=True)
+    runtime.venue({})
+    runtime.advance(120 * SECOND_NS)
+    runtime.pump()
+
+    assert runtime.strategy.submitted == []
+    assert runtime.plans() == []
+    assert runtime.dispositions() == []
+    assert runtime.strategy.runtime_view(runtime.clock.timestamp_ns()).unexpected_exposure
+
+
 def test_a_restart_that_finds_the_stop_missing_places_it_again_and_touches_nothing_else() -> None:
     plan = open_plan()
 
@@ -695,6 +708,26 @@ def test_a_venue_rejection_ends_the_plan_with_the_venues_words() -> None:
     assert runtime.dispositions() == [{"disposition": "venue_rejected", "venue_reason": reason}]
     [order] = runtime.observations("order")
     assert (order.summary["leg"], order.summary["status"], order.summary["reason"]) == ("entry", "rejected", reason)
+
+
+def test_local_unknown_rejection_does_not_end_a_submitted_plan_after_ttl() -> None:
+    plan = open_plan(opened_at_ns=None)
+    runtime = unit_runtime(open_plans=(OpenPlan(plan, disposition_pending=True),), venue_reads=True)
+    entry = runtime.strategy.order_factory.market(
+        instrument_id=INSTRUMENT.id,
+        order_side=OrderSide.BUY,
+        quantity=INSTRUMENT.make_qty(plan.entry_quantity),
+        client_order_id=ClientOrderId(plan.entry_client_order_id),
+    )
+    runtime.cache.add_order(entry)
+    runtime.strategy.on_order_rejected(_rejected(entry, "UNKNOWN"))
+    runtime.venue({})
+    runtime.advance(120 * SECOND_NS)
+    runtime.pump()
+
+    assert runtime.plans() == []
+    assert runtime.dispositions() == []
+    assert not [row for row in runtime.observations("order") if row.summary.get("status") == "rejected"]
 
 
 def test_a_stop_the_venue_says_would_trigger_immediately_closes_the_position_as_a_stop() -> None:
