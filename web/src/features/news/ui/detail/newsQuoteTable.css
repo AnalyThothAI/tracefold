@@ -57,6 +57,22 @@
     font-weight: 700;
   }
 
+  .news-quote-table[data-compact] .news-quote-table-head,
+  .news-quote-table[data-compact] .news-quote-table-row {
+    grid-template-columns: minmax(0, 1fr) 76px 54px;
+    gap: 5px;
+    padding: 8px;
+  }
+
+  .news-quote-table[data-compact] .news-quote-table-row code {
+    display: grid;
+    gap: 1px;
+  }
+
+  .news-quote-table[data-compact] .news-quote-table-row code span {
+    font-size: var(--font-size-eyebrow);
+  }
+
   .news-quote-table-note {
     margin: 0;
     padding: 7px 12px 8px;

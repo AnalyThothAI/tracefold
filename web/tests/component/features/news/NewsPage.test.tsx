@@ -1060,23 +1060,27 @@ describe("NewsPage", () => {
 
     // The headline a reader actually received, not a verdict's and not the wire title.
     await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" });
+    expect(screen.getByText(/通知：通知 · 有命题未被已送达内容覆盖/)).toBeVisible();
     expect(screen.queryByRole("region", { name: "旧版判定" })).toBeNull();
     expect(screen.queryByRole("region", { name: "本次判断的证据" })).toBeNull();
     expect(screen.getByText("关税")).toBeInTheDocument();
 
     const changes = screen.getByRole("region", { name: "新增了什么" });
-    expect(within(changes).getByText("参数变化")).toBeInTheDocument();
-    expect(
-      within(changes).getByText("Agency raises the steel import tariff to 50%."),
-    ).toBeVisible();
-    expect(within(changes).getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
-
-    const claims = screen.getByRole("region", { name: "命题" });
+    const claims = within(changes).getByRole("region", { name: "命题" });
     const items = within(claims).getAllByRole("listitem");
     expect(items).toHaveLength(2);
+    expect(
+      within(items[1].querySelector(".news-update-badges")!).getByText("参数变化"),
+    ).toBeVisible();
+    expect(items[1].querySelector(".news-update-statement")).toHaveTextContent(
+      "Agency raises the steel import tariff to 50%.",
+    );
+    fireEvent.click(within(items[1]).getByText("历史比较 1 项"));
+    expect(within(items[1]).getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
     expect(within(items[0]).getByText("来源分歧")).toBeInTheDocument();
     expect(within(items[0]).getByText("决定")).toBeInTheDocument();
     expect(within(items[0]).getByText("已宣布")).toBeInTheDocument();
+    fireEvent.click(within(items[0]).getByText("结构化字段"));
     expect(within(items[0]).getByText("2026-10-01")).toBeInTheDocument();
     expect(within(items[0]).getByText("unless a deal is signed")).toBeInTheDocument();
     expect(within(items[0]).getByText("rate 25%")).toBeInTheDocument();
@@ -1091,7 +1095,8 @@ describe("NewsPage", () => {
     expect(within(inference).getByText("Has the order been signed?")).toBeInTheDocument();
 
     const processing = screen.getByRole("region", { name: "处理状态" });
-    expect(within(processing).getByText("已完成")).toBeInTheDocument();
+    expect(within(processing).getByText("语义处理：已完成")).toBeVisible();
+    fireEvent.click(within(processing).getByText("查看逐条决定和处理详情"));
     expect(within(processing).getByText("通知 · 有命题未被已送达内容覆盖")).toBeInTheDocument();
     expect(within(processing).getByText("已送达内容已覆盖")).toBeInTheDocument();
     expect(within(processing).getByText("【重点】钢铁进口关税上调至 50%")).toBeInTheDocument();
@@ -1127,9 +1132,13 @@ describe("NewsPage", () => {
     );
 
     const changes = await screen.findByRole("region", { name: "新增了什么" });
-    expect(within(changes).getAllByRole("listitem")).toHaveLength(1);
-    expect(within(changes).getAllByText(first.current_statement)).toHaveLength(1);
-    expect(within(changes).getByText("与此前 3 条命题的比较")).toBeVisible();
+    expect(within(changes).getAllByRole("listitem")).toHaveLength(2);
+    expect(
+      [...changes.querySelectorAll(".news-update-statement")].filter(
+        (statement) => statement.textContent === first.current_statement,
+      ),
+    ).toHaveLength(1);
+    fireEvent.click(within(changes).getByText("历史比较 3 项"));
     for (const statement of [
       "Agency announces 25% tariff on steel imports.",
       "Agency first proposed a steel tariff.",
