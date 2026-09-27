@@ -71,12 +71,16 @@ def test_serve_pool_uses_the_shared_login_with_stable_read_only_attribution() ->
             identity = conn.execute(
                 "SELECT current_user AS role_name, "
                 "current_setting('application_name') AS application_name, "
-                "current_setting('default_transaction_read_only') AS read_only"
+                "current_setting('default_transaction_read_only') AS read_only, "
+                "current_setting('statement_timeout') AS statement_timeout, "
+                "current_setting('lock_timeout') AS lock_timeout"
             ).fetchone()
             assert identity == {
                 "role_name": "tracefold",
                 "application_name": "tracefold_serve",
                 "read_only": "on",
+                "statement_timeout": "2s",
+                "lock_timeout": "250ms",
             }
             with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
                 conn.execute(
@@ -97,5 +101,24 @@ def test_serve_pool_is_fully_warm_when_startup_returns() -> None:
         assert stats["pool_max"] == 7
         assert stats["pool_size"] == 7
         assert stats["pool_available"] == 7
+    finally:
+        asyncio.run(database.aclose())
+
+
+def test_serve_allows_reads_over_one_second_but_still_cancels_over_budget() -> None:
+    database = ServeDatabase.create(
+        Settings(storage=postgres_settings_storage()),
+        telemetry=TelemetryRegistry(),
+    )
+    try:
+        with database.api_pool.connection() as conn:
+            conn.execute("SELECT pg_sleep(1.1)")
+        with (
+            pytest.raises(psycopg.errors.QueryCanceled, match="statement timeout"),
+            database.api_pool.connection() as conn,
+        ):
+            conn.execute("SELECT pg_sleep(3)")
+        with database.api_pool.connection() as conn:
+            assert conn.execute("SELECT 1 AS ok").fetchone() == {"ok": 1}
     finally:
         asyncio.run(database.aclose())

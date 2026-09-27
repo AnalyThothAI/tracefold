@@ -20,7 +20,8 @@ from tracefold.trading.storage.root import TradingRepository
 
 _SERVE_POOL_SIZE = 7  # 6 ordinary read permits + 1 control permit
 _SERVE_CHECKOUT_TIMEOUT_SECONDS = 0.250
-_SERVE_STATEMENT_TIMEOUT_SECONDS = 1.0
+# Full-history feed counts take about 0.8-1.3 s at 35k events; keep a bounded read budget.
+_SERVE_STATEMENT_TIMEOUT_SECONDS = 2.0
 _SERVE_SESSION_CONFIG = {
     "jit": "off",
     "max_parallel_workers_per_gather": "0",

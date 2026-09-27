@@ -125,9 +125,248 @@ docker compose exec -T workers tracefold news retry-work \
 docker compose exec -T workers tracefold news retry-work \
   --event EVENT_ID --kind notification --revision CONTENT_REVISION
 
-# Dead, unsent card only: both content revision and intent must match.
-docker compose exec -T workers tracefold news retry-work \
-  --event EVENT_ID --kind card --revision CONTENT_REVISION --intent INTENT_ID
+## Worker ownership
+
+`tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
+It wires one root `TaskGroup`; its due loops and dispositions are private
+implementation details. Configuration cannot invent workers, owners, resource
+lanes, or concurrency. An unknown child exception is a process failure, not an
+individual-worker degraded state. The typed recurring business-DB overrun
+below is the one resource-specific local recovery rule.
+
+```text
+tracefold serve
+  -> read-only pool max 7 (6 ordinary + 1 control) -> HTTP/static
+
+tracefold workers
+  -> one singleton advisory lock and runtime_id
+  -> one DB pool min 2 / max 8 / max_waiting 3
+     (1 singleton lock + 2 business + 4 News lane + 1 control)
+  -> one pinned singleton session / business DB executor 2 / News DB lane 4 /
+     control DB executor 1
+  -> finite external-operation executor 3
+  -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
+     and the News consumer tasks (news-receiver, news-recovery, news-deduper,
+     news-semantic, news-deliverer, news-janitor); the bounded polling loops
+     (news-instruments, and with venues enabled news-quotes, news-reactions);
+     workers-control
+```
+
+Quote plan/store and the wallet tape use ordinary
+business permits. Event Reaction and the Janitor keep the one-slot
+heavy-business gate over the same pool, so heavy work is serialized without
+blocking display quote progress or consuming the four News hot-path slots. The
+Quote provider calls are
+bounded to 12 mandatory current source groups (concurrency 4, 10 s deadline)
+plus at most two post-store Binance day reads; its 20 s cadence is start-based,
+non-overlapping, and does not catch up. Reactions remain bounded to 32 merged
+candle requests per 60 s turn with concurrency 4. None of these loops holds a
+database connection while calling out.
+
+Every News consumer turn is one short idempotent transaction; provider and
+model work happens with no database connection held. There is no generic
+scheduler, projection frontier, EDF coordinator, model arbiter, database wake
+plane, startup rebuild, phased load shifting, or configurable concurrency
+beyond `news.triage.concurrency`.
+
+The control child distinguishes the pinned singleton session from its pooled
+heartbeat write. Loss of the pinned advisory-lock session remains immediately
+fatal. A precise transient PostgreSQL admission, timeout, pool-checkout, or
+connection error from the idempotent heartbeat write is retried after 250 ms;
+after 15 seconds the stale heartbeat makes readiness false without killing the
+root, and recovery restores readiness. Invariant failures and an unfinished
+native control future remain process-fatal. This retry does not apply to
+general control writes whose commit outcome could be ambiguous.
+
+Serve owns one read pool of seven with ordinary/control admission `6/1`,
+50 ms permit wait, 250 ms checkout, two-second statement timeout, JIT off,
+parallel gather off, and 8 MiB work memory. The statement budget accommodates
+full-history feed counts measured at about 0.8–1.3 seconds over 35k events;
+it does not change request admission or Workers budgets. Connections and ordinary requests
+default to read-only. The sole authenticated Trading Command POST opens a
+semaphore-bounded short-lived write connection outside that pool; every other
+HTTP route remains read-only. `tracefold news review submit` opens a short-lived connection under the
+same `tracefold` login and uses one ordinary short transaction. Database
+append-only triggers and business constraints—not an internal role ACL—protect
+the review facts. Workers owns the exact pool/lane topology
+above. Finite provider/filesystem operations share the three-slot
+external capability; the OpenNews WSS socket remains a long-lived async root
+child outside it. Only the owning source seam may map an outer
+finite-operation overrun into its existing durable failure policy. A typed
+recurring business-DB overrun remains local to its natural loop; its occupied
+permit remains bound to the native future and the loop retries on its normal
+cadence. Control-DB, model, cleanup, and unclassified overruns remain
+process-fatal. Classification uses the typed physical capability carried by
+the exception, never an operation-name or error-string prefix. A caller timeout
+never releases a resource permit before the underlying future actually
+completes; three stuck source futures therefore exhaust the shared external
+capability even though the root heartbeat can remain healthy. Diagnose that
+state from the resource-active/admission metrics and domain status. If an
+underlying thread never returns, process exit is the only universal release
+authority.
+
+Each Worker DB session is exactly one bounded transaction. One transaction-local
+setup statement installs the application name, statement/transaction deadlines,
+JIT, parallel-gather, and work-memory policy for that transaction. PostgreSQL
+restores those settings when the transaction exits, so pooling needs no reset
+round trip. Every SQL statement and multi-statement repository operation is
+therefore covered by the native database deadline; the async caller adds only a
+bounded completion grace. An unfinished recurring business future is reported
+to its loop as the typed local overrun above; every other unfinished capability
+keeps the fatal policy. The default transaction deadline is the statement
+deadline plus five seconds so a native statement cancellation has the same
+bounded cleanup allowance as the Worker future; explicit per-operation
+transaction deadlines remain authoritative.
+
+The measured transaction is the true outer scope: setup, the capability-limited
+callback, and commit or rollback produce one duration/outcome observation.
+Callbacks receive only their News/Price/Instrument/Trading repositories. They
+do not receive a raw connection and do not run provider I/O, Pydantic, hashing,
+canonicalization, compression, large Python work, or backoff while PostgreSQL
+is idle in transaction.
+
+News consumers use a dedicated four-slot News DB lane
+(`WorkerDatabase.run_news`: its own executor and gate, separate from the two
+business slots) for short idempotent transactions; each message is one
+transaction of a few milliseconds. `consume()` handles up to `prefetch`
+messages concurrently with a per-message ack, so `news.triage.concurrency`
+(default 4) is real concurrency and the only News concurrency knob;
+single-active queues use prefetch 1. When the News lane cannot admit a message
+the consumer raises `DeferError` and the message requeues uncounted through
+the retry lane. Delivery restart reconciliation likewise waits out a typed
+admission `DeferError` before claiming; statement overruns and unknown faults
+remain process-fatal.
+
+News has no projection lease: the broker's single-active-consumer and
+per-message ack are the fences on `news.raw` and `news.triage`, and on the
+delivery lane it is the row the claim holds with `FOR UPDATE SKIP LOCKED`,
+leased until its next due time (#598 D2).
+
+`/metrics` exposes low-cardinality worker transaction and shared capability
+resource signals. Use shared resource and PostgreSQL activity/lock evidence for
+diagnosis; CPU alone is not a root-cause claim.
+
+News Feed search adds
+`tracefold_news_search_requests_total{mode="asset|text",result="nonzero|zero"}`
+and `tracefold_news_search_duration_seconds{mode="asset|text"}`. They record
+successful first-page requests only; cursor pages are excluded, while repeated
+browser polling remains repeated operational load. These counters are not
+distinct user-search or user-session analytics. Labels never carry the raw
+query, symbol, resolved identity, route, or user-controlled text.
+
+News durable-event boundaries add the following bounded metrics. `stage`,
+`outcome`, `queue`, `reason_class`, `cause`, and `budget` are closed code-owned
+sets; Event/message/incident/Strategy IDs are log fields, never labels.
+
+```text
+tracefold_news_handoff_pending{stage}
+tracefold_news_handoff_oldest_age_seconds{stage}
+tracefold_news_handoff_repair_total{stage,outcome}
+tracefold_news_handoff_expired_total{stage}
+tracefold_news_rabbitmq_consumer_fatal_total{queue,reason_class}
+tracefold_news_rabbitmq_publish_failure_total{reason_class}
+tracefold_news_opennews_incident_open{provider,cause}
+tracefold_news_opennews_incident_oldest_age_seconds{provider,cause}
+tracefold_news_opennews_recovery_turn_total{outcome}
+tracefold_news_opennews_recovery_provider_calls_total
+tracefold_news_opennews_recovery_published_messages_total
+tracefold_news_opennews_recovery_budget_exhaustion_total{budget}
+```
+
+`handoff_expired_total` is a Gauge despite its compatibility name: expiry is a
+current marker-plus-age projection, not a durable transition that can be
+incremented once. Counting it on each Janitor scan would manufacture growth.
+The pending and expired gauges are each capped at 1,000 rows per stage; their
+partial-index scans are bounded even when retained expired audit facts grow.
+
+## Durable state and transaction rules
+
+- PostgreSQL facts/control rows plus the durable broker queues are the only
+  recovery sources.
+- Every News write is idempotent by key; the broker owns retry, buffering, and
+  the dead-letter lane.
+- Success writes the current model and acknowledges the exact message in one
+  application-owned transaction.
+- Provider/network/filesystem I/O occurs outside DB transactions.
+- Current rows use stable keys and skip unchanged payload writes.
+
+## First checks
+
+For missing or stale live data:
+
+1. run `uv run tracefold config`;
+2. check `/healthz` and `/readyz`;
+3. inspect authenticated `/api/status`, then `/api/news/status`;
+4. run `docker compose exec -T workers tracefold news bus-check` for per-queue depths;
+5. run `docker compose exec -T workers tracefold news why <event_id>` for one Event's whole chain;
+6. trace one stable target from fact -> Event row -> API.
+
+| Symptom | Inspect first |
+|---|---|
+| no API row | current key and publication state |
+| idle worker with expected work | durable target plus due/lease fields |
+| stale row after a run | fact watermark, payload hash, zero-write comparison |
+| growing queue | claim size, lease expiry, retry budget, terminal events |
+| repeated source failure | target error state and deterministic terminal policy |
+| readiness 503 | DB liveness and startup schema/composition |
+| status degraded, readiness 200 | expected runtime/product separation |
+
+The separate loopback Workers probe answers two questions, not one. `ok` is
+basic readiness: this process still owns PostgreSQL, its schema and its
+singleton session. `capabilities` is a separate object keyed by capability name
+-- `news_ingestion`, `news_editorial`, `news_delivery`, `news_instruments`,
+`news_quotes`, `news_reactions`, `market_notifications` -- each with a `state` of
+`running`, `faulted`, `unavailable` or `disabled` and the reason that put it
+there. The same object is persisted on `workers_runtime.capabilities` and
+republished on `/api/status` under `runtime.workers_runtime.capabilities`, and
+the console prints it as the **Workers 能力** card on 流水线状态 (`/news/status`),
+so an operator sees a stopped lane without opening the loopback probe
+(#553 PR-3). A stale runtime row publishes no report: a process that stopped
+answering is not evidence that its lanes are still running.
+
+An unexpected program error in one *optional* business task stops that task,
+records its capability `faulted` with the failure that stopped it, and leaves
+every other task running. Nothing restarts it: recovery is an operator restart
+after the fix, which is why a `faulted` capability is a page-worthy fact even
+while readiness stays 200. Analysis has its own process and its status is
+reported on `/api/trading/status`; Workers does not own its lifecycle. A push sender that cannot be constructed from the
+current configuration reports `news_delivery` `unavailable` with the
+configuration reason, the Deliverer settles those Events `delivery_unavailable`
+rather than presenting them as sent, and `/api/news/status` reports
+`delivery.delivery_available` false; correct the configuration and restart.
+
+News reception, admission and retention -- `news-receiver`, `news-recovery`,
+`news-deduper`, `news-janitor` -- are **not** optional. They are the information
+entry every other capability reads, so a program error there still fails the
+root and the container restart that has always healed it still happens, rather
+than becoming a permanent ingestion outage behind a 200 readiness.
+
+Shared foundation failures are unchanged and still fail the root: PostgreSQL
+unavailable, a schema that is not the code's head, a lost singleton session, an
+unfinished native control future, and a graceful deadline overrun. A PostgreSQL
+failure raised while a capability is being composed is also not confined: it
+says the database failed, not that one Program is wrong.
+
+A classified live broker incident or Recovery transient
+is recoverable work, not a crashed task: Workers readiness stays up while
+`/api/news/status` names the open incident or closed-pending recovery state as
+`reason=recovery_pending|recovery_transient`, retains the typed error code, and
+remains degraded.
+
+## Domain traces
+
+### Editorial News EventUpdate (#706)
+
+```text
+OpenNews -> RabbitMQ news.raw -> admission -> Item / Event / evidence revision
+           -> durable semantic work -> RabbitMQ news.triage
+           -> NewsAgent extraction + judgments -> adopted EventUpdate
+                  |                              |
+                  v                              v
+           public outbox                   notification work
+           -> App relay                    -> claim-level plan
+           -> Trading catalyst or          -> selected intent -> card -> sender
+              source amendment             -> exact receipt / ambiguous state
 ```
 
 These commands are writes. They refuse mismatched/nonfailed targets rather than
