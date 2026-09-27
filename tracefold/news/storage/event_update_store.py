@@ -293,11 +293,13 @@ class PgNewsStore:
             ),
         )
 
-    async def defer_notification(self, event_id: str, channel: str) -> None:
+    async def defer_notification(self, event_id: str, channel: str, expected_content_revision: str) -> None:
         now_ms = self.clock()
         await self.db.tx(
             "news_update_defer_notification",
-            lambda repos: repos.news.defer_notification_work(event_id=event_id, channel=channel, now_ms=now_ms),
+            lambda repos: repos.news.defer_notification_work(
+                event_id=event_id, channel=channel, expected_content_revision=expected_content_revision, now_ms=now_ms
+            ),
         )
 
     # ------------------------------------------------------------------ optional read

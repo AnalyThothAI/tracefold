@@ -896,6 +896,13 @@ content revision. A repeated or differently worded computation with no
 substantive content change does not create a fresh business update. A content
 reversal can be adopted again because the revision links to its predecessor.
 
+Internal FrozenInput includes member-specific extraction scopes in its
+input hash. Scope text is task metadata, not evidence or an adopted claim
+reference. The public EventUpdate fact contract is unchanged.
+Notification work projects `state="exhausted"` when a pending plan has
+spent its existing attempt budget; the Event outcome is
+`notification_exhausted` (held). Delivery facts retain precedence.
+
 Each adopted update carries `topics`, claims with typed assets, mode, phase,
 time and cited spans, evidence relations, changes with prior/current refs,
 optional conditional implications and open questions. The stable claim refs

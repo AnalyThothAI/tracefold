@@ -2329,7 +2329,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "pending" | "done";
+            state: "pending" | "done" | "exhausted";
             /**
              * State Zh
              * @default
@@ -2361,7 +2361,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "held_recovery" | "held_gate" | "expired_triage_handoff" | "expired_delivery_handoff" | "queued_publish" | "queued_triage" | "dropped" | "throttled" | "degraded_dropped" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "not_notified" | "delivery_ambiguous";
+            kind: "held_recovery" | "held_gate" | "expired_triage_handoff" | "expired_delivery_handoff" | "queued_publish" | "queued_triage" | "dropped" | "throttled" | "degraded_dropped" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "notification_exhausted" | "not_notified" | "delivery_ambiguous";
             /**
              * Reason Zh
              * @default

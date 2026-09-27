@@ -90,6 +90,13 @@ def add_news_commands(
     )
     news_why = news_subcommands.add_parser("why", help="print one Event's chain: item, gate, triage, decide, delivery")
     news_why.add_argument("event_id")
+    retry = news_subcommands.add_parser(
+        "retry-work", help="reopen one failed News work version; retain facts and receipts"
+    )
+    retry.add_argument("--event", required=True, help="exact Event ID")
+    retry.add_argument("--kind", required=True, choices=("semantic", "notification", "card"))
+    retry.add_argument("--revision", required=True, help="wanted input revision, or exact content revision")
+    retry.add_argument("--intent", default=None, help="required only for an unsent failed card intent")
     news_dlq = news_subcommands.add_parser("dlq", help="inspect, replay, or purge the News dead-letter queue")
     news_dlq.add_argument("dlq_action", choices=("inspect", "replay", "purge"))
     news_dlq.add_argument("--limit", type=_positive_int, default=20, help="messages to inspect/replay")

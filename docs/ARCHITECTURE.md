@@ -229,6 +229,17 @@ input, checkpoints extraction and judgments, and adopts an EventUpdate with a
 head compare-and-swap. Failed work stays visible, with bounded retries and
 Janitor repair.
 
+Frozen input carries each member's existing FactUnit extraction scope,
+recovered from its observed snapshots and attached to that Item's new
+evidence bodies. Whole-item sources remain whole-item inputs. A revision
+uses the old scope as a comparison target, never old character offsets to
+slice a changed body; only the frozen evidence is citable. Scope metadata
+participates in checkpoint identity. Related current claims are ranked
+against the new material before the existing eight-claim budget; Event
+recall queries and the history window are unchanged. Explicit provider
+cashtags survive ordinary-word collisions, while unknown per-asset types
+remain unknown rather than inheriting the Event's coarse asset class.
+
 The EventUpdate is the single editorial understanding owner: claims, mode,
 phase, time, evidence, source relations, changes, implications and gaps.
 Multiple claims can express different actions or conflicting evidence. The

@@ -7,6 +7,7 @@ from typing import Final
 # S608 exemptions below compose only the module's fixed feed predicate list; all request values stay bound.
 from ..models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
 from ..source_contracts import EVENT_KINDS
+from ..updates.notification import NOTIFICATION_ATTEMPTS_MAX
 
 ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
 # The legacy Triage verdict contracts. `news_verdicts` receives no writes since #706; every read of it is a
@@ -27,8 +28,9 @@ _VERDICT_HANDOFF_LIVE_SQL: Final = (
 # adopted head whose notification is undecided, deferred or decided to notify.
 _UPDATE_PENDING_SQL: Final = (
     "(sw.wanted_revision > COALESCE(sw.done_revision, 0) AND sw.last_outcome IS DISTINCT FROM 'failed')"
-    " OR (h.event_id IS NOT NULL AND (nw.event_id IS NULL OR nw.state = 'pending'"
-    " OR COALESCE(nw.plan ->> 'action', '') IN ('notify', 'unresolved')))"
+    " OR (h.event_id IS NOT NULL AND (nw.event_id IS NULL"
+    f" OR (nw.state = 'pending' AND nw.attempts < {NOTIFICATION_ATTEMPTS_MAX})"
+    " OR (nw.state = 'done' AND COALESCE(nw.plan ->> 'action', '') IN ('notify', 'unresolved'))))"
 )
 _PENDING_CORE_SQL: Final = (
     "COALESCE(d.state = 'sending', false)"
@@ -453,7 +455,8 @@ def feed_page_sql(where_sql: str) -> str:
                    WHERE NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
                    ORDER BY position LIMIT 1)
                ) AS update_claim_headline,
-               nw.state AS notification_state, nw.plan ->> 'action' AS notification_action,
+               nw.state AS notification_state, nw.attempts AS notification_attempts,
+               nw.plan ->> 'action' AS notification_action,
                nw.plan -> 'claim_decisions' AS notification_claim_decisions,
                d.kind AS delivery_kind, d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms,
                d.error_code AS delivery_error_code, d.plan_key AS delivery_plan_key,

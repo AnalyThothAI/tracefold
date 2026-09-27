@@ -31,6 +31,7 @@ class NewsOutcomeData(ExactApiSchema):
         "no_update",
         "queued_notification",
         "notification_deferred",
+        "notification_exhausted",
         "not_notified",
         "delivery_ambiguous",
     ]

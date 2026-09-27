@@ -802,6 +802,7 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         notification=(
             {
                 "state": row["notification_state"],
+                "attempts": row.get("notification_attempts"),
                 "action": row.get("notification_action"),
                 "claim_decisions": row.get("notification_claim_decisions"),
             }
@@ -930,6 +931,7 @@ def _notification_outcome_input(work: Mapping[str, Any] | None) -> dict[str, Any
     plan: Mapping[str, Any] = stored if isinstance(stored, Mapping) else {}
     return {
         "state": work["state"],
+        "attempts": work.get("attempts"),
         "action": plan.get("action"),
         "claim_decisions": plan.get("claim_decisions"),
     }

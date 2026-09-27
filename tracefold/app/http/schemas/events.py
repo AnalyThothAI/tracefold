@@ -519,7 +519,7 @@ class NewsNotificationPlanData(ExactApiSchema):
 
 
 class NewsNotificationWorkData(ExactApiSchema):
-    state: Literal["pending", "done"]
+    state: Literal["pending", "done", "exhausted"]
     state_zh: str = ""
     content_revision: str
     attempts: int = 0

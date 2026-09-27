@@ -14,7 +14,7 @@ from typing import Any, Final, Literal
 
 from .events.storyline import NO_STORYLINE_KEY, storyline_entry
 from .models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
-from .update_view import claim_reasons_zh, semantic_state
+from .update_view import claim_reasons_zh, notification_state, semantic_state
 
 OUTCOME_VERSION: Final = "news_outcome_v1"
 
@@ -38,6 +38,7 @@ OutcomeKind = Literal[
     "no_update",
     "queued_notification",
     "notification_deferred",
+    "notification_exhausted",
     "not_notified",
     "delivery_ambiguous",
 ]
@@ -61,6 +62,7 @@ OUTCOME_GROUP: Final[dict[str, str]] = {
     "no_update": "held",
     "queued_notification": "pending",
     "notification_deferred": "pending",
+    "notification_exhausted": "held",
     "not_notified": "held",
     "delivery_ambiguous": "held",
 }
@@ -436,11 +438,13 @@ def _update_outcome(semantic: Mapping[str, Any], *, adopted: bool, notification:
                 error_code_zh(semantic.get("last_error_code")) or "语义处理多次失败，等待新的材料版本",
             )
         return _outcome("no_update", "无可采用内容", "语义处理完成，未形成可采用的事件更新")
-    notification_state = str((notification or {}).get("state") or "")
+    plan_state = notification_state(notification or {})
+    if plan_state == "exhausted":
+        return _outcome("notification_exhausted", "通知规划已耗尽", "本版本不再自动规划，可重试指定版本或等待新事实")
     action = str((notification or {}).get("action") or "")
     if action == "unresolved":
         return _outcome("notification_deferred", "等待前序发送", "重叠的通知发送结果尚未确定")
-    if notification is None or notification_state == "pending":
+    if notification is None or plan_state == "pending":
         return _outcome("queued_notification", "待决定通知", "已采用事件更新，等待通知选择")
     if action == "notify":
         return _outcome("pending_delivery", "待推送", "通知已选择，等待发送")

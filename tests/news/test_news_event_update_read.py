@@ -335,3 +335,13 @@ def test_the_timeline_narrates_evidence_semantics_the_plan_and_the_intent_in_clo
     assert steps[4]["summary_zh"] == "新事实 · 1 条命题"
     assert steps[5]["summary_zh"] == "通知 1 条命题 · 重点 · 有命题未被已送达内容覆盖"
     assert steps[6]["summary_zh"] == "已送达 · 1 条命题"
+
+
+def test_exhausted_notification_is_held_but_actual_delivery_still_wins() -> None:
+    work = {"state": "pending", "attempts": 3, "content_revision": "v1", "updated_at_ms": NOW}
+    view = notification_view(work, statements={})
+    assert view is not None and view["state"] == "exhausted" and view["state_zh"] == "规划已耗尽"
+    outcome = _outcome(semantic=_DONE, adopted=True, notification=work)
+    assert outcome.kind == "notification_exhausted" and outcome.group == "held"
+    outcome = _outcome(semantic=_DONE, adopted=True, notification=work, delivery={"state": "sent"})
+    assert outcome.kind == "delivered"

@@ -75,6 +75,9 @@ KEY_CONTENT_KINDS: Final[frozenset[ContentKind]] = frozenset({"state_change", "o
 KEY_MIN_INDEPENDENT_ORIGINS: Final = 2
 
 
+NOTIFICATION_ATTEMPTS_MAX: Final = 3
+
+
 class DeliveredText(Exact):
     intent_id: str
     channel: str

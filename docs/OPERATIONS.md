@@ -1486,6 +1486,31 @@ single historical verdict/drop ratio. Check:
    handoff and amendment; do not infer a new Trading Case from a
    correction.
 
+Planner failures and card/send backoff are fenced by the content revision
+that started the turn. A late failure cannot spend a newer head's attempts
+or postpone it. The Janitor marks an unfinished semantic revision failed
+after its final attempt's lease expires; a live final lease is not failed.
+The detail and feed report exhausted notification planning explicitly,
+without changing any card intent or actual receipt.
+
+To reopen one failed version, use the existing CLI:
+
+```bash
+tracefold news retry-work --event EVENT_ID --kind semantic --revision INPUT_REVISION
+tracefold news retry-work --event EVENT_ID --kind notification --revision CONTENT_REVISION
+tracefold news retry-work --event EVENT_ID --kind card --revision CONTENT_REVISION --intent INTENT_ID
+```
+
+The version must still match. Semantic recovery requires failed,
+unfinished work with no live lease. Notification recovery requires an
+exhausted pending plan. Card recovery reopens only the same unsent dead
+intent on the current head; any existing send ledger, including sent,
+sending, ambiguous or terminal, refuses recovery. It does not clear a
+separately exhausted planning budget. Existing checkpoints, adopted
+updates, outbox rows, error codes and receipts remain intact. The Janitor
+re-wakes reopened semantic work; the Deliverer polls notification work.
+A new prompt deployment does not replay history or clear old failures.
+
 Use read-only queries through the configured database access and
 avoid displaying secrets or raw model credentials. A missing provider
 or model affects only its capability. No manual SQL should synthesize

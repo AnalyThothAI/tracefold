@@ -27,6 +27,7 @@ from ..taxonomy import source_authority
 from ..updates.contracts import (
     EventUpdate,
     Evidence,
+    ExtractionScope,
     FrozenInput,
     IdentityHint,
     PriorClaim,
@@ -35,7 +36,7 @@ from ..updates.contracts import (
     Source,
 )
 from ..updates.identity import digest, identity
-from ..updates.notification import DeliveredText, FrozenCard, NotificationPlan
+from ..updates.notification import NOTIFICATION_ATTEMPTS_MAX, DeliveredText, FrozenCard, NotificationPlan
 from .decisions import DecisionStorage
 from .evidence import EvidenceStorage
 from .sql_values import _dumps
@@ -49,7 +50,6 @@ SEMANTIC_ATTEMPTS_MAX: Final = 3
 SEMANTIC_RETRY_MS: Final = (15_000, 60_000, 300_000)
 # A pending revision whose broker wake is older than this is woken again by the repair turn.
 SEMANTIC_WAKE_STALE_MS: Final = 15_000
-NOTIFICATION_ATTEMPTS_MAX: Final = 3
 NOTIFICATION_RETRY_MS: Final = (30_000, 120_000, 600_000)
 # The queue's own CHECK bounds an intent at three attempts.
 INTENT_ATTEMPTS_MAX: Final = 3
@@ -74,14 +74,14 @@ READ_TARGET_PREFIX: Final = "news_item:"
 _WAKE_STATE_LIMIT: Final = 1_000
 SEMANTIC_WAKE_STATE_SQL: Final = f"""
     WITH pending AS MATERIALIZED (
-      SELECT attempts, updated_at_ms FROM news_semantic_work
+      SELECT attempts, last_outcome, updated_at_ms FROM news_semantic_work
        WHERE done_revision IS NULL OR done_revision < wanted_revision
        ORDER BY next_attempt_at_ms, event_id
        LIMIT {_WAKE_STATE_LIMIT}
     )
     SELECT count(*) FILTER (WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}) AS pending,
            min(updated_at_ms) FILTER (WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}) AS oldest_pending_at_ms,
-           count(*) FILTER (WHERE attempts >= {SEMANTIC_ATTEMPTS_MAX}) AS expired
+           count(*) FILTER (WHERE last_outcome = 'failed') AS expired
       FROM pending
 """  # noqa: S608 - code-owned integer constants only
 # The semantic stage's 24 h health: completed turns, adoptions and visibly failed work. Model health reads
@@ -352,21 +352,62 @@ def _identity_hints(evidence: Sequence[Evidence], symbols: Iterable[str]) -> tup
     return tuple(hints)
 
 
-def _related_prior(documents: Sequence[Mapping[str, Any]], own: set[str]) -> tuple[PriorClaim, ...]:
-    """At most RELATED_PRIOR_CLAIMS_MAX current claims of related Events, in retrieval order."""
+def _related_prior(
+    documents: Sequence[Mapping[str, Any]],
+    own: set[str],
+    *,
+    evidence: Sequence[Evidence],
+    preferred_refs: set[str],
+) -> tuple[PriorClaim, ...]:
+    """Rank the already recalled current claims before applying the unchanged eight-claim budget."""
 
-    prior: list[PriorClaim] = []
-    for document in documents:
+    candidates: list[tuple[tuple[Any, ...], PriorClaim]] = []
+    seen = set(own)
+    for event_rank, document in enumerate(documents):
         head = EventUpdate.model_validate(document)
         retired = set(head.retired_claim_refs) | set(head.superseded_claim_refs)
         for claim in head.claims:
-            if len(prior) >= RELATED_PRIOR_CLAIMS_MAX:
-                return tuple(prior)
-            if claim.ref in retired or claim.ref in own:
+            if claim.ref in retired or claim.ref in seen:
                 continue
-            own.add(claim.ref)
-            prior.append(PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim))
-    return tuple(prior)
+            seen.add(claim.ref)
+            score = max(
+                (
+                    trigram_similarity(item.text, text)
+                    for item in evidence
+                    for text in (claim.statement, *(c.quote for c in claim.citations))
+                ),
+                default=0.0,
+            )
+            key = (claim.ref not in preferred_refs, -score, event_rank, claim.ref)
+            candidates.append(
+                (key, PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim))
+            )
+    return tuple(row for _, row in sorted(candidates, key=lambda pair: pair[0])[:RELATED_PRIOR_CLAIMS_MAX])
+
+
+def _extraction_scopes(material: Mapping[str, Any], evidence: Sequence[Evidence]) -> tuple[ExtractionScope, ...]:
+    """Join immutable member FactUnits to every new body of their own Item."""
+
+    scopes = []
+    facts = material.get("fact_scopes") or {}
+    for item in evidence:
+        for member in material.get("members") or ():
+            if str(member["item_id"]) != item.source.record_id:
+                continue
+            fact_id = str(member["fact_id"])
+            fact = facts.get(fact_id) or {}
+            if fact.get("method", "whole_item") == "whole_item":
+                continue
+            scopes.append(
+                ExtractionScope(
+                    evidence_ref=item.ref,
+                    fact_id=fact_id,
+                    fact_text=str(member["fact_text"]),
+                    context=str(fact.get("context") or ""),
+                    method=str(fact["method"]),
+                )
+            )
+    return tuple(scopes)
 
 
 def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
@@ -435,7 +476,16 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     hints: tuple[IdentityHint, ...] = ()
     if not attached:
         # An optional read's revision re-asks only its focus claims against the attached material.
-        prior = (*prior, *_related_prior(material.get("related_heads") or (), {row.claim.ref for row in prior}))
+        preferred = {ref for row in prior for ref in row.claim.antecedent_refs}
+        prior = (
+            *prior,
+            *_related_prior(
+                material.get("related_heads") or (),
+                {row.claim.ref for row in prior},
+                evidence=unique,
+                preferred_refs=preferred,
+            ),
+        )
         read_targets = tuple(
             ReadTarget(
                 ref=read_target_ref(str(row["item_id"])), action="load_prior_statement", description=str(row["title"])
@@ -451,6 +501,7 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
         revision=wanted,
         lineage_id=lineage,
         evidence=unique,
+        extraction_scopes=() if attached else _extraction_scopes(material, unique),
         prior=prior,
         read_targets=read_targets,
         focus_claim_refs=focus,
@@ -645,6 +696,27 @@ class EventUpdateStorage:
             "evidence_refs": tuple({ref for row in rows for ref in row["evidence_refs"]}),
         }
 
+    def terminalize_exhausted_semantic_work(self, *, now_ms: int, limit: int) -> int:
+        """The Janitor settles a crashed final attempt only after its lease expires."""
+
+        cursor = self.conn.execute(
+            """
+            WITH expired AS (
+              SELECT event_id FROM news_semantic_work
+               WHERE (done_revision IS NULL OR done_revision < wanted_revision)
+                 AND attempts >= %s AND last_outcome IS DISTINCT FROM 'failed'
+                 AND (leased_until_ms IS NULL OR leased_until_ms <= %s)
+               ORDER BY updated_at_ms, event_id LIMIT %s FOR UPDATE SKIP LOCKED
+            )
+            UPDATE news_semantic_work w
+               SET last_outcome = 'failed', last_error_code = 'news_semantic_attempts_exhausted_after_lease',
+                   lease_token = NULL, leased_until_ms = NULL, updated_at_ms = %s
+              FROM expired WHERE w.event_id = expired.event_id
+            """,
+            (SEMANTIC_ATTEMPTS_MAX, int(now_ms), int(limit), int(now_ms)),
+        )
+        return int(cursor.rowcount)
+
     def pending_semantic_event_ids(self, *, now_ms: int, limit: int) -> list[str]:
         rows = self.conn.execute(
             """
@@ -676,9 +748,17 @@ class EventUpdateStorage:
         ).fetchone()
         snapshot = self.conn.execute(
             """
-            SELECT evidence_version, snapshot FROM news_event_evidence_snapshots
-             WHERE event_id = %s AND provenance = 'observed'
-             ORDER BY evidence_version DESC LIMIT 1
+            SELECT s.evidence_version, s.snapshot,
+                   (SELECT jsonb_object_agg(f.focus_fact_id, f.fact) FROM (
+                      SELECT DISTINCT ON (h.focus_fact_id) h.focus_fact_id, h.snapshot -> 'focus_fact' AS fact
+                        FROM news_event_evidence_snapshots h
+                       WHERE h.event_id = s.event_id AND h.provenance = 'observed'
+                         AND h.evidence_version <= s.evidence_version
+                       ORDER BY h.focus_fact_id, h.evidence_version
+                    ) f) AS fact_scopes
+              FROM news_event_evidence_snapshots s
+             WHERE s.event_id = %s AND s.provenance = 'observed'
+             ORDER BY s.evidence_version DESC LIMIT 1
             """,
             (event_id,),
         ).fetchone()
@@ -731,6 +811,8 @@ class EventUpdateStorage:
             "work": None if work is None else dict(work),
             "evidence_version": None if snapshot is None else int(snapshot["evidence_version"]),
             "item_ids": item_ids,
+            "members": members,
+            "fact_scopes": {} if snapshot is None else dict(snapshot["fact_scopes"] or {}),
             "items": [dict(row) for row in items],
             "revisions": [dict(row) for row in revisions],
             "head": self.event_update_head_document(event_id),
@@ -744,9 +826,14 @@ class EventUpdateStorage:
     ) -> list[str]:
         """Related Events by the existing bounded candidate retrieval, in its priority order."""
 
+        coins = (card.get("provider_metadata") or {}).get("coins") or ()
+        types = {
+            str(coin.get("symbol")): market_type_of(coin.get("market_type"))
+            for coin in coins
+            if isinstance(coin, Mapping)
+        }
         assets = tuple(
-            MarketAsset(str(symbol), market_type_of(card.get("asset_class")))
-            for symbol in card.get("grounded_assets") or ()
+            MarketAsset(str(symbol), types.get(str(symbol), "unknown")) for symbol in card.get("grounded_assets") or ()
         )
         query = query_for({**card, "event_id": event_id}, leader, cutoff=int(now_ms), assets=assets)
         rows = cast(EvidenceStorage, self).evidence_candidates(query)
@@ -1333,13 +1420,15 @@ class EventUpdateStorage:
             (state, plan_json, plan.reader_revision, attempts, int(next_at_ms), int(now_ms), event_id, plan.channel),
         )
 
-    def _pend_notification(self, event_id: str, *, next_at_ms: int, now_ms: int) -> None:
+    def _pend_notification(
+        self, event_id: str, *, expected_content_revision: str, next_at_ms: int, now_ms: int
+    ) -> None:
         self.conn.execute(
             """
             UPDATE news_notification_work SET state = 'pending', next_attempt_at_ms = %s, updated_at_ms = %s
-             WHERE event_id = %s AND channel = %s
+             WHERE event_id = %s AND channel = %s AND content_revision = %s
             """,
-            (int(next_at_ms), int(now_ms), event_id, NEWS_CHANNEL),
+            (int(next_at_ms), int(now_ms), event_id, NEWS_CHANNEL, expected_content_revision),
         )
 
     # ------------------------------------------------------------------ intent card, send and settlement
@@ -1420,7 +1509,9 @@ class EventUpdateStorage:
                 """,
                 (int(now_ms), int(now_ms), intent_id),
             )
-            self._pend_notification(event_id, next_at_ms=now_ms, now_ms=now_ms)
+            self._pend_notification(
+                event_id, expected_content_revision=str(queued["content_revision"]), next_at_ms=now_ms, now_ms=now_ms
+            )
             return False
         inserted = self.conn.execute(
             """
@@ -1554,7 +1645,9 @@ class EventUpdateStorage:
                 """,
                 (error_code or "send_not_sent", next_at_ms, now_ms, intent_id),
             )
-            self._pend_notification(event_id, next_at_ms=next_at_ms, now_ms=now_ms)
+            self._pend_notification(
+                event_id, expected_content_revision=content_revision, next_at_ms=next_at_ms, now_ms=now_ms
+            )
             return "not_sent"
         self.conn.execute(
             """
@@ -1602,36 +1695,41 @@ class EventUpdateStorage:
         if row is None:
             return False
         if row["state"] == "pending":
-            self._pend_notification(str(row["event_id"]), next_at_ms=int(row["next_attempt_at_ms"]), now_ms=now_ms)
+            self._pend_notification(
+                str(row["event_id"]),
+                expected_content_revision=str(row["content_revision"]),
+                next_at_ms=int(row["next_attempt_at_ms"]),
+                now_ms=now_ms,
+            )
         else:
             self._complete_intent(str(row["event_id"]), str(row["content_revision"]), now_ms=now_ms)
         return True
 
-    def defer_notification_work(self, *, event_id: str, channel: str, now_ms: int) -> bool:
-        """A planning turn failed before recording a plan: spend one attempt of the pending marker.
+    def defer_notification_work(
+        self, *, event_id: str, channel: str, expected_content_revision: str, now_ms: int
+    ) -> bool:
+        """Spend only the failed snapshot's budget. A superseded turn is a successful no-op."""
 
-        The marker stays pending and visible; after the last attempt it is no longer due until a new
-        adopted head resets it. Nothing else is touched.
-        """
-
-        row = self.conn.execute(
+        cursor = self.conn.execute(
             """
-            SELECT attempts FROM news_notification_work
-             WHERE event_id = %s AND channel = %s AND state = 'pending' FOR UPDATE
+            UPDATE news_notification_work
+               SET attempts = attempts + 1,
+                   next_attempt_at_ms = %s::bigint + (%s::bigint[])[attempts + 1],
+                   updated_at_ms = %s
+             WHERE event_id = %s AND channel = %s AND content_revision = %s
+               AND state = 'pending' AND attempts < %s
             """,
-            (event_id, channel),
-        ).fetchone()
-        if row is None:
-            return False
-        spent = min(int(row["attempts"]) + 1, NOTIFICATION_ATTEMPTS_MAX)
-        self.conn.execute(
-            """
-            UPDATE news_notification_work SET attempts = %s, next_attempt_at_ms = %s, updated_at_ms = %s
-             WHERE event_id = %s AND channel = %s
-            """,
-            (spent, int(now_ms) + _retry_delay(NOTIFICATION_RETRY_MS, spent), int(now_ms), event_id, channel),
+            (
+                int(now_ms),
+                list(NOTIFICATION_RETRY_MS),
+                int(now_ms),
+                event_id,
+                channel,
+                expected_content_revision,
+                NOTIFICATION_ATTEMPTS_MAX,
+            ),
         )
-        return True
+        return bool(cursor.rowcount)
 
     def pending_notification_event_ids(self, *, channel: str, now_ms: int, limit: int) -> list[str]:
         rows = self.conn.execute(
@@ -1650,6 +1748,69 @@ class EventUpdateStorage:
             "SELECT * FROM news_notification_work WHERE event_id = %s AND channel = %s", (event_id, channel)
         ).fetchone()
         return None if row is None else dict(row)
+
+    def retry_failed_work(
+        self, *, event_id: str, kind: str, revision: str, now_ms: int, intent_id: str | None = None
+    ) -> bool:
+        """Explicit operator recovery of one failed version, retaining facts, checkpoints and receipts.
+
+        Card recovery is limited to an unsent failed intent on the current version. A ledger row
+        (including a terminal or ambiguous send) is never erased or reopened by this operation.
+        """
+
+        if kind not in {"semantic", "notification", "card"} or (kind == "card") != bool(intent_id):
+            raise ValueError("news_retry_work_target_invalid")
+        if kind == "semantic":
+            wanted = int(revision)
+            if wanted < 1:
+                raise ValueError("news_retry_work_revision_invalid")
+            cursor = self.conn.execute(
+                """
+                UPDATE news_semantic_work
+                   SET attempts = 0, last_outcome = NULL, lease_token = NULL, leased_until_ms = NULL,
+                       next_attempt_at_ms = %s, published_at_ms = NULL, updated_at_ms = %s
+                 WHERE event_id = %s AND wanted_revision = %s AND last_outcome = 'failed'
+                   AND (done_revision IS NULL OR done_revision < wanted_revision)
+                   AND (leased_until_ms IS NULL OR leased_until_ms <= %s)
+                """,
+                (int(now_ms), int(now_ms), event_id, wanted, int(now_ms)),
+            )
+            return bool(cursor.rowcount)
+        if kind == "notification":
+            cursor = self.conn.execute(
+                """
+                UPDATE news_notification_work SET attempts = 0, next_attempt_at_ms = %s, updated_at_ms = %s
+                 WHERE event_id = %s AND channel = %s AND content_revision = %s
+                   AND state = 'pending' AND attempts >= %s
+                """,
+                (int(now_ms), int(now_ms), event_id, NEWS_CHANNEL, revision, NOTIFICATION_ATTEMPTS_MAX),
+            )
+            return bool(cursor.rowcount)
+        work = self.conn.execute(
+            """
+            SELECT content_revision FROM news_notification_work
+             WHERE event_id = %s AND channel = %s AND content_revision = %s FOR UPDATE
+            """,
+            (event_id, NEWS_CHANNEL, revision),
+        ).fetchone()
+        if work is None:
+            return False
+        cursor = self.conn.execute(
+            """
+            UPDATE news_delivery_queue q
+               SET state = 'pending', attempts = 0, lease_token = NULL, last_attempt_at_ms = NULL,
+                   settled_at_ms = NULL, next_attempt_at_ms = %s, updated_at_ms = %s
+             WHERE q.event_id = %s AND q.intent_id = %s AND q.content_revision = %s
+               AND q.kind = 'update' AND q.state = 'dead'
+               AND (q.lease_token IS NULL OR q.next_attempt_at_ms <= %s)
+               AND NOT EXISTS (SELECT 1 FROM news_deliveries d WHERE d.intent_id = q.intent_id)
+            """,
+            (int(now_ms), int(now_ms), event_id, intent_id, revision, int(now_ms)),
+        )
+        if not cursor.rowcount:
+            return False
+        self._pend_notification(event_id, expected_content_revision=revision, next_at_ms=now_ms, now_ms=now_ms)
+        return True
 
     # ------------------------------------------------------------------ optional read budget
     def reserve_extra_read(self, *, lineage_id: str, target_ref: str, now_ms: int) -> bool:

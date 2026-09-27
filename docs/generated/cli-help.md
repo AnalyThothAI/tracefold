@@ -180,10 +180,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,dlq} ...
+                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,dlq} ...
 
 positional arguments:
-  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,dlq}
+  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,dlq}
     bus-check           declare the News topology and report queue state,
                         effective retry policy, and topology drift
     bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
@@ -199,6 +199,8 @@ positional arguments:
                         thresholds, collected flow, decisions, send queue
     why                 print one Event's chain: item, gate, triage, decide,
                         delivery
+    retry-work          reopen one failed News work version; retain facts and
+                        receipts
     dlq                 inspect, replay, or purge the News dead-letter queue
 
 options:
@@ -404,6 +406,22 @@ positional arguments:
 
 options:
   -h, --help  show this help message and exit
+
+```
+
+## `news retry-work`
+
+```
+usage: tracefold news retry-work [-h] --event EVENT
+                                 --kind {semantic,notification,card}
+                                 --revision REVISION [--intent INTENT]
+
+options:
+  -h, --help            show this help message and exit
+  --event EVENT         exact Event ID
+  --kind {semantic,notification,card}
+  --revision REVISION   wanted input revision, or exact content revision
+  --intent INTENT       required only for an unsent failed card intent
 
 ```
 

@@ -35,6 +35,8 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         from .news_bus import _handle_dlq
 
         return _handle_dlq(args)
+    if args.news_command == "retry-work":
+        return _handle_retry_work(args)
     if args.news_command == "why":
         return _handle_why(args)
     if args.news_command == "wallets":
@@ -42,6 +44,32 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
 
         return handle_wallets(args)
     return 2, {"ok": False, "error": f"unknown news command: {args.news_command}"}
+
+
+def _handle_retry_work(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repository_session import repositories
+    from tracefold.news.bus import now_ms
+
+    settings = load_settings(require_ws_token=False)
+    try:
+        with repositories(settings) as repos, repos.transaction():
+            reopened = repos.news.retry_failed_work(
+                event_id=str(args.event),
+                kind=str(args.kind),
+                revision=str(args.revision),
+                intent_id=args.intent,
+                now_ms=now_ms(),
+            )
+    except ValueError as exc:
+        return 2, {"ok": False, "error": str(exc)}
+    return (0 if reopened else 1), {
+        "ok": reopened,
+        "event_id": args.event,
+        "kind": args.kind,
+        "revision": args.revision,
+        "intent_id": args.intent,
+        "status": "reopened" if reopened else "not_failed_or_version_changed",
+    }
 
 
 def _handle_why(args: Namespace) -> tuple[int, dict[str, Any]]:

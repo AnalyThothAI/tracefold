@@ -493,6 +493,10 @@ class JanitorLoop:
         """
 
         stamp = now_ms()
+        await self.db.tx(
+            "news_semantic_terminalize_exhausted",
+            lambda repos: repos.news.terminalize_exhausted_semantic_work(now_ms=stamp, limit=_REPAIR_LIMIT),
+        )
         state = await self.db.read("news_semantic_wake_state", lambda repos: repos.news.semantic_wake_state())
         self._record_handoff_state("event", state, stamp)
         expired = int(state.get("expired") or 0)

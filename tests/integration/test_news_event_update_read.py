@@ -427,3 +427,25 @@ def test_an_unsent_later_revision_is_titled_by_the_claim_it_changed(conn) -> Non
     # The SQL twin of `headline_claim_statement`: the 50% claim, not the superseded 25% lead claim.
     assert changed.statement != head.claims[0].statement
     assert (row["update"]["headline"], row["update"]["headline_source"]) == (changed.statement, "claim")
+
+
+@pytest.mark.parametrize("action", ["notify", "unresolved"])
+def test_exhausted_planning_agrees_in_feed_detail_and_tab_counts(conn, action: str) -> None:
+    seeded = _seed(conn)
+    news = repositories_for_connection(conn).news
+    with conn.transaction():
+        conn.execute(
+            "UPDATE news_notification_work SET state='pending', attempts=3,"
+            " plan=jsonb_set(plan, '{action}', to_jsonb(%s::text)) WHERE event_id='agent-silent'",
+            (action,),
+        )
+    # The work's terminal projection does not depend on a decodable cached plan.
+    detail = news.event_detail("agent-silent")
+    assert detail["processing"]["notification"]["state"] == "exhausted"
+    assert detail["outcome"]["kind"] == "notification_exhausted"
+    rows = {row["event_id"]: row for row in _feed(news)["events"]}
+    assert rows["agent-silent"]["outcome"]["group"] == "held"
+    for group in ("held", "pending", "pushed"):
+        served = {row["event_id"] for row in _feed(news, outcome=group)["events"]}
+        assert served == {event for event, row in rows.items() if row["outcome"]["group"] == group}
+    assert detail["event_update"]["content_revision"] == seeded["silent"].content_revision

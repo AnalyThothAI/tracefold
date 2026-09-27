@@ -58,8 +58,8 @@ class Store:
             update=self.update, reader=ReaderSnapshot(channel=channel, revision=READER_REVISION, receipts=())
         )
 
-    async def defer_notification(self, event_id: str, channel: str) -> None:
-        self.calls.append(("defer_notification", event_id))
+    async def defer_notification(self, event_id: str, channel: str, expected_content_revision: str) -> None:
+        self.calls.append(("defer_notification", (event_id, expected_content_revision)))
 
     async def atomic_record_plan(self, plan: NotificationPlan) -> IntentLease | None:
         self.calls.append(("record_plan", plan.action))

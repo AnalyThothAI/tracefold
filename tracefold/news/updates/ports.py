@@ -175,7 +175,7 @@ class NewsStore(Protocol):
 
     async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None: ...
 
-    async def defer_notification(self, event_id: str, channel: str) -> None:
+    async def defer_notification(self, event_id: str, channel: str, expected_content_revision: str) -> None:
         """A planning turn failed before a plan was recorded: spend one bounded attempt and back off.
 
         Semantics, the public outbox and any reserved intent are untouched; the caller reports the error.

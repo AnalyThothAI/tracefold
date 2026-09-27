@@ -5557,7 +5557,8 @@
           "state": {
             "enum": [
               "pending",
-              "done"
+              "done",
+              "exhausted"
             ],
             "title": "State",
             "type": "string"
@@ -5645,6 +5646,7 @@
               "no_update",
               "queued_notification",
               "notification_deferred",
+              "notification_exhausted",
               "not_notified",
               "delivery_ambiguous"
             ],

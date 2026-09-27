@@ -462,6 +462,19 @@ class EventUpdate(Exact):
         return self
 
 
+class ExtractionScope(Exact):
+    """An existing member FactUnit's task boundary, never citable evidence.
+
+    The same fact text anchors later body revisions; source spans are deliberately not sliced.
+    """
+
+    evidence_ref: str
+    fact_id: str
+    fact_text: str = Field(min_length=1)
+    context: str = ""
+    method: str
+
+
 class FrozenInput(Exact):
     schema_version: Literal["news_event_input_v1"] = "news_event_input_v1"
     event_id: str
@@ -471,6 +484,7 @@ class FrozenInput(Exact):
     # A later observed snapshot can add no model-visible source identity. The Agent records a
     # no-op observation and settles that revision without calling the extractor.
     evidence: tuple[Evidence, ...]
+    extraction_scopes: tuple[ExtractionScope, ...] = ()
     prior: tuple[PriorClaim, ...] = ()
     read_targets: tuple[ReadTarget, ...] = ()
     focus_claim_refs: tuple[str, ...] = ()
@@ -489,6 +503,9 @@ class FrozenInput(Exact):
             if len(refs) != len(set(refs)):
                 raise ValueError("news_input_duplicate_reference")
         evidence = {item.ref: item for item in self.evidence}
+        for scope in self.extraction_scopes:
+            if scope.evidence_ref not in evidence:
+                raise ValueError("news_extraction_scope_evidence_missing")
         for hint in self.identity_hints:
             if hint.evidence_ref not in evidence or hint.surface not in evidence[hint.evidence_ref].text:
                 raise ValueError("news_identity_hint_not_grounded")

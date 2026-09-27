@@ -269,7 +269,7 @@ class Notifications:
         except asyncio.CancelledError:
             raise
         except Exception:
-            await self.store.defer_notification(event_id, channel)
+            await self.store.defer_notification(event_id, channel, snapshot.update.content_revision)
             raise
         lease = await self.store.atomic_record_plan(plan)
         if plan.action != "notify":

@@ -1112,3 +1112,229 @@ def test_snapshot_keeps_earlier_incremental_receipt_and_excludes_future_and_dele
     assert receipts[old] == "机构宣布关税"
     assert receipts[latest] == "生效日期为下月"
     assert future not in receipts and removed not in receipts
+
+
+@pytest.mark.parametrize("phase", ["planner", "card"])
+def test_old_notification_failure_cannot_change_new_head_work(phase: str) -> None:
+    pg, _db, clock = store()
+    old = adopted_head(pg, clock)
+
+    async def exercise() -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class FailingPlanner:
+            async def plan(self, *args: Any, **kwargs: Any) -> Any:
+                entered.set()
+                await release.wait()
+                raise RuntimeError("old planner failed")
+
+        class FailingComposer:
+            async def compose(self, *args: Any, **kwargs: Any) -> Any:
+                entered.set()
+                await release.wait()
+                raise RuntimeError("old card failed")
+
+        planner = NotificationPlanner(
+            NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db))
+        )
+        service = Notifications(
+            pg,
+            FailingPlanner() if phase == "planner" else planner,
+            FailingComposer() if phase == "card" else Composer(),
+            clock=clock,
+        )  # type: ignore[arg-type]
+        task = asyncio.create_task(service.process(EVENT, "news", Sender()))
+        await asyncio.wait_for(entered.wait(), 3)
+        try:
+            source = FrozenInput(
+                event_id=EVENT,
+                revision=2,
+                lineage_id="next",
+                evidence=(evidence("Agency adds aluminium to the tariff."),),
+                prior=tuple(
+                    PriorClaim(event_id=EVENT, content_revision=old.content_revision, claim=c) for c in old.claims
+                ),
+            )
+            adopted, new = await adopt_next(pg, old, source, extraction_for(source))
+            assert adopted
+            before = sql("SELECT * FROM news_notification_work")[0]
+            assert before["content_revision"] == new.content_revision
+        finally:
+            release.set()
+        with pytest.raises(RuntimeError, match=f"old {phase} failed"):
+            await task
+        assert sql("SELECT * FROM news_notification_work")[0] == before
+        if phase == "card":
+            intent = sql("SELECT content_revision, error_code, attempts, state FROM news_delivery_queue")[0]
+            assert intent == {
+                "content_revision": old.content_revision,
+                "error_code": "news_card:RuntimeError",
+                "attempts": 1,
+                "state": "pending",
+            }
+
+    asyncio.run(exercise())
+
+
+def test_same_version_planner_failure_keeps_existing_bounded_backoff() -> None:
+    pg, db, clock = store()
+    head = adopted_head(pg, clock)
+    for expected in range(1, 4):
+        asyncio.run(pg.defer_notification(EVENT, "news", head.content_revision))
+        row = sql("SELECT attempts, next_attempt_at_ms FROM news_notification_work")[0]
+        assert row["attempts"] == expected and row["next_attempt_at_ms"] > clock()
+    before = sql("SELECT * FROM news_notification_work")[0]
+    asyncio.run(pg.defer_notification(EVENT, "news", head.content_revision))
+    assert sql("SELECT * FROM news_notification_work")[0] == before
+    assert asyncio.run(pg.pending_notification_events("news", 10)) == ()
+    # Explicit recovery affects this planning version only.
+    assert not asyncio.run(
+        db.tx(
+            "retry",
+            lambda r: r.news.retry_failed_work(
+                event_id=EVENT, kind="notification", revision="obsolete", now_ms=clock()
+            ),
+        )
+    )
+    assert asyncio.run(
+        db.tx(
+            "retry",
+            lambda r: r.news.retry_failed_work(
+                event_id=EVENT, kind="notification", revision=head.content_revision, now_ms=clock()
+            ),
+        )
+    )
+    assert asyncio.run(pg.pending_notification_events("news", 10)) == (EVENT,)
+
+
+def test_final_semantic_crash_is_settled_only_after_lease_expiry_and_retries_exact_version() -> None:
+    pg, db, clock = store()
+    head = adopted_head(pg, clock)
+    facts = sql("SELECT document FROM news_event_updates")
+    outbox = trade_rows()
+    checkpoints = sql("SELECT * FROM news_semantic_checkpoints")
+    sql(
+        "UPDATE news_semantic_work SET wanted_revision=2, attempts=3, lease_token='last', "
+        "leased_until_ms=%s, last_outcome=NULL",
+        (clock() + 1000,),
+    )
+
+    def settle(r):
+        return r.news.terminalize_exhausted_semantic_work(now_ms=clock(), limit=10)
+
+    assert asyncio.run(db.tx("janitor", settle)) == 0
+    clock.now_ms += 1001
+    assert asyncio.run(db.tx("janitor", settle)) == 1
+    failed = sql("SELECT last_outcome,last_error_code,lease_token FROM news_semantic_work")[0]
+    assert failed == {
+        "last_outcome": "failed",
+        "last_error_code": "news_semantic_attempts_exhausted_after_lease",
+        "lease_token": None,
+    }
+    assert asyncio.run(db.tx("janitor", settle)) == 0
+    for revision, expected in [("1", False), ("2", True), ("2", False)]:
+        assert (
+            asyncio.run(
+                db.tx(
+                    "retry",
+                    lambda r, revision=revision: r.news.retry_failed_work(
+                        event_id=EVENT, kind="semantic", revision=revision, now_ms=clock()
+                    ),
+                )
+            )
+            is expected
+        )
+    work = sql("SELECT attempts,done_revision,last_outcome,last_error_code FROM news_semantic_work")[0]
+    assert work["attempts"] == 0 and work["done_revision"] == 1 and work["last_outcome"] is None
+    assert work["last_error_code"] == failed["last_error_code"]
+    assert sql("SELECT document FROM news_event_updates") == facts
+    assert trade_rows() == outbox and sql("SELECT * FROM news_semantic_checkpoints") == checkpoints
+    assert asyncio.run(pg.head(EVENT)) == head
+
+
+def test_card_recovery_reuses_unsent_intent_and_never_reopens_sent_or_ambiguous() -> None:
+    pg, db, clock = store()
+    head = adopted_head(pg, clock)
+    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    assert snapshot is not None
+    plan = notify_plan(head, snapshot.reader.revision)
+    lease = asyncio.run(pg.atomic_record_plan(plan))
+    assert lease is not None
+    sql("UPDATE news_delivery_queue SET attempts=3")
+    asyncio.run(pg.record_card_failure(lease, error_code="bad_copy"))
+    assert sql("SELECT state FROM news_delivery_queue")[0]["state"] == "dead"
+    facts, outbox = sql("SELECT document FROM news_event_updates"), trade_rows()
+
+    def retry(r):
+        return r.news.retry_failed_work(
+            event_id=EVENT, kind="card", revision=head.content_revision, intent_id=lease.intent_id, now_ms=clock()
+        )
+
+    assert asyncio.run(db.tx("retry", retry))
+    assert sql("SELECT intent_id,attempts FROM news_delivery_queue") == [{"intent_id": lease.intent_id, "attempts": 0}]
+    assert not asyncio.run(db.tx("retry", retry))
+    sender = Sender("sent")
+    assert asyncio.run(notifications(pg, clock, sender).process(EVENT, "news")) == "sent"
+    assert sender.cards[0].intent_id == lease.intent_id
+    sent = sql("SELECT * FROM news_deliveries")
+    assert not asyncio.run(db.tx("retry", retry))
+    assert sql("SELECT * FROM news_deliveries") == sent
+    assert sql("SELECT document FROM news_event_updates") == facts and trade_rows() == outbox
+
+
+@pytest.mark.parametrize("state", ["sending", "ambiguous", "terminal"])
+def test_card_recovery_refuses_any_existing_send_ledger(state: str) -> None:
+    pg, db, clock = store()
+    head = adopted_head(pg, clock)
+    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    assert snapshot is not None
+    lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision)))
+    assert lease is not None
+    from tracefold.news.updates.notification import freeze_card
+
+    card = freeze_card(lease.plan, head, asyncio.run(Composer().compose(head.claims, sources={})))
+    asyncio.run(pg.save_card(lease, card))
+    assert asyncio.run(pg.atomic_begin_send(lease, card))
+    sql("UPDATE news_deliveries SET state=%s", (state,))
+    sql("UPDATE news_delivery_queue SET state='dead', attempts=3, lease_token=NULL, settled_at_ms=%s", (clock(),))
+    before = sql("SELECT * FROM news_deliveries")
+    assert not asyncio.run(
+        db.tx(
+            "retry",
+            lambda r: r.news.retry_failed_work(
+                event_id=EVENT, kind="card", revision=head.content_revision, intent_id=lease.intent_id, now_ms=clock()
+            ),
+        )
+    )
+    assert sql("SELECT * FROM news_deliveries") == before
+
+
+def test_snapshot_member_scopes_recover_each_fact_from_its_own_snapshot() -> None:
+    from tracefold.news.events.facts import FactUnit
+
+    pg, db, clock = store()
+    seed_event(text="1. Agency suspends withdrawals.\n2. Beta releases earnings.\n3. Gamma opens a factory.")
+    item = f"it-{EVENT}"
+    first = FactUnit("withdrawals", 1, "Agency suspends withdrawals.", "Exchange bulletin", 3, 30, "explicit_numbered")
+    second = FactUnit("earnings", 2, "Beta releases earnings.", "Company bulletin", 35, 55, "explicit_numbered")
+    sql("DELETE FROM news_event_members WHERE event_id=%s", (EVENT,))
+    for i, fact in enumerate((first, second)):
+        sql(
+            "INSERT INTO news_event_members(event_id,item_id,joined_at_ms,match_kind,fact_id,fact_text) "
+            "VALUES(%s,%s,%s,'leader',%s,%s)",
+            (EVENT, item, STAMP + i, fact.fact_id, fact.text),
+        )
+        asyncio.run(
+            db.tx(
+                "snapshot",
+                lambda r, i=i, fact=fact: r.news.append_evidence_snapshot(
+                    event_id=EVENT, now_ms=clock() + i, focus_item_id=item, focus_fact=fact
+                ),
+            )
+        )
+    source = asyncio.run(pg.input_for(EVENT))
+    assert [(s.fact_id, s.fact_text, s.context) for s in source.extraction_scopes] == [
+        (first.fact_id, first.text, first.context),
+        (second.fact_id, second.text, second.context),
+    ]
+    assert len(source.evidence) == 1 and "Gamma opens" in source.evidence[0].text
