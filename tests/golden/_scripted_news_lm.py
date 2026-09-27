@@ -71,7 +71,7 @@ def _answer(request: Request) -> dict[str, Any]:
         return {"result": {"answers": [{"item_id": item["item_id"], "value": JUDGMENTS[task]} for item in items]}}
     if "selected_claims_json" in inputs:
         claims = _json(inputs["selected_claims_json"])
-        lines = [{"claim_ref": claim["ref"], "text_zh": LINE_ZH} for claim in claims]
+        lines = [{"claim_ref": claim["claim_ref"], "text_zh": LINE_ZH} for claim in claims]
         return {"result": {"headline_zh": HEADLINE_ZH, "lines": lines}}
     raise AssertionError(f"golden provider got an unknown signature: {sorted(inputs)}")
 
