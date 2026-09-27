@@ -132,7 +132,7 @@ open-order and position checks keep it converged. There is no Cache database; a
 restart is the same reconciliation a start is. PostgreSQL holds intent (the
 TradePlan), the append-only execution journal and the operator's inputs. Realized
 PnL is folded from the journal's fills, net of every commission the venue charged.
-See [Architecture](ARCHITECTURE.md#runtime-ownership) for the ownership table.
+See [Architecture](modules/execution.md#1-ownership-and-source-map) for the ownership table.
 
 What reconciliation may do, and what it may not (#680 PR-3). It applies the
 venue's own orders and fills to the Cache. It does not invent an order or a fill
@@ -700,7 +700,7 @@ fail-closed application status gate. The wait is `docker wait`, not Compose's
 `--wait-timeout` as well, and when the budget ran out during `20260922_0387`
 Compose started Workers against the old head anyway, which then restarted on
 `migration_status: stale` for ten minutes (#680 PR-2). A migration that fails now
-leaves Serve and Workers stopped, with the migration's last log lines on stderr.
+leaves Serve, Workers and Analysis stopped, with the migration's last log lines on stderr.
 `make deploy-image` uses the same sequence. That
 preflight is a prerequisite of exactly four entries — `up`, `deploy-image`,
 `db-migrate` and `runtime-build`, the ones that build an image, start the stack
@@ -1763,237 +1763,13 @@ The raw archive holds retired wallet evidence; current APIs do not render an old
 
 ## Migrations
 
-Alembic has one root, baseline `20260831_0340`, and one head, named by
-[the migration guide](MIGRATIONS.md) rather than restated here — a head literal
-copied into four documents is four things to update and three of them go stale.
-A fresh PostgreSQL 18 database applies the baseline and every revision after it
-in order; each revision's own docstring carries its evidence.
-Four of them need an operator step before the upgrade runs: `20260901_0347`
-drops twenty-two read-only execution tables, `20260903_0355` drops the six
-dead `trading_cases` columns and refuses to run while any row still holds a
-retired state or admission value, `20260903_0356` drops the profile and
-activation ledgers, and `20260903_0357` drops the JSON-shape CHECKs with the
-nine unread columns and their payload keys. All four archive to
-`~/.tracefold/backups/`
-first; [the migration guide](MIGRATIONS.md) carries the exact commands.
-`20260905_0365` needs no archive step, but it does need writers stopped: the OI
-ledger gains a unique key the old writer does not know and the liquidation table
-renames a column the old writer names, so run it inside the ordinary `make up`
-stop rather than against a live Workers process.
+[Migrations](MIGRATIONS.md) owns the supported schema, forward-only cuts and
+historical restore boundaries. EventUpdates use 0404/0405 source, semantic,
+notification and Trading amendment records. Follow the matching-image and
+stopped-writer procedure there instead of copying pre-baseline epoch recipes.
 
-`20260908_0375` changes wallet outcome identity and introduces durable fill-derivation progress. Stop
-old Workers first, apply the migration under the existing maintenance gate, then start matching new
-Workers and Serve. Do not overlap old writers with the new schema. Existing fills retain their stored
-classifications and receive `derived_at_ms = classified_at_ms`; they are not replayed into new buy
-opportunities or ghost notifications. Existing outcomes keep their old delivery association and use
-`reference_kind = 'legacy_delivery'` with `reference_price IS NULL`. Their old entry/mark is not
-reinterpreted as a known observation or notification price. The migration is transactional and its
-downgrade is refused; recover by roll-forward or verified backup restore.
-
-`20260915_0378`, `20260915_0379` and `20260915_0380` are the #651 News cut and go
-out as one sequence. Each of the first two drops and re-adds
-`news_verdicts_current_judgment_check`, validating every verdict row in place,
-and each moves an identity the running Workers emit: `0378` takes
-`PROGRAM_VERSION` to `news_semantic_program_v10`, makes the typed asset a
-database fact and moves the Reaction ledger to `reaction_v2`; `0379` takes the
-editorial contract to `news_editorial_v3` and `TRIAGE_POLICY_VERSION` to
-`news_triage_policy_v14`; `0380` replaces the review contract functions for
-`news_review_v7` with `reader_contract_v3`. `20260922_0387` is the #675 PR-2 cut
-and goes out the same way: it takes the judgment contract to `news_judgment_v3`,
-the editorial contract to `news_editorial_v4`, `TRIAGE_POLICY_VERSION` to
-`news_triage_policy_v16`, `PROGRAM_VERSION` to `news_semantic_program_v13` and
-the review contract to `news_review_v8`, all in one transaction. Old Workers
-cannot write under the new CHECKs and new Workers cannot write under the old
-ones, so there is no
-overlap window: stop Serve and Workers, drain the News queues, apply the three
-revisions under the existing maintenance gate, then start the matching new
-image. The separate Nautilus runtime writes no `news_*` table and needs no stop
-of its own; a deploy that also carries a Trading schema change keeps the
-`make runtime-down` -> `make up` -> `make runtime-up` order. Nothing is
-rewritten: v8/v9 verdicts, `news_editorial_v2` judgments, `reaction_v1` rows and
-`news_review_v6` reviews stay exactly as written and stay readable, and an Event
-measured before `0378` reports no reaction number until the typed planner has
-measured it again. All three refuse their downgrade; recover by roll-forward or
-verified backup restore.
-
-`20260923_0390` takes `TRIAGE_POLICY_VERSION` to `news_triage_policy_v17` (the
-#504 per-storyline budget is deleted) and only widens the judgment CHECK's policy
-lists, so it needs no step beyond the ordinary stopped-writer `make up`: the
-revision lands before the new Workers start, and the old image's v16 writes
-would still validate. It drops and re-adds `news_verdicts_current_judgment_check`,
-revalidating every verdict row like `0386`. The new image refuses to start while
-the operator config still sets `news.policy.storyline_budget_window_s` or
-`storyline_budget_max`.
-
-`20260904_0360` needs no operator step and refuses nothing: it collapses any
-duplicate admission `source_key` to the row every reader already showed. It is
-still destructive — ten columns and one payload key go with it — so the same
-archive is taken before it runs. Because it changes the schema the execution
-Runtime writes, `make up` refuses to apply it while the Nautilus container is up:
-the deploy is `make runtime-build` -> `make runtime-down` (account flat) ->
-`make up` -> `make runtime-up`.
-
-This source may merge or deploy only after the supported pre-cut database
-is advanced to the old terminal revision with its recorded image, backed up,
-and put through the #449 stopped-writer role catalog cut while retaining the
-same Alembic identity and all business rows. The issue receipt records the old
-SHA/image, backup, before/after identities, and startup smoke.
-Current source has no pre-baseline upgrade or old-role repair path. New schema
-changes resume as immutable linear forward revisions after the baseline; an
-irreversible downgrade is a verified backup restore. Stop Serve, Workers, and
-Nautilus before migration; the maintenance gate refuses to run while the steady
-Workers lock is held.
-
-The normative authoring checklist, required evidence, and 0330–0332 object
-authority/cost audit are in [the migration guide](MIGRATIONS.md). Published
-revision files are immutable; a correction is a forward revision.
-
-An existing volume at 0283 needs no new password or offline role bootstrap.
-Before its first 0284–0295 upgrade, take a restorable volume backup, stop Serve
-and Workers, run the normal migration, then deploy the matching image. The
-migration owns the narrow ReviewDesk grants; the existing Serve credential is
-unchanged.
-
-0276 drops `news_title_presentations`, `token_discovery_results`,
-`token_discovery_dirty_lookup_keys`, `asset_profiles`,
-`asset_profile_refresh_targets`, `cex_token_profiles`, `token_image_assets`,
-`token_image_source_dirty_targets`, `token_profile_current`,
-`token_profile_projection_frontiers`, and the four unused `checkpoint_*`
-tables, and deletes their `queue_terminal_events` rows.
-
-0277 drops the whole GMGN lane in child-before-parent order:
-`news_event_market_marks`, `asset_identity_current`,
-`asset_identity_evidence`, `enriched_events`, `event_anchor_backfill_jobs`,
-`market_tick_current`, `market_ticks` (with its default partition),
-`price_feeds`, `cex_tokens`, `token_intent_lookup_keys`,
-`token_intent_evidence`, `token_intent_resolutions`, `token_intents`,
-`token_evidence`, `event_entities`, `events`, `raw_frames`,
-`registry_assets`, `collector_pending_items`, `persisted_live_events`,
-`us_equity_symbols`, and `provider_circuit_state`; it drops the
-`forbid_market_fact_update()` function and deletes the
-`queue_terminal_events` rows of `event_anchor_backfill_jobs` and
-`collector_pending_items`.
-
-0278 drops the whole Macro lane in child-before-parent order:
-`macro_document_analysis_jobs`, `macro_document_analyses`, `macro_documents`,
-`macro_fed_official_role_facts`, `macro_release_facts`, `macro_series_facts`,
-`macro_module_current`, `macro_module_frontiers`,
-`macro_dataset_projection_states`, `macro_acquisition_targets`,
-`market_position_facts`, `market_settlements`, `market_observations`,
-`market_instruments`, and `queue_terminal_events` (whose only writers were the
-Macro repository and the projection frontier); it also drops the
-`reject_macro_fact_mutation()` function. No revision performs a provider,
-broker, or outbound call.
-
-0279–0283 add listing admission, the instrument universe, legacy label-v1 and
-Price Review. 0284 freezes fact/evidence versions. 0285 verifies legacy-label
-migration, hard-deletes `news_event_labels`, creates append-only ReviewDesk
-evidence and the security-barrier task view, and grants Serve only INSERT on
-the two review fact tables in addition to its read access. 0286 adds content-addressed datasets,
-candidate/evaluation/deployment artifacts, pairwise cases and exact model
-recordings. 0287 adds durable canary activations, one assignment per Event and
-runtime manifests. 0288 adds the bounded retention function, cold-Janitor
-state, and indexes used by its ordered batches. 0289 reasserts the exact
-Workers `SELECT`/`INSERT` evidence-snapshot grant and revokes rewrite access;
-`db audit` now verifies that role contract so a missing runtime grant fails the
-rollout check before a live Event discovers it. 0290 removes an ineffective
-`FOR SHARE` from the append read: PostgreSQL otherwise requires UPDATE for the
-locking SELECT even though the immutable table rejects UPDATE. Migration never
-calls the model or derives a release PASS. 0291 removes the local OpenNews
-Strategy allowlist. 0292 adds Program version/SHA to verdicts, Predictor/call/
-attempt/route usage and cost fields to model recordings, and the append-only
-`news_learning_epochs` row whose database deployment timestamp starts
-`program_v1`; its explicit disposition makes all Prompt-era learning evidence
-audit-only and promotion-ineligible. `0293` preserves that row and appends
-`program_v2` after correcting the semantic fast-retry state machine and
-hardening the restatement sentinel, making `program_v1` evidence audit-only as
-well. `0294` preserves both prior Program epochs and appends `program_v3` for
-the expert quality baseline and semantic normalization, making `program_v2`
-evidence audit-only for its release decisions. `0295` preserves v1-v3 and
-appends `program_v4` for the D-generation ownership hard cut; `0298` preserves
-v1-v4 and appends `program_v5` for candidate-conditioned ToldContext, making
-every earlier cohort audit-only for current release decisions. `0301`
-hard-renames persisted `priority` to `queue_priority`, adds
-atomic editorial/scored/runtime-manifest judgment identity, trips old canaries,
-and starts `program_v6` for factory/executable v4 and policy v10. None of these migrations
-deletes history or claims a release PASS.
-`0303` preserves that history and appends `program_v7` for factory/executable
-v5 after the #162 Program/Learning package split; v6 evidence remains audit-only.
-`0304` is the #193 strategy-artifact hard cut: it adds no column, trips every
-armed or active canary whose candidate the new image cannot load, and appends
-one migration receipt to `news_learning_artifacts`. It leaves `program_v7`
-open on purpose — the artifact serialization and the Program root changed, the
-evidence did not — so the reviews accepted under the rubric of the day stayed
-eligible and the epoch row goes on naming what the epoch was opened with. It is
-irreversible.
-`0305` is the #193 compile-record hard cut: it adds `compile_record` to the
-learning-artifact kind constraint while keeping `compile_receipt` in it, and
-trips every armed or active canary whose candidate was registered against the
-retired receipt chain. It leaves `program_v7` open for the same reason and is
-irreversible as well.
-`0315` is the #288 exact source-contract route and Event-kind hard cut. It
-trips open canary activations and appends the factory-v6 to factory-v7 receipt,
-but neither rewrites nor appends the `program_v7` epoch row. Earlier rows and
-bundles remain immutable audit history; exact current-bundle acceptance makes
-prior-factory evidence audit-only, so the factory-v7 cohort starts at zero.
-`0318` is the #306 prompt-layer hard cut. It
-appends `program_v8` for `factory_v8` and trips every armed or active canary.
-Two byte changes land under that one identity migration, deliberately paid once
-rather than twice: the sealed kernel / nine RulePacks / advisory / authority-seal
-layering collapses into one seed instruction per Predictor, and the Program's
-self-owned chat transport composes the request envelope DSPy's JSON adapter used
-to compose. `program_v7` evidence — which closed with zero accepted candidates,
-zero canary activations and two empty advisory instructions — becomes immutable
-audit history. It adds no column and is irreversible.
-`0319` is the #310 envelope hard cut and the current epoch boundary. It appends
-`program_v9` for `factory_v9`, trips every armed or active canary, and re-issues
-the stable root over unchanged seed texts. The self-owned transport's
-structured-output constraint now follows the endpoint — `json_schema` where
-supported, `json_object` with the same schema inlined into the system message
-for DeepSeek-class endpoints — which moves fallback-route prompt bytes; the
-first hours of the v8 cohort, a third of whose verdicts degraded against the
-rejected format, become immutable audit history.
-`0320` adds the News catalogue's immutable listing-validity events and refuses a
-warm migration. Its execution ledgers were dropped by `20260901_0347`.
-`0321` is #314's computed-identity cut and the last epoch migration there will
-be. It adds `bundle_sha` and `envelope_sha256` to `news_learning_epochs`, ties
-`epoch_id` to `left(bundle_sha, 8)` by CHECK, relaxes `program_factory_id` to
-nullable, and allowed the startup barrier to open the running bundle's epoch
-itself; the append-only trigger remains the durable mutation boundary. The
-artifact loses its `factory_id` field, which
-re-issues the stable root over unchanged seed texts one last time, so the first
-deployment after this migration opens a new `bundle_<sha8>` epoch and trips every
-armed or active canary. After it, an identity migration is a code change plus a
-re-pinned line in `tests/contract/test_program_release_identity.py`.
-`0322` adds the durable News delivery edit-intent lifecycle and its stale-edit
-index; it performs no provider call and requires no new credential or runtime
-role. `0323` adds the receipt-bound deletion lifecycle and its stale-intent
-index for authoritative five-venue single-name absence.
-`0324` replaces both lifecycle shape constraints with two-valued predicates so
-PostgreSQL `NULL` semantics cannot admit partial edit or delete intent. It fails
-closed if an existing row violates either lifecycle before replacing the constraints.
-Issue #325 owns the operator-approved recovery: keep the database at `0323`,
-repair only the invalid lifecycle tuple from provider evidence, and then roll
-forward to `0324`; never start an older-schema image after that migration commits.
-
-The retired `trading.regime.*`, `trading.policy.*`,
-`trading.candidates.symbol_cooldown_seconds`, `trading.candidates.max_rank_in_window`,
-`trading.candidates.news_lookback_seconds`, `trading.candidates.oi_lookback_seconds`,
-`trading.candidates.max_dspy_cases_per_day` and `llm.trading_decision_model` keys
-must not appear in `~/.tracefold/config.yaml`; the settings models are
-`extra="forbid"`, so any one of them fails Serve and Workers at settings load.
-[Public contracts](CONTRACTS.md) carries the keys that are accepted today.
-
-Before applying 0278 remove `providers.macro_sources` and the
-`llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
-settings schema rejects them and Serve/Workers fail to start with them
-present. Verify after restart: `tracefold db audit` reports
-`migration_status` `ready`, current News table counts, and
-`news_schema.exact`; `tracefold news bus-check` shows one consumer on
-`news.raw` and `news.triage`; `/api/news/status.state` becomes `ready` only
-after the WSS, broker, model, delivery, and Workers health checks are all green;
-`/api/macro/overview` answers `404`; and the first candidate
-Event receives a Triage verdict within seconds.
+[Setup](SETUP.md) owns ordinary startup and removed configuration fields.
+Historical learning rows remain audit evidence, not a current optimization lane.
 
 ## Operator actions and retention
 

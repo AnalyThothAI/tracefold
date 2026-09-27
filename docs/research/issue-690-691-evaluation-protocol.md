@@ -1,5 +1,9 @@
 # Trading evidence and strategy evaluation (#690, #691)
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 ## Recorded scope
 
 The fixed historical window is `[1790154395682,1790240795682)`. The Issues

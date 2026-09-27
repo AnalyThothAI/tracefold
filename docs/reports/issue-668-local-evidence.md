@@ -1,5 +1,8 @@
 # Issue 668: local evidence engineering receipt
 
+> **Historical engineering evidence.** See the [receipt index](README.md) for scope.
+> These observations apply to the recorded source/data, not automatically to current main.
+
 Scope: [#668](https://github.com/AnalyThothAI/tracefold/issues/668), including its
 consolidated #669/#670 responsibilities and cancellation of #671 web fetching.
 Base: `449ee87ad4d3614e7b8c3228a1731b3e3ae92f16`; refreshed against origin/main

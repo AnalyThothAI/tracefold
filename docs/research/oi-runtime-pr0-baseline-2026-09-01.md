@@ -1,5 +1,9 @@
 # #475 PR-0: OI Runtime owner and concurrency baseline
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 This is the before-change receipt for Issue #475. It binds the current owner
 matrix and reproducible local measurements to measured commit
 `1e0ac22905ad69d3d36e38157520913b008dbb8e`, whose immutable pre-change main

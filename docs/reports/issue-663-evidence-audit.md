@@ -1,5 +1,8 @@
 # Issue 663: engineering and evidence audit
 
+> **Historical engineering evidence.** See the [receipt index](README.md) for scope.
+> These observations apply to the recorded source/data, not automatically to current main.
+
 Audit date: 2026-09-19 UTC. Source baseline: `c8c89065928de2a225cd502cbe40196bffe3609c`.
 This report supports [#663](https://github.com/AnalyThothAI/tracefold/issues/663),
 continuing [#651](https://github.com/AnalyThothAI/tracefold/issues/651). It is not a model-quality

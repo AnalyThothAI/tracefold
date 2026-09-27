@@ -1,5 +1,9 @@
 # OI Stage A: the contract-open-interest rule does not survive its own holdout (#459, 2026-09-01)
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 **Verdict: `NO_CANDIDATE`.** Stage B is not built.
 
 `oi-stage-a-replay-receipt-2026-09-01.json` beside this file is the machine receipt. It is reproduced

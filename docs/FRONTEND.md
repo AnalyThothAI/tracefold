@@ -1,789 +1,166 @@
-# Frontend
-
-> **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
-
-The React operator console is a News workbench plus one read-only Alpha/Execution monitor. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/market`, `/api/news/market/{item_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/news/wallets`, `/api/news/wallets/events`, `/api/news/wallets/events/{episode_id}`, `/api/trading/status`, `/api/trading/cases`, `/api/trading/executions`, and the on-demand `/api/trading/cases/{case_id}/replay` over HTTP. The two market reads arrived with #553 PR-1: OI frames, liquidations, smart-money prints and market sources we have no parser for are stored facts rather than Events, so the Event feed cannot serve them and `/api/news/status` no longer counts them. The wallet reads expose token episodes, direct episode detail and auxiliary roster/state.
-`GET /api/trading/signals` and the two `GET /api/trading/execution/*` projections were deleted in #537 PR-5: no browser surface called any of the three, they were three more public shapes over the ledgers `/api/trading/executions` already reads folded, and `tracefold trading signals | observations | commands` reads the same repository directly. `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were deleted in #589 PR-2 on the same terms: the OI frame table joined each admission row to its Event on the same line, #553 PR-1 removed that join with the Events themselves, and `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two admission-ledger statements directly. Every operation is a read. The console manual command route and controls were removed in #624. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
-
-## Source Layer Map (`web/src/`)
-
-| Directory                | Responsibility                                                                                                                                                                                                    |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `app/`                   | Application composition: providers, router wiring, top-level error boundary, and route fallback. It may compose feature route elements, but it must not own feature data queries or business rendering.           |
-| `routes/`                | Route entries and URL-state orchestration. Route modules parse/serialize shareable state and choose the owning feature view.                                                                                      |
-| `features/<name>/api/`   | Feature-owned endpoint adapters, query keys, and reusable server-state hooks. Feature public hooks/controllers may own narrow server reads when they are the feature boundary consumed by routes or UI.           |
-| `features/<name>/model/` | Pure feature helpers, view models, and constants. Framework-free where practical.                                                                                                                                 |
-| `features/<name>/state/` | Local client state that is not shareable URL state and not server cache state. Keep it narrow and feature-owned.                                                                                                  |
-| `features/<name>/ui/`    | Feature screens and components. UI reads data from props or feature hooks exposed through the feature public index, not from another feature's deep files.                                                        |
-| `shared/hooks/`          | Framework hooks that belong to no feature, such as `useMediaQuery` (which frame to *mount*).                                                                                                                       |
-| `shared/query/`          | Cross-feature React Query key helpers. Feature hooks own their queries; there is no cross-feature cache patching.                                                                                                 |
-| `shared/routing/`        | Reusable route parsing, path building, and URL search-param helpers.                                                                                                                                              |
-| `shared/ui/`             | Reusable presentational primitives (`Card`, `Metric`, `Bar`, `FactGrid`, `KeyValue`, `ActionButton`, `IconButton`, `PageState`, `Drawer`, `RouteBackLink`, `PageShell`, `PageHeader`, `PageReadingContent`, `SourceLine`, `EmptyNote`). No server fetching. |
-| `lib/api/`               | Typed HTTP client facade and auth-token plumbing. Requests resolve against `window.location.origin`; `vite.config.ts` proxies `/api` in development. No feature query hooks.                                       |
-| `lib/types/`             | Generated OpenAPI types (`openapi.ts`, regenerated by `npm run generate:types`) plus the frontend-owned `ApiResponse` envelope.                                                                                   |
-| `styles/`                | Application-global styles and their local imports. Feature/page selectors belong beside their owning component or feature as side-effect CSS, or as real CSS Modules with local class bindings. |
-
-Do not add new code under old `api/`, `store/`, or `components/` roots. Public feature imports should come from `@features/<name>`; sanctioned route-shell entrypoints may use `@features/<name>/shell`. Deep imports across feature internals are blocked by lint and grep gates; the relative-import boundary gate derives feature roots from `web/src/features`.
-
-`features/news` follows that map: `api/newsQueries.ts` (query hooks and contract
-types), `model/` (`newsLabels.ts`, `newsTime.ts`, `newsPrice.ts`, `feedFilters.ts` — the
-URL-owned feed state — and `marketFacts.ts` — the market page's kind vocabulary and its
-URL-owned `?kind=`), `state/` (`useAnchoredEventFeed`), and
-`ui/` split into `chrome/` (the heading block, tone grammar, outcome badge, direction chip,
-asset chips, quote values, health pill — anything more than one News surface renders; the
-route measure, the provenance line and the nothing-here sentence are `@shared/ui`),
-`feed/`, `detail/`, `status/`, `market/`, `wallets/` and `symbol/`. `model/walletFacts.ts` holds the
-wallet page's reason labels, raw fill kinds and URL-owned
-`?history_range=`, `?episode=`, `?cursor=` and `?to_ms=`, by the same rule `marketFacts.ts` follows. `features/news/shell.ts` is the shell
-entrypoint and exports hooks, pure helpers and types only, so importing it does not pull
-the route components into the eager shell chunk.
-
-## Test Map (`web/tests/`)
-
-`web/src/` contains production frontend code only. Frontend Vitest, React Testing Library, MSW, fixtures, architecture gates, and Playwright specs live under `web/tests/`. Repository-root `tests/` remains the Python/FastAPI pytest tree.
-
-| Directory           | Responsibility                                                                                         |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| `unit/`             | Pure model, state, mapper, and library tests that mirror production source paths.                      |
-| `component/`        | Focused React component, hook, and feature API hook tests.                                             |
-| `routes/`           | App and route integration tests that render `App` or route shells.                                     |
-| `architecture/`     | Static source gates for import boundaries, CSS ownership, test placement, and dead compatibility code. |
-| `fixtures/`         | Shared frontend test fixtures.                                                                         |
-| `msw/`              | MSW server, handlers, and named API scenarios.                                                         |
-| `render/`           | React Testing Library render wrappers and route render harnesses.                                      |
-| `e2e/golden-paths/` | Required four-viewport Playwright interaction specs over an intercepted API.                           |
-| `e2e/full-stack/`   | Required Chromium smoke against real FastAPI static/bootstrap/API reads.                               |
-
-## Conventions
-
-- **Design contract and page archetypes.** Tracefold has one light, restrained
-  operator-workbench language: 冷石板 / B SLATE (#74, redesigned to the v6 spec). The
-  console is read in Chinese, and Han glyphs bloom under light-on-dark at these sizes,
-  so the ground is a cool grey `#f1f3f5` and the ink is graphite `#1e2733`. A panel is white,
-  radius 10, separated from the canvas by a 1px *inset* ring (`--ring-panel`) — never by
-  lightening and never by a drop shadow. Real elevation is spent on exactly four things:
-  the segmented control's selected pill, the drawer, the pipeline-health popover, and the
-  time menu. `styles/tokens.css` is the only semantic colour, type, radius, depth, focus
-  and shell token contract; production code must not add a parallel theme or
-  compatibility alias, and it must not define a colour, a type step or a radius outside
-  it. The type scale is seven steps (`--type-page-title` … `--type-eyebrow`) and there is
-  no eighth: Chinese body text is set in the system sans, and every figure, ticker, key
-  and duration is monospace with tabular numerals so a number that changes on a poll
-  never re-flows the ones beside it.
-
-  Stable routes declare one of two information archetypes with `data-page-archetype`:
-  `scan` for workspaces and `case` for detail documents. Both use the same `PageShell`:
-  a centred 1340px maximum outer width, 16px top/side padding, 48px bottom padding and
-  12px section gaps. Below 768px, padding is 12px top/side and 16px plus the safe area
-  at the bottom, with 9px gaps. Only `PageShell.css` owns this geometry; feature classes
-  must not override it. `PageHeader` owns the 28px/42px title, weight 660, and its
-  baseline-aligned subtitle, which wraps naturally on narrow screens. Connection and
-  runtime timestamps belong to Trading's safety block, not a separate page masthead.
-  Loading, failure, empty and ready states remain inside the same shell and header.
-  Detail routes keep the shared outer edge and constrain only their document body to
-  1000px with `PageReadingContent`; their return controls retain workspace alignment.
-  The four-viewport `page-layout.spec.ts` compares cross-route geometry and Trading's
-  cold/error/recovery states. Archetypes describe information hierarchy, never data
-  ownership or business inference.
-- **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, or `queryClient.set*` directly. The frontend architecture lane enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
-- **URL state.** Shareable route options (News feed `q`/filters/sort) live in
-  the URL and their owning route-state helpers. No route
-  carries hidden same-session scroll or selection state that would not survive
-  a hard reload.
-- **Transport.** The browser talks HTTP only. `useAppSession` reads
-  `/api/bootstrap` (`{ws_token}`) once and installs the bearer token on
-  `lib/api/client`; feature hooks poll `/api/news/*` on
-  code-owned intervals with ETag revalidation. Trading monitoring is read-only
-  and the bearer grants no console mutation. There is no `/ws` client, no
-  socket provider, no live-market cache patching, and no subscription registry;
-  the shell status pill derives only from `/api/status.runtime`.
-- **Topbar search.** The single topbar search box is News-only: its label is
-  `news search`. Its placeholder is `标的 / 事件关键词` and the `/` key is an inert visual keycap, on
-  every route (#256): the artifact draws one topbar, and a box that renamed itself between surfaces taught
-  the reader that the two searched different things when they never did. Submit
-  always navigates to a fresh `/news?q=<query>&outcome=all&hours=168` scope from
-  every route; it never carries a previous cursor or hidden feed filter, and an
-  empty submit produces the same default scope without `q`. The `/` key has no
-  special behaviour. The server reports whether the query was classified as
-  exact asset identity or Event text; the feed renders that visible scope and a
-  mode-specific zero-result explanation. The feed toolbar may change its own
-  visible filters while preserving `q`. There is no global token/handle/CA
-  search and no second search entry inside the News feed.
-- **Topbar context figures.** The right side identifies the active workbench with facts already present in
-  the shared News and Trading status queries. The Event feed shows `PUSHED 24H / E2E P50`; other News
-  reading surfaces retain `PUSHED 24H / E2E P95`, pipeline status shows `EVENTS 24H / QUEUE P95`, and Trading
-  shows `ALPHA / EXECUTION / SIGNALS 24H`. 市场事实 shows none (#553 PR-1): its figure read
-  `pipeline.telemetry_parsed_24h`, which is not a status field any more, and market intake is a per-kind
-  figure the page itself leads with — a frame figure could only be a second poll of the page's own endpoint. No route starts an extra request for chrome and the browser does
-  not derive a rate, score, or readiness state. These figures leave the phone topbar; Trading repeats its
-  three safety facts in the page header at that width.
-- **News routes.** `/news` is a decision-first scan surface over the flat
-  Event feed from `/api/news/feed`; the browser never clusters, scores,
-  triages, throttles, or reorders. The public News navigation contains
-  exactly `事件流`, `市场研究`, `钱包研究` and `交易执行`.
-
-  `Alpha 判定` at `/news/alpha` was a fourth destination until #460. It read one
-  endpoint — `/api/trading/cases` — and so does `/trading`, so the list of Cases
-  existed twice. The thing it showed that `/trading` did not was one Case's
-  frozen evidence, and that moved into the Trading Case drawer rather than being
-  deleted with the page: opening a Case there shows its terminal answer, its
-  identity and timestamps, and the frozen check table (check, operator,
-  threshold, measured, pass/fail). A Case written before `policy_checks` existed
-  says so rather than showing an empty table, and every threshold on screen is
-  the Case's own, never today's configuration. A third card restated the frozen
-  `policy_config` under that table until #604 T3 removed the field from the
-  contract: the threshold column already prints those numbers beside the
-  condition each one was measured against. `/trading?case=<id>` opens one directly, and the desk's own Case
-  rows link that way. Identity lookup covers the retained Case; a missing identity
-  has an explicit empty state.
-
-
-  `/news/market` is `市场研究` (#621, following #553 which replaced `/news/oi` and the OI
-  audit before it). OI frames, liquidations, smart-money prints and market
-  sources we have no parser for are not Events: they are observations, stored as
-  facts, and this is the only browser surface that reads them. Nothing on the
-  page is judged, scored, admitted or pushed by the console — the Event feed's
-  vocabulary does not apply here, and neither does the Signal lane's.
-
-  It reads `/api/news/market` for the page and `/api/news/market/{item_id}` when
-  a reader selects one group. At 1100px and wider, an inline evidence panel
-  sits beside the list; narrower screens use the same shared Drawer as a sheet.
-  Selection is explicit, carried by `item`, and survives a hard reload independently
-  of the currently loaded list. Escape or close restores the opener focus.
-  The URL carries kind, time window, asset and
-  measurement scope, sort and pagination. The initial window is 72 h;
-  pagination anchors absolute bounds so a moving clock cannot shift a page. Consecutive observations of one `group_key` arrive collapsed to
-  their newest member with the run's `observation_count` and its first/last
-  clock, so a liquidation cascade is one row that says how deep it went rather
-  than four hundred.
-
-  **Three independent reads, three independent failures.** The list is the page:
-  `/api/news/market` answering is the only precondition for a row. This is the
-  defect the cut exists to remove — `/news/oi` wrapped its whole body in a
-  `PageState.Stale` gated on `/api/news/status`, so a 5xx on a pipeline
-  dashboard endpoint blanked the telemetry data beside it. Status is now one
-  supporting read behind one strip: the ingest wire, which is the single
-  question the stored rows cannot answer, since an empty window is either a
-  quiet market or a dropped connection. Its failure names itself and reaches
-  nothing else. The third read is one expanded group's Item, and it fails inside
-  that group and nowhere else. And the page reads no Trading endpoint at all: a
-  market observation carries no `event_id`, so there is no key for an admission
-  verdict to join on and nothing an admission read could answer. #589 PR-2
-  deleted the two `/api/trading/gate*` routes for that reason.
-
-  **Parse and push remain independent evidence.** `parse_status` /
-  `parse_error` say what the parser could read out of the provider's record;
-  `notification_status` / `notification_reason` say what the notification owner
-  did with it. Their separate fields live in the expanded collection and
-  delivery disclosure, below the research evidence. `notification_status`, `notification_reason` and
-  `parse_error` are open server strings and are printed verbatim — the operator
-  greps them, and a Chinese gloss invented in the browser would either rename
-  one or silently swallow a value this build has not seen. There is no
-  page-level "is push wired" banner (#553 PR-2): one group can be `sent` while
-  another is `merging` in the same moment, so a single banner would be a second,
-  weaker answer than the retained receipt for each observation. The expanded detail adds
-  the card's own numbers — its trigger reason, how many observations it spoke
-  for, how many attempts it took, and which provider answered — because "sent"
-  without them cannot be checked against the timeline beside it.
-
-  Five kinds share that strip. Four of them are provider frames; `wallet` is not
-  (#572 PR-2) — the chain tape derives it from the fills of the followed wallets,
-  so it is always `parsed`, always `robinhood_chain`, and its `wallet_*` fields
-  are absent on every other kind. It appears in the market list and the market
-  detail like any other kind, and since #572 PR-3 it also has a destination of
-  its own at `/news/wallets`, which answers what the *tape* is doing rather than
-  what one observation said.
-
-  Market research defaults to OI. The row leads with typed change, actual
-  measurement window, USD notional and venue/instrument. It describes a
-  discrete provider observation; it draws no continuous OI history and
-  does not infer long/short direction from OI alone. The evidence panel can show
-  the latest eight discrete bars only when every retained sample has the same
-  proven provider, venue, instrument, measurement definition and window. Signed
-  values remain visible; no line interpolates unsampled periods. Incompatible or
-  missing measurement contracts withhold the chart while the raw timeline remains.
-  Numeric sorting requires
-  a proven matching provider, venue and measurement definition. The whole
-  selected time window is filtered before sorting, with stable tie-breaking.
-  Collection/parse/notification counts are secondary and explicitly describe
-  the full time window before asset/definition filtering.
-
-  `/news/wallets` is 聪明钱警报: Robinhood Chain · 多钱包集中净买入.
-  One row is one token episode, including muted/unsent episodes. It presents the initial
-  30-minute buyer count and net amount, time, episode state and notification result.
-  The UI never sums pages or recomputes business money.
-
-  The independent `/api/news/wallets` status block shows source address count, source scope,
-  complete-window support, collection cutoff, roster attempt/success/error/next retry, blocked
-  receipt and the 24-hour episode → intent → sent funnel. The source is the full valid address
-  list, not a quality/whale leaderboard. Display metadata failures are a separate warning.
-  Server coverage includes gaps; an adequate address count alone is not a trading signal.
-  The status states remain `unread`, `query_failed`, `notifications_disabled`,
-  `roster_insufficient`, `warming_up`, `collection_lagging`, `send_failed`, `no_match`, `healthy`.
-  Each explains a different absence of events. The browser consumes the server's
-  `collection_lagging` and does not compare chain time with its own clock.
-  Status and event-list failures preserve the other section's data. “刷新事件” refreshes
-  event reads only; it does not initiate a provider roster refresh.
-
-  The URL owns history range (24h/72h/7d), anchored end time, cursor and episode ID.
-  Deep links query the episode directly. Detail order is initial event → member net flows
-  → raw timeline → current changes → price observations. Initial and latest snapshots are
-  separate; all exclusions and full addresses remain accessible on mobile without hover.
-  Independent roster/state and detail errors preserve existing event data. Missing price,
-  missing baseline, late sample, no events, stale collection and read failure have distinct
-  wording. The t0 baseline reads 首次可得参考价 with the delay it cost from the trigger, and each
-  horizon prints its target, actual and reference times; a horizon with no comparable baseline
-  stays 未知 rather than 0%. Explorer links remain limited to validated chain-4663 transaction hashes.
-
-  `raw` is a shape, not a failure. An `unknown_market` source has no parser at
-  all, and its record is retained with its provider line and its stated reason —
-  which is why the per-kind strip puts `raw` beside `parsed` rather than under
-  it. That strip is `sources[]`, counted off the stored facts in the same
-  response as the rows. It describes all facts in the time window; kind,
-  asset and measurement filters narrow the rows, not this intake summary. Its second line is the receipt half — `merged`, `sent`,
-  `failed`, `unknown` — drawn quieter than the intake because it answers a
-  different question: what a reader was actually told about what arrived. Every kind keeps a tile whether or not it sent anything:
-  「这个来源 72 小时没发过东西」 is the answer a reader came for.
-
-  The five kind chips write `?kind=` as the server's own comma-separated subset
-  and each selection is a real request, because `sources[]` describes the whole window
-  and a browser-side split would leave the strip disagreeing with the rows under
-  it. A subset that narrows nothing — empty, or all five — is the absence of the
-  filter rather than a spelled-out list, so it shares one query key and one
-  `filters.kind` with the unfiltered page. Expanding a group is one request for
-  the group's whole retained timeline, never one per member, and it is not
-  polled: a stored provider payload cannot change.
-
-  Rows lead with the stored subject and typed research evidence. The provider's
-  raw line and technical columns remain available in the expansion. It re-parses nothing: deriving a
-  number from `title` in the browser would be the ingest parser running a second
-  time, drifting from the stored fact the moment either side changed. It draws
-  no open-interest curve — the provider emits a record only when its own trigger
-  fires, so a line between them is invented — and it edits no threshold.
-
-  `/news/symbols/:base` is 代币页 (#207 PR-W1): what one `base_symbol` is, and
-  everything that happened to it. It reads three endpoints, each on its own key
-  and its own rhythm — `/api/news/symbols/{base}` for identity (`contracts`,
-  `tradeable`, `normalization`), `/api/news/feed?symbol=&hours=24` for the
-  Events, and `/api/news/quotes` for the current mark — and closes every panel
-  with the same mono source line 市场事实 uses. Identity does not poll:
-  the universe snapshot lands on a schedule measured in hours, and the two
-  things that do move each arrive on their own key.
-
-  The identity card keeps three answers separate. `known` is whether any venue
-  we poll lists the name; `tradeable` is the #91 distinction — a `us.listed`
-  contract proves a ticker exists, not that the lane can act on it, so a
-  reference-only row is rendered *and* labelled rather than filtered away. The
-  quote is a third poll and is never a zero. A base the universe has never seen
-  is `known: false` with an explanation, not a 404: every asset chip on the
-  console links here, including the struck-through ones, so 404 would be the
-  ordinary outcome of following one.
-
-  The events table mixes both Event kinds on one clock — the reason a
-  per-token page exists — and its channel tabs (`全部 / 已推送 / 新闻 /
-  上币/下币`) filter the loaded window in the browser, unlike 市场事实's
-  server-side kind chips. That is deliberate and stated in the source
-  line: `/api/news/feed` has no `event_kind` parameter, so a server count would
-  describe a window the table is not showing; the tab count and the rows under
-  it come from the same loaded set. `OI 帧 / 强平 / 未支持市场` left this strip
-  with the Events behind them (#553 PR-1): those records are market observations
-  and are read on 市场事实, so a tab here could only ever count zero. The lane is the server's `event_kind`, never
-  a guess from `admission`, title, or verdict. The rendered token page has no
-  watchlist control, price chart, or open-interest curve.
-
-  The token page reads no Trading endpoint at all (#537 PR-5). It carried one
-  `Alpha 复盘 · Case → Signal` section from #433-C, reading
-  `/api/trading/cases?underlying=` and `/api/trading/signals?market=…` and
-  joining them by `case_id`: a second Case list, on a News surface, over the two
-  ledgers the desk renders folded into one row per entry with its whole venue
-  outcome. The desk is where a Case and what the Runtime did with it are read
-  together; this page answers what happened to one name.
-
-  **Historical pre-433-C UI note (retired).** The previous artifact's order was
-  identity band, then the capital
-  lane's two sections, then the event list. 交易视角 · 最近一帧怎么读 reads the
-  newest case the lane opened for this token and shows three things in the order
-  the lane asks them — which quadrant it assigned, where the move that had
-  already happened sits against the band the strategy would still enter inside,
-  and how the frame's measurements compare with the floors. 交易复盘 lists every
-  case in the window, and expanding a row shows the named rule beside the frozen
-  `strategy_config` it was decided against. Both read one
-  `/api/trading/intents?underlying=` batch, so they share a poll, and the frame is
-  attached by the `event_id` the ledger itself published — never by symbol and
-  time, the join 市场事实 still refuses to guess at.
-
-  Each of the band's three figures is printed once, where the artifact puts
-  them: 24H 事件 and 已推送 have no second copy in the page header, and the OI
-  window figure has none in the rank card below, which is left carrying the
-  consequence — a full window withholds this name's next qualifying frame —
-  because that is what no tile can hold. The 结果 column keeps the ledger's bps
-  rather than the artifact's percent, so one field reads the same on this page
-  and on the Trading workbench.
-
-  Every threshold in both sections is the case's own frozen one. The artifact
-  hard-codes a 1–6% band and calls the window 「帧前 1H」; those were the numbers
-  of the strategy running when it was drawn, and today's are 0–10% over five
-  minutes, so the band's edges, its caption and the floor rows all come out of
-  `strategy_config`. A case that froze none says so rather than borrowing
-  today's configuration.
-
-  The floor table is keyed by `strategy_id`, and each row carries the operator
-  its own strategy refuses on. `/api/trading/cases?underlying=` filters on the
-  name alone, so this token's newest case can belong to any identity the ledger
-  holds, and identities freeze disjoint `strategy_config` key sets — one
-  identity's rows over another's case label every row 未冻结 and explain nothing.
-  Inclusivity is per key as well: the OI × smart-money template refuses
-  `whale_oi_ratio_bps <= floor` and `whale_long_profit_bps <= floor`, its own
-  docstring calls that non-negotiable, and its shipped profit floor is 0 — so a
-  table reading `>=` everywhere stamped 过地板 on exactly the frames the ledger
-  refused. A row prints `>` or `≥` as the strategy wrote it.
-
-  A floor row has four answers, not three: 过地板 and 低于地板 are comparisons,
-  未冻结 is the case having frozen no such floor, and 未测量 is a frozen floor
-  over a frame carrying nothing to compare it with — the common case, since most
-  cases publish no joinable `event_id` at all. Collapsing the last two printed
-  未冻结 in the same row as the `≥ 95.00%` the case had frozen. The sentence
-  under the table is counted off those rows for the same reason: 「一条都没过」 is
-  itself a measurement, and it was being asserted over rows that had never been
-  read. That sentence names the reader gate only when the frame's own `delivery`
-  says it was sent — the capital lane deliberately consumes frames the reader
-  withheld, so 「这一帧推送了」 over one of those states the opposite of the
-  ledger. The artifact's 研究分桶 card becomes 地板对照 on the same principle:
-  the buckets it names by hand belong to a strategy that no longer runs, where
-  the measurements-against-frozen-floors reading stays true.
-
-  An unanswered read is never an answer. `perspective == null` and an empty case
-  table each carry three states — the lane opened no case, the batch has not
-  come back yet, the batch failed — because rendering all three as the first
-  makes the strongest possible positive claim exactly when the page knows least.
-  The two halves of that batch also have different windows: Cases are bounded at
-  `window_hours`, active Intents are unbounded in time by design, so neither
-  section calls the batch 「这个窗口」 without naming both.
-
-  Both sections name every endpoint they read in a `SourceLine`. 交易视角
-  joins the Case to its frame, so it declares `/api/trading/intents` *and*
-  `/api/news/feed → events[].oi`; the identity band declares the two endpoints
-  its three tiles come from beside the one its contracts do. A card that names
-  one of two sources points an auditing reader at a response that does not carry
-  the figure.
-
-  When the quadrant is 象限不明, the panel names the case's own frozen
-  `contexts.regime.reason`, published beside `pre_move_bps` and
-  `strategy_config` as the projection's third named manifest slice. Not
-  `policy_reason`: that is the strategy's later answer and is null on a Case the
-  strategy went on to trade — which is exactly the traded-with-unclear-quadrant
-  population the smart-money lane creates whenever a move sits between the
-  shared 600 bps ceiling and its own 1000. Reading it there told an operator the
-  ledger had recorded no reason, over a manifest that had recorded one.
-
-  The Case column carries `case_state` for both halves of the batch. Case and
-  Intent execution states are disjoint vocabularies: the next columns separately
-  show Intent identity/state and the proven Outcome, so neither is mislabeled as
-  a Case transition.
-
-  Two things the artifact draws that this lane cannot answer. `thesis_zh` and
-  `invalidation_zh` are not written by a pure rule — the same finding #256
-  recorded for the Case surface — so the row expansion names the rule instead of
-  paraphrasing a sentence nobody wrote. And a token the lane never opened a case
-  for gets no reading at all: 「never asked」 and 「asked and found nothing」 are
-  different answers, and four unlit quadrants would assert the second.
-
-  Every `base_symbol` on the console routes here (#207 principle 9): the asset
-  chips on feed rows, the drawer and the Event detail, and the collapsed
-  identity in the Event's 符号归一 block. The feed row also carries the fixed
-  1H/4H Event Reaction in its own column, on held rows as well as pushed ones —
-  the verdict and what the market did are two different claims, and "the
-  pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
-  say. A horizon that has not matured reads `未到期`, never `0.00%`.
-
-  `/trading` is 交易执行. A compact safety strip leads with service readiness,
-  permission for new entries, its blocking reason and the reported connection.
-  Three URL-owned tabs follow: 持仓与订单 (default), 策略判定 and 执行记录.
-  Positions and protection precede account totals. Recent completed decisions are
-  an independent 24-hour list beside positions, never attributed to a position
-  by symbol: account positions do not carry a Case identity.
-
-  The position price diagram uses recorded stop, take-profit, entry and mark
-  prices only. It orders endpoints numerically for long and short positions,
-  withholds incomplete/invalid ranges and labels marks outside the range. It
-  does not prove protection or execution; those claims remain venue facts.
-
-  Strategy operation and the #683 chain live under 策略运行与统计口径 (open in
-  the decision tab). Admission, Case and decision counts retain their independent
-  24-hour populations; Signal publication does not prove an order or fill.
-  The decision tab retains the server-filtered 25-row list, state, asset, reason
-  and scope-bound cursor. TRADE distinguishes published, unpublished and blocked
-  publication; WATCH distinguishes event wait from a research note or no review.
-
-  Case detail uses the shared Drawer inline at 1100px and wider and as a sheet
-  below that. It supports Escape and restores opener focus. Analysis detail
-  leads with its frozen conclusion, publication, reason, source and execution
-  links. Identity and frozen fields, then diagnostic attempts and historical
-  evaluations, use disclosures. WATCH conditions stay directly visible. Full
-  replay archives are fetched only on demand, including a selected failed or
-  fenced attempt. Root and conditional Case identities remain explicit.
-  Historical simulation and venue evaluation keep distinct source labels;
-  missing costs or market coverage remain unavailable rather than zero.
-
-  An OI observation links by persisted source Item ID to retained Cases,
-  including those older than 24 hours. Missing links are explicit; the UI
-  never guesses by symbol or nearby time. Every Case can inspect its retained
-  executions, with the different scope stated and a control to return to the
-  ordinary 24-hour list. An empty execution list is not a claim that a trade ran.
-  Execution rows have a compact summary and an `entry`-selected disclosure for
-  frozen risk, exits and separate realized/fee/funding/net amounts.
-
-  The validated `research_from` query carries the original market research path,
-  filters and selected observation through Case and execution links and reloads.
-  It accepts only local market research routes. A Case source link always uses
-  that Case's own persisted source Item ID; return context never replaces identity.
-
-  Status, execution and decision reads fail independently. Fact expiry uses
-  the server's absolute deadline and schedules a re-render even if no poll
-  succeeds. An empty positions array does not prove a flat account.
-  Live status refreshes every second while visible, and always revalidates on
-  window focus. Historical reads retain their 15-second interval. An expired
-  projection says 状态待确认, masks the safety answers and protection claims,
-  and labels retained positions/orders as the last read. The page does not infer
-  a runtime transition from a missed refresh or flash an updating indicator on
-  every live status poll. Manual execution controls and mutations are absent.
-
-  **One empty-ledger vocabulary.** Every ledger on the page says the same three
-  sentences about its own subject word: reading, unreadable, or empty. Three
-  blocks each carried their own copy of them and the failure banner named the
-  same ledgers again in a fourth.
-
-  When Decision is disabled, empty ledger copy says the lane has no work; it
-  never rebrands execution as paper. Loading, cold failure, stale refresh, and a
-  genuinely empty batch remain different page states. The responsive desk uses
-  cards at desktop, tablet, and phone widths. The ledger uses five summary columns
-  on wide screens and labeled entry cards on mobile or beside a Case panel.
-  Detail amounts wrap within their own panel; the document never scrolls horizontally.
-
-
-  The Event detail carried an admission badge until #553 PR-1 and carries none
-  now. Only a deterministic source key was ever reconstructible from an
-  `event_id`, and the deterministic lane no longer produces Events at all — a
-  market observation is a stored fact — so the badge could answer for nothing
-  and rendered null on every Event that still exists. It went with its query,
-  its vocabulary and its fixtures rather than staying as a component that draws
-  nothing.
-
-  Polling: Feed every 3 seconds; 市场事实's group list every 10 seconds; Quote,
-  Event detail, News Status and trading history every 15 seconds (one shared News
-  status query feeds the Feed header, the topbar health lamp, 市场事实's ingest
-  strip and `/news/status`). The three Trading reads run on `/trading` alone
-  (#553 PR-1): the shell polled `/api/trading/status` on
-  every route for a sidebar badge and two chrome figures until #537 PR-5 deleted
-  both. Token identity and one expanded market group do not poll.
-  Quote batches preserve Feed order while deduplicating, select the first 100,
-  and only then sort that selected identity for the request/cache key. Their
-  interval pauses in a background tab and `refetchOnWindowFocus` immediately
-  revalidates on return. A stale server quote keeps its number with a visible
-  `陈旧 Xm` marker and three-clock tooltip. A failed poll with same-session LKG
-  keeps the cached number but dims it and shows
-  `行情读取失败 · 上次成功于 …`; a cold failure uses the shared error surface.
-  Neither client condition invents a fifth quote state.
-  Feed, Event, and Status retain ETag revalidation and a `304` reuses the
-  cached body. There is no archive, revision timeline, read state, favorites,
-  subscriptions, per-Event AI panel, push inbox, notification settings,
-  browser model call, or adjustable threshold.
-- **Page state.** Only an active first HTTP request may show Loading.
-  Bootstrap pending/error, disabled query, transport error, same-session stale
-  cache, and typed module-unavailable states use distinct `PageState.*`
-  surfaces with a truthful retry/recovery action. A query disabled while the
-  bootstrap token is missing must never leave an infinite skeleton.
-- **CSS ownership.** `main.tsx` imports application-global CSS entrypoints only from `src/styles/`; that directory may organize those styles through local imports and nested files, but it may not become a bucket for component or feature selectors. New application-wide utility classes use the `tf-global-` namespace. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `PageState`, and `RouteBackLink` own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
-- **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. Global entrypoints imported by `main.tsx` must live under `src/styles/`; the harness does not require every file there to be imported directly. Component and route CSS must live beside its owner. The harness rejects feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, side-effect class names reused across feature roots, literal or locally derived colours outside `styles/tokens.css`, raw type sizes and radii outside the global scale, and unresolved custom properties. It does not preserve retired filenames. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
-- **Rendered geometry.** Responsive navigation, overflow, landmarks and interaction are protected in Playwright, where computed layout exists. The explicit four-viewport visual lane remains diagnostic rather than merge evidence. Source tests do not pin selector spelling, file layout, exact track strings or a CSS line budget, so equivalent refactors remain possible.
-- **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
-- **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, `.topbar-sidebar-trigger` and `.cockpit-app-sidebar`, split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, `AppBottomNav.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Tablet route navigation is the shared `Drawer` primitive opened from the topbar trigger; below `768px` there is no drawer at all and `AppBottomNav` carries every destination (#87).
-- **Route controls.** Shells do not render route-specific filter controls. News controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, and the main route scroll container.
-- **Health lamp.** Pipeline health is one control in one place: `HealthLamp`
-  inside `CockpitTopbar`, beside the page title, on **every** route and in every
-  health state (#207, #256). It renders whenever `/api/news/status` answered at
-  all, and `null` only when it did not — 流水线状态 holds no navigation slot, so
-  hiding the affordance while healthy would make that page unreachable exactly
-  when a reader wants to confirm nothing is wrong. The `topbar-health-lamp` button surface never
-  changes size or copy: it reads `流水线` in every state, and its 7px dot carries
-  `ok` / `warn` / `bad` / `off`. The worst item's own `summary_zh` reaches the
-  reader through the accessible name, the `title`, and the popover — not by
-  rewriting the button, which would make the topbar reflow on a poll. A failed
-  read is its own `bad` state with a headline and a door but no stage lines. It is a `<button>` whose accessible name is
-  `流水线健康：{summary_zh}`; opening it shows the four server stage lines
-  (`接入 / 队列 / 模型 / 推送`, each `level` + `summary_zh`), the server instrument snapshot as a neutral
-  `标的表` fact without a browser-invented level or sentence, and a link
-  to `/news/status`. The popover is Radix's, so `Esc`, the dismiss layer and
-  `aria-expanded` are the platform's and no `keydown` listener is added. Below
-  `1279px` the sentence collapses to the dot; below `768px` the lamp is the one
-  part of `.brand` that stays, because a phone reader would otherwise never learn
-  the pipeline is degraded. The lamp reads the same
-  `useNewsStatusWithToken` query key as everything else — no second poll — and
-  the level, every stage level and every sentence are server values; the frame
-  computes no health state of its own.
-- **Icons.** Two families, one specification. Generic actions stay on lucide and
-  are never redrawn (`Search`, `PanelLeft`, `ChevronDown`, `ChevronRight`, `Check`,
-  `X`, `ExternalLink`, `SlidersHorizontal`). The product's own nouns are drawn in
-  `shared/ui/icons.tsx` on the same 24 grid with a 2px round-capped stroke and
-  `currentColor` only, each a `forwardRef` with lucide's exact signature so
-  `AppNavigationItem.icon` stays typed `LucideIcon`: `EventStreamIcon`,
-  `LeverageGaugeIcon`, `TradeFlowIcon`, `TelemetryPulseIcon`, and the three OI
-  measurement glyphs `WhaleShareIcon` / `WindowClockIcon` / `ThresholdIcon`. The
-  set holds exactly what is rendered — a glyph nothing imports is a claim about
-  a surface that does not exist. An
-  icon has three colours, all inherited — `--text-subtle` at rest,
-  `--accent-primary` when current, `--text-faint` when disabled — and **never**
-  red or green: those two hues state a market direction, which an icon never has.
-  `TelemetryPulseIcon` and `LeverageGaugeIcon` never lean up or down, because
-  open interest rising is not price rising (#104). Only `favicon.svg` and
-  the sidebar's `BrandMark` may be filled shapes; they are the same path on the
-  same indigo tile, so the tab and the frame are one face.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries four working surfaces in one `Workbench` group — `事件流` `/news`, `市场研究` `/news/market`, `钱包研究` `/news/wallets`, `交易执行` `/trading`. `System · 数据健康` held one entry and went with it (#553 PR-1): 市场事实 is a reading surface for what the venues reported, not a frame-parse audit, and whether the pipeline is telling the truth is the topbar lamp's question on every page. The feed entry shows the 24 h received count; the other three carry none — `/api/news/status` reports no market intake any more, and the destination prints the per-kind figures itself. A count clipped the 204px row's label to one glyph (#460), and the `tradingEnvironment` badge that replaced it — the lane's last-Case clock and the execution mode — cost every News route a 15 s poll of `/api/trading/status` for two words the desk itself states first (#537 PR-5). Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/market`, `/news/market/:itemId`, `/news/wallets`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/oi`, `/news/alpha` and `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
-- **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
-- **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
-- **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
-- **Side-effect CSS review signal.** Large owner stylesheets are a cohesion signal
-  for review, not a correctness threshold. CSS ownership and forbidden
-  cross-owner selectors remain mechanical boundaries; equivalent selector,
-  variable or file refactors are judged by rendered geometry, overflow,
-  accessibility and the explicit visual lane rather than an exact line budget.
-- **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
-- **Colour axes.** Colour carries exactly two axes and they never share a hue.
-  *Market direction* owns red and green — 红 = 利多, 绿 = 利空, the mainland
-  convention (`--dir-bullish` / `--dir-bearish`, `directionTone`). *Pipeline outcome*
-  owns blue, amber and grey and must never use red or green (`--signal-done` /
-  `-info` / `-caution` / `-alert` / `-neutral`, `outcomeTone`): 已推送 is a completed
-  step, not a market opinion, and colouring it green would read as a second,
-  contradicting 利空. Every foreground token clears 4.5:1 on white. The direction red
-  and green sit at near-equal luminance by necessity, so the arrow glyph and the
-  Chinese word carry the meaning and colour only reinforces it.
-- **Shared primitives.** `Card`, `Metric`, `Bar`, `FactGrid`, `KeyValue`,
-  `ActionButton`, `IconButton`, `PageState`, `Drawer`, `PageShell`, `PageHeader`,
-  `PageReadingContent`, `SourceLine` and
-  `EmptyNote` in `shared/ui` own
-  the console's panel, figure, proportion, labelled-fact, key/value, button,
-  page-state, sheet, route-measure, page-heading, document-measure, provenance-line and nothing-here shapes. A feature may frame a primitive with its own class but must not
-  restyle one — not even to hide it at a breakpoint; wrap it in a feature-owned element
-  instead. `cssArchitectureHarness` enforces this. Use the component: hand-writing its
-  class names leaves the primitive's stylesheet out of the bundle entirely, which is
-  exactly how the verdict grid and every key/value table lost their layout before #82.
-  The console does not depend on a component framework — the shadcn `sidebar`, `sheet`,
-  `tooltip`, `input`, `separator`, `tabs`, `panel`, `alert`, `button` and `skeleton`
-  wrappers were deleted with the v6 redesign because nothing rendered them any more.
-  Radix is used directly, and only for the one thing that needs a focus trap and a
-  dismiss layer: `Drawer`.
-- **Phone reading.** The console has to be comfortable to read on a phone. The shell
-  sets `viewport-fit=cover`, a `theme-color` matching the canvas, `format-detection`
-  off, `text-size-adjust: 100%` so a reader's larger font scales coherently, `100dvh`
-  so the shell does not jump as mobile toolbars slide, `env(safe-area-inset-bottom)`
-  on the route column, and a CJK-first font stack. Below `767px` the funnel tiles
-  compress to one scrollable row; shared page subtitles wrap below their titles.
-  The first screen must still fit two complete Event rows. Padding must never land on a `-webkit-line-clamp`
-  element — the clamped line shows through the padding band.
-- **Score display.** Displayed labels (the Triage fact kind and confidence, the News `outcome`/`*_zh`/`label_zh` copy) are server-owned values rendered as-is. The UI does not recompute, rank, translate, or synthesize them locally; `features/news/newsLabels.ts` holds UI affordance copy and tone mapping only.
-- **No token or provider-image surfaces.** There is no token profile, logo, chain/address link, DEX/CEX market panel, or image proxy anywhere in `web/src`; the API exposes no image URL or image route. Do not add a frontend proxy, helper, or filter that loads or rewrites provider image URLs.
-
-## Build And Test
-
-Common frontend gates:
-
-- `cd web && npm run lint`
-- `cd web && npm run test:architecture`
-- `cd web && npm run typecheck`
-- `cd web && npm test -- --run`
-- `cd web && npm run build`
-- `cd web && npm run test:e2e` or `make test-visual` (the required four-viewport interaction lane)
-- `make test-browser-smoke` (required single-Chromium FastAPI/browser seam)
-
-The four Playwright viewport projects are required per PR. `ci-frontend` runs
-them from `web/playwright.config.ts` — the same config `make test-visual` runs —
-with a JSON report that `scripts/require_test_reports.py` holds to the same
-fail-closed contract as the full-stack smoke: `forbidOnly`, no retry, no repeat,
-`updateSnapshots: "none"`, at least one executed case, and no skipped, flaky or
-unexpected outcome. There are two browser seams now, and they prove different
-things: the full-stack smoke proves the backend seam, and these specs prove the
-responsive interaction contracts across:
-
-- `desktop-1366` (`1366x720`)
-- `desktop-1920` (`1920x1080`)
-- `tablet-834` (`834x1194`)
-- `mobile-390` (`390x844`)
-
-Which spec runs at which viewport is decided by per-project `testMatch` in
-`web/playwright.config.ts`, at collection time. It used to be decided at run time
-by `test.skip(!testInfo.project.name.startsWith(...))` inside each spec, and a
-required Playwright report may contain no skip at all (#598 D8). Add a new spec to
-exactly the project lists whose viewport it contracts; a spec that reaches the
-wrong viewport now fails instead of skipping. A spec covering more than one
-viewport's contract belongs in more than one file. New `page.setViewportSize`
-calls are allowed only in dedicated responsive specs or in a spec whose file
-comment records that the config gives it desktop projects only.
-
-There are no screenshot baselines. The two `toHaveScreenshot` specs and their 40
-committed `-darwin` PNGs were deleted with the same decision: a baseline rendered
-on one developer's macOS is not a detector any Linux CI runner can match, and
-nothing had run them in CI.
-
-The required smoke uses a separate single-Chromium project with no route
-interception and no skips. It loads the production bundle from FastAPI,
-observes `/api/bootstrap`, verifies the installed bearer reaches
-`/api/news/feed`, and renders a service-owned Event fact on `/news`. Every
-Playwright spec uses the shared guard fixture: unexpected `pageerror`, console
-error, failed request or unhandled API request fails the case. The four-project
-lane intercepts every route through `tests/e2e/support/mockApi.ts` and serves the
-built bundle from `vite preview`, so it is evidence of responsive interaction and
-never of a backend seam.
-
-Required Vitest runs set `allowOnly=false`, disable retry/repeat, and emit the
-built-in JSON report under `artifacts/test-results/`. Required-test ESLint
-policy rejects focused, disabled, expected-failure, retry, and repeat syntax.
-Every required `test`/`it` declaration uses its unaliased named binding directly
-(including `.concurrent` and parameterized `.each`/`.for` cases) and has the
-fixed shape `(case name, callback)`. Namespace/dynamic imports, copied or
-extended bindings, computed modifiers, and options arguments are forbidden.
-This keeps an indirect or runtime-built expected-failure option from turning a
-real assertion failure green. The binding/declaration rule covers every
-`web/tests` helper and support module, not only top-level specs. The sole shared
-Playwright fixture factory is separately constrained to export exactly
-`test = base.extend(...)` and cannot register a case;
-the small native-report guard then requires a non-empty run with no failed,
-pending/todo, retried, snapshot-mutating, module, or unhandled outcome. It does
-not replace or reinterpret Vitest. Playwright likewise emits native JSON and
-the required smoke remains a non-empty, no-skip, no-retry run. Pytest's `slow`
-marker owns deliberate fault injection across real Vitest/Playwright native
-runs, the runtime-error guard, and the required-test ESLint policy; these
-nested frontend checks do not run from the architecture lane or `make check`.
-
-Repository hermetic bundle when the changed seam requires it:
-
-- `make check`
-
-Focused development runs select the exact Vitest and affected lint, type,
-build, browser, or visual seam per `DEVELOPMENT.md`; localized frontend changes
-do not run unrelated backend lanes. `make test-ci` is an optional complete
-local preflight only for declared high-risk changes. The successful fixed
-GitHub Actions `ci-gate` for the exact PR HEAD is merge authority; the exact
-main SHA's fixed workflow is release/deploy evidence. The visual matrix and
-scheduled diagnostics remain explicit separate lanes.
-
-Production bundles ship inside the same Docker image as the Python service and are served by the FastAPI static-file mount.
-
-## UI Verification Gate
-
-Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manually before declaring completion. The minimum checklist for frontend architecture changes is:
-
-1. Hard-reload `/`, `/news`, `/news/market`, `/news/wallets`, `/trading`, `/trading?case=<id>`,
-   `/news/status`, `/news/symbols/:base` and `/news/events/:eventId` with representative query
-   params; confirm `/news/oi`, `/news/alpha`, `/news/review`, `/macro`, `/search`, and `/token/...` render the
-   not-found surface. On the token page, confirm a base no venue lists (`/news/symbols/SPOT`)
-   says so rather than erroring, and that `/news/symbols/xyz-wif` resolves to the
-   same page as `/news/symbols/WIF`.
-2. Submit the topbar search from `/news/status` and from `/news` and confirm
-   the URL becomes `/news?q=<submitted-query>&outcome=all&hours=168`; existing
-   News filters and cursors do not survive this new search scope.
-   The box has no submit button: `Enter` submits, and the visible `/` keycap is inert on every route.
-3. Verify visible loading/empty/error states are structured, labelled, and non-overlapping.
-4. Confirm no failing `/api/*` requests and no WebSocket connection attempt in the browser session.
-   On `/trading`, verify disabled, alive-but-blocked and alive-but-paused states;
-   protected positions, positions missing a stop or take-profit and exposure no
-   plan claims; and Signal rows at rejected, expired and closed. Observe healthy
-   status beyond 30 seconds without freshness flicker. Interrupt status reads until the server deadline
-   passes: safety answers must become 待确认 with a clear last-read disclosure.
-   Restore reads and verify recovery. Historical execution and decision reads
-   must remain usable throughout, and no manual execution controls may render.
-5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
-   true and shows the first runtime reason when it is not, and that the feed
-   header shows no health pill while `health.overall` is `ok`.
-6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists. On `/trading`, confirm the safety strip, the tally band, the funnel, the loop ledger's per-entry cards, the exposure disclosure remain reachable without page-level horizontal overflow.
-7. At tablet width around `834px`, confirm the desktop sidebar is not mounted, the topbar trigger opens the drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
-   At `1280px` and above, confirm `/news` keeps the sidebar fixed in the frame with no trigger, other routes
-   retain the shared fold trigger, all three destinations are present and 交易 carries its mode word,
-   `/news/events/:eventId` keeps `事件流` current, and the feed count matches
-   the funnel's `收到`.
-8. Confirm the keyboard binds nothing on `/news`: `⌘K`, `?`, `J`, `K`,
-   `1`–`4`, `G`→`F` and `/` do nothing outside a text field, `Space` still
-   scrolls the page, and the topbar carries no 命令面板 button or `⌘K` hint; its visible `/` keycap remains inert.
-   `Tab` still reaches every control in order, and `Esc` still closes
-   the drawer because Radix owns that.
-9. From a row at `≥1024px`, confirm a plain click opens the compact drawer with the
-   list still visible and the URL unchanged, clicking the next row swaps the
-   drawer's Event without closing it, the footer's primary-token link reaches the token page, and `打开事件详情` reaches
-   `/news/events/:eventId`. There, confirm `上一条`/`下一条` and `i / n` walk the
-   same filtered list; then paste the URL into a fresh tab and confirm the
-   pager is absent rather than broken.
-10. At `1920px`, `1366px`, `834px`, and `390px`, verify the default News Feed
-    requests latest 25-row pushed pages for the last 24 h with no direction or channel filter; `q`, `outcome`,
-    `hours`, comma-separated `direction`, and comma-separated `channel` survive reload and alter server results;
-    the channel control exposes exactly 新闻 / 上币/下币 and every feed/detail kind badge reads
-    `event_kind` rather than admission, title or verdict type;
-    the header shows the 24 h funnel card; the four task tabs show
-    counts that match the rows each tab lists and follow a changed window or
-    filter; every row shows time, headline and meta line; a pushed / pending /
-    failed row shows exactly one outcome badge with Chinese copy and a coloured
-    rail while a held row shows only its grey `reason_zh` — no rule, admission,
-    decision, or score keys anywhere; and every row with a verdict shows the
-    direction chip (利多 filled red / 利空 filled green / 中性 quiet text, each
-    with its own arrow); a News Agent row (#706) has no direction chip and heads
-    with the server's `update.headline`. On `/news/events/:eventId`, verify hero
-    (outcome + reason, headline, a legacy verdict's direction, the head's topics,
-    assets); for a News Agent Event the sections 新增了什么 (changes against the
-    previous claim), 命题 (each claim's mode/phase/时间/条件/数值 and citations),
-    来源与分歧 (per-source supports/refutes/reports), 推断与缺口 (inference
-    labelled as such, and open questions) and 处理状态 (semantic work, the
-    notification plan's per-claim decisions, and each intent's state and sent
-    body); for a legacy Event the 旧版判定 panel (why, 判定/来源权威/范围/把握/
-    新颖度/事实类型, 主要标的 vs 提及) and no retired taxonomy cells; the timeline with `+Δ` and an end-to-end figure,
-    同类报道 and a collapsed 技术详情 appear in that order
-    with no market-mark table — the two #88 market blocks (`当前报价` and
-    `事件后反应`) are separate cards, never one table, because a rolling change and a
-    fixed post-Event return are different time semantics; the hero's left rail carries the direction colour and a
-    neutral verdict leaves it uncoloured; an Event with no Triage verdict renders
-    the hero without the 判定 block instead of empty cells; and the back link
-    returns to the feed the reader came from. Verify `/news/status` shows four
-    coloured health cards with bars, the overall pill, the funnel with its
-    biggest-drop sentence, Chinese reason bars,
-    no buttons), the Strategy usage bar with counts only (never IDs), a
-    collapsed 技术指标, and no operator controls. Confirm the technical key/value
-    tables render as two-column grids rather than stacked `dl`s. Confirm about
-    two News rows remain scannable at 390px and at least four at desktop height
-    without horizontal overflow.
-11. On `/news`, let the page cold-load and confirm the 2px in-flight line at the
-    top of the viewport, the five funnel tile bones, and the six row bones
-    fading with depth — then confirm all three are gone once the reads answer
-    and that nothing on the page changed height. Confirm the hour strips read
-    `HH:00 — HH+1:00` with the run's own count, that a 7-day window prefixes
-    the day, and that switching tabs or filters regroups without reordering.
-12. From `/news` with a non-default filter and from `/trading`,
-    open a `base_symbol` and confirm the token page's back link names the page
-    you actually left and returns you to it with its query state intact — the
-    referrer travels as route state (`shared/routing/routeReferrer.ts`), and a
-    cold token-page URL correctly falls back to 事件流.
-13. At `1920px`, `1366px`, `834px`, and `390px`, seed a stale quote and confirm
-    its number remains visible beside `陈旧 Xm`, the tooltip names venue plus
-    provider/receipt/reference clocks and ages, and the dense Feed has no page
-    overflow. Then fail a quote refetch: with LKG, confirm the cached number is
-    visibly degraded under `行情读取失败 · 上次成功于 …`; without cache, confirm
-    the shared loading/error surface renders. Background the tab long enough
-    to pause interval polling, return, and confirm one immediate quote refetch.
-
-
-### TradePlan execution completeness (#644)
-
-The existing Trading status, execution and strategy areas retain their roles.
-Execution row disclosures show frozen stop/risk budget/leverage and TP/holding limits;
-active plans stay visible beyond the 24-hour history window. The totals are
-explicitly known realized amounts with closed/known/missing counts. All-missing
-PnL renders a dash in totals and an unknown label on a closed row, never zero.
-A history gap has a named explanation and prevents a complete-net-profit claim.
-Execution rows show venue net only when signed funding is fully covered and uniquely
-attributed; they show the fee-adjusted fill result separately while net is
-unknown. The totals show known net sums and missing counts for every connection.
-The fee/funding basis is visible next to the totals. No recovery control center
-or browser command authority is added. Freshness uses the server's
-`facts_expire_at_ms`, including its independent heartbeat limit.
-The Trading account
-shows typed findings, source and Plan association, venue-only positions,
-truncation and protection status separately from field completeness.
-An account projection or convergence failure keeps the last account and risk
-evidence visible as historical, even while the Runtime heartbeat is fresh;
-protection remains unconfirmed until the relevant check succeeds.
+# Frontend: a read-only operator workbench
+
+[Handbook](README.md) · [Architecture](ARCHITECTURE.md) · [Contracts](CONTRACTS.md)
+
+The React console lets a reader inspect editorial News, market observations,
+wallet episodes, Trading decisions and execution evidence. **It has no command or
+order authority.** Every current public API operation is GET; operator writes use
+their explicit CLI/control boundary. There is no browser WebSocket client.
+
+## 1. Source layers
+
+```mermaid
+flowchart TD
+    App["app: providers and composition"] --> Routes["routes: route entries and<br/>shareable URL state"]
+    Routes --> Public["feature public hooks and views"]
+    Public --> API["feature api: query keys,<br/>endpoint adapters and server<br/>state"]
+    Public --> Model["feature model: pure view<br/>helpers"]
+    Public --> State["feature state: local<br/>interaction state"]
+    Public --> UI["feature ui: screens and<br/>presentation"]
+    API --> Client["lib/api: typed HTTP and bearer<br/>plumbing"]
+    Client --> Backend["Read-only FastAPI projections"]
+    UI --> Shared["shared/ui: presentation<br/>without server fetching"]
+    Client --> Types["lib/types: generated OpenAPI<br/>and named aliases"]
+```
+
+| Location | Responsibility |
+| --- | --- |
+| [src/app](../web/src/app/) | App composition, session initialization and root behavior; no feature query/renderer ownership. |
+| [src/routes](../web/src/routes/) | Route selection, parsing/serializing shareable URL state and loading/error boundaries. |
+| [features/news](../web/src/features/news/) | News feed/detail/status, market observations, wallet episodes and symbol views. |
+| [features/trading](../web/src/features/trading/) | Read-only Case/decision and execution monitoring. |
+| [features/cockpit](../web/src/features/cockpit/) | Workbench shell composition. |
+| `features/*/api` | Feature-owned server reads, query keys and reusable hooks. |
+| `features/*/model` | Pure labels, filter interpretation, view models and arithmetic. |
+| `features/*/state` | Narrow client interaction state, not a duplicate server cache or hidden URL filter. |
+| `features/*/ui` | Feature presentation through props or public feature hooks. |
+| [shared](../web/src/shared/) | Reusable UI/hooks/query/routing helpers without new business ownership. |
+| [lib/api](../web/src/lib/api/), [lib/types](../web/src/lib/types/) | Typed client, auth plumbing, generated types and explicit frontend aliases. |
+| [styles](../web/src/styles/) | Shared tokens and global styles; feature styles stay with their owner. |
+
+Import another feature through its public index or the sanctioned shell entrypoint,
+not its private files. Do not recreate retired `api/`, `store/` or `components/`
+roots. Source-boundary tests and lint enforce the actual allowed imports.
+The [repository map](generated/repository-map.md) indexes every current frontend file.
+
+## 2. Data loading and freshness
+
+```mermaid
+sequenceDiagram
+    participant B as Browser shell
+    participant A as API client
+    participant S as Serve
+    participant Q as Feature query hook
+    participant V as Feature view
+    B->>A: Initialize app session
+    A->>S: GET bootstrap
+    S-->>A: Configured bearer for HTTP reads
+    Q->>A: Typed feature request with URL-owned<br/>parameters
+    A->>S: GET persisted projection
+    S-->>A: Data or explicit failure, freshness/coverage<br/>fields
+    A-->>Q: Typed response
+    Q-->>V: Loading, empty, ready, stale or error state
+    Q->>A: Bounded polling and ETag revalidation
+```
+
+The source owners are [useAppSession.ts](../web/src/app/useAppSession.ts),
+[API client](../web/src/lib/api/), and feature API hooks. Requests use the current
+origin; [Vite](../web/vite.config.ts) proxies `/api` during development.
+Bootstrap's field name `ws_token` is historical, not a live socket feature.
+
+Feature hooks own server reads and polling. Route modules and presentational UI
+must not acquire raw queries or patch another feature's cache. Missing, zero,
+pending and stale are different values. A refresh failure may preserve clearly
+marked stale data; it must not manufacture a fresh result or hide a cold failure.
+
+## 3. Product surfaces and what they mean
+
+| Surface | Read responsibility | Important distinction |
+| --- | --- | --- |
+| News feed / Event detail | Adopted update, source evidence, semantic progress, claim-level notification reasons and reader receipts | Source Item, adopted content revision, work progress and sent card are different facts. |
+| Market list / Item detail | Typed observations, parser status, group coverage and notification outcome | A notification group is not an editorial Event or Trading Case. |
+| Wallet list / episode detail | First/current snapshot, member evidence, historical episodes and price observations | Roster metadata is not a fill; missing baseline is not zero return. |
+| Symbol view | Typed identity and related reads owned by their endpoints | A same-named equity and coin are not interchangeable. |
+| Trading decisions | Source → frozen Case → Agent/decision/publication explanation | A TRADE action is not proof a Signal was published or filled. |
+| Execution monitor | Runtime/account evidence, scoped plans, native executions and attributable economics | Unavailable account data is not a verified flat account. |
+
+Event detail renders the current update and processing state; older verdicts are
+explicit `legacy_verdict` history, not synthesized claims. Retired four-axis taxonomy
+filters are gone. See [News](modules/news.md) for the three independent state dimensions.
+
+The backend [contract inventory](CONTRACTS.md) owns the actual API route templates.
+Frontend pages must not add a speculative route because an old issue or screenshot
+contained it. Historical replay views read archived evidence; opening them does
+not rerun the model or execute a strategy.
+
+## 4. Navigation and shareable state
+
+News queries, filters and supported time scope are URL-owned through route/model
+helpers. Wallet selected episode and history pagination use their owning helpers.
+Trading tabs/selected Case use the Trading route owner. A hard reload or shared
+link must preserve the query's meaning; do not hide filters in a singleton store.
+
+The topbar search is News search, not a generic token/address/provider search.
+Feature views must distinguish a real empty result from an error or a still-loading
+page. Back navigation retains the documented route context rather than reconstructing
+an older filter from stale local state. There is no independent subscription
+registry, cross-feature socket cache or manual-order drawer to keep synchronized.
+
+## 5. Visual and accessibility contract
+
+The current workbench is a restrained light Chinese-reading interface.
+[styles/tokens.css](../web/src/styles/tokens.css) owns semantic colors, type, radius,
+depth and focus; it is not duplicated as numerical rules in this manual.
+Shared `PageShell`, `PageHeader` and `PageReadingContent` own page geometry and
+reading width. Feature CSS must not override the shell to invent another page grid.
+
+Scan/workspace and detail/case archetypes retain a stable header and shell across
+loading, error, empty and ready states. Numbers need consistent tabular alignment;
+status/financial meaning must be expressed in text rather than color alone.
+Use accessible names, real controls, visible focus and appropriate keyboard
+behavior. Missing evidence gets an explicit explanation, not a misleading green badge.
+
+Pure design-token/component changes, route/data changes and backend contract
+changes require different verification. Preserve the owning architecture checks
+rather than adding an unrelated UI process gate for a docs-only change.
+
+## 6. Build and test
+
+From `web/`:
+
+```bash
+npm ci
+npm run dev
+npm run typecheck
+npm run lint
+npm run test:unit
+npm run test:architecture
+npm run build:checked
+```
+
+The complete scripts live in [package.json](../web/package.json). The build serves
+through the normal backend image; `npm run preview` is a local static preview, not
+a replacement for the backend's bootstrap/API behavior.
+
+| Test directory | Evidence |
+| --- | --- |
+| [unit](../web/tests/unit/) | Pure model, route-state and helper behavior. |
+| [component](../web/tests/component/) | Components/hooks and feature API behavior. |
+| [routes](../web/tests/routes/) | App/route integration and navigation state. |
+| [architecture](../web/tests/architecture/) | Import, CSS, test-placement and compatibility boundaries. |
+| [e2e/golden-paths](../web/tests/e2e/golden-paths/) | Required viewport/interaction behavior with intercepted APIs. |
+| [e2e/full-stack](../web/tests/e2e/full-stack/) | Browser smoke against real FastAPI static/bootstrap/API reads. |
+
+Use `npm run test:e2e` and `npm run test:e2e:full-stack` for those corresponding
+lanes. Intercepted fixtures prove UI behavior, not backend correctness or live
+account state. Full-stack smoke does not prove venue execution. Record which
+lane actually ran rather than reporting every UI scenario as verified.
+
+## 7. Generated contract workflow
+
+Change backend schemas and caller behavior together, run `make regen-contract`,
+and inspect both OpenAPI and frontend type diffs. The generated
+[openapi.ts](../web/src/lib/types/openapi.ts) is not hand-edited;
+[frontend-contracts.ts](../web/src/lib/types/frontend-contracts.ts) owns the small
+frontend envelope/alias layer. [Development](DEVELOPMENT.md) and
+[Testing](TESTING.md) describe the broader CI contract.

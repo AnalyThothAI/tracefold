@@ -1,5 +1,9 @@
 # Wallet net-buy implementation evidence (#641)
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 Scope: replace the wallet product with token-level concentrated net-buy episodes; deployment and notification restoration are separate operations.
 
 ## Observed F2P and affected seams

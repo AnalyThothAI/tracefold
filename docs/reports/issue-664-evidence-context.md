@@ -1,5 +1,8 @@
 # #664 evidence-context engineering receipt
 
+> **Historical engineering evidence.** See the [receipt index](README.md) for scope.
+> These observations apply to the recorded source/data, not automatically to current main.
+
 Date: 2026-09-19. Repository: AnalyThothAI/tracefold.
 
 Started on #665 / #663 commit `dffa74dfd79c2a70024224031ebd024ed8ef0f32`;

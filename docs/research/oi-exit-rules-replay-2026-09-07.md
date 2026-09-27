@@ -1,5 +1,9 @@
 # 两个预注册出场约定的离线复跑（#604 R0，2026-09-07）
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 **裁定：8 个格子全部 `REPORT ONLY`。没有任何一格满足预注册判据，两条判据各自单独看也都不满足。**
 
 纯离线研究回执，零交易所访问、零数据库访问、零生产影响、零部署含义。语料是 #535 已封存的

@@ -1,5 +1,9 @@
 # ReaderCard fidelity #629: implementation and evidence
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 Issue: [#629](https://github.com/AnalyThothAI/tracefold/issues/629).
 Base: `77350161c2cb9e0a9fd21d20361be3a4ad2079af`.
 This is a development study and implementation receipt. It does not establish
@@ -131,14 +135,14 @@ The initial why-support reproducer failed on the old metric: two cases reported
 effective denominator 0 instead of 1. Focused tests then proved support repair,
 synonymous preservation, unsupported rejection and unavailable separation.
 
-The [PostgreSQL integration test](../../tests/integration/test_news_reader_card_fidelity.py)
+The [PostgreSQL integration test](https://github.com/AnalyThothAI/tracefold/blob/f9ba95ed133f9f425f21780f6b15b476374bd0e3/tests/integration/test_news_reader_card_fidelity.py)
 submits through ReviewDesk, persists the review, freezes a dataset, exports its
 original evidence and scores through the shared metric. All four scenarios
 pass, including shared physical judge-call accounting and unscored why value.
 Its scripted provider verifies the transport/accounting seam, not language
 quality; the live receipts above supply separate generation evidence.
 
-[Evidence tests](../../tests/news/test_news_reader_card_evidence.py) prove original
+[Evidence tests](https://github.com/AnalyThothAI/tracefold/blob/f9ba95ed133f9f425f21780f6b15b476374bd0e3/tests/news/test_news_reader_card_evidence.py) prove original
 input boundaries, source attribution and qualifier retention without a model.
 Existing native Program, artifact, lint, judge and baseline checks cover the
 three-Predictor graph and contract pins. Prompt-string assertions do not stand

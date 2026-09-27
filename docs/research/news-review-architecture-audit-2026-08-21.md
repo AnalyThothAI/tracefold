@@ -1,8 +1,14 @@
 # Tracefold News 复盘链路架构审计（2026-08-21）
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 > 结论先行：Tracefold 的在线执行面已经具备生产级骨架；目前“玩具化”的是学习面，而不是消息管道。系统能稳定地接收、判断、限流、投递和记录，却不能可靠回答“当前 Agent 是否比上一版更好、错在 Gate/Prompt/Policy/Delivery 的哪一层、一个候选是否应该发布”。
 >
 > 本报告基于代码与 Git 历史、`ai-agent-book` Chapter 9 及本地实验、生产库固定 24 小时窗口的只读审计。未修改配置、数据库、标签或线上流量。
+
+源码导航固定到历史提交 `4593ba6c12d0be2c67a2a758452030697a4fdd29` 中可验证存在的文件；旧行号不作为现行源码引用。无法在该提交定位的原路径仅保留为历史文字，不伪造链接。
 
 ## 1. 最终判断
 
@@ -167,7 +173,7 @@ reader load 已经很高：
 
 独立 3-gram containment 在 419 张 delivered cards 中找到 94 对近似文本，但 18 张“X appears on OKX”的不同 ticker 模板制造了大量假阳性；84 对还跨 storyline。当前 v9 仅 4 对，其中约 2 对是真复述。
 
-明确的真实逃逸是 `985ef2cabf460829390a6aa23f62d1ce9b8dc513ad6b28915bd91a17f4810f36` 与 `b320575a35fe88050d624e5ee8712062efa48bf62c0ece39076deaba82b9fef3` 两张“贝森特推动伊朗政权更迭/最大经济孤立”卡，后者 magnitude=3 后 escalate。准确地说，escalate 不进入 v6 `similarity_all_pushes`；只有自身 storyline throttle 已触发时才仍会走 v5 similarity。这留下了一条跨 storyline 的重复通道。[`triage_rules.py`](../../src/tracefold/news/triage_rules.py#L273-L281)
+明确的真实逃逸是 `985ef2cabf460829390a6aa23f62d1ce9b8dc513ad6b28915bd91a17f4810f36` 与 `b320575a35fe88050d624e5ee8712062efa48bf62c0ece39076deaba82b9fef3` 两张“贝森特推动伊朗政权更迭/最大经济孤立”卡，后者 magnitude=3 后 escalate。准确地说，escalate 不进入 v6 `similarity_all_pushes`；只有自身 storyline throttle 已触发时才仍会走 v5 similarity。这留下了一条跨 storyline 的重复通道。[`triage_rules.py`](https://github.com/AnalyThothAI/tracefold/blob/4593ba6c12d0be2c67a2a758452030697a4fdd29/src/tracefold/news/triage_rules.py)
 
 88 张 throttled 卡中，有 42 张在前后四小时找不到 containment ≥ 0.35 的 delivered neighbor；这只能叫“独立事实未覆盖代理”，不能叫 42 个真实漏推。代表例子包括上述两个 storyline 错分、`6109d461999c3cd29c17c553725b9c587432e429668073ec5be4a85ba968921e`（Moderna 盘前 -13%）的 hourly cap，以及 Panama Canal 容量/吃水事实。
 
@@ -224,7 +230,7 @@ Triage/复盘必须明确自己读取哪一个，不能用一个含混 SQL 同�
 
 ### P0-2：Event evidence 在首次 leader 上过早冻结
 
-`event_card()` 只读取 leader item。后来的 stronger member 能升级 Gate facts/assets 并让 suppressed Event 进入 Triage，却不会替换 leader 文本或 provider metadata；已经 judged 的 Event 加强后也不会产生新的判断。[`repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L530-L541)；[`pipeline/admission.py`](../../src/tracefold/news/pipeline/admission.py)
+`event_card()` 只读取 leader item。后来的 stronger member 能升级 Gate facts/assets 并让 suppressed Event 进入 Triage，却不会替换 leader 文本或 provider metadata；已经 judged 的 Event 加强后也不会产生新的判断。[`repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L530-L541)；`pipeline/admission.py` (historical source reference: `src/tracefold/news/pipeline/admission.py`)
 
 这会出现“更强证据使事件入场，但模型仍只看到旧弱标题”的不一致。需要不可变的：
 
@@ -243,13 +249,13 @@ CLI 支持 `--subject` 记录无 Event 的 missed case，但 offline eval 从 `n
 
 ### P0-4：label 维度和交互都不支持学习
 
-当前 mutually-exclusive enum 同时混合 `good/noise/dup/wrong_direction/late/missed/must_push`。offline eval 又把 good、wrong_direction、late、missed、must_push 全折成内部 outcome `moved`，其真实语义是“event mattered / 应该推”，不是发生了价格走势。真正的问题是折叠后丢失了 `direction_correctness`、timeliness 与 miss 类型，无法归因具体能力。[`offline.py`](../../src/tracefold/news/eval/offline.py#L51-L62)
+当前 mutually-exclusive enum 同时混合 `good/noise/dup/wrong_direction/late/missed/must_push`。offline eval 又把 good、wrong_direction、late、missed、must_push 全折成内部 outcome `moved`，其真实语义是“event mattered / 应该推”，不是发生了价格走势。真正的问题是折叠后丢失了 `direction_correctness`、timeliness 与 miss 类型，无法归因具体能力。[`offline.py`](https://github.com/AnalyThothAI/tracefold/blob/4593ba6c12d0be2c67a2a758452030697a4fdd29/src/tracefold/news/eval/offline.py)
 
 详情页多数场景只生成 CLI copy command；全库标签为 0 说明反馈入口实际没有进入操作习惯。先做可写 UI、review queue 和多维 rubric，再谈 prompt optimizer。
 
 ### P0-5：现有 release gate 不是 Agent/Prompt gate
 
-[`eval/harness.py`](../../src/tracefold/news/eval/harness.py#L1-L19) 在模块注释中明确承认 verdict 已冻结，只测试 `decide()`。Prompt SHA pin 只能证明 bytes 没变，不能证明行为更好。当前 CLI 还没有把 trusted-root SHA 传入 `validate_candidate()`，默认的 trusted-root 检查基本没有实际约束。[`commands/news.py`](../../src/tracefold/app/cli/commands/news.py#L305-L344)
+[`eval/harness.py`](https://github.com/AnalyThothAI/tracefold/blob/4593ba6c12d0be2c67a2a758452030697a4fdd29/src/tracefold/news/eval/harness.py) 在模块注释中明确承认 verdict 已冻结，只测试 `decide()`。Prompt SHA pin 只能证明 bytes 没变，不能证明行为更好。当前 CLI 还没有把 trusted-root SHA 传入 `validate_candidate()`，默认的 trusted-root 检查基本没有实际约束。[`commands/news.py`](https://github.com/AnalyThothAI/tracefold/blob/4593ba6c12d0be2c67a2a758452030697a4fdd29/src/tracefold/app/cli/commands/news.py)
 
 ## 7. Prompt/Agent 的具体问题
 
@@ -534,7 +540,7 @@ LLM、DSPy 或 GEPA 只作为离线 candidate searcher，权限停在 immutable 
 - 不允许 candidate generator 改 rubric、gold cases、阈值、trusted root 或 stable hash；
 - 不把每次投诉追加成一条永久 Prompt 规则。
 
-本地 Chapter 9 的小样本没有提供生产有效性证据：8 个样本仍有一个维度 recall=0；知识文档组 25%，两个 control 各 50%；prompt optimization 只有 5+5 个例且目标规则预先写进 Coding Agent。这些结果说明机制能运行，也诚实暴露负迁移可能；不能外推为生产收益。详细证据见配套研究稿 [`news-review-chapter9-evidence.md`](news-review-chapter9-evidence.md)。
+本地 Chapter 9 的小样本没有提供生产有效性证据：8 个样本仍有一个维度 recall=0；知识文档组 25%，两个 control 各 50%；prompt optimization 只有 5+5 个例且目标规则预先写进 Coding Agent。这些结果说明机制能运行，也诚实暴露负迁移可能；不能外推为生产收益。详细证据见配套研究稿 [`news-review-chapter9-evidence.md`](https://github.com/AnalyThothAI/tracefold/blob/f9ba95ed133f9f425f21780f6b15b476374bd0e3/docs/research/news-review-chapter9-evidence.md)。
 
 ## 13. 完成定义
 
@@ -554,7 +560,7 @@ LLM、DSPy 或 GEPA 只作为离线 candidate searcher，权限停在 immutable 
 
 ### 本地证据
 
-- Chapter 9 深入证据：[`docs/research/news-review-chapter9-evidence.md`](news-review-chapter9-evidence.md)
+- Chapter 9 深入证据：[[historical news-review-chapter9-evidence](https://github.com/AnalyThothAI/tracefold/blob/f9ba95ed133f9f425f21780f6b15b476374bd0e3/docs/research/news-review-chapter9-evidence.md)](https://github.com/AnalyThothAI/tracefold/blob/f9ba95ed133f9f425f21780f6b15b476374bd0e3/docs/research/news-review-chapter9-evidence.md)
 - Prompt：`src/tracefold/news/agents/prompts/__init__.py`
 - Triage 输入/ledger：`src/tracefold/news/agents/triage_model.py`
 - 最终 policy：`src/tracefold/news/triage_rules.py`

@@ -1,15 +1,21 @@
 # 新闻分类：现网体检、成熟实践调研与 #117/#344 之后的路线（2026-08-29）
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 > 状态：研究稿，不是实现 PR；不改变任何在线行为、身份或 Issue 验收。
 >
 > 范围：News 分类（`event_type` → `news_taxonomy_v1`）的执行前基线、[#117](https://github.com/AnalyThothAI/tracefold/issues/117) 与 [#344](https://github.com/AnalyThothAI/tracefold/issues/344) 的终态形状、与 DSPy 官方 classification 教程的方法论对照、行业成熟实践调研，以及数据集与深度分析 Agent 的路线建议。建议只作为后续 Issue 的输入，本文不构成验收。
 >
 > 证据规则：现网数字来自 `tracefold_serve` 只读聚合，`.sql`/`.json` 快照对与本文同目录提交（[discovery](news-classification-baseline-discovery-2026-08-29.sql) · [snapshot](news-classification-baseline-snapshot-2026-08-29.json)，captured `2026-08-29T11:44:43Z`）；只提交计数、比率、身份前缀与窗口，不含任何新闻文本、卡片、Prompt 或凭据。外部事实只采用官方规范、官方文档与论文并附链接；标注「推断」的句子是本文观点。
 
+源码导航固定到历史提交 `1f329bf1253d17947f15bc2140bbaa646ec458fd` 中可验证存在的文件；旧行号不作为现行源码引用。无法在该提交定位的原路径仅保留为历史文字，不伪造链接。 此提交取快照时间之前的 main，仅用于源码导航，不是额外的生产部署身份证据。
+
 ## 结论先行
 
-1. **#117 目前没有「执行后」。** 旧 #117 于 2026-08-24 被标记关闭，但没有 closure comment、关联 PR 或实现证据；2026-08-29 06:13 UTC 被重开、改题并整体替换为「先建 accepted Gold、多轴 shadow、受控 hard cut」的 P0 计划。现网仍在跑 17 类混轴 `event_type`（[signatures.py](../../src/tracefold/news/program/signatures.py) 的单选枚举）。本文第 1 节是它的执行前基线。
-2. **现网分类的病不是「分错」，是「不可测」。** 7 天窗口有 10,060 条 triage 判定（本文快照）；同期口径的 488 个 accepted review 里 exact Gold 覆盖仅 12.7%、`must_push` 仅 3 例（#117 正文的 operator 聚合）；metric 明确把 `event_type` 排除在可评分维度外（[objective.py](../../src/tracefold/news/learning/objective.py) 的维度注释）。「分类对不对」至今没有任何直接测量。
+1. **#117 目前没有「执行后」。** 旧 #117 于 2026-08-24 被标记关闭，但没有 closure comment、关联 PR 或实现证据；2026-08-29 06:13 UTC 被重开、改题并整体替换为「先建 accepted Gold、多轴 shadow、受控 hard cut」的 P0 计划。现网仍在跑 17 类混轴 `event_type`（[signatures.py](https://github.com/AnalyThothAI/tracefold/blob/1f329bf1253d17947f15bc2140bbaa646ec458fd/src/tracefold/news/program/signatures.py) 的单选枚举）。本文第 1 节是它的执行前基线。
+2. **现网分类的病不是「分错」，是「不可测」。** 7 天窗口有 10,060 条 triage 判定（本文快照）；同期口径的 488 个 accepted review 里 exact Gold 覆盖仅 12.7%、`must_push` 仅 3 例（#117 正文的 operator 聚合）；metric 明确把 `event_type` 排除在可评分维度外（[objective.py](https://github.com/AnalyThothAI/tracefold/blob/1f329bf1253d17947f15bc2140bbaa646ec458fd/src/tracefold/news/learning/objective.py) 的维度注释）。「分类对不对」至今没有任何直接测量。
 3. **混轴枚举的代价可以量化。** `macro` 一个桶占 40% 流量；`product_progress` 通道 1,440 行中 41.1%（592 行）的 `event_type` 不是 `product`——平面单选标签表达不了「这同时是产品进展」，靠多标签 channel 才兜住。这判死了「用 `event_type` 做股票/产品路由」。
 4. **运行可用性与分类质量是两回事，前者已经很好。** #314+#315 于 08-28 20:26 UTC 部署后：433 条判定、0 次备路接管、2 次降级（0.46%）。24h 口径里的 147 次备路全部落在部署前的旧运行时尾巴。
 5. **#344 结束后，News 模型程序回到原生 DSPy**（`Module/Signature/Predict/LM/JSONAdapter/GEPA`），自研 transport/graph/GEPA adapter（约 80KB 框架代码）删除，Tracefold 只保留业务契约、RoutePolicy、审计与发布治理。当前方向已批、实施被 P0 闸挡住（`ready-for-human`），单 PR、单部署，且要 #117 的 GEPA spend waiver 才能合并。
@@ -61,7 +67,7 @@
 
 ### 1.3 Gold 缺口：为什么「分类对不对」至今无法回答
 
-- metric 侧：[objective.py](../../src/tracefold/news/learning/objective.py) 的维度组只有 relevance/semantics（`asset_grounding/direction/magnitude`）/card/delivery；注释明确说把 `event_type`、`novelty`、`actionable` 发明成维度会产生「没有 reviewer 能标注的死条目」。
+- metric 侧：[objective.py](https://github.com/AnalyThothAI/tracefold/blob/1f329bf1253d17947f15bc2140bbaa646ec458fd/src/tracefold/news/learning/objective.py) 的维度组只有 relevance/semantics（`asset_grounding/direction/magnitude`）/card/delivery；注释明确说把 `event_type`、`novelty`、`actionable` 发明成维度会产生「没有 reviewer 能标注的死条目」。
 - 语料侧（#117 正文 2026-08-29 的 operator 聚合）：混合 7 天 488 个 accepted review / 420 个 fact cluster，exact Gold 覆盖 12.7%，`must_push` 只有 3 例；当前 learning epoch baseline 返回 `news_program_baseline_no_accepted_reviews_in_window`。
 - 身份侧：快照 `program_identity_mix_7d` 显示 7 天窗口横跨 **18 个 `program_sha256`**（最大三个：`e54c8d69b960` 4,603 条、`8c6dcf5085ba` 1,246 条、`535a1dff0ad5` 648 条）。任何按窗口聚合的「分类质量率」都在把多个身份的输出混成一个数——#117 Phase 0 要求生成诊断时显式携带 mixed-cohort caveat 的原因。
 
@@ -283,7 +289,7 @@ AND assertion_status = confirmed
 AND magnitude >= 2 AND 已投递
 ```
 
-按 storyline 去重（每次实质 `change_state` 跃迁一篇，不是每条推文一篇），加日配额与冷却。基建已预留：`news_verdicts.stage` 的 CHECK 里本有 `'deep'`（现存 14 行历史数据）；[progression_review.py](../../src/tracefold/news/progression_review.py) 已示范 post-delivery 车道的接法。
+按 storyline 去重（每次实质 `change_state` 跃迁一篇，不是每条推文一篇），加日配额与冷却。基建已预留：`news_verdicts.stage` 的 CHECK 里本有 `'deep'`（现存 14 行历史数据）；[progression_review.py](https://github.com/AnalyThothAI/tracefold/blob/1f329bf1253d17947f15bc2140bbaa646ec458fd/src/tracefold/news/progression_review.py) 已示范 post-delivery 车道的接法。
 
 ### 8.2 输出契约先行：结构化断言，不是文章
 

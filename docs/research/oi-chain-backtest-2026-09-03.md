@@ -1,5 +1,9 @@
 # OI 交易链路策略审计与供应商帧回测（#459，2026-09-03）
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 **结论：在这个样本上，已部署的链路没有可测的方向性边际。** 按 Runtime 实际执行的出场规则（市价入场、100 bps
 reduce-only 止损、持 4 h、双边 10 bps 成本）打分，310 帧整体 **+25.7 bps**，而同 symbol 同窗口随机入场的零假设
 均值是 **+68.2 bps**，置换检验 **p = 0.937**；通过策略全部条件的 16 帧（15 帧有完整 4 h）观测 **+10.0 bps**

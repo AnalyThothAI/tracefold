@@ -1,5 +1,9 @@
 # OI Agent 设计调研：1019 OI Event Monitor → OpenTrade 自动执行
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 调研日期：2026-08-22。作者：Claude（本机只读调研，未下单、未修改运行时配置、未输出凭证值）。
 
 ## 结论先行
@@ -171,7 +175,7 @@
 | 1019 已放行 | #126 取消本地 Strategy 白名单；DB 里 12h 内 169 条 1019 item（≈330/天） | 帧已经在管道里，不用改 provider 侧 |
 | **全部被 Gate 压掉** | 168 个 event，`admission` 全是 `suppressed_low_signal`，**0 条 verdict**，不进 Triage、不出卡、不进 outcome | 走 `/api/news/feed` 这条只读 HTTP 合同**拿不到**（也不该拿）；OI agent 需要自己的入口 |
 | 数值被丢弃 | `_provider_metadata()` 不保留 `strategy.metrics` | 需要 Receiver 侧改动，或者正则回收（有损） |
-| 架构禁令 | CLAUDE.md：单一业务能力 News V3；`docs/research/opentrade-deepagent-trading-agent.md` §1 已列出全部不可破坏条件 | **不能**在 `tracefold.news` 里加 Trading/Execution 子域 |
+| 架构禁令 | CLAUDE.md：单一业务能力 News V3；[historical opentrade-deepagent-trading-agent](https://github.com/AnalyThothAI/tracefold/blob/f9ba95ed133f9f425f21780f6b15b476374bd0e3/docs/research/opentrade-deepagent-trading-agent.md) §1 已列出全部不可破坏条件 | **不能**在 `tracefold.news` 里加 Trading/Execution 子域 |
 
 **三个接入方案：**
 
@@ -353,7 +357,7 @@ class OIContextVerdict(Signature):
 
 ### 4.4 明确不用 deepagents
 
-`docs/research/deepagents-order-capability-best-practices.md` 已经第一手核过：subagent 默认 tool scoping 会泄漏下单权限、built-in filesystem 默认不安全、官方自己声明是 "trust the LLM" 模型、权限边界必须在 tool/backend 层实施。给一个能下单的 agent 用它，是把安全边界交给 prompt。**这个 OI agent 不需要 planning/子 agent/文件系统 —— 它需要一个纯函数和一台状态机。**
+[historical deepagents-order-capability-best-practices](https://github.com/AnalyThothAI/tracefold/blob/f9ba95ed133f9f425f21780f6b15b476374bd0e3/docs/research/deepagents-order-capability-best-practices.md) 已经第一手核过：subagent 默认 tool scoping 会泄漏下单权限、built-in filesystem 默认不安全、官方自己声明是 "trust the LLM" 模型、权限边界必须在 tool/backend 层实施。给一个能下单的 agent 用它，是把安全边界交给 prompt。**这个 OI agent 不需要 planning/子 agent/文件系统 —— 它需要一个纯函数和一台状态机。**
 
 ---
 

@@ -1,5 +1,9 @@
 # Issue 683 real-model shadow diagnostic (2026-09-23)
 
+> **Historical record.** Retained for the dated evidence or reproducibility described below.
+> It is not the current runtime/setup contract. See the [research index](README.md)
+> and [current module guides](../README.md). Recorded results apply only to their stated source/data.
+
 This is a local, read-only integration receipt for the model seam. The source
 sample came from one stored OI fact and one stored pushed catalyst verdict in the
 existing News ledger. Each was paired with current public Binance market data
