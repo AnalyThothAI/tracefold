@@ -376,7 +376,31 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
 # EventUpdate join is on a primary key. `d` is the Event's representative ledger row -- its latest sent
 # card, else its latest attempt -- over the `(event_id, kind)` index; `q` is its latest intent still owed
 # with no ledger row, from one pass over the in-flight queue.
-_FEED_JOINS_SQL: Final = f"""
+_READER_DELIVERY_ORDER_SQL: Final = "(dl.state = 'sent') DESC, dl.created_at_ms DESC, dl.intent_id DESC"
+_FEED_PAGE_DELIVERY_SQL: Final = f"""
+          LEFT JOIN LATERAL (
+            SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key
+              FROM news_deliveries dl
+             WHERE dl.event_id = e.event_id AND dl.kind IN {READER_DELIVERY_KINDS_SQL}
+             ORDER BY {_READER_DELIVERY_ORDER_SQL}
+             LIMIT 1
+          ) d ON true
+"""  # noqa: S608
+# Counts inspect every matching Event. Pick its representative receipt once for the whole
+# ledger, rather than sorting a correlated lookup for each Event in the retained history.
+_FEED_COUNTS_DELIVERY_SQL: Final = f"""
+          LEFT JOIN (
+            SELECT DISTINCT ON (dl.event_id) dl.event_id, dl.state
+              FROM news_deliveries dl
+             WHERE dl.kind IN {READER_DELIVERY_KINDS_SQL}
+             ORDER BY dl.event_id, {_READER_DELIVERY_ORDER_SQL}
+          ) d ON d.event_id = e.event_id
+"""  # noqa: S608
+
+
+def _feed_joins_sql(*, bulk_deliveries: bool = False) -> str:
+    delivery_join = _FEED_COUNTS_DELIVERY_SQL if bulk_deliveries else _FEED_PAGE_DELIVERY_SQL
+    return f"""
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (
             SELECT s.provenance, s.snapshot
@@ -399,13 +423,7 @@ _FEED_JOINS_SQL: Final = f"""
           LEFT JOIN news_event_update_heads h ON h.event_id = e.event_id
           LEFT JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
           LEFT JOIN news_notification_work nw ON nw.event_id = e.event_id AND nw.channel = 'news'
-          LEFT JOIN LATERAL (
-            SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key
-              FROM news_deliveries dl
-             WHERE dl.event_id = e.event_id AND dl.kind IN {READER_DELIVERY_KINDS_SQL}
-             ORDER BY (dl.state = 'sent') DESC, dl.created_at_ms DESC, dl.intent_id DESC
-             LIMIT 1
-          ) d ON true
+          {delivery_join}
           LEFT JOIN (
             SELECT DISTINCT ON (owed.event_id) owed.event_id, owed.state, owed.error_code
               FROM news_delivery_queue owed
@@ -413,7 +431,7 @@ _FEED_JOINS_SQL: Final = f"""
                AND NOT EXISTS (SELECT 1 FROM news_deliveries settled WHERE settled.intent_id = owed.intent_id)
              ORDER BY owed.event_id, owed.enqueued_at_ms DESC, owed.intent_id DESC
           ) q ON q.event_id = e.event_id
-"""  # noqa: S608
+    """  # noqa: S608
 
 
 def feed_page_sql(where_sql: str) -> str:
@@ -464,7 +482,7 @@ def feed_page_sql(where_sql: str) -> str:
                     THEN NULLIF(btrim(d.card ->> 'headline_zh'), '') END AS sent_update_headline,
                q.state AS delivery_queue_state, q.error_code AS delivery_queue_error_code
           FROM clock CROSS JOIN news_events e
-          {_FEED_JOINS_SQL}
+          {_feed_joins_sql()}
          WHERE {where_sql}
          ORDER BY e.opened_at_ms DESC, e.event_id DESC
          LIMIT %s
@@ -481,7 +499,7 @@ def feed_counts_sql(where_sql: str) -> str:
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["held"]}) AS held,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pending"]}) AS pending
           FROM clock CROSS JOIN news_events e
-          {_FEED_JOINS_SQL}
+          {_feed_joins_sql(bulk_deliveries=True)}
          WHERE {where_sql}
     """  # noqa: S608
 
