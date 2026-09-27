@@ -12,6 +12,7 @@ from .contracts import (
     Claim,
     DraftClaim,
     EventUpdate,
+    Evidence,
     EvidenceRelation,
     Extraction,
     FrozenInput,
@@ -94,6 +95,16 @@ def equivalent_is_possible(current: DraftClaim, previous: Claim, hints: tuple[Id
         return False
     if a.phase not in {None, "unknown"} and b.phase not in {None, "unknown"} and a.phase != b.phase:
         return False
+    if (
+        a.conditions
+        and b.conditions
+        and {value.casefold().strip() for value in a.conditions} != {value.casefold().strip() for value in b.conditions}
+    ):
+        return False
+    for field in ("statistical_period", "effective_at", "occurred_at"):
+        current_value, previous_value = getattr(a, field), getattr(b, field)
+        if current_value and previous_value and current_value.casefold().strip() != previous_value.casefold().strip():
+            return False
     # Only compare normalized code values, not language-dependent period prose.
     qa = {(q.name.casefold(), q.unit.casefold(), q.period): Decimal(q.value) for q in a.quantities}
     qb = {(q.name.casefold(), q.unit.casefold(), q.period): Decimal(q.value) for q in b.quantities}
@@ -372,9 +383,10 @@ class SemanticAnalyzer:
 def _equivalent_prior(
     draft: DraftClaim,
     relations: list[RelationDraft],
-    material_previous: set[str],
+    occurrence_previous: set[str],
     previous: dict[str, PriorClaim],
     source: FrozenInput,
+    evidence: dict[str, Evidence],
 ) -> PriorClaim | None:
     # Reject a contradicted equivalent pair, not other independently valid
     # pairs. A numerical mismatch with an older claim cannot veto the latest.
@@ -383,11 +395,36 @@ def _equivalent_prior(
         for row in relations
         if row.relation == "equivalent"
         and equivalent_is_possible(draft, previous[row.previous_ref].claim, source.identity_hints)
-        # Repeating B can correctly be both equivalent to B and a change from A.
-        # Reuse B only when ALL reported changes are already its antecedents. A
-        # real reversal back to A still has a new predecessor B and remains new.
-        and material_previous <= set(previous[row.previous_ref].claim.antecedent_refs)
+        # Only a real-world transition can prevent reuse. A conflict or correction
+        # with another Claim changes the relationship, not this proposition's identity.
+        # Repeating B after A keeps B's antecedents; A -> B -> A has a new predecessor.
+        and occurrence_previous <= set(previous[row.previous_ref].claim.antecedent_refs)
     ]
+    if not equivalent and not occurrence_previous:
+        # Two feeds can carry the same complete headline while the relation model
+        # calls its second reading unrelated. This is narrower than deduplicating
+        # statements: both complete cited source texts must match, the reading
+        # must be identical, and the new structured quantities cannot add facts.
+        repeated_source = [
+            row
+            for row in relations
+            if row.relation == "unrelated"
+            and previous[row.previous_ref].event_id == source.event_id
+            and draft.statement == previous[row.previous_ref].claim.statement
+            and equivalent_is_possible(draft, previous[row.previous_ref].claim, source.identity_hints)
+            and set(_quantity_key(draft)) <= set(_quantity_key(previous[row.previous_ref].claim))
+            and any(
+                current.quote
+                == earlier.quote
+                == evidence[current.evidence_ref].text
+                == evidence[earlier.evidence_ref].text
+                for current in draft.citations
+                for earlier in previous[row.previous_ref].claim.citations
+                if current.evidence_ref in evidence and earlier.evidence_ref in evidence
+            )
+        ]
+        if len(repeated_source) == 1:
+            return previous[repeated_source[0].previous_ref]
     if not equivalent:
         return None
     equivalent.sort(key=lambda row: (previous[row.previous_ref].event_id != source.event_id, row.previous_ref))
@@ -506,13 +543,13 @@ def assemble_update(
     for draft in extraction.claims:
         relations = relations_by_slot.get(draft.slot, [])
         material_relations = tuple(row for row in relations if row.change_kind is not None)
-        material_previous = {row.previous_ref for row in material_relations}
-        same = _equivalent_prior(draft, relations, material_previous, previous, source)
+        occurrence_previous = {row.previous_ref for row in relations if row.relation == "real_world_change"}
+        same = _equivalent_prior(draft, relations, occurrence_previous, previous, source, evidence)
         material = _claim_material(draft)
-        # A new real-world reversal can return to a previously seen numeric state.
-        # Anchor this occurrence to its explicit predecessor and source, rather
-        # than reusing an earlier same-shaped claim and silently losing the action.
-        if material_relations:
+        # A genuine new proposition may have incomplete structured fields, and a
+        # reversal can return to a previously seen state. Without an equivalent
+        # prior, anchor material changes to their predecessor and source.
+        if same is None and material_relations:
             material["occurrence"] = {
                 "previous": sorted(row.previous_ref for row in material_relations),
                 "citations": sorted((citation.evidence_ref, citation.quote) for citation in draft.citations),
@@ -528,8 +565,8 @@ def assemble_update(
                 antecedents = same.claim.antecedent_refs
             else:
                 first = min(evidence[row.evidence_ref].source.first_available_at_ms for row in draft.citations)
-                ancestry = set(material_previous)
-                for previous_ref in material_previous:
+                ancestry = set(occurrence_previous)
+                for previous_ref in occurrence_previous:
                     ancestry.update(previous[previous_ref].claim.antecedent_refs)
                 antecedents = tuple(sorted(ancestry))
             claims[ref] = Claim(
@@ -553,10 +590,24 @@ def assemble_update(
                     )
                 )
             else:
-                for relation in material_relations:
-                    if relation.relation == "corrects" and relation.previous_ref in claims:
-                        retired.add(relation.previous_ref)
                 changes.extend(_occurrence_changes(draft, ref, relations, material_relations, previous, source))
+        # Relationship deltas do not depend on whether this occurrence already existed.
+        # An equivalent Claim can acquire a cross-Event conflict or correction while
+        # retaining its ref and its first available time.
+        for relation in material_relations:
+            if relation.relation == "corrects" and relation.previous_ref in claims:
+                retired.add(relation.previous_ref)
+            if ref in head_refs and relation.relation != "real_world_change":
+                prior = previous[relation.previous_ref]
+                changes.append(
+                    Change(
+                        kind="evidence_change" if relation.relation == "adds_information" else relation.change_kind,
+                        current_ref=ref,
+                        previous_ref=relation.previous_ref,
+                        previous_content_ref=_content_ref(prior),
+                        relation=relation.relation,
+                    )
+                )
         if draft.topics:
             claims[ref] = claims[ref].model_copy(update={"topics": tuple(sorted(set(draft.topics)))})
         changes.extend(_link_evidence(draft, ref, extraction, links, head, head_refs))
