@@ -41,7 +41,12 @@ import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
 import { NewsEventPager } from "./NewsEventPager";
-import { NewsEventUpdateSections, NewsProcessingState } from "./NewsEventUpdate";
+import {
+  NewsProcessingState,
+  NewsUpdateContent,
+  NewsUpdateInference,
+  NewsUpdateSources,
+} from "./NewsEventUpdate";
 import { NewsQuoteTable } from "./NewsQuoteTable";
 import { NewsTimeline } from "./NewsTimeline";
 
@@ -108,9 +113,14 @@ function EventDocument({
   const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
   const quoteList = assets.map((asset) => quotes[asset.symbol]).filter(Boolean);
   const steps = detail.timeline ?? [];
+  const priorComparisonCount = update?.changes?.filter((change) => change.previous_ref).length ?? 0;
   return (
     <>
-      <article className="news-detail-hero" data-direction={legacy?.direction ?? undefined}>
+      <article
+        className="news-detail-hero"
+        data-direction={legacy?.direction ?? undefined}
+        data-update={update ? true : undefined}
+      >
         <div className="news-detail-hero-top">
           {/* The conclusion and its one-line why, side by side: the chip is the verdict, the sentence is the
               server's reason for it. The chip does not repeat the reason inside itself. */}
@@ -129,6 +139,17 @@ function EventDocument({
         </div>
 
         <h1 className="news-detail-headline">{headline}</h1>
+        {update ? (
+          <p className="news-detail-update-summary">
+            本次提取 {update.claims.length} 条命题，来自 {update.sources?.length ?? 0} 个来源。
+            {detail.processing?.notification?.plan ? (
+              <span>
+                通知：{detail.processing.notification.plan.action_zh} ·{" "}
+                {detail.processing.notification.plan.reason_zh}
+              </span>
+            ) : null}
+          </p>
+        ) : null}
         {legacy || assets.length || update?.topics?.length ? (
           <div aria-label="事件判定" className="news-detail-verdict">
             {legacy ? <NewsDirectionChip size="lg" verdict={legacy} /> : null}
@@ -140,7 +161,7 @@ function EventDocument({
                 ))}
               </span>
             ) : null}
-            {assets.length ? (
+            {assets.length && !update ? (
               <>
                 <span aria-hidden className="news-detail-rule" />
                 <NewsAssetChips assets={assets} quotes={quotes} />
@@ -149,25 +170,69 @@ function EventDocument({
           </div>
         ) : null}
 
-        {quoteList.length ? <NewsQuoteTable quotes={quoteList} /> : null}
+        {!update && quoteList.length ? <NewsQuoteTable quotes={quoteList} /> : null}
 
-        <p className="news-detail-original">
-          <span className="news-detail-original-label">
-            原文 · {event.reporting_origin || "未知来源"}
-            {event.member_count > 1 ? ` · ${event.member_count} 条报道` : ""}
-          </span>
-          <span>{event.leader_title}</span>
-          {url ? (
-            <a href={url} rel="noreferrer" target="_blank">
-              打开
-              <ExternalLink aria-hidden />
-            </a>
-          ) : null}
-        </p>
+        {update ? (
+          <div className="news-detail-update-foot">
+            <span>原文 · {event.reporting_origin || "未知来源"}</span>
+            <span>{update.claims.length} 条命题</span>
+            <span>{priorComparisonCount} 项历史比较</span>
+            <a href="#news-source">查看来源</a>
+            <details>
+              <summary>原始标题</summary>
+              <p>{event.leader_title}</p>
+              {url ? (
+                <a href={url} rel="noreferrer" target="_blank">
+                  打开原文 <ExternalLink aria-hidden />
+                </a>
+              ) : null}
+            </details>
+          </div>
+        ) : (
+          <p className="news-detail-original">
+            <span className="news-detail-original-label">
+              原文 · {event.reporting_origin || "未知来源"}
+              {event.member_count > 1 ? ` · ${event.member_count} 条报道` : ""}
+            </span>
+            <span>{event.leader_title}</span>
+            {url ? (
+              <a href={url} rel="noreferrer" target="_blank">
+                打开
+                <ExternalLink aria-hidden />
+              </a>
+            ) : null}
+          </p>
+        )}
       </article>
 
-      {update ? <NewsEventUpdateSections update={update} /> : null}
-      {detail.processing ? <NewsProcessingState processing={detail.processing} /> : null}
+      {update ? (
+        <>
+          <nav aria-label="事件详情目录" className="news-detail-reading-nav">
+            <a href="#news-content">本次内容</a>
+            <a href="#news-source">来源证据</a>
+            {detail.processing ? <a href="#news-processing">处理记录</a> : null}
+            <a href="#news-market">行情观察</a>
+          </nav>
+          <div className="news-detail-reading-layout">
+            <NewsUpdateContent update={update} />
+            <NewsNotificationSummary detail={detail} />
+            <NewsUpdateSources update={update} />
+            <Card
+              aria-label="当前行情"
+              className="news-detail-current-market"
+              hint="滚动报价"
+              id="news-market"
+              title="当前行情"
+            >
+              {assets.length ? <NewsAssetChips assets={assets} quotes={quotes} /> : null}
+              <NewsQuoteTable compact quotes={quoteList} />
+            </Card>
+            <NewsUpdateInference update={update} />
+            {detail.processing ? <NewsProcessingState processing={detail.processing} /> : null}
+          </div>
+        </>
+      ) : null}
+      {!update && detail.processing ? <NewsProcessingState processing={detail.processing} /> : null}
       {legacy ? <LegacyVerdict verdict={legacy} /> : null}
 
       <SymbolNormalization groups={detail.normalization ?? []} />
@@ -208,6 +273,55 @@ function EventDocument({
 
       <TechnicalDetails detail={detail} />
     </>
+  );
+}
+
+function NewsNotificationSummary({ detail }: { detail: NewsEventDetail }) {
+  const plan = detail.processing?.notification?.plan;
+  const decisions = plan?.claim_decisions ?? [];
+  const positions = new Map(
+    detail.event_update?.claims.map((claim, index) => [claim.ref, index + 1]),
+  );
+  return (
+    <Card
+      aria-label="通知判断"
+      className="news-detail-notification-summary"
+      title={detail.outcome.kind === "not_notified" ? "为什么未通知" : "通知判断"}
+    >
+      <p className="news-detail-notification-lead">
+        {plan
+          ? `${plan.action_zh} · ${plan.reason_zh}`
+          : detail.outcome.reason_zh || detail.outcome.text_zh}
+      </p>
+      {decisions.length ? (
+        <ol className="news-detail-notification-decisions">
+          {decisions.slice(0, 3).map((row) => {
+            const position = positions.get(row.claim_ref);
+            return (
+              <li key={row.claim_ref}>
+                {position ? (
+                  <a href={`#news-claim-${position}`}>命题 {String(position).padStart(2, "0")}</a>
+                ) : (
+                  <span>命题</span>
+                )}
+                <span>{row.reason_zh || row.reason}</span>
+                <b>{row.decision_zh || row.decision}</b>
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+      {decisions.length > 3 ? (
+        <a className="news-detail-notification-more" href="#news-processing">
+          查看全部 {decisions.length} 条逐条决定
+        </a>
+      ) : null}
+      {detail.processing ? (
+        <a className="news-detail-notification-more" href="#news-processing">
+          查看处理记录
+        </a>
+      ) : null}
+    </Card>
   );
 }
 

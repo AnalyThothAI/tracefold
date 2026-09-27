@@ -13,7 +13,13 @@ import "./newsQuoteTable.css";
  * measurement anchored at this Event; one table would invite reading a rolling 24 h change as the market's
  * answer to this headline, which is the single wrong conclusion this whole plane exists to prevent.
  */
-export function NewsQuoteTable({ quotes }: { quotes: NewsQuote[] }) {
+export function NewsQuoteTable({
+  compact = false,
+  quotes,
+}: {
+  compact?: boolean;
+  quotes: NewsQuote[];
+}) {
   if (!quotes.length) return <EmptyNote>这条事件没有可以定价的标的。</EmptyNote>;
   // The oldest row in the table, because that is the only freshness the whole table can honour. A stale
   // quote stays on screen by design (#88), and a blanket "刚刚" would have been flatly wrong for it.
@@ -21,17 +27,18 @@ export function NewsQuoteTable({ quotes }: { quotes: NewsQuote[] }) {
     (worst.effective_age_ms ?? 0) >= (quote.effective_age_ms ?? 0) ? worst : quote,
   );
   return (
-    <div className="news-quote-table">
+    <div className="news-quote-table" data-compact={compact || undefined}>
       <div className="news-quote-table-head">
-        <span>ASSET · {quotes.length} 个标的</span>
+        <span>{compact ? "标的" : `ASSET · ${quotes.length} 个标的`}</span>
         <span>现价</span>
         <span>24H</span>
       </div>
       {quotes.map((quote) => (
         <div className="news-quote-table-row" key={quote.requested_symbol}>
           <code>
-            {quote.venue ? <span>{quote.venue}:</span> : null}
+            {quote.venue && !compact ? <span>{quote.venue}:</span> : null}
             <b>{quote.venue_symbol ?? quote.symbol}</b>
+            {quote.venue && compact ? <span>{quote.venue}</span> : null}
           </code>
           <NewsQuotePrice quote={quote} />
           <NewsQuoteChange quote={quote} showStale={false} />

@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>新闻事件详情 · 交互设计稿</title>
+    <style>
+      :root {
+        font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        color: #1e2733;
+        background: #f1f3f5;
+        font-synthesis: none;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      a {
+        color: #1e46ad;
+        text-decoration: none;
+      }
+      button,
+      summary {
+        cursor: pointer;
+      }
+      button {
+        font: inherit;
+      }
+      .app {
+        display: grid;
+        grid-template-columns: 204px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+      .sidebar {
+        border-right: 1px solid #e4e8ee;
+        background: #fff;
+      }
+      .brand {
+        height: 54px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 0 18px;
+        border-bottom: 1px solid #e4e8ee;
+        font-weight: 750;
+      }
+      .brand-mark {
+        display: grid;
+        place-items: center;
+        width: 25px;
+        height: 25px;
+        border-radius: 5px;
+        background: #315ddb;
+        color: #fff;
+        font-size: 14px;
+      }
+      .brand small {
+        display: block;
+        color: #6e7781;
+        font-size: 10px;
+        font-weight: 400;
+      }
+      .side-label {
+        margin: 26px 20px 10px;
+        color: #6e7781;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.11em;
+      }
+      .side-link {
+        display: flex;
+        justify-content: space-between;
+        margin: 3px 12px;
+        padding: 12px;
+        border-radius: 6px;
+        color: #444c56;
+        font-size: 13px;
+      }
+      .side-link.active {
+        background: #eaf0ff;
+        color: #1e46ad;
+        font-weight: 700;
+      }
+      .main {
+        min-width: 0;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        height: 54px;
+        padding: 0 16px;
+        border-bottom: 1px solid #e4e8ee;
+        background: #fff;
+        font-size: 13px;
+      }
+      .topbar strong {
+        white-space: nowrap;
+      }
+      .search {
+        width: 330px;
+        padding: 8px 12px;
+        border: 1px solid #e4e8ee;
+        border-radius: 6px;
+        color: #6e7781;
+      }
+      .top-note {
+        margin-left: auto;
+        color: #6e7781;
+        font-size: 11px;
+      }
+      .canvas {
+        max-width: 1110px;
+        margin: 0 auto;
+        padding: 18px 18px 72px;
+      }
+      .prototype {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 16px;
+        color: #6e7781;
+        font-size: 11px;
+      }
+      .prototype b {
+        padding: 4px 7px;
+        border: 1px solid #c6ccd5;
+        border-radius: 4px;
+        color: #444c56;
+        font-weight: 650;
+      }
+      .back {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin: 0 0 14px;
+        color: #444c56;
+        font-size: 13px;
+      }
+      .hero,
+      .panel {
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: inset 0 0 0 1px rgba(13, 17, 23, 0.07);
+      }
+      .hero {
+        padding: 24px 28px 23px;
+      }
+      .hero-top {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: #6e7781;
+        font-size: 12px;
+      }
+      .status {
+        padding: 4px 9px;
+        border-radius: 4px;
+        background: #eaedf1;
+        color: #444c56;
+        font-weight: 700;
+      }
+      .dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: #aeb5be;
+      }
+      .hero time {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+      }
+      .hero h1 {
+        max-width: 870px;
+        margin: 18px 0 12px;
+        font-size: clamp(23px, 2vw, 29px);
+        letter-spacing: -0.025em;
+        line-height: 1.3;
+      }
+      .hero-sub {
+        margin: 0;
+        color: #444c56;
+        font-size: 13px;
+        line-height: 1.65;
+      }
+      .hero-sub strong {
+        color: #1e2733;
+      }
+      .hero-foot {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 7px 16px;
+        margin-top: 21px;
+        padding-top: 15px;
+        border-top: 1px solid #eef1f5;
+        color: #5b636e;
+        font-size: 12px;
+      }
+      .hero-foot a {
+        margin-left: auto;
+        font-weight: 650;
+      }
+      .reading-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px;
+        margin: 11px 0 16px;
+        border-bottom: 1px solid #dfe4ea;
+      }
+      .reading-nav a {
+        min-width: 92px;
+        padding: 12px 13px;
+        border-bottom: 2px solid transparent;
+        color: #5b636e;
+        text-align: center;
+        font-size: 13px;
+      }
+      .reading-nav a:first-child {
+        border-bottom-color: #315ddb;
+        color: #1e46ad;
+        font-weight: 700;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 288px;
+        gap: 14px;
+        align-items: start;
+      }
+      .column {
+        display: grid;
+        gap: 14px;
+        min-width: 0;
+      }
+      .panel-title {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 18px 20px 15px;
+      }
+      .panel-title h2 {
+        margin: 0;
+        font-size: 17px;
+        letter-spacing: -0.01em;
+      }
+      .panel-title small {
+        color: #6e7781;
+        font-size: 11px;
+      }
+      .panel-body {
+        padding: 0 20px 20px;
+      }
+      .claim-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .claim {
+        display: grid;
+        grid-template-columns: 30px minmax(0, 1fr);
+        gap: 12px;
+        padding: 18px 0;
+        border-top: 1px solid #eef1f5;
+      }
+      .claim:first-child {
+        padding-top: 10px;
+        border-top: 0;
+      }
+      .claim-n {
+        padding-top: 3px;
+        color: #98a1ac;
+        font:
+          600 13px/1.5 Menlo,
+          Consolas,
+          monospace;
+      }
+      .claim-main {
+        min-width: 0;
+      }
+      .claim-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .tag {
+        padding: 3px 7px;
+        border: 1px solid #e4e8ee;
+        border-radius: 4px;
+        color: #5b636e;
+        font-size: 11px;
+      }
+      .tag.change {
+        border-color: rgba(42, 91, 215, 0.3);
+        background: rgba(42, 91, 215, 0.07);
+        color: #1e46ad;
+      }
+      .claim-main h3 {
+        margin: 10px 0 9px;
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 1.45;
+      }
+      .claim-source {
+        margin: 0;
+        color: #5b636e;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .claim-source b {
+        color: #444c56;
+      }
+      .claim-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px 15px;
+        margin-top: 13px;
+      }
+      .claim-actions details {
+        max-width: 100%;
+      }
+      .claim-actions summary {
+        color: #1e46ad;
+        font-size: 12px;
+        font-weight: 650;
+        list-style: none;
+      }
+      .claim-actions summary::-webkit-details-marker {
+        display: none;
+      }
+      .claim-actions summary::after {
+        content: "⌄";
+        padding-left: 5px;
+      }
+      .claim-actions details[open] summary::after {
+        content: "⌃";
+      }
+      .history {
+        display: grid;
+        gap: 8px;
+        margin-top: 13px;
+        padding: 11px 14px;
+        border-left: 2px solid #cdd9fa;
+        background: #f8f9fb;
+        color: #444c56;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .history p {
+        margin: 0;
+      }
+      .history small {
+        color: #6e7781;
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 13px;
+        padding: 12px;
+        background: #f8f9fb;
+        color: #444c56;
+        font-size: 12px;
+      }
+      .facts b {
+        display: block;
+        margin-bottom: 3px;
+        color: #6e7781;
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .decision {
+        padding: 0 18px 19px;
+      }
+      .decision-lead {
+        margin: 2px 0 10px;
+        color: #1e2733;
+        font-size: 15px;
+        font-weight: 700;
+      }
+      .decision-note {
+        margin: 0;
+        color: #5b636e;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .decision-list {
+        margin: 15px 0 0;
+        padding: 13px 0 0;
+        border-top: 1px solid #eef1f5;
+        list-style: none;
+      }
+      .decision-list li {
+        display: flex;
+        justify-content: space-between;
+        gap: 7px;
+        padding: 5px 0;
+        color: #444c56;
+        font-size: 12px;
+      }
+      .decision-list b {
+        color: #5b636e;
+        font-weight: 600;
+      }
+      .quote-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+      }
+      .quote-table th {
+        color: #6e7781;
+        font-weight: 500;
+        text-align: left;
+      }
+      .quote-table td,
+      .quote-table th {
+        padding: 8px 0;
+        border-bottom: 1px solid #eef1f5;
+      }
+      .quote-table td:last-child,
+      .quote-table th:last-child {
+        text-align: right;
+      }
+      .quote-note {
+        margin: 10px 0 0;
+        color: #6e7781;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+      .source-head {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: #444c56;
+        font-size: 13px;
+      }
+      .source-head strong {
+        color: #1e2733;
+      }
+      .source-text {
+        margin: 12px 0 0;
+        color: #444c56;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .source-evidence {
+        margin: 11px 0 0;
+        color: #6e7781;
+        font-size: 12px;
+      }
+      .panel details > summary.detail-summary {
+        margin-top: 13px;
+        color: #1e46ad;
+        font-size: 12px;
+      }
+      .muted {
+        margin: 0;
+        color: #6e7781;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      @media (max-width: 1050px) {
+        .layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .right {
+          grid-row: 2;
+        }
+      }
+      @media (max-width: 700px) {
+        .app {
+          display: block;
+        }
+        .sidebar {
+          display: none;
+        }
+        .topbar {
+          height: 52px;
+        }
+        .topbar .search {
+          flex: 1;
+          min-width: 0;
+          width: auto;
+        }
+        .topbar strong,
+        .top-note {
+          display: none;
+        }
+        .canvas {
+          padding: 13px 12px 70px;
+        }
+        .hero {
+          padding: 18px 16px;
+        }
+        .hero time {
+          width: 100%;
+          margin-left: 0;
+        }
+        .hero h1 {
+          font-size: 22px;
+        }
+        .hero-foot a {
+          margin-left: 0;
+        }
+        .reading-nav {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+        }
+        .reading-nav a {
+          min-width: 0;
+          padding: 11px 2px;
+          font-size: 12px;
+        }
+        .claim {
+          grid-template-columns: 22px minmax(0, 1fr);
+          gap: 9px;
+        }
+        .panel-title {
+          padding: 16px 15px 13px;
+        }
+        .panel-body {
+          padding: 0 15px 15px;
+        }
+        .facts {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar" aria-label="工作台导航">
+        <div class="brand">
+          <span class="brand-mark">T</span
+          ><span>Tracefold<small>研究与执行工作台</small></span>
+        </div>
+        <p class="side-label">WORKBENCH</p>
+        <a class="side-link active" href="#content">事件流 <span>391</span></a>
+        <a class="side-link" href="#market">市场研究</a>
+        <a class="side-link" href="#process">交易执行</a>
+      </aside>
+      <div class="main">
+        <header class="topbar">
+          <strong>事件详情</strong>
+          <div class="search">⌕　标的 / 事件关键词</div>
+          <span class="top-note">设计稿 · 静态样例</span>
+        </header>
+        <main class="canvas">
+          <p class="prototype">
+            <b>交互设计稿</b> 示例数据取自事件 cf4ba24a · 不代表实时状态
+          </p>
+          <a class="back" href="#">←　事件流</a>
+          <section class="hero" aria-label="事件概览">
+            <div class="hero-top">
+              <span class="status">未通知</span><span class="dot"></span
+              ><span>仅表态或观点 · 2 条命题</span
+              ><time>2026-09-27 16:15 UTC</time>
+            </div>
+            <h1>
+              Iran's foreign minister said Tehran is ready for 'doomsday' war
+              with the U.S.
+            </h1>
+            <p class="hero-sub">
+              本次提取 <strong>2 条命题</strong>，来自 1
+              条报道。下方逐条展示内容、来源及通知决定。
+            </p>
+            <div class="hero-foot">
+              <span>CNBC · 1 条来源</span><span>2 条命题</span
+              ><span>5 项历史比较</span><a href="#source">查看来源 ↗</a>
+            </div>
+          </section>
+          <nav class="reading-nav" aria-label="事件详情目录">
+            <a href="#content">本次内容</a><a href="#source">来源证据</a
+            ><a href="#process">处理记录</a><a href="#market">行情观察</a>
+          </nav>
+          <div class="layout">
+            <div class="column">
+              <section class="panel" id="content" aria-label="本次内容">
+                <div class="panel-title">
+                  <h2>本次内容</h2>
+                  <small>两条命题，分别保留历史对照</small>
+                </div>
+                <div class="panel-body">
+                  <ol class="claim-list">
+                    <li class="claim">
+                      <span class="claim-n">01</span>
+                      <div class="claim-main">
+                        <div class="claim-tags">
+                          <span class="tag change">参数变化</span
+                          ><span class="tag">表态或观点</span>
+                        </div>
+                        <h3>
+                          Iran's foreign minister said Tehran is ready for
+                          'doomsday' war with the U.S.
+                        </h3>
+                        <p class="claim-source">
+                          <b>CNBC 转述</b> · “Tehran ready for 'doomsday' war
+                          with U.S.”
+                        </p>
+                        <div class="claim-actions">
+                          <details>
+                            <summary>历史比较 1 项</summary>
+                            <div class="history">
+                              <p>
+                                此前：Iran is fully prepared for war to resume.
+                              </p>
+                              <small>补充信息 · 旧命题来自另一事件</small>
+                            </div>
+                          </details>
+                          <details>
+                            <summary>结构化字段</summary>
+                            <div class="facts">
+                              <div><b>主体</b>Abbas Araghchi</div>
+                              <div><b>表达方式</b>表态或观点</div>
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    </li>
+                    <li class="claim">
+                      <span class="claim-n">02</span>
+                      <div class="claim-main">
+                        <div class="claim-tags">
+                          <span class="tag change">新事实</span
+                          ><span class="tag">表态或观点</span>
+                        </div>
+                        <h3>
+                          Iran's foreign minister said Tehran leaves diplomacy
+                          on the table.
+                        </h3>
+                        <p class="claim-source">
+                          <b>CNBC 转述</b> · “but leaves diplomacy on the table”
+                        </p>
+                        <div class="claim-actions">
+                          <details>
+                            <summary>历史比较 4 项</summary>
+                            <div class="history">
+                              <p>
+                                此前：Iran is fully prepared for war to resume.
+                              </p>
+                              <p>
+                                此前：Iran stood firm on conditions for
+                                reopening the Strait of Hormuz.
+                              </p>
+                              <p>
+                                此前：The Middle East war is locked in a
+                                stalemate.
+                              </p>
+                              <p>
+                                此前：Iran stood firm despite rejection of its
+                                proposal.
+                              </p>
+                              <small>以上是 4 次比较，不是 4 条新消息</small>
+                            </div>
+                          </details>
+                          <details>
+                            <summary>结构化字段</summary>
+                            <div class="facts">
+                              <div><b>主体</b>Abbas Araghchi</div>
+                              <div><b>表达方式</b>表态或观点</div>
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    </li>
+                  </ol>
+                </div>
+              </section>
+              <section class="panel" id="source" aria-label="来源证据">
+                <div class="panel-title">
+                  <h2>来源与分歧</h2>
+                  <small>1 个来源 · 未记录来源分歧</small>
+                </div>
+                <div class="panel-body">
+                  <div class="source-head">
+                    <strong>CNBC</strong><span>可信二手来源 · 16:15</span
+                    ><a
+                      href="https://www.cnbc.com/2026/09/27/iran-foreign-minister-keeps-indirect-talks-with-us-open-state-media.html"
+                      >原文 ↗</a
+                    >
+                  </div>
+                  <p class="source-text">
+                    [UPDATE] Iran's foreign minister says Tehran ready for
+                    'doomsday' war with U.S., but leaves diplomacy on the table.
+                  </p>
+                  <p class="source-evidence">
+                    转述命题 01、02 · 没有独立第二来源
+                  </p>
+                  <details>
+                    <summary class="detail-summary">
+                      查看来源原文和引用关系
+                    </summary>
+                    <p class="muted">保留逐条引用、来源关系与完整原文。</p>
+                  </details>
+                </div>
+              </section>
+              <section class="panel" id="process" aria-label="处理记录">
+                <div class="panel-title">
+                  <h2>处理记录</h2>
+                  <small>语义处理、通知决定、发送</small>
+                </div>
+                <div class="panel-body">
+                  <p class="muted">
+                    语义处理已完成 · 通知计划：不通知 · 无发送记录
+                  </p>
+                  <details>
+                    <summary class="detail-summary">
+                      查看逐条决定和处理时间线
+                    </summary>
+                    <p class="muted">
+                      每条命题的决定、工作版本、尝试和发送意图在此保留。
+                    </p>
+                  </details>
+                </div>
+              </section>
+            </div>
+            <div class="column right">
+              <section class="panel" aria-label="通知判断">
+                <div class="panel-title"><h2>为什么未通知</h2></div>
+                <div class="decision">
+                  <p class="decision-lead">2 条命题仅为表态或观点</p>
+                  <p class="decision-note">
+                    事件已被记录，可继续阅读和追溯；本次没有具体行动、措施或新观测进入通知。
+                  </p>
+                  <ul class="decision-list">
+                    <li><span>准备战争的表态</span><b>不通知</b></li>
+                    <li><span>外交选项的表态</span><b>不通知</b></li>
+                  </ul>
+                </div>
+              </section>
+              <section class="panel" id="market" aria-label="行情观察">
+                <div class="panel-title">
+                  <h2>当前行情</h2>
+                  <small>滚动报价</small>
+                </div>
+                <div class="panel-body">
+                  <table class="quote-table">
+                    <thead>
+                      <tr>
+                        <th>标的</th>
+                        <th>现价</th>
+                        <th>24H</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>BTC</td>
+                        <td>84,477.30</td>
+                        <td>+0.50%</td>
+                      </tr>
+                      <tr>
+                        <td>CL</td>
+                        <td>93.31</td>
+                        <td>−1.07%</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p class="quote-note">
+                    这是当前行情，不是事件带来的收益。事件后反应另列。
+                  </p>
+                </div>
+              </section>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

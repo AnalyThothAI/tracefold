@@ -1,11 +1,10 @@
 @layer app.features {
   /*
-   * The EventUpdate sections (#706). One list grammar for changes, claims, sources and decisions: a small
+   * The EventUpdate sections (#706). One list grammar for claims, sources and decisions: a small
    * badge carrying the server's word, then the sentence it qualifies. Badges are neutral by default; only
    * the states a reader must not miss take a signal tone -- a refutation, a disputed or retired claim, an
    * inference, and a send that failed or is unsettled.
    */
-  .news-update-changes,
   .news-update-claims,
   .news-update-sources,
   .news-update-relations,
@@ -23,7 +22,48 @@
     gap: 6px;
   }
 
-  .news-update-change,
+  .news-update-content .news-update-claims {
+    gap: 0;
+  }
+
+  .news-update-content .news-update-claim {
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 12px;
+    padding: 17px 0;
+  }
+
+  .news-update-claim-number {
+    padding-top: 3px;
+    color: var(--text-faint);
+    font: 600 var(--font-size-mono-meta)/1.5 var(--font-mono);
+  }
+
+  .news-update-claim-main {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .news-update-claim-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px 17px;
+  }
+
+  .news-update-claim-actions details {
+    min-width: 0;
+  }
+
+  .news-update-claim-actions details[open] {
+    flex-basis: 100%;
+  }
+
+  .news-update-claim-actions summary {
+    width: fit-content;
+    color: var(--accent-strong);
+    font: 650 var(--font-size-meta)/1.5 var(--font-sans);
+  }
+
   .news-update-claim,
   .news-update-source,
   .news-update-intents > li {
@@ -33,7 +73,6 @@
     border-bottom: 1px solid var(--border-faint);
   }
 
-  .news-update-change:last-child,
   .news-update-claim:last-child,
   .news-update-source:last-child,
   .news-update-intents > li:last-child {
@@ -41,7 +80,6 @@
     border-bottom: 0;
   }
 
-  .news-update-change p,
   .news-update-claim p,
   .news-update-source p,
   .news-update-intents p,
@@ -52,10 +90,6 @@
     text-wrap: pretty;
   }
 
-  .news-update-previous {
-    color: var(--text-muted);
-  }
-
   .news-update-priors {
     display: grid;
     gap: 4px;
@@ -63,19 +97,24 @@
     border-left: 2px solid var(--border-faint);
   }
 
-  .news-update-priors > small {
-    color: var(--text-muted);
-    font: var(--type-meta);
+  .news-update-claim-actions .news-update-priors {
+    margin-top: 10px;
+    padding: 11px 13px;
+    border-left-color: var(--accent-border);
+    background: var(--surface-raised);
   }
 
-  .news-update-change .news-update-previous,
+  .news-update-claim .news-update-previous,
   .news-update-previous small {
     color: var(--text-muted);
     font: var(--type-meta);
   }
 
-  .news-update-statement {
-    font-weight: 600;
+  .news-update-claim .news-update-statement {
+    color: var(--text-primary);
+    font-size: var(--font-size-item-title);
+    font-weight: 650;
+    line-height: 1.45;
   }
 
   .news-update-claim[data-retired] .news-update-statement {
@@ -145,6 +184,33 @@
     padding: 8px 12px;
     border-left: 2px solid var(--border-strong);
     background: var(--surface-raised);
+  }
+
+  .news-update-content .news-update-quote {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .news-update-content .news-update-quote p {
+    color: var(--text-secondary);
+    font: var(--type-meta);
+  }
+
+  .news-update-content .news-update-quote p::before {
+    content: "引用 · ";
+    color: var(--text-muted);
+  }
+
+  .news-update-content .news-update-quote footer {
+    margin-top: 5px;
+  }
+
+  @media (max-width: 767px) {
+    .news-update-content .news-update-claim {
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 9px;
+    }
   }
 
   .news-update-quote footer {
@@ -221,6 +287,29 @@
   .news-update-processing {
     display: grid;
     gap: 12px;
+  }
+
+  .news-update-processing-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px 16px;
+    margin: 0;
+    color: var(--text-secondary);
+    font: var(--type-meta);
+  }
+
+  .news-update-processing-details > summary {
+    width: fit-content;
+    color: var(--accent-strong);
+    font: 650 var(--font-size-meta)/1.5 var(--font-sans);
+  }
+
+  .news-update-processing-details[open] > summary {
+    margin-bottom: 12px;
+  }
+
+  .news-update-processing-details > section {
+    margin-top: 16px;
   }
 
   .news-update-processing h4 {
