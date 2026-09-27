@@ -259,6 +259,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+            "20260927_0406",
         "20260927_0405",
         "20260926_0404",
         "20260926_0403",

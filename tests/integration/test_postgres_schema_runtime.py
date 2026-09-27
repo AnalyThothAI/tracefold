@@ -134,6 +134,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "body",
         "payload_sha256",
         "plan_key",
+        "decision_ref",
     }
     assert news_ingest_columns == {
         "singleton_key",
