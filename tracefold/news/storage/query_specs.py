@@ -132,7 +132,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_semantic_status",
             sql=SEMANTIC_STATUS_SQL,
-            params={"since": day_ago},
+            params={"since": day_ago, "now": now_ms},
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

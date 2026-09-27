@@ -150,6 +150,9 @@ class NewsPipelineStatusData(ExactApiSchema):
     semantic_adopted_24h: int = 0
     semantic_failed_24h: int = 0
     semantic_pending: int = 0
+    semantic_deferred: int = 0
+    semantic_in_progress: int = 0
+    semantic_failed_exhausted: int = 0
     semantic_failed_by_code_24h: dict[str, int] = Field(default_factory=dict)
     suppressed_by_reason: dict[str, int] = Field(default_factory=dict)
     dropped_by_rule: dict[str, int] = Field(default_factory=dict)

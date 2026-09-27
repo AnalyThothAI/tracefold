@@ -5890,6 +5890,11 @@
             "title": "Semantic Adopted 24H",
             "type": "integer"
           },
+          "semantic_deferred": {
+            "default": 0,
+            "title": "Semantic Deferred",
+            "type": "integer"
+          },
           "semantic_failed_24h": {
             "default": 0,
             "title": "Semantic Failed 24H",
@@ -5901,6 +5906,16 @@
             },
             "title": "Semantic Failed By Code 24H",
             "type": "object"
+          },
+          "semantic_failed_exhausted": {
+            "default": 0,
+            "title": "Semantic Failed Exhausted",
+            "type": "integer"
+          },
+          "semantic_in_progress": {
+            "default": 0,
+            "title": "Semantic In Progress",
+            "type": "integer"
           },
           "semantic_observations_24h": {
             "default": 0,

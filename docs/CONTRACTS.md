@@ -96,6 +96,10 @@ source relationships, implications and open questions have separate contracts in
 [updates/contracts.py](../tracefold/news/updates/contracts.py). Omission is not an
 implicit retraction or question resolution.
 
+`/api/news/status` counts claimable `semantic_pending`, scheduled
+`semantic_deferred`, leased `semantic_in_progress` and terminal
+`semantic_failed_exhausted` separately. An exhausted revision is not runnable.
+
 [News topics and source authority](modules/news.md#topics-and-cited-source-authority) owns the retained IPTC topic
 codebook and source-authority classifier. The former four-axis taxonomy and
 Program `fact_kind` output are not the current API contract. Publisher authority

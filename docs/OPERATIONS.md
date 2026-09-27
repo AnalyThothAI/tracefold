@@ -380,6 +380,15 @@ Failure/defer updates are revision-scoped: an older notification or card failure
 must not consume or postpone a successor's work. Do not replace the supported
 operation with manual SQL resetting every attempt counter.
 
+Generated output faults appear as `news_generation_output_truncated`,
+`news_generation_output_empty` or `news_generation_output_schema_invalid`.
+Truncation and schema faults may use one configured fallback with a meaningfully
+different contract; without one they fail visibly instead of repeating the same
+request. Reference and configuration faults fail immediately. Provider rate
+limits, timeouts, server and transport failures retain bounded recovery.
+`/api/news/status` separates runnable pending, scheduled retry, active lease
+and exhausted failure counts for semantic work.
+
 ## 4. Broker, OI and wallet diagnosis
 
 RabbitMQ carries raw input and semantic wake work. The queue name `news.triage`
