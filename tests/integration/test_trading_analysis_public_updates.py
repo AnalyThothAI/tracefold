@@ -68,7 +68,7 @@ def _counts(conn: Any) -> dict[str, int]:
     }
 
 
-def _correction(head, now_ms: int):
+def _correction(head, now_ms: int, *, event_id: str | None = None):
     return next_update(
         head,
         "Correction: the SOL swap fee was set to 20 bps, not 25 bps.",
@@ -79,10 +79,14 @@ def _correction(head, now_ms: int):
         revision=2,
         first_available_at_ms=now_ms - 20_000,
         completed_at_ms=now_ms - 10_000,
+        event_id=event_id,
     )
 
 
-def test_source_update_is_an_amendment_dispatched_before_target_selection(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("correction_event", [None, "different-event"])
+def test_source_update_is_an_amendment_dispatched_before_target_selection(
+    tmp_path, monkeypatch, correction_event
+) -> None:
     conn = connect_postgres_test(tmp_path / "public-relay-db", read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -92,7 +96,7 @@ def test_source_update_is_an_amendment_dispatched_before_target_selection(tmp_pa
         head, catalyst = first_report(
             event_id="event-sol", first_available_at_ms=now_ms - 60_000, completed_at_ms=now_ms - 30_000
         )
-        _, correction = _correction(head, now_ms)
+        _, correction = _correction(head, now_ms, event_id=correction_event)
         assert correction.kind == "source_update" and correction.retired_claim_refs == catalyst.claim_refs
         with conn.transaction():
             assert news.enqueue_trade_event(**outbox_row(catalyst))
@@ -130,7 +134,7 @@ def test_source_update_is_an_amendment_dispatched_before_target_selection(tmp_pa
         ).fetchall()
         assert amendment == {
             "update_id": correction.update_id,
-            "source_fact_key": "event-sol",
+            "source_fact_key": correction_event or "event-sol",
             "content_revision": correction.content_revision,
             "affected_claim_refs": list(catalyst.claim_refs),
             "retired_claim_refs": list(catalyst.claim_refs),
@@ -314,7 +318,8 @@ def test_source_update_receipt_is_idempotent_and_keeps_the_first_payload(tmp_pat
         conn.close()
 
 
-def test_analysis_sees_the_correction_recorded_for_its_claims(tmp_path) -> None:
+@pytest.mark.parametrize("correction_event", [None, "different-event"])
+def test_analysis_sees_the_correction_recorded_for_its_claims(tmp_path, correction_event) -> None:
     conn = connect_postgres_test(tmp_path / "amended-analysis-db", read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -323,7 +328,7 @@ def test_analysis_sees_the_correction_recorded_for_its_claims(tmp_path) -> None:
         head, catalyst = first_report(
             event_id="event-sol", first_available_at_ms=now_ms - 60_000, completed_at_ms=now_ms - 30_000
         )
-        _, correction = _correction(head, now_ms)
+        _, correction = _correction(head, now_ms, event_id=correction_event)
         with conn.transaction():
             news.enqueue_trade_event(**outbox_row(catalyst))
             news.enqueue_trade_event(**outbox_row(correction))

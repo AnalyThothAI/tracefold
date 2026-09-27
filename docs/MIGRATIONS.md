@@ -6,11 +6,34 @@ processes never execute DDL.
 ## Current baseline
 
 `20260831_0340` is the single Alembic root. The current head is
-`20260926_0404`; a fresh PostgreSQL 18 database applies the baseline and the
+`20260927_0405`; a fresh PostgreSQL 18 database applies the baseline and the
 linear forward-only revisions. The baseline creates
 application tables, sequences, views, indexes, functions, triggers,
 constraints, and only the structural singleton rows required on an empty
 cluster. Extensions remain the empty-PGDATA bootstrap's responsibility.
+
+## News revision ownership and source chains (`20260927_0405`)
+
+This additive revision preserves all adopted documents, evidence identities and
+delivery receipts. It permits both immutable EventUpdate v1 history and new v2
+adoptions. The v2 content hash includes current structured knowledge, topic
+contributions and source versions, so a resolved question or corrected source
+cannot disappear as a false no-op.
+
+Item revisions gain a content digest, predecessor and monotonic local sequence.
+Existing revisions retain their IDs and bodies; metadata is backfilled in
+receipt-time/hash order, without claiming a previously unavailable provider edit
+sequence. Each Item gains an observation high-water mark. New revision identities
+chain to their predecessor, allowing A→B→A while ignoring older envelopes and
+repeated current content. GIN indexes support claim-target queries across Events
+in News and Trading; no new relationship ledger or worker is introduced.
+
+Stop Serve and Workers, retain a verified backup, apply the revision and start
+the matching image. This transactional backfill and index build uses a 5-second
+lock timeout and 300-second statement timeout; production-scale duration remains
+unmeasured. A failure rolls back. Downgrade refuses: restore the verified database
+and matching image together. The isolated migration regression verifies that
+existing documents, source bodies and revision IDs survive unchanged.
 
 ## News EventUpdate cut (`20260926_0404`)
 

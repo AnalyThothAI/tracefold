@@ -16,13 +16,21 @@ Identity rules owned here:
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 
 from ..evidence import query_for
 from ..models import MarketAsset, market_type_of
 from ..taxonomy import source_authority
-from ..updates.contracts import EventUpdate, Evidence, FrozenInput, IdentityHint, PriorClaim, ReadTarget, Source
+from ..updates.contracts import (
+    EventUpdate,
+    Evidence,
+    FrozenInput,
+    IdentityHint,
+    PriorClaim,
+    ReadTarget,
+    SemanticLease,
+    Source,
+)
 from ..updates.identity import digest, identity
 from ..updates.notification import DeliveredText, FrozenCard, NotificationPlan
 from .decisions import DecisionStorage
@@ -105,13 +113,8 @@ class IntentLeaseLost(RuntimeError):
     """The caller no longer owns the intent lease it is writing under."""
 
 
-@dataclass(frozen=True, slots=True)
-class SemanticLease:
-    event_id: str
-    wanted_revision: int
-    lineage_id: str
-    lease_token: str
-    attempts: int
+class SemanticLeaseLost(RuntimeError):
+    """The semantic attempt no longer owns its frozen input's work."""
 
 
 def _retry_delay(delays: Sequence[int], attempts: int) -> int:
@@ -123,6 +126,7 @@ def reader_revision(
     ledger: Sequence[object],
     blocked_claim_refs: Iterable[str],
     watch_symbols: Iterable[str],
+    invalidated_claim_refs: Iterable[str] = (),
 ) -> str:
     """One reader version: the sent-ledger token read at `stamp_ms`, blocked claims and watchlist.
 
@@ -131,6 +135,9 @@ def reader_revision(
     """
 
     material = [list(ledger), sorted(set(blocked_claim_refs)), sorted(set(watch_symbols))]
+    invalidated = sorted(set(invalidated_claim_refs))
+    if invalidated:
+        material.append(invalidated)
     return f"{READER_REVISION_PREFIX}:{int(stamp_ms)}:{digest(material)}"
 
 
@@ -240,6 +247,7 @@ def item_evidence(item: Mapping[str, Any]) -> Evidence | None:
             publisher_id=str(item["source_id"]),
             artifact_id=artifact_id,
             artifact_revision=str(item.get("evidence_text_sha256") or "") or "1",
+            record_id=str(item["item_id"]),
             origin_id=origin,
             published_at_ms=None if item.get("published_at_ms") is None else int(item["published_at_ms"]),
             first_available_at_ms=int(item["observed_at_ms"]),
@@ -267,6 +275,7 @@ def revision_evidence(item: Mapping[str, Any], revision: Mapping[str, Any]) -> E
         first.source.model_copy(
             update={
                 "artifact_revision": str(revision["revision_sha256"]),
+                "revision_sequence": int(revision.get("revision_sequence") or 0),
                 "artifact_id": str(revision.get("source_artifact_id") or "").strip() or str(item["source_item_key"]),
                 "origin_id": origin,
                 "url": url,
@@ -311,7 +320,7 @@ def _related_prior(documents: Sequence[Mapping[str, Any]], own: set[str]) -> tup
     prior: list[PriorClaim] = []
     for document in documents:
         head = EventUpdate.model_validate(document)
-        retired = set(head.retired_claim_refs)
+        retired = set(head.retired_claim_refs) | set(head.superseded_claim_refs)
         for claim in head.claims:
             if len(prior) >= RELATED_PRIOR_CLAIMS_MAX:
                 return tuple(prior)
@@ -353,7 +362,12 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
             if value is not None:
                 evidence.append(value)
             for revision in sorted(
-                revisions.get(str(item_id), ()), key=lambda row: (int(row["received_at_ms"]), row["revision_sha256"])
+                revisions.get(str(item_id), ()),
+                key=lambda row: (
+                    int(row.get("revision_sequence") or 0),
+                    int(row["received_at_ms"]),
+                    row["revision_sha256"],
+                ),
             ):
                 revised = revision_evidence(item, revision)
                 if revised is not None:
@@ -402,6 +416,9 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
         prior=prior,
         read_targets=read_targets,
         focus_claim_refs=focus,
+        open_questions={}
+        if head_document is None
+        else {row.ref: row for row in EventUpdate.model_validate(head_document).open_questions},
         identity_hints=hints,
     )
 
@@ -483,93 +500,94 @@ class EventUpdateStorage:
         if row is None:
             return None
         return SemanticLease(
-            event_id=str(row["event_id"]),
-            wanted_revision=int(row["wanted_revision"]),
-            lineage_id=str(row["lineage_id"]),
+            source=frozen_input(event_id, self.semantic_input_material(event_id, now_ms=now_ms)),
             lease_token=str(row["lease_token"]),
             attempts=int(row["attempts"]),
         )
 
-    def defer_semantic_event(
-        self, *, event_id: str, lease_token: str | None, reason: str, now_ms: int, retry_after_ms: int = 0
+    def require_semantic_owner(self, lease: SemanticLease, *, now_ms: int) -> Mapping[str, Any]:
+        row = self.conn.execute(
+            "SELECT wanted_revision, attempts FROM news_semantic_work "
+            "WHERE event_id=%s AND lease_token=%s AND leased_until_ms>%s FOR UPDATE",
+            (lease.event_id, lease.lease_token, int(now_ms)),
+        ).fetchone()
+        if row is None:
+            raise SemanticLeaseLost("news_semantic_lease_lost")
+        return dict(row)
+
+    def defer_semantic_event(self, *, lease: SemanticLease, reason: str, now_ms: int, retry_after_ms: int = 0) -> bool:
+        """Settle only this input's retry budget; newer evidence remains due."""
+        return self._end_semantic_attempt(
+            lease, reason=reason, now_ms=now_ms, retry_after_ms=retry_after_ms, failed=False
+        )
+
+    def fail_semantic_event(self, *, lease: SemanticLease, error_code: str, now_ms: int) -> bool:
+        return self._end_semantic_attempt(lease, reason=error_code, now_ms=now_ms, failed=True)
+
+    def _end_semantic_attempt(
+        self, lease: SemanticLease, *, reason: str, now_ms: int, failed: bool, retry_after_ms: int = 0
     ) -> bool:
-        """Release a lease for a retry; the third attempt of a revision leaves it visibly `failed`."""
+        try:
+            row = self.require_semantic_owner(lease, now_ms=now_ms)
+        except SemanticLeaseLost:
+            return False
+        newer = int(row["wanted_revision"]) > lease.wanted_revision
+        if newer:
+            self.conn.execute(
+                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL WHERE event_id=%s",
+                (lease.event_id,),
+            )
+        else:
+            attempts = SEMANTIC_ATTEMPTS_MAX if failed else int(row["attempts"])
+            self.conn.execute(
+                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL, attempts=%s,"
+                " last_outcome=%s,last_error_code=%s,next_attempt_at_ms=%s,updated_at_ms=%s WHERE event_id=%s",
+                (
+                    attempts,
+                    "failed" if attempts >= SEMANTIC_ATTEMPTS_MAX else reason,
+                    reason,
+                    int(now_ms) + max(retry_after_ms, _retry_delay(SEMANTIC_RETRY_MS, attempts)),
+                    int(now_ms),
+                    lease.event_id,
+                ),
+            )
+        return True
 
-        cursor = self.conn.execute(
-            """
-            UPDATE news_semantic_work
-               SET lease_token = NULL, leased_until_ms = NULL,
-                   last_outcome = CASE WHEN attempts >= %s THEN 'failed' ELSE %s END,
-                   last_error_code = %s,
-                   next_attempt_at_ms = %s::bigint
-                     + GREATEST(%s::bigint, (%s::bigint[])[GREATEST(1, LEAST(attempts, %s))]),
-                   updated_at_ms = %s
-             WHERE event_id = %s AND (%s::text IS NULL OR lease_token = %s)
-            """,
-            (
-                SEMANTIC_ATTEMPTS_MAX,
-                reason,
-                reason,
-                int(now_ms),
-                int(retry_after_ms),
-                list(SEMANTIC_RETRY_MS),
-                len(SEMANTIC_RETRY_MS),
-                int(now_ms),
-                event_id,
-                lease_token,
-                lease_token,
-            ),
-        )
-        return bool(cursor.rowcount)
-
-    def fail_semantic_event(self, *, event_id: str, lease_token: str | None, error_code: str, now_ms: int) -> bool:
-        """A contract fault: visible as `failed` with its code, not retried until a new revision."""
-
-        cursor = self.conn.execute(
-            """
-            UPDATE news_semantic_work
-               SET lease_token = NULL, leased_until_ms = NULL, attempts = %s,
-                   last_outcome = 'failed', last_error_code = %s, updated_at_ms = %s
-             WHERE event_id = %s AND (%s::text IS NULL OR lease_token = %s)
-            """,
-            (SEMANTIC_ATTEMPTS_MAX, error_code, int(now_ms), event_id, lease_token, lease_token),
-        )
-        return bool(cursor.rowcount)
-
-    def finish_semantic_work(self, *, work_id: str, reason: str, now_ms: int) -> bool:
-        """Mark the observed revision done and remember its analyzed evidence atomically."""
-
+    def finish_semantic_work(self, *, work_id: str, lease: SemanticLease, reason: str, now_ms: int) -> bool:
+        row = self.require_semantic_owner(lease, now_ms=now_ms)
         observed = self._observed_work(work_id)
+        if observed["event_id"] != lease.event_id or observed["input_revision"] != lease.wanted_revision:
+            raise EventUpdateConflict("news_semantic_observation_lease_mismatch")
+        current = int(row["wanted_revision"]) == lease.wanted_revision
         cursor = self.conn.execute(
             """
             UPDATE news_semantic_work
-               SET done_revision = LEAST(wanted_revision, GREATEST(COALESCE(done_revision, 0), %s)),
+               SET done_revision = GREATEST(COALESCE(done_revision, 0), %s),
                    processed_evidence_refs = ARRAY(
                        SELECT DISTINCT ref FROM unnest(processed_evidence_refs || %s::text[]) AS ref
                    ),
-                   attempts = CASE WHEN %s >= wanted_revision THEN 0 ELSE attempts END,
+                   attempts = CASE WHEN %s THEN 0 ELSE attempts END,
                    lease_token = NULL, leased_until_ms = NULL,
-                   last_outcome = %s, last_error_code = NULL,
-                   next_attempt_at_ms = %s, updated_at_ms = %s
+                   last_outcome = CASE WHEN %s THEN %s ELSE last_outcome END,
+                   last_error_code = CASE WHEN %s THEN NULL ELSE last_error_code END,
+                   next_attempt_at_ms = CASE WHEN %s THEN %s ELSE next_attempt_at_ms END,
+                   updated_at_ms = %s
              WHERE event_id = %s
             """,
             (
                 observed["input_revision"],
                 list(observed["evidence_refs"]),
-                observed["input_revision"],
+                current,
+                current,
                 reason,
+                current,
+                current,
                 int(now_ms),
                 int(now_ms),
-                observed["event_id"],
+                lease.event_id,
             ),
         )
         return bool(cursor.rowcount)
-
-    def defer_semantic_work(self, *, work_id: str, reason: str, now_ms: int) -> bool:
-        observed = self._observed_work(work_id)
-        return self.defer_semantic_event(
-            event_id=str(observed["event_id"]), lease_token=None, reason=reason, now_ms=now_ms
-        )
 
     def _observed_work(self, work_id: str) -> Mapping[str, Any]:
         # The port addresses work by its code-owned identity; its Event and input revision are the ones
@@ -657,7 +675,7 @@ class EventUpdateStorage:
         revisions = (
             self.conn.execute(
                 """
-                SELECT r.item_id, r.revision_sha256, r.evidence_text, r.reporting_origin,
+                SELECT r.item_id, r.revision_sha256, r.revision_sequence, r.evidence_text, r.reporting_origin,
                        r.source_artifact_id,
                        r.canonical_url, r.published_at_ms, r.received_at_ms
                   FROM news_item_revisions r
@@ -870,6 +888,7 @@ class EventUpdateStorage:
         self,
         *,
         expected_head_ref: str | None,
+        lease: SemanticLease,
         update: EventUpdate,
         document_json: str,
         observation_result_id: str,
@@ -883,6 +902,9 @@ class EventUpdateStorage:
         """
 
         event_id = update.event_id
+        if event_id != lease.event_id or update.input_revision != lease.wanted_revision:
+            raise EventUpdateConflict("news_semantic_update_lease_mismatch")
+        self.require_semantic_owner(lease, now_ms=now_ms)
         self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_ADOPT_LOCK_NAMESPACE, event_id))
         head = self.conn.execute(
@@ -956,6 +978,27 @@ class EventUpdateStorage:
         return True
 
     # ------------------------------------------------------------------ notification snapshot and plan
+    def invalidated_claim_refs(self, event_id: str) -> list[str]:
+        """Read the adopted change ledger; no second writable claim-status authority."""
+        rows = self.conn.execute(
+            """
+            WITH own AS (
+              SELECT ARRAY(SELECT jsonb_array_elements(u.document->'claims')->>'ref') AS refs
+                FROM news_event_update_heads h JOIN news_event_updates u
+                  ON u.event_id=h.event_id AND u.content_revision=h.content_revision
+               WHERE h.event_id=%s
+            )
+            SELECT DISTINCT change->>'previous_ref' AS ref
+              FROM own JOIN news_event_updates u
+                ON jsonb_path_query_array(u.document, '$.changes[*].previous_ref') ?| own.refs
+              CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
+             WHERE change->>'previous_ref'=ANY(own.refs)
+               AND change->>'relation' IN ('corrects','real_world_change')
+            """,
+            (event_id,),
+        ).fetchall()
+        return sorted(str(row["ref"]) for row in rows)
+
     def _blocked_claim_refs(self, event_id: str) -> list[str]:
         rows = self.conn.execute(
             """
@@ -968,7 +1011,9 @@ class EventUpdateStorage:
 
     def _reader_revision(self, *, event_id: str, stamp_ms: int, watch_symbols: Iterable[str]) -> str:
         ledger = cast(DecisionStorage, self).reader_history_revision(now_ms=stamp_ms)
-        return reader_revision(stamp_ms, ledger, self._blocked_claim_refs(event_id), watch_symbols)
+        return reader_revision(
+            stamp_ms, ledger, self._blocked_claim_refs(event_id), watch_symbols, self.invalidated_claim_refs(event_id)
+        )
 
     def notification_snapshot_material(
         self, *, event_id: str, channel: str, now_ms: int, watch_symbols: Iterable[str]
@@ -985,6 +1030,7 @@ class EventUpdateStorage:
         if head is None or head.get("content_revision") != work["content_revision"]:
             return None
         blocked = self._blocked_claim_refs(event_id)
+        invalidated = self.invalidated_claim_refs(event_id)
         ledger = cast(DecisionStorage, self).reader_history_revision(now_ms=now_ms)
         history = cast(DecisionStorage, self).reader_history(event_id=event_id, now_ms=now_ms)
         band = [row.event_id for row in history.told_source_rows]
@@ -1002,7 +1048,8 @@ class EventUpdateStorage:
         return {
             "head": head,
             "blocked": blocked,
-            "revision": reader_revision(now_ms, ledger, blocked, watch_symbols),
+            "invalidated": invalidated,
+            "revision": reader_revision(now_ms, ledger, blocked, watch_symbols, invalidated),
             "band_event_ids": band,
             "receipt_rows": [dict(row) for row in rows],
         }

@@ -98,9 +98,14 @@ function quantityText(claim: NewsClaim): string {
 function ClaimItem({ claim }: { claim: NewsClaim }) {
   const counts = claim.relation_counts;
   return (
-    <li className="news-update-claim" data-retired={claim.retired || undefined}>
+    <li className="news-update-claim" data-retired={claim.retired || claim.superseded || undefined}>
       <p className="news-update-statement">{claim.statement}</p>
       <p className="news-update-badges">
+        {claim.superseded && (
+          <span className="news-update-badge" data-kind="retired">
+            已被后续变化替代
+          </span>
+        )}
         {claim.retired ? (
           <span className="news-update-badge" data-kind="retired">
             已撤回

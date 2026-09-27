@@ -16,14 +16,14 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Final, Literal, Protocol
 
 from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientError, now_ms
-from ..storage.event_updates import SEMANTIC_ATTEMPTS_MAX, EventUpdateConflict, SemanticLease
+from ..storage.event_updates import SEMANTIC_ATTEMPTS_MAX, EventUpdateConflict, SemanticLeaseLost
 from ..telemetry import NewsWorkSemantics
+from ..updates.contracts import SemanticLease
 from ..updates.judgment import ConfigurationFault, ContractFault, ProviderUnavailable
 from .runtime import NewsDatabasePort
 
 log = logging.getLogger("tracefold.news")
 
-# Longer than one stage (20 s) plus adoption: an expired lease means the turn is gone.
 # Longer than one semantic stage, so a live attempt is never re-claimed by a second worker.
 SEMANTIC_LEASE_MS: Final = 180_000
 # Revisions that arrive while a turn holds the lease are processed by the same consumer: their own
@@ -37,7 +37,7 @@ TurnOutcome = Literal["adopted", "unchanged", "newer_head", "deferred", "failed"
 
 
 class SemanticAgent(Protocol):
-    async def process(self, event_id: str, *, final_attempt: bool = True) -> str: ...
+    async def process(self, lease: SemanticLease, *, final_attempt: bool = True) -> str: ...
 
 
 class SemanticWorkStore(Protocol):
@@ -153,7 +153,9 @@ class SemanticWorker:
             raise RuntimeError("news_semantic_agent_missing")
         final_attempt = lease.attempts >= SEMANTIC_ATTEMPTS_MAX
         try:
-            outcome = await agent.process(lease.event_id, final_attempt=final_attempt)
+            outcome = await agent.process(lease, final_attempt=final_attempt)
+        except SemanticLeaseLost:
+            return "newer_head"
         except (asyncio.CancelledError, TransientError, DeferError):
             # Cancellation or a PostgreSQL lane failure says nothing about the provider or the content.
             # The lease expires on its own and the repair turn wakes the still-pending work.

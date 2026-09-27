@@ -25,6 +25,7 @@ from tracefold.news.updates.contracts import (
     PriorClaim,
     ReadTarget,
     RelationDraft,
+    SemanticLease,
     Source,
     SupportDraft,
 )
@@ -272,6 +273,14 @@ def store(clock: Clock | None = None, **kwargs: Any) -> tuple[PgNewsStore, Threa
     return PgNewsStore(db, clock=clock, **kwargs), db, clock
 
 
+async def run_agent(subject: NewsAgent, event_id: str) -> str:
+    assert isinstance(subject.store, PgNewsStore)
+    lease = await subject.store.claim_semantic_work(event_id, lease_ms=180_000)
+    if lease is None:
+        return "unchanged"
+    return await subject.process(lease)
+
+
 def agent(pg: PgNewsStore, clock: Clock, analyzer: StubAnalyzer | None = None) -> NewsAgent:
     return NewsAgent(pg, analyzer or StubAnalyzer(), program_identity="program-test", clock=clock)  # type: ignore[arg-type]
 
@@ -294,7 +303,7 @@ def notifications(pg: PgNewsStore, clock: Clock, sender: Sender, composer: Compo
 
 def adopted_head(pg: PgNewsStore, clock: Clock) -> EventUpdate:
     seed_event()
-    assert asyncio.run(agent(pg, clock).process(EVENT)) == "adopted"
+    assert asyncio.run(run_agent(agent(pg, clock), EVENT)) == "adopted"
     head = asyncio.run(pg.head(EVENT))
     assert head is not None
     return head
@@ -326,7 +335,7 @@ async def adopt_next(
         work_id=work_id,
         event_id=source.event_id,
         input_revision=source.revision,
-        input_sha256=source.evidence_sha,
+        input_sha256=source.input_sha,
         program_identity="program-test",
         completed_at_ms=STAMP + 100,
         understanding=extracted,
@@ -336,7 +345,15 @@ async def adopt_next(
     # Adoption happens after the semantic completion it adopts; the two clocks stay distinct.
     update = assemble_update(source, extracted, head, adopted_at_ms=STAMP + 150)
     assert update is not None
+    # Storage CAS tests prepare a real owner for this controlled frozen input.
+    sql(
+        "UPDATE news_semantic_work SET wanted_revision=GREATEST(wanted_revision,%s),"
+        "lease_token='storage-test', leased_until_ms=%s WHERE event_id=%s",
+        (source.revision, pg.clock() + 180_000, source.event_id),
+    )
+    lease = SemanticLease(source=source, lease_token="storage-test", attempts=1)
     adopted = await pg.atomic_adopt(
+        lease=lease,
         expected_head_ref=expected_head_ref if head is None else head.ref,
         observation=observation,
         update=update,
@@ -395,7 +412,7 @@ def test_agent_turn_adopts_once_with_public_row_and_pending_notification() -> No
     assert source.evidence[0].source.source_authority == "reputable_secondary"
     assert source.evidence[0].source.first_available_at_ms == STAMP
 
-    assert asyncio.run(agent(pg, clock, analyzer).process(EVENT)) == "adopted"
+    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "adopted"
     head = asyncio.run(pg.head(EVENT))
     assert head is not None and head.input_revision == 1
     work = sql("SELECT wanted_revision, done_revision, lease_token, last_outcome FROM news_semantic_work")[0]
@@ -414,7 +431,7 @@ def test_agent_turn_adopts_once_with_public_row_and_pending_notification() -> No
     }
 
     # A replay of the same work reuses its checkpoints and adopts nothing new.
-    assert asyncio.run(agent(pg, clock, analyzer).process(EVENT)) == "unchanged"
+    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "unchanged"
     assert analyzer.extract_calls == 1
     assert sql("SELECT count(*) AS n FROM news_event_updates")[0]["n"] == 1
     assert len(trade_rows()) == 1
@@ -437,7 +454,7 @@ def test_checkpoints_and_observations_are_insert_only() -> None:
         work_id="work-1",
         event_id=EVENT,
         input_revision=1,
-        input_sha256=source.evidence_sha,
+        input_sha256=source.input_sha,
         program_identity="program-test",
         completed_at_ms=STAMP + 10,
         understanding=first,
@@ -807,7 +824,7 @@ def test_deferred_claims_keep_notification_pending_beside_the_reserved_intent() 
         )
 
     seed_event()
-    assert asyncio.run(agent(pg, clock, StubAnalyzer(two_claims)).process(EVENT)) == "adopted"
+    assert asyncio.run(run_agent(agent(pg, clock, StubAnalyzer(two_claims)), EVENT)) == "adopted"
     head = asyncio.run(pg.head(EVENT))
     assert head is not None and len(head.claims) == 2
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))

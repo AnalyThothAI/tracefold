@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Final
 
-from .contracts import EventUpdate, Extraction, FrozenInput, PriorClaim, ReadTarget
+from .contracts import EventUpdate, Extraction, FrozenInput, PriorClaim, ReadTarget, SemanticLease
 from .identity import canonical_json, identity
 from .judgment import Budget, ContractFault, ProviderUnavailable, Question
 from .notification import CardComposer, FrozenCard, NotificationPlanner, freeze_card
@@ -56,7 +56,7 @@ class NewsAgent:
         self.clock = clock
         self.stage_seconds = stage_seconds
 
-    async def process(self, event_id: str, *, final_attempt: bool = True) -> str:
+    async def process(self, lease: SemanticLease, *, final_attempt: bool = True) -> str:
         """One semantic turn. Every model call, retry and optional read shares one stage deadline.
 
         `final_attempt` is the worker's retry policy, not a content rule: before the last attempt of a
@@ -67,15 +67,16 @@ class NewsAgent:
 
         budget = Budget.start(self.stage_seconds)
         async with asyncio.timeout(self.stage_seconds):
-            return await self._process(event_id, budget, final_attempt=final_attempt)
+            return await self._process(lease, budget, final_attempt=final_attempt)
 
-    async def _process(self, event_id: str, budget: Budget, *, final_attempt: bool) -> str:
-        source = await self.store.input_for(event_id)
+    async def _process(self, lease: SemanticLease, budget: Budget, *, final_attempt: bool) -> str:
+        source = lease.source
+        event_id = source.event_id
         work_id = identity(
             "semantic_work",
             source.event_id,
             source.revision,
-            source.evidence_sha,
+            source.input_sha,
             self.program_identity,
             self.analyzer.identity,
         )
@@ -85,7 +86,7 @@ class NewsAgent:
             # this input revision, but it must not re-extract the Event's old members.
             observation = self._observation(work_id, source, Extraction(claims=()), self.clock())
             await self.store.save_observation(observation)
-            await self.store.finish_semantic_work(work_id, reason="no_new_evidence")
+            await self.store.finish_semantic_work(work_id, lease=lease, reason="no_new_evidence")
             return "unchanged"
         saved = await self.store.checkpoint(work_id)
         extracted = None if saved is None else saved.extraction
@@ -105,7 +106,7 @@ class NewsAgent:
             if head is not None and head.input_revision > source.revision:
                 observation = self._observation(work_id, source, understood, completed_at_ms)
                 await self.store.save_observation(observation)
-                await self.store.finish_semantic_work(work_id, reason="newer_head_already_adopted")
+                await self.store.finish_semantic_work(work_id, lease=lease, reason="newer_head_already_adopted")
                 return "newer_head"
             head_refs = set() if head is None else {claim.ref for claim in head.claims}
             prior_refs = {row.claim.ref for row in source.prior}
@@ -123,22 +124,23 @@ class NewsAgent:
             observation = await self.store.save_observation(observation)
             update = assemble_update(source, understood, head, adopted_at_ms=self.clock())
             if update is None:
-                await self.store.finish_semantic_work(work_id, reason="no_substantive_content_change")
+                await self.store.finish_semantic_work(work_id, lease=lease, reason="no_substantive_content_change")
                 return "unchanged"
             public = public_updates(update, semantic_completed_at_ms=observation.completed_at_ms)
             adopted = await self.store.atomic_adopt(
                 expected_head_ref=None if head is None else head.ref,
+                lease=lease,
                 observation=observation,
                 update=update,
                 public=public,
             )
             if adopted:
-                await self.store.finish_semantic_work(work_id, reason="adopted")
+                await self.store.finish_semantic_work(work_id, lease=lease, reason="adopted")
                 # The result, outbox and notification_pending are already committed.
                 # This optional branch cannot retract them or reset its lineage budget.
                 await self._extra_read(source, update, budget)
                 return "adopted"
-        await self.store.defer_semantic_work(work_id, reason="adopted_head_changed")
+        await self.store.defer_semantic_event(lease, reason="adopted_head_changed")
         return "deferred"
 
     def _observation(
@@ -153,7 +155,7 @@ class NewsAgent:
             work_id=work_id,
             event_id=source.event_id,
             input_revision=source.revision,
-            input_sha256=source.evidence_sha,
+            input_sha256=source.input_sha,
             program_identity=self.program_identity,
             completed_at_ms=completed_at_ms,
             understanding=understood,

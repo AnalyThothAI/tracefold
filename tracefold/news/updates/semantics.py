@@ -23,6 +23,8 @@ from .contracts import (
     SupportDraft,
     content_material,
     content_revision_for,
+    current_evidence,
+    semantic_state,
 )
 from .identity import canonical_json, digest, identity
 from .judgment import (
@@ -130,6 +132,13 @@ def validate_extraction(source: FrozenInput, extraction: Extraction) -> None:
     for support in extraction.supports:
         if support.evidence_ref not in evidence:
             raise ContractFault("news_support_evidence_not_supplied")
+    for resolution in extraction.resolved_questions:
+        if resolution.question_ref not in source.open_questions:
+            raise ContractFault("news_question_not_supplied")
+        for citation in resolution.citations:
+            item = evidence.get(citation.evidence_ref)
+            if item is None or citation.quote not in item.text:
+                raise ContractFault("news_resolution_not_grounded")
     for gap in extraction.open_questions:
         if gap.target_ref is not None and gap.target_ref not in targets:
             raise ContractFault("news_read_target_not_supplied")
@@ -242,13 +251,18 @@ class SemanticAnalyzer:
         return _replace(extraction, claims=tuple(updated))
 
     async def _topics(self, extraction: Extraction, budget: Budget) -> Extraction:
-        # One request for the whole codebook; the claims are supplied once as shared context.
-        context = canonical_json({"claims": extraction.claims})
+        # Retain each extraction's topic contribution on its claims. The native codebook is
+        # still asked once for the new material, never again for accumulated Event history.
         items = tuple(
             Question(item_id=code, payload_json=canonical_json({"topic": label})) for code, label in self.topics
         )
-        answers = await self.judgments.judge("topic", items, budget, context_json=context)
-        return _replace(extraction, topics=project_topics(answers, self.topics))
+        answers = await self.judgments.judge(
+            "topic", items, budget, context_json=canonical_json({"claims": extraction.claims})
+        )
+        topics = project_topics(answers, self.topics)
+        return _replace(
+            extraction, claims=tuple(claim.model_copy(update={"topics": topics}) for claim in extraction.claims)
+        )
 
     async def _relations(
         self, source: FrozenInput, extraction: Extraction, budget: Budget, *, final_attempt: bool
@@ -440,7 +454,14 @@ def assemble_update(
                 event_id=head.event_id, content_revision=head.content_revision, claim=claim
             )
         evidence = {**{item.ref: item for item in head.evidence}, **evidence}
-        claims = {claim.ref: claim for claim in head.claims}
+        # v1 stored only Event-wide topic contributions. Carry that same broad scope forward;
+        # do not erase it merely because per-claim contributions were introduced in v2.
+        claims = {
+            claim.ref: claim.model_copy(update={"topics": claim.topics or head.topics})
+            if head.schema_version == "news_event_update_v1"
+            else claim
+            for claim in head.claims
+        }
         links = {(row.claim_ref, row.evidence_ref): row for row in head.evidence_relations}
         retired = set(head.retired_claim_refs)
         head_refs = set(claims)
@@ -484,6 +505,7 @@ def assemble_update(
                 fields=same.claim.fields if same is not None else draft.fields,
                 citations=draft.citations,
                 first_available_at_ms=first,
+                topics=draft.topics,
                 known_identity=_known_identity(draft, source.identity_hints),
                 antecedent_refs=antecedents,
             )
@@ -502,8 +524,87 @@ def assemble_update(
                     if relation.relation == "corrects" and relation.previous_ref in claims:
                         retired.add(relation.previous_ref)
                 changes.extend(_occurrence_changes(draft, ref, relations, material_relations, previous, source))
+        if draft.topics:
+            claims[ref] = claims[ref].model_copy(update={"topics": tuple(sorted(set(draft.topics)))})
         changes.extend(_link_evidence(draft, ref, extraction, links, head, head_refs))
-    content_sha = digest(content_material(source.event_id, claims, retired, links.values()))
+    # Replacing a source version changes its support even when the new body yields no claim.
+    # Keep the historical relationship; the unjudged current version is explicitly unresolved.
+    current_sources = current_evidence(evidence.values())
+    previous_sources = {} if head is None else current_evidence(head.evidence, identity_context=evidence.values())
+    for key, latest in current_sources.items():
+        old_source = previous_sources.get(key)
+        if not latest.source.record_id or old_source is None or old_source.ref == latest.ref:
+            continue
+        invalidated = retired | {change.previous_ref for change in changes if change.relation == "real_world_change"}
+        affected = {
+            link.claim_ref
+            for link in links.values()
+            if link.evidence_ref == old_source.ref and link.claim_ref not in invalidated
+        }
+        for claim_ref in affected:
+            pair = (claim_ref, latest.ref)
+            if pair not in links:
+                links[pair] = EvidenceRelation(claim_ref=claim_ref, evidence_ref=latest.ref, relation="unresolved")
+                changes.append(
+                    Change(
+                        kind="evidence_change",
+                        current_ref=claim_ref,
+                        previous_ref=claim_ref,
+                        previous_content_ref=head.ref if head else None,
+                    )
+                )
+    # History is immutable; the new document contains the still-current annotations.
+    # Omission means no operation. Resolution requires an explicit, grounded reference.
+    superseded = (set() if head is None else set(head.superseded_claim_refs)) | {
+        change.previous_ref
+        for change in changes
+        if change.previous_ref in claims and change.relation == "real_world_change"
+    }
+    inactive = retired | superseded
+    implications = {
+        (tuple(sorted(row.claim_refs)), row.channel, row.origin): row
+        for row in (() if head is None else head.implications)
+        if not set(row.claim_refs) & inactive
+    }
+    for row in extraction.implications:
+        value = Implication(
+            claim_refs=tuple(slot_refs[slot] for slot in row.slots),
+            channel=row.channel,
+            explanation=row.explanation,
+            conditions=row.conditions,
+            origin=row.origin,
+        )
+        implications[(tuple(sorted(value.claim_refs)), value.channel, value.origin)] = value
+    resolved = {row.question_ref for row in extraction.resolved_questions}
+    questions = {
+        row.ref: row
+        for row in (() if head is None else head.open_questions)
+        if row.ref not in resolved and not set(row.claim_refs) & inactive
+    }
+    for question in extraction.open_questions:
+        gap = KnowledgeGap(
+            question=question.question,
+            claim_refs=tuple(slot_refs[slot] for slot in question.slots),
+            target_ref=question.target_ref,
+        )
+        if gap.ref not in resolved:
+            questions[gap.ref] = gap
+    content_sha = digest(
+        content_material(
+            source.event_id,
+            claims,
+            retired,
+            links.values(),
+            state=semantic_state(
+                claims.values(),
+                implications.values(),
+                questions.values(),
+                evidence.values(),
+                links.values(),
+                superseded,
+            ),
+        )
+    )
     if head is not None and content_sha == head.content_sha:
         return None
     previous_revision = None if head is None else head.content_revision
@@ -514,30 +615,17 @@ def assemble_update(
         content_revision=content_revision_for(content_sha, previous_revision),
         previous_content_revision=previous_revision,
         adopted_at_ms=adopted_at_ms,
-        topics=tuple(sorted(set(extraction.topics))),
+        topics=tuple(
+            sorted({topic for claim in claims.values() if claim.ref not in inactive for topic in claim.topics})
+        ),
         claims=tuple(claims.values()),
         evidence=tuple(evidence.values()),
         evidence_relations=tuple(links.values()),
         retired_claim_refs=tuple(sorted(retired)),
+        superseded_claim_refs=tuple(sorted(superseded)),
         changes=tuple(dict.fromkeys(changes)),
-        implications=tuple(
-            Implication(
-                claim_refs=tuple(slot_refs[slot] for slot in row.slots),
-                channel=row.channel,
-                explanation=row.explanation,
-                conditions=row.conditions,
-                origin=row.origin,
-            )
-            for row in extraction.implications
-        ),
-        open_questions=tuple(
-            KnowledgeGap(
-                question=row.question,
-                claim_refs=tuple(slot_refs[slot] for slot in row.slots),
-                target_ref=row.target_ref,
-            )
-            for row in extraction.open_questions
-        ),
+        implications=tuple(implications.values()),
+        open_questions=tuple(questions.values()),
     )
 
 

@@ -51,7 +51,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260926_0404"
+HEAD = "20260927_0405"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -258,6 +258,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260926_0404",
         "20260926_0403",
         "20260926_0402",
         "20260925_0401",
@@ -517,7 +518,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="news_event_updates_forward_only"):
+    with pytest.raises(RuntimeError, match="news_revision_ownership_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     command.stamp(config, "20260926_0403")
@@ -3441,5 +3442,65 @@ def test_event_update_cut_keys_every_delivery_by_its_legacy_intent_without_resen
             "WHERE conname = 'news_trade_events_kind_check'"
         ).fetchone()
         assert "source_update" in kinds["definition"]
+    finally:
+        conn.close()
+
+
+def test_source_revision_chain_migration_preserves_history_and_orders_existing_revisions() -> None:
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260926_0404")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            _seed_pre_cut_oi_event(conn, event_id="ev-chain", leader_item="it-a", member_item="it-b", at_ms=100)
+            for content, stamp in (("a" * 64, 300), ("b" * 64, 200)):
+                conn.execute(
+                    "INSERT INTO news_item_revisions "
+                    "(item_id,revision_sha256,evidence_text,reporting_origin,source_artifact_id,"
+                    "published_at_ms,received_at_ms) VALUES ('it-a',%s,%s,'wire','artifact',100,%s)",
+                    (content, "Historical source " + content, stamp),
+                )
+            conn.execute(
+                "INSERT INTO news_semantic_observations "
+                "(result_id,work_id,event_id,input_revision,input_sha256,program_identity,completed_at_ms,understanding)"
+                " VALUES ('result','work','ev-chain',1,repeat('c',64),'original',300,'{}'::jsonb)"
+            )
+            document = {
+                "schema_version": "news_event_update_v1",
+                "event_id": "ev-chain",
+                "input_revision": 1,
+                "content_revision": "d" * 64,
+                "previous_content_revision": None,
+                "historical_payload": {"body": "不可改写", "topics": ["original"]},
+            }
+            conn.execute(
+                "INSERT INTO news_event_updates "
+                "(event_id,content_revision,input_revision,adopted_at_ms,observation_result_id,document)"
+                " VALUES ('ev-chain',repeat('d',64),1,300,'result',%s::jsonb)",
+                (json.dumps(document),),
+            )
+        before = conn.execute("SELECT * FROM news_item_revisions ORDER BY received_at_ms").fetchall()
+        command.upgrade(config, HEAD)
+        after = conn.execute("SELECT * FROM news_item_revisions ORDER BY revision_sequence").fetchall()
+        for old, new in zip(before, after, strict=True):
+            assert {key: new[key] for key in old} == old
+            assert new["content_sha256"] == old["revision_sha256"]
+        assert [row["revision_sequence"] for row in after] == [1, 2]
+        assert [row["previous_revision_sha256"] for row in after] == [None, "b" * 64]
+        assert (
+            conn.execute("SELECT evidence_observed_at_ms FROM news_items WHERE item_id='it-a'").fetchone()[
+                "evidence_observed_at_ms"
+            ]
+            == 300
+        )
+        assert conn.execute("SELECT document FROM news_event_updates").fetchone()["document"] == document
+        indexes = {row["indexname"] for row in conn.execute("SELECT indexname FROM pg_indexes").fetchall()}
+        assert {
+            "news_updates_affected_claims_idx",
+            "trading_amendments_affected_idx",
+            "trading_amendments_retired_idx",
+            "trading_catalyst_superseded_idx",
+        } <= indexes
     finally:
         conn.close()

@@ -76,8 +76,8 @@ class FakeAgent:
         self.outcomes = list(outcomes)
         self.calls: list[tuple[str, bool]] = []
 
-    async def process(self, event_id: str, *, final_attempt: bool = True) -> str:
-        self.calls.append((event_id, final_attempt))
+    async def process(self, lease: SemanticLease, *, final_attempt: bool = True) -> str:
+        self.calls.append((lease.event_id, final_attempt))
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
@@ -119,9 +119,9 @@ class FakeBus:
 
 def lease(event_id: str = "ev-1", *, revision: int = 1, attempts: int = 1) -> SemanticLease:
     return SemanticLease(
-        event_id=event_id,
-        wanted_revision=revision,
-        lineage_id=f"lineage-{event_id}-{revision}",
+        source=FrozenInput(
+            event_id=event_id, revision=revision, lineage_id=f"lineage-{event_id}-{revision}", evidence=()
+        ),
         lease_token="token",
         attempts=attempts,
     )

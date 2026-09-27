@@ -28,6 +28,7 @@ from tests.integration.test_news_event_update_store import (
     draft,
     evidence,
     extraction_for,
+    run_agent,
     seed_event,
     sql,
 )
@@ -179,7 +180,7 @@ class Rig:
 def _adopt(clock: Clock, analyzer: StubAnalyzer | None = None) -> EventUpdate:
     seed_event()
     pg = PgNewsStore(ThreadedDb(), clock=clock)
-    assert asyncio.run(agent(pg, clock, analyzer).process(EVENT)) == "adopted"
+    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "adopted"
     head = asyncio.run(pg.head(EVENT))
     assert head is not None
     return head

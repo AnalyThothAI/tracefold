@@ -404,6 +404,7 @@ export function newsEventUpdateFixture(overrides: Partial<NewsEventUpdate> = {})
     ref,
     relation_counts: { not_addressed: 0, refutes: 0, reports: 0, supports: 1, unresolved: 0 },
     retired: false,
+    superseded: false,
     speaker: "Agency spokesperson",
     statement,
     statistical_period: null,

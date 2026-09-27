@@ -140,6 +140,7 @@ class PgNewsStore:
         self,
         *,
         expected_head_ref: str | None,
+        lease: SemanticLease,
         observation: SemanticObservation,
         update: EventUpdate,
         public: tuple[PublicUpdate, ...],
@@ -157,6 +158,7 @@ class PgNewsStore:
                 "news_update_adopt",
                 lambda repos: repos.news.adopt_event_update(
                     expected_head_ref=expected_head_ref,
+                    lease=lease,
                     update=update,
                     document_json=document,
                     observation_result_id=observation.result_id,
@@ -166,18 +168,11 @@ class PgNewsStore:
             )
         )
 
-    async def finish_semantic_work(self, work_id: str, *, reason: str) -> None:
+    async def finish_semantic_work(self, work_id: str, *, lease: SemanticLease, reason: str) -> None:
         now_ms = self.clock()
         await self.db.tx(
             "news_update_finish_work",
-            lambda repos: repos.news.finish_semantic_work(work_id=work_id, reason=reason, now_ms=now_ms),
-        )
-
-    async def defer_semantic_work(self, work_id: str, *, reason: str) -> None:
-        now_ms = self.clock()
-        await self.db.tx(
-            "news_update_defer_work",
-            lambda repos: repos.news.defer_semantic_work(work_id=work_id, reason=reason, now_ms=now_ms),
+            lambda repos: repos.news.finish_semantic_work(work_id=work_id, lease=lease, reason=reason, now_ms=now_ms),
         )
 
     # ------------------------------------------------------------------ notifications
@@ -199,6 +194,7 @@ class PgNewsStore:
             revision=str(material["revision"]),
             receipts=select_receipts(event_id, material["band_event_ids"], material["receipt_rows"]),
             blocked_claim_refs=tuple(material["blocked"]),
+            invalidated_claim_refs=tuple(material["invalidated"]),
             watch_symbols=self.watch_symbols,
         )
         return NotificationSnapshot(update=update, reader=reader)
@@ -376,8 +372,7 @@ class PgNewsStore:
         await self.db.tx(
             "news_update_defer_event",
             lambda repos: repos.news.defer_semantic_event(
-                event_id=lease.event_id,
-                lease_token=lease.lease_token,
+                lease=lease,
                 reason=reason,
                 now_ms=now_ms,
                 retry_after_ms=retry_after_ms,
@@ -388,9 +383,7 @@ class PgNewsStore:
         now_ms = self.clock()
         await self.db.tx(
             "news_update_fail_event",
-            lambda repos: repos.news.fail_semantic_event(
-                event_id=lease.event_id, lease_token=lease.lease_token, error_code=error_code, now_ms=now_ms
-            ),
+            lambda repos: repos.news.fail_semantic_event(lease=lease, error_code=error_code, now_ms=now_ms),
         )
 
     async def purge_semantic_caches(self, *, limit: int) -> int:

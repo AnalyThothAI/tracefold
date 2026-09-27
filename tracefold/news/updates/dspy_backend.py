@@ -44,11 +44,14 @@ different countries, maturities, periods, exemptions or denials are distinct pro
 Prior claims are context, not new raw evidence. When focus_claim_refs is supplied, process only the
 provided changed material affecting that focus; do not regenerate unaffected Event history.
 Always classify content_kind with the supplied definitions; it reads the content, not the reader's interest.
-If extract_only is true, return mode=unknown, phase=null, and no topics/relations/supports: the configured
+If extract_only is true, return mode=unknown, phase=null, empty claim topics, and no relations/supports: the configured
 native backend owns those judgments. Otherwise fuse those judgments into this extraction using the supplied
 definitions and only supplied prior refs and evidence refs; do not ask whether the reader should be notified.
 Model slot IDs are temporary. Do not invent stable claim/content/intent IDs. Topics must come from the
-supplied codebook, at most three. Open questions must affect interpretation; target_ref must be one of
+supplied codebook, at most three per claim. Preserve unresolved prior open_questions; omit them from new
+open_questions unless adding a distinct question. To resolve a prior question, return its supplied ref in
+resolved_questions with exact citations from new evidence that answer it; silence is not resolution.
+Open questions must affect interpretation; target_ref must be one of
 read_targets. Empty optional arrays are valid. No tools, browsing, importance score or trade instruction.
 Implications are conditional mechanisms, labeled reported_causality or system_hypothesis, not facts,
 independent corroboration, price forecasts, priced-in claims or assumed consensus surprises.
@@ -165,7 +168,7 @@ class DspyExtractor:
             topic_codebook=self.topics,
         )
         value = Extraction.model_validate(result.result)
-        if len(value.topics) > MAX_TOPICS or not set(value.topics) <= self.topics.keys():
+        if any(len(claim.topics) > MAX_TOPICS or not set(claim.topics) <= self.topics.keys() for claim in value.claims):
             raise ContractFault("news_topic_outside_codebook")
         return value
 

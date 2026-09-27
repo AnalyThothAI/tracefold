@@ -252,7 +252,8 @@ def _accept(trading: TradingRepository, update: PublicUpdate, *, now_ms: int) ->
     )
 
 
-def test_catalyst_supersession_is_claim_scoped(tmp_path) -> None:
+@pytest.mark.parametrize("update_event", [None, "other-event"])
+def test_catalyst_supersession_is_claim_scoped(tmp_path, update_event) -> None:
     conn = connect_postgres_test(tmp_path / "catalyst-scope-db", read_only=False)
     try:
         migrate(conn)
@@ -268,7 +269,7 @@ def test_catalyst_supersession_is_claim_scoped(tmp_path) -> None:
             "SOL protocol exempts stablecoin pairs from the swap fee.",
             previous_ref=head.claims[0].ref,
             relation="adds_information",
-            change_kind="scope_change",
+            change_kind="parameter_change",
             quantity="25",
             revision=2,
             first_available_at_ms=1_600,
@@ -297,6 +298,7 @@ def test_catalyst_supersession_is_claim_scoped(tmp_path) -> None:
             revision=3,
             first_available_at_ms=2_600,
             completed_at_ms=2_650,
+            event_id=update_event,
         )
         assert changed.superseded_claim_refs == first.claim_refs
         with conn.transaction():
@@ -313,7 +315,8 @@ def test_catalyst_supersession_is_claim_scoped(tmp_path) -> None:
         conn.close()
 
 
-def test_research_settled_after_a_superseding_catalyst_is_not_published(tmp_path) -> None:
+@pytest.mark.parametrize("update_event", [None, "other-event"])
+def test_research_settled_after_a_superseding_catalyst_is_not_published(tmp_path, update_event) -> None:
     conn = connect_postgres_test(tmp_path / "catalyst-superseded-db", read_only=False)
     try:
         migrate(conn)
@@ -333,6 +336,7 @@ def test_research_settled_after_a_superseding_catalyst_is_not_published(tmp_path
             revision=2,
             first_available_at_ms=1_600,
             completed_at_ms=1_650,
+            event_id=update_event,
         )
         with conn.transaction():
             _accept(trading, changed, now_ms=1_700)
@@ -358,7 +362,8 @@ def test_research_settled_after_a_superseding_catalyst_is_not_published(tmp_path
         conn.close()
 
 
-def test_correction_refuses_the_unsubmitted_entry_without_a_trigger_or_fresh_ttl(tmp_path) -> None:
+@pytest.mark.parametrize("update_event", [None, "other-event"])
+def test_correction_refuses_the_unsubmitted_entry_without_a_trigger_or_fresh_ttl(tmp_path, update_event) -> None:
     conn = connect_postgres_test(tmp_path / "catalyst-correction-db", read_only=False)
     try:
         migrate(conn)
@@ -410,6 +415,7 @@ def test_correction_refuses_the_unsubmitted_entry_without_a_trigger_or_fresh_ttl
             revision=3,
             first_available_at_ms=2_400,
             completed_at_ms=2_450,
+            event_id=update_event,
         )
         with conn.transaction():
             assert receive(correction, 2_500) == "accepted"

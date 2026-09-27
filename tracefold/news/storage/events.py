@@ -361,35 +361,73 @@ class EventStorage:
     ) -> bool:
         """Keep a changed body or source attribution as a later evidence revision.
 
-        The first evidence stays on `news_items`; repeated source/body identities write nothing.
+        The first evidence stays on `news_items`; identical current content writes nothing.
+        A later return to older content has its own predecessor and evidence identity.
         """
 
         if not evidence_text.strip():
             return False
-        revision_sha256 = hashlib.sha256(
+        content_sha256 = hashlib.sha256(
             _dumps((evidence_text_sha256, reporting_origin, canonical_url, source_artifact_id)).encode("utf-8")
         ).hexdigest()
-        row = self.conn.execute(
+        item = self.conn.execute(
+            "SELECT evidence_text_sha256, reporting_origin, canonical_url, source_artifact_id, "
+            "provider_params, observed_at_ms, evidence_observed_at_ms "
+            "FROM news_items WHERE item_id=%s FOR UPDATE",
+            (item_id,),
+        ).fetchone()
+        if item is None or not item["provider_params"]:
+            return False
+        latest = self.conn.execute(
+            "SELECT revision_sha256, content_sha256, revision_sequence FROM news_item_revisions "
+            "WHERE item_id=%s ORDER BY revision_sequence DESC LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        original_sha = hashlib.sha256(
+            _dumps(
+                (
+                    item["evidence_text_sha256"],
+                    item["reporting_origin"],
+                    item["canonical_url"],
+                    item["source_artifact_id"],
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        current_sha = original_sha if latest is None else str(latest["content_sha256"])
+        highwater = int(item["evidence_observed_at_ms"] or item["observed_at_ms"])
+        # The receiver's immutable envelope clock orders local observations. Publication time is
+        # not an edit version. A new connection observation may legitimately return to an old body.
+        if received_at_ms < highwater:
+            return False
+        self.conn.execute(
+            "UPDATE news_items SET evidence_observed_at_ms=%s WHERE item_id=%s",
+            (int(received_at_ms), item_id),
+        )
+        if current_sha == content_sha256:
+            return False
+        if received_at_ms == int(item["observed_at_ms"]) and content_sha256 == original_sha:
+            return False
+        if self.conn.execute(
+            "SELECT 1 FROM news_item_revisions WHERE item_id=%s AND received_at_ms=%s AND content_sha256=%s",
+            (item_id, int(received_at_ms), content_sha256),
+        ).fetchone():
+            return False
+        previous = original_sha if latest is None else str(latest["revision_sha256"])
+        revision_sha256 = hashlib.sha256(_dumps((previous, content_sha256, int(received_at_ms))).encode()).hexdigest()
+        self.conn.execute(
             """
             INSERT INTO news_item_revisions (
-              item_id, revision_sha256, evidence_text, provider_params,
-              reporting_origin, canonical_url, source_artifact_id, published_at_ms, received_at_ms
-            )
-            SELECT i.item_id, %s, %s, %s::jsonb, %s, %s, %s, %s, %s
-              FROM news_items i
-             WHERE i.item_id = %s
-               AND i.provider_params <> '{}'::jsonb
-               AND (
-                 i.evidence_text_sha256 IS DISTINCT FROM %s
-                 OR i.reporting_origin IS DISTINCT FROM %s
-                 OR i.canonical_url IS DISTINCT FROM %s
-                 OR i.source_artifact_id IS DISTINCT FROM %s
-               )
-            ON CONFLICT (item_id, revision_sha256) DO NOTHING
-            RETURNING item_id
+              item_id, revision_sha256, content_sha256, previous_revision_sha256, revision_sequence,
+              evidence_text, provider_params, reporting_origin, canonical_url, source_artifact_id,
+              published_at_ms, received_at_ms
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)
             """,
             (
+                item_id,
                 revision_sha256,
+                content_sha256,
+                previous,
+                1 if latest is None else int(latest["revision_sequence"]) + 1,
                 evidence_text,
                 provider_params_json,
                 reporting_origin,
@@ -397,14 +435,9 @@ class EventStorage:
                 source_artifact_id,
                 int(published_at_ms),
                 int(received_at_ms),
-                item_id,
-                evidence_text_sha256,
-                reporting_origin,
-                canonical_url,
-                source_artifact_id,
             ),
-        ).fetchone()
-        return row is not None
+        )
+        return True
 
     def item_event_ids(self, item_id: str) -> list[str]:
         """Every Event this Item is evidence of: a revised body is new evidence for each of them."""
@@ -785,7 +818,7 @@ class EventStorage:
             SELECT m.item_id, m.fact_id, m.fact_text, m.joined_at_ms, m.match_kind, m.jaccard_estimate,
                    i.reporting_origin, i.canonical_url, i.provider_metadata, i.provenance,
                    COALESCE((
-                     SELECT jsonb_agg(r.revision_sha256 ORDER BY r.received_at_ms, r.revision_sha256)
+                     SELECT jsonb_agg(r.revision_sha256 ORDER BY r.revision_sequence)
                        FROM news_item_revisions r WHERE r.item_id = m.item_id
                    ), '[]'::jsonb) AS evidence_revisions
               FROM news_event_members m

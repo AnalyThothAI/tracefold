@@ -19,6 +19,7 @@ from tests.integration.test_news_event_update_store import (
     StubAnalyzer,
     ThreadedDb,
     draft,
+    run_agent,
     seed_event,
     sql,
 )
@@ -55,6 +56,13 @@ from tracefold.news.updates.service import NewsAgent
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 TITLE = "Agency orders 25% tariff on steel imports from Canada"
+
+
+@pytest.fixture(autouse=True)
+def admission_clock(monkeypatch):
+    # Arrival envelopes and the admission clock share a fixed test epoch; wall time must not
+    # expire the near-match window or make semantic work due in the future.
+    monkeypatch.setattr("tracefold.news.pipeline.admission.now_ms", lambda: STAMP)
 
 
 class RecordingBus:
@@ -147,7 +155,7 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     assert work(event_id)["wanted_revision"] == 1 and len(bus.wakes()) == 1
     assert sql("SELECT count(*) AS n FROM news_item_revisions")[0]["n"] == 0
     store = PgNewsStore(ThreadedDb(), clock=Clock(STAMP + 6_000))
-    assert asyncio.run(NewsAgent(store, StubAnalyzer(), program_identity="p").process(event_id)) == "adopted"
+    assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p"), event_id)) == "adopted"
     original = asyncio.run(store.head(event_id))
     assert original is not None and original.input_revision == 1
 
@@ -188,7 +196,7 @@ def test_an_attribution_only_revision_is_new_evidence_with_the_new_source() -> N
     clock = Clock(STAMP + 5_000)
     store = PgNewsStore(ThreadedDb(), clock=clock)
     agent = NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock)
-    assert asyncio.run(agent.process(event_id)) == "adopted"
+    assert asyncio.run(run_agent(agent, event_id)) == "adopted"
     first = asyncio.run(store.head(event_id))
     assert first is not None
 
@@ -226,7 +234,9 @@ def test_consecutive_members_extract_only_the_unadopted_material_and_carry_old_c
     store = PgNewsStore(ThreadedDb(), clock=clock)
     seed_event()
     first_analyzer = StubAnalyzer()
-    assert asyncio.run(NewsAgent(store, first_analyzer, program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    assert (
+        asyncio.run(run_agent(NewsAgent(store, first_analyzer, program_identity="p", clock=clock), EVENT)) == "adopted"
+    )
     first = asyncio.run(store.head(EVENT))
     assert first is not None
     original = first.claims[0]
@@ -234,6 +244,7 @@ def test_consecutive_members_extract_only_the_unadopted_material_and_carry_old_c
     add_member_evidence(EVENT, "it-member-a", "Agency announces a medicine exemption.", now_ms=clock.now_ms)
     add_member_evidence(EVENT, "it-member-b", "Agency confirms the start date.", now_ms=clock.now_ms + 1)
     source = asyncio.run(store.input_for(EVENT))
+    clock.now_ms += 2
     assert source.revision == 3
     assert {item.text for item in source.evidence} == {
         "Agency announces a medicine exemption.",
@@ -249,7 +260,7 @@ def test_consecutive_members_extract_only_the_unadopted_material_and_carry_old_c
             )
         )
     )
-    assert asyncio.run(NewsAgent(store, analyzer, program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    assert asyncio.run(run_agent(NewsAgent(store, analyzer, program_identity="p", clock=clock), EVENT)) == "adopted"
     adopted = asyncio.run(store.head(EVENT))
     assert adopted is not None and adopted.input_revision == 3
     assert analyzer.extract_calls == 1
@@ -264,7 +275,9 @@ def test_equivalent_new_member_amends_the_source_without_a_new_claim() -> None:
     clock = Clock(STAMP + 60_000)
     store = PgNewsStore(ThreadedDb(), clock=clock)
     seed_event()
-    assert asyncio.run(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    assert (
+        asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), EVENT)) == "adopted"
+    )
     first = asyncio.run(store.head(EVENT))
     assert first is not None
 
@@ -276,7 +289,7 @@ def test_equivalent_new_member_amends_the_source_without_a_new_claim() -> None:
             supports=(SupportDraft(slot="a", evidence_ref=source.evidence[0].ref, relation="supports"),),
         )
     )
-    assert asyncio.run(NewsAgent(store, analyzer, program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    assert asyncio.run(run_agent(NewsAgent(store, analyzer, program_identity="p", clock=clock), EVENT)) == "adopted"
     head = asyncio.run(store.head(EVENT))
     assert head is not None
     assert [claim.ref for claim in head.claims] == [first.claims[0].ref]
@@ -292,14 +305,14 @@ def test_no_new_source_identity_settles_the_revision_without_reextracting() -> N
     seed_event()
     analyzer = StubAnalyzer()
     agent = NewsAgent(store, analyzer, program_identity="p", clock=clock)
-    assert asyncio.run(agent.process(EVENT)) == "adopted"
+    assert asyncio.run(run_agent(agent, EVENT)) == "adopted"
     first = asyncio.run(store.head(EVENT))
     assert first is not None
     # A work revision can be requested for metadata whose source identity is already adopted.
     sql("UPDATE news_semantic_work SET wanted_revision = 2 WHERE event_id = %s", (EVENT,))
     source = asyncio.run(store.input_for(EVENT))
     assert source.evidence == ()
-    assert asyncio.run(agent.process(EVENT)) == "unchanged"
+    assert asyncio.run(run_agent(agent, EVENT)) == "unchanged"
     assert analyzer.extract_calls == 1
     assert work(EVENT)["done_revision"] == 2
 
@@ -309,21 +322,21 @@ def test_analyzed_material_without_a_claim_is_not_reextracted_on_the_next_revisi
     store = PgNewsStore(ThreadedDb(), clock=clock)
     seed_event()
     first_agent = NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock)
-    assert asyncio.run(first_agent.process(EVENT)) == "adopted"
+    assert asyncio.run(run_agent(first_agent, EVENT)) == "adopted"
     first = asyncio.run(store.head(EVENT))
     assert first is not None
 
     add_member_evidence(EVENT, "it-member-a", "Agency repeats background context.", now_ms=clock.now_ms)
     analyzer = StubAnalyzer(lambda _source: Extraction(claims=()))
     agent = NewsAgent(store, analyzer, program_identity="p", clock=clock)
-    assert asyncio.run(agent.process(EVENT)) == "unchanged"
+    assert asyncio.run(run_agent(agent, EVENT)) == "unchanged"
     assert work(EVENT)["done_revision"] == 2
     assert asyncio.run(store.head(EVENT)) == first
 
     add_member_evidence(EVENT, "it-member-b", "Agency adds a pharmaceutical exemption.", now_ms=clock.now_ms)
     source = asyncio.run(store.input_for(EVENT))
     assert [row.text for row in source.evidence] == ["Agency adds a pharmaceutical exemption."]
-    assert asyncio.run(agent.process(EVENT)) == "unchanged"
+    assert asyncio.run(run_agent(agent, EVENT)) == "unchanged"
     assert analyzer.extract_calls == 2
     assert work(EVENT)["done_revision"] == 3
     assert asyncio.run(store.head(EVENT)) == first
@@ -482,23 +495,21 @@ def test_provider_failures_defer_and_only_the_last_attempt_adopts_an_unresolved_
     assert sql("SELECT count(*) AS n FROM news_semantic_observations WHERE event_id = %s", (EVENT,))[0]["n"] == 2
 
 
-def test_a_slow_turn_behind_a_newer_adoption_records_its_observation_and_never_regresses_the_head() -> None:
+def test_a_reclaimed_slow_turn_cannot_regress_the_head_or_settle_the_new_owner() -> None:
+    from tracefold.news.storage.event_updates import SemanticLeaseLost
+
     clock = Clock(STAMP + 60_000)
-    db = ThreadedDb()
-    store = PgNewsStore(db, clock=clock)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
     seed_event()
-    stale = asyncio.run(store.input_for(EVENT))
+    stale = asyncio.run(store.claim_semantic_work(EVENT, lease_ms=10))
+    assert stale is not None
     add_member_evidence(EVENT, "it-member", "Agency adds a pharmaceutical exemption.", now_ms=clock.now_ms)
-    assert asyncio.run(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock).process(EVENT)) == "adopted"
+    clock.now_ms += 11
+    subject = NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock)
+    assert asyncio.run(run_agent(subject, EVENT)) == "adopted"
     head = asyncio.run(store.head(EVENT))
-    assert head is not None and head.input_revision == 2
-
-    class StaleInput(PgNewsStore):
-        async def input_for(self, event_id: str) -> FrozenInput:
-            return stale
-
-    slow = NewsAgent(StaleInput(db, clock=clock), StubAnalyzer(), program_identity="p", clock=clock)
-    assert asyncio.run(slow.process(EVENT)) == "newer_head"
+    with pytest.raises(SemanticLeaseLost):
+        asyncio.run(subject.process(stale))
     assert asyncio.run(store.head(EVENT)) == head
     assert work(EVENT)["done_revision"] == 2
 
@@ -511,7 +522,7 @@ def test_input_recalls_related_heads_and_prepares_read_targets_from_stored_mater
     db = ThreadedDb()
     store = PgNewsStore(db, clock=clock)
     seed_event("ev-related", text="Agency previously proposed a 10% tariff on $BTC miners.", fingerprint="fp-a")
-    assert asyncio.run(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock).process("ev-related"))
+    assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), "ev-related"))
     seed_event(EVENT, text="Agency orders a 25% tariff on $BTC miners.", fingerprint="fp-b")
     # Both leaders came from the same source URL: the existing explicit-origin recall channel links them.
     sql("UPDATE news_items SET provider_params_available_at_ms = %s", (STAMP,))
@@ -539,7 +550,12 @@ def test_input_recalls_related_heads_and_prepares_read_targets_from_stored_mater
     assert asyncio.run(PgSourceReader(db).read(unknown)) == ()
 
 
-def test_the_janitor_re_wakes_stale_pending_work_and_drops_expired_judgment_answers() -> None:
+def test_the_janitor_re_wakes_stale_pending_work_and_drops_expired_judgment_answers(monkeypatch) -> None:
+    monkeypatch.setattr("tracefold.news.pipeline.admission.now_ms", lambda: STAMP + 60_000)
+    monkeypatch.setattr("tracefold.news.pipeline.maintenance.now_ms", lambda: STAMP + 60_000)
+    monkeypatch.setattr(
+        "tracefold.news.pipeline.maintenance.PgNewsStore", lambda db: PgNewsStore(db, clock=Clock(STAMP + 60_000))
+    )
     seed_event()
     old = STAMP - JUDGMENT_CACHE_RETENTION_MS - 1
     sql(

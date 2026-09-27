@@ -14,7 +14,7 @@ from typing import Final, Literal, Protocol
 
 from pydantic import Field, model_validator
 
-from .contracts import Claim, ContentKind, EventUpdate, Exact, Mode
+from .contracts import Claim, ContentKind, EventUpdate, Exact, Mode, current_evidence
 from .identity import canonical_json, digest, identity
 from .judgment import Budget, NewsJudgments, Question
 from .topics import KEY_TOPIC_CODES
@@ -110,6 +110,7 @@ class ReaderSnapshot(Exact):
     receipts: tuple[DeliveredText, ...]
     # Claims of overlapping sending/ambiguous intents. Never counted as received.
     blocked_claim_refs: tuple[str, ...] = ()
+    invalidated_claim_refs: tuple[str, ...] = ()
     # The reader's code-owned watchlist, as canonical upper-case base symbols supplied by the store.
     watch_symbols: tuple[str, ...] = ()
 
@@ -267,10 +268,11 @@ def corroborated(claim: Claim, update: EventUpdate) -> bool:
     """
 
     evidence = {item.ref: item for item in update.evidence}
+    active = {item.ref for item in current_evidence(update.evidence).values()}
     supporting = [
         evidence[row.evidence_ref].source
         for row in update.evidence_relations
-        if row.claim_ref == claim.ref and row.relation == "supports"
+        if row.claim_ref == claim.ref and row.relation == "supports" and row.evidence_ref in active
     ]
     if any(source.source_authority != "unknown" for source in supporting):
         return True
@@ -281,7 +283,7 @@ def corroborated(claim: Claim, update: EventUpdate) -> bool:
 def is_key(claim: Claim, update: EventUpdate) -> bool:
     if claim.fields.content_kind not in KEY_CONTENT_KINDS:
         return False
-    if not set(update.topics) & KEY_TOPIC_CODES:
+    if not set(claim.topics) & KEY_TOPIC_CODES:
         return False
     return corroborated(claim, update)
 
@@ -309,7 +311,9 @@ class NotificationPlanner:
 
         decisions: dict[str, ClaimReason] = {}
         admitted: dict[str, ClaimReason] = {}
-        retired = set(update.retired_claim_refs)
+        retired = (
+            set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(reader.invalidated_claim_refs)
+        )
         watch = frozenset(symbol.strip().upper() for symbol in reader.watch_symbols)
         # Explicit corrections must not inherit a TTL refreshed by a model run.
         # They can nevertheless inform readers about an old report: not an entry signal.

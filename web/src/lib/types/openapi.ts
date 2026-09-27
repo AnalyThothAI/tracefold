@@ -900,6 +900,11 @@ export interface components {
             statistical_period?: string | null;
             /** Subject */
             subject: string;
+            /**
+             * Superseded
+             * @default false
+             */
+            superseded: boolean;
         };
         /** NewsClaimDecisionData */
         NewsClaimDecisionData: {

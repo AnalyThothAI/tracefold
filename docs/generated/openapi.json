@@ -1796,6 +1796,11 @@
           "subject": {
             "title": "Subject",
             "type": "string"
+          },
+          "superseded": {
+            "default": false,
+            "title": "Superseded",
+            "type": "boolean"
           }
         },
         "required": [

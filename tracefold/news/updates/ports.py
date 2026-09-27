@@ -13,7 +13,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import Field
 
-from .contracts import EventUpdate, Evidence, Exact, Extraction, FrozenInput, PublicUpdate, ReadTarget
+from .contracts import EventUpdate, Evidence, Exact, Extraction, FrozenInput, PublicUpdate, ReadTarget, SemanticLease
 from .notification import FrozenCard, NotificationPlan, ReaderSnapshot
 
 
@@ -80,8 +80,6 @@ class Sender(Protocol):
 
 
 class NewsStore(Protocol):
-    async def input_for(self, event_id: str) -> FrozenInput: ...
-
     async def head(self, event_id: str) -> EventUpdate | None: ...
 
     async def checkpoint(self, work_id: str) -> SemanticCheckpoint | None: ...
@@ -103,6 +101,7 @@ class NewsStore(Protocol):
         self,
         *,
         expected_head_ref: str | None,
+        lease: SemanticLease,
         observation: SemanticObservation,
         update: EventUpdate,
         public: tuple[PublicUpdate, ...],
@@ -117,9 +116,9 @@ class NewsStore(Protocol):
         """
         ...
 
-    async def finish_semantic_work(self, work_id: str, *, reason: str) -> None: ...
+    async def finish_semantic_work(self, work_id: str, *, lease: SemanticLease, reason: str) -> None: ...
 
-    async def defer_semantic_work(self, work_id: str, *, reason: str) -> None: ...
+    async def defer_semantic_event(self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0) -> None: ...
 
     async def notification_snapshot(self, event_id: str, channel: str) -> NotificationSnapshot | None:
         """Consistent adopted head and actual-reader snapshot, not observed history.

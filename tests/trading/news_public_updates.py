@@ -97,20 +97,25 @@ def next_update(
     first_available_at_ms: int,
     completed_at_ms: int,
     symbol: str = "SOL",
+    event_id: str | None = None,
 ) -> tuple[EventUpdate, PublicUpdate]:
     item = evidence(text, revision=revision, first_available_at_ms=first_available_at_ms)
     prior = tuple(
         PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim) for claim in head.claims
     )
     source = FrozenInput(
-        event_id=head.event_id, revision=revision, lineage_id=f"{head.event_id}:line", evidence=(item,), prior=prior
+        event_id=event_id or head.event_id,
+        revision=revision,
+        lineage_id=f"{head.event_id}:line",
+        evidence=(item,),
+        prior=prior,
     )
     extraction = Extraction(
         claims=(draft(item, symbol=symbol, quantity=quantity),),
         relations=(RelationDraft(slot="a", previous_ref=previous_ref, relation=relation, change_kind=change_kind),),
         supports=(SupportDraft(slot="a", evidence_ref=item.ref, relation="reports"),),
     )
-    update = assemble_update(source, extraction, head, adopted_at_ms=completed_at_ms)
+    update = assemble_update(source, extraction, head if event_id is None else None, adopted_at_ms=completed_at_ms)
     assert update is not None
     return update, _only(update, completed_at_ms)
 

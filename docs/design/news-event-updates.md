@@ -25,8 +25,23 @@ revision, preserving that revision's source and receipt time, and wakes semantic
 work in the same transaction. Exact retransmission is idempotent. A near match
 joins an Event and supplies candidates; similarity does not decide equivalence or
 end semantic work. The existing worker queue runs `SemanticWorker`, which claims
-a lease, bounds attempts, and leaves failures visible instead of recording a
+a lease and freezes its input in that same short transaction. The lease carries
+the exact input, owner token and per-revision attempt count into the Agent.
+Checkpoint identity hashes the full frozen input, including prior claims and
+open questions, so unchanged body text cannot reuse extraction from another
+comparison context.
+Adopt, finish, defer and fail check that owner; an expired worker cannot mutate
+its successor. A still-owned older revision may complete while newer evidence
+waits, preserving progress without spending the newer revision's retry budget.
+The worker bounds attempts and leaves failures visible instead of recording a
 negative editorial verdict. Janitor re-wakes stale durable work.
+
+Content equality is separate from revision occurrence. A revision chains to its
+predecessor and receives an Item-local sequence, so A→B→A produces distinct
+evidence. The receiver's immutable observation clock orders local arrivals;
+publication time is not a provider edit version. Older envelopes and repeated
+current content do not create work. A genuinely later observation of an older
+body is recorded as a local observation, not proof of an upstream restoration.
 
 Each turn sends only the new member bodies, body revisions or optional read not
 yet analyzed for this Event. Its adopted claims and up to eight related Events'
@@ -53,6 +68,22 @@ fabricated catalyst. Source relations and attributions are retained separately
 from a claim's quoted spans. A publisher's authority describes the cited source;
 it does not verify an allegation or future outcome.
 
+Assembly carries forward unaffected claims, implications and questions. Topics
+are contributions of claims; retired or superseded local claims cease to
+contribute to the current summary. A question closes only through an explicit
+supplied question reference with grounded citations, or when its underlying
+claim is retired/superseded. Omission is no operation. Implication wording alone
+does not create an adoption; structured conditions, questions, topics and current
+source versions do. New documents use v2; v1 history retains its original hash
+and its broad Event topic contributions carry into the next adoption.
+
+Historical evidence stays available for audit. Corroboration uses one current
+version per source record, shared by assembly and notification policy. A source
+attribution correction cannot count its old and new origin as independent
+support. Replacing an authoritative source also removes its old authority when
+the replacement yields no claim; unjudged support becomes unresolved, not
+invented refutation. This is source-version selection, not a claim freshness gate.
+
 The default path uses configured generative News endpoints. An optional,
 News-specific `llm.news_judgment` route calls Jev through the existing System One
 SDK and DSPy Choice/Noul adapter. Successful native answers are reused without
@@ -73,6 +104,13 @@ the actual sent body suppresses a claim. An in-flight or ambiguous send blocks
 overlapping claims without pretending the reader received them. `key` (⚡)
 requires a state change or official measure in a key topic family with sufficient
 source corroboration; it changes presentation, not fact authority.
+
+Explicit correction and real-world replacement targets are derived from adopted
+changes, including changes in other Events. They participate in the reader
+revision checked by the planner and send preflight, so an invalidated frozen
+card cannot pass simply because its own Event head stayed unchanged. This uses
+an indexed query over the existing ledger, with no second mutable relationship
+authority.
 
 The selected claim refs and adopted update define a stable `intent_id`.
 CardComposer runs only for that selection and freezes its Chinese body. The
@@ -95,6 +133,10 @@ authority. A catalyst uses `news_public_update_v1`, chooses its target from the
 changed claims' primary assets and starts freshness at first availability.
 Historical headline/why payloads are rejected on the new path. A correction of
 a cited proposition can reject a still-unsubmitted entry as `source_corrected`.
+Amendment joins, research supersession and final-entry checks follow explicit
+claim refs across Events with the existing knowledge-time cutoff. OI keeps its
+own source-key scope. News and Trading remain connected only by the public
+update contract; Trading does not query News tables.
 
 Serve exposes adopted update revisions, source relations, processing state,
 claim-level plan reasons and exact delivery outcomes. Legacy verdicts remain
@@ -106,7 +148,9 @@ filters on the retired four-axis taxonomy.
 
 Migration `20260926_0404` creates semantic/update/notification tables, changes
 delivery keys to `intent_id`, adds item revisions and Trading amendments, and
-widens the News trade-event kind. It is forward-only. Stop Serve and Workers,
+widens the News trade-event kind. Revision `20260927_0405` adds source-chain
+metadata, permits immutable v1/new v2 documents and indexes cross-Event targets.
+Both are forward-only. Stop Serve and Workers,
 back up the database, apply the migration, then start the matching image.
 Existing operator config must remove `llm.news_compiler_reflection` and
 `news.policy`; unknown keys fail validation. See [Migrations](../MIGRATIONS.md)

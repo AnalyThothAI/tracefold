@@ -188,7 +188,7 @@ def headline_claim_statement(update: EventUpdate) -> str | None:
     first listed claim would title a 25% -> 50% update with the 25% statement.
     """
 
-    retired = set(update.retired_claim_refs)
+    retired = set(update.retired_claim_refs) | set(update.superseded_claim_refs)
     live = {claim.ref: claim.statement for claim in update.claims if claim.ref not in retired}
     if update.previous_content_revision is not None:
         for change in update.changes:
@@ -216,6 +216,7 @@ def _claim(
     claim: Claim,
     *,
     retired: bool,
+    superseded: bool,
     evidence: Mapping[str, Evidence],
     relations: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
@@ -228,6 +229,7 @@ def _claim(
         "ref": claim.ref,
         "statement": claim.statement,
         "retired": retired,
+        "superseded": superseded,
         "subject": fields.subject,
         "action": fields.action,
         "object": fields.object,
@@ -297,7 +299,13 @@ def event_update_view(
         by_claim.setdefault(relation.claim_ref, []).append(row)
         by_evidence.setdefault(relation.evidence_ref, []).append(row)
     claims = [
-        _claim(claim, retired=claim.ref in retired, evidence=evidence, relations=by_claim.get(claim.ref, []))
+        _claim(
+            claim,
+            retired=claim.ref in retired,
+            superseded=claim.ref in update.superseded_claim_refs,
+            evidence=evidence,
+            relations=by_claim.get(claim.ref, []),
+        )
         for claim in update.claims
     ]
     changes = []

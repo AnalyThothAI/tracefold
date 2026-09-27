@@ -53,11 +53,12 @@ def _superseded_sql(*, created_until_param: bool) -> str:
     created = " AND newer.created_at_ms<=%s" if created_until_param else ""
     return f"""EXISTS (
           SELECT 1 FROM trading_triggers newer
-           WHERE newer.kind=original.kind AND newer.source_fact_key=original.source_fact_key
+           WHERE newer.kind=original.kind
              AND newer.trigger_id<>original.trigger_id{created}
              AND CASE WHEN original.kind='catalyst'
                  THEN newer.payload->'superseded_claim_refs' ?| {_ORIGINAL_CLAIMS}
-                 ELSE newer.source_revision<>original.source_revision
+                 ELSE newer.source_fact_key=original.source_fact_key
+                  AND newer.source_revision<>original.source_revision
                   AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,newer.first_visible_at_ms)
                     > COALESCE((original.payload->>'source_recorded_at_ms')::bigint,original.first_visible_at_ms)
                  END)"""  # noqa: S608 -- module-owned predicate; every value stays bound
@@ -431,11 +432,10 @@ class AnalysisStorage:
             SELECT amendment.update_id,amendment.content_revision,amendment.affected_claim_refs,
                    amendment.retired_claim_refs,amendment.payload,amendment.received_at_ms
               FROM trading_triggers original
-              JOIN trading_source_amendments amendment ON amendment.source_fact_key=original.source_fact_key
+              JOIN trading_source_amendments amendment ON amendment.affected_claim_refs
+                   ?| ARRAY(SELECT jsonb_array_elements_text(original.payload->'claim_refs'))
              WHERE original.trigger_id=%s AND original.kind='catalyst'
                AND amendment.received_at_ms<=%s
-               AND amendment.affected_claim_refs
-                   ?| ARRAY(SELECT jsonb_array_elements_text(original.payload->'claim_refs'))
              ORDER BY amendment.received_at_ms,amendment.update_id LIMIT %s
             """,
             (trigger_id, int(known_at_ms), limit),
@@ -1365,8 +1365,7 @@ class AnalysisStorage:
                    {_superseded_sql(created_until_param=False)} AS superseded,
                    (original.kind='catalyst' AND EXISTS (
                      SELECT 1 FROM trading_source_amendments amendment
-                      WHERE amendment.source_fact_key=original.source_fact_key
-                        AND amendment.retired_claim_refs ?| {_ORIGINAL_CLAIMS}
+                      WHERE amendment.retired_claim_refs ?| {_ORIGINAL_CLAIMS}
                    )) AS corrected
               FROM trading_trade_plans plan
               JOIN trading_trade_signals signal ON signal.signal_id=plan.entry_id

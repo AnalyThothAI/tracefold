@@ -14,8 +14,6 @@ CATALYST_CHANGES: Final[frozenset[ChangeKind]] = frozenset(
     {"new_fact", "parameter_change", "phase_change", "scope_change"}
 )
 SOURCE_CHANGES: Final[frozenset[ChangeKind]] = frozenset({"correction", "conflict", "evidence_change"})
-# A catalyst change whose earlier claim no longer describes the world.
-SUPERSEDING_CHANGES: Final[frozenset[ChangeKind]] = frozenset({"parameter_change", "phase_change"})
 
 
 def claim_text(claim: Claim) -> str:
@@ -54,21 +52,19 @@ def _superseded(changes: tuple[Change, ...]) -> tuple[str, ...]:
             {
                 change.previous_ref
                 for change in changes
-                if change.previous_ref is not None
-                and (change.kind in SUPERSEDING_CHANGES or change.relation == "real_world_change")
+                if change.previous_ref is not None and change.relation == "real_world_change"
             }
         )
     )
 
 
-def _retired(changes: tuple[Change, ...], update: EventUpdate) -> tuple[str, ...]:
-    retired = set(update.retired_claim_refs)
+def _retired(changes: tuple[Change, ...]) -> tuple[str, ...]:
     return tuple(
         sorted(
             {
                 change.previous_ref
                 for change in changes
-                if change.kind == "correction" and change.previous_ref is not None and change.previous_ref in retired
+                if change.kind == "correction" and change.relation == "corrects" and change.previous_ref is not None
             }
         )
     )
@@ -126,7 +122,7 @@ def public_updates(update: EventUpdate, *, semantic_completed_at_ms: int) -> tup
                 previous_content_refs=previous,
                 affected_claim_refs=tuple(sorted({change.previous_ref for change in changes if change.previous_ref})),
                 superseded_claim_refs=_superseded(changes) if kind == "catalyst_delta" else (),
-                retired_claim_refs=_retired(changes, update) if kind == "source_update" else (),
+                retired_claim_refs=_retired(changes) if kind == "source_update" else (),
                 first_available_at_ms=min(claim.first_available_at_ms for claim in claims),
                 semantic_completed_at_ms=semantic_completed_at_ms,
                 text="\n\n".join(text),

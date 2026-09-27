@@ -137,7 +137,9 @@ def adopted(
 ) -> EventUpdate:
     items = {item.ref: item for _draft, item in rows} | {item.ref: item for item in extra}
     source = FrozenInput(event_id="event", revision=1, lineage_id="lineage", evidence=tuple(items.values()))
-    extraction = Extraction(claims=tuple(draft for draft, _item in rows), supports=supports, topics=topics)
+    extraction = Extraction(
+        claims=tuple(draft.model_copy(update={"topics": topics}) for draft, _item in rows), supports=supports
+    )
     update = assemble_update(source, extraction, None, adopted_at_ms=STAMP)
     assert update is not None
     return update

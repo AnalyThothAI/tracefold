@@ -57,6 +57,7 @@ def _draft(evidence: Evidence, *, rate: str, phase: str = "announced", slot: str
     return DraftClaim.model_validate(
         {
             "slot": slot,
+            "topics": [TARIFF_TOPIC],
             "statement": evidence.text,
             "fields": {
                 "subject": "Agency",
@@ -84,7 +85,6 @@ def first_update(event_id: str, *, adopted_at_ms: int = STAMP + 5) -> EventUpdat
     source = FrozenInput(event_id=event_id, revision=1, lineage_id=f"{event_id}:line-1", evidence=(wire, rival))
     extraction = Extraction(
         claims=(_draft(wire, rate="25"),),
-        topics=(TARIFF_TOPIC,),
         supports=(
             SupportDraft(slot="a", evidence_ref=wire.ref, relation="supports"),
             SupportDraft(slot="a", evidence_ref=rival.ref, relation="refutes"),
@@ -117,7 +117,6 @@ def raised_update(head: EventUpdate, *, adopted_at_ms: int = STAMP + 100) -> Eve
     )
     extraction = Extraction(
         claims=(_draft(raised, rate="50"),),
-        topics=(TARIFF_TOPIC,),
         relations=(
             RelationDraft(
                 slot="a",

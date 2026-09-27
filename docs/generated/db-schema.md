@@ -299,6 +299,9 @@
 | `source_artifact_id` | `TEXT` | False | `None` |
 | `published_at_ms` | `BIGINT` | False | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
+| `content_sha256` | `TEXT` | False | `None` |
+| `previous_revision_sha256` | `TEXT` | True | `None` |
+| `revision_sequence` | `BIGINT` | False | `None` |
 
 ## `news_items`
 
@@ -333,6 +336,7 @@
 | `provider_params_sha256` | `TEXT` | True | `None` |
 | `evidence_text` | `TEXT` | True | `None` |
 | `evidence_text_sha256` | `TEXT` | True | `None` |
+| `evidence_observed_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_judgment_cache`
 

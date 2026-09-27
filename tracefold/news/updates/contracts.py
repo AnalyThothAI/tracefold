@@ -87,6 +87,8 @@ class Source(Exact):
     publisher_id: str = Field(min_length=1)
     artifact_id: str = Field(min_length=1)
     artifact_revision: str = Field(min_length=1)
+    record_id: str | None = None
+    revision_sequence: int = Field(default=0, ge=0)
     # Populated by ingestion from known provenance, not generated from a URL/name.
     origin_id: str | None = None
     attribution: str | None = None
@@ -129,6 +131,33 @@ class Evidence(Exact):
         return self
 
 
+def current_evidence(
+    evidence: Iterable[Evidence], *, identity_context: Iterable[Evidence] = ()
+) -> dict[tuple[str, str], Evidence]:
+    """Choose one current version per record, also recognizing pre-v2 artifact identities."""
+    items = tuple(evidence)
+    aliases = {
+        (item.source.publisher_id, item.source.artifact_id): item.source.record_id
+        for item in (*items, *identity_context)
+        if item.source.record_id
+    }
+    current: dict[tuple[str, str], Evidence] = {}
+    for item in items:
+        source = item.source
+        key = (
+            source.publisher_id,
+            source.record_id or aliases.get((source.publisher_id, source.artifact_id)) or source.artifact_id,
+        )
+        old = current[key].source if key in current else None
+        if old is None or (source.revision_sequence, source.first_available_at_ms, source.artifact_revision) > (
+            old.revision_sequence,
+            old.first_available_at_ms,
+            old.artifact_revision,
+        ):
+            current[key] = item
+    return current
+
+
 class Citation(Exact):
     evidence_ref: str = Field(min_length=1)
     quote: str = Field(min_length=1)
@@ -161,6 +190,7 @@ class ClaimFields(Exact):
 
 
 class DraftClaim(Exact):
+    topics: tuple[str, ...] = ()
     slot: str = Field(min_length=1)
     statement: str = Field(min_length=1)
     fields: ClaimFields
@@ -175,6 +205,7 @@ class IdentityHint(Exact):
 
 
 class Claim(Exact):
+    topics: tuple[str, ...] = ()
     ref: str = Field(min_length=1)
     statement: str = Field(min_length=1)
     fields: ClaimFields
@@ -233,10 +264,15 @@ class OpenQuestion(Exact):
     target_ref: str | None = None
 
 
+class QuestionResolution(Exact):
+    question_ref: str
+    citations: tuple[Citation, ...] = Field(min_length=1)
+
+
 class Extraction(Exact):
     # No maximum claim count: the backend batches; it never drops the tail.
     claims: tuple[DraftClaim, ...]
-    topics: tuple[str, ...] = ()
+    resolved_questions: tuple[QuestionResolution, ...] = ()
     relations: tuple[RelationDraft, ...] = ()
     supports: tuple[SupportDraft, ...] = ()
     implications: tuple[ImplicationDraft, ...] = ()
@@ -288,6 +324,10 @@ class Implication(Exact):
 
 
 class KnowledgeGap(Exact):
+    @property
+    def ref(self) -> str:
+        return identity("gap", self.question, sorted(self.claim_refs))
+
     question: str
     claim_refs: tuple[str, ...]
     target_ref: str | None = None
@@ -298,12 +338,14 @@ def content_material(
     claim_refs: Iterable[str],
     retired_claim_refs: Iterable[str],
     evidence_relations: Iterable[EvidenceRelation],
+    *,
+    state: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """The business material of one adopted revision.
 
-    Wording, program, observation/adoption clocks, topic labels and explanatory prose do not manufacture a
-    new business revision. Evidence is identified by immutable source refs; changed support relations are
-    genuine source updates.
+    Wording, program, observation/adoption clocks and explanatory prose do not manufacture a new
+    business revision. v2 includes current structured knowledge and topic contributions; v1 retains
+    its original identity. Evidence is identified by immutable source refs.
     """
 
     relations = sorted(
@@ -315,6 +357,32 @@ def content_material(
         "claims": sorted(claim_refs),
         "retired_claim_refs": sorted(retired_claim_refs),
         "evidence_relations": relations,
+        **({} if state is None else {"state": state}),
+    }
+
+
+def semantic_state(
+    claims: Iterable[Claim],
+    implications: Iterable[Implication],
+    questions: Iterable[KnowledgeGap],
+    evidence: Iterable[Evidence],
+    links: Iterable[EvidenceRelation],
+    superseded: Iterable[str],
+) -> dict[str, object]:
+    evidence = tuple(evidence)
+    linked = {link.evidence_ref for link in links}
+    # Unrelated unproductive material remains an observation, not a business revision.
+    # A replacement of a previously linked source must be adopted even if it yields no new claim.
+    records = current_evidence(evidence)
+    linked_records = current_evidence((item for item in evidence if item.ref in linked), identity_context=evidence)
+    return {
+        "source_versions": sorted(records[key].ref for key in linked_records if key in records),
+        "superseded_claim_refs": sorted(superseded),
+        "claim_topics": sorted((claim.ref, sorted(set(claim.topics))) for claim in claims),
+        "implications": sorted(
+            (sorted(row.claim_refs), row.channel, sorted(row.conditions), row.origin) for row in implications
+        ),
+        "questions": sorted((row.ref, row.target_ref or "") for row in questions),
     }
 
 
@@ -330,7 +398,8 @@ def content_revision_for(content_sha: str, previous_content_revision: str | None
 
 
 class EventUpdate(Exact):
-    schema_version: Literal["news_event_update_v1"] = "news_event_update_v1"
+    # v1 remains readable as immutable history; every new adoption writes v2.
+    schema_version: Literal["news_event_update_v1", "news_event_update_v2"] = "news_event_update_v2"
     event_id: str
     input_revision: int = Field(ge=1)
     content_sha: str
@@ -342,6 +411,7 @@ class EventUpdate(Exact):
     evidence: tuple[Evidence, ...]
     evidence_relations: tuple[EvidenceRelation, ...]
     retired_claim_refs: tuple[str, ...] = ()
+    superseded_claim_refs: tuple[str, ...] = ()
     changes: tuple[Change, ...]
     implications: tuple[Implication, ...] = ()
     open_questions: tuple[KnowledgeGap, ...] = ()
@@ -356,6 +426,16 @@ class EventUpdate(Exact):
             (claim.ref for claim in self.claims),
             self.retired_claim_refs,
             self.evidence_relations,
+            state=None
+            if self.schema_version == "news_event_update_v1"
+            else semantic_state(
+                self.claims,
+                self.implications,
+                self.open_questions,
+                self.evidence,
+                self.evidence_relations,
+                self.superseded_claim_refs,
+            ),
         )
 
     @model_validator(mode="after")
@@ -368,7 +448,7 @@ class EventUpdate(Exact):
             raise ValueError("news_content_sha_mismatch")
         if self.content_revision != content_revision_for(self.content_sha, self.previous_content_revision):
             raise ValueError("news_content_revision_mismatch")
-        if not set(self.retired_claim_refs) <= claims:
+        if not (set(self.retired_claim_refs) | set(self.superseded_claim_refs)) <= claims:
             raise ValueError("news_retired_claim_missing")
         for claim in self.claims:
             if not {citation.evidence_ref for citation in claim.citations} <= evidence:
@@ -394,11 +474,13 @@ class FrozenInput(Exact):
     prior: tuple[PriorClaim, ...] = ()
     read_targets: tuple[ReadTarget, ...] = ()
     focus_claim_refs: tuple[str, ...] = ()
+    open_questions: dict[str, KnowledgeGap] = Field(default_factory=dict)
     identity_hints: tuple[IdentityHint, ...] = ()
 
     @property
-    def evidence_sha(self) -> str:
-        return digest(sorted((item.model_dump(mode="json") for item in self.evidence), key=lambda row: row["ref"]))
+    def input_sha(self) -> str:
+        # Prior claims, questions and read targets affect extraction just as the new body does.
+        return digest(self.model_dump(mode="json"))
 
     @model_validator(mode="after")
     def unique_input_refs(self) -> FrozenInput:
@@ -414,6 +496,24 @@ class FrozenInput(Exact):
         if len(prior) != len(set(prior)):
             raise ValueError("news_input_duplicate_prior_reference")
         return self
+
+
+class SemanticLease(Exact):
+    source: FrozenInput
+    lease_token: str
+    attempts: int
+
+    @property
+    def event_id(self) -> str:
+        return self.source.event_id
+
+    @property
+    def wanted_revision(self) -> int:
+        return self.source.revision
+
+    @property
+    def lineage_id(self) -> str:
+        return self.source.lineage_id
 
 
 class PublicUpdate(Exact):

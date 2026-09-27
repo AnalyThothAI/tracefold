@@ -370,6 +370,7 @@ class NewsClaimData(ExactApiSchema):
     ref: str
     statement: str
     retired: bool = False
+    superseded: bool = False
     subject: str
     action: str
     object: str = ""

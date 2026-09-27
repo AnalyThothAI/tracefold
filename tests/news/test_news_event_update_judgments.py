@@ -478,7 +478,7 @@ def test_analyzer_asks_native_readings_per_claim_and_the_whole_codebook_once() -
         assert {claim.fields.mode for claim in result.claims} == {"decision"}
         assert {claim.fields.phase for claim in result.claims} == {"ordered"}
         assert {claim.fields.content_kind for claim in result.claims} == {"official_measure"}
-        assert len(result.topics) == 3
+        assert all(len(claim.topics) == 3 for claim in result.claims)
         assert generated.calls == []
 
     asyncio.run(run())
