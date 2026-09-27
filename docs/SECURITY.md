@@ -6,7 +6,7 @@ Tracefold 的边界围绕实际数据与副作用：**公开工作台只读，�
 
 ## 1. 凭据与文件
 
-应用设置从 `~/.tracefold/config.yaml` 读取。初始化创建私有目录和配置 / secret 文件；不将真实 token、API key、webhook、含密码的 DSN 或 proxy URL 写进仓库、日志、截图和 PR。
+应用设置从 `TRACEFOLD_HOME/config.yaml` 读取，默认 `~/.tracefold/config.yaml`。Compose 的可选 `.env` 仅承载部署参数，受 Git / Docker ignore 保护，不是业务配置的影子来源。初始化创建私有目录和配置 / secret 文件；不将真实 token、API key、webhook、含密码的 DSN 或 proxy URL 写进仓库、日志、截图和 PR。
 
 | 数据 | 归属 |
 | --- | --- |
@@ -72,3 +72,5 @@ ReviewDesk 记录实际 reviewer：AI 提交不能写成人工复核。真实成
 发现真实凭据泄露时先停止继续传播，在凭据所有者处撤销 / 轮换，核查访问和真实账户状态；仅删除 Markdown 并不能使旧 key 失效。相关记录避免再次包含原始秘密。
 
 修复配置、源码、迁移或操作流程中的实际根因，保存必要审计证据并验证对应风险。不要为一个局部事件默认新增全局 gate，也不要为追求 KISS 删除真正的数据、并发和账户权限控制。
+
+可信的短暂初始化容器以操作者 UID/GID 挂载配置目录，生成或修复私有文件；不启动业务循环。其他长期运行角色的最小挂载范围不因此扩大。初始化拒绝密钥文件的符号链接，避免修改无关目标。

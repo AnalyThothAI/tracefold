@@ -12,23 +12,21 @@
 在管理该部署的主检出目录执行：
 
 ```bash
-git rev-parse HEAD
-docker compose ps --all
-make status-app
-docker compose logs --tail=100 workers analysis serve
-curl -fsS http://127.0.0.1:8765/readyz
-curl -fsS http://127.0.0.1:8766/readyz
+make topology
+make status
+make logs
+make config
 ```
 
-端口有显式调整时使用实际绑定。仓库 HEAD、正在运行的镜像 ID 和 Runtime manifest 不一定相同；诊断记录要保留各自身份，不能只报“main 最新版”。
+Make 命令统一使用选定的 Compose 文件、项目和 `.env`，并从实际绑定推导探针 URL。下面的高级 `docker compose` 示例必须保持相同上下文；也可以先用 `make workers-shell` 进入选定容器后执行 CLI。端口有显式调整时使用实际绑定。仓库 HEAD、正在运行的镜像 ID 和 Runtime manifest 不一定相同；诊断记录要保留各自身份，不能只报“main 最新版”。
 
 | 检查 | 说明 |
 | --- | --- |
 | `make status-app` | 应用容器、基础依赖、迁移退出、Serve / Workers 就绪与工作台 |
-| `make status` | 还包含独立 Runtime；没有运行该可选角色时不能据此断言新闻应用失败 |
-| `make logs` | 主应用 / 基础服务日志；Analysis 可单独 `docker compose logs analysis` |
+| `make status` | 同时报告应用与独立 Runtime；未启用时报告 disabled，应用失败也不会吞掉执行状态 |
+| `make logs` | 所有服务日志，包含 Analysis、RabbitMQ policy 与 migrate |
 | `make runtime-status` / `make runtime-logs` | 独立执行角色，不等于账户已平仓或收益已齐全 |
-| `tracefold config` | 脱敏配置，不自动测试全部外部服务 |
+| `make config` | 脱敏配置，不自动测试全部外部服务 |
 | `tracefold db audit` | schema / role / catalog 有界审计，不是全表精确计数 |
 
 ```bash
@@ -174,16 +172,30 @@ docker compose exec -T nautilus tracefold trading verify-execution \
 <a id="deployment"></a>
 ## 6. 部署与独立 Runtime
 
-正常应用升级使用 `make up`；同 schema 的精确本地镜像替换使用：
+正常升级使用 `make up`。根 Makefile 只负责公开命令，[scripts/deploy.py](../scripts/deploy.py)持有项目级 OS 锁、验证配置、按顺序迁移并验收；[compose.yaml](../compose.yaml)拥有服务、挂载和关闭预算。迁移非零退出时，应用保持停止，不把 `depends_on` 或容器 running 当作成功。
+
+生产使用审阅后的干净源码；`make verify-main-ci` 可显式核验精确 main push 的发布证据，需要 uv 和已登录的 GitHub CLI。普通部署不再要求宿主机安装项目依赖；诊断、停止及兼容镜像恢复不依赖 GitHub 在线。
 
 ```bash
-# 部署操作：完整本地 sha256 镜像 ID，先核实与源 / 数据库 head 兼容
+# 已有本地镜像，完整 ID；先确认目标镜像与数据库 head 相同
 make deploy-image IMAGE_ID=sha256:FULL_LOCAL_IMAGE_ID
 ```
 
-它不构建新镜像、不降级 PostgreSQL、不自动替换执行进程。必须验证应用真正运行的镜像和 Workers 报告的身份，而不是只看命令返回。
+精确恢复只适用于能运行当前服务命令、且 schema 相同的镜像，不要求旧镜像等于当前源码 HEAD，不构建、不降级 PostgreSQL、不替换执行进程。配置和 image / database head 校验先于停止应用；随后验证实际镜像与 Workers 身份。不可变 image ID 而不是 tag 才是恢复依据。
 
-`make runtime-build`、`runtime-up`、`runtime-restart`、`runtime-down` 分别负责执行镜像和生命周期。应用 / 前端发布不能隐式重启账户所有者。schema 变化时按[迁移指南](MIGRATIONS.md)协调 Runtime 和其他写进程，不使用环境标志绕过不兼容检查。
+`make db-migrate` 是显式维护操作：构建、验证、停止应用写进程并迁移，完成后保持应用停止；再用 `make up` 启动。日常更新直接使用 `make up`，不要自行拼接多个并发部署步骤。
+
+```bash
+make runtime-build
+make runtime-up RUNTIME_IMAGE=tracefold-runtime:SOURCE_REVISION
+make runtime-restart
+make runtime-status
+make runtime-down
+```
+
+执行启动不构建、不迁移、不通过依赖关系重建 PostgreSQL。先验证执行启用状态与 image / database head，再操作账户所有者。`runtime-restart` 复用实际容器的 image ID，关闭预算仍为 90 秒。账户 paused / blocked 是诊断信息，不是自动重启依据。
+
+应用 / 前端发布不能隐式重启账户所有者。schema 变化时按[迁移指南](MIGRATIONS.md)协调 Runtime 和其他写进程；不提供绕过不兼容检查的环境开关。`make down` 先关闭执行，再停止其余服务，保留数据卷。
 
 <a id="6-backup-and-restore"></a>
 <a id="backup"></a>

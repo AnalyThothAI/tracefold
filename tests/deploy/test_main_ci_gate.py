@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -11,69 +10,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.deploy
-
-# What "deploys application source" means, mechanically: something that starts, builds or runs a
-# container from this repository's Compose stack, or applies its Alembic revisions. `docker compose
-# run` counts — `compose.yaml` mounts working-tree scripts into service containers, so "it is the
-# postgres image" is not the same claim as "it is not our code". #373 got that wrong once: the
-# provisioning entrypoint looks image-owned and is in fact bind-mounted from `docker/`.
-_DEPLOYS_APPLICATION_SOURCE = (
-    # The subcommand, not the word anywhere in the line: `docker compose exec ... /run/secrets/...`
-    # is a read, and matching `run` loosely classified all three read-only preflights as deployments.
-    re.compile(r"docker compose(?:\s+--?\S+)*\s+(?:up|build|run)\b"),
-    # #537 PR-2 gave the execution runtime its own image, so `docker build`/`buildx build` is now a
-    # way to produce a deployable artefact that does not go through `docker compose build`.
-    re.compile(r"docker (?:buildx )?build\b"),
-    re.compile(r"\btracefold db migrate\b"),
-    re.compile(r"docker run\s[^;\n]*?tracefold"),
-)
-# The execution-runtime movers (#537 PR-2). They start a container from an image that is already in
-# the local store and can only have got there through `make runtime-build`, which is gated. They
-# never build, never migrate, and deliberately never call GitHub: the whole point is that bringing
-# the process that owns live exposure back up must not depend on an authenticated `gh`, a reachable
-# github.com, or a green check on a SHA that is not the one already running. `docker compose up
-# --no-build` is what makes that safe, and the assertions below pin it.
-_IMAGE_ONLY_TARGETS = {"runtime-up", "runtime-restart", "_runtime-up-locked"}
-_BUILDS_OR_MIGRATES = re.compile(r"docker (?:compose )?(?:buildx )?build\b|\btracefold db migrate\b")
-_PRIVATE_TARGET = re.compile(r"make --no-print-directory (_[a-z-]+)")
-_DELEGATED_TARGET = re.compile(r"make --no-print-directory ([a-z][a-z-]*|_[a-z-]+)")
-# `make --dry-run` prints recipes with their backslash continuations intact, so a command split
-# across physical lines would escape a line-anchored pattern. Joining them first is also what
-# lets the patterns above exclude newlines: one logical command is then one line, and
-# `docker compose ps` on line 3 can no longer reach the word `run` on line 11.
-_LINE_CONTINUATION = re.compile(r"\\\n\s*")
-
-
-def _make_targets() -> tuple[str, ...]:
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    return tuple(sorted(set(re.findall(r"^([a-zA-Z0-9_][a-zA-Z0-9_.-]*):", makefile, flags=re.MULTILINE))))
-
-
-def _dry_run(target: str) -> str:
-    recipe = subprocess.run(
-        ["make", "--dry-run", target],
-        cwd=ROOT,
-        capture_output=True,
-        check=True,
-        text=True,
-        timeout=60,
-    ).stdout
-    return _LINE_CONTINUATION.sub(" ", recipe)
-
-
-def _reachable_recipe(target: str, seen: frozenset[str] = frozenset()) -> str:
-    """Every recipe line this entry can reach, following its `make ...` delegations.
-
-    `make --dry-run` does not expand a nested `make` invocation, so a contract about what an entry
-    can do has to walk the chain itself: `runtime-restart` -> `runtime-up` -> `_runtime-up-locked`.
-    """
-
-    if target in seen:
-        return ""
-    recipe = _dry_run(target)
-    return recipe + "".join(
-        _reachable_recipe(nested, seen | {target}) for nested in set(_DELEGATED_TARGET.findall(recipe))
-    )
 
 
 def _repository(tmp_path: Path) -> Path:
@@ -289,7 +225,7 @@ def test_commit_ahead_of_verified_origin_main_blocks_deployment(tmp_path: Path) 
         require_main_ci(root, {"check_runs": [_check(root)]})
 
 
-@pytest.mark.parametrize("state", ["unstaged", "staged", "untracked", "ignored-env"])
+@pytest.mark.parametrize("state", ["unstaged", "staged", "untracked"])
 def test_dirty_deployment_source_blocks_even_when_head_ci_is_green(tmp_path: Path, state: str) -> None:
     from scripts.require_main_ci import require_main_ci
 
@@ -301,15 +237,12 @@ def test_dirty_deployment_source_blocks_even_when_head_ci_is_green(tmp_path: Pat
         subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
     elif state == "untracked":
         (root / "Dockerfile.local").write_text("FROM scratch\n", encoding="utf-8")
-    else:
-        (root / ".git" / "info" / "exclude").write_text(".env\n", encoding="utf-8")
-        (root / ".env").write_text("COMPOSE_FILE=surprise.yaml\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="deployment_source_dirty"):
         require_main_ci(root, {"check_runs": [_check(root)]})
 
 
-def test_secondary_worktree_cannot_deploy_the_primary_stack(tmp_path: Path) -> None:
+def test_release_audit_requires_the_primary_checkout(tmp_path: Path) -> None:
     from scripts.require_main_ci import require_main_ci
 
     root = _repository(tmp_path)
@@ -351,137 +284,10 @@ def test_stale_local_main_cannot_redeploy_an_old_green_sha(tmp_path: Path) -> No
         require_main_ci(root, {"check_runs": [_check(root)]})
 
 
-@pytest.mark.parametrize(
-    "variable",
-    [
-        "COMPOSE_FILE",
-        "COMPOSE_PROJECT_NAME",
-        "COMPOSE_ENV_FILES",
-        "COMPOSE_PROFILES",
-        "COMPOSE_PATH_SEPARATOR",
-        "COMPOSE_DISABLE_ENV_FILE",
-    ],
-)
-def test_deployment_refuses_inherited_compose_topology(variable: str) -> None:
-    from scripts.require_main_ci import require_clean_deployment_environment
+def test_ignored_transport_env_does_not_change_release_source_identity(tmp_path: Path) -> None:
+    from scripts.require_main_ci import require_main_ci
 
-    with pytest.raises(RuntimeError, match=f"deployment_compose_environment_forbidden:{variable}"):
-        require_clean_deployment_environment({variable: "surprise"})
-
-
-def test_up_locks_compose_to_the_primary_repository_stack() -> None:
-    result = subprocess.run(
-        ["make", "--dry-run", "_up-locked"],
-        cwd=ROOT,
-        capture_output=True,
-        check=True,
-        text=True,
-    )
-
-    assert 'COMPOSE_FILE="$(pwd -P)/compose.yaml"' in result.stdout
-    assert "COMPOSE_PROJECT_NAME=tracefold" in result.stdout
-    assert "refuses inherited Compose stack variables" in result.stdout
-    assert "with_deployment_lock.py --assert-held" in result.stdout
-    assert "scripts/require_main_ci.py" in result.stdout
-
-
-def test_boolean_environment_flag_cannot_invoke_the_private_deployment_target() -> None:
-    result = subprocess.run(
-        ["make", "--no-print-directory", "_up-locked"],
-        cwd=ROOT,
-        env={**os.environ, "TRACEFOLD_DEPLOY_LOCK_HELD": "1"},
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=10,
-    )
-
-    assert result.returncode != 0
-    assert "inherited lock fd is missing" in result.stderr
-
-
-@pytest.mark.parametrize(
-    ("target", "private_target"),
-    [
-        ("up", "_up-locked"),
-        ("deploy-image", "_deploy-image-locked"),
-    ],
-)
-def test_the_locked_deployment_entries_hold_the_lock_and_the_gate(target: str, private_target: str) -> None:
-    public = subprocess.run(
-        ["make", "--dry-run", target],
-        cwd=ROOT,
-        capture_output=True,
-        check=True,
-        text=True,
-    )
-    locked = subprocess.run(
-        ["make", "--dry-run", private_target],
-        cwd=ROOT,
-        capture_output=True,
-        check=True,
-        text=True,
-    )
-
-    assert "scripts/with_deployment_lock.py" in public.stdout
-    assert "with_deployment_lock.py --assert-held" in locked.stdout
-    assert "scripts/require_main_ci.py" in locked.stdout
-
-
-def test_every_entry_that_deploys_application_source_requires_the_exact_main_gate() -> None:
-    """Derived from the Makefile, because a list of names cannot notice an entry nobody added to it.
-
-    The previous version of this contract named `up` and `deploy-image`. That is exactly why
-    `make db-migrate` went ungated for as long as it did: `OPERATIONS.md` names it beside `make up`
-    as an operator migration entry, it applies Alembic revisions to the production database from
-    whatever tree invoked it, and its only prerequisite was that git, uv and docker existed — but it
-    was not in the list, so nothing looked. Classifying by what a recipe *does* removes the list.
-
-    Still out of scope, because they are not classified in the first place: the `*-preflight` targets
-    are read-only proofs, and `down`, `status`, `logs` and the `*-shell` targets observe or stop what
-    is already running.
-    """
-
-    classified: list[str] = []
-    ungated: list[str] = []
-    for target in _make_targets():
-        recipe = _dry_run(target)
-        if not any(pattern.search(recipe) for pattern in _DEPLOYS_APPLICATION_SOURCE):
-            continue
-        classified.append(target)
-        if target in _IMAGE_ONLY_TARGETS:
-            continue
-        # A public entry may reach the verifier through the private target it takes the lock for,
-        # which `make --dry-run` does not expand for it.
-        reachable = recipe + "".join(_dry_run(private) for private in _PRIVATE_TARGET.findall(recipe))
-        if "scripts/require_main_ci.py" not in reachable:
-            ungated.append(target)
-
-    assert ungated == []
-    # A classifier that stopped recognising anything would satisfy the line above by finding nothing
-    # to check, which is the failure mode this whole test exists to remove. These targets put
-    # this repository's code in front of production today; a missing one means
-    # the patterns stopped matching the Makefile rather than that the risk went away.
-    assert set(classified) >= {
-        "_up-locked",
-        "_deploy-image-locked",
-        "_db-migrate-locked",
-        "_runtime-build-locked",
-    }
-
-
-def test_the_exempt_runtime_movers_only_ever_start_an_already_built_image() -> None:
-    """The exemption in the test above is only sound while these recipes cannot produce an artefact.
-
-    `make runtime-up` is how an operator restores the process that owns live Binance exposure. It
-    must work when GitHub is down, when `gh` is logged out, and when the SHA it is restoring is
-    deliberately older than `origin/main` — so it does not take the exact-main gate. What keeps that
-    honest is that it can only *move* an image: `--no-build`, no build recipe, no migration.
-    """
-
-    for target in sorted(_IMAGE_ONLY_TARGETS):
-        reachable = _reachable_recipe(target)
-        assert "docker compose up -d --no-build" in reachable, target
-        assert not _BUILDS_OR_MIGRATES.search(reachable), target
-        assert "require_main_ci" not in reachable, target
-        assert "gh " not in reachable, target
+    root = _repository(tmp_path)
+    (root / ".git/info/exclude").write_text(".env\n")
+    (root / ".env").write_text("COMPOSE_PROJECT_NAME=tracefold\n")
+    assert require_main_ci(root, {"check_runs": [_check(root)]})

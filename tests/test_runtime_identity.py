@@ -75,21 +75,20 @@ def test_compose_passes_the_image_digest_to_the_app_services() -> None:
         )
 
 
-def test_make_up_computes_the_digest_from_the_image_it_built() -> None:
-    makefile = (_REPO_ROOT / "Makefile").read_text()
-    up = makefile.split("\nup:", 1)[1].split("\nstatus:", 1)[0]
-    build_at = up.index("docker compose build migrate")
-    digest_at = up.index(IMAGE_DIGEST_ENV)
-    start_at = up.index("docker compose up -d")
-    assert build_at < digest_at < start_at, "the digest must be read after the build and before the start"
-    assert "docker compose config --images" in up, "ask compose which image it will run, do not rebuild the name"
-    assert "docker image inspect --format '{{.Id}}'" in up, (
-        "`.Id` is present in every image store; `RepoDigests` is empty for a never-pushed build under the "
-        "classic store and populated under containerd, so choosing it would make the recorded identity — "
-        "and every manifest_sha derived from it — depend on the host"
-    )
-    # #537 D: this used to warn and continue. A deployment whose receipts all record
-    # `image_digest=unversioned` cannot close a learning promotion and cannot be rolled back to by
-    # ID, so an unreadable digest is now a refusal.
-    assert "image_digest=unversioned" in up
-    assert "exit 1" in up.split("TRACEFOLD_IMAGE_DIGEST", 1)[1], "an empty digest must fail the deployment"
+def test_deployment_uses_local_image_id_not_registry_repo_digest(monkeypatch) -> None:
+    from scripts.deploy import Deployment
+
+    deployment = Deployment(environ={})
+    calls = []
+    image = "sha256:" + "a" * 64
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return image
+
+    monkeypatch.setattr(deployment, "run", run)
+    assert deployment.image_id("built-image") == image
+    assert calls == [("docker", "image", "inspect", "--format", "{{.Id}}", "built-image")]
+    deployment.select_app_image(image)
+    assert deployment.env[IMAGE_DIGEST_ENV] == image
+    assert deployment.env["TRACEFOLD_APP_IMAGE"] == image

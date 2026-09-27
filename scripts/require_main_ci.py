@@ -1,13 +1,11 @@
-"""Fail closed unless deployment source is the exact green origin/main SHA."""
+"""Explicit release-source audit for the exact green primary origin/main SHA."""
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -16,20 +14,6 @@ import yaml
 GITHUB_REPOSITORY = "AnalyThothAI/tracefold"
 GITHUB_ACTIONS_INTEGRATION_ID = 15_368
 REQUIRED_CHECK = "ci-gate"
-_COMPOSE_ENVIRONMENT = (
-    "COMPOSE_FILE",
-    "COMPOSE_PROJECT_NAME",
-    "COMPOSE_ENV_FILES",
-    "COMPOSE_PROFILES",
-    "COMPOSE_PATH_SEPARATOR",
-    "COMPOSE_DISABLE_ENV_FILE",
-)
-
-
-def require_clean_deployment_environment(environ: Mapping[str, str]) -> None:
-    for name in _COMPOSE_ENVIRONMENT:
-        if environ.get(name):
-            raise RuntimeError(f"deployment_compose_environment_forbidden:{name}")
 
 
 def require_unique_ci_gate_definition(root: Path) -> None:
@@ -74,7 +58,7 @@ def require_main_ci(root: Path, payload: dict[str, Any]) -> str:
         raise RuntimeError("deployment_remote_main_response_invalid")
     if head != remote_fields[0]:
         raise RuntimeError("deployment_head_not_remote_main")
-    if (root / ".env").exists() or _git(root, "status", "--porcelain=v1", "--untracked-files=all"):
+    if _git(root, "status", "--porcelain=v1", "--untracked-files=all"):
         raise RuntimeError("deployment_source_dirty")
     require_unique_ci_gate_definition(root)
 
@@ -167,7 +151,6 @@ def _check_runs(sha: str) -> dict[str, Any]:
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     try:
-        require_clean_deployment_environment(os.environ)
         head = _git(root, "rev-parse", "HEAD")
         verified = require_main_ci(root, _check_runs(head))
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, RuntimeError) as exc:

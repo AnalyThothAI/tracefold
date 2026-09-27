@@ -125,7 +125,7 @@
 
 `news replay` 在本地重放 provider hits 的准入 / Gate，不调用模型或 broker；它也不代表完整 EventUpdate→通知→交易回放。实际参数和默认值见[生成 CLI 帮助](generated/cli-help.md)，不要把命令名称扩展为未实现能力。
 
-未知配置 key 按 Settings 拒绝。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。没有 repo `.env` 配置回退。
+未知配置 key 按 Settings 拒绝。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。业务配置只有 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`；Compose 可读取 `.env` 持久化项目、路径和端口，但 Settings 不把它作为业务字段回退。
 
 ## 7. 时间、缺失与版本规则
 

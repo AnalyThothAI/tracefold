@@ -38,9 +38,14 @@ def test_fresh_init_creates_one_application_login_and_disables_bootstrap_login()
 def test_every_postgres_consumer_mounts_the_same_application_credential() -> None:
     compose = yaml.safe_load(_read("compose.yaml"))
     services = compose["services"]
-    credential = "${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro"
+    credential = (
+        "${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:"
+        "/root/.tracefold/postgres_database_password:ro"
+    )
 
-    assert compose["secrets"]["postgres_database_password"]["file"] == ("${HOME}/.tracefold/postgres_database_password")
+    assert compose["secrets"]["postgres_database_password"]["file"] == (
+        "${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password"
+    )
     assert services["postgres"]["secrets"] == ["postgres_password", "postgres_database_password"]
     for service_name in ("migrate", "serve", "workers", "nautilus"):
         assert credential in services[service_name]["volumes"]

@@ -22,3 +22,13 @@ notebooks
 web/dist
 web/.vite
 web/coverage
+
+# Never send private configuration or secondary checkouts to the build context.
+.env
+.env.*
+.tracefold
+**/.tracefold
+.claude
+.codex
+artifacts
+web/test-results
