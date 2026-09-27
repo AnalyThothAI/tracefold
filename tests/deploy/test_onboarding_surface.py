@@ -294,7 +294,13 @@ def test_every_make_lifecycle_target_is_phony_and_dry_run_is_offline(tmp_path: P
     from scripts.deploy import ACTIONS
 
     for action in ACTIONS:
-        result = subprocess.run(["make", "-n", action], cwd=ROOT, check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["make", "--no-print-directory", "-n", action],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         assert result.stdout.strip() == f"python3 scripts/deploy.py {action}"
     makefile = (ROOT / "Makefile").read_text()
     declared = " ".join(line for line in makefile.splitlines() if line.startswith(".PHONY:"))
