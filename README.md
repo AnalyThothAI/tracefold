@@ -1,61 +1,53 @@
 # Tracefold
 
-**Evidence-first market research, news understanding, and separately controlled execution.**
+**Evidence-first news research, market observations and separately controlled trading.**
 
-Tracefold turns provider messages and on-chain receipts into durable, inspectable
-facts. News understands editorial stories and publishes reader cards; Trading
-researches eligible news catalysts and open-interest observations, records its
-reasoning and decisions, and can publish account-scoped signals. A separate
+Tracefold records provider messages and on-chain receipts, understands incremental
+news changes, explains what is new, and exposes the evidence in a read-only React
+console. Trading researches eligible catalysts and OI observations; an independent
 Nautilus process owns execution against the configured Binance connection.
 
-The React console exposes what was received, understood, decided, delivered, and
-executed. These are different outcomes: a model answer is not a fact, a queued
-card is not a sent receipt, and a signal is not an order fill.
+A source report, adopted claim, selected notification, sent receipt, trading decision
+and venue fill are different facts. The system preserves those boundaries instead
+of treating a model answer or an accepted command as proof of an external result.
 
-## What is inside
+## Capabilities
 
-| Capability | Implemented responsibility | Guide |
+| Area | What runs | Guide |
 | --- | --- | --- |
-| Editorial News | Source admission, incremental claim understanding, versioned EventUpdates, independent notification planning and on-demand cards | [News](docs/modules/news.md) |
-| Market observations | Deterministic OI, liquidation and smart-money parsing; grouped notifications; independent Trading handoff | [OI and market data](docs/modules/oi.md) |
-| Wallet activity | Followed-address roster, receipt-backed fills, concentrated net-buy episodes and independent price samples | [Wallets](docs/modules/wallets.md) |
-| Trading Analysis | One target per source, bounded read-only Agent research, frozen Cases, TRADE / NO_TRADE / WATCH decisions | [Trading](docs/modules/trading.md) |
-| Execution | Signal validation, scoped plans, venue orders, protection, reconciliation and native execution evidence | [Execution](docs/modules/execution.md) |
-| News improvement | ReviewDesk for current intents and bounded card-judge calibration; legacy optimization/release execution removed | [Review and calibration](docs/modules/learning.md) |
+| News | Incremental claim extraction, versioned EventUpdates, evidence relationships, notification planning and on-demand cards | [News](docs/modules/news.md) |
+| Market observations | Deterministic OI/liquidation/smart-money parsing and grouped notifications, independent of editorial News | [OI](docs/modules/oi.md) |
+| Wallets | Followed-address roster, receipt-backed fills, concentrated net-buy episodes and separate price observations | [Wallets](docs/modules/wallets.md) |
+| Trading Analysis | One eligible target, frozen evidence, bounded read-only ReAct research, TRADE / NO_TRADE / WATCH and optional Signal publication | [Trading](docs/modules/trading.md) |
+| Execution | Scoped plans, actual orders/fills, protection, reconciliation and native economics | [Execution](docs/modules/execution.md) |
+| Review | ReviewDesk and bounded card-judge calibration | [Review](docs/modules/review.md) |
 
-## System at a glance
+## Architecture at a glance
 
 ```mermaid
 flowchart TB
-    Sources["OpenNews messages"] --> Workers["Workers: News admission and<br/>understanding"]
-    Chain["Roster and chain receipts"] --> Workers
-    Workers --> PG[("PostgreSQL facts, decisions<br/>and receipts")]
-    Workers --> Push["Reader notifications"]
-    PG --> Analysis["Analysis: Trading research"]
-    Analysis --> PG
-    PG --> Serve["Serve: HTTP API and React<br/>console"]
-    PG --> Runtime["Optional Nautilus execution"]
+    Inputs["News providers and<br/>chain receipts"] --> News["Workers<br/>News and market facts"]
+    News --> Facts[("PostgreSQL<br/>facts, updates and receipts")]
+    News --> Reader["Independent notification<br/>planning and delivery"]
+    Facts --> Analysis["Analysis<br/>Trading research"]
+    Analysis --> Facts
+    Facts --> Serve["Serve<br/>read-only API and console"]
+    Facts --> Runtime["Optional Nautilus<br/>execution owner"]
     Runtime <--> Venue["Configured Binance connection"]
-    Runtime --> PG
+    Runtime --> Facts
 ```
 
 There are **two business capabilities** (`news`, `trading`) and **four process
-roles** (`serve`, `workers`, `analysis`, `nautilus`). Process isolation does not
-create additional business domains. Serve, Workers and Analysis share the
-application image; Nautilus has a separate image and lifecycle.
+roles** (`serve`, `workers`, `analysis`, `nautilus`). Serve, Workers and Analysis
+share the application image. Nautilus has a separate image and lifecycle.
+[Architecture](docs/ARCHITECTURE.md) maps processes, package owners, durable state
+and the public News-to-Trading handoff.
 
-News uses the merged EventUpdate path, not the retired three-predictor/GEPA
-workflow. New catalysts and amendments reach Trading independently of reader delivery.
+## Start the application
 
-See [Architecture](docs/ARCHITECTURE.md) for the broker, transaction boundaries,
-dependency graph and deployment topology. The [documentation index](docs/README.md)
-identifies the reviewed source baseline and separates current guides from history.
-
-## Run locally with Docker
-
-Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with its Compose plugin,
-`curl`, and the [GitHub CLI](https://cli.github.com/). Start the Docker daemon and
-authenticate GitHub CLI for the repository's existing build/deployment preflight:
+Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose plugin,
+`curl` and [GitHub CLI](https://cli.github.com/). Start Docker and authenticate GitHub
+CLI for the existing repository/deployment preflight. From the permitted main checkout:
 
 ```bash
 gh auth login --hostname github.com
@@ -66,87 +58,61 @@ make up
 
 Open **http://127.0.0.1:8765/** after startup succeeds.
 
-`make up` initializes operator files without replacing existing choices, builds
-the Python/React application image, starts PostgreSQL and RabbitMQ, applies broker
-policy and migrations, then starts Serve, Workers and Analysis. A failed required
-startup boundary returns non-zero; it is not a successful deployment.
+`make up` initializes operator files, builds the Python/React image, starts
+PostgreSQL/RabbitMQ, applies broker policy and migrations, then starts Serve,
+Workers and Analysis. It preserves existing operator choices and persistent data.
+It does **not** start or restart Nautilus. A failed required boundary returns non-zero.
 
 ```bash
-make status   # inspect application and configured execution readiness
-make logs     # follow logs; Ctrl-C leaves services running
-make down     # stop services, including execution; preserve data volumes
+make status-app
+make logs
+make down  # stops execution first as well; preserves data volumes
 ```
 
-Generated defaults contain no live provider, model or delivery credentials.
-An empty feed without a configured source is expected; it is not demo data.
-Trading and execution require their own configuration, and signal publication is
-disabled by default. **`make up` does not start or restart Nautilus.** Its explicit
-`make runtime-*` lifecycle is documented in [Execution](docs/modules/execution.md).
-
-### Configuration
-
-The operator-owned configuration is **`~/.tracefold/config.yaml`**, generated by
-`tracefold init`. There is no second maintained example config or `.env` fallback.
-Secret files, archive, cache and logs live under the same operator directory.
-Initialization preserves an existing config and passwords; `init --force` replaces
-config and is not a routine upgrade command.
+The application config is **`~/.tracefold/config.yaml`**, generated by `tracefold init`.
+There is no repository-local credential file or `.env` fallback. Defaults contain
+no external provider/model/delivery credentials. An empty feed without a source is
+expected, not a reason to fabricate demo data. Trading, Signal publication and
+execution have explicit independent settings; execution is disabled by default.
 
 ```bash
-uv run tracefold config  # redacted configuration, not raw secrets
+uv run tracefold config  # redacted configuration, never raw secrets
 uv run tracefold --help
 ```
 
-Configure only the capabilities needed: News source, model endpoint, delivery,
-wallet sources, Trading analysis, and execution are separate concerns. Follow
-[Setup](docs/SETUP.md) for the actual fields, file permissions and container mounts.
-Do not paste live credentials into tracked files.
+Follow [Setup](docs/SETUP.md) for credential-dependent capabilities, mounts and
+container versus host addresses. [Operations](docs/OPERATIONS.md) owns diagnostics,
+exact failed-work retries, backups and explicit execution lifecycle actions.
 
-For the standard Compose network, run database/broker diagnostics in a container:
-
-```bash
-docker compose exec workers tracefold news bus-check
-docker compose exec workers tracefold db audit
-```
-
-The generated config uses container-network addresses; it does not automatically
-rewrite them for a host-side CLI. [Operations](docs/OPERATIONS.md) covers health,
-incident diagnosis, backups, maintenance and authorized runtime controls.
-
-## Find your way through the code
+## Navigate and develop
 
 ```text
-tracefold/
-  news/           editorial and market facts, delivery, wallets, review and calibration
-  trading/        analysis contracts, pure policy, Cases, execution contracts
-  integrations/   provider, broker, delivery, market and Nautilus adapters
-  platform/       config, PostgreSQL, resource limits, identity, telemetry
-  app/            process composition, HTTP/CLI, cross-capability mapping
-web/              React operator console and frontend tests
-scripts/          maintenance, generation and bounded research utilities
-tests/            unit, architecture, contract, integration and deployment tests
-notebooks/        offline research; not imported by production processes
+tracefold/news/          Items, EventUpdates, market facts, delivery and review
+tracefold/trading/       Research contracts, pure policy, Cases and execution contracts
+tracefold/integrations/  Provider, broker, delivery, market and Nautilus adapters
+tracefold/platform/      Configuration, PostgreSQL, physical resources and telemetry
+tracefold/app/           Process composition, HTTP/CLI and cross-capability mapping
+web/                    Read-only React workbench and frontend tests
+notebooks/              Offline research, preserved inputs and historical experiments
 ```
 
-Use the [file-by-file repository map](docs/generated/repository-map.md) to locate
-an owner, then the relevant module guide to understand its behavior. The map is
-generated from tracked paths and Python declarations; it is navigation, not a
-claim that every line has been individually audited.
-
-## Develop and verify
+The [handbook](docs/README.md) routes each question to one maintained owner. Module
+guides link directly to implementation and tests rather than duplicating every
+function's docstring in an automatically expanded manual. [Generated contracts](docs/generated/README.md)
+own the exact CLI/API/database shapes.
 
 ```bash
 uv sync --frozen
-make check        # hermetic static, architecture and contract checks
-make test-fast    # broad hermetic checkpoint
+make check
+make test-fast
 ```
 
-Run focused tests while editing; use the full resource-backed lanes when the
-change needs them. [Development](docs/DEVELOPMENT.md) explains the workflow and
-[Testing](docs/TESTING.md) names the actual CI lanes. Frontend commands and layering
-are in [Frontend](docs/FRONTEND.md); generated HTTP, CLI and database references
-are indexed in [Contracts](docs/CONTRACTS.md).
+Use focused tests while editing and the appropriate resource-backed lanes for the
+change. [Development](docs/DEVELOPMENT.md), [Testing](docs/TESTING.md) and
+[Frontend](docs/FRONTEND.md) describe those workflows. Coding-agent entry points
+are [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md).
 
-A cohesive change includes its callers, tests, documentation and obsolete-path
-removal. Agent entry points are [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md).
-Documentation, unit tests and historical replays do not establish live execution
-or profitability; deployment and account control remain explicit operations.
+The former three-predictor News Program and its GEPA/release/canary execution are
+not current capabilities. Historical studies remain in Git or their explicitly
+historical research workspace, not mixed into the operating handbook. A test or
+research return is not proof of production model quality, execution or profitability.

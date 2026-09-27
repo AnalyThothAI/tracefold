@@ -90,7 +90,7 @@ Source text and tool results are untrusted data, not instructions that enlarge
 capabilities. Validate output shapes, visible references, plan identities and
 budgets in code. Unknown errors must not turn into fabricated favorable decisions.
 The [News](modules/news.md), [Trading](modules/trading.md), and
-[Learning](modules/learning.md) guides identify the concrete owners.
+[Learning](modules/review.md) guides identify the concrete owners.
 
 Semantic checkpoints and observations bind the full frozen input, program and
 model identities; credentials do not belong in those artifacts. Physical model

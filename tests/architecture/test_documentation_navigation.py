@@ -1,10 +1,11 @@
-"""The handbook has live links and a deterministic tracked-file map, without external services."""
+"""The handbook has live links and one reachable current source handbook, without external services."""
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
 from types import ModuleType
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -15,26 +16,6 @@ def _script(name: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def test_repository_map_is_current_and_complete() -> None:
-    generator = _script("regen_repository_map")
-    paths = generator.tracked_paths(ROOT)
-    assert paths
-    actual = (ROOT / generator.OUTPUT).read_text(encoding="utf-8")
-    assert actual == generator.render(ROOT, paths)
-    assert actual.count("| [`") == len(paths)
-
-
-def test_inventory_parses_python_without_importing_it(tmp_path: Path) -> None:
-    generator = _script("regen_repository_map")
-    source = tmp_path / "unsafe_to_import.py"
-    source.write_text(
-        '"""A module with a non-importable body."""\nraise RuntimeError("must not execute")\ndef entry(): pass\n'
-    )
-    first = generator.render(tmp_path, (Path(source.name),))
-    assert "non-importable body" in first and "entry" in first
-    assert first == generator.render(tmp_path, (Path(source.name),))
 
 
 def test_links_check_anchors_references_and_percent_encoded_paths(tmp_path: Path) -> None:
@@ -56,12 +37,12 @@ def test_links_check_anchors_references_and_percent_encoded_paths(tmp_path: Path
     assert any("undefined reference" in error for error in errors)
 
 
-def test_context_and_historical_research_are_not_exempt(tmp_path: Path) -> None:
+def test_context_and_nested_module_docs_are_checked(tmp_path: Path) -> None:
     checker = _script("check_mandatory_docs_links")
     (tmp_path / "CONTEXT.md").write_text("[missing](missing.md)\n")
-    research = tmp_path / "docs" / "research"
-    research.mkdir(parents=True)
-    (research / "historical.md").write_text("[missing](old-layout.py)\n")
+    modules = tmp_path / "docs" / "modules"
+    modules.mkdir(parents=True)
+    (modules / "example.md").write_text("[missing](old-layout.py)\n")
     assert len(checker.missing_links(tmp_path)) == 2
 
 
@@ -69,3 +50,24 @@ def test_current_module_guides_have_an_explicit_handbook_entry() -> None:
     index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     for guide in (ROOT / "docs" / "modules").glob("*.md"):
         assert f"(modules/{guide.name})" in index
+
+
+def test_every_current_handbook_page_is_reachable_from_the_front_door() -> None:
+    checker = _script("check_mandatory_docs_links")
+    queue = [ROOT / "README.md"]
+    seen: set[Path] = set()
+    while queue:
+        source = queue.pop().resolve()
+        if source in seen or not source.is_file() or source.suffix != ".md":
+            continue
+        seen.add(source)
+        targets, _ = checker.local_targets(source.read_text(encoding="utf-8"))
+        for target in targets:
+            parsed = urlsplit(target.strip("<>"))
+            if parsed.scheme or parsed.netloc:
+                continue
+            path = (source.parent / unquote(parsed.path)).resolve() if parsed.path else source
+            if path.is_file() and path.suffix == ".md":
+                queue.append(path)
+    expected = {path.resolve() for path in (ROOT / "docs").rglob("*.md")}
+    assert expected <= seen, sorted(str(path.relative_to(ROOT)) for path in expected - seen)

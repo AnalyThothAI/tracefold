@@ -10,12 +10,7 @@ every ordinary test run.
 This module names the forbidden path only by assembling it from parts, so the guard can scan every
 tracked file including itself and needs no self-exemption.
 
-`docs/research/` is out of scope here, and deliberately. It is the dated evidence corpus: its
-mentions of the old path are `file:line` citations and pinned-commit GitHub permalinks describing
-trees as they were on the audit date, and `scripts/check_mandatory_docs_links.py` already exempts
-that directory from the live-link contract for the same reason. Rewriting the directory component
-of a citation whose line ranges — and often whose file — belong to an older tree would not make it
-correct, only harder to recognise as historical.
+All current tracked documentation is included in the package-path checks.
 """
 
 from __future__ import annotations
@@ -27,7 +22,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "tracefold"
-ARCHIVAL_EVIDENCE = "docs/research/"
 LEGACY_PARENT = "src"
 LEGACY_PACKAGE_PATH = f"{LEGACY_PARENT}/{PACKAGE}"
 LEGACY_IMPORT_PATH_ENV = re.compile(r"PYTHONPATH[\"'\]:= ]*[^\n]*\b" + LEGACY_PARENT + r"\b")
@@ -43,10 +37,10 @@ def _tracked_files() -> tuple[Path, ...]:
     return tuple(Path(name) for name in listing.split("\0") if name)
 
 
-def _readable_files_outside_the_archive() -> tuple[tuple[Path, str], ...]:
+def _readable_tracked_files() -> tuple[tuple[Path, str], ...]:
     readable: list[tuple[Path, str]] = []
     for path in _tracked_files():
-        if path.as_posix().startswith(ARCHIVAL_EVIDENCE) or not (ROOT / path).is_file():
+        if not (ROOT / path).is_file():
             continue
         try:
             readable.append((path, (ROOT / path).read_text(encoding="utf-8")))
@@ -65,7 +59,7 @@ def test_the_repository_root_holds_exactly_one_production_package() -> None:
 def test_no_current_path_still_names_the_legacy_package_root() -> None:
     offenders = [
         f"{path.as_posix()}:{number}"
-        for path, content in _readable_files_outside_the_archive()
+        for path, content in _readable_tracked_files()
         for number, line in enumerate(content.splitlines(), start=1)
         if LEGACY_PACKAGE_PATH in line
     ]
@@ -82,7 +76,7 @@ def test_nothing_resurrects_the_legacy_root_through_the_import_system() -> None:
     assert [path.as_posix() for path in tracked if path.name == "sitecustomize.py"] == []
     assert [
         f"{path.as_posix()}:{number}"
-        for path, content in _readable_files_outside_the_archive()
+        for path, content in _readable_tracked_files()
         for number, line in enumerate(content.splitlines(), start=1)
         if LEGACY_IMPORT_PATH_ENV.search(line)
     ] == []

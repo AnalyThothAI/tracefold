@@ -1,74 +1,63 @@
-# Documentation
+# Handbook
 
-This is the entry point for the maintained handbook. The module guides were
-reviewed against **main `a1f4a9ac1ae8795be93b644eb5e4b88e0bce919b`** on
-2026-09-27. Relative source links resolve in the same checkout as these documents.
-This records a source review, not the deployed image or an account-health claim.
+These documents describe the implementation in the same checkout. Read the owning
+module and its tests for exact behavior; the deployed image may differ. Each concern
+has one maintained page. Closed issue plans and historical reports are not additional
+runtime rules.
 
-**Current branch boundary:** PR #711 merged while this handbook was being prepared.
-The guides were rebased and updated against the resulting main commit above.
-News now produces versioned EventUpdates; its old three-predictor Program,
-GEPA/release/canary execution and four-axis taxonomy are not current capabilities.
-The [EventUpdate reference](design/news-event-updates.md) records the detailed
-identity/cutover contract. This is source documentation, not deployment verification.
+## Find the owner
 
-## Start with a question
-
-| Question | Maintained owner |
+| Question | Document |
 | --- | --- |
-| What is this project, and how do I start it? | [Repository README](../README.md), [Setup](SETUP.md) |
-| Which processes run, and where is the durable truth? | [Architecture](ARCHITECTURE.md) |
-| What happens to one news item? Which steps call a model? | [News](modules/news.md) |
-| What does OI measure, and why did it notify or not trade? | [OI and market observations](modules/oi.md) |
+| What does Tracefold do? | [Repository README](../README.md) |
+| How do I start/configure it? | [Setup](SETUP.md) |
+| Which processes, packages and data stores own the work? | [Architecture](ARCHITECTURE.md) |
+| How does a source revision become an EventUpdate and notification? | [News](modules/news.md) |
+| What does OI mean, and how are market observations processed? | [OI and market observations](modules/oi.md) |
 | How does an input become a Case, WATCH or Signal? | [Trading Analysis](modules/trading.md) |
-| Who can place orders, and what proves an execution? | [Execution](modules/execution.md) |
-| How do several wallets produce one net-buy alert? | [Wallets](modules/wallets.md) |
-| Which review/calibration tools remain after the EventUpdate cut? | [Review and calibration](modules/learning.md) |
-| Where are adapters, configuration and database boundaries? | [Platform and integrations](modules/platform.md) |
-| How does the read-only console consume these facts? | [Frontend](FRONTEND.md) |
-| Where is a particular file or public contract? | [Repository map](generated/repository-map.md), [Contracts](CONTRACTS.md) |
-| How do I diagnose, upgrade or restore? | [Operations](OPERATIONS.md), [Migrations](MIGRATIONS.md), [Security](SECURITY.md) |
-| How do I change and test the implementation? | [Development](DEVELOPMENT.md), [Testing](TESTING.md) |
+| What actually places orders and reconciles fills? | [Execution](modules/execution.md) |
+| How do wallet receipts become a concentrated net-buy alert? | [Wallets](modules/wallets.md) |
+| Which review and calibration capabilities currently exist? | [Review](modules/review.md) |
+| Where are infrastructure, adapters and composition boundaries? | [Platform](modules/platform.md) |
+| How does the read-only console use the data? | [Frontend](FRONTEND.md) |
+| What are the public and generated contracts? | [Contracts](CONTRACTS.md), [generated references](generated/README.md) |
+| How do I diagnose and recover current work? | [Operations](OPERATIONS.md) |
+| How do I change or restore a schema safely? | [Migrations](MIGRATIONS.md) |
+| Who holds credentials and write authority? | [Security](SECURITY.md) |
+| How do I develop and verify changes? | [Development](DEVELOPMENT.md), [Testing](TESTING.md) |
 
-## Reference and evidence
+The News guide includes the current topic/source-authority model and the complete
+EventUpdate identity/recovery contract. There is no second taxonomy manual or
+parallel EventUpdate design document to reconcile with it.
 
-[Generated references](generated/README.md) own exact CLI, HTTP, schema and file
-inventories. [News topics and source authority](NEWS_TAXONOMY.md) owns the retained topic codebook
-and source-authority meaning; [CONTEXT.md](../CONTEXT.md) owns review language and acceptance context.
+## Repository work and offline research
 
-[Research records](research/README.md) and [engineering receipts](reports/README.md)
-are explicitly historical evidence, not installation instructions or additional
-runtime requirements. [Research notebooks](../notebooks/README.md) retain their
-recorded inputs and limitations. The [execution ownership ADR](adr/0002-trading-execution-owner-hard-cuts.md)
-explains old terms found in backups. The [wallet cutover](wallet-net-buy-cutover.md)
-is a version-specific migration procedure, not the normal startup path.
+[Shared agent routing](agents/shared-router.md), [domain exploration](agents/domain.md),
+[worktrees](agents/worktrees.md), [issue/PR scope](agents/issue-tracker.md), and
+[triage labels](agents/triage-labels.md) describe repository work, not business policy.
+[CONTEXT.md](../CONTEXT.md) defines honest review terminology.
 
-Coding-agent guidance is routed by [shared-router](agents/shared-router.md),
-[domain exploration](agents/domain.md), [worktrees](agents/worktrees.md),
-[issue/PR scope](agents/issue-tracker.md), and [triage labels](agents/triage-labels.md).
-Those pages describe repository work, not another business architecture.
+[Notebooks](../notebooks/README.md) identifies current offline utilities versus
+historical experiments and preserved inputs. Historical studies, one-off query
+plans, rollout transcripts and superseded architecture proposals are retrieved
+from their original Git revision when needed. They are not kept beside current
+instructions merely with an “outdated” banner. Frozen datasets are not rewritten
+to update historical prose references.
 
-## Keeping the handbook current
+## Maintain a change once
 
-Each concern has one owner: README is the front door; Architecture owns system
-boundaries; module pages own behavior; Setup/Operations own commands;
-Contracts/generated references own exact shapes; history owns past evidence.
-Link to another owner instead of copying its full policy or a changing list of fields.
+Update the owning page with the implementation: source entry points, input/output,
+state ownership, failure/retry behavior and test links. README stays the front door;
+Architecture stays the system map; module pages explain behavior; Operations and
+Migrations own actions; schemas/help own exact syntax. Link rather than copy.
 
-For a changed module, update its entry points, diagram, state/failure explanation
-and test links together. Use Mermaid fences in Markdown for maintained diagrams;
-keep diagrams small and name real processes, contracts and writers. A sequence
-step is not automatically a persisted state. Do not label a proposal, test result
-or historical replay as a deployed capability.
+Use small Mermaid diagrams for processes, data flow, state or timing. A processing
+step is not automatically a database state, and two different persisted state
+axes must not become one overall success badge. Render changed diagrams before
+submission; local-link checks alone do not establish a successful rendering.
 
-Delete superseded design proposals when the implemented behavior has a maintained
-owner. Retain a historical record only when it carries useful decision provenance,
-measurements, reproducible inputs or a required cutover. Being old or having no
-inbound Markdown link alone is not enough to delete evidence. Git history retains
-removed proposals without a second archive directory in the current handbook.
-
-After editing, run the local-link and repository-map checks described in
-[Generated references](generated/README.md), then the focused documentation tests.
-Generated inventories must be regenerated, not hand-edited. Mermaid rendering is
-checked separately from the hermetic Python checks; those checks do not prove the
-diagrams render or that an operator deployment succeeded.
+Run `python scripts/check_mandatory_docs_links.py` and the focused documentation
+checks in [Development](DEVELOPMENT.md). The check covers local files, Markdown
+anchors and reference links. It does not prove remote link availability, model
+quality or a running deployment. Documentation work does not require a new service,
+a documentation site or a generated index of every source declaration.

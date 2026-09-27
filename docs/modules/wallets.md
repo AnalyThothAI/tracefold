@@ -1,7 +1,7 @@
 # Wallets: receipt-backed concentrated net buying
 
 [Handbook](../README.md) · [News](news.md) · [Market notifications](oi.md) ·
-[Version-specific cutover](../wallet-net-buy-cutover.md)
+[Migrations](../MIGRATIONS.md)
 
 The wallet product detects concentrated net buying among followed addresses.
 Roster statistics identify whom to follow; on-chain receipts establish observed
@@ -125,8 +125,6 @@ product. No automatic Trading strategy is implied by a qualifying episode.
 
 [Chain-tape integration tests](../../tests/integration/test_news_chain_tape.py),
 [notification tests](../../tests/integration/test_news_market_notifications.py),
-[market API tests](../../tests/integration/test_news_market_api.py), and the
-[recorded wallet verification](../research/wallet-net-buy-verification-2026-09-12.md)
-cover different evidence boundaries. The historical receipt is not a current
+[market API tests](../../tests/integration/test_news_market_api.py) cover different evidence boundaries. Test results do not establish a current
 production-health claim. Follow [Operations](../OPERATIONS.md) for live diagnosis
 and [Migrations](../MIGRATIONS.md) for the actual schema/config cut.

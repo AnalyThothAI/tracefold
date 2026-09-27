@@ -1,197 +1,280 @@
-# News: versioned EventUpdates and independent notifications
+# News: incremental evidence, adopted knowledge and reader delivery
 
-[Handbook](../README.md) · [Architecture](../ARCHITECTURE.md) · [OI](oi.md) ·
-[Review and calibration](learning.md) · [EventUpdate technical reference](../design/news-event-updates.md)
+[Handbook](../README.md) · [Architecture](../ARCHITECTURE.md) · [OI](oi.md) · [Review](review.md)
 
-This guide describes main **after PR #711**. The editorial result is an adopted
-`EventUpdate`, not the removed three-predictor Program's verdict. Understanding a
-source, deciding what a reader needs, sending a card and offering a Trading
-catalyst are different responsibilities with separate durable outcomes.
+Editorial News has one current understanding product: **EventUpdate**. It records
+claims, evidence relationships, changes, implications and open questions. Semantic
+processing, reader notification and the public Trading handoff are separate paths.
+This page is their canonical behavior/identity reference; no second design document
+or taxonomy manual overrides it.
 
-## 1. Objects and source owners
+## 1. Objects and implementation owners
 
-| Object / owner | Meaning |
+| Object / owner | Responsibility |
 | --- | --- |
-| [Item and admission](../../tracefold/news/pipeline/admission.py) | Original source identity, observed material and attribution; editorial and typed market paths diverge here. |
-| [FactUnit scope](../../tracefold/news/events/facts.py) | Deterministic extraction focus within an Item, preserving shared context rather than treating every line as a new story. |
-| [Event membership](../../tracefold/news/storage/events.py) | Source grouping and candidate identity; near similarity does not establish claim equivalence. |
-| [Evidence revision and semantic work](../../tracefold/news/storage/event_updates.py) | What changed, what input is wanted/done, and who owns the current attempt. |
-| [FrozenInput, Claim, EventUpdate](../../tracefold/news/updates/contracts.py) | Exact citable inputs, stable Event-local claim refs, changes, source relations, implications and open questions. |
-| [SemanticWorker](../../tracefold/news/pipeline/semantic.py) | Consume the existing `news.triage` queue, claim bounded work, run the Agent and attribute retry/failure. |
-| [NewsAgent](../../tracefold/news/updates/service.py), [SemanticAnalyzer](../../tracefold/news/updates/semantics.py) | Checkpoint extraction/understanding, assemble content and adopt against the current head. |
-| [NotificationPlanner and CardComposer](../../tracefold/news/updates/notification.py) | Per-claim reader decision, selected intent and on-demand Chinese copy. |
-| [Deliverer](../../tracefold/news/pipeline/delivery.py), [store adapter](../../tracefold/news/storage/event_update_store.py) | Poll notification work, freeze/send the exact body and persist the actual outcome. |
-| [PublicUpdate](../../tracefold/news/updates/public.py), [App mapping](../../tracefold/app/news_updates.py) | Card-independent catalyst delta or source amendment for Trading. |
+| [Admission](../../tracefold/news/pipeline/admission.py), [events](../../tracefold/news/storage/events.py) | Preserve original Items, source identity, FactUnit focus, Event membership and new evidence revisions. |
+| [Source/fact helpers](../../tracefold/news/events/), [source contracts](../../tracefold/news/source_contracts.py) | Deterministic source routing, extraction scope, grounding and candidate grouping. |
+| [SemanticWorker](../../tracefold/news/pipeline/semantic.py) | Consume `news.triage` as task `news-semantic`, claim durable input work and attribute bounded failures. |
+| [NewsAgent](../../tracefold/news/updates/service.py), [SemanticAnalyzer](../../tracefold/news/updates/semantics.py) | Incremental extraction/understanding, checkpoints, observations, assembly and conditional adoption. |
+| [Typed update contracts](../../tracefold/news/updates/contracts.py), [judgments](../../tracefold/news/updates/judgment.py) | Exact claim, evidence, source, time, relationship and model-answer meanings. |
+| [DSPy adapters](../../tracefold/news/updates/dspy_backend.py) | Structured extraction, generated/native narrow judgments and selected-card composition. |
+| [NotificationPlanner](../../tracefold/news/updates/notification.py), [Notifications](../../tracefold/news/updates/service.py) | Compare actual reader coverage, select claim refs, compose/freeze a card and settle its send. |
+| [Storage](../../tracefold/news/storage/event_updates.py), [port adapter](../../tracefold/news/storage/event_update_store.py) | Revision/lease predicates, immutable adoptions, notification state, receipts and scoped retry. |
+| [Delivery loop](../../tracefold/news/pipeline/delivery.py), [App composition](../../tracefold/app/workers/wiring/news.py) | Existing supervised polling, provider adaptation and role wiring. |
+| [Public facts](../../tracefold/news/updates/public.py), [App mapping](../../tracefold/app/news_updates.py) | Deterministic card-independent public updates for Trading. |
+| [Update read model](../../tracefold/news/update_view.py) | Present adopted content, input progress, planning and actual delivery separately. |
 
-An Item revision is not an Event's adopted content revision. A semantic observation
-is not necessarily a changed head. A selected notification is not a sent receipt.
-These distinctions are visible in the API rather than flattened into one status.
+An Item ID, source revision occurrence, semantic input revision, adopted content
+revision, claim ref and delivery intent ID identify different things. No clock or
+hash can be substituted for another solely because both increase or look unique.
 
-## 2. End-to-end flow
+## 2. End-to-end data flow
 
 ```mermaid
 flowchart TB
-    Raw["Provider input and<br/>RabbitMQ raw handoff"] --> Admission["Normalize and classify<br/>source contract"]
-    Admission -->|"market"| Market["Typed OI, liquidation or<br/>smart-money fact"]
-    Admission -->|"editorial"| Revision["Item / Event / evidence<br/>revision and durable work"]
-    Revision --> Agent["SemanticWorker and NewsAgent<br/>frozen input and checkpoints"]
-    Agent --> Adopt["Conditional adoption<br/>of EventUpdate head"]
-    Adopt --> Outbox["Public catalyst delta<br/>or source amendment"]
-    Outbox --> Trading["App relay to Trading"]
-    Adopt --> Plan["NotificationPlanner<br/>claim-level reasons"]
-    Plan -->|"selected claims"| Card["CardComposer<br/>frozen body and intent"]
-    Plan -->|"no selection"| NoCard["Understanding remains<br/>available without a card"]
-    Card --> Send["Head / reader preflight<br/>and provider send"]
-    Send --> Receipt["sent / not_sent / ambiguous<br/>with exact body and identity"]
+    Raw["Source arrival<br/>and raw broker handoff"] --> Route["Classify source contract"]
+    Route -->|"market"| Market["Typed fact or explicit parse failure<br/>separate OI/market path"]
+    Route -->|"editorial"| Admit["Item + Event membership<br/>+ evidence revision + semantic work"]
+    Admit --> Claim["Claim lease and freeze exact input"]
+    Claim --> Extract["Extract unprocessed material<br/>reuse exact checkpoints"]
+    Extract --> Understand["Bounded relationship/support judgments<br/>preserve uncertainty"]
+    Understand --> Adopt["Assemble and conditionally adopt<br/>immutable EventUpdate"]
+    Adopt --> Public["Public catalyst_delta / source_update"]
+    Public --> Trading["App relay to Trading"]
+    Adopt --> Planner["Per-claim notification plan"]
+    Planner -->|"selected"| Card["On-demand CardComposer<br/>frozen intent body"]
+    Planner -->|"no selection"| NoCard["Understanding remains available"]
+    Card --> Send["Head / reader revision preflight<br/>then provider send"]
+    Send --> Receipt["Actual outcome and body digest"]
 ```
 
-Market observations follow [their own contract](oi.md); they do not need an
-editorial Event, model result or reader card. The same independence applies to
-Trading: a card failure cannot retract an already adopted update or its public outbox.
+Adoption commits the update, public outbox and notification work together. It does
+not wait for Chinese copy or a provider send. Failed copy/delivery cannot retract
+already adopted semantics or prevent the independently committed public handoff.
+An OI measurement does not enter this editorial chain; see [OI](oi.md).
 
-## 3. Input scope, extraction and comparison
+## 3. Input scope, identities and current source contributions
 
-Admission records source-body or attribution changes as revisions. Content equality
-and occurrence are different: an A → B → A sequence can be three local observations,
-while an exact repeat of current material is idempotent. The receiver's immutable
-observation clock orders local arrivals; publication time is not a provider edit
-version, and a later arrival of old text does not prove an upstream restoration.
+**Source revision occurrence is not content equality.** An Item-local sequence and
+predecessor distinguish A → B → A from an exact retransmission of current A. The
+receiver's immutable observation clock orders local arrivals. Publication time is
+not a provider edit version; a later arrival of older text is a local observation,
+not proof that the upstream author restored it.
 
-Fact splitting remains deliberately narrow: at least three contiguous explicitly
-numbered blocks can become scoped FactUnits, with shared lead context. A clock such
-as `10:30` is not a numbered story. Other material remains whole-item input.
-For a changed body, its earlier extraction scope is a comparison target, not old
-character offsets that can safely slice new text. Only frozen evidence is citable.
+**FactUnit scope is deterministic, not another Agent.**
+[facts.py](../../tracefold/news/events/facts.py) splits only sufficiently clear,
+contiguous explicitly numbered material, retaining shared lead context. A clock
+such as `10:30` is not a story number. Other inputs remain whole-item material.
+A changed body uses the old extraction scope as a comparison target, never old
+character offsets to slice a newly edited body. Only the frozen supplied evidence
+can be cited.
 
-Each semantic turn extracts **new, not-yet-analyzed material**. Adopted claims,
-questions and bounded related claims are comparison context. Successful progress
-records consumed evidence even when it yields no new claim, so the next member
-does not force extraction of the entire historical Event again. Arrivals during
-an owned turn coalesce into the latest wanted revision for a following turn.
+**Grouping recalls candidates; it does not decide claim equivalence.** Exact keys,
+source-artifact identity and bounded token/MinHash near matching operate within the
+source/Event contract. Related prior claims are ranked against new material before
+their budget is applied. A shared name, same ticker or high text similarity alone
+is not proof that two propositions are equivalent or already reported.
 
-Matching has two responsibilities: deterministic exact/source/near matching recalls
-Event candidates; semantic relation judgments decide equivalent, added information,
-real-world change, correction, conflict, unrelated or unresolved propositions.
-Neither shared vocabulary nor token similarity proves a restatement. Typed primary
-versus mentioned assets are part of the claim; a cashtag and a venue route still
-answer different questions.
+**Only unprocessed material is extracted in a turn.** Existing adopted claims and
+questions remain comparison context. Successful no-claim material still records its
+analyzed evidence refs, so a new member does not trigger repeated extraction of all
+old bodies. Several arrivals while an owner is working can coalesce into the next
+wanted revision.
 
-## 4. Which steps use models, and which are code?
+**Current contribution is one version per source record.** Old and corrected
+attribution for the same source cannot be counted as independent corroboration.
+Source replacement can remove its former support/authority even when its new body
+yields no claim. Missing support judgment becomes unresolved, not invented refutation.
+Historical evidence remains available for attribution, not duplicate support.
 
-| Step | Actual owner | Boundary |
+Grounding still uses structured provider candidates, explicit cashtags and the
+existing collision/commodity rules in [gate.py](../../tracefold/news/events/gate.py)
+and [grounding.py](../../tracefold/news/events/grounding.py). The model identifies
+typed primary versus mentioned assets. An unknown asset type remains unknown;
+text grounding, catalogue existence and a verified executable native route are
+three different questions.
+
+## 4. Agent work, deterministic assembly and source authority
+
+| Stage | What the model may answer | What remains code-owned |
 | --- | --- | --- |
-| Extraction | [DspyExtractor](../../tracefold/news/updates/dspy_backend.py) | Native DSPy prediction of structured claims and optional hints, with source-language citations. |
-| Understanding | [SemanticAnalyzer](../../tracefold/news/updates/semantics.py), [NewsJudgments](../../tracefold/news/updates/judgment.py) | Bounded mode/phase/content, relation, support and other narrow judgments; cache by task/input/model identity. |
-| Assembly/adoption | [service.py](../../tracefold/news/updates/service.py), [storage](../../tracefold/news/storage/event_updates.py) | Carry forward unaffected knowledge, validate refs, create substantive revisions and conditionally advance the head. |
-| Reader planning | [notification.py](../../tracefold/news/updates/notification.py) | Named code-owned selection rules using grounded claim readings and actual delivered-body coverage. |
-| Card generation | [DspyCardComposer](../../tracefold/news/updates/dspy_backend.py) | Only for selected claims; it does not decide the Event's truth or Trading admission. |
-| Sending/publication | [ports](../../tracefold/news/updates/ports.py), [public.py](../../tracefold/news/updates/public.py) | Explicit durable identities, preflight, provider receipt and deterministic public facts. |
+| Extraction | Claims, supported conditions/timing, exact source-language citations and optional hints | Input scope, available refs, schema/citation validation and durable checkpoint identity |
+| Understanding | Mode, phase, content kind, relation, support, topic and other narrow questions | Task options, input/model cache key, bounded batches, uncertainty and adoption rules |
+| Reader planning | Actual sent-body coverage and other grounded narrow readings | Per-claim selection reasons, overlap handling, revision preflight and intent identity |
+| Card composition | Chinese explanation for the selected adopted claims | Selection itself, source refs, no-link/plain-text contract, frozen payload and send outcome |
 
-The default judgment route is generative. Optional `llm.news_judgment` uses the
-existing Jev/System One SDK and DSPy Choice/Noul adapter for narrow questions.
-Successful native answers are reused without a second-model vote; unavailable
-native batches can fall back to the corresponding generated judgment.
+These are native DSPy boundaries in `dspy_backend.py`, not the retired fixed
+three-predictor Program. The default judgments are generated. An optional
+`llm.news_judgment` route uses the existing Jev/System One SDK with DSPy Choice/Noul.
+Successful native answers are reused, not voted on by another model; an unavailable
+native batch can use its corresponding generated fallback. Cache identity includes
+the task, exact input and model identity.
 
-**There is no fixed three-call formula.** A turn can reuse checkpoints, require
-several judgment batches, produce no changed content, or generate no card. Actual
-calls depend on the supplied claims, prior comparisons, missing answers and cache.
-Shared stage deadlines and individual physical-call limits bound the work; their
-constants live in the service/judgment owners, not a separate config table here.
+**Physical call count is variable.** Checkpoint/cache hits, multiple claim/prior
+comparisons, missing answers, optional stored-source reading and whether any card
+is selected all affect calls. Stage and physical-call budgets remain in the service
+and judgment owners. A configured model name or a logical step count is not a receipt
+of how many requests actually ran.
 
-Core schema/citation errors fail the turn. Invalid optional hint/question proposals
-are diagnosed and omitted without destroying valid claims. Unknown comparisons
-can remain `possible_new`; an unknown mode remains unknown rather than becoming
-a fabricated positive decision. One optional additional read uses a supplied stored
-News target and a durable lineage reservation, **not arbitrary web browsing**.
+Generated requests use short local aliases mapped back to durable refs. Invalid
+core claims/citations fail. Invalid optional relationship/support/gap proposals
+are diagnosed and omitted without erasing valid claims or existing questions.
+Resolving an actually supplied question still requires grounded citations. One
+cached clarification of unknown mode belongs to understanding, not notification;
+unresolved mode remains unknown. Unknown comparisons can yield `possible_new`,
+not a fabricated catalyst.
 
-## 5. Version-safe adoption and the three state dimensions
+Assembly carries unaffected claims, implications and questions forward. Omission
+is not an instruction to retract a claim or close a question. Explicit grounded
+resolution or retirement of its underlying claim is needed. New documents use
+`news_event_update_v2`; original v1 documents retain their immutable identity.
+
+The optional extra read chooses only a supplied stored News target, with one durable
+reservation per lineage. It is not arbitrary browsing, a general tool loop, or an
+opportunity to reset its budget after a retry. Its failure cannot undo adoption.
+
+### Topics and cited source authority
+
+[updates/topics.py](../../tracefold/news/updates/topics.py) pins the IPTC Media Topics
+codebook used for navigation/presentation. An update may carry up to three known
+qcodes, without simultaneously selecting a broad parent and pinned descendant.
+Topics are contributed by active claims; retired/superseded claims do not keep a
+stale topic alive. Topics do not collapse the update into one semantic event type.
+
+[taxonomy.py](../../tracefold/news/taxonomy.py) now owns **cited source authority**,
+not the removed four-axis taxonomy. It uses structured source names/handles and
+HTTP hostname boundaries, not fuzzy text or a strategy ID. Values are
+`regulatory_filing`, `issuer_first_party`, `reputable_secondary` and `unknown`.
+Authority attaches to a cited Source, not a rank inherited by an entire Event.
+A source can establish that it made a claim without verifying a third-party
+allegation or future outcome. Independent support remains a separate relationship.
+
+## 5. Work progress and recovery
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: wanted input exceeds done
+    Pending --> Owned: claim + freeze input
+    Owned --> Waiting: bounded transient defer
+    Waiting --> Owned: due and claimable
+    Owned --> Completed: record consumed input
+    Owned --> Failed: owned final failure
+    Owned --> Expired: lease expires
+    Expired --> Pending: attempts remain
+    Expired --> Failed: final attempt exhausted
+```
+
+These labels explain work predicates; they are **not** a new `Event.status` enum.
+`news_semantic_work` owns wanted/done revision, owner token, attempts, due time and
+lease. The last valid EventUpdate head remains independent. Completing unchanged
+input advances progress without inventing another content revision.
+
+Checkpoint identity hashes the full frozen input and comparison context, not just
+body text. Extraction/understanding checkpoints and semantic observations are
+insert-only. Adoption checks the owned lease and head compare-and-swap. An older
+observation cannot move a newer head backward. A still-owned older revision may
+finish while newer work waits without spending or clearing the newer budget.
+
+Final-attempt exhaustion is exposed only after its lease expires, never while its
+worker still owns a valid lease. Current failure/defer writes for notification and
+card work also name the content revision; stale failures cannot postpone a successor.
+These predicates are in [event_updates.py](../../tracefold/news/storage/event_updates.py).
+
+| Independent dimension | What to inspect |
+| --- | --- |
+| Semantic input | Wanted/done revision, lease, attempts, next attempt and failure code |
+| Adopted knowledge | Immutable update observations/content and current head |
+| Notification planning | Current content revision, plan action/reasons and planner retry budget |
+| Card and external result | Exact intent, frozen payload, generation attempts and actual send ledger |
+
+No agent configured can leave durable input pending even when its wake was
+acknowledged. Janitor repairs due wake work and exposes crashed exhausted attempts.
+A semantic failure is not “no news value”; a plan with no selection is not an outage;
+a completed planner with a dead card is not a successful notification.
+
+`news retry-work` reopens only its exact failed target. Semantic retry takes the
+wanted input revision; notification retry takes the current exhausted content
+revision; card retry additionally requires a dead **unsent** intent. Any existing
+send ledger blocks card reopening, including terminal or ambiguous results.
+Card retry does not reset an independently exhausted planner. Prompt deployment
+does not trigger historical replay. Exact commands belong to
+[Operations](../OPERATIONS.md#3-news-identify-the-failed-version-before-retrying).
+
+## 6. Reader coverage, selection and actual delivery
+
+The planner compares claims against **actual sent bodies**. It recalls candidates
+using explicit antecedents and current claims/source-language quotes, then ranks
+receipts before applying the bounded model budget. An old leader title is only a
+fallback; the newest card from another Event can omit an earlier sent proposition.
+Similarity, selected IDs or an in-flight intent do not prove the reader was told.
+
+Only full coverage suppresses a proposition as already received. Partial coverage
+is not full; in-flight/ambiguous sends block overlap without being successful
+receipts. Commentary, promotion, forecast, schedule-only material, unsupported
+price reports, stale sources, watchlist exceptions and unknown mode have explicit
+claim-level reasons. Unknown mode is not an indefinite quality-approval queue.
+`key` is a presentation flag requiring the implemented change/topic/corroboration
+conditions, not proof of truth or permission to trade.
 
 ```mermaid
 sequenceDiagram
-    participant W as SemanticWorker
+    participant P as Notification planner
     participant D as PostgreSQL
-    participant A as NewsAgent
-    participant M as Model adapters
-    W->>D: Claim lease and freeze input together
-    D-->>W: Input revision, owner token, attempt and evidence
-    W->>A: Process exact owned input
-    A->>D: Read extraction and understanding checkpoints
-    A->>M: Execute only missing bounded model work
-    A->>D: Save insert-only checkpoints and observation
-    A->>D: Compare head and atomically adopt update,<br/>public outbox and notification work
-    alt A substantive update is adopted
-        A->>D: Mark owned input consumed
-    else No substantive change or a newer head already exists
-        A->>D: Finish owned input without moving head backward
+    participant C as CardComposer
+    participant S as Sender
+    P->>D: Read adopted update and reader revision
+    P->>P: Grounded per-claim coverage and selection
+    P->>D: Record plan and reserve exact intent
+    alt Claims selected and no frozen card yet
+        P->>C: Compose only selected claims and sources
+        C-->>P: Validated Chinese body
+        P->>D: Freeze payload and digest
     end
-    Note over A,D: Lease loss cannot mutate the successor's work.<br/>A failed latest input preserves the last valid head.
+    P->>D: Check head and reader revision before send
+    P->>S: Send outside transaction
+    S-->>P: sent, proved not_sent or ambiguous
+    P->>D: Persist exact provider outcome and body
 ```
 
-| Dimension | Stored meaning | Common misreading |
-| --- | --- | --- |
-| Input progress | Wanted/done revision, lease owner, attempt count, next attempt and failure | A semantic failure means the Event has no news value. |
-| Adopted knowledge | Immutable content revisions and one current head | Every processed input must produce a new head. |
-| Reader outcome | Plan, selected intent, card attempt and provider receipt | A completed plan proves the card was delivered. |
+The stable intent binds adopted content and selected refs. Sending rechecks the
+head and reader revision, including explicit cross-Event correction/replacement
+targets even when the card's own head stayed unchanged. Frozen copy is not silently
+rewritten during send.
 
-Checkpoint identity includes the complete frozen comparison context, not just the
-new body text. Head compare-and-swap prevents an older observation replacing a
-newer head. An owned older input may finish while newer evidence waits, without
-spending the newer revision's attempt budget. Unaffected claims/questions carry
-forward; omission is not an implicit retraction or question resolution.
+A proved retryable `not_sent` can reuse the intent under its existing budget.
+`ambiguous` is not blindly resent. Sender outcomes, persisted ledger states and
+queue states are different contracts: a terminal external failure may leave a
+`dead` queue record that is **not** eligible for unsent-card recovery because its
+send ledger already exists.
 
-Source-version selection prevents old/new attribution for the same record counting
-as two independent confirmations. A publisher's authority does not verify every
-allegation it quotes. Topic contributions follow active claims, not retired/superseded
-ones. New documents are v2; immutable v1 history retains its original identity.
+## 7. Example: commitment, repetition, execution and correction
 
-## 6. Reader coverage and side effects
+Suppose a source reports “Acme will open a plant if approval arrives.” The adopted
+claim retains the commitment, condition and supported time precision; it does not
+establish an operating plant. A second source repeating it can add attributable
+evidence without another catalyst or another fully covered notification.
 
-Notification planning compares the selected propositions against **actual sent
-bodies**. Related Events, claim refs and source-language quotes recall candidates;
-similarity or a list of selected claim IDs does not itself establish coverage.
-Only full coverage suppresses a claim as already told. In-flight or ambiguous
-sends block overlapping work without being counted as successful delivery.
+A later report that the plant actually opened can establish a real-world/phase
+change. An explicit retraction of the original report is instead a correction.
+News adopts these distinctions independently of card generation.
+[public.py](../../tracefold/news/updates/public.py) emits a `catalyst_delta` for
+qualifying changed claims or `source_update` for a published ancestor amendment.
+Restatement and unresolved `possible_new` are not manufactured fresh catalysts.
 
-Commentary, promotion, forecast, schedule-only material, unsupported price reports,
-watchlist matches and source evidence have named claim-level reasons. Unknown mode
-is visible, not an indefinite quality-approval gate. The `key` presentation mark
-requires the implemented content/topic/corroboration conditions; it is not a claim
-of fact certainty or permission to trade.
+[Trading](trading.md) records amendments before target selection, without a new
+Case or TTL. It can refuse a not-yet-submitted entry against a corrected cited
+proposition; the amendment is not an account-close command. This example is
+illustrative, not an observed news item or execution receipt.
 
-Selected claim refs and the adopted update define a stable `intent_id`. The sender
-rechecks both the Event head and reader revision, freezes the exact body/digest,
-and records the provider result. A proved `not_sent` can retry that intent;
-`ambiguous` is not blindly resent. Cross-Event corrections/replacements participate
-in this preflight even when the card's own Event head did not move.
+## 8. Verification entry points
 
-## 7. One hypothetical story across updates
-
-A source says “Acme will open a plant if approval arrives.” The claim must retain
-its commitment, condition and supported timing; it does not establish an operating
-plant. A second source merely repeating it may add evidence without a new catalyst.
-A later report that the plant actually opened can be a real-world/phase change.
-A source retracting the original claim is a correction, not another bullish entry.
-
-News adopts these differences before any card is composed. Trading receives a
-structured `catalyst_delta` for eligible new changes, or `source_update` for an
-amendment to earlier published knowledge. The latter records an amendment without
-a new Trigger/Case or refreshed TTL. See [Trading](trading.md) for final-entry
-invalidation and the explicit no-order-authority boundary.
-
-## 8. Failure diagnosis and verification
-
-Follow input revision → owned attempt/checkpoint → observation → adopted head →
-notification plan → intent/body → actual receipt. A model outage can leave durable
-work pending; an exhausted revision stays visibly failed. Janitor re-wakes due
-work. Deploying a new prompt does not automatically reset failed work or recompute
-historical adoptions. `news retry-work` requires the exact kind/revision and, for
-card work, the exact unsent failed intent; see [Operations](../OPERATIONS.md).
-
-Tests cover [input scope](../../tests/news/test_news_update_input_scope.py),
+[Input scope](../../tests/news/test_news_update_input_scope.py),
+[semantic worker](../../tests/news/test_news_semantic_worker.py),
 [revision ownership](../../tests/integration/test_news_revision_ownership.py),
 [update store](../../tests/integration/test_news_event_update_store.py),
 [semantic pipeline](../../tests/integration/test_news_semantic_pipeline.py),
-[notification behavior](../../tests/news/test_news_event_update_notifications.py),
+[notification decisions](../../tests/news/test_news_event_update_notifications.py),
 [delivery](../../tests/integration/test_news_update_delivery.py), and
-[Trading public updates](../../tests/integration/test_trading_analysis_public_updates.py).
-These do not establish model accuracy, delivery volume, cost reduction or profitability.
+[Trading amendments](../../tests/integration/test_trading_analysis_public_updates.py)
+exercise different boundaries. Test success does not establish model accuracy,
+production notification quality, provider completeness or trading profitability.

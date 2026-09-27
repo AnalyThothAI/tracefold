@@ -22,8 +22,8 @@ Run:
 
     ALL_PROXY= all_proxy= uv run python notebooks/oi_chain_backtest_2026_09_03.py
 
-Output: `docs/research/oi-chain-backtest-2026-09-03.json`, the receipt every table in
-`docs/research/oi-chain-backtest-2026-09-03.md` cites.
+Output: `notebooks/snapshots/oi-chain-backtest-2026-09-03.json`, the receipt every table in
+`the historical report in Git history` cites.
 """
 
 from __future__ import annotations

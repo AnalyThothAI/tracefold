@@ -96,7 +96,7 @@ source relationships, implications and open questions have separate contracts in
 [updates/contracts.py](../tracefold/news/updates/contracts.py). Omission is not an
 implicit retraction or question resolution.
 
-[News topics and source authority](NEWS_TAXONOMY.md) owns the retained IPTC topic
+[News topics and source authority](modules/news.md#topics-and-cited-source-authority) owns the retained IPTC topic
 codebook and source-authority classifier. The former four-axis taxonomy and
 Program `fact_kind` output are not the current API contract. Publisher authority
 is not independent verification of a quoted allegation. Unknown market identity
@@ -203,6 +203,5 @@ parallel compatibility model. Update the corresponding module guide when semanti
 change; a generated schema diff alone does not explain an ownership change.
 
 External public/provider compatibility decisions need explicit handling, but
-historical Issue prose is not an additional runtime contract. The
-[execution-owner history](adr/0002-trading-execution-owner-hard-cuts.md) exists to
-interpret old archives, not to keep retired execution paths alive.
+historical Issue prose is not an additional runtime contract. Historical execution layouts belong to the backup's matching Git revision,
+not another current owner or compatibility lane.

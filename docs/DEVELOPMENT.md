@@ -62,7 +62,7 @@ commit. Keep database callbacks bounded and SQL-focused. Provider, model, broker
 filesystem, and other network I/O happen outside transactions, without holding a
 connection. Prepare expensive validation, canonical serialization, and hashes before
 the callback; materialize richer objects after it. See
-[transaction ownership](ARCHITECTURE.md#5-transaction-and-recovery-boundaries).
+[transaction ownership](ARCHITECTURE.md#5-transactions-resource-completion-and-supervision).
 
 **SQL and migrations.** Parameterize values and compose dynamic identifiers with
 psycopg's SQL facilities. Reuse the actual production statement in query audits.
@@ -160,7 +160,7 @@ side-effect receipts and public Trading amendments. Passing them does not establ
 that a model understands real stories accurately or improves trading returns.
 
 [News](modules/news.md) owns the current Agent/notification path and its executable
-tests. [Review and calibration](modules/learning.md) owns the retained ReviewDesk
+tests. [Review and calibration](modules/review.md) owns the retained ReviewDesk
 and fixed card-judge measurement. The former three-predictor Program, GEPA campaigns,
 optimizer metrics and release/canary commands are removed; do not import their old
 modules or present historical campaign commands as current development workflow.
@@ -201,7 +201,6 @@ do not hand-edit a generated file to make a drift check green.
 | OpenAPI and frontend API types | Python HTTP schema; `make regen-contract` |
 | Database schema document | A disposable PostgreSQL database at Alembic head; `uv run python scripts/regen_db_schema.py` |
 | RabbitMQ definitions | News broker policy; `uv run python scripts/regen_rabbitmq_definitions.py` |
-| Tracked-file map | Git paths and Python AST; `uv run python scripts/regen_repository_map.py --write` |
 
 Set `TRACEFOLD_TEST_POSTGRES_DSN` to the isolated database for DB generation; without
 it the generator reads the operator config. The DB must already be at Alembic head.

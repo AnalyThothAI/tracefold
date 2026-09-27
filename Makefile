@@ -335,7 +335,6 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run python scripts/regen_rabbitmq_definitions.py --check
 	@uv run python scripts/sync_agent_router.py --check
 	@uv run python scripts/check_mandatory_docs_links.py
-	@uv run python scripts/regen_repository_map.py --check
 	@uv run python -m compileall tracefold tests
 
 check: check-static ## static checks plus local architecture/contract regression
@@ -822,9 +821,9 @@ serve-shell: ## open a shell in the Serve container
 workers-shell: ## open a shell in the Workers container
 	@docker compose exec workers /bin/sh
 
-.PHONY: docs-generated docs-db-schema docs-cli-help docs-rabbitmq-definitions docs-repository-map
+.PHONY: docs-generated docs-db-schema docs-cli-help docs-rabbitmq-definitions
 
-docs-generated: docs-db-schema docs-cli-help docs-rabbitmq-definitions docs-repository-map ## regenerate docs/generated/* and the broker policy document
+docs-generated: docs-db-schema docs-cli-help docs-rabbitmq-definitions ## regenerate docs/generated/* and the broker policy document
 
 docs-db-schema: ## regenerate docs/generated/db-schema.md (requires Postgres)
 	@uv run python scripts/regen_db_schema.py
@@ -834,6 +833,3 @@ docs-cli-help: ## regenerate docs/generated/cli-help.md
 
 docs-rabbitmq-definitions:
 	@uv run python scripts/regen_rabbitmq_definitions.py
-
-docs-repository-map: ## regenerate the tracked-file navigation map without services
-	@uv run python scripts/regen_repository_map.py --write

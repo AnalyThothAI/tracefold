@@ -5,8 +5,8 @@
 
 These packages supply infrastructure and compose the two business capabilities.
 They are not a third trading domain, a generic Agent scheduler or a second ledger.
-Use the [repository map](../generated/repository-map.md) for every tracked path and
-this guide for ownership and interaction.
+Use [Architecture](../ARCHITECTURE.md#2-package-ownership-and-source-navigation)
+for source navigation and this guide for ownership and interaction.
 
 ## 1. Configuration and process resources
 

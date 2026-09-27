@@ -11,21 +11,21 @@ window: "The #535 sealed window, unchanged: 310 OpenNews OI frames observed_at_m
   pairs, and 5-minute candles cut off at 1788475500000 (2026-09-03T22:45Z). Neither extended nor
   narrowed; the receipt records the per-file digests of the corpus it actually read."
 identity: "The frames, their pre_move_bps and their policy_pass flags are read from the committed
-  #535 receipt (docs/research/oi-chain-backtest-2026-09-03.json, sha in the output), which froze
+  #535 receipt (notebooks/snapshots/oi-chain-backtest-2026-09-03.json, sha in the output), which froze
   trading_admission_v8 / source_native_oi_smart_money_long_v4 / oi_signal_v1 / opennews_oi_source_v1.
   No policy or admission code is re-evaluated here, so no threshold can drift between the two runs."
 safety: "Offline. Reads two files: the committed #535 receipt, and the operator-owned candle cache
   under ~/.tracefold/research/oi_backtest_cache/ (overridable via TRACEFOLD_OI_BACKTEST_CACHE).
   No exchange endpoint, no PostgreSQL, no credential, no import of `tracefold`. Writes exactly one
-  file, docs/research/oi-exit-rules-replay-2026-09-07.json."
+  file, notebooks/snapshots/oi-exit-rules-replay-2026-09-07.json."
 ```
 
 Run:
 
     uv run python notebooks/research/oi_exit_rules_replay_2026_09_07.py
 
-Output: `docs/research/oi-exit-rules-replay-2026-09-07.json`, the receipt every table in
-`docs/research/oi-exit-rules-replay-2026-09-07.md` cites.
+Output: `notebooks/snapshots/oi-exit-rules-replay-2026-09-07.json`, the receipt every table in
+`the historical report in Git history` cites.
 
 Why the scoring machinery is copied rather than imported. `notebooks/oi_chain_backtest_2026_09_03.py`
 is the #535 script and stays untouched, but it no longer imports on `main`: #537 PR-3 (295f3fc5f)
@@ -65,8 +65,8 @@ WINDOW_END_MS = 1_788_471_261_000  # 2026-09-03T21:34:21Z, the last frame
 CANDLE_CUTOFF_MS = 1_788_475_500_000  # 2026-09-03T22:45:00Z; a bar counts only if it closed by then
 BAR_MS = 300_000
 
-SOURCE_RECEIPT_PATH = REPO_ROOT / "docs" / "research" / "oi-chain-backtest-2026-09-03.json"
-RECEIPT_PATH = REPO_ROOT / "docs" / "research" / "oi-exit-rules-replay-2026-09-07.json"
+SOURCE_RECEIPT_PATH = REPO_ROOT / "notebooks" / "snapshots" / "oi-chain-backtest-2026-09-03.json"
+RECEIPT_PATH = REPO_ROOT / "notebooks" / "snapshots" / "oi-exit-rules-replay-2026-09-07.json"
 CACHE_DIR = Path(os.environ.get("TRACEFOLD_OI_BACKTEST_CACHE", "~/.tracefold/research/oi_backtest_cache"))
 
 # --- Issue #604 §5, pre-registered ----------------------------------------

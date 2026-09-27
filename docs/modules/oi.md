@@ -59,9 +59,8 @@ five-minute interpretation to any news text mentioning OI.
 
 Percentages use integer basis points with decimal rounding; a 4.55% example becomes
 455 bps. The parser cannot establish whether dollar OI rose because of price,
-contract quantities or both. Nor does “OI Rise” establish a long trade. The
-[historical holdout](../research/oi-stage-a-holdout-2026-09-01.md) is retained as a
-research limitation, not the live policy or a promise of future performance.
+contract quantities or both. Nor does “OI Rise” establish a long trade. Historical OI studies do not establish a current entry rule. Trading requires
+its own frozen source and market evidence.
 
 ## 3. Grouping and notification policy
 

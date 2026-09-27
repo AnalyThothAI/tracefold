@@ -41,7 +41,8 @@ flowchart TD
 Import another feature through its public index or the sanctioned shell entrypoint,
 not its private files. Do not recreate retired `api/`, `store/` or `components/`
 roots. Source-boundary tests and lint enforce the actual allowed imports.
-The [repository map](generated/repository-map.md) indexes every current frontend file.
+The linked source directories are the live navigation map; individual files stay
+with their feature rather than a second generated catalog.
 
 ## 2. Data loading and freshness
 
