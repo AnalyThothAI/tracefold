@@ -286,18 +286,63 @@ class GeneratedJudgmentSignature(dspy.Signature):  # type: ignore[misc]
 _GENERATION_TRANSIENT = (dspy.LMRateLimitError, dspy.LMServerError, dspy.LMTimeoutError, dspy.LMTransportError)
 
 
+def _finish_reason(response: Any) -> str | None:
+    """Read only structured provider metadata; never inspect or log response prose."""
+    if isinstance(response, Mapping):
+        reason = response.get("finish_reason")
+        choices = response.get("choices")
+    else:
+        reason = getattr(response, "finish_reason", None)
+        choices = getattr(response, "choices", None)
+    if reason is not None:
+        return str(reason)
+    if choices:
+        return _finish_reason(choices[0])
+    return None
+
+
+def _parse_failure_code(exc: dspy.AdapterParseError, lm: Any, history_before: int) -> str:
+    history: Any = getattr(lm, "history", None)
+    if (
+        history is not None
+        and len(history) > history_before
+        and _finish_reason(history[-1].get("response")) == "length"
+    ):
+        return "news_generation_output_truncated"
+    if not str(exc.lm_response).strip():
+        return "news_generation_output_empty"
+    return "news_generation_output_schema_invalid"
+
+
+def _different_route(current: Any, fallback: Any) -> bool:
+    if isinstance(current, str) or isinstance(fallback, str):
+        return bool(current != fallback)
+
+    def shape(lm: Any) -> tuple[Any, ...]:
+        request = getattr(lm, "kwargs", {})
+        return (
+            type(lm),
+            getattr(lm, "model", None),
+            getattr(lm, "_structured_output", None),
+            *(request.get(key) for key in ("api_base", "max_tokens", "max_completion_tokens", "temperature")),
+        )
+
+    return shape(current) != shape(fallback)
+
+
 async def _generate(signature: Any, route: Any, **inputs: Any) -> Any:
     """Ask one generative signature on a configured route: the primary LM, then its declared fallback.
 
-    A factory returns one LM or an ordered route of them. Only a transient provider failure moves to
-    the next endpoint, which answers the same signature once; it is never a second vote. The caller's
-    stage deadline bounds the whole route.
+    A factory returns one LM or an ordered route of them. A transient provider failure
+    uses the declared fallback. A malformed response uses it only if the request route
+    materially differs; neither path is a second vote. The stage deadline bounds both.
     """
 
     lms = tuple(route) if isinstance(route, (tuple, list)) else (route,)
     if not lms:
         raise ConfigurationFault("news_generation_route_empty")
     for index, lm in enumerate(lms):
+        history_before = len(getattr(lm, "history", ()))
         try:
             # This is the normal generative signature, not a Jev probability signature
             # temporarily bound to a chat model. No global dspy.configure mutation.
@@ -307,16 +352,20 @@ async def _generate(signature: Any, route: Any, **inputs: Any) -> Any:
             if index + 1 == len(lms):
                 raise ProviderUnavailable(f"news_generation_{type(exc).__name__}") from exc
         except dspy.AdapterParseError as exc:
+            code = _parse_failure_code(exc, lm, history_before)
             log.warning(
-                "news_generation_output_contract_invalid",
+                "news_generation_output_invalid",
                 extra={
                     "signature": exc.signature.__name__,
                     "adapter": exc.adapter_name,
-                    "response_sample": str(exc.lm_response)[:2048],
+                    "failure_code": code,
+                    "response_chars": len(str(exc.lm_response)),
                     "output_fields": list(exc.signature.output_fields),
                 },
             )
-            raise ContractFault("news_generation_output_contract_invalid") from exc
+            if index + 1 < len(lms) and _different_route(lm, lms[index + 1]):
+                continue
+            raise ContractFault(code) from exc
     raise ProviderUnavailable("news_generation_route_exhausted")
 
 

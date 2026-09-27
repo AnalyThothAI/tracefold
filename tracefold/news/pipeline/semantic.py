@@ -156,13 +156,10 @@ class SemanticWorker:
             await self._provider_failed()
             return "deferred"
         except ContractFault as exc:
-            # A generated answer that breaks the contract is not a property of the Event: the same frozen
-            # input can come back valid (temperature 0 is not determinism on the production endpoint). It
-            # spends one attempt of the same bounded budget, and only the last one fails visibly.
+            # Reference/program faults cannot improve through another identical request.
+            # Generated truncation/schema failures already tried a meaningful configured fallback.
+            # Leave the revision visibly failed until new evidence changes its request shape.
             code = error_code(exc, default="news_semantic_contract_fault")
-            if not final_attempt:
-                await self.store.defer_semantic_event(lease, reason=code)
-                return "deferred"
             log.warning("news semantic turn failed event_id=%s code=%s", lease.event_id, code)
             await self.store.fail_semantic_event(lease, error_code=code)
             return "failed"

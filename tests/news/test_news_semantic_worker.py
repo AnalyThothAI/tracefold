@@ -206,19 +206,16 @@ def test_a_stage_deadline_is_a_provider_deferral_with_a_bounded_code() -> None:
     assert store.deferred == [("ev-1", "news_provider_unavailable:TimeoutError")]
 
 
-def test_a_contract_fault_spends_an_attempt_and_only_the_last_attempt_fails() -> None:
-    # 2026-09-26 replay: the production endpoint returned a contract-invalid extraction for a frozen input
-    # that came back valid on re-run. One malformed answer is not a property of the Event.
-    fault = ContractFault("news_generation_output_contract_invalid")
-    store = FakeStore(lease(attempts=1), lease(attempts=3))
-    subject = worker(store, FakeAgent(fault, fault))
-
+@pytest.mark.parametrize(
+    "code",
+    ["news_generation_output_truncated", "news_generation_output_schema_invalid", "news_citation_not_in_frozen_source"],
+)
+def test_request_shape_and_reference_faults_fail_without_spending_three_attempts(code: str) -> None:
+    store = FakeStore(lease(attempts=1))
+    subject = worker(store, FakeAgent(ContractFault(code)))
     asyncio.run(subject.handle(wake()))
-    assert store.deferred == [("ev-1", "news_generation_output_contract_invalid")]
-    assert store.failed == []
-
-    asyncio.run(subject.handle(wake()))
-    assert store.failed == [("ev-1", "news_generation_output_contract_invalid")]
+    assert store.deferred == []
+    assert store.failed == [("ev-1", code)]
 
 
 @pytest.mark.parametrize(
@@ -463,12 +460,58 @@ def test_a_route_that_fails_on_every_endpoint_is_provider_unavailable(monkeypatc
     assert asked == ["primary", "fallback"]
 
 
-def test_a_parse_failure_is_a_contract_fault_and_never_a_second_vote(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_parse_failure_uses_a_distinct_configured_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     parse_failure = dspy.AdapterParseError("adapter", dspy.Signature("question -> answer"), "bad")
     script = {"primary": parse_failure, "fallback": "answer"}
-    with _scripted(monkeypatch, script) as asked, pytest.raises(ContractFault):
-        asyncio.run(dspy_backend._generate(object(), ("primary", "fallback")))
+    with _scripted(monkeypatch, script) as asked:
+        assert asyncio.run(dspy_backend._generate(object(), ("primary", "fallback"))) == "answer"
+    assert asked == ["primary", "fallback"]
+
+
+@pytest.mark.parametrize(
+    ("response", "code"),
+    [("bad", "news_generation_output_schema_invalid"), ("", "news_generation_output_empty")],
+)
+def test_a_parse_failure_with_the_same_route_fails_once(
+    monkeypatch: pytest.MonkeyPatch, response: str, code: str
+) -> None:
+    parse_failure = dspy.AdapterParseError("adapter", dspy.Signature("question -> answer"), response)
+    with (
+        _scripted(monkeypatch, {"primary": parse_failure}) as asked,
+        pytest.raises(ContractFault, match=code),
+    ):
+        asyncio.run(dspy_backend._generate(object(), ("primary", "primary")))
     assert asked == ["primary"]
+
+
+def test_parse_failure_uses_finish_metadata_and_never_logs_raw_content(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class LM:
+        model = "model"
+        _structured_output = "prompt_json"
+
+        def __init__(self) -> None:
+            self.kwargs = {"api_base": "https://provider.test", "max_tokens": 4000}
+            self.history: list[dict[str, Any]] = []
+
+    lm = LM()
+    secret = "source phrase that must not appear in logs"
+    failure = dspy.AdapterParseError("adapter", dspy.Signature("question -> answer"), secret)
+
+    class Predict:
+        def __init__(self, signature: Any) -> None:
+            del signature
+
+        async def acall(self, *, lm: LM, **inputs: Any) -> Any:
+            del inputs
+            lm.history.append({"response": {"choices": [{"finish_reason": "length"}]}})
+            raise failure
+
+    monkeypatch.setattr(dspy_backend.dspy, "Predict", Predict)
+    with pytest.raises(ContractFault, match="news_generation_output_truncated"):
+        asyncio.run(dspy_backend._generate(object(), lm))
+    assert secret not in caplog.text
 
 
 def test_a_single_lm_is_a_route_of_one(monkeypatch: pytest.MonkeyPatch) -> None:
