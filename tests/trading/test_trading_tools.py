@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from tests.trading.news_public_updates import first_report
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.trading_tools import CaseToolContext
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
@@ -151,5 +152,34 @@ def test_event_context_adds_citable_same_asset_fact_with_bounded_text(tmp_path: 
         assert context.evidence_catalog[ref]["source_ref"] == context.context_artifacts[ref]
         excerpt = json.loads(await context.read_evidence(ref, 0, 120))
         assert excerpt["status"] == "ok"
+
+    asyncio.run(run())
+
+
+def test_event_context_reads_a_news_catalyst_as_its_public_text(tmp_path: Path) -> None:
+    async def run() -> None:
+        now = int(time.time() * 1_000)
+        _, catalyst = first_report(
+            event_id="event-sol", first_available_at_ms=now - 40_000, completed_at_ms=now - 35_000
+        )
+        context = _context(
+            tmp_path,
+            _Market(),
+            history_rows=(
+                {
+                    "trigger_id": "older-catalyst",
+                    "source_revision": catalyst.content_revision,
+                    "first_visible_at_ms": now - 30_000,
+                    "source_observed_at_ms": catalyst.first_available_at_ms,
+                    "payload": catalyst.model_dump(mode="json"),
+                },
+            ),
+        )
+        result = json.loads(await context.get_event_context("swap fee", 60))
+        assert result["status"] == "ok"
+        assert result["events"][0]["text"] == catalyst.text
+        ref = result["events"][0]["ref"]
+        assert context.evidence_catalog[ref]["values"] == {"text": catalyst.text}
+        assert context.evidence_catalog[ref]["event_at_ms"] == now - 40_000
 
     asyncio.run(run())

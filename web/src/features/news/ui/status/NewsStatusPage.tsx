@@ -384,7 +384,9 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
         <KeyValue>
           <KeyValueRow k="state" v={status.state} />
           <KeyValueRow k="workers_state" v={status.workers_state ?? "—"} />
-          <KeyValueRow k="triage_model" v={status.pipeline.triage_model ?? "—"} />
+          <KeyValueRow k="extraction_model" v={status.pipeline.extraction_model ?? "—"} />
+          <KeyValueRow k="judgment_model" v={status.pipeline.judgment_model ?? "—"} />
+          <KeyValueRow k="card_model" v={status.pipeline.card_model ?? "—"} />
           <KeyValueRow k="triage_p50_ms" v={optionalDuration(status.pipeline.triage_p50_ms)} />
           <KeyValueRow k="triage_p95_ms" v={optionalDuration(status.pipeline.triage_p95_ms)} />
           <KeyValueRow

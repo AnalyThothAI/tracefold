@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gzip
 import json
-from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,17 +9,14 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support import news_novelty_sequences as sequences
-from tests.support.news_judgment import scored_judgment
+from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.learning.evaluation_history import ArmState, EvaluationReaderHistory, Receipt
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.market_review.instrument_storage import InstrumentsRepository
+from tracefold.news.models import TriageVerdict, base_symbol
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
-from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
-from tracefold.news.reader_history import build_reader_history
 from tracefold.news.similarity import trigram_similarity
-from tracefold.news.told_context import ToldLedgerSnapshot
 
 pytestmark = pytest.mark.integration
 
@@ -75,7 +71,7 @@ def _persist_triage_verdict(
     symbol: str,
     direction: str = "bearish",
     headline_zh: str = "阿里巴巴配售新股",
-    policy_version: str = TRIAGE_POLICY_VERSION,
+    policy_version: str = LEGACY_TRIAGE_POLICY_VERSION,
     final_decision: str = "push",
     throttled_by: str | None = None,
 ) -> None:
@@ -92,7 +88,7 @@ def _persist_triage_verdict(
         headline_zh=headline_zh,
         why_zh="",
     )
-    judgment = scored_judgment(verdict)
+    judgment = legacy_judgment(verdict)
     runtime_manifest_sha = "b" * 64
     trace = {
         "judgment_contract_version": judgment.judgment_contract_version,
@@ -101,7 +97,7 @@ def _persist_triage_verdict(
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "editorial_sha256": judgment.editorial.editorial_sha256,
         "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_version": LEGACY_PROGRAM_VERSION,
         "program_sha256": "a" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
@@ -120,11 +116,11 @@ def _persist_triage_verdict(
         override_rule="fact_kind_state_change",
         throttled_by=throttled_by,
         verdict=verdict.model_dump(mode="json"),
-        model_editorial=judgment.editorial.model_dump(mode="json"),
+        model_editorial=judgment.editorial.document,
         judgment_sha256=judgment.scored_judgment_sha256,
         runtime_manifest_sha=runtime_manifest_sha,
         model="test",
-        program_version=SEMANTIC_PROGRAM_VERSION,
+        program_version=LEGACY_PROGRAM_VERSION,
         program_sha256="a" * 64,
         degraded=False,
         error_code=None,
@@ -134,6 +130,13 @@ def _persist_triage_verdict(
         focus_fact_id=str(evidence["focus_fact_id"]),
         now_ms=at_ms - 1,
     )
+
+
+def _canonical_assets(repos, symbols: list[str]) -> list[str]:
+    """The Event-asset ledger's base symbols: an alias resolves to its base, anything else is itself."""
+
+    aliases = InstrumentsRepository(repos.news.conn).alias_map()
+    return sorted({aliases.get(symbol, aliases.get(base_symbol(symbol), base_symbol(symbol))) for symbol in symbols})
 
 
 def _persist_sent_triage_card(
@@ -161,7 +164,7 @@ def _persist_sent_triage_card(
         for key in ("storyline_key", "comparison_title", "comparison_fingerprint", "dedupe_family", "grounded_assets")
     }
     bound.update({key: verdict["verdict"].get(key) for key in ("direction", "headline_zh", "why_zh", "assets")})
-    bound["canonical_assets"] = list(EvaluationReaderHistory(repos.news.conn).canonical_assets([symbol]))
+    bound["canonical_assets"] = _canonical_assets(repos, [symbol])
     assert (
         repos.news.begin_delivery(
             event_id=event_id, kind="first", card={}, now_ms=at_ms - 1, history_context_json=json.dumps(bound)
@@ -297,33 +300,9 @@ def test_sent_asset_binding_survives_later_grounding_removal(conn) -> None:
         conn.execute("UPDATE news_events SET grounded_assets='[]'::jsonb WHERE event_id=%s", (prior,))
 
     production = repos.news.reader_history(event_id=current, now_ms=now_ms)
-    evaluator = build_reader_history(
-        (
-            {
-                "event_id": prior,
-                "at_ms": sent_at_ms,
-                "storyline_key": "asset:OTHER",
-                "comparison_title": "unrelated issuer routine notice",
-                "comparison_fingerprint": "prior-fingerprint",
-                "dedupe_family": "general",
-                "grounded_assets": [],
-                "assets": ["BABA"],
-                "canonical_assets": ["BABA"],
-                "direction": "bearish",
-                "headline_zh": "无关发行人提交例行文件",
-                "why_zh": "",
-            },
-        ),
-        now_ms=now_ms,
-        comparison_fingerprint="current-fingerprint",
-        canonical_assets=("BABA",),
-    )
 
-    assert (
-        [r.event_id for r in production.targeted_told_rows]
-        == [r.event_id for r in evaluator.targeted_told_rows]
-        == [prior]
-    )
+    # The sent card keeps the asset binding it was delivered with, though its Event lost the tag since.
+    assert [r.event_id for r in production.targeted_told_rows] == [prior]
     conn.commit()
 
 
@@ -486,13 +465,13 @@ def test_title_similarity_band_recalls_a_same_story_card_the_recent_cap_and_targ
     similar = [(row.event_id, row.scope, row.reason) for row in history.similar_told_rows]
     assert similar[0] == (prior, "targeted", "title_similarity")
     # The band admits any shared trigram (English function words share a few), so the unrelated card may be in
-    # it; what matters is that it ranks below the same-story card and that the selector's tiers see the score.
+    # it; what matters is that it ranks below the same-story card.
     ranked = [row.event_id for row in history.similar_told_rows]
     assert unrelated_old not in ranked or ranked.index(unrelated_old) > ranked.index(prior)
     # The band never spends a slot on a row the recent ledger already carries.
     assert not {row.event_id for row in history.similar_told_rows} & {row.event_id for row in history.recent_seen_rows}
-    told = [row.as_told_row() for row in history.told_source_rows]
-    assert told[0]["event_id"] == prior and len(told) == len(history.recent_seen_rows) + len(similar)
+    told = history.told_source_rows
+    assert told[0].event_id == prior and len(told) == len(history.recent_seen_rows) + len(similar)
 
     # The pure twin agrees with PostgreSQL on the number it ranked by.
     titles = conn.execute(
@@ -508,7 +487,7 @@ def test_title_similarity_band_recalls_a_same_story_card_the_recent_cap_and_targ
 
 def test_trigram_similarity_is_pg_trgm_similarity_on_the_calibration_titles(conn) -> None:
     """`assemble_reader_history` re-ranks the SQL band in Python. Equality of the two numbers, on every title pair
-    of the 2026-09-01 calibration set that shares a trigram, is what lets the evaluator replay production."""
+    of the 2026-09-01 calibration set that shares a trigram, is what keeps the Python ranking the SQL one."""
 
     with gzip.open(CALIBRATION, "rt", encoding="utf-8") as handle:
         doc = json.load(handle)
@@ -570,17 +549,13 @@ def _sequence_events(repos, sequence_id: str) -> list[dict[str, object]]:
 
 
 @pytest.mark.parametrize("sequence_id", ["visa_onchain_credit", "cp_listing_three_venues"])
-def test_sql_and_replayed_history_select_the_same_told_candidates_for_a_frozen_sequence(conn, sequence_id: str) -> None:
-    """One reader ledger, two readers of it (#651 §6.3).
-
-    Production asks PostgreSQL for the bounded bands; CandidateEvaluator replays receipts through
-    `EvaluationReaderHistory`, which is the same `build_reader_history` over rows `seed_receipts` projected.
-    A sequence replay is evidence about what the reader was shown only if those two agree on the rows *and*
-    on the visible indices the model cites, because `restates` is an index into the second list.
+def test_sql_history_holds_exactly_the_receipts_of_a_frozen_sequence(conn, sequence_id: str) -> None:
+    """The reader ledger PostgreSQL returns for one frozen production chain (#651 §6.3, §12).
 
     The clocks are the frozen ones: each card's receipt settles when it actually settled, and the ledger is
-    read at the last card's own triage stamp. A queued delivery and a failed one also exist in the database
-    and must appear in neither list: a receipt is proof the reader received a card, and neither of those is.
+    read at the last card's own stamp. A queued delivery, a failed one and one that settles after the read
+    clock also exist in the database and must not appear: a receipt is proof the reader had the card at
+    that stamp, and none of those is.
     """
 
     repos = repositories_for_connection(conn)
@@ -639,59 +614,15 @@ def test_sql_and_replayed_history_select_the_same_told_candidates_for_a_frozen_s
 
     delivered = [row for row in admitted[:-1] if row["settled_at_ms"] is not None]
     delivered_ids = [str(row["event_id"]) for row in delivered]
-    current_event = conn.execute(
-        "SELECT comparison_title, comparison_fingerprint, dedupe_family, grounded_assets"
-        "  FROM news_events WHERE event_id = %s",
-        (str(current["event_id"]),),
-    ).fetchone()
-    assert current_event is not None
 
     production = repos.news.reader_history(event_id=str(current["event_id"]), now_ms=now_ms)
-    history = EvaluationReaderHistory(conn)
-    state = ArmState(deque(Receipt(**receipt) for receipt in history.seed_receipts(from_ms=now_ms)))
-    replayed = history.build({"snapshot": {"card": dict(current_event)}, "opened_at_ms": now_ms}, state)
-
-    sql_rows = [row for row in production.told_source_rows]
-    replay_rows = [row for row in replayed.told_source_rows]
+    sql_ids = [row.event_id for row in production.told_source_rows]
     # A card the policy dropped is never a receipt, so the CP chain's middle step contributes no row.
     assert [str(row["case"]) for row in admitted[:-1] if row["settled_at_ms"] is None] == (
         ["cp_upbit_cross_channel"] if sequence_id == "cp_listing_three_venues" else []
     )
     assert delivered_ids
-
-    # The queued and the failed delivery are absent from both, for the same reason in both: `state='sent'`
-    # with a settle stamp is the whole definition of a receipt.
-    for label in ("queued", "failed"):
-        assert excluded[label] not in {row.event_id for row in sql_rows}, label
-        assert excluded[label] not in {receipt.event_id for receipt in state.receipts}, label
-
-    # The row the two sides used to read differently, and the reason `READER_HISTORY_CONTRACT` gained its
-    # `read_clock` bound (#651 §12): a delivery that settles *after* the read clock. `seed_receipts` bounds
-    # the look-back at both ends, and the SQL bands now do too, so neither side holds it. Production is
-    # unaffected -- it reads at the wall clock, where nothing has settled in the future -- but a replay
-    # reads at a frozen stamp, and there the open band made the SQL history a ledger the reader never had.
-    assert excluded["future"] not in {row.event_id for row in sql_rows}
-    assert excluded["future"] not in {receipt.event_id for receipt in state.receipts}
-
-    sql_ids = [row.event_id for row in sql_rows]
-    assert sql_ids == [row.event_id for row in replay_rows]
+    for label in ("queued", "failed", "future"):
+        assert excluded[label] not in sql_ids, label
     assert set(delivered_ids) | set(fillers) == set(sql_ids)
-
-    indexed = [
-        [
-            (entry.i, entry.event_id)
-            for entry in ToldLedgerSnapshot.select(
-                [row.as_told_row() for row in rows],
-                now_ms=now_ms,
-                storyline_key=sequences.storyline_key(str(current["case"])),
-                symbols=[str(current["symbol"])],
-                comparison_title=str(current_event["comparison_title"] or ""),
-                exclude_event_id=str(current["event_id"]),
-            ).entries
-        ]
-        for rows in (sql_rows, replay_rows)
-    ]
-    assert indexed[0] == indexed[1]
-    assert len(indexed[0]) == len(sql_ids)
-    assert set(delivered_ids) <= {event_id for _, event_id in indexed[0]}
     conn.commit()

@@ -7,7 +7,7 @@ import { ChevronRight, X } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { useNewsEventWithToken, useNewsQuotesWithToken } from "../../api/newsQueries";
-import { clockTime, displayAssetRefs, displayAssets } from "../../model/newsLabels";
+import { clockTime, displayAssetRefs, displayAssets, eventHeadline } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
@@ -45,7 +45,8 @@ export function NewsEventDrawer({
   const referrer = useRouteReferrer();
   const detail = eventId ? query.data : undefined;
   const event = detail?.event;
-  const triage = detail?.triage;
+  const legacy = detail?.legacy_verdict;
+  const update = detail?.event_update;
   const assets = displayAssetRefs(event?.grounded_assets ?? [], event?.assets);
   const quotesQuery = useNewsQuotesWithToken(
     token,
@@ -55,14 +56,20 @@ export function NewsEventDrawer({
     assets.some((asset) => asset.symbol === quote.requested_symbol),
   );
   const quotesBySymbol = Object.fromEntries(quotes.map((quote) => [quote.requested_symbol, quote]));
+  // The primary asset the judgment named: an adopted claim's own asset, else a legacy verdict's.
+  const judgedAssets = update
+    ? update.claims.filter((claim) => !claim.retired).flatMap((claim) => claim.assets ?? [])
+    : (legacy?.assets ?? []);
   const primaryTag = displayAssets(
-    (triage?.assets ?? []).filter((asset) => asset.role === "primary").map((asset) => asset.symbol),
+    judgedAssets.filter((asset) => asset.role === "primary").map((asset) => asset.symbol),
   )[0];
   const primarySymbol = primaryTag
     ? (assets.find((asset) => displayAssets([asset.symbol, asset.base_symbol]).includes(primaryTag))
         ?.base_symbol ?? primaryTag)
     : undefined;
-  const headline = triage?.headline_zh?.trim() || event?.leader_title || "事件";
+  const headline = event
+    ? eventHeadline({ leader_title: event.leader_title, legacy_verdict: legacy, update })
+    : "事件";
   return (
     <Drawer
       actions={
@@ -104,7 +111,7 @@ export function NewsEventDrawer({
             <h2 className="news-drawer-headline">{headline}</h2>
             <p className="news-drawer-original">{event.leader_title}</p>
             {assets.length ? <NewsAssetChips assets={assets} quotes={quotesBySymbol} /> : null}
-            {triage?.why_zh ? <p className="news-drawer-why">{triage.why_zh}</p> : null}
+            {legacy?.why_zh ? <p className="news-drawer-why">{legacy.why_zh}</p> : null}
             <h3 className="news-drawer-section-title">判定链路</h3>
             <NewsEventDrawerTimeline steps={detail.timeline ?? []} />
             <footer className="news-drawer-footer">

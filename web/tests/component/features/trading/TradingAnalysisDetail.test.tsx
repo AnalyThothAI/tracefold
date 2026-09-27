@@ -107,6 +107,29 @@ it.each([
     source: { kind: "catalyst", title: "不应使用的别名" },
     expected: "catalyst",
   },
+  // #706: a News EventUpdate source has claims and a deterministic text, and no headline at all.
+  {
+    source: {
+      kind: "catalyst_delta",
+      claims: [{ statement: "Agency announces 25% tariff on steel imports." }],
+      text: "claim: Agency announces 25% tariff on steel imports.",
+      title: "不应使用的别名",
+    },
+    expected: "Agency announces 25% tariff on steel imports.",
+  },
+  {
+    source: {
+      kind: "catalyst_delta",
+      claims: [],
+      text: `${"关".repeat(170)}`,
+      title: "不应使用的别名",
+    },
+    expected: `${"关".repeat(160)}…`,
+  },
+  {
+    source: { kind: "oi", title: "不应使用的别名" },
+    expected: "oi",
+  },
 ])("uses public source text ($expected)", async ({ source, expected }) => {
   server.use(
     http.get(/.*\/api\/trading\/cases\/case-hype\/replay$/, () =>

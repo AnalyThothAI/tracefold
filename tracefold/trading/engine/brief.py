@@ -38,7 +38,13 @@ def build_brief(
     plans: tuple[EntryPlan, ...],
     trigger_context: dict[str, Any] | None = None,
     typed_evidence: dict[str, Any] | None = None,
+    source_amendments: tuple[dict[str, Any], ...] = (),
 ) -> AnalystBrief:
+    """`source_amendments` are recorded News corrections and evidence changes to the source's own claims.
+
+    They inform the analysis; they grant or revoke nothing. Entry refusal on a retired claim is the
+    storage-owned last check before submission, not a brief field.
+    """
     if any(
         plan.asset_id != target_asset_id or plan.instrument_semantics_digest != instrument_semantics_digest
         for plan in plans
@@ -52,6 +58,7 @@ def build_brief(
         "instrument_semantics_digest": instrument_semantics_digest,
         "source_fact": source_fact,
         "same_asset_source_history": source_history,
+        "source_amendments": source_amendments,
         "evidence": evidence,
         "citable_evidence_ids": sorted(ref for ref, item in evidence.items() if is_citable_evidence(item)),
         "features": features,

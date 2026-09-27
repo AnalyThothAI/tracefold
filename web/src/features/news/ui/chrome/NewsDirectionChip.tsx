@@ -1,4 +1,4 @@
-import type { NewsTriageSummary } from "../../api/newsQueries";
+import type { NewsLegacyVerdict } from "../../api/newsQueries";
 import { directionGlyph, directionTone } from "../../model/newsLabels";
 
 import "./newsDirection.css";
@@ -13,25 +13,27 @@ import "./newsDirection.css";
  *
  * `direction_zh` and `fact_kind_zh` are server-owned copy; this only picks the tone and the glyph. A
  * verdict written before `news_judgment_v3` carries no fact kind, and the second span is simply absent.
+ * Only a legacy verdict has a direction (#706): an EventUpdate keeps each claim's own reading and never
+ * collapses them into one market call, so a News Agent Event renders no chip.
  */
 export function NewsDirectionChip({
   size = "sm",
-  triage,
+  verdict,
   withStrength = true,
 }: {
   size?: "sm" | "lg";
-  triage: NewsTriageSummary;
+  verdict: NewsLegacyVerdict;
   withStrength?: boolean;
 }) {
-  if (!triage.direction_zh) return null;
-  const strength = withStrength ? triage.fact_kind_zh : "";
+  if (!verdict.direction_zh) return null;
+  const strength = withStrength ? verdict.fact_kind_zh : "";
   return (
     <span className="news-direction-pair">
-      <span className="news-direction" data-dir={directionTone(triage.direction)} data-size={size}>
+      <span className="news-direction" data-dir={directionTone(verdict.direction)} data-size={size}>
         <span aria-hidden className="news-direction-glyph">
-          {directionGlyph(triage.direction)}
+          {directionGlyph(verdict.direction)}
         </span>
-        {triage.direction_zh}
+        {verdict.direction_zh}
       </span>
       {strength ? <span className="news-direction-strength">{strength}</span> : null}
     </span>

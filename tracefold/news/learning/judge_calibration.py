@@ -1,22 +1,19 @@
-"""Does the metric judge actually answer the two questions the explanation ruler asks it (#651 §7.3)?
+"""Does the card judge actually answer the two questions it is asked (#651 §7.3)?
 
-The explanation target's score is `F1(evidence_support, key_facts_covered)`, and both halves are a model's
-opinion. That is a defensible ruler only while the model's opinion tracks the perturbation it is supposed
-to catch, and nothing in the release path measures whether it does: a judge that answered `supported=True`
-to everything would publish a rising explanation score on a Program that got worse, and every gate
-downstream would read it as evidence.
+Both questions -- is every claim of a card supported by the evidence, and which must-keep facts does it
+still state -- are a model's opinion. That opinion is worth reading only while it tracks the perturbation it
+is supposed to catch: a judge that answered `supported=True` to everything would report every card as
+faithful.
 
 This harness is the measurement. A small fixed corpus of synthetic `(evidence, card)` pairs spans the
-seven ways a *why* goes wrong or stays right — entity swap, number/unit swap, condition removed,
-plan presented as executed, unsupported cause added, faithful paraphrase (which must pass), and a
-supported strong conclusion (which must also pass) — each with the verdict a competent reader would give.
-The last two classes are not decoration: a judge that catches every perturbation by calling everything
-unsupported is useless in exactly the opposite way, and they are the only cases that can see it.
+seven ways a card goes wrong or stays right -- entity swap, number/unit swap, condition removed, plan
+presented as executed, unsupported cause added, faithful paraphrase (which must pass), and a supported
+strong conclusion (which must also pass) -- each with the verdict a competent reader would give. The last
+two classes are not decoration: a judge that catches every perturbation by calling everything unsupported
+is useless in exactly the opposite way, and they are the only cases that can see it.
 
-The command that runs it against a real model writes a receipt, and the metric receipt records that
-receipt's sha when one is supplied, so a run's explanation numbers carry the evidence that the judge
-behind them was checked. Nothing here gates anything: it is a measurement an operator reads before
-spending a run, exactly as `calibrate_taxonomy` is for the codebook.
+The command that runs it against a real model writes a receipt. Nothing here gates anything: it is a
+measurement an operator reads before trusting the judge's answers.
 """
 
 from __future__ import annotations
@@ -30,9 +27,10 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
+from ..updates.notification import CardCopy
 
-CALIBRATION_RECEIPT_SCHEMA: Final = "tracefold.news.judge_calibration_receipt.v1"
-CALIBRATION_CASES_SCHEMA: Final = "tracefold.news.judge_calibration_cases.v1"
+CALIBRATION_RECEIPT_SCHEMA: Final = "tracefold.news.judge_calibration_receipt.v2"
+CALIBRATION_CASES_SCHEMA: Final = "tracefold.news.judge_calibration_cases.v2"
 
 PerturbationClass = Literal[
     "entity_swap",
@@ -68,7 +66,7 @@ def _packaged_cases_text() -> str:
 
 
 class JudgeCalibrationCase(BaseModel):
-    """One synthetic (evidence, card) pair and the verdict a competent reader would give it."""
+    """One synthetic (evidence, frozen-shape card) pair and the verdict a competent reader would give it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -80,17 +78,18 @@ class JudgeCalibrationCase(BaseModel):
     expected_supported: bool
     key_facts: tuple[str, ...] = ()
     expected_key_facts_covered: tuple[bool, ...] = ()
-    forbidden_claims: tuple[str, ...] = ()
-    expected_forbidden_asserted: tuple[bool, ...] = ()
 
     @model_validator(mode="after")
     def answers_match_their_questions(self) -> JudgeCalibrationCase:
         if len(self.key_facts) != len(self.expected_key_facts_covered):
             raise ValueError("news_judge_calibration_key_fact_answers_mismatch")
-        if len(self.forbidden_claims) != len(self.expected_forbidden_asserted):
-            raise ValueError("news_judge_calibration_forbidden_answers_mismatch")
         if self.perturbation in MUST_PASS_CLASSES and not self.expected_supported:
             raise ValueError("news_judge_calibration_must_pass_case_expects_failure")
+        return self
+
+    @model_validator(mode="after")
+    def card_is_the_frozen_reader_shape(self) -> JudgeCalibrationCase:
+        CardCopy.model_validate(self.card)
         return self
 
     @property
@@ -125,7 +124,7 @@ def run_judge_calibration(
 
     An unavailable answer is counted as unavailable and never as a miss: a judge that could not be reached
     has not disagreed with anything, and scoring it as wrong would make a provider outage look like a
-    miscalibrated model — the same rule the explanation ruler follows on a live run.
+    miscalibrated model.
     """
 
     corpus = tuple(cases if cases is not None else load_calibration_cases())
@@ -213,7 +212,7 @@ def run_judge_calibration(
 
 
 def calibration_receipt_sha256(receipt: Mapping[str, Any]) -> str:
-    """The address of one calibration measurement, for the metric receipt to point at."""
+    """The address of one calibration measurement."""
 
     if str(receipt.get("schema") or "") != CALIBRATION_RECEIPT_SCHEMA:
         raise ValueError("news_judge_calibration_receipt_schema_unknown")

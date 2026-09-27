@@ -12,7 +12,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from tracefold.trading.engine.contracts import ExitPlan, Frozen
-from tracefold.trading.engine.features import catalyst_text_values
+from tracefold.trading.engine.features import CATALYST_SOURCE_KIND, catalyst_text_values
 
 
 class Candidate(Frozen):
@@ -76,7 +76,7 @@ def build_event_price_candidates(
     source_first_visible_at_ms: int,
     perp_rows: tuple[dict[str, Any], ...],
 ) -> tuple[Candidate, ...]:
-    if source_fact.get("kind") not in ("oi", "catalyst"):
+    if source_fact.get("kind") not in ("oi", "catalyst", CATALYST_SOURCE_KIND):
         raise ValueError("strategy_source_kind_invalid")
     if len(perp_rows) < LOOKBACK_CLOSED_BARS + 1:
         raise ValueError("strategy_closed_bar_history_incomplete")
@@ -108,6 +108,12 @@ def build_event_price_candidates(
     )
     if source_fact["kind"] == "oi":
         source_ready = all(source_fact.get(key) is not None for key in ("oi_change_bps", "measurement_definition"))
+    elif source_fact["kind"] == "catalyst":
+        # Archived pre-#706 snapshots froze the retired headline/why catalyst; this offline
+        # report reads them as recorded. Live Trading has no such reading path.
+        source_ready = any(
+            isinstance(source_fact.get(key), str) and source_fact[key].strip() for key in ("headline", "why")
+        )
     else:
         source_ready = bool(catalyst_text_values(source_fact))
     if source_first_visible_at_ms <= 0:

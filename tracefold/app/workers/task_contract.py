@@ -68,7 +68,7 @@ _NEWS_TASK_DECLARATIONS: dict[str, tuple[str, bool]] = {
     "news-deduper": (NEWS_INGESTION, True),
     "news-janitor": (NEWS_INGESTION, True),
     # Optional capabilities, one task each, so a fault names exactly what stopped.
-    "news-triage": (NEWS_EDITORIAL, False),
+    "news-semantic": (NEWS_EDITORIAL, False),
     "news-deliverer": (NEWS_DELIVERY, False),
     "news-instruments": (NEWS_INSTRUMENTS, False),
     "news-quotes": (NEWS_QUOTES, False),

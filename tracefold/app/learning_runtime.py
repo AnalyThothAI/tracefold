@@ -1,348 +1,56 @@
-"""Application composition for content-addressed Agent manifests."""
+"""Application composition of the News runtime's configured model routes (#706).
+
+One seam resolves operator settings into three generative DSPy routes -- extraction, generative
+judgments and cards -- plus the optional News Jev endpoint, with secret-free identities for each.
+Extraction and the generative judgments share the `news_triage_model` endpoint and its fallback;
+cards use `news_reader_card` (or the extraction endpoint) and its fallback. No taxonomy slot, no
+progression slot, and never Trading's `trading_semantics` route.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import dspy  # type: ignore[import-untyped]
 
-from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
-from tracefold.news import NEWS_RETRIEVAL_SHA256, PROGRESSION_REVIEW_TIMEOUT_SECONDS
-from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
-from tracefold.news.learning.contracts import ArmManifest
-from tracefold.news.program.artifact import (
-    NewsProgramStateV1,
-    load_stable_program_state,
-)
-from tracefold.news.program.contracts import SemanticJudge
-from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
-from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity
-from tracefold.news.program.module import NativeNewsProgram
-from tracefold.news.program.progression_review import (
-    PROGRESSION_REVIEW_MAX_TOKENS,
-    ProgressionReviewProgram,
-)
-from tracefold.news.program.routing import RoutedSemanticJudge, RouteLMs
-from tracefold.news.program.runtime import PROGRAM_ROUTE_DEADLINE_SECONDS, PROGRAM_VERSION
-from tracefold.platform.config.models import news_model_availability
+from tracefold.app.llm import ConfiguredLMEndpoint, StructuredOutputMode, configured_lm_endpoint
+from tracefold.app.news_updates import NewsJudgmentEndpoint, news_program_identity
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.updates.service import GENERATION_CALL_SECONDS
+from tracefold.platform.config.models import NewsModelAvailability, news_model_availability
+
+# Code-owned generation ceilings per role. A native Jev route has none: it is not a chat model.
+EXTRACTION_MAX_TOKENS: Final = 4_000
+JUDGMENT_MAX_TOKENS: Final = 2_000
+CARD_MAX_TOKENS: Final = 1_200
+# One provider call; the stage deadline bounds the route, fallback included.
+GENERATION_TIMEOUT_SECONDS: Final = GENERATION_CALL_SECONDS
 
 
-@dataclass(frozen=True, slots=True)
-class NewsProgramRuntimeComposition:
-    """The application seam that owns every runtime slot, identity and Judge binding."""
+class GenerativeLM(dspy.LM):
+    """A stock DSPy LM that states the structured-output capability its endpoint was configured with.
 
-    program_configured: bool
-    event_semantics_primary: ConfiguredLMEndpoint
-    reader_card_primary: ConfiguredLMEndpoint
-    event_semantics_fallback: ConfiguredLMEndpoint | None
-    reader_card_fallback: ConfiguredLMEndpoint | None
-    reader_card_primary_alias: bool
-    reader_card_fallback_alias: bool
+    DSPy's JSON adapter asks the LM whether it accepts `response_format` and a JSON schema; a proxied
+    model name cannot answer that truthfully, so the endpoint configuration does.
+    """
 
-    # The taxonomy Predictor (#501) has no operator setting of its own: it always runs on the Triage
-    # endpoint of its route, so both of its slots are declared aliases of the EventSemantics slots.
-    @property
-    def taxonomy_primary(self) -> ConfiguredLMEndpoint:
-        return self.event_semantics_primary
+    def __init__(self, model: str, *, structured_output: StructuredOutputMode, **kwargs: Any) -> None:
+        self._structured_output = structured_output
+        super().__init__(model, **kwargs)
 
     @property
-    def taxonomy_fallback(self) -> ConfiguredLMEndpoint | None:
-        return self.event_semantics_fallback
-
-    def secret_free_slot_identities(self) -> dict[str, dict[str, str] | None]:
-        if not self.program_configured:
-            return {
-                "event_semantics.primary": None,
-                "taxonomy.primary": None,
-                "reader_card.primary": None,
-                "event_semantics.fallback": None,
-                "taxonomy.fallback": None,
-                "reader_card.fallback": None,
-            }
-        return {
-            "event_semantics.primary": _optional_endpoint_identity(self.event_semantics_primary),
-            "taxonomy.primary": _optional_endpoint_identity(self.taxonomy_primary),
-            "reader_card.primary": _optional_endpoint_identity(self.reader_card_primary),
-            "event_semantics.fallback": _optional_endpoint_identity(self.event_semantics_fallback),
-            "taxonomy.fallback": _optional_endpoint_identity(self.taxonomy_fallback),
-            "reader_card.fallback": _optional_endpoint_identity(self.reader_card_fallback),
-        }
-
-    def slot_aliases(self) -> dict[str, str]:
-        """Name every deliberate endpoint alias instead of inferring it from equal hashes."""
-
-        if not self.program_configured:
-            return {}
-        aliases: dict[str, str] = {"taxonomy.primary": "event_semantics.primary"}
-        if self.reader_card_primary_alias:
-            aliases["reader_card.primary"] = "event_semantics.primary"
-        if self.event_semantics_fallback is not None:
-            aliases["taxonomy.fallback"] = "event_semantics.fallback"
-        if self.reader_card_fallback_alias:
-            aliases["reader_card.fallback"] = "event_semantics.fallback"
-        return aliases
+    def supported_params(self) -> set[str]:
+        return set() if self._structured_output == "prompt_json" else {"response_format"}
 
     @property
-    def runtime_model_bindings_sha256(self) -> str:
-        return canonical_sha(
-            {
-                "identity_schema": "configured_runtime_binding_v2",
-                "slots": self.secret_free_slot_identities(),
-                "aliases": self.slot_aliases(),
-            }
-        )
-
-    def semantic_judge(
-        self,
-        state: NewsProgramStateV1,
-        *,
-        lm_type: Any = dspy.LM,
-    ) -> SemanticJudge | None:
-        """Bind the six configured slots to the native DSPy Program."""
-
-        if not self.program_configured:
-            return None
-        timeout = float(PROGRAM_ROUTE_DEADLINE_SECONDS)
-
-        primary = RouteLMs(
-            event_semantics=_configured_program_lm(
-                self.event_semantics_primary,
-                max_tokens=state.event_semantics.max_tokens,
-                timeout=timeout,
-                predictor="event_semantics",
-                route="primary",
-                model_binding=state.event_semantics.model_bindings.primary,
-                lm_type=lm_type,
-            ),
-            taxonomy=_configured_program_lm(
-                self.taxonomy_primary,
-                max_tokens=state.taxonomy.max_tokens,
-                timeout=timeout,
-                predictor="taxonomy",
-                route="primary",
-                model_binding=state.taxonomy.model_bindings.primary,
-                lm_type=lm_type,
-            ),
-            reader_card=_configured_program_lm(
-                self.reader_card_primary,
-                max_tokens=state.reader_card.max_tokens,
-                timeout=timeout,
-                predictor="reader_card",
-                route="primary",
-                model_binding=state.reader_card.model_bindings.primary,
-                lm_type=lm_type,
-            ),
-        )
-        fallback = None
-        if self.event_semantics_fallback is not None and self.reader_card_fallback is not None:
-            fallback = RouteLMs(
-                event_semantics=_configured_program_lm(
-                    self.event_semantics_fallback,
-                    max_tokens=state.event_semantics.max_tokens,
-                    timeout=timeout,
-                    predictor="event_semantics",
-                    route="fallback",
-                    model_binding=state.event_semantics.model_bindings.fallback,
-                    lm_type=lm_type,
-                ),
-                taxonomy=_configured_program_lm(
-                    self.event_semantics_fallback,
-                    max_tokens=state.taxonomy.max_tokens,
-                    timeout=timeout,
-                    predictor="taxonomy",
-                    route="fallback",
-                    model_binding=state.taxonomy.model_bindings.fallback,
-                    lm_type=lm_type,
-                ),
-                reader_card=_configured_program_lm(
-                    self.reader_card_fallback,
-                    max_tokens=state.reader_card.max_tokens,
-                    timeout=timeout,
-                    predictor="reader_card",
-                    route="fallback",
-                    model_binding=state.reader_card.model_bindings.fallback,
-                    lm_type=lm_type,
-                ),
-            )
-        return RoutedSemanticJudge(
-            NativeNewsProgram(state),
-            primary=primary,
-            fallback=fallback,
-        )
-
-    def compile_semantic_judge(
-        self,
-        state: NewsProgramStateV1,
-        *,
-        lm_type: Any = dspy.LM,
-    ) -> SemanticJudge | None:
-        """Bind each Predictor to its own production primary slot, with no fallback route.
-
-        Offline compile and baseline answer on exactly the endpoints production asks that Predictor on:
-        `event_semantics.primary`, the taxonomy alias of it, and `reader_card.primary` — which is a
-        dedicated endpoint when the operator configured one and the EventSemantics alias otherwise. Until
-        #651 all three were pinned to `event_semantics_primary`, so a ReaderCard instruction optimized or
-        scored here was measured against a model production never asks to write the card.
-
-        What offline deliberately does *not* have is the rest of the route: no fallback endpoint, no
-        whole-route deadline (`route_deadline_seconds=None`) and no cross-case primary breaker. Each call
-        still carries its own `PROGRAM_ROUTE_DEADLINE_SECONDS` client timeout, so a hung provider ends one
-        call rather than the run. Production adds the fallback route, the route deadline and the breaker on
-        top of this; a compile that inherited them would attribute a candidate's score to a degraded route
-        it will never run under.
-        """
-
-        if not self.program_configured:
-            return None
-        timeout = float(PROGRAM_ROUTE_DEADLINE_SECONDS)
-        primary = RouteLMs(
-            event_semantics=_configured_program_lm(
-                self.event_semantics_primary,
-                max_tokens=state.event_semantics.max_tokens,
-                timeout=timeout,
-                predictor="event_semantics",
-                route="primary",
-                model_binding=state.event_semantics.model_bindings.primary,
-                lm_type=lm_type,
-            ),
-            taxonomy=_configured_program_lm(
-                self.taxonomy_primary,
-                max_tokens=state.taxonomy.max_tokens,
-                timeout=timeout,
-                predictor="taxonomy",
-                route="primary",
-                model_binding=state.taxonomy.model_bindings.primary,
-                lm_type=lm_type,
-            ),
-            reader_card=_configured_program_lm(
-                self.reader_card_primary,
-                max_tokens=state.reader_card.max_tokens,
-                timeout=timeout,
-                predictor="reader_card",
-                route="primary",
-                model_binding=state.reader_card.model_bindings.primary,
-                lm_type=lm_type,
-            ),
-        )
-        return RoutedSemanticJudge(
-            NativeNewsProgram(state),
-            primary=primary,
-            route_deadline_seconds=None,
-            primary_breaker_enabled=False,
-        )
-
-    def progression_verifier(
-        self,
-        *,
-        lm_type: Any = dspy.LM,
-    ) -> ProgressionReviewProgram | None:
-        """Bind the post-delivery relationship check to the primary event-semantics endpoint."""
-
-        if not self.program_configured:
-            return None
-        endpoint = self.event_semantics_primary
-        lm = _configured_program_lm(
-            endpoint,
-            timeout=PROGRESSION_REVIEW_TIMEOUT_SECONDS,
-            max_tokens=PROGRESSION_REVIEW_MAX_TOKENS,
-            predictor="progression_review",
-            route="primary",
-            model_binding="progression_review.primary",
-            lm_type=lm_type,
-        )
-        return ProgressionReviewProgram(lm)
+    def supports_response_schema(self) -> bool:
+        return self._structured_output == "json_schema"
 
 
-def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition:
-    """Resolve operator settings once into the secret-free Program slot identities and endpoints."""
-
-    availability = news_model_availability(settings)
-    primary_model = str(availability.triage_model or settings.llm.news_triage_model or "unconfigured")
-    event_primary = configured_lm_endpoint(settings, model_name=primary_model)
-    if availability.reader_card_dedicated and availability.reader_card_model:
-        reader_settings = settings.llm.news_reader_card
-        reader_primary = configured_lm_endpoint(
-            settings,
-            model_name=availability.reader_card_model,
-            api_key=reader_settings.api_key,
-            base_url=reader_settings.base_url,
-            request_config=reader_settings.request,
-        )
-    else:
-        reader_model = availability.reader_card_model or "unconfigured"
-        reader_primary = configured_lm_endpoint(settings, model_name=reader_model)
-
-    event_fallback: ConfiguredLMEndpoint | None = None
-    reader_fallback: ConfiguredLMEndpoint | None = None
-    if availability.triage_fallback_model:
-        fallback_settings = settings.llm.news_triage_fallback
-        event_fallback = configured_lm_endpoint(
-            settings,
-            model_name=availability.triage_fallback_model,
-            api_key=fallback_settings.api_key,
-            base_url=fallback_settings.base_url,
-            request_config=fallback_settings.request,
-        )
-        reader_fallback_settings = settings.llm.news_reader_card_fallback
-        if availability.reader_card_fallback_dedicated and availability.reader_card_fallback_model:
-            reader_fallback = configured_lm_endpoint(
-                settings,
-                model_name=availability.reader_card_fallback_model,
-                api_key=reader_fallback_settings.api_key,
-                base_url=reader_fallback_settings.base_url,
-                request_config=reader_fallback_settings.request,
-            )
-        elif not reader_fallback_settings.configured:
-            reader_fallback = event_fallback
-    return NewsProgramRuntimeComposition(
-        program_configured=availability.program_configured,
-        event_semantics_primary=event_primary,
-        reader_card_primary=reader_primary,
-        event_semantics_fallback=event_fallback,
-        reader_card_fallback=reader_fallback,
-        reader_card_primary_alias=not settings.llm.news_reader_card.configured,
-        reader_card_fallback_alias=bool(
-            event_fallback is not None and not settings.llm.news_reader_card_fallback.configured
-        ),
-    )
-
-
-def active_arm_manifest(
-    settings: Any,
-    *,
-    runtime_composition: NewsProgramRuntimeComposition | None = None,
-) -> ArmManifest:
-    """Describe the exact stable arm wired into this process."""
-
-    artifact = load_stable_program_state()
-    composition = runtime_composition or compose_news_program_runtime(settings)
-    policy = settings.news.policy.model_dump(mode="json")
-    return ArmManifest(
-        program_version=PROGRAM_VERSION,
-        program_sha256=artifact.program_sha256,
-        envelope_sha256=EXECUTION_ENVELOPE_SHA256,
-        runtime_model_bindings_sha256=composition.runtime_model_bindings_sha256,
-        # Composite identity for both bounded source assembly and candidate-conditioned selection.
-        retrieval_sha256=NEWS_RETRIEVAL_SHA256,
-        policy=policy,
-        policy_sha256=canonical_sha(policy),
-    )
-
-
-def _configured_program_lm(
-    endpoint: ConfiguredLMEndpoint,
-    *,
-    timeout: float,
-    max_tokens: int,
-    predictor: str,
-    route: str,
-    model_binding: str,
-    lm_type: Any = dspy.LM,
-    ledger: Any = None,
-) -> AuditedConfiguredLM:
-    """Create a stock DSPy LM and add only Tracefold's secret-free audit seam."""
+def generative_lm(endpoint: ConfiguredLMEndpoint, *, max_tokens: int, timeout: float) -> GenerativeLM:
+    """One configured generative endpoint with its existing request settings; no retries, no cache."""
 
     request: dict[str, Any] = {
         "api_key": endpoint.api_key,
@@ -351,40 +59,151 @@ def _configured_program_lm(
         "max_tokens": int(max_tokens),
         "cache": False,
         "num_retries": 0,
+        "engine": "litellm",
         **dict(endpoint.model_kwargs),
     }
     if endpoint.temperature is not None:
         request["temperature"] = float(endpoint.temperature)
-    if lm_type is dspy.LM:
-        request["engine"] = "litellm"
-    delegate = lm_type(str(endpoint.model_name), **request)
-    if not isinstance(delegate, dspy.LM):
-        raise TypeError("news_program_configured_lm_factory_invalid")
-    return AuditedConfiguredLM(
-        delegate,
-        structured_output=endpoint.structured_output,
-        runtime_identity=RuntimeModelIdentity.issue(
-            provider=_endpoint_provider(endpoint),
-            model=str(endpoint.model_name),
-            model_sha256=_endpoint_model_sha256(endpoint),
-        ),
-        predictor=predictor,
-        route=route,
-        model_binding=model_binding,
-        ledger=ledger,
+    return GenerativeLM(str(endpoint.model_name), structured_output=endpoint.structured_output, **request)
+
+
+@dataclass(frozen=True, slots=True)
+class NewsModelRoute:
+    """One role's primary endpoint and its declared fallback."""
+
+    role: str
+    primary: ConfiguredLMEndpoint
+    fallback: ConfiguredLMEndpoint | None
+    max_tokens: int
+
+    @property
+    def identity(self) -> str:
+        """Secret-free: provider, model, endpoint and request semantics of both endpoints, and the ceiling."""
+
+        return canonical_sha(
+            {
+                "identity_schema": "news_generative_route_v1",
+                "role": self.role,
+                "primary": _endpoint_model_sha256(self.primary),
+                "fallback": None if self.fallback is None else _endpoint_model_sha256(self.fallback),
+                "max_tokens": self.max_tokens,
+            }
+        )
+
+    def lms(self) -> tuple[GenerativeLM, ...]:
+        endpoints = (self.primary,) if self.fallback is None else (self.primary, self.fallback)
+        return tuple(
+            generative_lm(endpoint, max_tokens=self.max_tokens, timeout=GENERATION_TIMEOUT_SECONDS)
+            for endpoint in endpoints
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NewsRuntimeModels:
+    extraction: NewsModelRoute
+    judgment: NewsModelRoute
+    card: NewsModelRoute
+    news_judgment: NewsJudgmentEndpoint | None
+    availability: NewsModelAvailability
+
+    @property
+    def program_identity(self) -> str:
+        return news_program_identity(
+            extraction_model_identity=self.extraction.identity,
+            judgment_model_identity=self.judgment.identity,
+            card_model_identity=self.card.identity,
+            news_judgment=self.news_judgment,
+        )
+
+    def status(self) -> dict[str, Any]:
+        """The secret-free model identities Serve reports; field names are the public status contract."""
+
+        return {
+            "extraction_model": self.availability.extraction_model,
+            "extraction_fallback_model": self.availability.extraction_fallback_model,
+            "judgment_backend": "native" if self.news_judgment is not None else "generated",
+            "judgment_model": (
+                self.news_judgment.model if self.news_judgment is not None else self.availability.extraction_model
+            ),
+            "news_judgment_configured": self.news_judgment is not None,
+            "card_model": self.availability.card_model,
+            "card_fallback_model": self.availability.card_fallback_model,
+            "card_dedicated": self.availability.card_dedicated,
+            "program_identity": self.program_identity,
+        }
+
+
+def compose_news_models(settings: Any) -> NewsRuntimeModels | None:
+    """Resolve operator settings once. None when no complete News generative route is configured."""
+
+    availability = news_model_availability(settings)
+    if not availability.configured or availability.extraction_model is None or availability.card_model is None:
+        return None
+    extraction_primary = configured_lm_endpoint(settings, model_name=availability.extraction_model)
+    extraction_fallback: ConfiguredLMEndpoint | None = None
+    if availability.extraction_fallback_model:
+        fallback = settings.llm.news_triage_fallback
+        extraction_fallback = configured_lm_endpoint(
+            settings,
+            model_name=availability.extraction_fallback_model,
+            api_key=fallback.api_key,
+            base_url=fallback.base_url,
+            request_config=fallback.request,
+        )
+    if availability.card_dedicated:
+        reader = settings.llm.news_reader_card
+        card_primary = configured_lm_endpoint(
+            settings,
+            model_name=availability.card_model,
+            api_key=reader.api_key,
+            base_url=reader.base_url,
+            request_config=reader.request,
+        )
+    else:
+        card_primary = extraction_primary
+    card_fallback: ConfiguredLMEndpoint | None = None
+    if availability.card_fallback_dedicated and availability.card_fallback_model:
+        reader_fallback = settings.llm.news_reader_card_fallback
+        card_fallback = configured_lm_endpoint(
+            settings,
+            model_name=availability.card_fallback_model,
+            api_key=reader_fallback.api_key,
+            base_url=reader_fallback.base_url,
+            request_config=reader_fallback.request,
+        )
+    elif availability.card_fallback_model:
+        card_fallback = extraction_fallback
+    judgment = settings.llm.news_judgment
+    news_judgment = (
+        NewsJudgmentEndpoint(base_url=str(judgment.base_url), model=str(judgment.model), api_key=str(judgment.api_key))
+        if judgment.configured
+        else None
+    )
+    return NewsRuntimeModels(
+        extraction=NewsModelRoute("extraction", extraction_primary, extraction_fallback, EXTRACTION_MAX_TOKENS),
+        judgment=NewsModelRoute("judgment", extraction_primary, extraction_fallback, JUDGMENT_MAX_TOKENS),
+        card=NewsModelRoute("card", card_primary, card_fallback, CARD_MAX_TOKENS),
+        news_judgment=news_judgment,
+        availability=availability,
     )
 
 
-def _endpoint_identity(endpoint: ConfiguredLMEndpoint) -> dict[str, str]:
-    """Use the same secret-free identity that each live Predictor request carries."""
+def news_runtime_manifest_sha(settings: Any, *, image_digest: str, runtime_revision: str) -> str:
+    """The Workers runtime manifest: the configured News program identity in this exact image.
 
-    model = str(endpoint.model_name)
-    provider = _endpoint_provider(endpoint)
-    return RuntimeModelIdentity.issue(
-        provider=provider,
-        model=model,
-        model_sha256=_endpoint_model_sha256(endpoint),
-    ).model_dump(mode="json")
+    Workers reports it on /readyz and the deployment compares it with the value computed from the
+    same configuration, so a Workers process running another program or image is visible.
+    """
+
+    models = compose_news_models(settings)
+    return canonical_sha(
+        {
+            "identity_schema": "news_runtime_manifest_v2",
+            "news_program_identity": None if models is None else models.program_identity,
+            "image_digest": image_digest,
+            "runtime_revision": runtime_revision,
+        }
+    )
 
 
 def _endpoint_model_sha256(endpoint: ConfiguredLMEndpoint) -> str:
@@ -443,14 +262,14 @@ def _canonical_endpoint_sha256(value: str) -> str:
     )
 
 
-def _optional_endpoint_identity(endpoint: ConfiguredLMEndpoint | None) -> dict[str, str] | None:
-    return _endpoint_identity(endpoint) if endpoint is not None else None
-
-
 __all__ = [
-    "NewsProgramRuntimeComposition",
-    "active_arm_manifest",
-    "canonical_sha",
-    "compose_news_program_runtime",
-    "runtime_manifest_sha",
+    "CARD_MAX_TOKENS",
+    "EXTRACTION_MAX_TOKENS",
+    "JUDGMENT_MAX_TOKENS",
+    "GenerativeLM",
+    "NewsModelRoute",
+    "NewsRuntimeModels",
+    "compose_news_models",
+    "generative_lm",
+    "news_runtime_manifest_sha",
 ]

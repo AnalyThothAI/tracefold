@@ -14,8 +14,9 @@ from urllib.parse import urlsplit
 import psycopg
 import pytest
 
+from tests.support.rabbitmq import UNDECLARED_MESSAGE, declared_amqp_url
+
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
-DEFAULT_AMQP_URL = "amqp://tracefold:tracefold@127.0.0.1:5672/"
 
 
 def _dsn_reachable(dsn: str) -> bool:
@@ -39,7 +40,11 @@ def _docker_available() -> bool:
 def rabbitmq_url() -> str:
     """Return a reachable broker only to integration tests that declare it."""
 
-    url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", DEFAULT_AMQP_URL)
+    url = declared_amqp_url()
+    if not url:
+        if os.environ.get("TRACEFOLD_TEST_RESOURCES_REQUIRED") == "1":
+            pytest.fail(UNDECLARED_MESSAGE + " (required test resource)", pytrace=False)
+        pytest.skip(UNDECLARED_MESSAGE + " (local convenience skip; not complete verification)")
     parsed = urlsplit(url)
     try:
         with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 5672), timeout=1.5):

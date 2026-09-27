@@ -26,6 +26,8 @@ from tracefold.trading.storage.root import TradingRepository
 
 _NEWS_QUERY_NAMES = (
     "news_feed_events",
+    "news_feed_filtered",
+    "news_feed_filtered_counts",
     "news_search_identity",
     "news_search_event_symbols",
     "news_feed_asset_search",
@@ -38,6 +40,15 @@ _NEWS_QUERY_NAMES = (
     "news_event_asset_projection",
     "news_event_members",
     "news_event_verdicts",
+    # #706: the Event detail's EventUpdate plane and its intent ledger/queue.
+    "news_event_deliveries",
+    "news_event_delivery_queue",
+    "news_event_semantic_work",
+    "news_event_update_head",
+    "news_event_update_revisions",
+    "news_event_update_previous_claims",
+    "news_event_semantic_observations",
+    "news_event_notification_work",
     "news_band_lookup",
     "news_status_ingest",
     "news_status_incidents_open",
@@ -87,11 +98,6 @@ _NEWS_QUERY_NAMES = (
     "news_review_task_evidence_version",
     "news_review_active_agent",
     "news_review_coverage_source",
-    "news_review_pairwise_queue",
-    "news_review_proposal_candidates",
-    "news_review_proposal_releases",
-    "news_review_proposal_reports",
-    "news_review_proposal_activations",
     "news_review_market",
 )
 
@@ -138,6 +144,8 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert set(_NEWS_QUERY_NAMES) < names
     assert catalog.query_routes["/api/news/feed"] == (
         "news_feed_events",
+        "news_feed_filtered",
+        "news_feed_filtered_counts",
         "news_search_identity",
         "news_search_event_symbols",
         "news_feed_asset_search",
@@ -153,6 +161,14 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_event_detail",
         "news_event_members",
         "news_event_verdicts",
+        "news_event_deliveries",
+        "news_event_delivery_queue",
+        "news_event_semantic_work",
+        "news_event_update_head",
+        "news_event_update_revisions",
+        "news_event_update_previous_claims",
+        "news_event_semantic_observations",
+        "news_event_notification_work",
         "news_event_asset_projection",
         "news_reaction_attach",
     )

@@ -20,6 +20,7 @@ from typesafe_sdk import (
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.system_one import SystemOneConnection, SystemOneReceipt
 from tracefold.app.trading_analyst import PhysicalModelCall
+from tracefold.trading.engine.features import catalyst_text_values
 from tracefold.trading.engine.marketdata import Dataset, MarketDataPort, MarketDataRequest
 from tracefold.trading.engine.plans import EntryPlan, build_entry_plans
 from tracefold.trading.engine.policy import is_citable_evidence
@@ -54,6 +55,13 @@ def _json(value: object) -> str:
 
 def _content_sha(value: object) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
+
+
+def _source_text(payload: dict[str, Any]) -> str:
+    """A News catalyst's deterministic public text; any other source fact as its bounded JSON."""
+
+    text = catalyst_text_values(payload).get("text")
+    return (text if text is not None else _json(payload))[:2_048]
 
 
 class CaseToolContext:
@@ -176,7 +184,7 @@ class CaseToolContext:
                     {
                         "status": "ok",
                         "source_ref": artifact_ref,
-                        "values": {"text": _json(payload)[:2_048]},
+                        "values": {"text": _source_text(payload)},
                         "unit_definition": {"text": "source_text"},
                         "event_at_ms": int(item.get("source_observed_at_ms") or first_visible),
                         "received_at_ms": first_visible,
@@ -188,7 +196,7 @@ class CaseToolContext:
                         "ref": ref,
                         "first_visible_at_ms": first_visible,
                         "source_revision": item.get("source_revision"),
-                        "text": _json(payload)[:2_048],
+                        "text": _source_text(payload),
                     }
                 )
             return {

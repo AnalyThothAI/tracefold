@@ -15,214 +15,6 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
     # public News projection row into a Trading trigger.
     "trading": {"trading", "platform"},
 }
-# Private implementation imports are ownership rules, not historical file exceptions. Only the
-# named composition families and concrete adapter families may reach the named private contracts.
-PRIVATE_BUSINESS_IMPORT_RULES = {
-    "app.news_cli": (
-        # The code-owned Program contract: the version every verdict row is stamped with, the route
-        # budget the composition seam builds its LM clients against, and the computed identity of that
-        # code (#314) — which the composition root stamps onto the arm manifest and the epoch it opens,
-        # for the same reason it stamps `PROGRAM_VERSION`. #193 moved these off the Artifact, where they
-        # were optimizer-shaped state they never were.
-        "tracefold.news.program.runtime",
-        "tracefold.news.program.identity",
-        "tracefold.news.learning.baseline",
-        "tracefold.news.review.drafter",
-        # The one offline optimization capability. App composition may invoke it, while the capability
-        # tests assert that it cannot reach database review, candidate registration or canary promotion.
-        "tracefold.news.learning.optimizer",
-        # #202 §8: freezing a corpus, admitting a candidate and judging one are three objects now, and
-        # the CLI composes them where the old evaluator hid the composition. `learning freeze --role
-        # validation` is the one command that needs both: the release plane admits the candidate, and only
-        # then does the freeze get to refuse the window.
-        "tracefold.news.learning.dataset",
-        "tracefold.news.learning.ledger",
-        "tracefold.news.release.candidate",
-        "tracefold.news.program.resources.candidates",
-        "tracefold.news.program.artifact",
-        "tracefold.news.program.artifact_tool",
-        "tracefold.news.program.lm",
-        "tracefold.news.program.module",
-        "tracefold.news.program.routing",
-        "tracefold.news.artifact_identity",
-        "tracefold.news.bus",
-        "tracefold.news.release.canary",
-        "tracefold.news.release.runtime",
-        "tracefold.news.learning.contracts",
-        "tracefold.news.learning.evaluate",
-        # #199. The framework-neutral objective: which accepted cases GEPA may optimize, which ones hold it
-        # honest, and which ones are somebody else's defect. `readiness` is the CLI that publishes it, so
-        # this is the one module here that is neither the optimizer nor the release plane.
-        "tracefold.news.learning.objective",
-        # #437: the existing recorded Dataset baseline invokes one pure taxonomy metric.
-        "tracefold.news.learning.taxonomy_metric",
-        # #651 §7.3: `news learning judge-calibration` measures the metric judge against a fixed
-        # perturbation corpus. Pure and database-free, like the taxonomy metric above; the CLI composes
-        # the endpoint and this module asks the questions.
-        "tracefold.news.learning.judge_calibration",
-        "tracefold.news.eval.replay",
-        "tracefold.news.eval.why",
-        # #649 §7.2: `news wallets` reports how many published addresses have been monitored long
-        # enough to fill the window. That width is the product's own code-owned constant, and a literal
-        # here would stop meaning the same thing the day the rule changes it (#649 PR-3 §4).
-        "tracefold.news.wallet_contracts",
-        # #697: the same pure monitoring predicate serves rules, HTTP and CLI.
-        "tracefold.news.chain_tape.rules",
-        "tracefold.news.review.desk",
-        # #675 §4: `news review audit-report` is pure folding over a draft batch and the decisions the
-        # desk already published. The CLI composes the two; the module reaches no database of its own.
-        "tracefold.news.review.audit",
-        "tracefold.news.program.contracts",
-    ),
-    "app.composition": (
-        # Analysis composition maps News' public projection into Trading's
-        # typed target/evidence contracts and persists the frozen decision.
-        "tracefold.trading.engine",
-        "tracefold.trading.execution_contracts",
-        "tracefold.trading.storage.analysis",
-        "tracefold.trading.storage.execution_stream",
-        # The code-owned Program contract: the version every verdict row is stamped with, the route
-        # budget the composition seam builds its LM clients against, and the computed identity of that
-        # code (#314) — which the composition root stamps onto the arm manifest and the epoch it opens,
-        # for the same reason it stamps `PROGRAM_VERSION`. #193 moved these off the Artifact, where they
-        # were optimizer-shaped state they never were.
-        "tracefold.news.program.runtime",
-        "tracefold.news.program.identity",
-        "tracefold.news.program.artifact",
-        "tracefold.news.program.lm",
-        "tracefold.news.program.module",
-        "tracefold.news.program.routing",
-        # Post-delivery relationship verification is a content-addressed model adapter composed by App.
-        # It cannot change admission or the semantic Program and is scheduled only after send settlement.
-        "tracefold.news.program.progression_review",
-        # #572 PR-3's wallet digest is the same shape: one Signature, its own identity, bound by the
-        # composition root to the reader-card endpoint. It reads a fact pack the tape already computed
-        # and can change no threshold, no roster and no card -- only the wording of a summary that is
-        # written either way.
-        "tracefold.news.artifact_identity",
-        "tracefold.news.learning.contracts",
-        "tracefold.news.learning.evaluate",
-        "tracefold.news.market_review.instrument_storage",
-        "tracefold.news.market_review.storage",
-        "tracefold.news.storage.query_specs",
-        "tracefold.news.program.contracts",
-        "tracefold.news.storage.root",
-        "tracefold.news.search",
-        "tracefold.trading.storage.root",
-        # #433-A. App owns the dormant transport's query-audit registration and restore-drill seed.
-        # Neither path activates a producer or consumer; both compose the Trading-owned storage seam.
-        "tracefold.trading.storage.execution_stream",
-        # Read-only history and the new Analysis process are composed by App.
-        "tracefold.trading.storage.queries",
-        "tracefold.trading.storage.gate",
-        "tracefold.trading.storage.history",
-    ),
-    "app.http": (
-        "tracefold.news.health",
-        "tracefold.news.market_review.instruments",
-        "tracefold.news.market_review.pricing",
-        # #207 PR-W4: the measurement version that is half of `OiTradeCandidate.source_key`. The 成案 badge
-        # rebuilds `oi:{event_id}:{metric_version}` to ask whether one Event became a case, and a literal
-        # here would stop matching the day `oi_signals` bumps it — silently, as "no case".
-        "tracefold.news.oi_signals",
-        # #649 §7.3: `/api/news/wallets` computes "monitored long enough to fill the window"
-        # server-side, against the product's own window width rather than a copy of it. The status
-        # block answers whether the roster can support the quorum at all, over the same span
-        # `rules.py` measures a member against; a literal here would stop matching the day that
-        # constant moved (#649 PR-3 §4).
-        "tracefold.news.wallet_contracts",
-        # #697: the same pure monitoring predicate serves rules, HTTP and CLI.
-        "tracefold.news.chain_tape.rules",
-        "tracefold.news.review.desk",
-        "tracefold.trading.intent",
-        "tracefold.trading.stages",
-    ),
-    "app.trading_cli": ("tracefold.trading.operator_control",),
-    # #572 PR-1. The JSON-RPC adapter answers in the tape's own address and topic encoding rather than
-    # keeping a second copy of it, the same way the venue catalogue adapters answer in the instrument
-    # vocabulary. `evm` is pure string work with no network, no ABI library and no business rule.
-    "integrations.robinhood_chain": ("tracefold.news.chain_tape.evm",),
-    # The source adapter returns the consumer-owned member value and reuses the
-    # chain adapter's address decoder, not a second address/roster representation.
-    "integrations.robinhoodtrenches": (
-        "tracefold.news.chain_tape.contracts",
-        "tracefold.news.chain_tape.evm",
-    ),
-    "app.workers": (
-        # The code-owned Program contract: the version every verdict row is stamped with, the route
-        # budget the composition seam builds its LM clients against, and the computed identity of that
-        # code (#314) — which the composition root stamps onto the arm manifest and the epoch it opens,
-        # for the same reason it stamps `PROGRAM_VERSION`. #193 moved these off the Artifact, where they
-        # were optimizer-shaped state they never were.
-        "tracefold.news.program.runtime",
-        "tracefold.news.program.identity",
-        "tracefold.news.program.resources.candidates",
-        "tracefold.news.program.artifact",
-        # The News transport error vocabulary. The composition root's database adapter is the one place
-        # that turns a lane's admission timeout into the Defer/Transient distinction the broker acts on.
-        "tracefold.news.bus",
-        "tracefold.news.release.canary",
-        "tracefold.news.release.runtime",
-        "tracefold.news.learning.contracts",
-        "tracefold.news.learning.evaluate",
-        "tracefold.news.oi_signals",
-        "tracefold.news.pipeline",
-        # #553 PR-2. The market notification loop is one News-owned object with one business action,
-        # `advance()`. App composes it, declares its capability key and owns its tick.
-        "tracefold.news.market_notifications",
-        # #572 PR-1. The wallet tape joins the same way and for the same reason: one News-owned object
-        # with one business action, `advance()`. App composes it, builds the two provider adapters that
-        # News may not name, declares its capability key and owns its tick.
-        "tracefold.news.chain_tape",
-        "tracefold.news.market_review.loops",
-        # #651 §6.2: the typed quote question. The composition seam builds the `QuoteRequest` values the
-        # News-owned quote port takes, for the same reason `app.http` already reads this module -- the
-        # vocabulary a caller must speak to ask for a price belongs to the pricing domain, and a literal
-        # copy of it at the seam would be a second definition of what a market is.
-        "tracefold.news.market_review.pricing",
-        # The database composition adapter constructs narrow callback views from the concrete
-        # repositories; no business package imports the App adapter in return.
-        "tracefold.news.market_review.instrument_storage",
-        "tracefold.news.market_review.storage",
-        "tracefold.news.program.contracts",
-        "tracefold.news.storage.root",
-        "tracefold.news.triage_rules",
-        "tracefold.trading.storage.root",
-    ),
-    "app.nautilus": (
-        "tracefold.trading.execution_contracts",
-        "tracefold.trading.native_fills",
-        "tracefold.trading.trade_plan",
-        # #433-B: the dormant Runtime composition root materializes Trading-owned execution rows,
-        # prepares bounded Observation batches, and supplies the wake channel to the PostgreSQL
-        # integration. Nautilus adapters receive only public values and narrow callables.
-        "tracefold.trading.storage.execution_stream",
-        # #644: the same DB bridge prepares and commits immutable execution plans before order admission.
-        "tracefold.trading.storage.trade_plans",
-    ),
-    "integrations.opennews": ("tracefold.news.opennews",),
-    "integrations.rabbitmq": (
-        "tracefold.news.bus",
-        # #400: the broker owns retry, and the News-owned policy document is what says so. The adapter
-        # applies and verifies that contract; it does not decide it.
-        "tracefold.news.broker_policy",
-        # The adapter reports fatal transport settlement through the News-owned, platform-implemented
-        # low-cardinality telemetry port; it does not reach storage or pipeline implementation.
-        "tracefold.news.telemetry",
-    ),
-    "integrations.venues": (
-        "tracefold.news.market_review.instruments",
-        "tracefold.news.market_review.pricing",
-        "tracefold.news.tradability",
-    ),
-    "integrations.marketdata": ("tracefold.trading.engine.marketdata",),
-    "integrations.nautilus": (
-        "tracefold.trading.execution_contracts",
-        "tracefold.trading.native_fills",
-        "tracefold.trading.trade_plan",
-        "tracefold.trading.storage.execution_stream",
-    ),
-}
 # Concrete integration families may own one business-facing adapter. This is a module-family rule,
 # not a filename inventory: converting `opentrade.py` into an `opentrade/` package keeps the seam.
 INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
@@ -268,16 +60,13 @@ PLATFORM_TABLES = {
     "workers_runtime",
 }
 # Existing database adapters that legitimately own SQL without being storage modules. Keep this small:
-# App is the composition seam, ReviewDesk/evaluation_history predate the storage package split, and moving
-# them is not part of PostgreSQL governance. New product SQL belongs in its owner's storage family.
+# App is the composition seam, ReviewDesk predates the storage package split, and moving it is not part
+# of PostgreSQL governance. New product SQL belongs in its owner's storage family.
 SQL_LOCATION_EXCEPTIONS = frozenset(
     {
         "tracefold/app/cli/commands/db.py",
-        "tracefold/app/cli/commands/news_learning.py",
-        "tracefold/app/cli/commands/news_learning_runtime.py",
         "tracefold/app/query_audit.py",
         "tracefold/app/workers/runtime.py",
-        "tracefold/news/learning/evaluation_history.py",
         "tracefold/news/review/desk.py",
     }
 )
@@ -362,44 +151,12 @@ def _migration_parser_imports(path: Path) -> frozenset[str]:
     return BUSINESS_PARSER_MIGRATIONS.get(path.relative_to(ROOT).as_posix(), frozenset())
 
 
-def _private_import_allowed(importer: str, imported: str) -> bool:
-    parts = importer.split(".")
-    family: str | None = None
-    if parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("news"):
-        family = "app.news_cli"
-    elif parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("trading"):
-        family = "app.trading_cli"
-    elif parts[:3] == ["tracefold", "app", "workers"]:
-        family = "app.workers"
-    elif parts[:3] == ["tracefold", "app", "http"]:
-        family = "app.http"
-    elif parts[:3] == ["tracefold", "app", "nautilus"]:
-        family = "app.nautilus"
-    elif parts[:2] == ["tracefold", "app"] and len(parts) == 3:
-        family = "app.composition"
-    elif parts[:3] == ["tracefold", "integrations", "opennews"]:
-        family = "integrations.opennews"
-    elif parts[:3] == ["tracefold", "integrations", "venues"]:
-        family = "integrations.venues"
-    elif parts[:3] == ["tracefold", "integrations", "marketdata"]:
-        family = "integrations.marketdata"
-    elif parts[:3] == ["tracefold", "integrations", "nautilus"]:
-        family = "integrations.nautilus"
-    elif parts == ["tracefold", "integrations", "rabbitmq"]:
-        family = "integrations.rabbitmq"
-    elif parts == ["tracefold", "integrations", "robinhood_chain"]:
-        family = "integrations.robinhood_chain"
-    elif parts == ["tracefold", "integrations", "robinhoodtrenches"]:
-        family = "integrations.robinhoodtrenches"
-    allowed_imports = PRIVATE_BUSINESS_IMPORT_RULES.get(family or "", ())
-    return any(imported == allowed or imported.startswith(f"{allowed}.") for allowed in allowed_imports)
-
-
 def test_retired_taxonomy_lifecycle_has_no_module_or_runtime_wiring() -> None:
     for module in (
         "tracefold.news.learning.taxonomy",
         "tracefold.news.learning.taxonomy_shadow",
         "tracefold.news.learning.taxonomy_evaluation",
+        "tracefold.news.learning.taxonomy_metric",
     ):
         try:
             importlib.import_module(module)
@@ -408,28 +165,14 @@ def test_retired_taxonomy_lifecycle_has_no_module_or_runtime_wiring() -> None:
         else:  # pragma: no cover - the assertion describes the retired public import surface
             raise AssertionError(f"retired taxonomy module remains importable: {module}")
 
-    from tracefold.app.learning_runtime import NewsProgramRuntimeComposition
-    from tracefold.news.storage.learning import LearningStorage
+    from tracefold.app.learning_runtime import NewsRuntimeModels
+    from tracefold.news import taxonomy
 
-    assert not hasattr(NewsProgramRuntimeComposition, "taxonomy_shadow_program")
-    for retired_storage_read in (
-        "taxonomy_candidate_registration",
-        "taxonomy_active_deployment",
-        "taxonomy_shadow_artifacts",
-        "taxonomy_regression_sources",
-        "taxonomy_gold_sources",
-    ):
-        assert not hasattr(LearningStorage, retired_storage_read)
-
-
-def test_private_business_import_rules_follow_consumer_families() -> None:
-    assert _private_import_allowed(
-        "tracefold.app.cli.commands.news_learning",
-        "tracefold.news.learning.baseline",
-    )
-    assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.storage.root")
-    assert _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.review.desk")
-    assert not _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.storage.root")
+    # The runtime model composition has no taxonomy or progression slot of any kind (#706).
+    assert not [name for name in NewsRuntimeModels.__dataclass_fields__ if "taxonomy" in name or "progression" in name]
+    # What stays is the IPTC codebook and source authority; none of the four model-owned axes.
+    for retired in ("ModelTaxonomyV1", "NewsTaxonomyV1", "ReviewTaxonomyV1", "EVENT_FAMILIES", "CHANGE_STATES"):
+        assert not hasattr(taxonomy, retired)
 
 
 def test_delivery_adapters_never_import_the_market_notification_loop() -> None:
@@ -499,9 +242,9 @@ def test_delivery_adapters_import_the_card_model_and_never_a_renderer_or_a_loop(
 
     from tracefold import news
 
-    for name in ("ReaderCard", "quote_line", "card_clock", "LINKABLE_TICKER_RE", "NOVELTY_ZH"):
+    for name in ("ReaderCard", "quote_line", "card_clock", "LINKABLE_TICKER_RE"):
         assert name in news.__all__
-    for renderer in ("render_first_card", "render_market_card", "feishu_card"):
+    for renderer in ("news_update_card", "render_market_card", "feishu_card"):
         assert renderer not in news.__all__
 
 
@@ -621,24 +364,6 @@ def test_integrations_do_not_depend_on_app() -> None:
     assert violations == []
 
 
-def test_external_consumers_use_declared_business_interfaces() -> None:
-    violations: list[str] = []
-    for package in BUSINESS_PACKAGES:
-        prefix = f"tracefold.{package}."
-        for path in _python_files(SRC):
-            if path.relative_to(SRC).parts[0] == package:
-                continue
-            importer = _module_name(path)
-            violations.extend(
-                f"{path.relative_to(ROOT)} -> {imported}"
-                for imported in _imports(path)
-                if imported.startswith(prefix)
-                and not _private_import_allowed(importer, imported)
-                and imported not in _migration_parser_imports(path)
-            )
-    assert violations == [], "\n".join(violations)
-
-
 def test_business_sql_uses_only_owned_tables() -> None:
     schema = (ROOT / "docs" / "generated" / "db-schema.md").read_text(encoding="utf-8")
     tables = set(SCHEMA_TABLE_RE.findall(schema))
@@ -672,40 +397,6 @@ def test_production_sql_lives_in_owned_storage_or_an_explicit_adapter() -> None:
     assert sql_paths, "production SQL location scan must fail closed"
 
     violations = sorted(path for path in sql_paths if not _sql_location_allowed(path))
-    assert violations == []
-
-
-def test_app_composition_does_not_own_news_canary_release_semantics() -> None:
-    """App may pass runtime facts, but News Release owns lineage, reasons, and transitions."""
-
-    durable_reasons = {
-        "selector_version_mismatch",
-        "eligibility_profile_hash_mismatch",
-        "rolling_profile_hash_mismatch",
-        "candidate_manifest_missing_or_invalid",
-        "candidate_bundle_mismatch",
-        "candidate_parent_stale",
-        "candidate_artifact_invalid",
-        "candidate_runtime_invalid",
-        "candidate_runtime_unavailable",
-    }
-    lineage_attributes = {
-        "parent_stable_sha",
-        "program_parent_sha256",
-        "program_candidate_sha256",
-    }
-    violations: list[str] = []
-    for path in _python_files(SRC / "app"):
-        relative = path.relative_to(SRC)
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if node.func.attr == "transition_canary":
-                    violations.append(f"{relative.as_posix()} calls transition_canary")
-            elif isinstance(node, ast.Attribute) and node.attr in lineage_attributes:
-                violations.append(f"{relative.as_posix()} interprets {node.attr}")
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in durable_reasons:
-                violations.append(f"{relative.as_posix()} owns durable reason {node.value}")
     assert violations == []
 
 

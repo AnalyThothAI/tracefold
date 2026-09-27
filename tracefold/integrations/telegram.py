@@ -31,7 +31,6 @@ from tracefold.news import (
     COMMIT_PHASE_NOT_SENT,
     COMMIT_PHASE_UNKNOWN,
     LINKABLE_TICKER_RE,
-    NOVELTY_ZH,
     UNTRADEABLE_NOTICE_ZH,
     ReaderCard,
     ReaderDeliveryPresentation,
@@ -70,11 +69,9 @@ _BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage"
 _NEWSLIQUID_RELAY_HOSTS = frozenset({"news-history.newsliquid.com"})
 _NEWSLIQUID_REUTERS_PATH_RE = re.compile(r"^/b/nL[0-9A-Z]+$")
 
-# One mark per card, from `family + tone` and nothing else -- the same two fields Feishu maps to its
-# own template colour. The model's judgment marks a News card; a market family carries no judgment,
-# so its family marks it. Before this the adapter mapped Feishu's colour *names* and knew only three
-# of them, which is why every OI (blue) and smart-money (turquoise) card reached readers as ⚪.
-_TONE_ICON: Final[dict[str, str]] = {"bullish": "🟢", "bearish": "🔴"}
+# One mark per card, from its family and nothing else -- the same field Feishu maps to its own template
+# colour. Before this the adapter mapped Feishu's colour *names* and knew only three of them, which is
+# why every OI (blue) and smart-money (turquoise) card reached readers as ⚪.
 _FAMILY_ICON: Final[dict[str, str]] = {
     "news": "⚪",
     "oi": "🔵",
@@ -82,12 +79,12 @@ _FAMILY_ICON: Final[dict[str, str]] = {
     "smart_money": "💠",
     "wallet": "🟠",
 }
-# An escalated News card is marked by its escalation rather than by its direction: it is the one
-# thing the reader is meant to see first, and the card model already carries the mark as a qualifier.
-_ESCALATION_ICON: Final = "⚡"
-_NOVELTY_ICON: Final[dict[str, str]] = {"new_fact": "🆕", "progression": "🔄", "restatement": "♻️"}
-# The lead a card holds; the rest of a very long one is on the page the card links to.
-_LEAD_MAX: Final = 1_800
+# A key News update is marked by its key marker: it is the one thing the reader is meant to see first,
+# and the card model already carries the mark as a qualifier.
+_KEY_ICON: Final = "⚡"
+# The News card's change label, in the card's own word and this channel's mark for it.
+_CHANGE_ICON: Final[dict[str, str]] = {"new": "🆕", "update": "🔄", "correction": "✏️"}
+# A market card's title bound. A News title is frozen copy and is never clipped.
 _TITLE_MAX: Final = 240
 
 
@@ -277,7 +274,7 @@ class TelegramNewsPushSender:
         """Replace one previously sent channel message while preserving its original push timestamp.
 
         The enrichment edit is the same rendering as the send, from the updated card: the quotes,
-        trade targets, market movements and progression review the Deliverer resolved after the first
+        trade targets, market movements and tradability answer the Deliverer resolved after the first
         send reach this channel as an updated `ReaderCard` plus its presentation, never as a second
         parse of the text this adapter itself wrote.
         """
@@ -323,15 +320,9 @@ class TelegramNewsPushSender:
         *,
         pushed_at_ms: int,
     ) -> str:
-        """One card as this channel's text. The chat id is the adapter's, so the parent link is too."""
+        """One card as this channel's text."""
 
-        view = presentation or ReaderDeliveryPresentation()
-        return _telegram_message(
-            card,
-            view=view,
-            pushed_at_ms=pushed_at_ms,
-            parent_url=_telegram_message_url(self._chat_id, view.progression_review_parent_message_id),
-        )
+        return _telegram_message(card, view=presentation or ReaderDeliveryPresentation(), pushed_at_ms=pushed_at_ms)
 
     def _message_payload(self, text: str, *, message_id: int | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -523,30 +514,31 @@ def _telegram_message(
     *,
     view: ReaderDeliveryPresentation,
     pushed_at_ms: int | None = None,
-    parent_url: str | None = None,
 ) -> str:
     """One `ReaderCard` as this channel's message.
 
-    The layout is Telegram's own -- a marked title, the review band, the lead, one block per asset,
-    the judgment, and a footer -- but every word, number, symbol and time in it comes from the card or
-    from `card_format`. `view` is the adapter-only context the Deliverer resolves around a News card
-    (trade targets, movement returns, the progression review); a market card is complete on its own
-    and arrives with none of it.
+    The layout is Telegram's own -- a marked title, the change label, the lead, one block per asset and
+    a footer -- but every word, number, symbol and time in it comes from the card or from
+    `card_format`. A News card's title and lead are its frozen copy and are sent whole, never clipped.
+    `view` is the adapter-only context the Deliverer resolves around a News card (trade targets and
+    movement returns); a market card is complete on its own and arrives with none of it.
     """
 
     news = card.header.family == "news"
-    sections = [f"{_header_icon(card)} <b>{_escape_html(_clip(_header_title(card), _TITLE_MAX))}</b>"]
+    title = card.header.subject if news else _clip(card.title(), _TITLE_MAX)
+    sections = [f"{_header_icon(card)} <b>{_escape_html(title)}</b>"]
 
     if card.untradeable:
         # The card's own sentence, in the one place a reader who already read this card will see it:
         # directly under the title, above everything the edit did not change (#562 §5 row 5).
         sections.append(f"<b>{_escape_html(UNTRADEABLE_NOTICE_ZH)}</b>")
-    review_band = _telegram_review_band(card, view, parent_url=parent_url)
-    if review_band:
-        sections.append(review_band)
     if news:
+        change = card.change_word()
+        icon = _CHANGE_ICON.get(card.facts.change or "")
+        if change and icon:
+            sections.append(f"{icon} <b>{change}</b>")
         if card.lead:
-            sections.append(_escape_html(_clip(card.lead, _LEAD_MAX)))
+            sections.append(_escape_html(card.lead))
     else:
         # A market card's body is the model's own lines: the OI change and its measurement, the
         # liquidation count and largest reported figure, the account and its action timeline, or the
@@ -557,6 +549,7 @@ def _telegram_message(
         body = "\n".join(_escape_html(line) for line in card.market_lines())
         if body:
             sections.append(body)
+    required = len(sections) if news else 1
 
     groups: list[str] = []
     if news and card.facts.tickers:
@@ -568,21 +561,14 @@ def _telegram_message(
                 market_data_pending=view.market_data_state == "pending",
             )
         )
-    elif news and view.market_scope:
-        scope_line = _telegram_scope_html(view.market_scope)
-        if scope_line:
-            groups.append(scope_line)
-    judgment = " · ".join(part for part in (card.direction_word(), card.fact_kind_word()) if part)
-    if judgment:
-        groups.append(f"🧭 <b>方向</b>  {_escape_html(judgment)}")
 
     footer = [
         line
         for line in (
             _telegram_timing_html(
                 # The card's own event time, which is what the reader is being told about. A News
-                # delivery knows a more exact source stamp than the leader item carries and passes it;
-                # a market card carried one all along and used to lose it here, so its Feishu copy read
+                # delivery knows a more exact source stamp than the card carries and passes it; a
+                # market card carried one all along and used to lose it here, so its Feishu copy read
                 # 18:40 and its Telegram copy the 00:27 this process happened to send at (#562 §1).
                 event_at_ms=view.news_at_ms or card.times.event_at_ms,
                 pushed_at_ms=pushed_at_ms,
@@ -606,30 +592,34 @@ def _telegram_message(
     # the source line under it.
     sections.extend(groups)
 
-    return _fit_telegram_message(sections)
+    return _fit_telegram_message(sections, required=required)
 
 
-def _fit_telegram_message(sections: Sequence[str]) -> str:
-    """Join the card's sections into a message Telegram will accept, clipping if it must.
+def _fit_telegram_message(sections: Sequence[str], *, required: int = 1) -> str:
+    """Join the card's sections into a message Telegram will accept, giving up optional ones if it must.
 
     Telegram refuses a message over 4096 characters, and this used to answer that by raising: the whole
     delivery settled `terminal` and the reader got nothing at all, for a card whose title, body and
-    source link would all have fitted. A clipped card is worth more than no card (#562 §5 row 7).
-    Sections are dropped whole, never cut mid-way, so the HTML handed to Telegram stays well-formed.
+    source link would all have fitted. A card without its optional parts is worth more than no card
+    (#562 §5 row 7). Sections are dropped whole, never cut mid-way, so the HTML handed to Telegram stays
+    well-formed.
 
-    The order is what the card is for: the title leads and the footer closes, and everything between
-    them gives way from the bottom up -- the last asset block first, then the earlier ones, then the
-    body, then the review band. Popping the tail instead would take the reader's source link with it
-    while asset blocks above it survived, which is exactly backwards. Only when the title and the
-    footer are alone and still over the bound does the footer go too, and the renderer bounds the
-    title far below the limit, so a card always leaves this function with something on it.
+    The first `required` sections are never dropped: a market card's title, and a News card's title,
+    change label and frozen copy -- the payload the ledger records as sent. Between them and the footer,
+    everything gives way from the bottom up -- the last asset block first, then the earlier ones. Popping
+    the tail instead would take the reader's source link with it while asset blocks above it survived,
+    which is exactly backwards. Only when the required sections and the footer are alone and still over
+    the bound does the footer go too. A News card whose frozen copy alone is over the bound is refused,
+    provably unsent, rather than sent clipped.
     """
 
     working = list(sections)
-    while len(working) > 2 and _telegram_text_length(working) > _TELEGRAM_TEXT_MAX:
+    while len(working) > required + 1 and _telegram_text_length(working) > _TELEGRAM_TEXT_MAX:
         working.pop(-2)
-    while len(working) > 1 and _telegram_text_length(working) > _TELEGRAM_TEXT_MAX:
+    while len(working) > required and _telegram_text_length(working) > _TELEGRAM_TEXT_MAX:
         working.pop()
+    if _telegram_text_length(working) > _TELEGRAM_TEXT_MAX:
+        raise TelegramDeliveryError("news_delivery_telegram_message_too_long", commit_phase=COMMIT_PHASE_NOT_SENT)
     return _SECTION_SEPARATOR.join(working).strip()
 
 
@@ -646,51 +636,11 @@ def _telegram_text_length(sections: Sequence[str]) -> int:
 
 
 def _header_icon(card: ReaderCard) -> str:
-    """The card's one mark, by `family + tone`."""
+    """The card's one mark: a key News update's marker, otherwise its family's."""
 
     if card.header.family == "news" and card.header.qualifier:
-        return _ESCALATION_ICON
-    return _TONE_ICON.get(card.header.tone) or _FAMILY_ICON.get(card.header.family, "⚪")
-
-
-def _header_title(card: ReaderCard) -> str:
-    """A News card is headed by its headline alone; its escalation is the icon, not a repeated mark."""
-
-    return card.header.subject if card.header.family == "news" else card.title()
-
-
-def _telegram_review_band(
-    card: ReaderCard,
-    view: ReaderDeliveryPresentation,
-    *,
-    parent_url: str | None,
-) -> str:
-    """The novelty claim and the state of its review, as one block below the title."""
-
-    novelty = view.novelty or card.facts.novelty
-    review_state = view.progression_review_state
-    parent_headline = view.progression_from_headline
-    parent_age = view.progression_review_parent_age_minutes
-    if review_state in {"rejected", "unavailable"}:
-        # A claim whose review did not confirm it is not shown as a claim, and the reason a reviewer
-        # gave belongs to the operator's evidence, not to the reader's card.
-        novelty = "new_fact"
-        review_state = parent_headline = parent_age = parent_url = None
-    elif review_state == "confirmed" and not parent_url:
-        novelty = "new_fact"
-        review_state = parent_headline = parent_age = None
-
-    novelty_line = _telegram_novelty_html(
-        novelty,
-        progression_from_headline=(None if review_state else parent_headline),
-    )
-    review_line = _telegram_progression_review_html(
-        review_state,
-        parent_headline=parent_headline,
-        parent_age_minutes=parent_age,
-        parent_url=parent_url,
-    )
-    return "\n".join(line for line in (novelty_line, review_line) if line)
+        return _KEY_ICON
+    return _FAMILY_ICON.get(card.header.family, "⚪")
 
 
 def _telegram_source_line(card: ReaderCard, *, news: bool) -> str:
@@ -728,64 +678,6 @@ def _telegram_link_line(card: ReaderCard, *, news: bool) -> str:
     return f'🔗 <a href="{html.escape(link.url, quote=True)}">{_escape_html(link.label)}</a>'
 
 
-def _telegram_novelty_html(value: str | None, *, progression_from_headline: str | None) -> str:
-    """The model's novelty judgment, in the card's word and this channel's mark for it."""
-
-    icon = _NOVELTY_ICON.get(str(value or ""))
-    word = NOVELTY_ZH.get(str(value or ""), "")
-    if icon is None or not word:
-        return ""
-    if value == "progression":
-        previous = _clip(str(progression_from_headline or "").strip(), 72)
-        suffix = f" · 接续「{_escape_html(previous)}」" if previous else ""
-        return f"{icon} <b>{word}</b>{suffix}"
-    return f"{icon} <b>{word}</b>"
-
-
-def _telegram_progression_review_html(
-    value: str | None,
-    *,
-    parent_headline: str | None,
-    parent_age_minutes: int | None,
-    parent_url: str | None,
-) -> str:
-    if value == "pending":
-        return "<blockquote>⏳ <b>关联确认中</b></blockquote>"
-    if value == "confirmed":
-        age = _telegram_parent_age(parent_age_minutes)
-        age_suffix = f" · {age} 前" if age else ""
-        headline = _escape_html(_clip(str(parent_headline or "").strip(), 72)) or "上一条消息"
-        parent = f'<a href="{parent_url}">此前：{headline}</a>' if parent_url else f"此前：{headline}"
-        return f"<blockquote>✅ <b>已确认关联</b>\n↳ {parent}{age_suffix}</blockquote>"
-    return ""
-
-
-def _telegram_parent_age(value: int | None) -> str:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        return ""
-    if value == 0:
-        return "&lt;1min"
-    hours, minutes = divmod(value, 60)
-    if hours and minutes:
-        return f"{hours}h {minutes}mins"
-    if hours:
-        return f"{hours}h"
-    return f"{minutes}mins"
-
-
-def _telegram_message_url(chat_id: int | str, message_id: int | None) -> str | None:
-    """The link a reader can follow back to one earlier message in this same channel."""
-
-    if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
-        return None
-    if isinstance(chat_id, str):
-        return f"https://t.me/{chat_id.removeprefix('@')}/{message_id}"
-    channel_id = str(chat_id)
-    if _PRIVATE_CHANNEL_ID_RE.fullmatch(channel_id) is None:
-        return None
-    return f"https://t.me/c/{channel_id.removeprefix('-100')}/{message_id}"
-
-
 def _channel_target(chat_id: object) -> int | str:
     """The one channel this sender is bound to, as a Bot API id or a public `@name`.
 
@@ -805,15 +697,6 @@ def _channel_target(chat_id: object) -> int | str:
         # orphan every receipt already stored and silently stop the enrichment edits on them.
         return chat_id.strip().casefold()
     raise ValueError("news_push_telegram_chat_id_invalid")
-
-
-def _telegram_scope_html(value: str) -> str:
-    label = {
-        "macro": "宏观市场 · 暂无直接标的",
-        "sector": "行业板块 · 暂无直接标的",
-        "single_name": "暂未验证到具体标的",
-    }.get(str(value or ""), "")
-    return f"🌐 <b>影响范围</b>  {label}" if label else ""
 
 
 def _telegram_asset_blocks(

@@ -1,7 +1,6 @@
-"""The News learning plane: frozen datasets, the cold compiler, evaluation, and canary control.
+"""The News card judge and its calibration harness.
 
-Nothing here runs on the online Event route. Human truth acquisition is not here either: #202 moved the
-ReviewDesk and its drafter to `tracefold.news.review`, because a queue served over HTTP against production
-and an offline optimization over a frozen export are two lifecycles, and naming them one package made one
-set of permissions stand for both.
+Nothing here runs on the online Event route. The program optimization, dataset, release and canary plane
+that used to live here was deleted in #706; what remains is an operator measurement: an evidence-grounded
+judge of one composed card, and the fixed corpus that checks whether that judge answers correctly.
 """

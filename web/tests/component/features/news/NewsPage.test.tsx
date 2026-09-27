@@ -12,6 +12,7 @@ import {
   newsOutcomeFixture,
   newsQuoteFixture,
   newsStatusFixture,
+  newsUpdateDetailFixture,
   newsVerdictFixture,
 } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
@@ -201,8 +202,8 @@ describe("NewsPage", () => {
                 ],
                 event_id: "evt-oi-btr",
                 grounded_assets: [],
-                triage: {
-                  ...newsFeedEventFixture().triage!,
+                legacy_verdict: {
+                  ...newsFeedEventFixture().legacy_verdict!,
                   headline_zh: "BTR 持仓异动",
                 },
               }),
@@ -360,8 +361,8 @@ describe("NewsPage", () => {
                   reason_zh: "BTC 同一话题 2 小时内已推过同等或更重要的消息",
                   text_zh: "未推送（历史限流）",
                 }),
-                triage: {
-                  ...newsFeedEventFixture().triage!,
+                legacy_verdict: {
+                  ...newsFeedEventFixture().legacy_verdict!,
                   final_decision: "throttled",
                   throttled_by: "storyline:asset:BTC",
                 },
@@ -378,7 +379,7 @@ describe("NewsPage", () => {
                   reason_zh: "断线期间补抄的旧闻，仅用于去重与历史",
                   text_zh: "补抄件，不推送",
                 }),
-                triage: null,
+                legacy_verdict: null,
               }),
             ],
           }),
@@ -409,6 +410,49 @@ describe("NewsPage", () => {
     expect(within(recovery).getByRole("heading", { name: "补抄回来的旧闻" })).toBeInTheDocument();
   });
 
+  it("heads a News Agent row with its server headline and no market direction", async () => {
+    // #706: an EventUpdate has no Event-wide bullish/bearish call. The row reads the headline the server
+    // resolved -- the card a reader received, else the first unretired claim -- and draws no direction.
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({
+                event_id: "evt-agent",
+                legacy_verdict: null,
+                outcome: newsOutcomeFixture({
+                  group: "held",
+                  kind: "not_notified",
+                  reason_zh: "评论 ×2",
+                  text_zh: "未通知",
+                }),
+                update: {
+                  adopted_at_ms: NEWS_NOW_MS - 60_000,
+                  claim_n: 2,
+                  content_revision: "f".repeat(64),
+                  headline: "Agency raises the steel import tariff to 50%.",
+                  headline_source: "claim",
+                },
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    const row = (
+      await screen.findByRole("heading", { name: "Agency raises the steel import tariff to 50%." })
+    ).closest("article")!;
+    expect(row).toHaveAttribute("data-direction", "flat");
+    expect(row).toHaveAttribute("data-outcome", "not_notified");
+    expect(row.querySelector(".news-direction")).toBeNull();
+    expect(within(row).getByText("评论 ×2")).toBeInTheDocument();
+  });
+
   it("keeps row-level expansion controls off the approved feed interaction", async () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
@@ -429,7 +473,7 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 leader_title: longTitle,
-                triage: { ...newsFeedEventFixture().triage!, headline_zh: null },
+                legacy_verdict: { ...newsFeedEventFixture().legacy_verdict!, headline_zh: null },
               }),
             ],
           }),
@@ -632,7 +676,10 @@ describe("NewsPage", () => {
               newsFeedEventFixture(),
               newsFeedEventFixture({
                 event_id: "evt-second-page",
-                triage: { ...newsFeedEventFixture().triage!, headline_zh: "Second page Event" },
+                legacy_verdict: {
+                  ...newsFeedEventFixture().legacy_verdict!,
+                  headline_zh: "Second page Event",
+                },
               }),
             ],
             next_cursor: null,
@@ -660,8 +707,8 @@ describe("NewsPage", () => {
       events: [
         newsFeedEventFixture({
           event_id: "evt-new-at-top",
-          triage: {
-            ...newsFeedEventFixture().triage!,
+          legacy_verdict: {
+            ...newsFeedEventFixture().legacy_verdict!,
             headline_zh: "New high-signal event at the top",
           },
         }),
@@ -686,8 +733,8 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 event_id: "evt-loaded-tail",
-                triage: {
-                  ...newsFeedEventFixture().triage!,
+                legacy_verdict: {
+                  ...newsFeedEventFixture().legacy_verdict!,
                   headline_zh: "Loaded non-deferred tail event",
                 },
               }),
@@ -709,7 +756,10 @@ describe("NewsPage", () => {
       events: [
         newsFeedEventFixture({
           event_id: "evt-deferred-at-top",
-          triage: { ...newsFeedEventFixture().triage!, headline_zh: "Deferred high-signal event" },
+          legacy_verdict: {
+            ...newsFeedEventFixture().legacy_verdict!,
+            headline_zh: "Deferred high-signal event",
+          },
         }),
         ...newsFeedFixture().events,
       ],
@@ -867,8 +917,8 @@ describe("NewsPage", () => {
               grounded_assets: [],
             },
             normalization: [],
-            triage: {
-              ...detail.triage!,
+            legacy_verdict: {
+              ...detail.legacy_verdict!,
               assets: [{ role: "primary", symbol: "BTR" }],
             },
           },
@@ -974,37 +1024,32 @@ describe("NewsPage", () => {
     expect(within(hero).queryByText(/asset:BTC|evt-global-policy|jaccard/)).toBeNull();
   });
 
-  it("says the classification is unavailable, with its code, and keeps the source authority", async () => {
-    // #651 §5.3: the taxonomy Predictor can fail while the other two answer, so the reader gets a real
-    // card with no classification behind it. The four axis cells must say that once, with the reason —
-    // not read as four Events nobody bothered to classify — and 来源权威 is code-owned, so it survives.
-    const detail = newsEventDetailFixture();
-    const verdict = newsVerdictFixture();
+  it("keeps a legacy verdict in its own 旧版判定 panel without the retired taxonomy facts", async () => {
+    // #706: a legacy Event keeps its Triage verdict, labelled as history. The retired taxonomy axes are not
+    // a current reading: no 事件族/变化状态/断言状态 cell, and the verdict row shows its stored code only.
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+
+    await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
+    const legacy = screen.getByRole("region", { name: "旧版判定" });
+    expect(within(legacy).getByText("利率指引与市场预期背离，风险资产定价需要重估")).toBeVisible();
+    expect(within(legacy).getByText("可信二手来源")).toBeInTheDocument();
+    for (const retired of ["事件族", "变化状态", "断言状态"]) {
+      expect(screen.queryByText(retired)).toBeNull();
+    }
+    for (const section of ["新增了什么", "命题", "来源与分歧", "推断与缺口", "处理状态"]) {
+      expect(screen.queryByRole("region", { name: section })).toBeNull();
+    }
+    const technical = screen.getByText(/技术详情/).closest("details")!;
+    expect(within(technical).getByText("macro_policy_data")).toBeInTheDocument();
+  });
+
+  it("renders a News Agent Event from its EventUpdate: changes, claims, sources, inference and processing", async () => {
     server.use(
       http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: {
-            ...detail,
-            triage: {
-              ...detail.triage!,
-              taxonomy: null,
-              taxonomy_error_code: "news_program_output_truncated",
-              taxonomy_status: "unavailable",
-            },
-            verdicts: [
-              {
-                ...verdict,
-                model_editorial: {
-                  ...verdict.model_editorial!,
-                  taxonomy: null,
-                  taxonomy_error_code: "news_program_output_truncated",
-                  taxonomy_status: "unavailable",
-                },
-              },
-            ],
-          },
-        }),
+        HttpResponse.json({ ok: true, data: newsUpdateDetailFixture() }),
       ),
     );
 
@@ -1013,26 +1058,43 @@ describe("NewsPage", () => {
       "/news/events/evt-global-policy",
     );
 
-    const region = await screen.findByRole("region", { name: "新闻事件详情" });
-    await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
-    const facts = region.querySelector<HTMLElement>(".news-detail-fact-grid")!;
-    expect(
-      within(facts).getByText("分类不可用（news_program_output_truncated）"),
-    ).toBeInTheDocument();
-    expect(within(facts).queryByText("宏观政策与数据")).toBeNull();
-    expect(within(facts).queryByText("已更新")).toBeNull();
-    // The code fact the escalate-corroboration rule reads is still here.
-    expect(within(facts).getByText("可信二手来源")).toBeInTheDocument();
-    // And the card itself is a real card.
-    expect(
-      screen.getByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" }),
-    ).toBeInTheDocument();
+    // The headline a reader actually received, not a verdict's and not the wire title.
+    await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" });
+    expect(screen.queryByRole("region", { name: "旧版判定" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "本次判断的证据" })).toBeNull();
+    expect(screen.getByText("关税")).toBeInTheDocument();
 
-    const technical = screen.getByText(/技术详情/).closest("details")!;
-    expect(within(technical).getByText("source_authority")).toBeInTheDocument();
+    const changes = screen.getByRole("region", { name: "新增了什么" });
+    expect(within(changes).getByText("参数变化")).toBeInTheDocument();
     expect(
-      within(technical).getAllByText("分类不可用（news_program_output_truncated）").length,
-    ).toBeGreaterThan(0);
+      within(changes).getByText("Agency raises the steel import tariff to 50%."),
+    ).toBeVisible();
+    expect(within(changes).getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
+
+    const claims = screen.getByRole("region", { name: "命题" });
+    const items = within(claims).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(within(items[0]).getByText("来源分歧")).toBeInTheDocument();
+    expect(within(items[0]).getByText("决定")).toBeInTheDocument();
+    expect(within(items[0]).getByText("已宣布")).toBeInTheDocument();
+    expect(within(items[0]).getByText("2026-10-01")).toBeInTheDocument();
+    expect(within(items[0]).getByText("unless a deal is signed")).toBeInTheDocument();
+    expect(within(items[0]).getByText("rate 25%")).toBeInTheDocument();
+
+    const sources = screen.getByRole("region", { name: "来源与分歧" });
+    expect(within(sources).getByText("反驳")).toBeInTheDocument();
+    expect(within(sources).getByText("rival")).toBeInTheDocument();
+    expect(sources).toHaveTextContent("1 条命题来源分歧");
+
+    const inference = screen.getByRole("region", { name: "推断与缺口" });
+    expect(within(inference).getByText(/推断 · 来源所述因果（推断）/)).toBeInTheDocument();
+    expect(within(inference).getByText("Has the order been signed?")).toBeInTheDocument();
+
+    const processing = screen.getByRole("region", { name: "处理状态" });
+    expect(within(processing).getByText("已完成")).toBeInTheDocument();
+    expect(within(processing).getByText("通知 · 有命题未被已送达内容覆盖")).toBeInTheDocument();
+    expect(within(processing).getByText("已送达内容已覆盖")).toBeInTheDocument();
+    expect(within(processing).getByText("【重点】钢铁进口关税上调至 50%")).toBeInTheDocument();
   });
 
   it("hides same-name non-primary market candidates from Event evidence", async () => {

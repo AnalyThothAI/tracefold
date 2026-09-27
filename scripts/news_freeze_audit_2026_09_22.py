@@ -1,22 +1,20 @@
-"""Freeze the 2026-09-22 independent audit (1,491 labels) as `news_review_v7` judgments (#675 §4).
+"""Freeze the 2026-09-22 independent audit (1,491 labels) as ReviewDesk judgments (#675 §4).
 
 One-shot. The audit was 14 independent Opus reviewers labelling every model-origin verdict in the
 2026-09-21 07:10 -> 09-22 07:10 UTC window against `RUBRIC.md`: keep / demote / borderline on delivered
 cards, ok_drop / missed_valuable / borderline on the rest. Those labels are the only end-to-end reading
 this corpus has of "did the reader want this", and they live in a scratchpad JSON file until something
-writes them where the desk, the funnel ratios and the frozen datasets can see them.
+writes them where the desk and the funnel ratios can see them.
 
 What it writes, and what it deliberately does not.
 
 - `should_push` only, with `dimensions={"timeliness": "not_applicable"}`. That is the minimal honest
   shape: the DB CHECK refuses an empty `dimensions`, `must_push`/`should_push` require a `timeliness`
-  entry, and `not_applicable` produces no component target at all (`learning/supervision.py`). The
-  reviewers read the headline, the card and the decision -- they did not read the frozen evidence
-  snapshot, so a `factual_fidelity`, `asset_grounding` or `why_*` label from this batch would be a
-  fabricated citation. These cases enter the corpus with `targets=()`; their value is an end-to-end
-  baseline and a seed pool, not component supervision.
-- The auditor identity goes in `reviewer` (a principal subject, <= 64 chars). `label_source` is a closed
-  enum that only governs the taxonomy axis, so it stays untouched.
+  entry, and `not_applicable` claims nothing. The reviewers read the headline, the card and the
+  decision -- they did not read the frozen evidence snapshot, so a `factual_fidelity`,
+  `asset_grounding` or `why_*` label from this batch would be a fabricated citation. Their value is an
+  end-to-end reading of what the reader wanted, not component labels.
+- The auditor identity goes in `reviewer` (a principal subject, <= 64 chars).
 - `category` and the reviewer's sentence go in `note` as `category=<category>; <reason>`. 24 category
   values do not become an enum for one batch.
 - `gate_correct`, `throttle_correct` and `price_basis` are not written anywhere. The first two belong to
@@ -75,7 +73,7 @@ CONFIRMED_MISSES: Mapping[str, str] = {
 
 
 def should_push_for(review: Mapping[str, Any]) -> str:
-    """The audit verdict as a `news_review_v7` push label."""
+    """The audit verdict as a ReviewDesk push label."""
 
     verdict = str(review.get("verdict") or "")
     category = str(review.get("category") or "")
@@ -144,7 +142,7 @@ def main() -> None:
             queue = desk.open(
                 # The `event` branch resolves the Event's newest evidence version directly; it applies no
                 # look-back window, so an Event older than the queue's default 24 h still resolves.
-                DeskQuery(view="queue", mode="event", event=str(event_id), status="all"),
+                DeskQuery(view="queue", event=str(event_id), status="all"),
                 principal=principal,
             )
             rows = list(queue.get("tasks") or ())

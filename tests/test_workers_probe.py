@@ -165,3 +165,61 @@ def test_workers_runtime_status_truth_table(row, query_failed, state, reason) ->
     assert status["state"] == state
     assert status["unavailable_reason"] == reason
     assert status["heartbeat_stale_after_ms"] == 15_000
+
+
+def test_graceful_cleanup_closes_the_news_jev_connection_after_the_pipeline() -> None:
+    """#706: the optional News judgment connection is borrowed by semantic turns, so it closes last."""
+
+    import asyncio
+
+    from tracefold.app.workers.root import _graceful_cleanup
+    from tracefold.platform.observability import TelemetryRegistry
+
+    closed: list[str] = []
+
+    class _Pipeline:
+        async def drain(self) -> None:
+            closed.append("drain")
+
+        async def close(self) -> None:
+            closed.append("pipeline")
+
+    class _NewsUpdates:
+        async def aclose(self) -> None:
+            closed.append("news_judgment_connection")
+
+    class _Database:
+        def close_business_admission(self) -> None:
+            closed.append("business_admission")
+
+        async def drain_business(self, *, timeout_seconds: float) -> bool:
+            return True
+
+    class _Finite:
+        def close_admission(self) -> None:
+            return None
+
+        async def drain(self, *, timeout_seconds: float) -> bool:
+            return True
+
+        def close(self) -> None:
+            closed.append("finite")
+
+    async def cleanup() -> None:
+        from tracefold.app.workers.wiring.components import _Components
+
+        components = _Components(
+            news_pipeline=_Pipeline(),  # type: ignore[arg-type]
+            news_bus=None,
+            telemetry=TelemetryRegistry(),
+            news_updates=_NewsUpdates(),  # type: ignore[arg-type]
+        )
+        await _graceful_cleanup(
+            started_at=asyncio.get_running_loop().time(),
+            db=_Database(),  # type: ignore[arg-type]
+            finite=_Finite(),  # type: ignore[arg-type]
+            components=components,
+        )
+
+    asyncio.run(cleanup())
+    assert closed == ["drain", "business_admission", "pipeline", "news_judgment_connection", "finite"]

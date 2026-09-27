@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, ClassVar, Final, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
@@ -72,6 +72,28 @@ class StorageConfig(BaseModel):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
 
 
+_SECRET_SHAPED_KEY = re.compile(r"(?i)(^|[_-])(api[_-]?key|access[_-]?token|authorization|password|secret)($|[_-])")
+
+
+def _secret_shaped_key(value: Any, *, path: str) -> str | None:
+    """The path of the first credential-shaped key inside a JSON-like value, or None."""
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if _SECRET_SHAPED_KEY.search(str(key)):
+                return child_path
+            found = _secret_shaped_key(child, path=child_path)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _secret_shaped_key(child, path=f"{path}[]")
+            if found is not None:
+                return found
+    return None
+
+
 class LlmRequestConfig(BaseModel):
     """Provider-neutral controls for one OpenAI-compatible request envelope."""
 
@@ -98,6 +120,11 @@ class LlmRequestConfig(BaseModel):
         overlap = owned.intersection(self.extra_body)
         if overlap:
             raise ValueError(f"llm_request_extra_body_owned:{','.join(sorted(overlap))}")
+        # Credentials belong in api_key (or a secret file), never in a request body that model-call receipts
+        # and error paths may render. The path is named; the value never is.
+        secret_path = _secret_shaped_key(self.extra_body, path="extra_body")
+        if secret_path is not None:
+            raise ValueError(f"llm_request_extra_body_secret:{secret_path}")
         return self
 
 
@@ -149,10 +176,11 @@ class LlmFallbackConfig(_LlmEndpointConfig):
         return "llm_fallback_configuration_incomplete"
 
 
-class TradingSemanticsConfig(BaseModel):
-    """An optional, complete System One route independent of News models."""
+class _SystemOneRouteConfig(BaseModel):
+    """One optional, complete System One route: all three fields or none, and an HTTP(S) base URL."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    error_prefix: ClassVar[str]
 
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
@@ -165,17 +193,32 @@ class TradingSemanticsConfig(BaseModel):
         return normalized.rstrip("/") or None
 
     @model_validator(mode="after")
-    def complete_group(self) -> TradingSemanticsConfig:
+    def complete_group(self) -> Self:
         fields = (self.api_key, self.base_url, self.model)
         if any(fields) and not all(fields):
-            raise ValueError("trading_semantics_configuration_incomplete")
+            raise ValueError(f"{self.error_prefix}_configuration_incomplete")
         if self.base_url is not None and not _is_http_base_url(self.base_url):
-            raise ValueError("trading_semantics_base_url_invalid")
+            raise ValueError(f"{self.error_prefix}_base_url_invalid")
         return self
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key and self.base_url and self.model)
+
+
+class TradingSemanticsConfig(_SystemOneRouteConfig):
+    """An optional, complete System One route independent of News models."""
+
+    error_prefix: ClassVar[str] = "trading_semantics"
+
+
+class NewsJudgmentConfig(_SystemOneRouteConfig):
+    """The optional News Jev judgment route (#706). It is never inferred from `trading_semantics`.
+
+    Unset, every News judgment runs on the generative News endpoints.
+    """
+
+    error_prefix: ClassVar[str] = "news_judgment"
 
 
 class LlmConfig(BaseModel):
@@ -185,21 +228,15 @@ class LlmConfig(BaseModel):
     base_url: str | None = Field(default=None, repr=False)
     news_triage_model: str | None = None
     request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
-    # Four optional endpoints with one shape. Only the triage fallback names its own incomplete-
-    # configuration code, because `llm_fallback_without_primary` reads next to it; the other three
+    # Three optional endpoints with one shape. Only the triage fallback names its own incomplete-
+    # configuration code, because `llm_fallback_without_primary` reads next to it; the other two
     # say `llm_endpoint_configuration_incomplete` and the field path in the error names which one
     # (#589 P-F12).
     news_reader_card: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     news_reader_card_fallback: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
-    # The GEPA reflection endpoint -- deliberately not the task endpoint (#143). DSPy's own guidance
-    # is that "when optimizing smaller models, it's worthwhile to use a larger model as the
-    # `reflection_lm`", and the compiler used to pass the task endpoint object for both. That made
-    # the local 27B student its own teacher, gave the reflection call the task route's 1,200-token
-    # ceiling (it has to emit a whole new instruction) and its 20 s route deadline, and pointed a
-    # multi-hour optimization run at the same single-slot GPU production Triage runs on.
-    news_compiler_reflection: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
     trading_semantics: TradingSemanticsConfig = Field(default_factory=TradingSemanticsConfig)
+    news_judgment: NewsJudgmentConfig = Field(default_factory=NewsJudgmentConfig)
 
     @field_validator("api_key", "news_triage_model", mode="before")
     @classmethod
@@ -340,31 +377,6 @@ class NewsTriageSettings(BaseModel):
     def validate_bounds(self) -> NewsTriageSettings:
         if not 1 <= self.concurrency <= 32:
             raise ValueError("news_triage_concurrency_invalid")
-        return self
-
-
-class NewsPolicySettings(BaseModel):
-    """The four operator-owned duplicate/safety knobs used by ``decide()``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    restatement_drop: bool = True
-    # This is duplicate evidence, not a reader quota. Zero disables the
-    # deterministic similarity check.
-    similarity_max: float = 0.25
-    # Exchange listing/delisting frames share one wire template but name different instruments, so
-    # they are exempt from the restatement drop and the similarity throttle.
-    listing_exempt_from_duplicate: bool = True
-    # #154: an artifact already this old when the provider pushed it is a replay, not news. Only
-    # x/twitter frames carry their own publication time; everything else is unaffected. Zero disables.
-    stale_source_max_age_s: int = 12 * 60 * 60
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> NewsPolicySettings:
-        if not 0.0 <= float(self.similarity_max) <= 1.0:
-            raise ValueError("news_policy_similarity_max_invalid")
-        if int(self.stale_source_max_age_s) < 0:
-            raise ValueError("news_policy_stale_source_max_age_s_invalid")
         return self
 
 
@@ -523,7 +535,6 @@ class NewsSettings(BaseModel):
     broker: NewsBrokerSettings = Field(default_factory=NewsBrokerSettings)
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
-    policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
     retention: NewsRetentionSettings = Field(default_factory=NewsRetentionSettings)
     venues: NewsVenuesSettings = Field(default_factory=NewsVenuesSettings)
     chain_tape: NewsChainTapeSettings = Field(default_factory=NewsChainTapeSettings)
@@ -867,17 +878,24 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
 
 @dataclass(frozen=True, slots=True)
 class NewsModelAvailability:
-    triage_configured: bool
-    triage_model: str | None
-    reader_card_model: str | None
-    reader_card_dedicated: bool
-    triage_fallback_model: str | None = None
-    reader_card_fallback_model: str | None = None
-    reader_card_fallback_dedicated: bool = False
+    """The News model routes a valid configuration describes, secret-free.
+
+    Extraction and the generative judgments run on the `news_triage_model` endpoint (and its fallback);
+    cards run on `news_reader_card`, or on the extraction endpoint when no dedicated one is configured.
+    `news_judgment_model` is the optional Jev route; `None` means generative judgments.
+    """
+
+    extraction_model: str | None
+    card_model: str | None
+    card_dedicated: bool
+    extraction_fallback_model: str | None = None
+    card_fallback_model: str | None = None
+    card_fallback_dedicated: bool = False
+    news_judgment_model: str | None = None
 
     @property
-    def program_configured(self) -> bool:
-        return bool(self.triage_configured and self.triage_model and self.reader_card_model)
+    def configured(self) -> bool:
+        return bool(self.extraction_model and self.card_model)
 
 
 def news_model_availability(settings: Settings) -> NewsModelAvailability:
@@ -889,22 +907,23 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
     fallback_ok = triage and fallback.configured and _is_http_base_url(fallback.base_url)
     reader_fallback = settings.llm.news_reader_card_fallback
     reader_fallback_ok = fallback_ok and reader_fallback.configured and _is_http_base_url(reader_fallback.base_url)
+    judgment = settings.llm.news_judgment
     return NewsModelAvailability(
-        triage_configured=triage,
-        triage_model=settings.llm.news_triage_model if triage else None,
-        reader_card_model=(
+        extraction_model=settings.llm.news_triage_model if triage else None,
+        card_model=(
             reader.model if reader_ok else settings.llm.news_triage_model if triage and not reader.configured else None
         ),
-        reader_card_dedicated=bool(reader_ok),
-        triage_fallback_model=fallback.model if fallback_ok else None,
-        reader_card_fallback_model=(
+        card_dedicated=bool(reader_ok),
+        extraction_fallback_model=fallback.model if fallback_ok else None,
+        card_fallback_model=(
             reader_fallback.model
             if reader_fallback_ok
             else fallback.model
             if fallback_ok and not reader_fallback.configured
             else None
         ),
-        reader_card_fallback_dedicated=bool(reader_fallback_ok),
+        card_fallback_dedicated=bool(reader_fallback_ok),
+        news_judgment_model=judgment.model if judgment.configured else None,
     )
 
 

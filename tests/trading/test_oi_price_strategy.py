@@ -36,7 +36,7 @@ def test_event_plans_use_closed_bars_and_atr_for_both_sources(kind: str) -> None
     source = (
         {"kind": "oi", "oi_change_bps": -400, "measurement_definition": "exchange-open-interest-v1"}
         if kind == "oi"
-        else {"kind": "catalyst", "headline": "A visible announcement"}
+        else {"kind": "catalyst_delta", "text": "[cl:a] A visible announcement"}
     )
     plans = _plans(source=source)
     assert len(plans) == 4
@@ -65,41 +65,41 @@ def test_missing_oi_definition_creates_no_plan() -> None:
     assert _plans(source={"kind": "oi", "oi_change_bps": 100}) == ()
 
 
-@pytest.mark.parametrize("text", [{"headline": "A reported announcement"}, {"why": "A reported explanation"}])
-def test_public_catalyst_text_qualifies_source(text: dict[str, str]) -> None:
-    assert _plans(source={"kind": "catalyst", **text})
+def test_public_catalyst_text_qualifies_source() -> None:
+    assert _plans(source={"kind": "catalyst_delta", "text": "[cl:a] A reported announcement"})
 
 
 @pytest.mark.parametrize(
     "text",
     [
         {},
-        {"headline_zh": "News internal text"},
-        {"title": "Provider title"},
-        {"why_zh": "News internal explanation"},
-        {"headline": "", "why": " \t\n"},
-        {"headline": 123, "why": True},
-        {"headline": None, "why": {"text": "not a string"}},
-        {"headline": " ", "why": None, "headline_zh": "Must not rescue the public text"},
+        {"text": "", "headline": "A retired alias"},
+        {"text": " \t\n", "why": "A retired alias"},
+        {"text": 123},
+        {"text": None, "claims": [{"statement": "A claim statement is not the public text"}]},
+        {"headline_zh": "News internal text", "why_zh": "News internal explanation"},
     ],
 )
 def test_missing_public_text_cannot_be_rescued_by_alias(text: dict[str, object]) -> None:
-    source = {"kind": "catalyst", **text}
+    source = {"kind": "catalyst_delta", **text}
     before = deepcopy(source)
     assert _plans(source=source) == ()
     assert source == before
 
 
+def test_retired_headline_why_catalyst_is_not_a_source() -> None:
+    assert _plans(source={"kind": "catalyst", "headline": "Old headline", "why": "Old why"}) == ()
+    assert catalyst_text_values({"kind": "catalyst", "headline": "Old headline", "text": "Old"}) == {}
+
+
 def test_public_text_projection_preserves_verbatim_values_without_aliases() -> None:
     source = {
-        "kind": "catalyst",
-        "headline": "  Public headline\n",
-        "why": "Public explanation",
-        "title": "Different provider title",
-        "headline_zh": "Different internal headline",
-        "why_zh": "Different internal explanation",
+        "kind": "catalyst_delta",
+        "text": "  [cl:a] Public projection\n",
+        "headline": "Different retired headline",
+        "why": "Different retired explanation",
     }
     before = deepcopy(source)
-    assert catalyst_text_values(source) == {"headline": source["headline"], "why": source["why"]}
+    assert catalyst_text_values(source) == {"text": source["text"]}
     assert source == before
     assert catalyst_text_values({**source, "kind": "oi"}) == {}

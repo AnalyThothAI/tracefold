@@ -3,11 +3,10 @@ from __future__ import annotations
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_judgment import scored_judgment
+from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
-from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.models import TriageVerdict
 
 pytestmark = pytest.mark.integration
 
@@ -81,7 +80,7 @@ def _seed_current_event(repos, *, event_id: str, at_ms: int, judged: bool) -> st
             headline_zh="保留证据",
             why_zh="",
         )
-        judgment = scored_judgment(verdict)
+        judgment = legacy_judgment(verdict)
         runtime_manifest_sha = "b" * 64
         program_sha = "a" * 64
         verdict_payload = verdict.model_dump(mode="json")
@@ -92,7 +91,7 @@ def _seed_current_event(repos, *, event_id: str, at_ms: int, judged: bool) -> st
             "verdict_sha256": canonical_sha(verdict_payload),
             "editorial_sha256": judgment.editorial.editorial_sha256,
             "runtime_manifest_sha": runtime_manifest_sha,
-            "program_version": PROGRAM_VERSION,
+            "program_version": LEGACY_PROGRAM_VERSION,
             "program_sha256": program_sha,
             "evidence_version": int(evidence["evidence_version"]),
             "evidence_sha256": str(evidence["evidence_sha256"]),
@@ -103,7 +102,7 @@ def _seed_current_event(repos, *, event_id: str, at_ms: int, judged: bool) -> st
         repos.news.insert_verdict(
             event_id=event_id,
             stage="triage",
-            policy_version=TRIAGE_POLICY_VERSION,
+            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
             judgment_contract_version=judgment.judgment_contract_version,
             judgment_origin="model",
             rule_baseline_decision="drop",
@@ -111,11 +110,11 @@ def _seed_current_event(repos, *, event_id: str, at_ms: int, judged: bool) -> st
             override_rule=None,
             throttled_by=None,
             verdict=verdict_payload,
-            model_editorial=judgment.editorial.model_dump(mode="json"),
+            model_editorial=judgment.editorial.document,
             judgment_sha256=judgment.scored_judgment_sha256,
             runtime_manifest_sha=runtime_manifest_sha,
             model="retention-fixture",
-            program_version=PROGRAM_VERSION,
+            program_version=LEGACY_PROGRAM_VERSION,
             program_sha256=program_sha,
             degraded=False,
             error_code=None,

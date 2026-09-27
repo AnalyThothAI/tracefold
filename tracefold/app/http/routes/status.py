@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from tracefold.app.learning_runtime import compose_news_models
 from tracefold.app.workers.runtime import NEWS_DELIVERY, workers_runtime_status
 from tracefold.news.health import status_health
 from tracefold.news.market_review.instruments import grounding_rollup
@@ -28,6 +29,7 @@ def get_news_status(request: Request) -> Response:
     settings = runtime.settings
     with runtime.repositories() as repos:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
+        semantic = repos.news.semantic_status(now_ms=now_ms)
         workers_runtime_row = repos.workers_runtime_row()
         workers_state, _ = _news_workers_observation(workers_runtime_row, now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
@@ -55,15 +57,24 @@ def get_news_status(request: Request) -> Response:
         "last_publish_error_at_ms": observed.get("last_publish_error_at_ms"),
     }
     ingest = {**snapshot["ingest"], "token_configured": bool(settings.news.opennews_token)}
+    runtime_models = compose_news_models(settings)
     pipeline = {
         **snapshot["pipeline"],
         **grounding,
-        "triage_model": models.triage_model,
-        "reader_card_model": models.reader_card_model,
-        "reader_card_dedicated": models.reader_card_dedicated,
-        "triage_fallback_model": models.triage_fallback_model,
-        "reader_card_fallback_model": models.reader_card_fallback_model,
-        "reader_card_fallback_dedicated": models.reader_card_fallback_dedicated,
+        # The EventUpdate stage (#706): model health is judged on these, not on legacy verdicts.
+        **semantic,
+        # The configured model routes, secret-free: extraction and generative judgments share one
+        # endpoint, cards another, and News Jev is an optional judgment backend of its own.
+        "extraction_model": models.extraction_model,
+        "extraction_fallback_model": models.extraction_fallback_model,
+        "card_model": models.card_model,
+        "card_dedicated": models.card_dedicated,
+        "card_fallback_model": models.card_fallback_model,
+        "card_fallback_dedicated": models.card_fallback_dedicated,
+        "news_judgment_configured": models.news_judgment_model is not None,
+        "judgment_backend": None if runtime_models is None else runtime_models.status()["judgment_backend"],
+        "judgment_model": None if runtime_models is None else runtime_models.status()["judgment_model"],
+        "news_program_identity": None if runtime_models is None else runtime_models.program_identity,
     }
     delivery = {
         **snapshot["delivery"],
@@ -84,7 +95,7 @@ def get_news_status(request: Request) -> Response:
         workers_state=workers_state,
         now_ms=now_ms,
         enabled=bool(settings.news.enabled),
-        model_configured=models.program_configured,
+        model_configured=models.configured,
     )
     state = _derive_state(
         ingest=ingest,

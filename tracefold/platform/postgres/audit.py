@@ -95,6 +95,14 @@ NEWS_TABLES = (
     "news_verdicts",
     "news_deliveries",
     "news_delivery_queue",
+    "news_item_revisions",
+    "news_semantic_work",
+    "news_semantic_checkpoints",
+    "news_semantic_observations",
+    "news_event_updates",
+    "news_event_update_heads",
+    "news_judgment_cache",
+    "news_notification_work",
     "news_reviews",
     "news_external_miss_snapshots",
     "news_market_instruments",
@@ -150,6 +158,7 @@ TRADING_TABLES = (
     "trading_execution_observations",
     "trading_execution_runtime_control_state",
     "trading_execution_runtime_state",
+    "trading_source_amendments",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
@@ -508,7 +517,7 @@ class ProjectionValidationAudit:
               SELECT count(*)::integer AS count
               FROM news_deliveries
               WHERE (state = 'sending' AND settled_at_ms IS NOT NULL)
-                 OR (state IN ('sent', 'terminal') AND settled_at_ms IS NULL)
+                 OR (state IN ('sent', 'terminal', 'ambiguous') AND settled_at_ms IS NULL)
                  OR (state = 'sent' AND error_code IS NOT NULL)
                  OR jsonb_typeof(card) <> 'object'
             ),

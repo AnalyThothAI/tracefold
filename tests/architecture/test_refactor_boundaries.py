@@ -119,20 +119,13 @@ def test_workers_root_owns_lifecycle_but_not_capability_construction() -> None:
     assert sorted(imported for imported in imports if imported.startswith(forbidden)) == []
 
 
-# #202 §12. The online plane may observe, review and monitor a canary; it may not optimize. This is the
-# only test here that measures what a *process* loads rather than what a file names, because that is the
-# claim: an import three hops down a wiring chain reaches the optimizer exactly as surely as a direct one.
+# #202 §12, narrowed by #706. The online plane runs the News Agent; the operator's card judge, its
+# calibration and the human ReviewDesk are offline tools it never loads. This is the only test here that
+# measures what a *process* loads rather than what a file names, because that is the claim: an import
+# three hops down a wiring chain reaches an operator tool exactly as surely as a direct one.
 WORKER_FORBIDDEN_AUTHORITY_MODULES = (
-    "tracefold.news.learning.dataset",
-    "tracefold.news.learning.evaluation_history",
-    "tracefold.news.learning.ledger",
-    "tracefold.news.release.candidate",
-    "tracefold.news.learning.optimizer",
-    "tracefold.news.learning.baseline",
-    "tracefold.news.learning.evaluate",
-    "tracefold.news.learning.judge",
-    "tracefold.news.review.drafter",
-    "tracefold.news.review.desk",
+    "tracefold.news.learning",
+    "tracefold.news.review",
 )
 
 
@@ -162,9 +155,9 @@ def _module_file(module: str) -> Path | None:
 def _every_import(path: Path) -> set[str]:
     """Every module this file names, at any depth — including inside a function body.
 
-    `ast.walk`, not `tree.body`, and that is the whole point: `app/workers/wiring/news.py` already imports
-    `learning.canary` from inside `_wire_news_pipeline`, so a boundary that only reads top-level imports
-    would miss exactly the pattern this codebase actually uses to defer a heavy import.
+    `ast.walk`, not `tree.body`, and that is the whole point: the wiring modules import heavy owners from
+    inside functions, so a boundary that only reads top-level imports would miss exactly the pattern this
+    codebase actually uses to defer a heavy import.
     """
 
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -200,26 +193,20 @@ def _worker_import_closure() -> set[str]:
     return seen
 
 
-def test_online_worker_cannot_reach_offline_learning_or_release_authorities() -> None:
+def test_online_worker_cannot_reach_the_operator_judge_or_review_desk() -> None:
     """Two measurements of one claim, because each catches what the other cannot.
 
-    The static half follows every import at any depth, transitively — a lazy import inside
-    `_wire_news_pipeline` reaches the optimizer exactly as surely as a top-level one, and this codebase
-    already defers heavy imports that way. The process half below then catches what a source read cannot:
-    a dynamic import, or a module pulled in by something the walk resolved as third-party.
-
-    What the online route legitimately reaches is `dspy` — it *runs* a DSPy Program, and dspy's own package
-    pulls `dspy.teleprompt`, which pulls `gepa`. That is the optimizer library, not this repository's
-    optimizer, and nothing in the worker can start a run with it. `learning.canary` and `learning.contracts`
-    are in and belong in: arming, tripping and validating an image-carried candidate is release control,
-    and it is online by nature.
+    The static half follows every import at any depth, transitively — a lazy import inside a wiring
+    function reaches an operator tool exactly as surely as a top-level one, and this codebase already
+    defers heavy imports that way. The process half below then catches what a source read cannot: a
+    dynamic import, or a module pulled in by something the walk resolved as third-party.
     """
 
     reachable = _worker_import_closure()
     assert _forbidden_worker_authorities(reachable) == []
 
 
-def test_online_worker_process_does_not_load_offline_learning_or_release_authorities() -> None:
+def test_online_worker_process_does_not_load_the_operator_judge_or_review_desk() -> None:
     """The dynamic half: a fresh interpreter, because a test session has already loaded half the repo.
 
     Weaker than the static walk above — it sees only module-level imports — and kept beside it because it
@@ -231,7 +218,7 @@ def test_online_worker_process_does_not_load_offline_learning_or_release_authori
         "import tracefold.app.workers.root\n"
         "from tracefold.app.workers import wiring\n"
         "print(json.dumps(sorted(m for m in sys.modules "
-        "if m.startswith(('tracefold.news.learning', 'tracefold.news.review', 'tracefold.news.release')))))\n"
+        "if m.startswith(('tracefold.news.learning', 'tracefold.news.review')))))\n"
     )
     completed = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT, check=False)
     assert completed.returncode == 0, completed.stderr[-2000:]

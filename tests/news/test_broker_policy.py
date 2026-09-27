@@ -152,29 +152,23 @@ def test_the_application_never_publishes_to_the_cut_retry_lane() -> None:
     assert rabbitmq.topology().exchange_names == ("news", "news.dlx")
 
 
-def test_the_triage_circuit_has_no_process_memory_branch_over_durable_incident_state() -> None:
-    """#400 Workstream B: nothing may decide a PostgreSQL incident transition from a remembered edge.
-
-    The two writes have to be reachable from state that a retried transaction can re-derive, and neither
-    may be wrapped in a suppression that turns a failed durable write into a silent success.
+def test_the_semantic_provider_incident_is_reconciled_at_startup_and_never_suppressed() -> None:
+    """#400 Workstream B, kept for the semantic stage (#706): the durable outage incident is reconciled when
+    the consumer starts, and neither transition sits inside a suppression that turns a failed durable
+    write into a silent success.
     """
 
     import inspect
 
-    from tracefold.news.pipeline import triage
+    from tracefold.news.pipeline import semantic
 
-    # Startup reconciliation must fail the Workers root, so it cannot sit inside a suppression.
-    run_source = inspect.getsource(triage.TriageConsumer.run)
-    assert "news_triage_circuit_reconcile" in run_source
+    run_source = inspect.getsource(semantic.SemanticWorker.run)
+    assert "news_semantic_incident_reconcile" in run_source
     assert "suppress" not in run_source
-
-    # Exactly one place writes the incident, and the persist transaction is what calls it.
-    source = inspect.getsource(triage)
+    source = inspect.getsource(semantic)
     assert source.count("open_incident(") == 1
-    assert source.count("close_open_incidents(") == 2  # the persist transition and startup reconciliation
-    assert "_apply_circuit_incident(repos, s.circuit_incident" in source
-    # The transition is derived, never remembered: no attribute on the consumer holds incident state.
-    assert not [name for name in vars(triage.TriageConsumer) if "incident" in name]
+    assert source.count("close_open_incidents(") == 2  # the recovery transition and startup reconciliation
+    assert "suppress" not in source
 
 
 def test_declared_queue_arguments_carry_nothing_the_policy_owns() -> None:

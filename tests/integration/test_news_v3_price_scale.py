@@ -177,8 +177,10 @@ def _seed(conn: Any) -> None:
         conn.commit()
     conn.execute(
         """
-        INSERT INTO news_deliveries (event_id, kind, state, card, attempted_at_ms, settled_at_ms, created_at_ms)
-        SELECT 'e-' || g, 'first', 'sent', '{}'::jsonb, %s + g * %s::bigint, %s + g * %s::bigint, %s + g * %s::bigint
+        INSERT INTO news_deliveries (intent_id, event_id, kind, state, card, attempted_at_ms, settled_at_ms,
+                                     created_at_ms)
+        SELECT news_identity('legacy_intent', jsonb_build_array('e-' || g, 'first')), 'e-' || g, 'first', 'sent',
+               '{}'::jsonb, %s + g * %s::bigint, %s + g * %s::bigint, %s + g * %s::bigint
           FROM generate_series(1, %s) AS g WHERE g %% 4 = 0
         """,
         (window_start, step, window_start, step, window_start, step, EVENTS),

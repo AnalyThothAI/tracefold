@@ -22,6 +22,26 @@ function words(value: unknown): string {
   return Array.isArray(value) ? value.map(word).join(", ") : "—";
 }
 
+const SOURCE_TEXT_MAX = 160;
+
+/**
+ * The frozen source's own words. A News EventUpdate source (#706: `catalyst_delta`/`source_update`) carries
+ * claims and a deterministic `text`, never a headline: the first claim statement reads as the source, else
+ * the head of `text`. A legacy catalyst keeps its headline/why and an OI source its kind, as before.
+ */
+function sourceLabel(source: Record<string, unknown> | null): string {
+  if (source?.kind === "catalyst_delta" || source?.kind === "source_update") {
+    const claims = Array.isArray(source.claims) ? source.claims : [];
+    const statement = claims
+      .map((claim) => record(claim)?.statement)
+      .find((value): value is string => typeof value === "string" && value.trim() !== "");
+    if (statement) return statement.trim();
+    const text = typeof source.text === "string" ? source.text.trim() : "";
+    if (text) return text.length > SOURCE_TEXT_MAX ? `${text.slice(0, SOURCE_TEXT_MAX)}…` : text;
+  }
+  return word(source?.headline ?? source?.why ?? source?.kind);
+}
+
 function attemptClock(value: number | null | undefined): string {
   if (value == null) return "—";
   const date = new Date(value);
@@ -351,7 +371,7 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
         {openReplay && replay.data ? (
           <div>
             {replay.data.status !== "ok" ? <p>回放状态：{replay.data.status}</p> : null}
-            <p>来源：{word(source?.headline ?? source?.why ?? source?.kind)}</p>
+            <p>来源：{sourceLabel(source)}</p>
             <p>证据截止：{caseClock(Number(evidence?.knowledge_cutoff_ms) || null)}</p>
             <p>计划行情来源：Binance USD-M · {word(evidence?.data_environment)}</p>
             <p>

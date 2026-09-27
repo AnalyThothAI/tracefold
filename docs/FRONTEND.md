@@ -723,11 +723,16 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     rail while a held row shows only its grey `reason_zh` — no rule, admission,
     decision, or score keys anywhere; and every row with a verdict shows the
     direction chip (利多 filled red / 利空 filled green / 中性 quiet text, each
-    with its own arrow). On `/news/events/:eventId`, verify hero (outcome +
-    reason, headline, direction + 事实类型 + 把握, why, the
-    taxonomy `事件族/变化状态/来源权威/断言状态/主题` followed by the diagnostic
-    `旧分类` and `SCOPE/NOVELTY/ACTIONABLE/MEMBERS` grid with framed cells,
-    主要标的 vs 提及), the timeline with `+Δ` and an end-to-end figure,
+    with its own arrow); a News Agent row (#706) has no direction chip and heads
+    with the server's `update.headline`. On `/news/events/:eventId`, verify hero
+    (outcome + reason, headline, a legacy verdict's direction, the head's topics,
+    assets); for a News Agent Event the sections 新增了什么 (changes against the
+    previous claim), 命题 (each claim's mode/phase/时间/条件/数值 and citations),
+    来源与分歧 (per-source supports/refutes/reports), 推断与缺口 (inference
+    labelled as such, and open questions) and 处理状态 (semantic work, the
+    notification plan's per-claim decisions, and each intent's state and sent
+    body); for a legacy Event the 旧版判定 panel (why, 判定/来源权威/范围/把握/
+    新颖度/事实类型, 主要标的 vs 提及) and no retired taxonomy cells; the timeline with `+Δ` and an end-to-end figure,
     同类报道 and a collapsed 技术详情 appear in that order
     with no market-mark table — the two #88 market blocks (`当前报价` and
     `事件后反应`) are separate cards, never one table, because a rolling change and a

@@ -1,6 +1,6 @@
 """Telegram News delivery: one configured channel and one outbound attempt.
 
-Every card here is built by the renderer production builds it with (`news_reader_card`,
+Every card here is built by the renderer production builds it with (`news_update_card`,
 `market_reader_card`) and handed to the sender as the `ReaderCard` value object. The adapter used to
 receive Feishu's JSON and read the card back out of the rendered markdown, so these tests used to
 assert on a string round trip through a second channel's serializer (#562 PR-C).
@@ -21,6 +21,8 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
+from tests.support.news_update_cards import adopted, asset, draft, plan_for
+from tests.support.news_update_cards import source as update_source
 from tracefold.integrations.telegram import (
     _SECTION_SEPARATOR,
     _TELEGRAM_RESPONSE_MAX_BYTES,
@@ -39,10 +41,13 @@ from tracefold.news import (
     ReaderMarketMovement,
     ReaderTradeTarget,
 )
-from tracefold.news.delivery import news_reader_card
+from tracefold.news.delivery import news_update_card
 from tracefold.news.feishu_card import feishu_card
 from tracefold.news.market_notifications import MarketObservation, MarketTrack, market_reader_card
 from tracefold.news.reader_card import ReaderCard, ReaderCardLink
+from tracefold.news.updates.contracts import SupportDraft
+from tracefold.news.updates.identity import digest
+from tracefold.news.updates.notification import FrozenCard
 
 CHANNEL_ID = -1001234567890
 BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12345"
@@ -84,42 +89,44 @@ def _card(
     source_url: str = "https://www.coindesk.com/news/1",
     title: str = "BTC ETF 净流入",
     lead: str = "连续第三日净流入",
-    direction: str = "bullish",
-    fact_kind: str = "quantified_flow",
-    novelty: str = "progression",
+    change: str = "new_fact",
     assets: Sequence[str] = ("BTC",),
     origin: str = "CoinDesk",
     member_count: int = 2,
-    decision: str = "push",
-    degraded: bool = False,
-    description: str = "",
+    key: bool = False,
     quotes: Sequence[Mapping[str, Any]] = (),
 ) -> ReaderCard:
-    """One News first card, from the builder the Deliverer uses."""
+    """One News update card, from the builder the Deliverer uses, around one frozen claim line.
 
-    return news_reader_card(
-        event={
-            "event_id": "abc12345" + "f" * 56,
-            "leader_title": title,
-            "leader_description": description,
-            "leader_url": source_url,
-            "reporting_origin": origin,
-            "member_count": member_count,
-            "leader_published_at_ms": NEWS_AT_MS,
-        },
-        verdict={
-            "direction": direction,
-            "fact_kind": fact_kind,
-            "novelty": novelty,
-            "headline_zh": title,
-            "why_zh": lead,
-        },
-        decision=decision,
-        grounded_assets=list(assets),
-        assets=list(assets),
-        degraded=degraded,
-        quotes=list(quotes),
+    The frozen card is built directly rather than through `freeze_card`, so an adapter test may hand the
+    channel any copy at all -- markup, a very long line -- and see what the channel does with it.
+    """
+
+    main = update_source(
+        "BTC ETF inflows for a third day.",
+        origin=origin or None,
+        url=source_url or None,
+        published_at_ms=NEWS_AT_MS,
+        available_at_ms=NEWS_AT_MS,
     )
+    others = [update_source(f"Report {index}", origin=origin or None) for index in range(member_count - 1)]
+    update = adopted(
+        (draft("a", main, assets=tuple(asset(symbol, "crypto") for symbol in assets)), main),
+        extra=others,
+        supports=[SupportDraft(slot="a", evidence_ref=item.ref, relation="supports") for item in others],
+        event_id="abc12345" + "f" * 56,
+        changes=() if change == "new_fact" else (("a", change),),
+    )
+    plan = plan_for(update, key=key)
+    body = f"{title}\n\n{lead}"
+    card = FrozenCard(
+        intent_id=plan.intent_id,
+        claim_refs=plan.selected_claim_refs,
+        headline_zh=title,
+        body=body,
+        payload_sha256=digest(body),
+    )
+    return news_update_card(card, plan=plan, update=update, assets=list(assets), quotes=list(quotes))
 
 
 def _market_card(
@@ -202,17 +209,18 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
 
     assert observed["chat_id"] == CHANNEL_ID
     assert _without_timing(observed["text"]) == (
-        "🟢 <b>BTC ETF 净流入</b>\n\n"
-        "🔄 <b>新进展</b>\n\n"
+        "⚪ <b>BTC ETF 净流入</b>\n\n"
+        "🆕 <b>新增</b>\n\n"
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>  BTC\n"
         "新闻后 暂无\n"
         "1h 暂无，\n"
         "24h 暂无\n\n"
-        "🧭 <b>方向</b>  利多 · 资金流\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
         "Tracefold · abc12345"
     )
+    # No model judgment reaches the channel: no direction chip, novelty band or fact kind.
+    assert "🧭" not in str(observed["text"]) and "方向" not in str(observed["text"])
     assert observed["parse_mode"] == "HTML"
     assert observed["link_preview_options"] == {"is_disabled": True}
     assert "reply_markup" not in observed
@@ -236,8 +244,7 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
             "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
             "压低美光产能利用率与现金流。"
         ),
-        direction="bearish",
-        fact_kind="new_quantity",
+        change="phase_change",
         assets=("MU",),
         origin="jukan05",
         member_count=1,
@@ -283,22 +290,13 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
                 ),
             ),
             news_at_ms=1_787_885_301_000,
-            observed_at_ms=1_787_885_301_000,
-            novelty="progression",
-            progression_from_headline="美光工会此前启动劳资协商",
-            progression_review_state="confirmed",
-            progression_review_reason="同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。",
-            progression_review_parent_age_minutes=61,
-            progression_review_parent_message_id=41,
         ),
     )
 
     ticker = '<a href="https://www.binance.com/en/futures/MUUSDT">MU</a>'
     assert observed["text"] == (
-        "🔴 <b>美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制</b>\n\n"
-        "🔄 <b>新进展</b>\n"
-        "<blockquote>✅ <b>已确认关联</b>\n"
-        '↳ <a href="https://t.me/c/1234567890/41">此前：美光工会此前启动劳资协商</a> · 1h 1mins 前</blockquote>\n\n'
+        "⚪ <b>美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制</b>\n\n"
+        "🔄 <b>更新</b>\n\n"
         "美光约 60% 全球产能集中在台湾，是 HBM 先进制程的主力基地，工会参照三星 10.5%、"
         "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
         "压低美光产能利用率与现金流。\n\n"
@@ -306,8 +304,6 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
         "新闻后 0.00%\n"
         "1h -0.25%，\n"
         "24h -5.11%\n\n"
-        "🧭 <b>方向</b>  利空 · 新数据\n"
-        "\n"
         "新闻时间  10:48\n"
         "推送时间  10:48\n"
         '🔗 <b>来源</b>  <a href="https://x.com/jukan05/status/1234567890123456789">jukan05 的推特</a>\n'
@@ -315,15 +311,12 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
     )
 
 
-def test_sender_does_not_render_unclear_direction_or_fact_kind_as_trade_targets() -> None:
+def test_sender_renders_one_asset_block_and_no_model_judgment_beside_it() -> None:
     observed: dict[str, object] = {}
     card = _card(
         source_url="https://x.com/FirstSquawk/status/1234567890123456789",
         title="中国存储芯片厂商长鑫存储起诉五角大楼，挑战涉军企业清单指定",
         lead="长鑫存储在美国法院起诉，要求撤销五角大楼将其列入涉军企业清单的决定。",
-        direction="unclear",
-        fact_kind="state_change",
-        novelty="new_fact",
         assets=("CXMT",),
         origin="FirstSquawk",
         member_count=1,
@@ -367,7 +360,6 @@ def test_sender_does_not_render_unclear_direction_or_fact_kind_as_trade_targets(
                     one_hour_state="available",
                 ),
             ),
-            novelty="new_fact",
         ),
     )
 
@@ -376,22 +368,19 @@ def test_sender_does_not_render_unclear_direction_or_fact_kind_as_trade_targets(
     assert "🎯 <b>标的</b>  方向待定" not in text
     assert "🎯 <b>标的</b>  状态变化" not in text
     assert '<a href="https://www.binance.com/en/futures/CXMTUSDT">CXMT</a>' in text
-    assert "🧭 <b>方向</b>  方向待定 · 状态变化" in text
+    assert "🧭" not in text and "方向" not in text
 
 
-def test_sender_puts_new_fact_below_title_and_explains_macro_events_without_a_ticker() -> None:
+def test_sender_puts_the_change_label_below_the_title_and_sends_a_macro_update_without_a_ticker() -> None:
     observed: dict[str, object] = {}
     card = _card(
         source_url="",
         title="美国 2026 年初步基准非农就业下修 7.9 万人",
         lead="官方就业基线整体下移，利率市场将重新定价劳动力转弱路径。",
-        direction="bearish",
-        fact_kind="new_quantity",
-        novelty="new_fact",
         assets=(),
         origin="jin10",
         member_count=1,
-        decision="escalate",
+        key=True,
     )
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -416,17 +405,13 @@ def test_sender_puts_new_fact_below_title_and_explains_macro_events_without_a_ti
         card,
         presentation=ReaderDeliveryPresentation(
             news_at_ms=1_787_925_762_000,
-            market_scope="macro",
-            novelty="new_fact",
         ),
     )
 
     assert observed["text"] == (
         "⚡ <b>美国 2026 年初步基准非农就业下修 7.9 万人</b>\n\n"
-        "🆕 <b>新事实</b>\n\n"
+        "🆕 <b>新增</b>\n\n"
         "官方就业基线整体下移，利率市场将重新定价劳动力转弱路径。\n\n"
-        "🌐 <b>影响范围</b>  宏观市场 · 暂无直接标的\n\n"
-        "🧭 <b>方向</b>  利空 · 新数据\n\n"
         "新闻时间  22:02\n"
         "推送时间  22:03\n"
         "🔗 <b>来源</b>  金十\n"
@@ -460,12 +445,7 @@ def test_sender_sends_pending_market_data_then_edits_the_same_message() -> None:
     initial = _send(
         sender,
         _card(),
-        presentation=ReaderDeliveryPresentation(
-            news_at_ms=1_787_885_301_000,
-            market_data_state="pending",
-            novelty="progression",
-            progression_review_state="pending",
-        ),
+        presentation=ReaderDeliveryPresentation(news_at_ms=1_787_885_301_000, market_data_state="pending"),
     )
     updated = _edit(
         sender,
@@ -474,67 +454,26 @@ def test_sender_sends_pending_market_data_then_edits_the_same_message() -> None:
         presentation=ReaderDeliveryPresentation(
             market_movements=(ReaderMarketMovement("BTC", 0, -25, -511, "available"),),
             news_at_ms=1_787_885_301_000,
-            novelty="progression",
-            progression_review_state="rejected",
-            progression_review_reason="候选报道的主体和事件链不同。",
         ),
     )
 
     assert [method for method, _payload in observed] == ["sendMessage", "editMessageText"]
     assert "新闻后 计算中\n1h 计算中，\n24h 计算中" in str(observed[0][1]["text"])
-    assert "🔄 <b>新进展</b>\n<blockquote>⏳ <b>关联确认中</b></blockquote>" in str(observed[0][1]["text"])
     assert observed[1][1]["chat_id"] == CHANNEL_ID
     assert observed[1][1]["message_id"] == 42
     assert "新闻后 0.00%\n1h -0.25%，\n24h -5.11%" in str(observed[1][1]["text"])
-    assert "🆕 <b>新事实</b>" in str(observed[1][1]["text"])
-    assert "🔄 <b>新进展</b>" not in str(observed[1][1]["text"])
-    assert "未确认关联" not in str(observed[1][1]["text"])
-    assert "候选报道的主体和事件链不同" not in str(observed[1][1]["text"])
-    assert "接续「" not in str(observed[1][1]["text"])
+    # The edit replaces only what the enrichment resolved; the frozen copy and its label are unchanged.
+    for text in (str(observed[0][1]["text"]), str(observed[1][1]["text"])):
+        assert "🆕 <b>新增</b>\n\n连续第三日净流入" in text
     assert "推送时间  10:48" in str(observed[1][1]["text"])
     assert initial["pushed_at_ms"] == 1_787_885_313_000
     assert updated["pushed_at_ms"] == initial["pushed_at_ms"]
     assert updated["edited_at_ms"] == 1_787_885_315_000
 
 
-def test_sender_hides_unavailable_progression_evidence_after_downgrading_to_new_fact() -> None:
-    observed: dict[str, object] = {}
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        preflight = _preflight_response(request)
-        if preflight is not None:
-            return preflight
-        observed.update(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
-        )
-
-    sender = TelegramNewsPushSender(
-        bot_token=BOT_TOKEN,
-        chat_id=CHANNEL_ID,
-        transport=httpx.MockTransport(handle),
-    )
-    sender.prepare()
-    _send(
-        sender,
-        _card(),
-        presentation=ReaderDeliveryPresentation(
-            novelty="progression",
-            progression_review_state="unavailable",
-            progression_review_reason="上游复核服务暂时不可用，\n请稍后确认。",
-        ),
-    )
-
-    assert "🆕 <b>新事实</b>" in str(observed["text"])
-    assert "🔄 <b>新进展</b>" not in str(observed["text"])
-    assert "关联待确认" not in str(observed["text"])
-    assert "上游复核服务暂时不可用" not in str(observed["text"])
-
-
 def test_sender_links_a_fresh_bitget_target_even_when_prices_are_unavailable() -> None:
     observed: dict[str, object] = {}
-    card = _card(lead="业绩改善", novelty="new_fact", assets=("2605",), origin="rtpr.io", member_count=1)
+    card = _card(lead="业绩改善", assets=("2605",), origin="rtpr.io", member_count=1)
 
     def handle(request: httpx.Request) -> httpx.Response:
         preflight = _preflight_response(request)
@@ -672,8 +611,8 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
 
     ticker = '<a href="https://www.binance.com/en/futures/BTCUSDT">BTC</a>'
     assert _without_timing(observed["text"]) == (
-        "🟢 <b>BTC ETF 净流入</b>\n\n"
-        "🔄 <b>新进展</b>\n\n"
+        "⚪ <b>BTC ETF 净流入</b>\n\n"
+        "🆕 <b>新增</b>\n\n"
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>  BTC-USDT\n"
         "新闻后 暂无\n"
@@ -683,7 +622,6 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
         "新闻后 暂无\n"
         "1h 暂无，\n"
         "24h 暂无\n\n"
-        "🧭 <b>方向</b>  利多 · 资金流\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
         "Tracefold · abc12345"
     )
@@ -694,9 +632,7 @@ def test_sender_renders_each_asset_in_its_own_complete_market_block() -> None:
     card = _card(
         source_url="https://x.com/serenity/status/1234567890123456789",
         lead="资金从 BTC 轮动至 ETH",
-        direction="bearish",
-        fact_kind="quantified_flow",
-        novelty="",
+        change="evidence_change",
         assets=("BTC", "ETH"),
         origin="serenity",
         member_count=1,
@@ -760,7 +696,8 @@ def test_sender_renders_each_asset_in_its_own_complete_market_block() -> None:
     btc = '<a href="https://www.binance.com/en/futures/BTCUSDT">BTC</a>'
     eth = '<a href="https://www.binance.com/en/trade/ETH_USDT">ETH</a>'
     assert _without_timing(observed["text"]) == (
-        "🔴 <b>BTC ETF 净流入</b>\n\n"
+        "⚪ <b>BTC ETF 净流入</b>\n\n"
+        "🔄 <b>更新</b>\n\n"
         "资金从 BTC 轮动至 ETH\n\n"
         f"🎯 <b>标的</b>  {btc}\n"
         "新闻后 +1.10%\n"
@@ -770,7 +707,6 @@ def test_sender_renders_each_asset_in_its_own_complete_market_block() -> None:
         "新闻后 -0.40%\n"
         "1h 暂无，\n"
         "24h +1.70%\n\n"
-        "🧭 <b>方向</b>  利空 · 资金流\n\n"
         '🔗 <b>来源</b>  <a href="https://x.com/serenity/status/1234567890123456789">serenity 的推特</a>\n'
         "Tracefold · abc12345"
     )
@@ -784,7 +720,6 @@ def test_sender_shows_the_news_and_push_times_to_the_minute() -> None:
     card = _card(
         source_url="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin",
         lead="现货 ETF 资金继续流入",
-        novelty="new_fact",
         origin="Bloomberg",
         member_count=1,
     )
@@ -811,7 +746,6 @@ def test_sender_shows_the_news_and_push_times_to_the_minute() -> None:
         card,
         presentation=ReaderDeliveryPresentation(
             news_at_ms=1_787_898_725_000,
-            observed_at_ms=1_787_898_725_000,
         ),
     )
 
@@ -989,7 +923,7 @@ def test_a_trade_link_cannot_leave_the_venue_its_own_template_names() -> None:
     """
 
     observed: dict[str, object] = {}
-    card = _card(lead="业绩改善", novelty="new_fact", assets=("ETH",), origin="rtpr.io", member_count=1)
+    card = _card(lead="业绩改善", assets=("ETH",), origin="rtpr.io", member_count=1)
 
     def handle(request: httpx.Request) -> httpx.Response:
         preflight = _preflight_response(request)
@@ -1035,7 +969,6 @@ def test_sender_never_turns_untrusted_ticker_destinations_into_links() -> None:
     card = _card(
         source_url="",
         lead="",
-        novelty="new_fact",
         assets=("BTC", "ETH", "SOL"),
         origin="Reuters",
         member_count=1,
@@ -1098,8 +1031,7 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
         source_url="https://www.reuters.com/world/example",
         title="A < B & <i>not markup</i>",
         lead="利润 < 预期 & 风险上升",
-        direction="bearish",
-        novelty="",
+        change="correction",
         assets=(),
         origin="Reuters",
         member_count=1,
@@ -1124,57 +1056,13 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
     _send(sender, card)
 
     assert observed["parse_mode"] == "HTML"
-    # The card model's own sanitizer already dropped the markdown-ish `>` from the untrusted title;
-    # everything that survives it reaches this channel escaped, so `<i` is text and never a tag.
+    # Frozen copy is sent as frozen, so every character reaches this channel escaped: `<i>` is text and
+    # never a tag.
     assert _without_timing(observed["text"]) == (
-        "🔴 <b>A &lt; B &amp; &lt;inot markup&lt;/i</b>\n\n"
+        "⚪ <b>A &lt; B &amp; &lt;i&gt;not markup&lt;/i&gt;</b>\n\n"
+        "✏️ <b>更正</b>\n\n"
         "利润 &lt; 预期 &amp; 风险上升\n\n"
-        "🧭 <b>方向</b>  利空 · 资金流\n\n"
         '🔗 <b>来源</b>  <a href="https://www.reuters.com/world/example">路透社</a>\n'
-        "Tracefold · abc12345"
-    )
-
-
-def test_degraded_card_uses_asset_label_instead_of_claiming_a_model_judgment() -> None:
-    observed: dict[str, object] = {}
-    card = _card(
-        source_url="",
-        title="交易所恢复提现",
-        assets=("BTC", "ETH"),
-        origin="opennews",
-        member_count=1,
-        degraded=True,
-    )
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        preflight = _preflight_response(request)
-        if preflight is not None:
-            return preflight
-        observed.update(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
-        )
-
-    sender = TelegramNewsPushSender(
-        bot_token=BOT_TOKEN,
-        chat_id=CHANNEL_ID,
-        transport=httpx.MockTransport(handle),
-    )
-    sender.prepare()
-    _send(sender, card)
-
-    assert _without_timing(observed["text"]) == (
-        "⚪ <b>交易所恢复提现</b>\n\n"
-        "🎯 <b>标的</b>  BTC\n"
-        "新闻后 暂无\n"
-        "1h 暂无，\n"
-        "24h 暂无\n\n"
-        "🎯 <b>标的</b>  ETH\n"
-        "新闻后 暂无\n"
-        "1h 暂无，\n"
-        "24h 暂无\n\n"
-        "🔗 <b>来源</b>  opennews\n"
         "Tracefold · abc12345"
     )
 
@@ -1527,23 +1415,11 @@ def test_a_public_channel_is_addressed_by_its_name_and_bound_to_the_id_it_answer
         transport=httpx.MockTransport(handle),
     )
     sender.prepare()
-    receipt = _send(
-        sender,
-        _card(),
-        presentation=ReaderDeliveryPresentation(
-            novelty="progression",
-            progression_from_headline="ETF 前一日净流入",
-            progression_review_state="confirmed",
-            progression_review_parent_age_minutes=61,
-            progression_review_parent_message_id=41,
-        ),
-    )
+    receipt = _send(sender, _card(), presentation=ReaderDeliveryPresentation())
 
     assert [entry["method"] for entry in observed] == ["getChat", "getMe", "getChatMember", "sendMessage"]
     assert observed[0]["chat_id"] == "@tracefold_feed"
     assert observed[-1]["chat_id"] == "@tracefold_feed"
-    # The parent link is the public channel's own permalink, not the private `t.me/c/<id>` form.
-    assert '<a href="https://t.me/tracefold_feed/41">此前：ETF 前一日净流入</a>' in str(observed[-1]["text"])
     assert receipt["message_id"] == 42
 
 
@@ -1658,8 +1534,7 @@ def test_an_over_long_card_is_clipped_rather_than_lost() -> None:
     text = str(observed["text"])
     assert receipt["message_id"] == 42
     assert len(_plain_html_text(text)) <= _TELEGRAM_TEXT_MAX
-    assert text.startswith("🟢 <b>BTC ETF 净流入</b>")
-    assert "连续第三日净流入" in text
+    assert text.startswith("⚪ <b>BTC ETF 净流入</b>\n\n🆕 <b>新增</b>\n\n连续第三日净流入")
     assert text.endswith(
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\nTracefold · abc12345'
     )
@@ -2092,8 +1967,8 @@ def test_an_oi_card_carries_the_news_lines_both_channels_take_from_one_list() ->
 def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> None:
     """The first send is the card as it stood; the edit is the same message, from the resolved card.
 
-    Nothing here re-reads the text of the first message: the quotes, the trade target, the movement
-    returns and the confirmed progression all arrive as an updated `ReaderCard` plus its presentation.
+    Nothing here re-reads the text of the first message: the quotes, the trade target and the movement
+    returns arrive as an updated `ReaderCard` plus its presentation, around the same frozen copy.
     """
 
     observed: list[tuple[str, dict[str, object]]] = []
@@ -2120,12 +1995,7 @@ def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> Non
     receipt = _send(
         sender,
         _card(),
-        presentation=ReaderDeliveryPresentation(
-            news_at_ms=NEWS_AT_MS,
-            market_data_state="pending",
-            novelty="progression",
-            progression_review_state="pending",
-        ),
+        presentation=ReaderDeliveryPresentation(news_at_ms=NEWS_AT_MS, market_data_state="pending"),
     )
     edited = _edit(
         sender,
@@ -2154,25 +2024,18 @@ def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> Non
             ),
             market_movements=(ReaderMarketMovement("BTC", 110, 80, 791, "available"),),
             news_at_ms=NEWS_AT_MS,
-            novelty="progression",
-            progression_from_headline="ETF 前一日净流入",
-            progression_review_state="confirmed",
-            progression_review_parent_age_minutes=61,
-            progression_review_parent_message_id=41,
         ),
     )
 
     assert [method for method, _payload in observed] == ["sendMessage", "editMessageText"]
     assert observed[0][1]["text"] == (
-        "🟢 <b>BTC ETF 净流入</b>\n\n"
-        "🔄 <b>新进展</b>\n"
-        "<blockquote>⏳ <b>关联确认中</b></blockquote>\n\n"
+        "⚪ <b>BTC ETF 净流入</b>\n\n"
+        "🆕 <b>新增</b>\n\n"
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>  BTC\n"
         "新闻后 计算中\n"
         "1h 计算中，\n"
         "24h 计算中\n\n"
-        "🧭 <b>方向</b>  利多 · 资金流\n\n"
         "新闻时间  14:32\n"
         "推送时间  14:32\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
@@ -2180,16 +2043,13 @@ def test_the_enrichment_edit_replaces_the_message_from_the_updated_card() -> Non
     )
     assert observed[1][1]["message_id"] == 42
     assert observed[1][1]["text"] == (
-        "🟢 <b>BTC ETF 净流入</b>\n\n"
-        "🔄 <b>新进展</b>\n"
-        "<blockquote>✅ <b>已确认关联</b>\n"
-        '↳ <a href="https://t.me/c/1234567890/41">此前：ETF 前一日净流入</a> · 1h 1mins 前</blockquote>\n\n'
+        "⚪ <b>BTC ETF 净流入</b>\n\n"
+        "🆕 <b>新增</b>\n\n"
         "连续第三日净流入\n\n"
         '🎯 <b>标的</b>  <a href="https://www.binance.com/en/futures/BTCUSDT">BTC</a>\n'
         "新闻后 +1.10%\n"
         "1h +0.80%，\n"
         "24h +7.91%\n\n"
-        "🧭 <b>方向</b>  利多 · 资金流\n\n"
         "新闻时间  14:32\n"
         "推送时间  14:32\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\n'
@@ -2209,7 +2069,7 @@ def test_a_card_the_catalogues_cannot_trade_says_so_under_its_title() -> None:
 
     text = _sent_text(replace(_card(), untradeable=True))
 
-    assert text.startswith("🟢 <b>BTC ETF 净流入</b>\n\n<b>未找到可交易标的</b>\n\n")
+    assert text.startswith("⚪ <b>BTC ETF 净流入</b>\n\n<b>未找到可交易标的</b>\n\n🆕 <b>新增</b>\n\n")
     assert "连续第三日净流入" in text
 
 
@@ -2222,31 +2082,63 @@ def _wide_card(assets: int) -> ReaderCard:
     )
 
 
+# The most asset blocks the default card carries before the channel bound: one more is clipped.
+WIDE_CARD_FITS = 108
+
+
 def test_a_message_within_the_channel_bound_is_sent_whole() -> None:
-    text = _sent_text(_wide_card(107))
+    text = _sent_text(_wide_card(WIDE_CARD_FITS))
 
     # The bound is on the text a reader receives -- the message without its markup -- counted in the
     # units Telegram counts it in. Every emoji this renderer marks a card with is one code point and
     # two UTF-16 code units, so the two numbers are not the same number (#604 N3).
     assert 4_000 < _telegram_text_length([text]) <= _TELEGRAM_TEXT_MAX
     assert len(_plain_html_text(text)) < _telegram_text_length([text])
-    assert text.count("🎯 <b>标的</b>") == 107
+    assert text.count("🎯 <b>标的</b>") == WIDE_CARD_FITS
 
 
 def test_a_card_over_the_bound_gives_up_its_bottom_blocks_and_keeps_its_source() -> None:
-    """Bottom-up: the judgment row sits lowest above the footer, then the last asset block."""
+    """Bottom-up: the last asset block goes first, and the frozen copy and the footer stay."""
 
-    whole = _sent_text(_wide_card(107))
-    clipped = _sent_text(_wide_card(108))
+    whole = _sent_text(_wide_card(WIDE_CARD_FITS))
+    clipped = _sent_text(_wide_card(WIDE_CARD_FITS + 1))
 
-    assert "🧭 <b>方向</b>  利多 · 资金流" in whole
+    assert whole.count("🎯 <b>标的</b>") == WIDE_CARD_FITS
     assert _telegram_text_length([clipped]) <= _TELEGRAM_TEXT_MAX
-    assert "🧭 <b>方向</b>" not in clipped
-    assert "AAA0107" not in clipped and "🎯 <b>标的</b>  AAA0106" in clipped
-    assert clipped.startswith("🟢 <b>BTC ETF 净流入</b>")
+    assert f"AAA{WIDE_CARD_FITS:04d}" not in clipped and f"🎯 <b>标的</b>  AAA{WIDE_CARD_FITS - 1:04d}" in clipped
+    assert clipped.startswith("⚪ <b>BTC ETF 净流入</b>\n\n🆕 <b>新增</b>\n\n连续第三日净流入")
     assert clipped.endswith(
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道\nTracefold · abc12345'
     )
+
+
+def test_a_news_card_whose_frozen_copy_cannot_fit_is_refused_unsent_rather_than_clipped() -> None:
+    """#706: the frozen copy is the payload the ledger records as sent, so it is never cut to fit.
+
+    Optional sections still give way first; a card whose title and frozen lines alone are over the
+    channel bound is refused before `sendMessage` is called, and says so as provably unsent.
+    """
+
+    methods: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        methods.append(request.url.path.rsplit("/", maxsplit=1)[-1])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID}}})
+
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID, transport=httpx.MockTransport(handle))
+    sender.prepare()
+
+    with pytest.raises(TelegramDeliveryError, match="news_delivery_telegram_message_too_long") as refused:
+        _send(sender, _card(lead="长" * 5_000))
+
+    assert refused.value.commit_phase == COMMIT_PHASE_NOT_SENT and not refused.value.retryable
+    assert methods == []
+    # Within the bound the whole frozen line is sent, never clipped with an ellipsis.
+    sent = _sent_text(_card(lead="长" * 3_500, assets=()))
+    assert "长" * 3_500 in sent and "…" not in sent
 
 
 def test_every_card_carries_the_identity_line_its_feishu_copy_has_always_carried() -> None:
@@ -2304,10 +2196,10 @@ def test_the_channel_bound_is_counted_in_the_units_telegram_counts_it_in() -> No
 def test_clipping_gives_up_the_middle_before_the_title_or_the_footer() -> None:
     """#562 §5 row 7: the drop order is the card's priority, not the order of the list.
 
-    The blocks between the title and the footer go from the bottom up -- the last asset block, then
-    the ones above it, then the body, then the review band. The source line the card exists for
-    outlives all of them, and only a card still over the bound with nothing but a title and a footer
-    left gives up the footer too. Popping the tail instead would drop the reader's link while asset
+    The blocks between the required sections and the footer go from the bottom up -- the last asset
+    block, then the ones above it. The source line the card exists for outlives all of them, and only
+    a card still over the bound with nothing but its required sections and a footer left gives up the
+    footer too. Popping the tail instead would drop the reader's link while asset
     blocks above it survived.
     """
 
@@ -2319,8 +2211,16 @@ def test_clipping_gives_up_the_middle_before_the_title_or_the_footer() -> None:
     )
     # With nothing between them left to give, the body goes before the footer does.
     assert _fit_telegram_message(["title", block * 3, "footer"]) == "title\n\nfooter"
-    # And the footer only when what is left is still over the bound -- a card always keeps one block.
-    assert _fit_telegram_message([block * 3, "footer"]) == block * 3
+    # And the footer only when what is left is still over the bound. What is required -- a News card's
+    # title, change label and frozen copy -- is never cut: a card that cannot fit it is refused unsent,
+    # because the ledger records that copy as what the reader received.
+    body = "x" * 3_000
+    assert _fit_telegram_message(["title", "label", body, f"meta {body}", "footer"], required=3) == (
+        f"title\n\nlabel\n\n{body}\n\nfooter"
+    )
+    with pytest.raises(TelegramDeliveryError, match="message_too_long") as refused:
+        _fit_telegram_message(["title", block * 3, "footer"], required=2)
+    assert refused.value.commit_phase == COMMIT_PHASE_NOT_SENT and not refused.value.retryable
 
 
 def test_wallet_names_stay_literal_when_the_same_card_is_sent_to_telegram() -> None:

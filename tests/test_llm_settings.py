@@ -39,20 +39,20 @@ def test_availability_reports_primary_and_fallback_models() -> None:
         news_triage_fallback={"api_key": "d", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
     )
     models = _availability(llm)
-    assert models.triage_configured and models.triage_model == "qwen3.8-27b"
-    assert models.triage_fallback_model == "deepseek-chat"
-    assert models.reader_card_fallback_model == "deepseek-chat"
-    assert models.reader_card_fallback_dedicated is False
+    assert models.configured and models.extraction_model == "qwen3.8-27b"
+    assert models.extraction_fallback_model == "deepseek-chat"
+    assert models.card_fallback_model == "deepseek-chat"
+    assert models.card_fallback_dedicated is False
     assert llm.base_url == "http://192.168.0.2:8080/v1"
 
 
 def test_availability_without_fallback_is_unchanged() -> None:
     llm = LlmConfig(api_key="k", base_url="https://api.deepseek.com/v1", news_triage_model="deepseek-chat")
     models = _availability(llm)
-    assert models.triage_model == "deepseek-chat" and models.triage_fallback_model is None
-    assert models.reader_card_model == "deepseek-chat"
-    assert models.reader_card_dedicated is False
-    assert models.program_configured is True
+    assert models.extraction_model == "deepseek-chat" and models.extraction_fallback_model is None
+    assert models.card_model == "deepseek-chat"
+    assert models.card_dedicated is False
+    assert models.configured is True
     assert LlmConfig().news_triage_fallback.configured is False
 
 
@@ -101,9 +101,9 @@ def test_availability_reports_dedicated_reader_fallback_endpoint() -> None:
 
     models = _availability(llm)
 
-    assert models.triage_fallback_model == "event-fallback-model"
-    assert models.reader_card_fallback_model == "reader-fallback-model"
-    assert models.reader_card_fallback_dedicated is True
+    assert models.extraction_fallback_model == "event-fallback-model"
+    assert models.card_fallback_model == "reader-fallback-model"
+    assert models.card_fallback_dedicated is True
 
 
 def test_partial_reader_card_endpoint_fails_validation() -> None:
@@ -141,9 +141,9 @@ def test_availability_reports_dedicated_reader_card_endpoint() -> None:
 
     models = _availability(llm)
 
-    assert models.triage_configured is True
-    assert models.reader_card_model == "reader-model"
-    assert models.reader_card_dedicated is True
+    assert models.extraction_model is not None
+    assert models.card_model == "reader-model"
+    assert models.card_dedicated is True
     assert llm.news_reader_card.base_url == "https://reader.test/v1"
     rendered = repr(llm)
     assert "reader-key" not in rendered
@@ -165,7 +165,55 @@ def test_invalid_dedicated_reader_endpoint_disables_the_whole_program() -> None:
 
     models = _availability(llm)
 
-    assert models.triage_configured is True
-    assert models.reader_card_model is None
-    assert models.program_configured is False
+    assert models.extraction_model is not None
+    assert models.card_model is None
+    assert models.configured is False
     assert "reader-secret" not in repr(llm.news_reader_card)
+
+
+def test_news_judgment_is_all_or_none_and_validates_its_url() -> None:
+    with pytest.raises(ValidationError, match="news_judgment_configuration_incomplete"):
+        LlmConfig(news_judgment={"base_url": "https://openrouter.ai/api", "model": "jev-1.13"})
+    with pytest.raises(ValidationError, match="news_judgment_base_url_invalid"):
+        LlmConfig(news_judgment={"api_key": "k", "base_url": "openrouter.ai/api", "model": "jev-1.13"})
+    configured = LlmConfig(
+        news_judgment={"api_key": "k", "base_url": "https://api.typesafe.ai/", "model": "jev-1.13.0"}
+    )
+    assert configured.news_judgment.configured is True
+    assert configured.news_judgment.base_url == "https://api.typesafe.ai"
+    assert "k" not in repr(configured.news_judgment).replace("jev", "")
+    assert LlmConfig().news_judgment.configured is False
+
+
+def test_news_judgment_is_reported_and_never_inferred_from_trading_semantics() -> None:
+    route = {"api_key": "k", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
+    news = LlmConfig(api_key="k", base_url="https://api.deepseek.com/v1", news_triage_model="m", news_judgment=route)
+    trading = LlmConfig(
+        api_key="k", base_url="https://api.deepseek.com/v1", news_triage_model="m", trading_semantics=route
+    )
+    assert _availability(news).news_judgment_model == "jev-1.13"
+    assert _availability(trading).news_judgment_model is None
+
+
+@pytest.mark.parametrize(
+    ("extra_body", "path"),
+    [
+        ({"access_token": "sk-abcdefghijklmnopqrstu"}, "extra_body.access_token"),
+        ({"provider": {"Authorization": "Bearer sk-abcdefghijklmnopqrstu"}}, "extra_body.provider.Authorization"),
+        ({"routes": [{"api-key": "sk-abcdefghijklmnopqrstu"}]}, "extra_body.routes[].api-key"),
+        ({"client_secret": "sk-abcdefghijklmnopqrstu"}, "extra_body.client_secret"),
+    ],
+)
+def test_a_credential_in_the_request_body_is_refused_without_echoing_it(extra_body: dict, path: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        LlmConfig.model_validate({"request": {"extra_body": extra_body}})
+
+    assert f"llm_request_extra_body_secret:{path}" in str(caught.value)
+    assert "sk-abcdefghijklmnopqrstu" not in str(caught.value)
+
+
+def test_ordinary_provider_extensions_are_not_mistaken_for_credentials() -> None:
+    config = LlmConfig.model_validate(
+        {"request": {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}, "top_k": 20}}}
+    )
+    assert config.request.extra_body["chat_template_kwargs"] == {"enable_thinking": False}

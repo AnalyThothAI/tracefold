@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from loguru import logger
-
+from tracefold.app.news_updates import NewsUpdateRuntime
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.runtime import (
@@ -16,7 +15,6 @@ from tracefold.app.workers.runtime import (
     NEWS_INSTRUMENTS,
     NEWS_QUOTES,
     NEWS_REACTIONS,
-    SHARED_RESOURCE_FAILURES,
     WALLET_NET_BUY,
     WALLET_PRICES,
     WALLET_ROSTER,
@@ -45,6 +43,8 @@ class _Components:
     market_notifications: MarketNotificationLoop | None = None
     chain_tape: ChainTapeComposition | None = None
     capabilities: CapabilityStates = field(default_factory=CapabilityStates)
+    # The EventUpdate runtime whose optional News Jev connection the root closes at shutdown.
+    news_updates: NewsUpdateRuntime | None = None
 
 
 def _capability_fault_reason(capability: str, exc: BaseException) -> str:
@@ -81,15 +81,18 @@ async def _wire_components(
     runtime_manifest_sha: str | None = None
     market_notifications: MarketNotificationLoop | None = None
     chain_tape: ChainTapeComposition | None = None
+    news_updates: NewsUpdateRuntime | None = None
     if settings.news.enabled:
-        news_bus, news_pipeline, market_notifications = await _wire_news_pipeline(
+        wiring = await _wire_news_pipeline(
             settings=settings,
             db=db,
             finite=finite,
             telemetry=telemetry,
             capabilities=capabilities,
         )
-        runtime_manifest_sha = await _register_runtime_manifest(news_pipeline, capabilities=capabilities)
+        news_bus, news_pipeline = wiring.bus, wiring.pipeline
+        market_notifications, news_updates = wiring.market_notifications, wiring.news_updates
+        runtime_manifest_sha = wiring.runtime_manifest_sha
         chain_tape = _wire_chain_tape(
             settings=settings,
             db=db,
@@ -126,33 +129,5 @@ async def _wire_components(
         chain_tape=chain_tape,
         telemetry=telemetry,
         capabilities=capabilities,
+        news_updates=news_updates,
     )
-
-
-async def _register_runtime_manifest(
-    news_pipeline: NewsPipeline,
-    *,
-    capabilities: CapabilityStates,
-) -> str | None:
-    """Register the editorial Program manifest, or fault only the editorial capability.
-
-    Reception, market facts and market notifications read no Program manifest, so a registration
-    failure has nothing to say about them (#553 §7). The version check itself is unchanged: a
-    manifest that cannot be registered leaves no Triage consumer to run an unproven Program.
-    """
-
-    try:
-        await news_pipeline.register_runtime_manifest()
-    except SHARED_RESOURCE_FAILURES:
-        # PostgreSQL or a shared native permit, not this Program. Recording it as an editorial fault
-        # would report a process-wide failure as one capability's, behind a green readiness.
-        raise
-    except Exception as exc:
-        logger.opt(exception=exc).error("News Program manifest registration failed; editorial capability faulted")
-        news_pipeline.disable_editorial()
-        capabilities.faulted(
-            NEWS_EDITORIAL,
-            f"{NEWS_EDITORIAL}_manifest_registration_failed:{type(exc).__name__}",
-        )
-        return None
-    return news_pipeline.runtime_manifest_sha

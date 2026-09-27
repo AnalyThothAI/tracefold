@@ -51,9 +51,6 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
   const filters = useMemo<NewsFeedFilters>(
     () => ({
       admission: null,
-      assertionStatuses: [],
-      changeStates: [],
-      eventFamilies: [],
       eventKinds: [],
       finalDecisions: [],
       hours: NEWS_FEED_DEFAULT_HOURS,

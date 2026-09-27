@@ -186,30 +186,31 @@ def model_health(
     if not enabled:
         return HealthItem("off", "News 未启用", "")
     if not model_configured:
-        if pipeline.get("triage_model") and not pipeline.get("reader_card_model"):
-            return HealthItem("bad", "Reader 模型不可用", "ReaderCard 配置无效；所有事件按规则兜底")
-        return HealthItem("bad", "未配置 Triage 模型", "所有事件按规则兜底")
+        if pipeline.get("extraction_model") and not pipeline.get("card_model"):
+            return HealthItem("bad", "卡片模型不可用", "卡片模型配置无效；语义工作等待可用配置")
+        return HealthItem("bad", "未配置 News 模型", "语义工作等待模型配置，不按规则兜底")
     if "triage_circuit_open" in open_causes:
-        return HealthItem("bad", "模型熔断中", "连续调用失败后暂停调用；此期间所有事件按规则兜底")
-    # The model's own denominator, not the funnel's: a deterministic telemetry judgment is never
-    # degraded, so counting ~190 of them a day here would dilute the share and make the model look
-    # healthier than it is (#137).
-    total = int(pipeline.get("model_triage_24h") or 0)
-    degraded = int(pipeline.get("triage_degraded_24h") or 0)
-    by_code = dict(pipeline.get("triage_degraded_by_code_24h") or {})
+        return HealthItem("bad", "模型熔断中", "连续调用失败后暂停领取；待处理语义工作在恢复后继续")
+    # The semantic stage's own denominator (#706): completed turns plus work that failed visibly after
+    # its bounded attempts. There is no rule fallback, so a failure is unprocessed evidence, not a
+    # degraded judgment. Legacy verdicts are history and no longer describe the model.
+    completed = int(pipeline.get("semantic_observations_24h") or 0)
+    failed = int(pipeline.get("semantic_failed_24h") or 0)
+    total = completed + failed
+    by_code = dict(pipeline.get("semantic_failed_by_code_24h") or {})
     ranked = sorted(by_code.items(), key=lambda kv: -kv[1])
     detail = "、".join(f"{error_code_zh(code)} {count}" for code, count in ranked)
+    pending = int(pipeline.get("semantic_pending") or 0)
+    backlog = f"待处理 {pending}" if pending else ""
     if total == 0:
-        return HealthItem("ok", "24 小时内没有送审事件", "")
-    share = degraded / total
-    p95 = pipeline.get("triage_p95_ms")
-    latency = f"p95 {int(p95) / 1000:.1f} 秒" if p95 else ""
+        return HealthItem("ok", "24 小时内没有语义处理", backlog)
+    share = failed / total
     if share >= DEGRADED_SHARE_BAD:
-        return HealthItem("bad", f"24 小时降级率 {_pct(share)}（{degraded}/{total}）", detail or latency)
+        return HealthItem("bad", f"24 小时语义失败率 {_pct(share)}（{failed}/{total}）", detail or backlog)
     if share >= DEGRADED_SHARE_WARN:
-        return HealthItem("warn", f"24 小时降级率 {_pct(share)}（{degraded}/{total}）", detail or latency)
-    summary = f"模型正常，24 小时降级 {degraded}/{total}" if degraded else f"模型正常，24 小时 {total} 次判断"
-    return HealthItem("ok", summary, latency)
+        return HealthItem("warn", f"24 小时语义失败率 {_pct(share)}（{failed}/{total}）", detail or backlog)
+    summary = f"模型正常，24 小时失败 {failed}/{total}" if failed else f"模型正常，24 小时 {completed} 次理解"
+    return HealthItem("ok", summary, backlog)
 
 
 def delivery_health(delivery: Mapping[str, Any]) -> HealthItem:

@@ -7,7 +7,7 @@ parsed that JSON back into text, so "what does a card say" had three answers and
 its event time on the way through the third.
 
 What lives here is the card's *own* language: the order of its lines, the words that stand for a
-direction or an action, the separators between facts. What does not live here is any channel's
+change or an action, the separators between facts. What does not live here is any channel's
 vocabulary -- no colour name, no icon, no button element, no JSON -- and no I/O of any kind. The
 number, time and clipping rules are `card_format`'s, and are not restated.
 
@@ -25,13 +25,14 @@ from typing import Any, Final, Literal
 
 from . import card_format as fmt
 from .market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS
-from .outcome import DIRECTION_ZH, FACT_KIND_ZH, NOVELTY_ZH
 from .wallet_contracts import NetBuyMember, NetBuySnapshot
 
 CardFamily = Literal["news", "oi", "liquidation", "smart_money", "wallet"]
-# The model's own judgment about the news, and `none` for a card that carries no judgment at all --
-# a degraded News card or any market card. A channel maps `family + tone` to its colour or icon.
-CardTone = Literal["bullish", "bearish", "neutral", "unclear", "none"]
+# What a News card's selected claims are to the reader, from the adopted update's own change kinds
+# (#706): a first report or an addition, a change to something already reported, or a correction. Code
+# owns it; no model direction, novelty or fact kind reaches a card any more.
+ChangeLabel = Literal["new", "update", "correction"]
+CHANGE_ZH: Final[dict[str, str]] = {"new": "新增", "update": "更新", "correction": "更正"}
 
 # One card's header is bounded by what every channel will show without folding.
 TITLE_MAX: Final = 100
@@ -113,25 +114,26 @@ _NOTE_ID_MAX: Final[dict[str, int]] = {"news": 8, "market": 24}
 
 @dataclass(frozen=True, slots=True)
 class ReaderCardHeader:
-    """Who this card is about. `subject` is the News headline or the market instrument."""
+    """Who this card is about. `subject` is the News headline or the market instrument.
+
+    A News card's `qualifier` is the key marker (⚡) of a key update, never a gate.
+    """
 
     family: CardFamily
     subject: str = ""
     qualifier: str = ""
-    tone: CardTone = "none"
 
 
 @dataclass(frozen=True, slots=True)
 class ReaderCardFacts:
-    """The code-owned line: what kind of claim this is, about what, from whom, when.
+    """The code-owned line: what changed, about what, from whom, when.
 
     `source` is the origin in the parts a card joins with a space -- one reporting origin for News,
     the provider and the market kind for a market card -- so neither renderer has to pre-join it.
+    `change` is a News card's change label and absent on every market card.
     """
 
-    direction: str | None = None
-    novelty: str | None = None
-    fact_kind: str | None = None
+    change: ChangeLabel | None = None
     tickers: tuple[str, ...] = ()
     source: tuple[str, ...] = ()
     report_count: int = 1
@@ -356,46 +358,26 @@ class ReaderCard:
     # -- the card's own words ---------------------------------------------------------------------
     #
     # A channel that lays the facts out itself instead of taking `body_lines` (Telegram, #562 PR-C)
-    # still writes them in the card's vocabulary rather than a table of its own: the adapter used to
-    # keep `影响明显` -> `明显` and a set of direction words next to a regex that read them back out
-    # of rendered text, so a word could be renamed here and silently stop being recognised there.
+    # still writes them in the card's vocabulary rather than a table of its own.
 
-    def direction_word(self) -> str:
-        """`利多`, or nothing at all: a degraded card and every market card claim no direction."""
+    def change_word(self) -> str:
+        """`新增` / `更新` / `更正`, or nothing at all on a market card."""
 
-        direction = self.facts.direction
-        return DIRECTION_ZH.get(direction, direction) if direction is not None else ""
-
-    def fact_kind_word(self) -> str:
-        """`状态变化`, or nothing at all for a card whose judgment states no kind (#675 §1)."""
-
-        return FACT_KIND_ZH.get(str(self.facts.fact_kind or ""), "")
+        return CHANGE_ZH.get(self.facts.change or "", "")
 
     # -- line composition -------------------------------------------------------------------------
 
     def _facts_line(self) -> str:
-        """`利多 · 新进展 · 影响明显 · BTC ETH · CoinDesk`, its report count, and `14:32`.
+        """`新增 · BTC ETH · Reuters`, its report count, and `14:32`.
 
-        A market card names no direction, novelty or fact kind -- it carries no model judgment -- and
-        always states its report count, because "how many reports is this one card standing for" is
-        the whole of what a summary card promises. A News card states the count only when it stands
-        for more than one report, where a count of one would be noise.
+        A market card names no change -- it carries no News update -- and always states its report
+        count, because "how many reports is this one card standing for" is the whole of what a summary
+        card promises. A News card states the count only when it stands for more than one report, where
+        a count of one would be noise.
         """
 
         facts, market = self.facts, self.header.family != "news"
-        parts: list[str] = []
-        # Gated on the direction alone, not on the fact kind. A verdict written under `news_judgment_v2`
-        # has a direction and a novelty and no kind at all, and re-rendering one -- the review desk, the
-        # fidelity corpus and the console detail all do -- must not silently drop 利多/利空 and 新进展
-        # because the third word is missing. `fact_kind_word()` contributes nothing when there is no kind
-        # (#679 review 6).
-        if facts.direction is not None:
-            parts.append(self.direction_word())
-            # 28.8% of a week's cards advanced a story the reader already had one for, and the card
-            # said nothing about it (#113). `新进展` is the model's own `novelty`, not a count.
-            if facts.novelty == "progression":
-                parts.append(NOVELTY_ZH["progression"])
-            parts.extend(word for word in (self.fact_kind_word(),) if word)
+        parts: list[str] = [word for word in (self.change_word(),) if word]
         if facts.tickers:
             parts.append(" ".join(facts.tickers))
         origin = " ".join(part for part in facts.source if part) or fmt.UNKNOWN_ORIGIN
@@ -671,16 +653,16 @@ def quote_line(quotes: Sequence[ReaderCardQuote]) -> str:
 __all__ = [
     "ACTION_ZH",
     "CARD_ASSETS_MAX",
+    "CHANGE_ZH",
     "FAMILY_TITLE",
     "NEWS_HEADLINE_MAX",
-    "NOVELTY_ZH",
     "OI_DIRECTION_ZH",
     "QUOTE_LINE_PREFIX",
     "SIDE_ZH",
     "TITLE_MAX",
     "UNTRADEABLE_NOTICE_ZH",
     "CardFamily",
-    "CardTone",
+    "ChangeLabel",
     "ReaderCard",
     "ReaderCardAction",
     "ReaderCardFacts",

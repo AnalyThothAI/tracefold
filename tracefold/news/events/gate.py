@@ -166,6 +166,10 @@ def grounded_assets(
         if not symbol:
             continue
         base = _base_symbol(symbol)
+        # Explicit mentions outrank ordinary-word and commodity-context collisions.
+        if _cashtag_in_text(base, text):
+            out.append(symbol)
+            continue
         if base == "CL":
             if energy:
                 out.append(symbol)
@@ -181,7 +185,7 @@ def grounded_assets(
         if not commodity_context_present(base, text):
             continue
         grade = str(coin.get("grade") or "")
-        if grade in grades or _cashtag_in_text(base, text):
+        if grade in grades:
             out.append(symbol)
     return tuple(sorted(set(out)))
 

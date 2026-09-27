@@ -13,8 +13,8 @@ import {
 
 /**
  * The feed's shareable state, parsed from and written back to the URL. Every value here mirrors a server
- * parameter exactly. The browser normalizes the bounded controls it renders; taxonomy codes stay opaque and
- * the server remains their sole vocabulary authority.
+ * parameter exactly. The browser normalizes the bounded controls it renders; topic codes and source
+ * authorities stay opaque and the server remains their sole vocabulary authority.
  */
 export type FeedFilterChanges = Partial<Omit<NewsFeedFilters, "q">> & { q?: string | null };
 
@@ -40,9 +40,6 @@ export const ADMISSION_FILTER_LABELS: Record<string, string> = {
 export function parseFeedFilters(searchParams: URLSearchParams): NewsFeedFilters {
   return {
     admission: searchParams.get("admission") || null,
-    eventFamilies: parseOpaqueList(searchParams.get("event_family")),
-    changeStates: parseOpaqueList(searchParams.get("change_state")),
-    assertionStatuses: parseOpaqueList(searchParams.get("assertion_status")),
     sourceAuthorities: parseOpaqueList(searchParams.get("source_authority")),
     subjectCodes: parseOpaqueList(searchParams.get("subject_code")),
     finalDecisions: parseList(searchParams.get("final_decision"), NEWS_FEED_FINAL_DECISIONS),
@@ -83,9 +80,6 @@ function filterLists(
   changes: FeedFilterChanges,
 ): Array<[string, readonly string[]]> {
   return [
-    ["event_family", changes.eventFamilies ?? filters.eventFamilies],
-    ["change_state", changes.changeStates ?? filters.changeStates],
-    ["assertion_status", changes.assertionStatuses ?? filters.assertionStatuses],
     ["source_authority", changes.sourceAuthorities ?? filters.sourceAuthorities],
     ["subject_code", changes.subjectCodes ?? filters.subjectCodes],
     ["final_decision", changes.finalDecisions ?? filters.finalDecisions],
@@ -98,9 +92,6 @@ export function hasAdvancedFilters(filters: NewsFeedFilters): boolean {
     filters.q ||
     filters.admission ||
     filters.symbol ||
-    filters.eventFamilies.length ||
-    filters.changeStates.length ||
-    filters.assertionStatuses.length ||
     filters.sourceAuthorities.length ||
     filters.subjectCodes.length ||
     filters.finalDecisions.length ||

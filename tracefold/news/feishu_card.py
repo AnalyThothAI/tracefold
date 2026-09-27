@@ -10,9 +10,8 @@ It lives in `news/` rather than in `integrations/feishu.py` because both the New
 the market loop freeze this JSON before the adapter is reached, and an adapter that business modules
 import is not an adapter. `FeishuNewsPushSender` still receives a finished card and posts it.
 
-`template` is Feishu's colour vocabulary, mapped from the card's own `family + tone`: the model's
-judgment colours a News card, and a market card is coloured by its family because it carries no
-judgment to colour it with. Telegram maps the same two fields to its own icons (#562 PR-C).
+`template` is Feishu's colour vocabulary, mapped from the card's family: no card carries a model
+judgment to colour it with any more (#706). Telegram maps the same field to its own icons (#562 PR-C).
 """
 
 from __future__ import annotations
@@ -29,19 +28,21 @@ _FAMILY_TEMPLATE: Final[dict[str, str]] = {
     # The chain wallet family has one colour; its trading facts carry no model judgment.
     "wallet": "orange",
 }
-_TONE_TEMPLATE: Final[dict[str, str]] = {"bullish": "green", "bearish": "red"}
+# Bodies Feishu shows literally. A News body is frozen model copy that was sent exactly as frozen, and a
+# wallet body names provider handles; neither may become Feishu markdown, links or mentions.
+_PLAIN_TEXT_FAMILIES: Final = frozenset({"news", "wallet"})
 
 
 def feishu_card(card: ReaderCard) -> dict[str, Any]:
     """One reader card as the JSON Feishu accepts, and as the delivery ledgers store it."""
 
     body = "\n".join(card.body_lines())
-    # Provider wallet handles and token symbols are data, including in the net-buy member list.
-    # Feishu JSON 1.0's div/plain_text keeps their links and <at> syntax literal:
+    # Provider wallet handles, token symbols and a News card's frozen copy are data. Feishu JSON 1.0's
+    # div/plain_text keeps their links, markdown and <at> syntax literal:
     # https://open.feishu.cn/document/feishu-cards/card-components/content-components/plain-text
     elements: list[dict[str, Any]] = [
         {"tag": "div", "text": {"tag": "plain_text", "content": body}}
-        if card.header.family == "wallet"
+        if card.header.family in _PLAIN_TEXT_FAMILIES
         else {"tag": "markdown", "content": body}
     ]
     if card.link is not None:
@@ -63,7 +64,7 @@ def feishu_card(card: ReaderCard) -> dict[str, Any]:
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": card.title()},
-            "template": _TONE_TEMPLATE.get(card.header.tone) or _FAMILY_TEMPLATE.get(card.header.family, "grey"),
+            "template": _FAMILY_TEMPLATE.get(card.header.family, "grey"),
         },
         "elements": elements,
     }

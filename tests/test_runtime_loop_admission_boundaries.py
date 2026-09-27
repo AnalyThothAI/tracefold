@@ -227,7 +227,7 @@ class _AllStagesPipeline:
                 "news-receiver",
                 "news-recovery",
                 "news-deduper",
-                "news-triage",
+                "news-semantic",
                 "news-deliverer",
                 "news-janitor",
                 "news-instruments",

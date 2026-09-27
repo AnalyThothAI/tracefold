@@ -24,14 +24,15 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 
-from tests.support.news_judgment import news_taxonomy
+from tests.support.news_update_cards import adopted, draft, frozen_card, plan_for
+from tests.support.news_update_cards import asset as update_asset
+from tests.support.news_update_cards import source as update_source
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerNewsDatabase
-from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import (
     RK_RAW_LIVE,
     RK_RAW_RECOVERY,
@@ -46,7 +47,6 @@ from tracefold.news.bus import (
 from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from tracefold.news.market_review.pricing import Candle, PriceInstrument, PricePoint
 from tracefold.news.models import (
-    TRIAGE_POLICY_VERSION,
     ReaderDeliveryPresentation,
     ReaderMarketMovement,
     ReaderTradeTarget,
@@ -55,38 +55,24 @@ from tracefold.news.opennews import OpenNewsHistoryError
 from tracefold.news.pipeline import admission as admission_module
 from tracefold.news.pipeline import delivery as delivery_module
 from tracefold.news.pipeline import recovery as recovery_module
-from tracefold.news.pipeline import triage_audit as triage_audit_module
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererLoop
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
-from tracefold.news.pipeline.triage import TriageConsumer
-from tracefold.news.program.contracts import (
-    EditorialEnvelope,
-    ProgramCallTrace,
-    ProgramTrace,
-    ProgramUsage,
-    SemanticJudgeError,
-    SemanticJudgment,
-    TriageContext,
-)
-from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.reader_card import ReaderCard
-from tracefold.news.reader_history import ReaderHistorySnapshot, assemble_reader_history
-from tracefold.news.release.canary import CanaryRuntimeArm
-from tracefold.news.triage_rules import DEFAULT_POLICY
+from tracefold.news.reader_history import ReaderHistorySnapshot
+from tracefold.news.updates.contracts import EventUpdate
+from tracefold.news.updates.judgment import ProviderUnavailable
+from tracefold.news.updates.notification import FrozenCard, NotificationPlan
+from tracefold.news.updates.ports import IntentLease, SendOutcome
+from tracefold.news.updates.service import NotificationTurn
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
 WATCHLIST = frozenset({"BTC", "NVDA"})
 PROGRAM_SHA256 = "9" * 64
-
-
-@pytest.fixture(autouse=True)
-def _fixed_triage_clock(monkeypatch):
-    monkeypatch.setattr("tracefold.news.pipeline.triage.now_ms", lambda: NOW_MS)
 
 
 class FakeBus:
@@ -211,7 +197,28 @@ class RecordingNews:
                     ),
                 }
             if name == "append_prepared_evidence_snapshot" and name not in self.responses:
-                return {}
+                snapshot = args[0]
+                return {
+                    "evidence_version": snapshot["evidence_version"],
+                    "evidence_sha256": snapshot["evidence_sha256"],
+                }
+            if name == "semantic_wake_route" and name not in self.responses:
+                event_id = str(args[0] if args else kwargs.get("event_id"))
+                return {
+                    "event_id": event_id,
+                    "wanted_revision": 1,
+                    "dedupe_family": "general",
+                    "queue_priority": "normal",
+                    "trace_id": "trace-1",
+                }
+            if name in {"pending_semantic_event_ids", "pending_notification_event_ids", "item_event_ids"} and (
+                name not in self.responses
+            ):
+                return []
+            if name == "record_item_revision" and name not in self.responses:
+                return False
+            if name == "purge_semantic_caches" and name not in self.responses:
+                return 0
             if name == "event_admission" and name not in self.responses:
                 response = self.responses.get("event_card") or {}
                 card = response if isinstance(response, dict) else {}
@@ -220,12 +227,8 @@ class RecordingNews:
                     "event_kind": str(card.get("event_kind") or "news"),
                     "storyline_key": str(card.get("storyline_key") or ""),
                 }
-            if name == "event_handoff_scan" and name not in self.responses:
-                return (
-                    self.responses.get("unpublished_candidates") or [],
-                    self.responses.get("event_handoff_state")
-                    or {"pending": 0, "oldest_pending_at_ms": None, "expired": self.responses.get("expired_count", 0)},
-                )
+            if name == "semantic_wake_state" and name not in self.responses:
+                return {"pending": 0, "oldest_pending_at_ms": None, "expired": self.responses.get("expired_count", 0)}
             value = self.responses.get(name)
             return value(*args, **kwargs) if callable(value) else value
 
@@ -404,53 +407,29 @@ def _message(kind: str, payload: dict[str, Any], *, routing_key: str = "", prior
 
 
 # ---------------------------------------------------------------- Deduper
-def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def _admitted(event_id: str, dedupe_family: str, *, inserted: bool = True) -> Any:
+    return SimpleNamespace(
+        item_inserted=inserted,
+        event_id=event_id,
+        dedupe_family=dedupe_family,
+        evidence_focus_changed=False,
+        evidence_revised=False,
+    )
+
+
+def test_deduper_wakes_semantic_work_for_new_evidence_of_admitted_live_events(monkeypatch: pytest.MonkeyPatch) -> None:
     admissions = iter(
         [
-            SimpleNamespace(
-                item_inserted=True,
-                event_created=True,
-                admission="candidate",
-                event_id="ev-1",
-                dedupe_family="macro",
-                gate=SimpleNamespace(queue_priority="high", amqp_priority=5),
-            ),
-            SimpleNamespace(
-                item_inserted=False,
-                event_created=False,
-                admission="candidate",
-                event_id="ev-1",
-                dedupe_family="macro",
-                gate=None,
-            ),
-            SimpleNamespace(
-                item_inserted=True,
-                event_created=True,
-                admission="suppressed_ungrounded",
-                event_id="ev-2",
-                dedupe_family="general",
-                gate=SimpleNamespace(queue_priority="normal", amqp_priority=0),
-            ),
+            _admitted("ev-1", "macro"),
+            # A suppressed Event records its evidence and wakes nothing.
+            _admitted("ev-2", "general"),
             # `listing_deterministic` is an admitted admission, not a suppression: exchange listing/delisting
-            # frames must reach Triage like any candidate (#72 — they used to die silently right here).
-            SimpleNamespace(
-                item_inserted=True,
-                event_created=True,
-                admission="listing_deterministic",
-                event_id="ev-3",
-                dedupe_family="listing",
-                gate=SimpleNamespace(queue_priority="high", amqp_priority=5),
-            ),
-            # #126: a Strategy Tracefold has no local knowledge of. There is no allowlist to consult — the
-            # provider account enabled it and the socket pushed it, so the Gate judges it like any other.
-            SimpleNamespace(
-                item_inserted=True,
-                event_created=True,
-                admission="candidate",
-                event_id="ev-4",
-                dedupe_family="general",
-                gate=SimpleNamespace(queue_priority="normal", amqp_priority=0),
-            ),
+            # frames must reach the semantic stage like any candidate (#72).
+            _admitted("ev-3", "listing"),
+            # #126: a Strategy Tracefold has no local knowledge of is ordinary work.
+            _admitted("ev-4", "general"),
+            # Recovery ingest stores evidence and never wakes semantics, even for an admitted Event.
+            _admitted("ev-1", "macro", inserted=False),
         ]
     )
     seen: list[dict[str, Any]] = []
@@ -459,8 +438,29 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
         seen.append(kwargs)
         return next(admissions)
 
+    admission = {
+        "ev-1": "candidate",
+        "ev-2": "suppressed_ungrounded",
+        "ev-3": "listing_deterministic",
+        "ev-4": "candidate",
+    }
+    routes = {
+        "ev-1": ("macro", "high", 3),
+        "ev-3": ("listing", "high", 1),
+        "ev-4": ("general", "normal", 1),
+    }
     monkeypatch.setattr(admission_module, "admit_item", fake_admit)
-    news = RecordingNews(find_band_candidates=[])
+    news = RecordingNews(
+        find_band_candidates=[],
+        event_admission=lambda event_id: {"admission": admission[event_id], "event_kind": "news", "storyline_key": ""},
+        semantic_wake_route=lambda event_id: {
+            "event_id": event_id,
+            "wanted_revision": routes[event_id][2],
+            "dedupe_family": routes[event_id][0],
+            "queue_priority": routes[event_id][1],
+            "trace_id": "trace-event",
+        },
+    )
     bus = FakeBus()
     deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset({"BTC"}))
     params = {
@@ -479,16 +479,20 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
     async def scenario() -> None:
         await deduper.handle(raw)
-        await deduper.handle(raw)  # redelivery: admit_frame reports nothing new
-        await deduper.handle(raw)  # a suppressed admission never reaches Triage
+        await deduper.handle(raw)  # a suppressed admission never reaches the semantic stage
         await deduper.handle(raw)  # a listing admission does
-        # An unknown Strategy is ordinary work now, not a frame to drop.
         foreign = _message(
             "raw",
             {"params": {**params, "strategy": {"id": 4242, "name": "other"}}, "strategy_id": "4242"},
             routing_key=RK_RAW_LIVE.format(strategy_id="4242"),
         )
         await deduper.handle(foreign)
+        recovered = _message(
+            "raw",
+            {"params": params, "strategy_id": "1018", "ingest_mode": "recovery", "observed_at_ms": NOW_MS - 5},
+            routing_key=RK_RAW_RECOVERY.format(strategy_id="1018"),
+        )
+        await deduper.handle(recovered)
         with pytest.raises(PermanentError, match="news_raw_params_missing"):
             await deduper.handle(_message("raw", {}))
 
@@ -498,14 +502,48 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
     assert seen[0]["ingest_mode"] == "live" and seen[0]["observed_at_ms"] == NOW_MS - 5
     assert seen[0]["trace_id"] == "trace-1" and seen[0]["watchlist_symbols"] == frozenset({"BTC"})
     assert seen[0]["event"].provider_record_id == "3568501"
+    assert seen[4]["ingest_mode"] == "recovery"
     assert bus.routing_keys() == ["event.macro.high", "event.listing.high", "event.general.normal"]
-    assert bus.published[0].payload == {"event_id": "ev-1"}
-    assert bus.published[0].priority == 5 and bus.published[0].message_id == "event:ev-1"
-    assert bus.published[1].payload == {"event_id": "ev-3"}
-    assert news.names().count("evidence_snapshot_material") == 5
+    assert [message.message_id for message in bus.published] == ["event:ev-1:3", "event:ev-3:1", "event:ev-4:1"]
+    assert bus.published[0].payload == {"event_id": "ev-1", "revision": 3}
+    assert bus.published[0].priority == 5 and bus.published[0].trace_id == "trace-1"
+    # Every admission appends its evidence; only admitted live Events want a semantic revision.
     assert news.names().count("append_prepared_evidence_snapshot") == 5
+    requested = [kwargs["event_id"] for name, kwargs in news.calls if name == "request_semantic_revision"]
+    assert requested == ["ev-1", "ev-3", "ev-4"]
+    marked = [kwargs for name, kwargs in news.calls if name == "mark_semantic_work_published"]
+    assert [(row["event_id"], row["revision"]) for row in marked] == [("ev-1", 3), ("ev-3", 1), ("ev-4", 1)]
     assert news.names().count("mark_event_published") == 3
-    assert news.kwargs_of("mark_event_published")["event_id"] == "ev-1"
+
+
+def test_deduper_wakes_every_event_of_an_item_whose_evidence_was_revised(monkeypatch: pytest.MonkeyPatch) -> None:
+    revised = SimpleNamespace(
+        item_inserted=False,
+        event_id="ev-new",
+        dedupe_family="general",
+        evidence_focus_changed=False,
+        evidence_revised=True,
+    )
+    monkeypatch.setattr(admission_module, "admit_item", lambda *_a, **_k: revised)
+    news = RecordingNews(find_band_candidates=[], item_event_ids=["ev-new", "ev-old"])
+    bus = FakeBus()
+    deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset())
+    raw = _message(
+        "raw",
+        {
+            "params": {"id": 7, "engineType": "news", "text": "x y z", "ts": NOW_MS, "strategy": {"id": 1018}},
+            "strategy_id": "1018",
+            "ingest_mode": "live",
+        },
+    )
+
+    asyncio.run(deduper.handle(raw))
+
+    assert sorted(kwargs["event_id"] for name, kwargs in news.calls if name == "request_semantic_revision") == [
+        "ev-new",
+        "ev-old",
+    ]
+    assert sorted(message.message_id for message in bus.published) == ["event:ev-new:1", "event:ev-old:1"]
 
 
 def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -529,638 +567,16 @@ def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkey
     assert bus.published == [] and news.calls == []
 
 
-# ---------------------------------------------------------------- Triage
-class _RecordingJudge:
-    """Counts model calls so a test can assert one never happened."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def judge(self, context: Any) -> Any:
-        self.calls += 1
-        raise AssertionError("the model must not be called for this Event")
-
-
-def _triage(news: RecordingNews, bus: FakeBus, *, judge: Any = None) -> TriageConsumer:
-    return TriageConsumer(
-        bus=bus,
-        db=FakeWorkerDatabase(news),
-        judge=judge,
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        watchlist_symbols=WATCHLIST,
-        watchlist=sorted(WATCHLIST),
-        concurrency=1,
-        circuit_failures=3,
-        circuit_open_seconds=60.0,
-        runtime_manifest={"manifest_sha": "d" * 64},
-    )
-
-
-def test_triage_holds_a_queued_event_reclassified_by_the_current_source_contract() -> None:
-    evidence_card = _card(admission="candidate")
-    news = RecordingNews(
-        event_card=evidence_card,
-        event_admission={
-            "admission": "unsupported_market_contract",
-            "event_kind": "unsupported_market",
-            "storyline_key": "asset:NVDA",
-        },
-        get_verdict=lambda **_kwargs: pytest.fail("held Event must not inspect or republish a verdict"),
-    )
-    judge = _RecordingJudge()
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus, judge=judge).handle(_message("event", {"event_id": "ev-strong"})))
-
-    assert evidence_card["admission"] == "candidate", "the immutable evidence snapshot is not rewritten"
-    assert judge.calls == 0
-    assert "get_verdict" not in news.names()
-    assert "insert_verdict" not in news.names()
-    assert bus.published == []
-
-
-def test_triage_without_model_pushes_an_objective_watchlist_fact_and_persists_editorial_identity() -> None:
-    """A degraded card is one typed judgment; only the grounded watchlist guard makes it reader-eligible."""
-
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
-    bus = FakeBus()
-    triage = _triage(news, bus)
-
-    asyncio.run(
-        triage.handle(_message("event", {"event_id": "ev-strong"}, routing_key="event.general.high", priority=5))
-    )
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["stage"] == "triage" and inserted["policy_version"] == TRIAGE_POLICY_VERSION
-    assert inserted["degraded"] is True and inserted["error_code"] == "news_semantic_program_unconfigured"
-    assert inserted["model"] is None and inserted["model_editorial"] is None
-    assert "prompt_version" not in inserted
-    assert inserted["program_version"] == PROGRAM_VERSION
-    assert inserted["program_sha256"] == PROGRAM_SHA256
-    assert inserted["judgment_origin"] == "degraded"
-    assert len(inserted["judgment_sha256"]) == 64
-    assert inserted["runtime_manifest_sha"] == "d" * 64
-    assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "push"
-    assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
-    trace = inserted["trace"]
-    assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
-    assert trace["program_version"] == PROGRAM_VERSION and trace["program_sha256"] == PROGRAM_SHA256
-    assert trace["verdict_sha256"] == canonical_sha(inserted["verdict"])
-    assert trace["status"] == {
-        "storyline_key": "asset:NVDA",
-        "preliminary": True,
-        "queue_lag_ms": trace["queue_lag_ms"],
-    }  # replayable, quota-free input snapshot
-    assert "latency_ms" not in trace and "input_sha256" not in trace  # no model call happened
-    assert "NVIDIA to invest $100bn" in news.kwargs_of("set_context_line")["context_line"]
-    # escalate is a high-importance push (⚡ + priority); there is no second lane to notify
-    # The handoff is a `news_delivery_queue` row in the verdict's own transaction, not a publish.
-    assert bus.published == []
-    assert news.kwargs_of("enqueue_delivery")["event_id"] == "ev-strong"
-    assert news.kwargs_of("enqueue_delivery")["kind"] == "first"
-    assert news.names()[-1] == "mark_verdict_published"
-    # An Event's assets are the Gate's grounding evidence, provenance-checked against the Item.
-    # Promoting a verdict's own primaries would let an unchecked reading seed a price measurement and
-    # a canonical asset, so Triage writes none -- the second writer #267 added for the deterministic
-    # market judge went with that judge (#553).
-    assert not any(name.endswith("event_assets") for name in news.names())
-
-
-@pytest.mark.parametrize(
-    "card",
-    [
-        _card(
-            event_id="ev-weak",
-            queue_priority="normal",
-            provider_score_max=75.0,
-            grounded_assets=["AMD"],
-            watchlist_hits=[],
-        ),
-        _card(
-            event_id="ev-quiet",
-            queue_priority="normal",
-            provider_score_max=95.0,
-            grounded_assets=[],
-            watchlist_hits=[],
-        ),
-    ],
-)
-def test_triage_without_model_drops_when_rule_baseline_drops(card: dict[str, Any]) -> None:
-    news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["degraded"] is True
-    assert inserted["rule_baseline_decision"] == "drop" and inserted["final_decision"] == "drop"
-    assert bus.published == []
-    assert "mark_verdict_published" not in news.names()
-
-
-def test_triage_without_model_fails_open_on_a_deterministic_listing() -> None:
-    card = _card(
-        event_id="ev-listing",
-        queue_priority="normal",
-        admission="listing_deterministic",
-        provider_score_max=10.0,
-        grounded_assets=[],
-        watchlist_hits=[],
-    )
-
-    news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["degraded"] is True
-    assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "push"
-    assert inserted["verdict"]["headline_zh"]  # the wire headline, which delivery renders verbatim
-    assert bus.published == [] and "enqueue_delivery" in news.names()
-
-
-def test_triage_without_model_does_not_treat_provider_score_or_queue_priority_as_editorial_truth() -> None:
-
-    card = _card(
-        event_id="ev-strong-80",
-        queue_priority="high",
-        provider_score_max=85.0,
-        grounded_assets=["AMD"],
-        watchlist_hits=[],
-    )
-    news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["degraded"] is True and inserted["rule_baseline_decision"] == "drop"
-    assert inserted["final_decision"] == "drop"
-    assert bus.routing_keys() == []
-
-
-def _program_call(
-    *,
-    predictor: Literal["event_semantics", "taxonomy", "reader_card"],
-    marker: str,
-    input_tokens: int,
-    output_tokens: int,
-    cached_tokens: int,
-    provider_cost_microusd: int | None,
-) -> ProgramCallTrace:
-    return ProgramCallTrace(
-        predictor=predictor,
-        route="primary",
-        attempt=1,
-        request_sha256=marker * 64,
-        input_sha256=marker * 64,
-        model_binding="primary",
-        physical_provider_call=True,
-        runtime_provider="test",
-        runtime_model="fake",
-        runtime_model_sha256="e" * 64,
-        runtime_binding_sha256="f" * 64,
-        output_sha256="d" * 64,
-        validated_output={"marker": marker},
-        latency_ms=7,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cached_tokens=cached_tokens,
-        total_tokens=input_tokens + output_tokens,
-        usage_coverage="complete",
-        provider_cost_microusd=provider_cost_microusd,
-        finish_reason="stop",
-        terminal_disposition="provider_success",
-        invocation_sha256=marker * 64,
-    )
-
-
-def _program_trace(
-    *,
-    fallback_from: str | None = None,
-    context_sha256: str = "1" * 64,
-    verdict_sha256: str | None = "7" * 64,
-    calls: tuple[ProgramCallTrace, ...] = (),
-) -> ProgramTrace:
-    return ProgramTrace(
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        context_sha256=context_sha256,
-        envelope_sha256="0" * 64,
-        event_semantics_sha256="5" * 64,
-        taxonomy_sha256="4" * 64,
-        reader_card_sha256="6" * 64,
-        verdict_sha256=verdict_sha256,
-        answering_route="fallback" if fallback_from else "primary",
-        fallback_from=fallback_from,
-        calls=calls,
-    )
-
-
-def _synthetic_program_call() -> ProgramCallTrace:
-    return ProgramCallTrace(
-        predictor="event_semantics",
-        route="primary",
-        attempt=1,
-        request_sha256="0" * 64,
-        input_sha256="0" * 64,
-        model_binding="primary",
-        error_code="news_program_model_binding_unresolved",
-    )
-
-
-def _judgment(
-    verdict: Any,
-    *,
-    model: str = "fake",
-    fallback_from: str | None = None,
-    trace: ProgramTrace | None = None,
-    usage: ProgramUsage | None = None,
-) -> SemanticJudgment:
-    verdict_payload = verdict.model_dump(mode="json") if hasattr(verdict, "model_dump") else dict(verdict)
-    editorial = EditorialEnvelope.issue(source_authority="unknown", taxonomy=news_taxonomy())
-    default_calls = (
-        _program_call(
-            predictor="event_semantics",
-            marker="8",
-            input_tokens=1,
-            output_tokens=1,
-            cached_tokens=0,
-            provider_cost_microusd=None,
-        ),
-        _program_call(
-            predictor="taxonomy",
-            marker="7",
-            input_tokens=1,
-            output_tokens=1,
-            cached_tokens=0,
-            provider_cost_microusd=None,
-        ),
-        _program_call(
-            predictor="reader_card",
-            marker="9",
-            input_tokens=1,
-            output_tokens=1,
-            cached_tokens=0,
-            provider_cost_microusd=None,
-        ),
-    )
-    actual_trace = (
-        trace.model_copy(update={"editorial_sha256": editorial.editorial_sha256})
-        if trace is not None
-        else _program_trace(
-            fallback_from=fallback_from,
-            verdict_sha256=canonical_sha(verdict_payload),
-            calls=default_calls,
-        ).model_copy(update={"editorial_sha256": editorial.editorial_sha256})
-    )
-    physical_calls = tuple(call for call in actual_trace.calls if call.physical_provider_call)
-    complete_cost = bool(physical_calls) and all(call.provider_cost_microusd is not None for call in physical_calls)
-    return SemanticJudgment(
-        verdict=verdict,
-        editorial=editorial,
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        trace=actual_trace,
-        usage=usage
-        or ProgramUsage(
-            wall_latency_ms=10,
-            call_count=len(actual_trace.calls),
-            physical_call_count=len(physical_calls),
-            input_tokens=sum(call.input_tokens for call in actual_trace.calls),
-            output_tokens=sum(call.output_tokens for call in actual_trace.calls),
-            cached_tokens=sum(call.cached_tokens for call in actual_trace.calls),
-            total_tokens=sum(call.total_tokens for call in actual_trace.calls),
-            usage_coverage="complete" if physical_calls else "unknown",
-            provider_cost_microusd=(
-                sum(int(call.provider_cost_microusd) for call in physical_calls) if complete_cost else None
-            ),
-        ),
-        answering_model=model,
-        fallback_from=fallback_from,
-    )
-
-
-def _program_error(
-    code: str,
-    *,
-    retryable: bool = False,
-    output_failure: bool = False,
-    partial_trace: ProgramTrace | None = None,
-) -> SemanticJudgeError:
-    return SemanticJudgeError(
-        code,
-        retryable=retryable,
-        output_failure=output_failure,
-        attempts=1,
-        partial_trace=partial_trace,
-    )
-
-
-def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_calls() -> None:
-    synthetic = _synthetic_program_call()
-    fallback_calls = (
-        _program_call(
-            predictor="event_semantics",
-            marker="1",
-            input_tokens=5,
-            output_tokens=2,
-            cached_tokens=1,
-            provider_cost_microusd=11,
-        ).model_copy(update={"route": "fallback"}),
-        _program_call(
-            predictor="reader_card",
-            marker="2",
-            input_tokens=7,
-            output_tokens=3,
-            cached_tokens=0,
-            provider_cost_microusd=13,
-        ).model_copy(update={"route": "fallback"}),
-    )
-    program_trace = _program_trace(
-        fallback_from="news_program_model_binding_unresolved",
-        verdict_sha256=None,
-        calls=(synthetic, *fallback_calls),
-    )
-
-    usage = triage_audit_module._usage_from_partial_trace(program_trace, attempts=3)
-    trace: dict[str, Any] = {}
-    executions = [{"trace": program_trace.model_dump(mode="json"), "usage": usage}]
-    triage_audit_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
-
-    assert usage == {
-        "wall_latency_ms": 14,
-        "call_count": 3,
-        "physical_call_count": 2,
-        "input_tokens": 12,
-        "output_tokens": 5,
-        "cached_tokens": 1,
-        "total_tokens": 17,
-        "usage_coverage": "complete",
-        "provider_cost_microusd": 24,
-    }
-    assert trace["model_attempts"] == 3
-    assert trace["physical_model_attempts"] == 2
-    assert trace["provider_cost_microusd"] == 24
-    assert len(trace["program_executions"][0]["trace"]["calls"]) == 3
-
-
-def test_failed_program_synthetic_only_trace_has_zero_physical_cost() -> None:
-    synthetic = _synthetic_program_call()
-    program_trace = _program_trace(verdict_sha256=None, calls=(synthetic,))
-
-    usage = triage_audit_module._usage_from_partial_trace(program_trace, attempts=1)
-    trace: dict[str, Any] = {}
-    executions = [{"trace": program_trace.model_dump(mode="json"), "usage": usage}]
-    triage_audit_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
-
-    assert usage == {
-        "wall_latency_ms": 0,
-        "call_count": 1,
-        "physical_call_count": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cached_tokens": 0,
-        "total_tokens": 0,
-        "usage_coverage": "unknown",
-        "provider_cost_microusd": 0,
-    }
-    assert trace["model_attempts"] == 1
-    assert trace["physical_model_attempts"] == 0
-    assert trace["provider_cost_microusd"] == 0
-    assert trace["program_executions"][0]["trace"]["calls"][0]["physical_provider_call"] is False
-
-
-class _ScriptedSemanticJudge:
-    """SemanticJudge double that records typed contexts and returns or raises scripted outcomes."""
-
-    def __init__(self, outcomes: list[Any]) -> None:
-        self.outcomes = list(outcomes)
-        self.inputs: list[TriageContext] = []
-
-    async def judge(self, context: TriageContext) -> SemanticJudgment:
-        self.inputs.append(context)
-        outcome = self.outcomes.pop(0)
-        if isinstance(outcome, BaseException):
-            raise outcome
-        if isinstance(outcome, SemanticJudgment):
-            return outcome
-        return _judgment(outcome)
-
-
-def _triage_with_judge(news: RecordingNews, bus: FakeBus, judge: Any) -> TriageConsumer:
-    triage = _triage(news, bus)
-    triage.judge = judge
-    return triage
-
-
-def test_triage_output_failure_is_traced_and_never_opens_the_circuit() -> None:
-    """max_tokens truncation / schema mismatch: degraded verdict with finish_reason + parsing_error in the trace, the
-    transport circuit stays closed (no incident), and the next Event still reaches the model."""
-
-    card = _card()
-    news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
-    bus = FakeBus()
-    truncated = [_program_error("news_program_output_truncated", output_failure=True) for _ in range(4)]
-    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(truncated))
-
-    for index in range(4):
-        asyncio.run(triage.handle(_message("event", {"event_id": f"ev-trunc-{index}"})))
-
-    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
-    assert len(inserted) == 4
-    assert all(row["degraded"] is True and row["error_code"] == "news_program_output_truncated" for row in inserted)
-    assert inserted[0]["trace"]["model_failure_retryable"] is False
-    assert "open_incident" not in news.names()
-    assert not triage.circuit.is_open(NOW_MS * 2)
-    assert triage.circuit.failures == 0
-
-
-def test_triage_refuses_to_consume_when_startup_reconciliation_fails() -> None:
-    """#400: consuming with unknown incident state would leave PostgreSQL permanently wrong.
-
-    The failure has to reach the Workers root so the supervised restart tries again; swallowing it would
-    start the consumer against an incident this process cannot see and will never close.
-    """
-
-    news = RecordingNews(close_open_incidents=1)
-    bus = FakeBus()
-    triage = TriageConsumer(
-        bus=bus,
-        db=FakeWorkerDatabase(news, admission_timeout_for={"news_triage_circuit_reconcile"}),
-        judge=None,
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        watchlist_symbols=WATCHLIST,
-        watchlist=sorted(WATCHLIST),
-        concurrency=1,
-        circuit_failures=3,
-        circuit_open_seconds=60.0,
-        runtime_manifest={"manifest_sha": "d" * 64},
-    )
-    stop = asyncio.Event()
-    stop.set()
-
-    with pytest.raises(DeferError, match="db_admission_timeout:news_triage_circuit_reconcile"):
-        asyncio.run(triage.run(stop_event=stop))
-
-    assert bus.consumed == []
-
-
-def test_triage_hard_stops_a_recovery_event_even_if_a_message_exists() -> None:
-    news = RecordingNews(
-        event_card=_card(admission="recovery"),
-        event_admission={"admission": "recovery", "event_kind": "news"},
-    )
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "recovered-event"})))
-
-    assert "get_verdict" not in news.names()
-    assert "insert_verdict" not in news.names()
-    assert bus.published == []
-
-
-def test_triage_runtime_manifest_registration_is_a_required_startup_operation() -> None:
-    news = RecordingNews()
-    triage = TriageConsumer(
-        bus=FakeBus(),
-        db=FakeWorkerDatabase(news, admission_timeout_for={"news_agent_runtime_manifest"}),
-        judge=None,
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        watchlist_symbols=WATCHLIST,
-        watchlist=sorted(WATCHLIST),
-        concurrency=1,
-        circuit_failures=3,
-        circuit_open_seconds=60.0,
-        runtime_manifest={
-            "manifest_sha": "1" * 64,
-            "stable_bundle_sha": "2" * 64,
-            "candidate_shas": [],
-            "image_digest": "sha256:" + "3" * 64,
-            "runtime_revision": "git:test",
-            "now_ms": NOW_MS,
-        },
-    )
-
-    with pytest.raises(DeferError, match="db_admission_timeout:news_agent_runtime_manifest"):
-        asyncio.run(triage.register_runtime_manifest())
-
-
-def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_incident() -> None:
-    from tracefold.news.models import TriageVerdict
-
-    card = _card()
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=card,
-        insert_verdict=True,
-        open_incident=1,
-        close_open_incidents=1,
-    )
-    bus = FakeBus()
-    ok = _judgment(
-        TriageVerdict(
-            novelty="new_fact",
-            assets=[],
-            direction="bullish",
-            scope="single_name",
-            fact_kind="statement",
-            confidence=0.6,
-            headline_zh="ok",
-        )
-    )
-    outcomes: list[Any] = [_program_error("news_program_timeout", retryable=True) for _ in range(3)] + [ok]
-    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(outcomes))
-
-    for index in range(3):
-        asyncio.run(triage.handle(_message("event", {"event_id": f"ev-net-{index}"})))
-    assert triage.circuit.open_until_ms > 0  # the circuit tripped on the third transport failure
-    # The open window elapsing is what lets the fourth call reach the model again.
-    triage.circuit.open_until_ms = 0
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-net-3"})))
-
-    assert news.names().count("open_incident") == 1
-    assert news.kwargs_of("open_incident")["cause_class"] == "triage_circuit_open"
-    assert news.kwargs_of("close_open_incidents")["cause_classes"] == ["triage_circuit_open"]
-    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
-    assert [row["degraded"] for row in inserted] == [True, True, True, False]
-
-
-def test_triage_circuit_incident_failure_reaches_the_broker_instead_of_process_memory() -> None:
-    """A DB lane that cannot admit the incident write must return the message, not drop the transition."""
-
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, open_incident=1)
-    bus = FakeBus()
-    triage = TriageConsumer(
-        bus=bus,
-        db=FakeWorkerDatabase(news, admission_timeout_for={"news_triage_persist"}),
-        judge=_ScriptedSemanticJudge([_program_error("news_program_timeout", retryable=True) for _ in range(3)]),
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        watchlist_symbols=WATCHLIST,
-        watchlist=sorted(WATCHLIST),
-        concurrency=1,
-        circuit_failures=1,
-        circuit_open_seconds=60.0,
-        runtime_manifest={"manifest_sha": "d" * 64},
-    )
-
-    with pytest.raises(DeferError, match="db_admission_timeout:news_triage_persist"):
-        asyncio.run(triage.handle(_message("event", {"event_id": "ev-defer"})))
-
-    assert "open_incident" not in news.names()
-    # The circuit is open in this process, so the next attempt re-derives the same transition rather
-    # than treating the trip as already recorded.
-    assert triage.circuit.open_until_ms > 0
-
-
-def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
-    from tracefold.news.models import TriageVerdict
-
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
-    bus = FakeBus()
-    answered_by_fallback = _judgment(
-        TriageVerdict(
-            novelty="new_fact",
-            assets=[],
-            direction="bullish",
-            scope="single_name",
-            fact_kind="statement",
-            confidence=0.6,
-            headline_zh="ok",
-        ),
-        model="deepseek-chat",
-        fallback_from="news_program_timeout",
-    )
-    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([answered_by_fallback]))
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-fallback"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["model"] == "deepseek-chat" and inserted["degraded"] is False
-    assert inserted["trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
-    assert inserted["trace"]["model_fallback_from"] == "news_program_timeout"
-    assert inserted["trace"]["model_attempts"] == 3
-
-
-def test_triage_rejects_missing_event_id_and_missing_event() -> None:
-    news = RecordingNews(get_verdict=None, event_card=None)
-    triage = _triage(news, FakeBus())
-    with pytest.raises(PermanentError, match="news_event_id_missing"):
-        asyncio.run(triage.handle(_message("event", {})))
-    with pytest.raises(PermanentError, match="news_event_missing"):
-        asyncio.run(triage.handle(_message("event", {"event_id": "ghost"})))
-
-
 # ---------------------------------------------------------------- Deliverer
+#
+# The Deliverer is the channel side of one core notification turn (#706): it is the `Sender` a turn
+# hands its frozen card to, and it enriches the receipt of a sent Telegram card in place. What a turn
+# plans, reserves, freezes and settles is the core's and the store's, and is proven against real rows
+# in `tests/integration/test_news_event_update_store.py` and `tests/integration/test_news_crash_replay.py`.
 class RecordingSender:
     def __init__(self, order: list[str] | None = None) -> None:
-        # `cards` is the frozen channel payload the ledger stores; `reader_cards` is the value
-        # object a model-rendering channel serializes for itself (#562 PR-C).
+        # `cards` is the channel payload a Feishu channel posts; `reader_cards` is the value object a
+        # model-rendering channel serializes for itself (#562 PR-C).
         self.cards: list[dict[str, Any]] = []
         self.reader_cards: list[ReaderCard] = []
         self.presentations: list[ReaderDeliveryPresentation] = []
@@ -1182,7 +598,7 @@ class RecordingSender:
         self.cards.append(dict(channel_payload))
         self.reader_cards.append(card)
         self.presentations.append(presentation or ReaderDeliveryPresentation())
-        return {"status_code": 200, "code": 0}
+        return {"provider": "feishu", "status_code": 200, "code": 0}
 
     def close(self) -> None:
         return None
@@ -1254,185 +670,193 @@ class BlockingEditSender(RecordingEditableSender):
         self.order.append("close")
 
 
-class BlockingProgressionVerifier:
-    def __init__(self, order: list[str], *, response: Mapping[str, Any] | None = None) -> None:
-        self.order = order
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-        self.calls: list[dict[str, Any]] = []
-        self.response = dict(
-            response
-            or {
-                "state": "confirmed",
-                "candidate_i": 0,
-                "candidate_headline_zh": "美光工会此前启动劳资协商",
-                "reason_zh": "同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。",
-                "verifier_id": "scripted-progression-review-v1",
-            }
-        )
-
-    async def review(
-        self,
-        *,
-        event: Mapping[str, Any],
-        verdict: Mapping[str, Any],
-        candidates: Sequence[Mapping[str, Any]],
-    ) -> Mapping[str, Any]:
-        self.order.append("review")
-        self.calls.append(
-            {
-                "event": dict(event),
-                "verdict": dict(verdict),
-                "candidates": [dict(candidate) for candidate in candidates],
-            }
-        )
-        self.started.set()
-        await self.release.wait()
-        return self.response
-
-
 class ScriptedTradabilityVerifier:
     def __init__(self, response: Mapping[str, Any], order: list[str] | None = None) -> None:
         self.response = dict(response)
         self.order = order
+        self.calls: list[dict[str, Any]] = []
 
-    async def review(self, **_kwargs: Any) -> Mapping[str, Any]:
+    async def review(self, **kwargs: Any) -> Mapping[str, Any]:
+        self.calls.append(kwargs)
         if self.order is not None:
             self.order.append("market-search")
         return self.response
 
 
-def _deliverer(
-    news: RecordingNews,
-    *,
-    price: RecordingPrice | None = None,
-    sender: RecordingSender | None = None,
-    candle_fetcher_for: Any | None = None,
-    price_fetcher_for: Any | None = None,
-    progression_verifier: Any | None = None,
-    tradability_verifier: Any | None = None,
-    min_interval_seconds: float = 0.0,
-) -> DelivererLoop:
-    return DelivererLoop(
-        db=FakeWorkerDatabase(news, price=price),
-        sender=sender,
-        finite_operations=InlineFinite(),
-        min_interval_seconds=min_interval_seconds,
-        candle_fetcher_for=candle_fetcher_for,
-        price_fetcher_for=price_fetcher_for,
-        progression_verifier=progression_verifier,
-        tradability_verifier=tradability_verifier,
+Intent = tuple[NotificationPlan, FrozenCard, EventUpdate]
+
+
+def _intent(
+    *assets: tuple[str, str],
+    event_id: str = "ev-strong",
+    key: bool = False,
+    news_at_ms: int = NOW_MS - 20_000,
+) -> Intent:
+    """One reserved intent of one adopted claim naming these primary assets, frozen as the core freezes it."""
+
+    item = update_source(
+        f"Company update for {event_id}.",
+        url="https://www.bloomberg.com/news/articles/example",
+        origin="Bloomberg",
+        published_at_ms=news_at_ms,
+        available_at_ms=news_at_ms,
     )
+    update = adopted(
+        (draft("a", item, assets=tuple(update_asset(symbol, market) for symbol, market in assets)), item),
+        event_id=event_id,
+    )
+    plan = plan_for(update, key=key)
+    return plan, frozen_card(plan, update), update
+
+
+class ScriptedNotifications:
+    """The core notification service as the Deliverer sees it: due markers, then one turn per marker.
+
+    Each turn hands its frozen card to the loop's own `send` -- the `Sender` port, exactly where the
+    core calls it after `atomic_begin_send` -- and reports the settled outcome the way the core does.
+    """
+
+    def __init__(self, *intents: Intent, failures: Mapping[str, BaseException] | None = None) -> None:
+        self.intents = {update.event_id: (plan, card, update) for plan, card, update in intents}
+        self.failures = dict(failures or {})
+        self.processed: list[str] = []
+        self.outcomes: dict[str, SendOutcome] = {}
+        self.polls = 0
+        self.store = self
+
+    async def pending_notification_events(self, channel: str, limit: int) -> tuple[str, ...]:
+        assert channel == "news"
+        self.polls += 1
+        return tuple(event_id for event_id in self.intents if event_id not in self.processed)[:limit]
+
+    async def process(self, event_id: str, channel: str, sender: Any) -> NotificationTurn:
+        assert channel == "news"
+        self.processed.append(event_id)
+        if event_id in self.failures:
+            raise self.failures[event_id]
+        plan, card, update = self.intents[event_id]
+        outcome = await sender.send(card, plan=plan, update=update)
+        self.outcomes[event_id] = outcome
+        lease = IntentLease(intent_id=plan.intent_id, lease_token="lease", plan=plan, card=card)
+        return NotificationTurn(outcome.state, update=update, lease=lease, card=card, outcome=outcome)
 
 
 def _delivery_news(**overrides: Any) -> RecordingNews:
-    states = iter(overrides.pop("begin_states", ["new"]))
     responses: dict[str, Any] = {
-        "event_card": _card(),
-        "latest_verdict": lambda *, event_id, stage: (
-            {
-                "final_decision": "push",
-                "verdict": {
-                    "novelty": "new_fact",
-                    "restates": -1,
-                    "assets": [{"symbol": "NVDA", "market_type": "equity", "role": "primary"}],
-                    "direction": "bullish",
-                    "scope": "single_name",
-                    "fact_kind": "state_change",
-                    "confidence": 0.8,
-                    "headline_zh": "英伟达投资",
-                    "why_zh": "投资扩大算力供给。",
-                },
-            }
-            if stage == "triage"
-            else None
-        ),
-        "begin_delivery": lambda **_k: next(states),
-        "settle_delivery": True,
+        "terminalize_interrupted_deliveries": 0,
+        "retire_legacy_delivery_intents": 0,
+        "terminalize_interrupted_delivery_edits": 0,
+        "terminalize_stale_delivery_edits": 0,
         "begin_delivery_edit": True,
         "settle_delivery_edit": True,
+        "mark_delivery_edit_ambiguous": True,
     }
     responses.update(overrides)
     return RecordingNews(**responses)
 
 
-def test_deliverer_holds_a_queued_push_reclassified_by_the_current_source_contract() -> None:
-    sender = RecordingSender()
-    news = _delivery_news(
-        event_admission={
-            "admission": "unsupported_market_contract",
-            "event_kind": "unsupported_market",
-            "storyline_key": "asset:NVDA",
-        },
-        latest_verdict=lambda **_kwargs: pytest.fail("held Event must not read the historical push verdict"),
+def _deliverer(
+    news: RecordingNews | None = None,
+    *,
+    notifications: ScriptedNotifications | None = None,
+    price: RecordingPrice | None = None,
+    sender: RecordingSender | None = None,
+    candle_fetcher_for: Any | None = None,
+    price_fetcher_for: Any | None = None,
+    tradability_verifier: Any | None = None,
+    min_interval_seconds: float = 0.0,
+    finite_operations: Any | None = None,
+    admission_timeout_for: set[str] | None = None,
+) -> DelivererLoop:
+    return DelivererLoop(
+        db=FakeWorkerDatabase(news or _delivery_news(), price=price, admission_timeout_for=admission_timeout_for),
+        sender=sender,
+        finite_operations=finite_operations or InlineFinite(),
+        min_interval_seconds=min_interval_seconds,
+        notifications=notifications,  # type: ignore[arg-type]
+        candle_fetcher_for=candle_fetcher_for,
+        price_fetcher_for=price_fetcher_for,
+        tradability_verifier=tradability_verifier,
     )
 
-    asyncio.run(_deliverer(news, sender=sender).deliver(event_id="ev-strong"))
 
-    assert sender.cards == []
-    assert "latest_verdict" not in news.names()
-    assert "begin_delivery" not in news.names()
-    assert "settle_delivery" not in news.names()
-
-
-def test_deliverer_prepares_the_provider_before_creating_the_sending_row() -> None:
-    order: list[str] = []
-    news = _delivery_news(begin_delivery=lambda **_kwargs: order.append("begin") or "new")
-    sender = RecordingSender(order)
-
-    asyncio.run(_deliverer(news, sender=sender).deliver(event_id="ev-strong"))
-
-    assert order == ["prepare", "begin", "send"]
+def _send(consumer: DelivererLoop, intent: Intent) -> SendOutcome:
+    plan, card, update = intent
+    return asyncio.run(consumer.send(card, plan=plan, update=update))
 
 
 class _FailingPrepareSender(RecordingSender):
     """A provider whose target check fails, saying what that failure proved about the message."""
 
     def __init__(self, error: BaseException) -> None:
-        super().__init__()
+        super().__init__([])
         self._error = error
 
     def prepare(self) -> None:
         raise self._error
 
 
-def _provider_error(code: str, *, commit_phase: str, retryable: bool = False) -> RuntimeError:
-    """The adapters' own error shape, in the two attributes every delivery loop reads (#604 N1)."""
+class _FailingSendSender(RecordingSender):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__([])
+        self._error = error
+
+    def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
+        raise self._error
+
+
+def _provider_error(
+    code: str, *, commit_phase: str, retryable: bool = False, retry_after_seconds: float | None = None
+) -> RuntimeError:
+    """The adapters' own error shape, in the attributes every delivery loop reads (#604 N1)."""
 
     error = RuntimeError(code)
     error.code = code  # type: ignore[attr-defined]
     error.commit_phase = commit_phase  # type: ignore[attr-defined]
     error.retryable = retryable  # type: ignore[attr-defined]
+    error.retry_after_seconds = retry_after_seconds  # type: ignore[attr-defined]
     return error
 
 
-def test_deliverer_settles_a_refused_preflight_without_calling_send() -> None:
-    """A target the provider refuses is settled on the spot: waiting cannot make a bad channel good."""
+def test_the_deliverer_prepares_the_target_and_sends_the_frozen_card_whole() -> None:
+    order: list[str] = []
+    sender = RecordingSender(order)
+    plan, card, update = intent = _intent(("NVDA", "equity"))
 
-    news = _delivery_news()
+    outcome = _send(_deliverer(sender=sender), intent)
+
+    assert order == ["prepare", "send"]
+    # The frozen body is the payload: its digest is the outcome's, and the channel shows it whole.
+    assert outcome.state == "sent" and outcome.payload_sha256 == card.payload_sha256
+    assert f"{sender.reader_cards[0].header.subject}\n\n{sender.reader_cards[0].lead}" == card.body
+    body = sender.cards[0]["elements"][0]["text"]["content"]
+    assert body.startswith(card.body.removeprefix(f"{card.headline_zh}\n\n"))
+    # A Feishu webhook answers with no message id, and the outcome says so rather than inventing one.
+    assert outcome.message_id is None
+    assert outcome.receipt == {"provider": "feishu", "status_code": 200, "code": 0}
+    assert plan.intent_id == card.intent_id and update.ref == plan.update_ref
+
+
+def test_a_refused_preflight_is_not_sent_and_never_reaches_the_provider() -> None:
+    """A target the provider refuses: provably unsent, and waiting cannot make a bad channel good."""
+
     sender = _FailingPrepareSender(
         _provider_error("news_delivery_telegram_preflight_bot_not_admin", commit_phase=COMMIT_PHASE_NOT_SENT)
     )
 
-    asyncio.run(_deliverer(news, sender=sender).deliver(event_id="ev-strong"))
+    outcome = _send(_deliverer(sender=sender), _intent())
 
-    begin = news.kwargs_of("begin_delivery")
-    settle = news.kwargs_of("settle_delivery")
-    assert begin["card"] == {}
-    assert settle["state"] == "terminal"
-    assert settle["error_code"] == "news_delivery_telegram_preflight_bot_not_admin"
+    assert (outcome.state, outcome.retryable, outcome.error_code) == (
+        "not_sent",
+        False,
+        "news_delivery_telegram_preflight_bot_not_admin",
+    )
     assert sender.cards == []
 
 
-def test_deliverer_keeps_an_intent_whose_preflight_provably_never_reached_the_provider() -> None:
-    """#604 N1. A rate limit or a connect failure on the target check is not this card's ending.
+def test_a_preflight_that_never_reached_the_provider_keeps_the_same_identity_for_a_retry() -> None:
+    """#604 N1. A rate limit or connect failure on the target check is not this card's ending."""
 
-    It used to be: any preflight exception was settled `terminal`, the queue row was deleted behind
-    it, and the reader never saw a card that nothing was wrong with. The attempt is spent, no ledger
-    row is written at all, and the claim's own lease brings the Event back.
-    """
-
-    news = _delivery_news()
     sender = _FailingPrepareSender(
         _provider_error(
             "news_delivery_telegram_preflight_transport_failed",
@@ -1441,792 +865,112 @@ def test_deliverer_keeps_an_intent_whose_preflight_provably_never_reached_the_pr
         )
     )
 
-    with pytest.raises(TransientError, match="news_delivery_telegram_preflight_transport_failed"):
-        asyncio.run(_deliverer(news, sender=sender).deliver(event_id="ev-strong", attempts=1))
+    outcome = _send(_deliverer(sender=sender), _intent())
 
-    assert "begin_delivery" not in news.names()
-    assert "settle_delivery" not in news.names()
+    assert (outcome.state, outcome.retryable) == ("not_sent", True)
+    assert outcome.error_code == "news_delivery_telegram_preflight_transport_failed"
     assert sender.cards == []
 
 
-def test_deliverer_gives_the_sending_row_back_when_the_card_provably_never_left() -> None:
-    """#604 N1. The `sending` row is a claim on the identity, not evidence a reader saw anything."""
+def test_a_send_the_provider_proved_unsent_is_retryable_with_the_providers_own_wait() -> None:
+    """#604 N1/N3. A rate limit keeps the intent; `Retry-After` is carried, and bounded, as advice."""
 
-    class RateLimitedSender(RecordingSender):
-        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
-            raise _provider_error(
-                "news_delivery_feishu_business_rate_limited", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
-            )
+    sender = _FailingSendSender(
+        _provider_error(
+            "news_delivery_feishu_business_rate_limited",
+            commit_phase=COMMIT_PHASE_NOT_SENT,
+            retryable=True,
+            retry_after_seconds=120.0,
+        )
+    )
 
-    news = _delivery_news()
+    outcome = _send(_deliverer(sender=sender), _intent())
 
-    with pytest.raises(TransientError, match="news_delivery_feishu_business_rate_limited"):
-        asyncio.run(_deliverer(news, sender=RateLimitedSender()).deliver(event_id="ev-strong", attempts=2))
-
-    assert news.kwargs_of("begin_delivery")["kind"] == "first"
-    assert news.kwargs_of("release_delivery") == {"event_id": "ev-strong", "kind": "first"}
-    assert "settle_delivery" not in news.names(), "nothing is settled while the intent still has attempts"
-
-
-def test_deliverer_settles_the_last_attempt_terminal_and_makes_the_intent_a_dead_letter() -> None:
-    """#604 N1. The budget is spent: the ledger takes the provider's last word, the intent dies."""
-
-    class RateLimitedSender(RecordingSender):
-        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
-            raise _provider_error(
-                "news_delivery_feishu_business_rate_limited", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
-            )
-
-    news = _delivery_news()
-
-    with pytest.raises(PermanentError, match="news_delivery_attempts_exhausted"):
-        asyncio.run(_deliverer(news, sender=RateLimitedSender()).deliver(event_id="ev-strong", attempts=3))
-
-    settle = news.kwargs_of("settle_delivery")
-    assert (settle["state"], settle["error_code"]) == ("terminal", "news_delivery_feishu_business_rate_limited")
-    assert "release_delivery" not in news.names(), "the ledger row is the evidence now, not a released claim"
+    assert (outcome.state, outcome.retryable, outcome.retry_after_ms) == ("not_sent", True, 120_000)
+    assert outcome.error_code == "news_delivery_feishu_business_rate_limited"
 
 
-def test_deliverer_never_retries_a_send_whose_outcome_the_provider_did_not_report() -> None:
+def test_a_refused_send_is_not_sent_and_not_retried() -> None:
+    sender = _FailingSendSender(
+        _provider_error("news_delivery_telegram_message_too_long", commit_phase=COMMIT_PHASE_NOT_SENT)
+    )
+
+    outcome = _send(_deliverer(sender=sender), _intent())
+
+    assert (outcome.state, outcome.retryable) == ("not_sent", False)
+
+
+def test_a_send_whose_outcome_the_provider_did_not_report_is_ambiguous_and_never_retried() -> None:
     """#604 N1. A read timeout may already be on a reader's screen; a second card is the worse answer."""
 
-    class UnreadableSender(RecordingSender):
-        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
-            raise _provider_error(
-                "news_delivery_feishu_transport_unreadable", commit_phase=COMMIT_PHASE_UNKNOWN, retryable=True
-            )
-
-    news = _delivery_news()
-
-    asyncio.run(_deliverer(news, sender=UnreadableSender()).deliver(event_id="ev-strong", attempts=1))
-
-    settle = news.kwargs_of("settle_delivery")
-    assert (settle["state"], settle["error_code"]) == ("terminal", "news_delivery_feishu_transport_unreadable")
-    assert "release_delivery" not in news.names()
-
-
-def test_the_enrichment_edit_is_paced_by_the_same_entry_the_initial_send_uses() -> None:
-    """#604 N3: one process, one pacer, whether the outbound message is a send or an edit.
-
-    The Deliverer used to hold a second lock and a second stamp for its edit, so on Telegram -- which
-    edits every News card once -- the provider saw twice the rate the operator configured. Both calls
-    now queue at `InitialSendEntry`, which is what makes `min_interval_seconds` mean one thing.
-    """
-
-    interval = 0.05
-
-    class TimingSender(RecordingEditableSender):
-        def __init__(self) -> None:
-            super().__init__([])
-            self.at: list[tuple[str, float]] = []
-
-        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
-            self.at.append(("send", time.monotonic()))
-            return super().send_card(card, **kwargs)
-
-        def edit_card(self, receipt: Mapping[str, Any], card: Any, **kwargs: Any) -> dict[str, Any]:
-            self.at.append(("edit", time.monotonic()))
-            return super().edit_card(receipt, card, **kwargs)
-
-    async def scenario() -> TimingSender:
-        sender = TimingSender()
-        consumer = _deliverer(_delivery_news(), sender=sender, min_interval_seconds=interval)
-        await consumer.deliver(event_id="ev-strong")
-        await consumer.close()
-        return sender
-
-    sender = asyncio.run(scenario())
-
-    assert [operation for operation, _ in sender.at] == ["send", "edit"]
-    assert sender.at[1][1] - sender.at[0][1] >= interval
-    # And the loop keeps no pacing state of its own for anyone to forget about.
-    assert not hasattr(_deliverer(_delivery_news()), "_edit_lock")
-
-
-def test_a_deferred_claim_keeps_its_lease_unless_the_provider_asked_for_longer() -> None:
-    """#604 N3: `retry_after` may raise this lane's flat 30 s wait; nothing may lower it.
-
-    The claim already leased the row until one retry delay from now. A provider that answered a rate
-    limit with a number of its own is obeyed when the number is larger -- coming back sooner earns
-    another refusal and spends an attempt on nothing -- and `GREATEST` in `defer_delivery_claim` is
-    what makes every other deferral leave the lease exactly where the claim put it.
-    """
-
-    class RateLimited(TransientError):
-        retry_after_seconds = 120.0
-
-    class Ordinary(TransientError):
-        pass
-
-    def _deferred(failure: type[TransientError]) -> dict[str, Any]:
-        def refuse(**_kwargs: Any) -> None:
-            raise failure("the provider refused this attempt")
-
-        news = _delivery_news(latest_verdict=refuse, defer_delivery_claim=True)
-        consumer = _deliverer(news, sender=RecordingSender())
-        asyncio.run(consumer._deliver_claim(event_id="ev-strong", kind="first", attempts=1))
-        return news.kwargs_of("defer_delivery_claim")
-
-    advised = _deferred(RateLimited)
-    plain = _deferred(Ordinary)
-
-    # The advice is a due time in the future; the ordinary deferral asks for nothing beyond `now`, so
-    # `GREATEST` leaves the claim's own lease standing.
-    assert advised["next_attempt_at_ms"] - advised["now_ms"] == 120_000
-    assert plain["next_attempt_at_ms"] == plain["now_ms"]
-
-
-def test_deliverer_has_no_reader_count_input() -> None:
-    news = _delivery_news()
-
-    asyncio.run(_deliverer(news).deliver(event_id="ev-strong"))
-
-    assert "sent_count_since" not in news.names()
-    settle = news.kwargs_of("settle_delivery")
-    assert settle["state"] == "terminal" and settle["error_code"] == "delivery_unavailable"
-
-
-def test_deliverer_skips_dropped_first_cards() -> None:
-    news = _delivery_news(latest_verdict=lambda *, event_id, stage: {"final_decision": "drop", "verdict": {}})
-    asyncio.run(_deliverer(news).deliver(event_id="ev-strong"))
-    assert "begin_delivery" not in news.names()
-
-    # There is no `news_event_id_missing` case left: the claim's own primary key and its foreign key
-    # to `news_events` are what used to be re-checked here against a message payload (#598 D2).
-    with pytest.raises(PermanentError, match="news_delivery_inputs_missing"):
-        asyncio.run(_deliverer(_delivery_news(event_card=None)).deliver(event_id="ghost"))
-
-
-def test_deliverer_passes_macro_scope_and_shows_no_badge_for_a_review_that_will_never_run() -> None:
-    """#562 §5 rows 3 and 6. The scope is a verdict fact and ships; the reference is a reviewed claim.
-
-    With no verifier composed -- none configured, or the editorial Program faulted and left one
-    unwired (#553 PR-3) -- no edit is coming, and `⏳ 关联确认中` used to stay on the card for the rest
-    of its life because nothing existed to clear it. The reference is still withheld, which is the risk
-    the badge was protecting; what the reader now sees is the plain `新进展` the verdict earned. The
-    reviewed headline still reaches them through the confirmed edit, which
-    `test_telegram_sends_a_progression_before_llm_association_review_then_edits_with_reason` proves,
-    and that test also proves `pending` is still shown while a real review is in flight.
-    """
-
-    news = _delivery_news(
-        event_card=_card(grounded_assets=[]),
-        latest_verdict=lambda **_kwargs: {
-            "final_decision": "escalate",
-            "verdict": {
-                "direction": "bearish",
-                "fact_kind": "state_change",
-                "scope": "macro",
-                "novelty": "progression",
-                "headline_zh": "美国就业基准继续下修",
-                "assets": [],
-            },
-            "trace": {
-                "told": [
-                    {
-                        "tier": "storyline",
-                        "similarity": 0.0,
-                        "headline_zh": "同属宏观大类但与就业无关的旧闻",
-                    },
-                    {
-                        "tier": "exact_fact",
-                        "similarity": 0.0,
-                        "headline_zh": "美国此前公布初步就业基准修订",
-                    },
-                ]
-            },
-        },
+    sender = _FailingSendSender(
+        _provider_error("news_delivery_feishu_transport_failed", commit_phase=COMMIT_PHASE_UNKNOWN, retryable=True)
     )
+
+    outcome = _send(_deliverer(sender=sender), _intent())
+
+    assert (outcome.state, outcome.error_code) == ("ambiguous", "news_delivery_feishu_transport_failed")
+    assert not outcome.retryable
+
+
+def test_a_telegram_send_carries_its_message_id_and_receipt_and_prices_later() -> None:
+    price = RecordingPrice(quotes=[{"requested_symbol": "NVDA", "price": "217.32", "state": "fresh"}])
     sender = RecordingEditableSender([])
 
-    asyncio.run(_deliverer(news, sender=sender).deliver(event_id="ev-strong"))
+    outcome = _send(_deliverer(sender=sender, price=price), _intent(("NVDA", "equity")))
 
-    assert sender.presentations == [
-        ReaderDeliveryPresentation(
-            market_data_state="pending",
-            market_scope="macro",
-            novelty="progression",
-        )
-    ]
-    assert sender.presentations[0].progression_review_state is None
-    assert sender.presentations[0].progression_from_headline is None
-    assert sender.edited_presentations == []
-
-
-def test_telegram_sends_a_progression_before_llm_association_review_then_edits_with_reason() -> None:
-    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, BlockingProgressionVerifier, list[str]]:
-        order: list[str] = []
-        news = _delivery_news(
-            event_card=_card(grounded_assets=[]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bearish",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "novelty": "progression",
-                    "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
-                    "why_zh": "工会行动从劳资协商进入有明确门槛的罢工程序。",
-                    "assets": [],
-                },
-                "trace": {
-                    "told": [
-                        {
-                            "i": 0,
-                            "event_id": "ev-parent",
-                            "tier": "storyline",
-                            "similarity": 0.31,
-                            "headline_zh": "美光工会此前启动劳资协商",
-                            "symbols": ["MU"],
-                            "at_ms": NOW_MS - 150_000,
-                        }
-                    ]
-                },
-            },
-            delivery=lambda *, event_id, kind: (
-                {
-                    "event_id": event_id,
-                    "kind": kind,
-                    "state": "sent",
-                    "delete_state": None,
-                    "receipt": {
-                        "provider": "telegram",
-                        "message_id": 41,
-                        "pushed_at_ms": NOW_MS - 150_000,
-                        "target_sha256": "a" * 64,
-                    },
-                }
-                if event_id == "ev-parent" and kind == "first"
-                else None
-            ),
-        )
-        sender = RecordingEditableSender(order)
-        verifier = BlockingProgressionVerifier(order)
-        consumer = _deliverer(
-            news,
-            sender=sender,
-            progression_verifier=verifier,
-        )
-
-        await asyncio.wait_for(
-            consumer.deliver(event_id="ev-strong"),
-            timeout=0.2,
-        )
-        assert order[:2] == ["prepare", "send"]
-        assert "edit" not in order
-        assert sender.presentations[0].progression_from_headline is None
-        assert sender.presentations[0].progression_review_state == "pending"
-        assert news.kwargs_of("settle_delivery")["state"] == "sent"
-
-        await asyncio.wait_for(verifier.started.wait(), timeout=0.2)
-        assert order == ["prepare", "send", "review"]
-        verifier.release.set()
-        await consumer.close()
-        return news, sender, verifier, order
-
-    news, sender, verifier, order = asyncio.run(scenario())
-
-    assert order == ["prepare", "send", "review", "edit"]
-    assert verifier.calls[0]["candidates"][0]["headline_zh"] == "美光工会此前启动劳资协商"
-    updated = sender.edited_presentations[0]
-    assert updated.progression_from_headline == "美光工会此前启动劳资协商"
-    assert updated.progression_review_state == "confirmed"
-    assert updated.progression_review_reason == "同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。"
-    assert updated.progression_review_parent_age_minutes == 2
-    assert updated.progression_review_parent_message_id == 41
-    assert sender.edited_cards[0]["progression_review"]["state"] == "confirmed"
-    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+    assert outcome.message_id == "42"
+    assert outcome.receipt == {
+        "provider": "telegram",
+        "message_id": 42,
+        "pushed_at_ms": NOW_MS,
+        "target_sha256": "a" * 64,
+    }
+    # An editable channel is sent first and priced by the edit: no quote read holds the send.
+    assert price.requested == []
+    assert sender.presentations[0].market_data_state == "pending"
 
 
-def test_a_told_entry_with_a_new_upstream_field_still_reaches_the_reader() -> None:
-    """#562 §5 row 4. An added key in the told ledger used to raise and block the whole card.
+def test_without_a_sender_or_a_notification_service_nothing_is_planned() -> None:
+    notifications = ScriptedNotifications(_intent())
 
-    Every field the candidate builder reads is named one at a time, with its own type check and its own
-    bound, so a key it does not read cannot change a candidate. Refusing the Event over one meant that
-    the day retrieval grew a column, no progression card was delivered at all -- the message failed in
-    `handle` before the send. The reader gets the card; the unknown key is simply not carried.
-    """
-
-    async def scenario() -> tuple[RecordingEditableSender, list[str], BlockingProgressionVerifier]:
-        order: list[str] = []
-        news = _delivery_news(
-            event_card=_card(grounded_assets=[]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "scope": "macro",
-                    "novelty": "progression",
-                    "headline_zh": "巴拿马运河拥堵迫使液化气油轮绕行",
-                    "assets": [],
-                },
-                "trace": {
-                    "told": [
-                        {
-                            "i": 0,
-                            "tier": "storyline",
-                            "similarity": 0.35,
-                            "headline_zh": "巴拿马运河管理局上调通行费",
-                            "retrieval_lane_v2": "a field this builder has never been shown",
-                        }
-                    ]
-                },
-            },
-        )
-        sender = RecordingEditableSender(order)
-        verifier = BlockingProgressionVerifier(
-            order,
-            response={
-                "state": "rejected",
-                "reason_zh": "两条新闻只是被归入了同一条主题线。",
-                "verifier_id": "scripted-progression-review-v1",
-            },
-        )
-        verifier.release.set()
-        consumer = _deliverer(news, sender=sender, progression_verifier=verifier)
-
-        await consumer.deliver(event_id="ev-strong")
-        await consumer.close()
-        return sender, order, verifier
-
-    sender, order, verifier = asyncio.run(scenario())
-
-    assert order == ["prepare", "send", "review", "edit"]
-    assert sender.presentations[0].progression_review_state == "pending"
-    candidate = verifier.calls[0]["candidates"][0]
-    assert candidate["headline_zh"] == "巴拿马运河管理局上调通行费"
-    assert "retrieval_lane_v2" not in candidate
+    assert asyncio.run(_deliverer(notifications=notifications).advance()) == 0
+    assert asyncio.run(_deliverer(sender=RecordingSender()).advance()) == 0
+    assert notifications.polls == 0 and notifications.processed == []
 
 
-def test_telegram_removes_an_unverified_previous_headline_and_marks_the_reason() -> None:
-    async def scenario() -> tuple[RecordingEditableSender, list[str]]:
-        order: list[str] = []
-        news = _delivery_news(
-            event_card=_card(grounded_assets=[]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "scope": "macro",
-                    "novelty": "progression",
-                    "headline_zh": "巴拿马运河拥堵迫使液化气油轮绕行",
-                    "assets": [],
-                },
-                "trace": {
-                    "told": [
-                        {
-                            "i": 0,
-                            "tier": "storyline",
-                            "similarity": 0.35,
-                            "headline_zh": "a16z 推出 Machine Age Fund",
-                        }
-                    ]
-                },
-            },
-        )
-        sender = RecordingEditableSender(order)
-        verifier = BlockingProgressionVerifier(
-            order,
-            response={
-                "state": "rejected",
-                "reason_zh": "两条新闻的主体、事件和影响链路均不同，只是被归入了宽泛主题。",
-                "verifier_id": "scripted-progression-review-v1",
-            },
-        )
-        verifier.release.set()
-        consumer = _deliverer(news, sender=sender, progression_verifier=verifier)
+def test_a_turn_runs_every_due_marker_and_a_recorded_failure_does_not_stop_the_next(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card failure or a deferred plan is already recorded by the core; the loop moves on."""
 
-        await consumer.deliver(event_id="ev-strong")
-        assert sender.presentations[0].progression_review_state == "pending"
-        assert sender.presentations[0].progression_from_headline is None
-        await consumer.close()
-        return sender, order
+    monkeypatch.setattr(logging.getLogger("tracefold.news"), "disabled", False)
 
-    sender, order = asyncio.run(scenario())
-
-    assert order == ["prepare", "send", "review", "edit"]
-    updated = sender.edited_presentations[0]
-    assert updated.novelty == "new_fact"
-    assert updated.progression_from_headline is None
-    assert updated.progression_review_state == "rejected"
-    assert updated.progression_review_reason == "两条新闻的主体、事件和影响链路均不同，只是被归入了宽泛主题。"
-    assert sender.edited_cards[0]["progression_review"]["state"] == "rejected"
-
-
-def test_telegram_downgrades_a_confirmed_progression_without_a_receipted_parent_to_new_fact() -> None:
-    async def scenario() -> RecordingEditableSender:
-        order: list[str] = []
-        news = _delivery_news(
-            event_card=_card(grounded_assets=[]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "novelty": "progression",
-                    "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
-                    "assets": [],
-                },
-                "trace": {
-                    "told": [
-                        {
-                            "i": 0,
-                            "event_id": "ev-parent-without-delivery",
-                            "tier": "storyline",
-                            "similarity": 0.63,
-                            "headline_zh": "美光工会此前启动劳资协商",
-                            "at_ms": NOW_MS - 60_000,
-                        }
-                    ]
-                },
-            },
-            delivery=lambda **_kwargs: None,
-        )
-        sender = RecordingEditableSender(order)
-        verifier = BlockingProgressionVerifier(order)
-        verifier.release.set()
-        consumer = _deliverer(news, sender=sender, progression_verifier=verifier)
-
-        await consumer.deliver(event_id="ev-strong")
-        await consumer.close()
-        return sender
-
-    sender = asyncio.run(scenario())
-
-    updated = sender.edited_presentations[0]
-    assert updated.novelty == "new_fact"
-    assert updated.progression_from_headline is None
-    assert updated.progression_review_state == "unavailable"
-    assert updated.progression_review_reason == "未找到可引用的历史推送。"
-    assert updated.progression_review_parent_age_minutes is None
-    assert updated.progression_review_parent_message_id is None
-
-
-def test_single_name_is_sent_first_then_edited_with_a_fresh_cross_venue_contract() -> None:
-    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
-        order: list[str] = []
-        news = _delivery_news(
-            event_card=_card(
-                leader_title="MetaLight (02605.HK) announces interim results",
-                grounded_assets=["2605"],
-            ),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "novelty": "new_fact",
-                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
-                    "assets": [{"symbol": "2605", "market_type": "equity", "role": "primary"}],
-                },
-            },
-        )
-        sender = RecordingEditableSender(order)
-        verifier = ScriptedTradabilityVerifier(
-            {
-                "state": "matched",
-                "candidates": ["2605", "02605", "HK2605", "METALIGHT"],
-                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
-                "failed_venues": [],
-                "matches": [
-                    {
-                        "requested_symbol": "2605",
-                        "venue_family": "bitget",
-                        "venue": "bitget.perp",
-                        "venue_symbol": "METALIGHTUSDT",
-                        "price_symbol": "METALIGHTUSDT",
-                        "base_symbol": "METALIGHT",
-                        "quote_asset": "USDT",
-                        "instrument_class": "equity",
-                    }
-                ],
-                "reason_zh": "已在 bitget.perp 官方市场目录命中可交易合约。",
-            },
-            order,
-        )
-
-        async def fetch(_venue_symbol: str, targets_ms: Sequence[int]) -> Mapping[int, PricePoint]:
-            return {
-                target: PricePoint(at_ms=target, price=Decimal("10") + Decimal(index), basis="trade")
-                for index, target in enumerate(targets_ms)
-            }
-
-        consumer = _deliverer(
-            news,
-            sender=sender,
-            tradability_verifier=verifier,
-            price_fetcher_for=lambda venue: fetch if venue == "bitget.perp" else None,
-        )
-        await consumer.deliver(event_id="ev-strong")
-        assert order[:2] == ["prepare", "send"]
-        await consumer.close()
-        return news, sender
-
-    news, sender = asyncio.run(scenario())
-
-    assert sender.edited_cards[0]["tradability_review"]["state"] == "matched"
-    assert sender.edited_presentations[0].trade_targets == (
-        ReaderTradeTarget(
-            ticker="2605",
-            venue="bitget.perp",
-            venue_symbol="METALIGHTUSDT",
-            base_symbol="METALIGHT",
-            quote_asset="USDT",
-        ),
+    notifications = ScriptedNotifications(
+        _intent(event_id="ev-card-failed"),
+        _intent(event_id="ev-sent"),
+        failures={"ev-card-failed": ProviderUnavailable("news_generation_LMRateLimitError")},
     )
-    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+    sender = RecordingSender([])
+
+    with caplog.at_level(logging.WARNING, logger="tracefold.news.pipeline.delivery"):
+        worked = asyncio.run(_deliverer(notifications=notifications, sender=sender).advance())
+
+    assert worked == 2
+    assert notifications.processed == ["ev-card-failed", "ev-sent"]
+    assert notifications.outcomes["ev-sent"].state == "sent" and len(sender.cards) == 1
+    assert "news notification turn failed event_id=ev-card-failed" in caplog.text
+    assert "ProviderUnavailable" in caplog.text
 
 
-def test_single_name_without_a_grounded_asset_is_edited_when_the_title_resolves_to_a_contract() -> None:
-    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
-        order: list[str] = []
-        news = _delivery_news(
-            event_card=_card(
-                leader_title="MetaLight (02605.HK) announces interim results",
-                grounded_assets=[],
-            ),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "novelty": "new_fact",
-                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
-                    "assets": [],
-                },
-            },
-        )
-        sender = RecordingEditableSender(order)
-        verifier = ScriptedTradabilityVerifier(
-            {
-                "state": "matched",
-                "candidates": ["02605.HK", "2605", "METALIGHT"],
-                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
-                "failed_venues": [],
-                "matches": [
-                    {
-                        "requested_symbol": "METALIGHT",
-                        "venue_family": "bitget",
-                        "venue": "bitget.perp",
-                        "venue_symbol": "METALIGHTUSDT",
-                        "price_symbol": "METALIGHTUSDT",
-                        "base_symbol": "METALIGHT",
-                        "quote_asset": "USDT",
-                        "instrument_class": "equity",
-                    }
-                ],
-                "reason_zh": "已在 bitget.perp 官方市场目录命中可交易合约。",
-            },
-            order,
-        )
+def test_an_unclassified_turn_failure_faults_the_capability() -> None:
+    notifications = ScriptedNotifications(_intent(), failures={"ev-strong": KeyError("bug")})
 
-        async def fetch(_venue_symbol: str, targets_ms: Sequence[int]) -> Mapping[int, PricePoint]:
-            return {target: PricePoint(at_ms=target, price=Decimal("10"), basis="trade") for target in targets_ms}
-
-        consumer = _deliverer(
-            news,
-            sender=sender,
-            tradability_verifier=verifier,
-            price_fetcher_for=lambda venue: fetch if venue == "bitget.perp" else None,
-        )
-        await consumer.deliver(event_id="ev-strong")
-        await consumer.close()
-        return news, sender, order
-
-    news, sender, order = asyncio.run(scenario())
-
-    assert order == ["prepare", "send", "market-search", "edit"]
-    assert sender.edited_presentations[0].trade_targets == (
-        ReaderTradeTarget("METALIGHT", "bitget.perp", "METALIGHTUSDT", "METALIGHT", "USDT"),
-    )
-    assert sender.edited_presentations[0].market_movements[0].ticker == "METALIGHT"
-    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+    with pytest.raises(KeyError):
+        asyncio.run(_deliverer(notifications=notifications, sender=RecordingSender()).advance())
 
 
-def test_single_name_without_a_grounded_asset_is_edited_to_say_so_after_authoritative_absence() -> None:
-    """#562 §5 row 5. The five-venue absence now edits the card; it never takes it back.
-
-    A card the reader has already read was deleted out of their channel on an LLM-derived candidate list
-    plus a title heuristic. The review is unchanged -- same five catalogues, same authoritative-absence
-    rule, same identity confidence -- and what it authorises is a line on the card saying what the
-    catalogues answered.
-    """
-
-    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
-        news = _delivery_news(
-            event_card=_card(leader_title="MetaLight (02605.HK) announces interim results", grounded_assets=[]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "novelty": "new_fact",
-                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
-                    "assets": [],
-                },
-            },
-        )
-        sender = RecordingEditableSender([])
-        verifier = ScriptedTradabilityVerifier(
-            {
-                "state": "absent",
-                "candidates": ["02605.HK", "2605", "METALIGHT"],
-                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
-                "failed_venues": [],
-                "matches": [],
-                "deletion_safe": True,
-                "reason_zh": "Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。",
-            }
-        )
-        consumer = _deliverer(news, sender=sender, tradability_verifier=verifier)
-        await consumer.deliver(event_id="ev-strong")
-        await consumer.close()
-        return news, sender
-
-    news, sender = asyncio.run(scenario())
-
-    assert "delete" not in sender.order
-    assert sender.edited_cards[0]["elements"][0]["content"].startswith("未找到可交易标的\n")
-    # The notice is a fact about the card, not one channel's line: the model carries it and every
-    # serializer reads it from there (#562 PR-C).
-    assert sender.edited_reader_cards[0].untradeable is True
-    assert sender.edited_cards[0]["tradability_review"]["state"] == "absent"
-    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
-
-
-def test_the_untradeable_notice_survives_all_five_catalogues_and_reaches_the_sent_message() -> None:
-    """#562 §5 row 5. Same authoritative absence on a grounded asset: one edit, one durable intent."""
-
-    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
-        order: list[str] = []
-        news = _delivery_news(
-            event_card=_card(
-                leader_title="MetaLight (02605.HK) announces interim results",
-                grounded_assets=["2605"],
-            ),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "novelty": "new_fact",
-                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
-                    "assets": [{"symbol": "2605", "market_type": "equity", "role": "primary"}],
-                },
-            },
-        )
-        sender = RecordingEditableSender(order)
-        verifier = ScriptedTradabilityVerifier(
-            {
-                "state": "absent",
-                "candidates": ["2605", "02605", "HK2605", "METALIGHT"],
-                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
-                "failed_venues": [],
-                "matches": [],
-                "deletion_safe": True,
-                "reason_zh": "Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。",
-            },
-            order,
-        )
-        consumer = _deliverer(news, sender=sender, tradability_verifier=verifier)
-        await consumer.deliver(event_id="ev-strong")
-        assert order[:2] == ["prepare", "send"]
-        await consumer.close()
-        return news, sender
-
-    news, sender = asyncio.run(scenario())
-
-    assert sender.order == ["prepare", "send", "market-search", "edit"]
-    assert sender.edited_cards[0]["elements"][0]["content"].startswith("未找到可交易标的\n")
-    assert news.kwargs_of("settle_delivery_edit")["receipt"]["edited_at_ms"] == NOW_MS + 1_000
-
-
-def test_title_only_acronym_is_kept_when_five_venue_absence_is_not_deletion_safe() -> None:
-    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
-        news = _delivery_news(
-            event_card=_card(leader_title="OpenAI (GPT) announces a research update", grounded_assets=[]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "neutral",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "novelty": "new_fact",
-                    "headline_zh": "OpenAI 发布研究更新",
-                    "assets": [],
-                },
-            },
-        )
-        sender = RecordingEditableSender([])
-        verifier = ScriptedTradabilityVerifier(
-            {
-                "state": "absent",
-                "candidates": ["GPT", "OPENAI"],
-                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
-                "failed_venues": [],
-                "matches": [],
-                "deletion_safe": False,
-                "reason_zh": "五个交易所均未命中，但标题代码缺少交易所前缀，保留消息等待人工确认。",
-            }
-        )
-        consumer = _deliverer(news, sender=sender, tradability_verifier=verifier)
-        await consumer.deliver(event_id="ev-strong")
-        await consumer.close()
-        return news, sender
-
-    _news, sender = asyncio.run(scenario())
-
-    assert sender.edited_cards[0]["tradability_review"]["state"] == "absent"
-    # #562 §5 row 5: the identity confidence still decides whether an absence is worth stating. An
-    # ordinary name shaped like a ticker earns no claim about catalogues on the reader's card.
-    assert "未找到可交易标的" not in sender.edited_cards[0]["elements"][0]["content"]
-
-
-def test_single_name_is_kept_when_even_one_catalogue_check_is_incomplete() -> None:
-    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
-        news = _delivery_news(
-            event_card=_card(leader_title="MetaLight (02605.HK)", grounded_assets=["2605"]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
-                    "assets": [{"symbol": "2605", "market_type": "equity", "role": "primary"}],
-                },
-            },
-        )
-        sender = RecordingEditableSender([])
-        verifier = ScriptedTradabilityVerifier(
-            {
-                "state": "incomplete",
-                "candidates": ["2605", "02605", "HK2605", "METALIGHT"],
-                "checked_venues": ["hyperliquid", "okx", "lighter", "bitget"],
-                "failed_venues": ["binance"],
-                "matches": [],
-                "reason_zh": "部分交易所目录查询失败，按安全规则保留消息。",
-            }
-        )
-        consumer = _deliverer(news, sender=sender, tradability_verifier=verifier)
-        await consumer.deliver(event_id="ev-strong")
-        await consumer.close()
-        return news, sender
-
-    _news, sender = asyncio.run(scenario())
-
-    assert sender.edited_cards[0]["tradability_review"]["state"] == "incomplete"
-    assert "未找到可交易标的" not in sender.edited_cards[0]["elements"][0]["content"]
-
-
-def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
+def test_the_deliverer_prices_exactly_the_selected_claims_primary_assets() -> None:
     price = RecordingPrice(
         quotes=[
             {
@@ -2244,26 +988,31 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
             }
         ]
     )
-    news = _delivery_news(
-        latest_verdict=lambda *, event_id, stage: {
-            "final_decision": "push",
-            "verdict": {
-                "direction": "bullish",
-                "fact_kind": "state_change",
-                "headline_zh": "英伟达",
-                "assets": [
-                    {"symbol": "NVDA", "market_type": "equity", "role": "primary"},
-                    {"symbol": "OPENAI", "role": "mentioned"},
-                ],
-            },
-        }
-    )
     sender = RecordingSender()
+    item = update_source("Nvidia invests in OpenAI.")
+    update = adopted(
+        (
+            draft(
+                "a",
+                item,
+                assets=(
+                    update_asset("NVDA", "equity"),
+                    update_asset("OPENAI", "unknown"),
+                    update_asset("MSFT", "equity", "mentioned"),
+                ),
+            ),
+            item,
+        )
+    )
+    plan = plan_for(update)
 
-    asyncio.run(_deliverer(news, price=price, sender=sender).deliver(event_id="ev-strong"))
+    _send(_deliverer(price=price, sender=sender), (plan, frozen_card(plan, update), update))
 
+    # Only the typed primary: an untyped name and a mention are not the card's subject or its quote target.
     assert price.requested == [["NVDA"]]
-    assert sender.cards[0]["elements"][0]["content"].splitlines()[-1] == "行情 NVDA $217.32 24h +1.50%（永续）"
+    assert price.requested_markets == [["equity"]]
+    body = sender.cards[0]["elements"][0]["text"]["content"]
+    assert body.splitlines()[-1] == "行情 NVDA $217.32 24h +1.50%（永续）"
     assert sender.presentations[0].trade_targets == (
         ReaderTradeTarget(
             ticker="NVDA",
@@ -2309,30 +1058,6 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
             },
         ],
     )
-    news = _delivery_news(
-        event_card=_card(
-            leader_published_at_ms=NOW_MS - 20_000,
-            leader_url="https://www.bloomberg.com/news/articles/example",
-            grounded_assets=["BTC", "ETH"],
-        ),
-        event_delivery_timing={
-            "news_at_ms": NOW_MS - 20_000,
-            "reaction_anchor_at_ms": NOW_MS - 20_000,
-            "observed_at_ms": NOW_MS - 8_000,
-        },
-        latest_verdict=lambda *, event_id, stage: {
-            "final_decision": "push",
-            "verdict": {
-                "direction": "bullish",
-                "fact_kind": "state_change",
-                "headline_zh": "比特币与以太坊走强",
-                "assets": [
-                    {"symbol": "BTC", "market_type": "crypto", "role": "primary"},
-                    {"symbol": "ETH", "market_type": "crypto", "role": "primary"},
-                ],
-            },
-        },
-    )
     sender = RecordingSender()
     candle_calls: list[tuple[str, str, int, int]] = []
 
@@ -2352,15 +1077,12 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
 
         return fetch
 
-    asyncio.run(
-        _deliverer(
-            news,
-            price=price,
-            sender=sender,
-            candle_fetcher_for=candle_fetcher_for,
-        ).deliver(event_id="ev-strong")
+    _send(
+        _deliverer(price=price, sender=sender, candle_fetcher_for=candle_fetcher_for),
+        _intent(("BTC", "crypto"), ("ETH", "crypto"), news_at_ms=NOW_MS - 20_000),
     )
 
+    # The news time is the selected claim's own source time, never the adoption or send clock.
     assert sender.presentations == [
         ReaderDeliveryPresentation(
             trade_targets=(
@@ -2372,10 +1094,8 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
                 ReaderMarketMovement("ETH", 101, 50, 170, "available"),
             ),
             news_at_ms=NOW_MS - 20_000,
-            observed_at_ms=NOW_MS - 8_000,
         )
     ]
-    assert price.requested_reaction_versions == []
     assert candle_calls == [
         ("binance.perp", "BTCUSDT", NOW_MS - 3_690_000, NOW_MS),
         ("binance.spot", "ETHUSDT", NOW_MS - 3_690_000, NOW_MS),
@@ -2411,20 +1131,6 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
             )
         },
     )
-    news_at = NOW_MS - 20_000
-    news = _delivery_news(
-        event_card=_card(grounded_assets=["MSFT"], leader_published_at_ms=news_at),
-        event_delivery_timing={"news_at_ms": news_at, "observed_at_ms": news_at + 1_000},
-        latest_verdict=lambda **_kwargs: {
-            "final_decision": "push",
-            "verdict": {
-                "direction": "bullish",
-                "fact_kind": "state_change",
-                "headline_zh": "微软事件",
-                "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
-            },
-        },
-    )
     sender = RecordingSender()
     calls: list[tuple[str, str]] = []
 
@@ -2449,13 +1155,9 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
 
         return fetch
 
-    asyncio.run(
-        _deliverer(
-            news,
-            price=price,
-            sender=sender,
-            price_fetcher_for=price_fetcher_for,
-        ).deliver(event_id="ev-strong")
+    _send(
+        _deliverer(price=price, sender=sender, price_fetcher_for=price_fetcher_for),
+        _intent(("MSFT", "equity")),
     )
 
     assert calls == [("binance.perp", "MSFTUSDT"), ("hl.xyz", "xyz:MSFT")]
@@ -2471,45 +1173,31 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
     )
 
 
+_MSFT_QUOTE: dict[str, Any] = {
+    "requested_symbol": "MSFT",
+    "symbol": "MSFT",
+    "base_symbol": "MSFT",
+    "venue": "binance.perp",
+    "venue_symbol": "MSFTUSDT",
+    "quote_asset": "USDT",
+    "instrument_class": "equity",
+    "price": "500",
+    "state": "fresh",
+}
+_MSFT_INSTRUMENTS = {"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)}
+
+
 def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("tracefold.news.pipeline.delivery.now_ms", lambda: NOW_MS)
+    msft = _intent(("MSFT", "equity"))
 
     async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
         allow_prices = asyncio.Event()
         price_started = asyncio.Event()
         order: list[str] = []
-        price = RecordingPrice(
-            quotes=[
-                {
-                    "requested_symbol": "MSFT",
-                    "symbol": "MSFT",
-                    "base_symbol": "MSFT",
-                    "venue": "binance.perp",
-                    "venue_symbol": "MSFTUSDT",
-                    "quote_asset": "USDT",
-                    "instrument_class": "equity",
-                    "price": "500",
-                    "state": "fresh",
-                }
-            ],
-            instruments={"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)},
-        )
-        news_at = NOW_MS - 20_000
-        news = _delivery_news(
-            event_card=_card(grounded_assets=["MSFT"], leader_published_at_ms=news_at),
-            event_delivery_timing={"news_at_ms": news_at, "observed_at_ms": news_at + 1_000},
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
-                },
-            },
-        )
+        news = _delivery_news()
         sender = RecordingEditableSender(order)
 
         def price_fetcher_for(_venue: str) -> Any:
@@ -2529,18 +1217,15 @@ def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_me
 
         consumer = _deliverer(
             news,
-            price=price,
+            notifications=ScriptedNotifications(msft),
+            price=RecordingPrice(quotes=[_MSFT_QUOTE], instruments=_MSFT_INSTRUMENTS),
             sender=sender,
             price_fetcher_for=price_fetcher_for,
         )
-        await asyncio.wait_for(
-            consumer.deliver(event_id="ev-strong"),
-            timeout=0.2,
-        )
+        await asyncio.wait_for(consumer.advance(), timeout=0.2)
         assert order[:2] == ["prepare", "send"]
         assert "edit" not in order
         assert sender.presentations[0].market_data_state == "pending"
-        assert news.kwargs_of("settle_delivery")["state"] == "sent"
 
         await asyncio.wait_for(price_started.wait(), timeout=0.2)
         assert order == ["prepare", "send", "price"]
@@ -2555,23 +1240,269 @@ def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_me
     assert sender.edited_presentations[0].market_movements == (
         ReaderMarketMovement("MSFT", 202, 100, 1222, "available"),
     )
-    assert sender.edited_cards[0]["elements"][0]["content"].splitlines()[-1].startswith("行情 MSFT $101")
+    edited_body = sender.edited_cards[0]["elements"][0]["text"]["content"]
+    assert edited_body.splitlines()[-1].startswith("行情 MSFT $101")
+    # The edit is keyed by the intent, fenced by the exact receipt the send settled with, and never
+    # touches the frozen copy: the edited card carries the same lead.
+    begin = news.kwargs_of("begin_delivery_edit")
+    assert begin["intent_id"] == msft[0].intent_id
+    assert begin["card"] == sender.edited_cards[0]
+    assert begin["receipt"] == {
+        "provider": "telegram",
+        "message_id": 42,
+        "pushed_at_ms": NOW_MS,
+        "target_sha256": "a" * 64,
+    }
+    assert sender.edited_reader_cards[0].lead == sender.reader_cards[0].lead
+    settle = news.kwargs_of("settle_delivery_edit")
+    assert settle["intent_id"] == msft[0].intent_id and settle["receipt"]["edited_at_ms"] == NOW_MS + 1_000
+
+
+def test_the_enrichment_edit_is_paced_by_the_same_entry_the_initial_send_uses() -> None:
+    """#604 N3: one process, one pacer, whether the outbound message is a send or an edit."""
+
+    interval = 0.05
+
+    class TimingSender(RecordingEditableSender):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.at: list[tuple[str, float]] = []
+
+        def send_card(self, card: Any, **kwargs: Any) -> dict[str, Any]:
+            self.at.append(("send", time.monotonic()))
+            return super().send_card(card, **kwargs)
+
+        def edit_card(self, receipt: Mapping[str, Any], card: Any, **kwargs: Any) -> dict[str, Any]:
+            self.at.append(("edit", time.monotonic()))
+            return super().edit_card(receipt, card, **kwargs)
+
+    async def scenario() -> TimingSender:
+        sender = TimingSender()
+        consumer = _deliverer(
+            notifications=ScriptedNotifications(_intent(("NVDA", "equity"))),
+            sender=sender,
+            min_interval_seconds=interval,
+        )
+        await consumer.advance()
+        await consumer.close()
+        return sender
+
+    sender = asyncio.run(scenario())
+
+    assert [operation for operation, _ in sender.at] == ["send", "edit"]
+    assert sender.at[1][1] - sender.at[0][1] >= interval
+    assert not hasattr(_deliverer(), "_edit_lock")
+
+
+def test_a_sent_card_with_nothing_to_enrich_is_not_edited() -> None:
+    order: list[str] = []
+    news = _delivery_news()
+
+    async def scenario() -> None:
+        consumer = _deliverer(
+            news, notifications=ScriptedNotifications(_intent()), sender=RecordingEditableSender(order)
+        )
+        await consumer.advance()
+        await consumer.close()
+
+    asyncio.run(scenario())
+
+    assert order == ["prepare", "send"]
+    assert "begin_delivery_edit" not in news.names()
+
+
+_METALIGHT_MATCH: dict[str, Any] = {
+    "requested_symbol": "METALIGHT",
+    "venue_family": "bitget",
+    "venue": "bitget.perp",
+    "venue_symbol": "METALIGHTUSDT",
+    "price_symbol": "METALIGHTUSDT",
+    "base_symbol": "METALIGHT",
+    "quote_asset": "USDT",
+    "instrument_class": "equity",
+}
+
+
+def test_one_named_instrument_is_sent_first_then_edited_with_a_fresh_cross_venue_contract() -> None:
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, ScriptedTradabilityVerifier]:
+        order: list[str] = []
+        news = _delivery_news()
+        sender = RecordingEditableSender(order)
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "matched",
+                "candidates": ["2605", "02605", "HK2605", "METALIGHT"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [{**_METALIGHT_MATCH, "requested_symbol": "2605"}],
+                "reason_zh": "已在 bitget.perp 官方市场目录命中可交易合约。",
+            },
+            order,
+        )
+
+        async def fetch(_venue_symbol: str, targets_ms: Sequence[int]) -> Mapping[int, PricePoint]:
+            return {
+                target: PricePoint(at_ms=target, price=Decimal("10") + Decimal(index), basis="trade")
+                for index, target in enumerate(targets_ms)
+            }
+
+        consumer = _deliverer(
+            news,
+            notifications=ScriptedNotifications(_intent(("2605", "equity"))),
+            sender=sender,
+            tradability_verifier=verifier,
+            price_fetcher_for=lambda venue: fetch if venue == "bitget.perp" else None,
+        )
+        await consumer.advance()
+        assert order[:2] == ["prepare", "send"]
+        await consumer.close()
+        return news, sender, verifier
+
+    news, sender, verifier = asyncio.run(scenario())
+
+    assert verifier.calls[0]["symbols"] == ["2605"]
+    assert verifier.calls[0]["verdict"] == {"headline_zh": "英伟达向数据中心投资千亿美元"}
+    assert sender.edited_cards[0]["tradability_review"]["state"] == "matched"
+    assert sender.edited_presentations[0].trade_targets == (
+        ReaderTradeTarget(
+            ticker="2605",
+            venue="bitget.perp",
+            venue_symbol="METALIGHTUSDT",
+            base_symbol="METALIGHT",
+            quote_asset="USDT",
+        ),
+    )
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
-    assert news.kwargs_of("settle_delivery_edit")["receipt"]["edited_at_ms"] == NOW_MS + 1_000
+
+
+def test_an_untyped_named_instrument_is_edited_when_the_catalogue_resolves_it() -> None:
+    async def scenario() -> tuple[RecordingEditableSender, list[str]]:
+        order: list[str] = []
+        sender = RecordingEditableSender(order)
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "matched",
+                "candidates": ["02605.HK", "2605", "METALIGHT"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [_METALIGHT_MATCH],
+                "reason_zh": "已在 bitget.perp 官方市场目录命中可交易合约。",
+            },
+            order,
+        )
+
+        async def fetch(_venue_symbol: str, targets_ms: Sequence[int]) -> Mapping[int, PricePoint]:
+            return {target: PricePoint(at_ms=target, price=Decimal("10"), basis="trade") for target in targets_ms}
+
+        consumer = _deliverer(
+            notifications=ScriptedNotifications(_intent(("METALIGHT", "unknown"))),
+            sender=sender,
+            tradability_verifier=verifier,
+            price_fetcher_for=lambda venue: fetch if venue == "bitget.perp" else None,
+        )
+        await consumer.advance()
+        await consumer.close()
+        return sender, order
+
+    sender, order = asyncio.run(scenario())
+
+    # An untyped name is not shown on the first send; the catalogue's exact match is what types it.
+    assert sender.reader_cards[0].facts.tickers == ()
+    assert order == ["prepare", "send", "market-search", "edit"]
+    assert sender.edited_presentations[0].trade_targets == (
+        ReaderTradeTarget("METALIGHT", "bitget.perp", "METALIGHTUSDT", "METALIGHT", "USDT"),
+    )
+    assert sender.edited_presentations[0].market_movements[0].ticker == "METALIGHT"
+
+
+def test_an_authoritative_five_venue_absence_edits_the_card_to_say_so_and_never_removes_it() -> None:
+    """#562 §5 row 5. The five-venue absence edits the card; it never takes it back."""
+
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
+        news = _delivery_news()
+        sender = RecordingEditableSender([])
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "absent",
+                "candidates": ["02605.HK", "2605", "METALIGHT"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [],
+                "deletion_safe": True,
+                "reason_zh": "Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。",
+            }
+        )
+        consumer = _deliverer(
+            news,
+            notifications=ScriptedNotifications(_intent(("METALIGHT", "unknown"))),
+            sender=sender,
+            tradability_verifier=verifier,
+        )
+        await consumer.advance()
+        await consumer.close()
+        return news, sender
+
+    news, sender = asyncio.run(scenario())
+
+    assert "delete" not in sender.order
+    assert sender.edited_cards[0]["elements"][0]["text"]["content"].startswith("未找到可交易标的\n")
+    assert sender.edited_reader_cards[0].untradeable is True
+    assert sender.edited_cards[0]["tradability_review"]["state"] == "absent"
+    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+
+
+def test_a_card_about_several_instruments_gets_no_catalogue_check() -> None:
+    verifier = ScriptedTradabilityVerifier({"state": "incomplete"})
+
+    async def scenario() -> None:
+        consumer = _deliverer(
+            notifications=ScriptedNotifications(_intent(("BTC", "crypto"), ("ETH", "crypto"))),
+            sender=RecordingEditableSender([]),
+            tradability_verifier=verifier,
+        )
+        await consumer.advance()
+        await consumer.close()
+
+    asyncio.run(scenario())
+
+    assert verifier.calls == []
+
+
+def test_delivery_retires_legacy_intents_and_reconciles_before_it_claims() -> None:
+    order: list[str] = []
+    news = _delivery_news(
+        terminalize_interrupted_deliveries=lambda **_kwargs: order.append("interrupted-sends") or 0,
+        retire_legacy_delivery_intents=lambda **_kwargs: order.append("retire-legacy") or 2,
+        terminalize_interrupted_delivery_edits=lambda **_kwargs: order.append("interrupted-edits") or 0,
+    )
+    stop_event = asyncio.Event()
+
+    class StopAfterPoll(ScriptedNotifications):
+        async def pending_notification_events(self, channel: str, limit: int) -> tuple[str, ...]:
+            order.append("poll")
+            stop_event.set()
+            return ()
+
+    asyncio.run(_deliverer(news, notifications=StopAfterPoll(), sender=RecordingSender()).run(stop_event=stop_event))
+
+    assert order[:4] == ["interrupted-sends", "retire-legacy", "interrupted-edits", "poll"]
 
 
 def test_delivery_refuses_to_claim_when_startup_edit_reconciliation_is_unavailable() -> None:
     def unavailable(**_kwargs: Any) -> int:
         raise TransientError("edit reconciliation unavailable")
 
-    news = _delivery_news(terminalize_interrupted_delivery_edits=unavailable)
-    bus = FakeBus()
-    consumer = _deliverer(news, sender=RecordingSender())
+    notifications = ScriptedNotifications()
+    consumer = _deliverer(
+        _delivery_news(terminalize_interrupted_delivery_edits=unavailable),
+        notifications=notifications,
+        sender=RecordingSender(),
+    )
 
     with pytest.raises(TransientError, match="edit reconciliation unavailable"):
         asyncio.run(consumer.run(stop_event=asyncio.Event()))
 
-    assert bus.consumed == []
+    assert notifications.polls == 0
 
 
 def test_delivery_waits_out_startup_news_lane_contention_before_claiming(
@@ -2587,14 +1518,18 @@ def test_delivery_waits_out_startup_news_lane_contention_before_claiming(
             raise DeferError("db_admission_timeout:news_delivery_edit_reconcile")
         return 1
 
-    news = _delivery_news(terminalize_interrupted_delivery_edits=reconcile_after_contention)
-    consumer = _deliverer(news, sender=RecordingSender())
+    notifications = ScriptedNotifications()
+    consumer = _deliverer(
+        _delivery_news(terminalize_interrupted_delivery_edits=reconcile_after_contention),
+        notifications=notifications,
+        sender=RecordingSender(),
+    )
     stop_event = asyncio.Event()
 
     async def scenario() -> None:
         task = asyncio.create_task(consumer.run(stop_event=stop_event))
         for _ in range(100):
-            if "claim_due_deliveries" in news.names():
+            if notifications.polls:
                 break
             if task.done():
                 await task
@@ -2607,7 +1542,7 @@ def test_delivery_waits_out_startup_news_lane_contention_before_claiming(
     asyncio.run(scenario())
 
     assert attempts == 2
-    assert "claim_due_deliveries" in news.names()
+    assert notifications.polls >= 1
 
 
 def test_delivery_periodically_retries_stale_edit_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2623,16 +1558,17 @@ def test_delivery_periodically_retries_stale_edit_reconciliation(monkeypatch: py
         stop_event.set()
         return 1
 
-    news = _delivery_news(
-        terminalize_interrupted_delivery_edits=0,
-        terminalize_stale_delivery_edits=stale_reconcile,
+    notifications = ScriptedNotifications()
+    consumer = _deliverer(
+        _delivery_news(terminalize_stale_delivery_edits=stale_reconcile),
+        notifications=notifications,
+        sender=RecordingSender(),
     )
-    consumer = _deliverer(news, sender=RecordingSender())
 
     asyncio.run(consumer.run(stop_event=stop_event))
 
     assert attempts == 2
-    assert "claim_due_deliveries" in news.names()
+    assert notifications.polls >= 1
 
 
 def test_delivery_fails_closed_when_periodic_edit_reconciliation_crashes(
@@ -2643,18 +1579,19 @@ def test_delivery_fails_closed_when_periodic_edit_reconciliation_crashes(
     def invariant_failure(**_kwargs: Any) -> int:
         raise RuntimeError("edit reconciliation invariant failure")
 
-    news = _delivery_news(
-        terminalize_interrupted_delivery_edits=0,
-        terminalize_stale_delivery_edits=invariant_failure,
+    notifications = ScriptedNotifications()
+    consumer = _deliverer(
+        _delivery_news(terminalize_stale_delivery_edits=invariant_failure),
+        notifications=notifications,
+        sender=RecordingSender(),
     )
-    consumer = _deliverer(news, sender=RecordingSender())
 
     with pytest.raises(RuntimeError, match="edit reconciliation invariant failure"):
         asyncio.run(consumer.run(stop_event=asyncio.Event()))
 
     # The claim loop was live beside the reconciler and the reconciler's crash still won: `run`
     # cancels its sibling and raises, which is what marks the `news_delivery` capability faulted.
-    assert "claim_due_deliveries" in news.names()
+    assert notifications.polls >= 1
 
 
 def test_pending_enrichment_does_not_block_the_next_telegram_initial_send() -> None:
@@ -2662,19 +1599,6 @@ def test_pending_enrichment_does_not_block_the_next_telegram_initial_send() -> N
         allow_prices = asyncio.Event()
         first_price_started = asyncio.Event()
         order: list[str] = []
-        news = _delivery_news(
-            begin_states=["new", "new"],
-            event_card=_card(grounded_assets=["MSFT"]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
-                },
-            },
-        )
 
         def price_fetcher_for(_venue: str) -> Any:
             async def fetch(_venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
@@ -2689,33 +1613,18 @@ def test_pending_enrichment_does_not_block_the_next_telegram_initial_send() -> N
 
             return fetch
 
+        notifications = ScriptedNotifications(
+            _intent(("MSFT", "equity"), event_id="ev-first"),
+            _intent(("MSFT", "equity"), event_id="ev-second"),
+        )
         consumer = _deliverer(
-            news,
-            price=RecordingPrice(
-                quotes=[
-                    {
-                        "requested_symbol": "MSFT",
-                        "symbol": "MSFT",
-                        "base_symbol": "MSFT",
-                        "venue": "binance.perp",
-                        "venue_symbol": "MSFTUSDT",
-                        "quote_asset": "USDT",
-                        "instrument_class": "equity",
-                        "price": "500",
-                        "state": "fresh",
-                    }
-                ],
-                instruments={"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)},
-            ),
+            notifications=notifications,
+            price=RecordingPrice(quotes=[_MSFT_QUOTE], instruments=_MSFT_INSTRUMENTS),
             sender=RecordingEditableSender(order),
             price_fetcher_for=price_fetcher_for,
         )
-        await consumer.deliver(event_id="ev-first")
+        await asyncio.wait_for(consumer.advance(), timeout=0.2)
         await asyncio.wait_for(first_price_started.wait(), timeout=0.2)
-        await asyncio.wait_for(
-            consumer.deliver(event_id="ev-second"),
-            timeout=0.2,
-        )
         assert order.count("send") == 2
         assert "edit" not in order
         allow_prices.set()
@@ -2734,42 +1643,13 @@ def test_delivery_drain_waits_for_native_edit_before_closing_the_sender() -> Non
         order: list[str] = []
         sender = BlockingEditSender(order)
         finite = FiniteOperations(telemetry=TelemetryRegistry())
-        news = _delivery_news(
-            event_card=_card(grounded_assets=["MSFT"]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
-                },
-            },
-        )
-        consumer = DelivererLoop(
-            db=FakeWorkerDatabase(
-                news,
-                price=RecordingPrice(
-                    quotes=[
-                        {
-                            "requested_symbol": "MSFT",
-                            "symbol": "MSFT",
-                            "base_symbol": "MSFT",
-                            "venue": "binance.perp",
-                            "venue_symbol": "MSFTUSDT",
-                            "quote_asset": "USDT",
-                            "instrument_class": "equity",
-                            "price": "500",
-                            "state": "fresh",
-                        }
-                    ]
-                ),
-            ),
+        consumer = _deliverer(
+            notifications=ScriptedNotifications(_intent(("MSFT", "equity"))),
+            price=RecordingPrice(quotes=[_MSFT_QUOTE]),
             sender=sender,
             finite_operations=finite,
-            min_interval_seconds=0.0,
         )
-        await consumer.deliver(event_id="ev-strong")
+        await consumer.advance()
         assert await asyncio.to_thread(sender.started.wait, 1.0)
         finite.close_admission()
         drain_task = asyncio.create_task(consumer.drain())
@@ -2794,20 +1674,7 @@ def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admissi
         order: list[str] = []
         price_started = asyncio.Event()
         allow_price = asyncio.Event()
-        sender = RecordingEditableSender(order)
         finite = FiniteOperations(telemetry=TelemetryRegistry())
-        news = _delivery_news(
-            event_card=_card(grounded_assets=["MSFT"]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bullish",
-                    "fact_kind": "state_change",
-                    "headline_zh": "微软事件",
-                    "assets": [{"symbol": "MSFT", "market_type": "equity", "role": "primary"}],
-                },
-            },
-        )
 
         def price_fetcher_for(_venue: str) -> Any:
             async def fetch(_venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
@@ -2822,32 +1689,14 @@ def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admissi
 
             return fetch
 
-        consumer = DelivererLoop(
-            db=FakeWorkerDatabase(
-                news,
-                price=RecordingPrice(
-                    quotes=[
-                        {
-                            "requested_symbol": "MSFT",
-                            "symbol": "MSFT",
-                            "base_symbol": "MSFT",
-                            "venue": "binance.perp",
-                            "venue_symbol": "MSFTUSDT",
-                            "quote_asset": "USDT",
-                            "instrument_class": "equity",
-                            "price": "500",
-                            "state": "fresh",
-                        }
-                    ],
-                    instruments={"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)},
-                ),
-            ),
-            sender=sender,
+        consumer = _deliverer(
+            notifications=ScriptedNotifications(_intent(("MSFT", "equity"))),
+            price=RecordingPrice(quotes=[_MSFT_QUOTE], instruments=_MSFT_INSTRUMENTS),
+            sender=RecordingEditableSender(order),
             finite_operations=finite,
-            min_interval_seconds=0.0,
             price_fetcher_for=price_fetcher_for,
         )
-        await consumer.deliver(event_id="ev-strong")
+        await consumer.advance()
         await asyncio.wait_for(price_started.wait(), timeout=0.2)
         finite.close_admission()
         drain_task = asyncio.create_task(consumer.drain())
@@ -2863,50 +1712,22 @@ def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admissi
     assert order == ["prepare", "send", "price", "edit"]
 
 
-def _quoted_delivery_news() -> RecordingNews:
-    """A pushed crypto card whose primary the Gate did ground, which is what earns a quote line.
-
-    This used to be an OI frame. #458 stopped the OI lane from pushing, so it can no longer stand in
-    for "a card that reaches delivery"; what the tests below are about — a stale quote, and one whose
-    reference change expired — is the quote line itself, and it is reached the ordinary way.
-    """
-
-    return _delivery_news(
-        event_card=_card(admission="candidate", grounded_assets=["DOGE"]),
-        latest_verdict=lambda *, event_id, stage: {
-            "final_decision": "push",
-            "verdict": {
-                "novelty": "new_fact",
-                "restates": -1,
-                "direction": "bullish",
-                "scope": "single_name",
-                "fact_kind": "state_change",
-                "confidence": 0.8,
-                "headline_zh": "DOGE 现货 ETF 通过",
-                "why_zh": "现货通道打开。",
-                "assets": [{"symbol": "DOGE", "role": "primary", "market_type": "crypto"}],
-            },
-        },
-    )
-
-
-def test_deliverer_omits_a_stale_quote_after_requesting_the_grounded_symbol() -> None:
-    price = RecordingPrice(quotes=[{"symbol": "DOGE", "price": "0.2143", "state": "stale"}])
+def test_deliverer_omits_a_stale_quote_after_requesting_the_named_symbol() -> None:
+    price = RecordingPrice(quotes=[{"requested_symbol": "DOGE", "price": "0.2143", "state": "stale"}])
     sender = RecordingSender()
-    news = _quoted_delivery_news()
 
-    asyncio.run(_deliverer(news, price=price, sender=sender).deliver(event_id="ev-strong"))
+    outcome = _send(_deliverer(price=price, sender=sender), _intent(("DOGE", "crypto")))
 
     assert price.requested == [["DOGE"]]
     assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
-    assert news.kwargs_of("settle_delivery")["state"] == "sent"  # quote state never changes eligibility
+    assert outcome.state == "sent"  # quote state never changes eligibility
 
 
 def test_deliverer_keeps_a_fresh_price_after_its_reference_change_expires() -> None:
     price = RecordingPrice(
         quotes=[
             {
-                "symbol": "DOGE",
+                "requested_symbol": "DOGE",
                 "price": "0.2143",
                 "change_pct": None,
                 "change_basis": "rolling_24h",
@@ -2916,123 +1737,83 @@ def test_deliverer_keeps_a_fresh_price_after_its_reference_change_expires() -> N
             }
         ]
     )
-    news = _quoted_delivery_news()
     sender = RecordingSender()
 
-    asyncio.run(_deliverer(news, price=price, sender=sender).deliver(event_id="ev-strong"))
+    _send(_deliverer(price=price, sender=sender), _intent(("DOGE", "crypto")))
 
-    lines = sender.cards[0]["elements"][0]["content"].splitlines()
-    assert lines[-1] == "行情 DOGE $0.2143"
-    assert news.kwargs_of("settle_delivery")["state"] == "sent"
-
-
-def test_deliverer_does_not_price_an_ordinary_ungrounded_model_asset() -> None:
-    price = RecordingPrice(quotes=[{"symbol": "DOGE", "price": "0.2143", "state": "fresh"}])
-    news = _delivery_news(
-        event_card=_card(admission="candidate", grounded_assets=[]),
-        latest_verdict=lambda *, event_id, stage: {
-            "final_decision": "push",
-            "program_version": "program-v4",
-            "verdict": {
-                "direction": "bullish",
-                "fact_kind": "state_change",
-                "headline_zh": "模型提到了 DOGE",
-                "assets": [{"symbol": "DOGE", "role": "primary"}],
-            },
-        },
-    )
-    sender = RecordingSender()
-
-    asyncio.run(_deliverer(news, price=price, sender=sender).deliver(event_id="ev-strong"))
-
-    assert price.requested == []
-    assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
+    assert sender.cards[0]["elements"][0]["text"]["content"].splitlines()[-1] == "行情 DOGE $0.2143"
 
 
 def test_deliverer_delivers_when_the_price_plane_fails() -> None:
-    news = _delivery_news()
     sender = RecordingSender()
 
-    asyncio.run(
-        _deliverer(news, price=RecordingPrice(error=RuntimeError("quote lane on fire")), sender=sender).deliver(
-            event_id="ev-strong"
-        )
+    outcome = _send(
+        _deliverer(price=RecordingPrice(error=RuntimeError("quote lane on fire")), sender=sender),
+        _intent(("NVDA", "equity")),
     )
 
-    assert news.kwargs_of("settle_delivery")["state"] == "sent"
+    assert outcome.state == "sent"
     assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
 
 
 def test_deliverer_delivers_when_quote_read_cannot_be_admitted() -> None:
-    news = _delivery_news()
     sender = RecordingSender()
-    db = FakeWorkerDatabase(news, admission_timeout_for={"news_delivery_quotes"}, price=RecordingPrice())
-    deliverer = DelivererLoop(db=db, sender=sender, finite_operations=InlineFinite(), min_interval_seconds=0.0)
+    consumer = _deliverer(sender=sender, admission_timeout_for={"news_delivery_quotes"})
 
-    asyncio.run(deliverer.deliver(event_id="ev-strong"))
+    outcome = _send(consumer, _intent(("NVDA", "equity")))
 
-    assert "news_delivery_quotes" in db.operations
-    assert news.kwargs_of("settle_delivery")["state"] == "sent"
+    assert "news_delivery_quotes" in consumer.db.operations  # type: ignore[attr-defined]
+    assert outcome.state == "sent"
     assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
 
 
-def test_deliverer_does_not_read_quotes_for_a_card_it_will_not_send() -> None:
-    dropped = _delivery_news(latest_verdict=lambda *, event_id, stage: {"final_decision": "drop", "verdict": {}})
-    dropped_price = RecordingPrice()
-    asyncio.run(_deliverer(dropped, price=dropped_price, sender=RecordingSender()).deliver(event_id="ev-strong"))
-    assert dropped_price.requested == []
+def test_janitor_names_semantic_work_that_exhausted_its_attempts(caplog, monkeypatch) -> None:
+    """Exhausted work is visible failed work, never silently pending."""
 
-    unavailable_price = RecordingPrice()
-    asyncio.run(_deliverer(_delivery_news(), price=unavailable_price).deliver(event_id="ev-strong"))
-    assert unavailable_price.requested == []
-
-
-def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog, monkeypatch) -> None:
-    """Rows past the relevance ceiling are explicit terminal projections, never silent pending work."""
-
-    news = RecordingNews(unpublished_candidates=[], expired_count=3)
+    news = RecordingNews(expired_count=3)
     # Some earlier real-runtime tests reconfigure logging. This unit owns its logger state and restores it.
     monkeypatch.setattr(logging.getLogger("tracefold.news"), "disabled", False)
     with caplog.at_level("WARNING", logger="tracefold.news"):
-        stranded = FakeWorkerDatabase(news)
-        asyncio.run(JanitorLoop(db=stranded, cold_db=stranded.cold_port, bus=FakeBus()).repair_event_handoffs())
-    assert any("Event handoff expired" in r.getMessage() for r in caplog.records)
+        exhausted = FakeWorkerDatabase(news)
+        asyncio.run(JanitorLoop(db=exhausted, cold_db=exhausted.cold_port, bus=FakeBus()).repair_semantic_wakes())
+    assert any("exhausted its attempts" in r.getMessage() for r in caplog.records)
 
-    quiet = RecordingNews(unpublished_candidates=[])
+    quiet = RecordingNews()
     with caplog.at_level("WARNING", logger="tracefold.news"):
         caplog.clear()
         quiet_db = FakeWorkerDatabase(quiet)
-        asyncio.run(JanitorLoop(db=quiet_db, cold_db=quiet_db.cold_port, bus=FakeBus()).repair_event_handoffs())
-    assert not [r for r in caplog.records if "handoff expired" in r.getMessage()]
+        asyncio.run(JanitorLoop(db=quiet_db, cold_db=quiet_db.cold_port, bus=FakeBus()).repair_semantic_wakes())
+    assert not [r for r in caplog.records if "exhausted" in r.getMessage()]
 
 
-def test_janitor_records_handoff_state_and_marker_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_janitor_re_wakes_stale_semantic_work_and_records_marker_pending(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracefold.news.pipeline.maintenance.now_ms", lambda: NOW_MS)
     news = RecordingNews(
-        unpublished_candidates=[
-            {
-                "event_id": "ev-marker-pending",
-                "dedupe_family": "general",
-                "queue_priority": "normal",
-                "trace_id": "trace-1",
-                "opened_at_ms": NOW_MS - 60_000,
-            }
-        ],
-        event_handoff_state={"pending": 2, "oldest_pending_at_ms": NOW_MS - 120_000, "expired": 3},
+        pending_semantic_event_ids=["ev-stale"],
+        semantic_wake_route={
+            "event_id": "ev-stale",
+            "wanted_revision": 2,
+            "dedupe_family": "general",
+            "queue_priority": "normal",
+            "trace_id": "trace-event",
+        },
+        semantic_wake_state={"pending": 2, "oldest_pending_at_ms": NOW_MS - 120_000, "expired": 3},
     )
     telemetry = RecordingHandoffTelemetry()
-    db = FakeWorkerDatabase(news, admission_timeout_for={"news_event_mark_published"})
+    bus = FakeBus()
+    db = FakeWorkerDatabase(news, admission_timeout_for={"news_semantic_wake_mark"})
 
-    repaired = asyncio.run(
-        JanitorLoop(db=db, cold_db=db.cold_port, bus=FakeBus(), telemetry=telemetry).repair_event_handoffs()
-    )
+    woken = asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=bus, telemetry=telemetry).repair_semantic_wakes())
 
-    assert repaired == 1
+    assert woken == 1
+    assert [message.message_id for message in bus.published] == ["event:ev-stale:2"]
+    assert bus.published[0].payload == {"event_id": "ev-stale", "revision": 2}
+    assert bus.published[0].trace_id == "trace-event"
     assert telemetry.states == [("event", 2, 120.0, 3)]
     assert telemetry.repairs == [("event", "marker_pending")]
 
 
-def test_janitor_contains_typed_handoff_transients_but_unknown_failures_escape() -> None:
+def test_janitor_contains_typed_wake_transients_but_unknown_failures_escape() -> None:
     class UnavailableBus(FakeBus):
         async def publish(self, message: BusMessage) -> None:
             del message
@@ -3043,26 +1824,21 @@ def test_janitor_contains_typed_handoff_transients_but_unknown_failures_escape()
 
         prefix = ""
 
-    row = {
-        "event_id": "ev-transient",
-        "dedupe_family": "general",
-        "queue_priority": "normal",
-        "trace_id": "trace-1",
-        "opened_at_ms": NOW_MS - 60_000,
-    }
-    news = RecordingNews(unpublished_candidates=[row], purge_learning_retention={})
+    news = RecordingNews(pending_semantic_event_ids=["ev-transient"], purge_learning_retention={})
     telemetry = RecordingHandoffTelemetry()
     db = FakeWorkerDatabase(news)
 
     asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=UnavailableBus(), telemetry=telemetry).turn())
 
     assert telemetry.repairs == [("event", "transient")]
-    assert "mark_event_published" not in news.names()
+    assert "mark_semantic_work_published" not in news.names()
+    # The judgment cache retention runs on the cold lane every turn.
+    assert "news_semantic_cache_retention" in db.heavy_operations
 
     def _explode(**_kwargs: Any) -> Any:
         raise RuntimeError("repair bug")
 
-    broken = RecordingNews(event_handoff_scan=_explode)
+    broken = RecordingNews(semantic_wake_state=_explode)
     broken_db = FakeWorkerDatabase(broken)
     with pytest.raises(RuntimeError, match="repair bug"):
         asyncio.run(JanitorLoop(db=broken_db, cold_db=broken_db.cold_port, bus=FakeBus()).turn())
@@ -3183,6 +1959,8 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
         # #572 PR-1: the wallet tape's own bounded batch, on the same heavy slot and beside the other
         # sweeps rather than as a task of its own.
         "news_chain_tape_retention",
+        # #706: the judgment cache and stage checkpoints keep 14 days, one bounded batch per pass.
+        "news_semantic_cache_retention",
         "news_learning_retention",
     ]
     assert news.kwargs_of("chain_tape_purge_fills")["limit"] == 500
@@ -3227,863 +2005,12 @@ def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
         "news_raw_retention",
         "news_market_track_retention",
         "news_chain_tape_retention",
+        "news_semantic_cache_retention",
         "news_learning_retention",
         "news_learning_retention_error",
     ]
     error = news.kwargs_of("record_learning_retention_error")
     assert error["error_code"] == "learning_retention_failed:RuntimeError"
-
-
-def _model_verdict(**overrides: Any) -> Any:
-    from tracefold.news.models import TriageVerdict
-
-    base: dict[str, Any] = {
-        "novelty": "new_fact",
-        "restates": -1,
-        "assets": [{"symbol": "NVDA", "market_type": "equity", "role": "primary"}],
-        "direction": "bullish",
-        "scope": "single_name",
-        "fact_kind": "state_change",
-        "confidence": 0.8,
-        "headline_zh": "英伟达投资 OpenAI",
-        "why_zh": "投资扩大算力供给。",
-    }
-    base.update(overrides)
-    return TriageVerdict(**base)
-
-
-def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment() -> None:
-    stable_judge = _ScriptedSemanticJudge([_model_verdict(headline_zh="稳定版不应被调用")])
-    candidate_judge = _ScriptedSemanticJudge([_model_verdict(headline_zh="候选版真实输出")])
-    stable_bundle = "a" * 64
-    candidate_bundle = "b" * 64
-    activation_id = "c" * 32
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(queue_priority="normal"),
-        insert_verdict=True,
-        assign_agent_arm={
-            "activation_id": activation_id,
-            "arm": "candidate",
-            "bundle_sha": candidate_bundle,
-            "selector_version": "news_canary_selector_v2",
-            "eligibility_reason": "eligible_bucket",
-        },
-        evaluate_canary_rolling_slo={"evaluated": True, "tripped": False},
-    )
-    triage = TriageConsumer(
-        bus=FakeBus(),
-        db=FakeWorkerDatabase(news),
-        judge=stable_judge,
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        watchlist_symbols=WATCHLIST,
-        watchlist=sorted(WATCHLIST),
-        concurrency=1,
-        circuit_failures=3,
-        circuit_open_seconds=60.0,
-        stable_bundle_sha=stable_bundle,
-        runtime_manifest={"manifest_sha": "e" * 64},
-        canary_arms={
-            candidate_bundle: CanaryRuntimeArm(
-                bundle_sha=candidate_bundle,
-                program=candidate_judge,
-                policy=DEFAULT_POLICY,
-                program_version=PROGRAM_VERSION,
-                program_sha256=PROGRAM_SHA256,
-            )
-        },
-    )
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    assert stable_judge.inputs == []
-    assert len(candidate_judge.inputs) == 1
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["program_version"] == PROGRAM_VERSION
-    assert inserted["program_sha256"] == PROGRAM_SHA256
-    assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
-    assert inserted["model_editorial"]["editorial_contract_version"] == "news_editorial_v4"
-    assert inserted["model_editorial"]["taxonomy"]["taxonomy_version"] == "news_taxonomy_v1"
-    assert inserted["trace"]["agent_assignment"] == {
-        "activation_id": activation_id,
-        "arm": "candidate",
-        "bundle_sha": candidate_bundle,
-        "selector_version": "news_canary_selector_v2",
-        "eligibility_reason": "eligible_bucket",
-    }
-    assert "evaluate_canary_rolling_slo" in news.names()
-
-
-def test_triage_fails_closed_when_a_persisted_stable_assignment_names_a_retired_bundle() -> None:
-    current_bundle = "a" * 64
-    retired_bundle = "b" * 64
-    judge = _ScriptedSemanticJudge([_model_verdict(headline_zh="绝不能由新 Program 回答旧 assignment")])
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(),
-        insert_verdict=True,
-        assign_agent_arm={
-            "activation_id": None,
-            "arm": "stable",
-            "bundle_sha": retired_bundle,
-            "selector_version": "stable_only_v2",
-            "eligibility_reason": "no_active_canary",
-        },
-    )
-    triage = TriageConsumer(
-        bus=FakeBus(),
-        db=FakeWorkerDatabase(news),
-        judge=judge,
-        program_version=PROGRAM_VERSION,
-        program_sha256=PROGRAM_SHA256,
-        watchlist_symbols=WATCHLIST,
-        watchlist=sorted(WATCHLIST),
-        concurrency=1,
-        circuit_failures=3,
-        circuit_open_seconds=60.0,
-        stable_bundle_sha=current_bundle,
-        runtime_manifest={"manifest_sha": "e" * 64},
-    )
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert judge.inputs == []
-    assert inserted["degraded"] is True
-    assert inserted["error_code"] == "news_semantic_program_identity_mismatch"
-    assert inserted["trace"]["agent_assignment"]["bundle_sha"] == retired_bundle
-
-
-def _ledger_row(
-    event_id: str,
-    at_ms: int,
-    *,
-    key: str = "asset:NVDA",
-    headline: str = "英伟达投资 OpenAI",
-    grounded_assets: list[str] | None = None,
-) -> dict[str, Any]:
-    return {
-        "event_id": event_id,
-        "at_ms": at_ms,
-        "storyline_key": key,
-        "comparison_title": headline,
-        "comparison_fingerprint": f"fingerprint:{event_id}",
-        "dedupe_family": "general",
-        "direction": "bullish",
-        "headline_zh": headline,
-        "why_zh": "已有读者收据。",
-        "grounded_assets": grounded_assets if grounded_assets is not None else [],
-        "assets": [],
-        "canonical_assets": grounded_assets if grounded_assets is not None else [],
-    }
-
-
-def _recent_history(*rows: dict[str, Any], now_ms: int = NOW_MS) -> ReaderHistorySnapshot:
-    return assemble_reader_history(recent_rows=rows, now_ms=now_ms)
-
-
-def test_triage_told_rows_carry_the_instruments_so_the_listing_exemption_can_fire() -> None:
-    """A listing frame whose closest told entry is about a *different* instrument still reaches the reader.
-
-    ``decide()`` compares symbol sets, so the told rows it reads have to carry symbols.  The rows the
-    handler builds come from ``ToldLedgerEntry``, which is deliberately free of anything the Program may
-    not read — so the symbols have to be re-attached from the source ledger row.  Without that, every
-    told row looks like "no instruments", ``_names_another_instrument`` reads that as "not evidence of a
-    different instrument", and the policy-v8 listing exemption is inert in production while its own unit
-    test passes because it supplies the symbols by hand.
-    """
-
-    ledger = [
-        _ledger_row(
-            "ev-doge", NOW_MS - 300_000, key="asset:DOGE", headline="Coinbase 将上线狗狗币", grounded_assets=["DOGE"]
-        )
-    ]
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(
-            admission="listing_deterministic",
-            grounded_assets=["BICO"],
-            watchlist_hits=[],
-            storyline_key="asset:BICO",
-            leader_title="Upbit will list BICO",
-        ),
-        insert_verdict=True,
-        reader_history=_recent_history(*ledger),
-    )
-    bus = FakeBus()
-    model = _ScriptedSemanticJudge(
-        [
-            _model_verdict(
-                novelty="restatement",
-                restates=0,
-                fact_kind="state_change",
-                assets=[{"symbol": "BICO", "market_type": "crypto", "role": "primary"}],
-                headline_zh="Upbit 将上线 BICO",
-            )
-        ]
-    )
-    triage = _triage_with_judge(news, bus, model)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "push"
-    assert inserted["override_rule"] != "restatement"
-
-
-def test_triage_reader_history_reaches_the_model_and_the_trace_and_grounds_a_restatement() -> None:
-    """The told ledger (what the reader already received) is in the status bar and the trace; a restatement the
-    model grounds in it drops with the restated card's event id recorded; the persist step locks the final key."""
-
-    ledger = [_ledger_row("ev-earlier", NOW_MS - 300_000), _ledger_row("ev-other", NOW_MS - 900_000, key="asset:BTC")]
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(),
-        insert_verdict=True,
-        reader_history=_recent_history(*ledger),
-    )
-    bus = FakeBus()
-    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0)])
-    triage = _triage_with_judge(news, bus, model)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    assert len(model.inputs) == 1
-    context = model.inputs[0]
-    assert [entry.event_id for entry in context.told.entries] == ["ev-earlier", "ev-other"]
-    assert context.told.entries[0].headline_zh == "英伟达投资 OpenAI"
-    assert context.evidence.title == "NVIDIA to invest $100bn in OpenAI data centre"
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "restatement"
-    assert inserted["verdict"]["novelty"] == "restatement" and inserted["verdict"]["restates"] == 0
-    trace = inserted["trace"]
-    # The preliminary key is computed at Gate time with no judgment and therefore no market; the final
-    # key carries the one the verdict named. `same_storyline_key` is what still joins them (#651 §6.2).
-    assert trace["storyline_key_preliminary"] == "asset:NVDA" and trace["storyline_key"] == "asset:equity:NVDA"
-    assert trace["told_count"] == 2 and [t["event_id"] for t in trace["told"]] == ["ev-earlier", "ev-other"]
-    assert trace["restates_event_id"] == "ev-earlier"
-    assert "status_final" in trace and "input_sha256" in trace and "reasked_after_told_change" not in trace
-    assert news.kwargs_of("lock_storyline")["arg0"] == "asset:equity:NVDA"
-    assert bus.published == []
-
-
-def test_triage_shows_targeted_history_to_the_model_but_never_to_recent_seen_policy() -> None:
-    old_exact = {
-        **_ledger_row("ev-old-exact", NOW_MS - 24 * 3_600_000),
-        "dedupe_family": "general",
-        "comparison_fingerprint": "f" * 64,
-        "canonical_assets": ["NVDA"],
-    }
-    history = assemble_reader_history(recent_rows=(), exact_rows=(old_exact,), now_ms=NOW_MS)
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(),
-        insert_verdict=True,
-        reader_history=history,
-    )
-    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0)])
-    triage = _triage_with_judge(news, FakeBus(), model)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    entry = model.inputs[0].told.entries[0]
-    assert (entry.event_id, entry.history_scope, entry.retrieval_reason, entry.tier) == (
-        "ev-old-exact",
-        "targeted",
-        "exact_fingerprint",
-        "exact_fact",
-    )
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "restatement"
-    assert inserted["trace"]["seen_count"] == 0
-    assert inserted["trace"]["reader_history"] == {
-        "recent_count": 0,
-        "targeted_count": 1,
-        "similar_count": 0,
-        "source_count": 1,
-        "selected_count": 1,
-        "selected_reasons": ["exact_fingerprint"],
-    }
-    history_calls = [kwargs for name, kwargs in news.calls if name == "reader_history"]
-    assert history_calls and all(call["include_targeted"] is True for call in history_calls)
-
-
-def test_triage_does_not_reask_when_an_unrelated_card_lands_but_the_selection_is_unchanged() -> None:
-    """The old rule re-asked whenever any new event id appeared in the recent ledger. In the fixed production
-    cohort that fired on 16% of judgments and each one paid for a second full two-Predictor execution.
-
-    Staleness is a property of the evidence the model was shown about *this* candidate. A card that shares no
-    storyline, no instrument and no fact lands in the recency filler and cannot turn this Event into a
-    restatement of anything, so the first judgment stands. `decide()` still measures the card against the
-    refreshed wide ledger, so the duplicate defence loses nothing.
-    """
-
-    ledger_calls = {"n": 0}
-    unrelated = _ledger_row("ev-unrelated", NOW_MS - 1_000, key="topic:trade", headline="完全无关的新卡片")
-
-    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
-        ledger_calls["n"] += 1
-        related = [_ledger_row(f"ev-{i}", NOW_MS - (10 + i) * 1_000) for i in range(4)]
-        filler = [_ledger_row(f"bg-{i}", NOW_MS - (30 + i) * 1_000, key="topic:trade") for i in range(6)]
-        rows = [unrelated, *related, *filler] if ledger_calls["n"] > 1 else [*related, *filler]
-        return _recent_history(*rows, now_ms=now_ms)
-
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, reader_history=reader_history)
-    model = _ScriptedSemanticJudge([_model_verdict(novelty="new_fact")])
-    triage = _triage_with_judge(news, FakeBus(), model)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    assert len(model.inputs) == 1, "an unrelated card must not buy a second paid execution"
-    trace = news.kwargs_of("insert_verdict")["trace"]
-    assert "reasked_after_told_change" not in trace
-    # The wide ledger decide() measured against was re-read and does contain the new card.
-    assert trace["seen_count"] == 11
-    assert len(trace["selected_context_sha256"]) == 64 and len(trace["novelty_context_sha256"]) == 64
-
-
-def test_triage_does_not_reask_when_only_the_source_row_order_changed() -> None:
-    ledger_calls = {"n": 0}
-    rows = [_ledger_row(f"ev-{i}", NOW_MS - (10 + i) * 1_000) for i in range(3)]
-
-    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
-        ledger_calls["n"] += 1
-        source = rows if ledger_calls["n"] == 1 else list(reversed(rows))
-        return _recent_history(*source, now_ms=now_ms)
-
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, reader_history=reader_history)
-    model = _ScriptedSemanticJudge([_model_verdict(novelty="new_fact")])
-    triage = _triage_with_judge(news, FakeBus(), model)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    assert len(model.inputs) == 1
-    assert "reasked_after_told_change" not in news.kwargs_of("insert_verdict")["trace"]
-
-
-def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() -> None:
-    """A push committed between the ledger snapshot and the persist step means the model judged novelty against a
-    stale ledger: the consumer asks once more with the fresh ledger and persists that verdict."""
-
-    fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
-    ledger_calls = {"n": 0}
-
-    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
-        ledger_calls["n"] += 1
-        # First read (load): nothing yet. Every later read (in-lock check, reload) sees the new card.
-        if ledger_calls["n"] == 1:
-            return ReaderHistorySnapshot()
-        return _recent_history(fresh_push, now_ms=now_ms)
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(),
-        insert_verdict=True,
-        reader_history=reader_history,
-    )
-    bus = FakeBus()
-    first_verdict = _model_verdict(novelty="new_fact")
-    reask_verdict = _model_verdict(novelty="restatement", restates=0)
-    first_trace = _program_trace(
-        context_sha256="a" * 64,
-        verdict_sha256=canonical_sha(first_verdict.model_dump(mode="json")),
-        calls=(
-            _program_call(
-                predictor="event_semantics",
-                marker="1",
-                input_tokens=5,
-                output_tokens=2,
-                cached_tokens=1,
-                provider_cost_microusd=11,
-            ),
-            _program_call(
-                predictor="reader_card",
-                marker="2",
-                input_tokens=7,
-                output_tokens=3,
-                cached_tokens=0,
-                provider_cost_microusd=13,
-            ),
-        ),
-    )
-    reask_trace = _program_trace(
-        context_sha256="b" * 64,
-        verdict_sha256=canonical_sha(reask_verdict.model_dump(mode="json")),
-        calls=(
-            _program_call(
-                predictor="event_semantics",
-                marker="3",
-                input_tokens=11,
-                output_tokens=4,
-                cached_tokens=2,
-                provider_cost_microusd=17,
-            ),
-            _program_call(
-                predictor="reader_card",
-                marker="4",
-                input_tokens=13,
-                output_tokens=5,
-                cached_tokens=1,
-                provider_cost_microusd=19,
-            ),
-        ),
-    )
-    model = _ScriptedSemanticJudge(
-        [
-            _judgment(
-                first_verdict,
-                trace=first_trace,
-                usage=ProgramUsage(
-                    wall_latency_ms=20,
-                    call_count=2,
-                    physical_call_count=2,
-                    input_tokens=12,
-                    output_tokens=5,
-                    cached_tokens=1,
-                    total_tokens=17,
-                    usage_coverage="complete",
-                    provider_cost_microusd=24,
-                ),
-            ),  # judged against the empty ledger
-            _judgment(
-                reask_verdict,
-                trace=reask_trace,
-                usage=ProgramUsage(
-                    wall_latency_ms=30,
-                    call_count=2,
-                    physical_call_count=2,
-                    input_tokens=24,
-                    output_tokens=9,
-                    cached_tokens=3,
-                    total_tokens=33,
-                    usage_coverage="complete",
-                    provider_cost_microusd=36,
-                ),
-            ),  # sees ev-just-pushed
-        ]
-    )
-    triage = _triage_with_judge(news, bus, model)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    assert len(model.inputs) == 2 and model.inputs[0].told.entries == ()
-    assert model.inputs[1].told.entries[0].event_id == "ev-just-pushed"
-    assert model.inputs[1].told.entries[0].headline_zh == "英伟达投资 OpenAI"
-    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
-    assert len(inserted) == 1  # the stale round wrote nothing
-    row = inserted[0]
-    assert row["final_decision"] == "drop" and row["override_rule"] == "restatement"
-    trace = row["trace"]
-    assert trace["reasked_after_told_change"] is True
-    assert trace["first_judgment"]["verdict"]["novelty"] == "new_fact"
-    assert trace["first_judgment"]["verdict"]["fact_kind"] == "state_change"
-    assert trace["first_input_sha256"] == first_trace.context_sha256
-    assert trace["told_count"] == 1 and trace["restates_event_id"] == "ev-just-pushed"
-    # The verdict-owning trace is the re-ask trace; the stale trace remains a
-    # separate execution instead of having its calls spliced under this context.
-    assert row["verdict"] == reask_verdict.model_dump(mode="json")
-    assert trace["program_execution_index"] == 1
-    assert trace["program_trace"]["context_sha256"] == reask_trace.context_sha256
-    assert trace["program_trace"]["verdict_sha256"] == canonical_sha(row["verdict"])
-    executions = trace["program_executions"]
-    assert [execution["status"] for execution in executions] == ["superseded_stale_ledger", "accepted"]
-    assert [execution["context_sha256"] for execution in executions] == [
-        first_trace.context_sha256,
-        reask_trace.context_sha256,
-    ]
-    assert [execution["recording_call_indices"] for execution in executions] == [[0, 1], [2, 3]]
-    assert sum(len(execution["trace"]["calls"]) for execution in executions) == 4
-    assert {
-        field: trace[field]
-        for field in (
-            "latency_ms",
-            "model_attempts",
-            "input_tokens",
-            "output_tokens",
-            "cached_tokens",
-            "total_tokens",
-            "provider_cost_microusd",
-        )
-    } == {
-        "latency_ms": 50,
-        "model_attempts": 4,
-        "input_tokens": 36,
-        "output_tokens": 14,
-        "cached_tokens": 4,
-        "total_tokens": 50,
-        "provider_cost_microusd": 60,
-    }
-    # The re-ask reloads everything the model and decide() look at: card, sent ledger, and control state.
-    assert news.names().count("event_card") == 2
-    assert bus.published == []
-
-
-def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> None:
-    initial = _card()
-    refreshed = _card(
-        evidence_version=2,
-        evidence_sha256="f" * 64,
-        focus_fact_id="fact-2",
-        grounded_assets=[],
-        provider_score_max=10.0,
-        queue_priority="normal",
-        storyline_key="none",
-    )
-    cards = iter((initial, refreshed))
-    verdict = _model_verdict(fact_kind="statement")
-    judge = _ScriptedSemanticJudge([verdict, verdict])
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=lambda _event_id: next(cards),
-        latest_evidence_snapshot={
-            "evidence_version": 2,
-            "evidence_sha256": "f" * 64,
-            "focus_fact_id": "fact-2",
-        },
-        insert_verdict=True,
-    )
-    triage = _triage_with_judge(news, FakeBus(), judge)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert len(judge.inputs) == 2
-    assert judge.inputs[0].gate.grounded_assets == ("NVDA",)
-    assert judge.inputs[1].gate.grounded_assets == ()
-    assert inserted["rule_baseline_decision"] == "drop"
-    assert inserted["final_decision"] == "drop"
-    assert inserted["trace"]["storyline_key_preliminary"] == "none"
-    assert inserted["trace"]["first_storyline_key_preliminary"] == "asset:NVDA"
-    assert inserted["trace"]["reask_reason"] == "evidence"
-    assert inserted["trace"]["reasked_after_evidence_change"] is True
-
-
-def test_triage_evidence_reask_failure_degrades_against_the_refreshed_evidence() -> None:
-    """A v1 judgment must never be persisted under the identity or Gate facts of v2 evidence."""
-
-    initial = _card()
-    refreshed = _card(
-        leader_title="Second evidence no longer names a grounded asset",
-        evidence_version=2,
-        evidence_sha256="f" * 64,
-        focus_fact_id="fact-2",
-        grounded_assets=[],
-        watchlist_hits=[],
-        provider_score_max=10.0,
-        queue_priority="normal",
-        storyline_key="none",
-    )
-    cards = iter((initial, refreshed))
-    first_verdict = _model_verdict(fact_kind="state_change", direction="bearish", scope="macro")
-
-    class _EvidenceReaskFails:
-        def __init__(self) -> None:
-            self.inputs: list[TriageContext] = []
-
-        async def judge(self, context: TriageContext) -> SemanticJudgment:
-            self.inputs.append(context)
-            context_sha = canonical_sha(context.model_dump(mode="json"))
-            if len(self.inputs) == 1:
-                return _judgment(
-                    first_verdict,
-                    trace=_program_trace(
-                        context_sha256=context_sha,
-                        verdict_sha256=canonical_sha(first_verdict.model_dump(mode="json")),
-                        calls=(
-                            _program_call(
-                                predictor="event_semantics",
-                                marker="1",
-                                input_tokens=5,
-                                output_tokens=2,
-                                cached_tokens=0,
-                                provider_cost_microusd=11,
-                            ),
-                            _program_call(
-                                predictor="reader_card",
-                                marker="2",
-                                input_tokens=7,
-                                output_tokens=3,
-                                cached_tokens=0,
-                                provider_cost_microusd=13,
-                            ),
-                        ),
-                    ),
-                )
-            failed_trace = _program_trace(
-                context_sha256=context_sha,
-                verdict_sha256=None,
-                calls=(
-                    _program_call(
-                        predictor="event_semantics",
-                        marker="3",
-                        input_tokens=9,
-                        output_tokens=4,
-                        cached_tokens=0,
-                        provider_cost_microusd=17,
-                    ),
-                ),
-            )
-            raise _program_error("news_program_timeout", retryable=True, partial_trace=failed_trace)
-
-    judge = _EvidenceReaskFails()
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=lambda _event_id: next(cards),
-        latest_evidence_snapshot={
-            "evidence_version": 2,
-            "evidence_sha256": "f" * 64,
-            "focus_fact_id": "fact-2",
-        },
-        insert_verdict=True,
-    )
-    triage = _triage_with_judge(news, FakeBus(), judge)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert len(judge.inputs) == 2
-    assert inserted["evidence_version"] == 2
-    assert inserted["evidence_sha256"] == "f" * 64
-    assert inserted["focus_fact_id"] == "fact-2"
-    assert inserted["degraded"] is True
-    assert inserted["error_code"] == "news_program_timeout"
-    assert inserted["model"] is None
-    assert inserted["rule_baseline_decision"] == "drop"
-    assert inserted["final_decision"] == "drop"
-    assert inserted["verdict"]["headline_zh"] == "Second evidence no longer names a grounded asset"
-    trace = inserted["trace"]
-    assert trace["reask_reason"] == "evidence"
-    assert trace["reasked_after_evidence_change"] is True
-    assert trace["reask_failed"] == "news_program_timeout"
-    assert "program_execution_index" not in trace
-    assert "program_trace" not in trace
-    assert "input_sha256" not in trace
-    executions = trace["program_executions"]
-    assert [execution["status"] for execution in executions] == ["superseded_evidence_change", "failed"]
-    assert [execution["context"]["evidence"]["evidence_version"] for execution in executions] == [1, 2]
-    assert [execution["recording_call_indices"] for execution in executions] == [[0, 1], [2]]
-    assert trace["model_attempts"] == 3
-    assert trace["physical_model_attempts"] == 3
-
-
-def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseline() -> None:
-    """If the re-ask itself fails, the model's first (valid) judgment is persisted, not a degraded fallback."""
-
-    fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
-    ledger_calls = {"n": 0}
-
-    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
-        ledger_calls["n"] += 1
-        return ReaderHistorySnapshot() if ledger_calls["n"] == 1 else _recent_history(fresh_push, now_ms=now_ms)
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(queue_priority="normal", provider_score_max=70.0),
-        insert_verdict=True,
-        reader_history=reader_history,
-    )
-    bus = FakeBus()
-
-    first_verdict = _model_verdict(novelty="new_fact", fact_kind="state_change", direction="bearish", scope="macro")
-    first_trace = _program_trace(
-        context_sha256="a" * 64,
-        verdict_sha256=canonical_sha(first_verdict.model_dump(mode="json")),
-        calls=(
-            _program_call(
-                predictor="event_semantics",
-                marker="1",
-                input_tokens=5,
-                output_tokens=2,
-                cached_tokens=1,
-                provider_cost_microusd=11,
-            ),
-            _program_call(
-                predictor="reader_card",
-                marker="2",
-                input_tokens=7,
-                output_tokens=3,
-                cached_tokens=0,
-                provider_cost_microusd=13,
-            ),
-        ),
-    )
-    failed_reask_trace = _program_trace(
-        context_sha256="c" * 64,
-        verdict_sha256=None,
-        calls=(
-            _program_call(
-                predictor="event_semantics",
-                marker="3",
-                input_tokens=17,
-                output_tokens=6,
-                cached_tokens=2,
-                provider_cost_microusd=23,
-            ),
-        ),
-    )
-
-    class _FirstOkThenTimeout(_ScriptedSemanticJudge):
-        async def judge(self, context: TriageContext) -> SemanticJudgment:
-            if self.inputs:
-                self.inputs.append(context)
-                raise _program_error(
-                    "news_program_timeout",
-                    retryable=True,
-                    partial_trace=failed_reask_trace,
-                )
-            return await super().judge(context)
-
-    model = _FirstOkThenTimeout(
-        [
-            _judgment(
-                first_verdict,
-                trace=first_trace,
-                usage=ProgramUsage(
-                    wall_latency_ms=20,
-                    call_count=2,
-                    physical_call_count=2,
-                    input_tokens=12,
-                    output_tokens=5,
-                    cached_tokens=1,
-                    total_tokens=17,
-                    usage_coverage="complete",
-                    provider_cost_microusd=24,
-                ),
-            )
-        ]
-    )
-    triage = _triage_with_judge(news, bus, model)
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    assert len(model.inputs) == 2
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["degraded"] is False and inserted["error_code"] is None
-    assert inserted["final_decision"] == "push" and inserted["verdict"]["fact_kind"] == "state_change"
-    assert inserted["verdict"] == first_verdict.model_dump(mode="json")
-    trace = inserted["trace"]
-    assert trace["reask_failed"] == "news_program_timeout"
-    assert trace["reasked_after_told_change"] is True
-    assert trace["program_execution_index"] == 0
-    assert trace["program_trace"]["context_sha256"] == first_trace.context_sha256
-    assert trace["program_trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
-    executions = trace["program_executions"]
-    assert [execution["status"] for execution in executions] == ["accepted_after_reask_failure", "failed"]
-    assert executions[1]["context_sha256"] == failed_reask_trace.context_sha256
-    assert executions[1]["error"]["code"] == "news_program_timeout"
-    assert executions[1]["trace"]["verdict_sha256"] is None
-    assert [execution["recording_call_indices"] for execution in executions] == [[0, 1], [2]]
-    assert sum(len(execution["trace"]["calls"]) for execution in executions) == 3
-    assert {
-        field: trace[field]
-        for field in (
-            "latency_ms",
-            "model_attempts",
-            "input_tokens",
-            "output_tokens",
-            "cached_tokens",
-            "total_tokens",
-            "provider_cost_microusd",
-        )
-    } == {
-        "latency_ms": 27,
-        "model_attempts": 3,
-        "input_tokens": 29,
-        "output_tokens": 11,
-        "cached_tokens": 3,
-        "total_tokens": 40,
-        "provider_cost_microusd": 47,
-    }
-    assert bus.published == [] and "enqueue_delivery" in news.names()
-
-
-def test_triage_degraded_fallback_is_not_blocked_by_prior_reader_volume() -> None:
-    """A rule-baseline fallback follows its safety rule; no reader quota vetoes it."""
-
-    news = RecordingNews(
-        get_verdict=None,
-        event_card=_card(),  # watchlist NVDA -> rule baseline pushes
-        insert_verdict=True,
-    )
-    bus = FakeBus()
-    triage = _triage(news, bus)  # model=None -> degraded fallback
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["degraded"] is True and inserted["final_decision"] == "push"
-    assert inserted["throttled_by"] is None and inserted["override_rule"] == "degraded_watchlist_objective"
-    assert bus.published == [] and "enqueue_delivery" in news.names()
-
-
-def _duplicate_news(*, ledger_headline: str) -> RecordingNews:
-    """One actually-sent card in the duplicate-evidence ledger."""
-
-    return RecordingNews(
-        get_verdict=None,
-        event_card=_card(queue_priority="normal", provider_score_max=75.0),
-        insert_verdict=True,
-        reader_history=_recent_history(_ledger_row("ev-earlier", NOW_MS - 300_000, headline=ledger_headline)),
-    )
-
-
-def test_triage_sends_a_distinct_card_and_traces_the_duplicate_measurement() -> None:
-    """Prior counts never block the card; the sent ledger is measured only for duplicate evidence."""
-
-    news = _duplicate_news(ledger_headline="美联储纪要显示官员对通胀存在分歧")
-    bus = FakeBus()
-    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([_model_verdict()]))
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "watchlist_objective_guard"
-    assert inserted["throttled_by"] is None
-    assert bus.published == [] and "enqueue_delivery" in news.names()
-    assert inserted["trace"]["seen_similarity"] < 0.25 and inserted["trace"]["seen_count"] == 1
-    assert "restates_event_id" not in inserted["trace"]
-
-
-def test_triage_withholds_a_card_the_reader_already_received() -> None:
-    """The model calling its own event new buys nothing: the measurement against the reader's window decides."""
-
-    news = _duplicate_news(ledger_headline="英伟达投资 OpenAI 数据中心")
-    bus = FakeBus()
-    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([_model_verdict(novelty="progression")]))
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "throttled"
-    assert inserted["throttled_by"] == "storyline:asset:equity:NVDA:seen"
-    assert bus.published == []
-    assert inserted["trace"]["seen_similarity"] >= 0.25
-    seen_against = inserted["trace"]["seen_against"]
-    assert seen_against["event_id"] == "ev-earlier"
-    assert seen_against["headline_zh"] == "英伟达投资 OpenAI 数据中心"
-    assert seen_against["at_ms"] == NOW_MS - 300_000  # `news why` can say how long ago the reader got it
-    assert inserted["trace"]["seen_scope"] == "all"
-
-
-def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on() -> None:
-    """The OKX batch is caught by duplicate evidence even though every asset key is fresh."""
-
-    news = _duplicate_news(ledger_headline="Ciena Corporation（$CIENx）出现在 OKX")
-    bus = FakeBus()
-    triage = _triage_with_judge(
-        news,
-        bus,
-        _ScriptedSemanticJudge([_model_verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")]),
-    )
-
-    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "throttled"
-    assert inserted["throttled_by"] == "storyline:asset:equity:NVDA:seen"
-    assert inserted["trace"]["seen_scope"] == "all"
-    assert bus.published == []
 
 
 # ---------------------------------------------------------- Receiver / Recovery
@@ -4784,81 +2711,3 @@ def test_an_ordinary_news_frame_still_opens_an_event_and_never_reaches_the_marke
     assert news.kwargs_of("insert_event")["event_kind"] == "news"
     for writer in ("insert_oi_signal", "insert_market_liquidation", "insert_market_smart_money"):
         assert writer not in news.names(), writer
-
-
-def test_a_progression_review_that_has_not_answered_cannot_hold_the_first_delivery() -> None:
-    """#651 §6.3: novelty decides before the send, and `ProgressionVerifier` decides nothing about it.
-
-    The restatement guard now drops a repeat whichever way the model read its direction, which makes
-    novelty a pre-delivery decision in full. The one model check that runs *after* the send has to stay
-    there: this verifier is entered and never answers, and the receipt is written anyway. What an
-    unanswered review may cost is a badge that stays `pending`; what it may never cost is the card.
-    """
-
-    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
-        order: list[str] = []
-        news = _delivery_news(
-            event_card=_card(grounded_assets=[]),
-            latest_verdict=lambda **_kwargs: {
-                "final_decision": "push",
-                "verdict": {
-                    "direction": "bearish",
-                    "fact_kind": "state_change",
-                    "scope": "single_name",
-                    "novelty": "progression",
-                    "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
-                    "why_zh": "工会行动从劳资协商进入有明确门槛的罢工程序。",
-                    "assets": [],
-                },
-                "trace": {
-                    "told": [
-                        {
-                            "i": 0,
-                            "event_id": "ev-parent",
-                            "tier": "storyline",
-                            "similarity": 0.31,
-                            "headline_zh": "美光工会此前启动劳资协商",
-                            "symbols": ["MU"],
-                            "at_ms": NOW_MS - 150_000,
-                        }
-                    ]
-                },
-            },
-            delivery=lambda *, event_id, kind: (
-                {
-                    "event_id": event_id,
-                    "kind": kind,
-                    "state": "sent",
-                    "delete_state": None,
-                    "receipt": {
-                        "provider": "telegram",
-                        "message_id": 41,
-                        "pushed_at_ms": NOW_MS - 150_000,
-                        "target_sha256": "a" * 64,
-                    },
-                }
-                if event_id == "ev-parent" and kind == "first"
-                else None
-            ),
-        )
-        sender = RecordingEditableSender(order)
-        verifier = BlockingProgressionVerifier(order)
-        consumer = _deliverer(news, sender=sender, progression_verifier=verifier)
-
-        await asyncio.wait_for(consumer.deliver(event_id="ev-strong"), timeout=0.2)
-        # The receipt exists before the review is even entered, and it does not change afterwards.
-        assert news.kwargs_of("settle_delivery")["state"] == "sent"
-        await asyncio.wait_for(verifier.started.wait(), timeout=0.2)
-        assert order == ["prepare", "send", "review"]
-        assert news.kwargs_of("settle_delivery")["state"] == "sent"
-        assert sender.presentations[0].progression_review_state == "pending"
-        assert sender.edited_presentations == []
-        # Released only so the loop can be closed; the assertions above all hold while it is blocked.
-        verifier.release.set()
-        await consumer.close()
-        return news, sender, order
-
-    news, _sender, order = asyncio.run(scenario())
-
-    assert order.index("send") < order.index("review")
-    assert news.kwargs_of("settle_delivery")["state"] == "sent"

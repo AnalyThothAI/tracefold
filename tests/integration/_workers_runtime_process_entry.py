@@ -9,8 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-RUNTIME_MANIFEST_BARRIER_SHA = "a" * 64
-
 
 def _ignore_sigterm_and_sleep(delay_seconds: float) -> None:
     import signal
@@ -47,8 +45,7 @@ def _arguments() -> argparse.Namespace:
         required=True,
         choices=(
             "inert",
-            "manifest_barrier",
-            "manifest_registration_fault",
+            "semantic_assembly_fault",
             "optional_task_fault",
             "market_notifications_fault",
             "chain_tape_fault",
@@ -88,18 +85,8 @@ class _TurnPipeline:
         # The Deliverer's send entry as composition reads it. This harness builds no push sender.
         self.deliverer = SimpleNamespace(send_entry=SimpleNamespace(available=False))
 
-    @property
-    def runtime_manifest_sha(self) -> str | None:
-        return None
-
-    async def register_runtime_manifest(self) -> None:
-        return None
-
     def runners(self) -> list[tuple[str, Any]]:
         return [(name, _turn_runner(turn, idle_seconds)) for name, turn, idle_seconds in self._turns]
-
-    def disable_editorial(self) -> None:
-        return None
 
     async def drain(self) -> None:
         return None
@@ -108,53 +95,18 @@ class _TurnPipeline:
         return None
 
 
-class _RegistrationFaultPipeline(_TurnPipeline):
-    """A pipeline whose editorial Program manifest cannot be registered."""
+def _wiring(pipeline: Any, market_notifications: Any = None, *, runtime_manifest_sha: str | None = None) -> Any:
+    """What `_wire_news_pipeline` hands the root. These stubs compose no bus and no semantic runtime."""
 
-    async def register_runtime_manifest(self) -> None:
-        print("MANIFEST_REGISTRATION_ABOUT_TO_FAIL", flush=True)
-        raise RuntimeError("test_manifest_registration_fault")
+    from tracefold.app.workers.wiring.news import NewsWiring
 
-
-class _ManifestBarrierPipeline(_TurnPipeline):
-    def __init__(self, *, dsn: str, release_gate: Path) -> None:
-        super().__init__(())
-        self._dsn = dsn
-        self._release_gate = release_gate
-
-    @property
-    def runtime_manifest_sha(self) -> str:
-        return RUNTIME_MANIFEST_BARRIER_SHA
-
-    async def register_runtime_manifest(self) -> None:
-        Path(f"{self._release_gate}.entered").touch()
-        while not self._release_gate.exists():
-            await asyncio.sleep(0.01)
-
-        from psycopg import connect
-        from psycopg.rows import dict_row
-
-        from tracefold.app.repository_session import repositories_for_connection
-        from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
-
-        conn = connect(self._dsn, row_factory=dict_row)
-        try:
-            repositories = repositories_for_connection(conn)
-            with repositories.transaction():
-                repositories.news.register_agent_runtime_manifest(
-                    manifest_sha=RUNTIME_MANIFEST_BARRIER_SHA,
-                    stable_bundle_sha="b" * 64,
-                    envelope_sha256="e" * 64,
-                    artifact_schema_version=PROGRAM_SCHEMA_VERSION,
-                    program_version=PROGRAM_VERSION,
-                    program_sha256="f" * 64,
-                    candidate_shas=(),
-                    image_digest="sha256:" + "c" * 64,
-                    runtime_revision="git:test-manifest-barrier",
-                    now_ms=int(time.time() * 1_000),
-                )
-        finally:
-            conn.close()
+    return NewsWiring(
+        bus=None,  # type: ignore[arg-type]
+        pipeline=pipeline,
+        market_notifications=market_notifications,
+        news_updates=None,
+        runtime_manifest_sha=runtime_manifest_sha,
+    )
 
 
 def _fact_writer(db: Any) -> Any:
@@ -484,31 +436,25 @@ async def _main() -> None:
 
         return _components(workers, due_turns=(("news-deduper", provider_publication, 1.0),))
 
-    if arguments.mode == "manifest_barrier":
-        release_gate = Path(os.environ["TRACEFOLD_TEST_MANIFEST_GATE"])
-
-        async def wire_news_pipeline(**_kwargs: Any) -> tuple[None, _ManifestBarrierPipeline, None]:
-            # Three-tuple since #553 PR-2: bus, pipeline, market notification loop. These stubs
-            # compose no market loop, so the optional task is simply not declared.
-            return None, _ManifestBarrierPipeline(dsn=arguments.dsn, release_gate=release_gate), None
-
-        workers_wiring._wire_news_pipeline = wire_news_pipeline
-    elif arguments.mode == "manifest_registration_fault":
-        # The real `_wire_components` runs: what fails is the editorial Program registration, and the
+    if arguments.mode == "semantic_assembly_fault":
+        # The semantic runtime could not be composed: editorial is faulted at composition, and the
         # fact-writing ingestion task beside it must keep committing.
-        async def wire_registration_fault(**kwargs: Any) -> tuple[None, _RegistrationFaultPipeline, None]:
-            _declare_news_capabilities(kwargs["capabilities"])
-            return None, _RegistrationFaultPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)), None
+        async def wire_semantic_assembly_fault(**kwargs: Any) -> Any:
+            from tracefold.app.workers.runtime import NEWS_EDITORIAL
 
-        workers_wiring._wire_news_pipeline = wire_registration_fault
+            _declare_news_capabilities(kwargs["capabilities"])
+            print("SEMANTIC_ASSEMBLY_ABOUT_TO_FAIL", flush=True)
+            kwargs["capabilities"].faulted(NEWS_EDITORIAL, f"{NEWS_EDITORIAL}_assembly_failed:RuntimeError")
+            return _wiring(_TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)))
+
+        workers_wiring._wire_news_pipeline = wire_semantic_assembly_fault
     elif arguments.mode == "optional_task_fault":
         resume_gate = Path(os.environ["TRACEFOLD_TEST_RESUME_GATE"])
 
-        async def wire_optional_task_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, None]:
+        async def wire_optional_task_fault(**kwargs: Any) -> Any:
             db = kwargs["db"]
             _declare_news_capabilities(kwargs["capabilities"], quotes=True)
-            return (
-                None,
+            return _wiring(
                 _TurnPipeline(
                     (
                         ("news-deduper", _fact_writer(db), 1.0),
@@ -516,8 +462,7 @@ async def _main() -> None:
                         # which is the shape #553 PR-2's market notification loop registers as.
                         ("news-quotes", _backlog_consumer(db, resume_gate=resume_gate), 1.0),
                     )
-                ),
-                None,
+                )
             )
 
         workers_wiring._wire_news_pipeline = wire_optional_task_fault
@@ -547,10 +492,9 @@ async def _main() -> None:
                 print("MARKET_TASK_ABOUT_TO_FAIL", flush=True)
                 raise RuntimeError("test_market_notifications_fault")
 
-        async def wire_market_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, Any]:
+        async def wire_market_fault(**kwargs: Any) -> Any:
             _declare_news_capabilities(kwargs["capabilities"], market=True)
-            return (
-                None,
+            return _wiring(
                 _TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)),
                 _FailingMarketLoop(),
             )
@@ -584,9 +528,9 @@ async def _main() -> None:
                 print(f"{self.capability.upper()}_ABOUT_TO_FAIL", flush=True)
                 raise RuntimeError(f"test_{self.capability}_fault")
 
-        async def wire_wallet_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, None]:
+        async def wire_wallet_fault(**kwargs: Any) -> Any:
             _declare_news_capabilities(kwargs["capabilities"], market=True)
-            return None, _TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)), None
+            return _wiring(_TurnPipeline((("news-deduper", _fact_writer(kwargs["db"]), 1.0),)))
 
         def wire_wallet_stages(**kwargs: Any) -> ChainTapeComposition:
             for capability in (CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY, WALLET_PRICES):
@@ -605,7 +549,7 @@ async def _main() -> None:
         # Reception and admission are the information entry, not a capability to switch off. A program
         # error there must still end the process, so the container restart that has always healed it
         # keeps happening instead of a permanent outage behind a 200 /readyz.
-        async def wire_ingestion_fault(**kwargs: Any) -> tuple[None, _TurnPipeline, None]:
+        async def wire_ingestion_fault(**kwargs: Any) -> Any:
             _declare_news_capabilities(kwargs["capabilities"])
 
             async def fail() -> bool:
@@ -615,7 +559,7 @@ async def _main() -> None:
                 print("INGESTION_ABOUT_TO_FAIL", flush=True)
                 raise RuntimeError("test_ingestion_task_fault")
 
-            return None, _TurnPipeline((("news-receiver", fail, 1.0),)), None
+            return _wiring(_TurnPipeline((("news-receiver", fail, 1.0),)))
 
         workers_wiring._wire_news_pipeline = wire_ingestion_fault
     elif arguments.mode == "push_misconfigured":
@@ -634,8 +578,7 @@ async def _main() -> None:
         "trading_execution_requested",
     }
     news_process = arguments.mode in {
-        "manifest_barrier",
-        "manifest_registration_fault",
+        "semantic_assembly_fault",
         "optional_task_fault",
         "market_notifications_fault",
         "chain_tape_fault",

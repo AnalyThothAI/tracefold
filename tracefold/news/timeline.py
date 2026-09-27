@@ -1,14 +1,15 @@
 """Event timeline: the ordered, human-readable steps one Event went through (pure).
 
-Built from the same rows ``event_detail`` returns (event, members, verdicts, deliveries); each step carries a Chinese
-title/summary and the raw facts it was built from, so the console shows the sentence and keeps the fields one click
-away. ``tracefold news why`` prints the same steps.
+Built from the same rows ``event_detail`` returns (event, members, legacy verdicts, deliveries and, since #706,
+the EventUpdate plane: evidence revisions, semantic observations and adoptions, the notification plan and the
+update intents); each step carries a Chinese title/summary and the raw facts it was built from, so the console
+shows the sentence and keeps the fields one click away. ``tracefold news why`` prints the same steps.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
 from .outcome import (
     Outcome,
@@ -24,7 +25,9 @@ from .outcome import (
     storyline_key_zh,
     throttled_by_zh,
 )
-from .taxonomy import event_family_zh
+from .update_view import CHANGE_KIND_ZH, INTENT_STATE_ZH, semantic_state
+
+_READER_DELIVERY_KINDS: Final = frozenset({"first", "update"})
 
 
 def _latest_triage(verdicts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
@@ -32,9 +35,25 @@ def _latest_triage(verdicts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] |
     return triage[-1] if triage else None
 
 
-def _first_delivery(deliveries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    first = [d for d in deliveries if d.get("kind") == "first"]
-    return first[-1] if first else None
+def reader_delivery(deliveries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The Event's representative reader card: its latest sent one, else its latest attempt.
+
+    The same order `storage.feed_sql` picks the feed row's `d` by, so the feed row and the detail agree.
+    Legacy `followup` cards were never an Event's outcome and stay out.
+    """
+
+    readers = [(index, row) for index, row in enumerate(deliveries) if row.get("kind") in _READER_DELIVERY_KINDS]
+    if not readers:
+        return None
+    return max(
+        readers,
+        key=lambda pair: (
+            pair[1].get("state") == "sent",
+            int(pair[1].get("created_at_ms") or 0),
+            str(pair[1].get("intent_id") or ""),
+            pair[0],
+        ),
+    )[1]
 
 
 def restated_card(trace: Mapping[str, Any], verdict: Mapping[str, Any], *, at_ms: int) -> dict[str, Any] | None:
@@ -91,12 +110,25 @@ def event_timeline(
     verdicts: Sequence[Mapping[str, Any]],
     deliveries: Sequence[Mapping[str, Any]],
     delivery_queue: Mapping[str, Any] | None = None,
+    semantic: Mapping[str, Any] | None = None,
+    adopted: bool = False,
+    notification: Mapping[str, Any] | None = None,
+    evidence_snapshots: Sequence[Mapping[str, Any]] = (),
+    revisions: Sequence[Mapping[str, Any]] = (),
+    observations: Sequence[Mapping[str, Any]] = (),
+    notification_view: Mapping[str, Any] | None = None,
+    intents: Sequence[Mapping[str, Any]] = (),
     now_ms: int | None = None,
 ) -> tuple[Outcome, list[dict[str, Any]]]:
-    """Return ``(outcome, steps)``; steps are in pipeline order and only include stages that happened."""
+    """Return ``(outcome, steps)``; steps are in pipeline order and only include stages that happened.
+
+    A legacy Event (a Triage verdict and no semantic work) keeps exactly its triage/decide steps. An Event
+    on the EventUpdate path gets evidence, semantic, notification and intent steps instead, in clock order
+    after the Gate; a legacy verdict it also carries stays as the history it is.
+    """
 
     latest = _latest_triage(verdicts)
-    delivery = _first_delivery(deliveries)
+    delivery = reader_delivery(deliveries)
     outcome = event_outcome(
         admission=event.get("admission"),
         opened_at_ms=event.get("opened_at_ms"),
@@ -104,6 +136,9 @@ def event_timeline(
         triage=latest,
         delivery=delivery,
         delivery_queue=delivery_queue,
+        semantic=semantic,
+        adopted=adopted,
+        notification=notification,
         now_ms=now_ms,
     )
     steps: list[dict[str, Any]] = []
@@ -162,18 +197,12 @@ def event_timeline(
 
     if latest is not None:
         verdict = dict(latest.get("verdict") or {})
-        model_editorial = latest.get("model_editorial") if isinstance(latest.get("model_editorial"), Mapping) else None
-        taxonomy = model_editorial.get("taxonomy") if model_editorial is not None else None
         degraded = bool(latest.get("degraded"))
         if degraded:
             triage_summary = "模型不可用：" + (error_code_zh(latest.get("error_code")) or "未知原因") + "，按规则兜底"
         else:
             bits = [str(verdict.get("headline_zh") or "").strip() or "（无标题）"]
-            facts_bits = [
-                direction_zh(verdict.get("direction")),
-                fact_kind_zh(verdict.get("fact_kind")),
-                event_family_zh(taxonomy.get("event_family")) if isinstance(taxonomy, Mapping) else "",
-            ]
+            facts_bits = [direction_zh(verdict.get("direction")), fact_kind_zh(verdict.get("fact_kind"))]
             bits.append(" / ".join(b for b in facts_bits if b))
             triage_summary = " · ".join(b for b in bits if b)
         steps.append(
@@ -189,7 +218,6 @@ def event_timeline(
                     "judgment_origin": latest.get("judgment_origin"),
                     "judgment_contract_version": latest.get("judgment_contract_version"),
                     "event_kind": event.get("event_kind"),
-                    "taxonomy": taxonomy,
                     "direction": verdict.get("direction"),
                     "fact_kind": verdict.get("fact_kind"),
                     "scope": verdict.get("scope"),
@@ -259,7 +287,20 @@ def event_timeline(
             }
         )
 
+    update_steps = _update_steps(
+        semantic=semantic,
+        evidence_snapshots=evidence_snapshots,
+        revisions=revisions,
+        observations=observations,
+        notification_view=notification_view,
+        intents=intents,
+    )
+    steps.extend(sorted(update_steps, key=lambda step: step["at_ms"]))
+
     for row in deliveries:
+        if row.get("kind") == "update":
+            # An update intent is one step with its queue and its ledger row, above.
+            continue
         state = str(row.get("state") or "")
         if state == "sent":
             summary = "已送达"
@@ -285,7 +326,144 @@ def event_timeline(
     return outcome, steps
 
 
+def _change_kinds_zh(kinds: Any) -> str:
+    counts: dict[str, int] = {}
+    for kind in kinds if isinstance(kinds, list) else ():
+        label = CHANGE_KIND_ZH.get(str(kind), str(kind))
+        counts[label] = counts.get(label, 0) + 1
+    return "、".join(f"{label} ×{n}" if n > 1 else label for label, n in counts.items())
+
+
+def _update_steps(
+    *,
+    semantic: Mapping[str, Any] | None,
+    evidence_snapshots: Sequence[Mapping[str, Any]],
+    revisions: Sequence[Mapping[str, Any]],
+    observations: Sequence[Mapping[str, Any]],
+    notification_view: Mapping[str, Any] | None,
+    intents: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """The EventUpdate path's steps (#706), each from one durable row and never from a guess."""
+
+    steps: list[dict[str, Any]] = []
+    for snapshot in evidence_snapshots:
+        version = int(snapshot["evidence_version"])
+        steps.append(
+            {
+                "stage": "evidence",
+                "title_zh": "材料版本" if version == 1 else "材料更新",
+                "at_ms": int(snapshot["created_at_ms"]),
+                "summary_zh": f"第 {version} 版证据" + ("" if version == 1 else "：新成员或正文修订"),
+                "facts": {
+                    "evidence_version": version,
+                    "evidence_sha256": snapshot.get("evidence_sha256"),
+                    "focus_fact_id": snapshot.get("focus_fact_id"),
+                },
+            }
+        )
+    adopted_by_result = {str(row["observation_result_id"]): row for row in revisions}
+    for observation in observations:
+        adoption = adopted_by_result.get(str(observation["result_id"]))
+        summary = f"输入第 {int(observation['input_revision'])} 版"
+        summary += " · 形成新的事件更新" if adoption is not None else " · 内容无实质变化，未改写已采用版本"
+        steps.append(
+            {
+                "stage": "semantic",
+                "title_zh": "语义理解",
+                "at_ms": int(observation["completed_at_ms"]),
+                "summary_zh": summary,
+                "facts": {
+                    "result_id": observation.get("result_id"),
+                    "input_revision": observation.get("input_revision"),
+                    "program_identity": observation.get("program_identity"),
+                    "adopted_content_revision": observation.get("adopted_content_revision"),
+                },
+            }
+        )
+    for revision in revisions:
+        kinds = revision.get("change_kinds")
+        described = _change_kinds_zh(kinds)
+        steps.append(
+            {
+                "stage": "semantic",
+                "title_zh": "采用更新",
+                "at_ms": int(revision["adopted_at_ms"]),
+                "summary_zh": (described or "无新增变化") + f" · {int(revision.get('claim_n') or 0)} 条命题",
+                "facts": {
+                    "content_revision": revision.get("content_revision"),
+                    "previous_content_revision": revision.get("previous_content_revision"),
+                    "input_revision": revision.get("input_revision"),
+                    "change_kinds": list(kinds) if isinstance(kinds, list) else [],
+                },
+            }
+        )
+    if semantic is not None and semantic_state(semantic) == "failed":
+        steps.append(
+            {
+                "stage": "semantic",
+                "title_zh": "语义处理失败",
+                "at_ms": int(semantic.get("updated_at_ms") or 0),
+                "summary_zh": error_code_zh(semantic.get("last_error_code")) or "多次尝试后失败，等待新的材料版本",
+                "facts": {
+                    "wanted_revision": semantic.get("wanted_revision"),
+                    "attempts": semantic.get("attempts"),
+                    "last_outcome": semantic.get("last_outcome"),
+                    "last_error_code": semantic.get("last_error_code"),
+                },
+            }
+        )
+    plan = (notification_view or {}).get("plan")
+    if notification_view is not None and isinstance(plan, Mapping):
+        selected = [row for row in plan.get("claim_decisions") or () if row.get("decision") == "notify"]
+        summary = str(plan.get("action_zh") or "")
+        if plan.get("action") == "notify":
+            summary += f" {len(selected)} 条命题" + (" · 重点" if plan.get("key") else "")
+        summary += f" · {plan.get('reason_zh')}" if plan.get("reason_zh") else ""
+        steps.append(
+            {
+                "stage": "notify",
+                "title_zh": "通知决策",
+                "at_ms": int(notification_view["updated_at_ms"]),
+                "summary_zh": summary,
+                "facts": {
+                    "action": plan.get("action"),
+                    "reason": plan.get("reason"),
+                    "key": plan.get("key"),
+                    "content_revision": notification_view.get("content_revision"),
+                    "selected_claim_refs": [row.get("claim_ref") for row in selected],
+                    "reader_revision": plan.get("reader_revision"),
+                },
+            }
+        )
+    for intent in intents:
+        state = str(intent["state"])
+        summary = INTENT_STATE_ZH.get(state, state)
+        if state in {"terminal", "dead"} and intent.get("error_code"):
+            summary += "：" + (delivery_error_zh(intent.get("error_code")) or str(intent.get("error_code")))
+        summary += f" · {len(intent.get('claim_refs') or [])} 条命题"
+        steps.append(
+            {
+                "stage": "delivery",
+                "title_zh": "推送" + (" · 重点" if intent.get("key") else ""),
+                "at_ms": int(
+                    intent.get("settled_at_ms") or intent.get("attempted_at_ms") or intent.get("enqueued_at_ms") or 0
+                ),
+                "summary_zh": summary,
+                "facts": {
+                    "intent_id": intent.get("intent_id"),
+                    "state": state,
+                    "error_code": intent.get("error_code"),
+                    "claim_refs": list(intent.get("claim_refs") or []),
+                    "attempted_at_ms": intent.get("attempted_at_ms"),
+                    "settled_at_ms": intent.get("settled_at_ms"),
+                },
+            }
+        )
+    return steps
+
+
 __all__ = [
     "event_timeline",
+    "reader_delivery",
     "restated_card",
 ]

@@ -4,7 +4,6 @@ import asyncio
 import base64
 import io
 import json
-import os
 import tempfile
 import time
 import urllib.request
@@ -191,12 +190,9 @@ def test_trading_gate_reads_the_admission_ledger_the_deleted_routes_read(postgre
 
 
 def _management_url(url: str) -> str:
-    from urllib.parse import urlsplit
+    from tests.support.rabbitmq import rabbitmq_management_url
 
-    return os.environ.get(
-        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
-        f"http://{urlsplit(url).hostname or '127.0.0.1'}:15672",
-    ).rstrip("/")
+    return rabbitmq_management_url(url)
 
 
 def _test_bus(url: str, name_prefix: str) -> Any:

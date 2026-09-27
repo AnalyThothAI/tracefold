@@ -20,6 +20,7 @@ from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.system_one import SystemOneConnection
 from tracefold.app.trading_analyst import PhysicalModelCall, TradeAnalyst
 from tracefold.app.trading_tools import CaseToolContext
+from tracefold.news.updates.contracts import PublicUpdate
 from tracefold.platform.market_identity import (
     AssetId,
     AssetRegistry,
@@ -29,10 +30,12 @@ from tracefold.platform.market_identity import (
 )
 from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
 from tracefold.trading.engine.features import (
+    CATALYST_SOURCE_KIND,
     PROFILE_VERSION,
     catalyst_text_values,
     extract_features,
     freeze_features,
+    source_recorded_at_ms,
 )
 from tracefold.trading.engine.marketdata import Dataset, MarketDataPort, MarketDataRequest, MarketDataResult
 from tracefold.trading.engine.outcomes import price_path_label
@@ -45,7 +48,7 @@ from tracefold.trading.engine.plans import (
     directed_cross,
 )
 from tracefold.trading.engine.policy import InvalidAssessment, decision_identity, is_citable_evidence
-from tracefold.trading.engine.target import SourceAsset, TargetSelection, select_target
+from tracefold.trading.engine.target import SourceAsset, TargetSelection, TriggerKind, select_target
 from tracefold.trading.execution_contracts import (
     SignalEntryEnvelopeV3,
     SignalExitPlanV1,
@@ -102,6 +105,7 @@ class FrameReader:
         source_history: tuple[dict[str, Any], ...] = (),
         source_history_at: Callable[[int], Awaitable[tuple[dict[str, Any], ...]]] | None = None,
         source_revision: str | None = None,
+        source_amendments_at: Callable[[int], Awaitable[tuple[dict[str, Any], ...]]] | None = None,
     ) -> PreparedAnalysis:
         selection = dict(case["target_selection"])
         instrument = selection.get("instrument")
@@ -200,6 +204,7 @@ class FrameReader:
             },
         }
         failure_evidence_ref = await _file_io(self.files.write, snapshot)
+        source_amendments: tuple[dict[str, Any], ...] = ()
         try:
             if source_history_at is not None:
                 try:
@@ -207,6 +212,15 @@ class FrameReader:
                 except Exception as exc:
                     raise FrozenEvidenceError(f"source_history_{type(exc).__name__}", failure_evidence_ref) from exc
                 snapshot["same_asset_source_history"] = source_history
+                failure_evidence_ref = await _file_io(self.files.write, snapshot)
+            if source_amendments_at is not None:
+                # Corrections and evidence changes News recorded against this source's own claims.
+                # They inform the analysis; the last entry check alone refuses a retired claim.
+                try:
+                    source_amendments = await source_amendments_at(knowledge_cutoff)
+                except Exception as exc:
+                    raise FrozenEvidenceError(f"source_amendments_{type(exc).__name__}", failure_evidence_ref) from exc
+                snapshot["source_amendments"] = source_amendments
                 failure_evidence_ref = await _file_io(self.files.write, snapshot)
             if any(
                 result.received_at_ms is not None and result.received_at_ms > knowledge_cutoff
@@ -253,28 +267,29 @@ class FrameReader:
             results=results,
             features=features,
         )
-        if source_fact.get("kind") == "catalyst":
-            source_values: dict[str, Any] = catalyst_text_values(source_fact)
-            source_units = {key: "text" for key in source_values}
-        else:
+        if source_fact.get("kind") == "oi":
             source_units = {
                 "oi_change_bps": "bps",
                 "oi_value_usd": "USD",
                 "measurement_definition": "text",
                 "measurement_window_ms": "ms",
             }
-            source_values = {
+            source_values: dict[str, Any] = {
                 key: source_fact[key]
                 for key in source_units
                 if source_fact.get(key) is not None and source_fact[key] != ""
             }
+        else:
+            # Only a News catalyst delta's structured projection is citable source text.
+            source_values = catalyst_text_values(source_fact)
+            source_units = {key: "text" for key in source_values}
         brief_evidence: dict[str, dict[str, Any]] = {
             "source": {
                 "status": "ok" if source_values else "missing",
                 "source_ref": evidence_ref,
                 "values": source_values,
                 "unit_definition": {key: source_units[key] for key in source_values},
-                "event_at_ms": source_fact.get("source_recorded_at_ms"),
+                "event_at_ms": source_recorded_at_ms(source_fact),
                 "received_at_ms": int(case.get("created_at_ms", knowledge_cutoff)),
                 "knowledge_cutoff_ms": knowledge_cutoff,
             }
@@ -341,18 +356,68 @@ class FrameReader:
             plans=plans,
             trigger_context=trigger_context,
             typed_evidence=typed_evidence.model_dump(mode="json"),
+            source_amendments=source_amendments,
         )
         brief_ref = await _file_io(self.files.write, {"brief_json": brief.text})
         return PreparedAnalysis(evidence_ref, brief_ref, brief, reference_price, reference_at_ms, plans)
+
+
+_MAX_SOURCE_ASSETS = 8
+
+
+class LegacyCatalystPayload(ValueError):
+    """A pre-EventUpdate catalyst (headline/why). The outbox is drained before cutover; none is read."""
 
 
 def _assets(payload: dict[str, Any]) -> tuple[SourceAsset, ...]:
     raw_assets = payload.get("assets")
     if not isinstance(raw_assets, list):
         raise ValueError("trade_event_assets_invalid")
-    if len(raw_assets) > 8:
+    if len(raw_assets) > _MAX_SOURCE_ASSETS:
         raise ValueError("trade_event_assets_oversized")
     return tuple(SourceAsset(str(item["symbol"]), str(item["market_type"]), str(item["role"])) for item in raw_assets)
+
+
+def public_update(event: dict[str, Any]) -> PublicUpdate:
+    """Map one News outbox row to its exact public contract, or refuse it by name.
+
+    The row identity is News' (Event, content revision); the payload must name the same
+    Event, revision and public kind. A catalyst row without a schema version is the retired
+    headline/why shape and has no second reading path.
+    """
+
+    payload = event["payload"]
+    if event["kind"] == "catalyst" and "schema_version" not in payload:
+        raise LegacyCatalystPayload("legacy_catalyst_payload")
+    update = PublicUpdate.model_validate(payload)
+    expected = "source_update" if event["kind"] == "source_update" else CATALYST_SOURCE_KIND
+    if (
+        update.kind != expected
+        or update.event_id != event["source_fact_key"]
+        or update.content_revision != event["source_revision"]
+    ):
+        raise ValueError("trade_event_public_identity_mismatch")
+    return update
+
+
+def catalyst_assets(update: PublicUpdate) -> tuple[SourceAsset, ...]:
+    """The union of primary assets over the claims this delta changed.
+
+    A mentioned asset never becomes a target; several eligible primaries stay ambiguous
+    in target selection rather than fanning out one Case per claim.
+    """
+
+    assets = sorted(
+        {
+            (asset.symbol, asset.market_type)
+            for claim in update.claims
+            for asset in claim.fields.assets
+            if asset.role == "primary"
+        }
+    )
+    if len(assets) > _MAX_SOURCE_ASSETS:
+        raise ValueError("trade_event_assets_oversized")
+    return tuple(SourceAsset(symbol, market_type, "primary") for symbol, market_type in assets)
 
 
 def _registry_from_rows(
@@ -424,14 +489,13 @@ def _registry_from_rows(
 
 async def _select_from_connection(
     market_data: MarketDataPort,
-    event: dict[str, Any],
+    kind: TriggerKind,
+    assets: tuple[SourceAsset, ...],
     *,
     environment: str,
     universe: UniversePolicy,
     verified_routes: list[Any],
 ) -> TargetSelection:
-    payload = dict(event["payload"])
-    assets = _assets(payload)
     symbols = {asset.symbol for asset in assets if asset.role == "primary"}
     for route in verified_routes:
         if route.source_symbol in symbols:
@@ -463,7 +527,7 @@ async def _select_from_connection(
         raise TimeoutError("connection_catalogue_unavailable")
     rows = [dict(result.payload[0]) for result in results if result.status == "ok" and result.payload]
     registry = _registry_from_rows(rows, environment=environment, universe=universe, verified_routes=verified_routes)
-    return select_target(kind=event["kind"], assets=assets, registry=registry, universe=universe)
+    return select_target(kind=kind, assets=assets, registry=registry, universe=universe)
 
 
 def _configured_universe(settings: Any) -> UniversePolicy:
@@ -564,61 +628,94 @@ class AnalysisRunner:
         )
 
     async def relay_once(self, *, batch_size: int = 64) -> int:
+        """Relay unacknowledged News public facts; the row kind is dispatched before target selection.
+
+        A source update is recorded as a Trading amendment and never reaches target
+        selection or trigger acceptance. A commit before the acknowledgement is
+        intentionally replayable: every receipt is idempotent on the public identity.
+        """
+
         events = await self._db_async(lambda repos: repos.news.unacknowledged_trade_events(limit=batch_size))
         environment = (self.settings.trading.execution.binance.environment or "LIVE").lower()
         for event in events:
             try:
-                selection = await _select_from_connection(
-                    self.reader.market_data,
-                    event,
-                    environment=environment,
-                    universe=self._universe,
-                    verified_routes=self.settings.trading.analysis.verified_routes,
-                )
+                disposition = await self._receive_trade_event(event, environment=environment)
             except TimeoutError:
                 continue
+            except LegacyCatalystPayload:
+                reason = "legacy_catalyst_payload"
             except (KeyError, TypeError, ValueError):
+                reason = "trade_event_payload_invalid"
+            else:
+                if disposition == "source_conflict":
+                    # Trading keeps the first receipt; the different payload is recorded, not applied.
+                    _LOG.warning(
+                        "trade_event_source_conflict",
+                        extra={"kind": event["kind"], "source_fact_key": event["source_fact_key"]},
+                    )
                 await self._db_async(
-                    lambda repos, event=event: repos.news.reject_trade_event(
-                        event_id=event["event_id"],
-                        payload_sha256=event["payload_sha256"],
-                        reason="trade_event_payload_invalid",
+                    lambda repos, event=event: repos.news.acknowledge_trade_event(
+                        event_id=event["event_id"], payload_sha256=event["payload_sha256"], now_ms=_clock_ms()
                     ),
                     transaction=True,
                 )
                 continue
-            try:
-                await self._db_async(
-                    lambda repos, event=event, selection=selection: repos.trading.accept_trigger(
-                        kind=event["kind"],
-                        source_fact_key=event["source_fact_key"],
-                        source_revision=event["source_revision"],
-                        payload_sha256=event["payload_sha256"],
-                        payload=event["payload"],
-                        selection=selection,
-                        now_ms=_clock_ms(),
-                        root_ttl_ms=self._root_ttl_ms,
-                    ),
-                    transaction=True,
-                )
-            except (KeyError, TypeError, ValueError):
-                await self._db_async(
-                    lambda repos, event=event: repos.news.reject_trade_event(
-                        event_id=event["event_id"],
-                        payload_sha256=event["payload_sha256"],
-                        reason="trade_event_payload_invalid",
-                    ),
-                    transaction=True,
-                )
-                continue
-            # A commit before this acknowledgement is intentionally replayable.
             await self._db_async(
-                lambda repos, event=event: repos.news.acknowledge_trade_event(
-                    event_id=event["event_id"], payload_sha256=event["payload_sha256"], now_ms=_clock_ms()
+                lambda repos, event=event, reason=reason: repos.news.reject_trade_event(
+                    event_id=event["event_id"], payload_sha256=event["payload_sha256"], reason=reason
                 ),
                 transaction=True,
             )
         return len(events)
+
+    async def _receive_trade_event(self, event: dict[str, Any], *, environment: str) -> str:
+        kind = event["kind"]
+        if kind == "source_update":
+            amendment = public_update(event)
+            return cast(
+                str,
+                await self._db_async(
+                    lambda repos: repos.trading.receive_source_update(
+                        update_id=amendment.update_id,
+                        source_fact_key=event["source_fact_key"],
+                        content_revision=event["source_revision"],
+                        affected_claim_refs=amendment.affected_claim_refs,
+                        retired_claim_refs=amendment.retired_claim_refs,
+                        payload=event["payload"],
+                        payload_sha256=event["payload_sha256"],
+                        now_ms=_clock_ms(),
+                    ),
+                    transaction=True,
+                ),
+            )
+        if kind == "catalyst":
+            assets = catalyst_assets(public_update(event))
+        elif kind == "oi":
+            assets = _assets(dict(event["payload"]))
+        else:
+            raise ValueError("trade_event_kind_invalid")
+        selection = await _select_from_connection(
+            self.reader.market_data,
+            kind,
+            assets,
+            environment=environment,
+            universe=self._universe,
+            verified_routes=self.settings.trading.analysis.verified_routes,
+        )
+        _, _, disposition = await self._db_async(
+            lambda repos: repos.trading.accept_trigger(
+                kind=kind,
+                source_fact_key=event["source_fact_key"],
+                source_revision=event["source_revision"],
+                payload_sha256=event["payload_sha256"],
+                payload=event["payload"],
+                selection=selection,
+                now_ms=_clock_ms(),
+                root_ttl_ms=self._root_ttl_ms,
+            ),
+            transaction=True,
+        )
+        return str(disposition)
 
     async def _claim(self) -> dict[str, Any] | None:
         return cast(
@@ -660,6 +757,15 @@ class AnalysisRunner:
                     )
                 )
 
+            async def source_amendments_at(cutoff_ms: int) -> tuple[dict[str, Any], ...]:
+                return tuple(
+                    await self._db_async(
+                        lambda repos: repos.trading.source_amendments(
+                            trigger_id=str(case["trigger_id"]), known_at_ms=cutoff_ms
+                        ),
+                    )
+                )
+
             prior = await self._db_async(
                 lambda repos: repos.trading.prior_analysis_snapshot(
                     case_id=case["case_id"], before_claim_attempt=int(case["claim_attempt"])
@@ -674,6 +780,7 @@ class AnalysisRunner:
                     source_first_visible_at_ms=int(source["first_visible_at_ms"]),
                     source_revision=str(source["source_revision"]),
                     source_history_at=source_history_at,
+                    source_amendments_at=source_amendments_at,
                 )
             )
             evidence_ref = prepared.evidence_ref

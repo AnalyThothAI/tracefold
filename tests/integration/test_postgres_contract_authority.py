@@ -8,12 +8,10 @@ from psycopg.types.json import Jsonb
 from pydantic import TypeAdapter, ValidationError
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_judgment import news_taxonomy
+from tests.support.news_legacy import legacy_editorial, legacy_taxonomy
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TriageVerdict
-from tracefold.news.program.contracts import EditorialEnvelope
-from tracefold.news.review.desk import BlindPairwiseSubmission, EventRubricSubmission, _pairwise_virtual
-from tracefold.news.taxonomy import ModelTaxonomyV1
+from tracefold.news.review.desk import _V8_NO_TAXONOMY, EventRubricSubmission
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -96,13 +94,7 @@ _HISTORICAL_LIQUIDATION_METADATA: Final[dict[str, Any]] = {
 def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]:
     evidence_refs = []
     note = ""
-    dimensions = {
-        "factual_fidelity": "pass",
-        "taxonomy_subject_codes": "pass",
-        "taxonomy_event_family": "pass",
-        "taxonomy_change_state": "pass",
-        "taxonomy_assertion_status": "pass",
-    }
+    dimensions = {"factual_fidelity": "pass"}
     expected: dict[str, Any] | None = None
     if production_sized:
         evidence_refs = [f"ref-{index:02d}-" + "x" * 493 for index in range(32)]
@@ -120,37 +112,27 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
             ],
             "fact_kind": "official_measure",
         }
-    return EventRubricSubmission(
-        should_push="should_hold",
-        dimensions=dimensions,
-        novelty={"judgment": "new_fact"},
-        first_bad_owner="triage_prompt",
-        evidence_refs=evidence_refs,
-        expected=expected,
-        # The four model axes (#651 §7.2). `news_taxonomy()` builds the persisted seven-key shape, whose
-        # `source_authority` is a code fact the reviewer never states and the v8 payload never carries.
-        taxonomy=ModelTaxonomyV1(
-            subject_codes=(),
-            event_family="regulatory_legal",
-            change_state="reported",
-            assertion_status="claimed",
-        ),
-        note=note,
-    ).model_dump(mode="json")
+    return (
+        EventRubricSubmission(
+            should_push="should_hold",
+            dimensions=dimensions,
+            novelty={"judgment": "new_fact"},
+            first_bad_owner="triage_prompt",
+            evidence_refs=evidence_refs,
+            expected=expected,
+            note=note,
+        ).model_dump(mode="json")
+        | _V8_NO_TAXONOMY
+    )
 
 
-def _current_pairwise_selection(*, dataset_role: str) -> dict[str, Any]:
-    return _pairwise_virtual(
-        {
-            "run_sha": "a" * 64,
-            "case_id": f"case-{dataset_role}",
-            "evidence_sha256": "b" * 64,
-            "output_a": {"answer": "A"},
-            "output_b": {"answer": "B"},
-            "disclosure": {},
-            "dataset_role": dataset_role,
-        }
-    ).selection
+def _review_row_accepted_by_python(payload: dict[str, Any]) -> bool:
+    """The ReviewDesk writes the submission plus the two constant `news_review_v8` taxonomy keys (#706)."""
+
+    if any(key not in payload or payload[key] != value for key, value in _V8_NO_TAXONOMY.items()):
+        return False
+    submission = {key: value for key, value in payload.items() if key not in _V8_NO_TAXONOMY}
+    return _python_persisted_form_accepts(EventRubricSubmission, submission)
 
 
 def test_news_current_json_validators_match_the_python_contract() -> None:
@@ -166,14 +148,6 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
         headline_zh="跨语言契约",
         why_zh="数据库必须拒绝绕过应用模型的同一无效当前事实。",
     ).model_dump(mode="json")
-    editorial = EditorialEnvelope.issue(
-        source_authority="reputable_secondary",
-        taxonomy=news_taxonomy(
-            event_family="regulatory_legal",
-            change_state="reported",
-            assertion_status="claimed",
-        ),
-    ).model_dump(mode="json")
     verdict_corpus = [
         verdict,
         verdict | {"retired": True},
@@ -185,17 +159,6 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
     verdict_asset_extra = copy.deepcopy(verdict)
     verdict_asset_extra["assets"][0]["retired"] = True
     verdict_corpus.append(verdict_asset_extra)
-    editorial_corpus = [
-        editorial,
-        editorial | {"retired": True},
-        editorial | {"editorial_sha256": "0" * 64},
-        editorial | {"editorial_origin": "operator"},
-    ]
-    editorial_corpus.extend({key: value for key, value in editorial.items() if key != removed} for removed in editorial)
-    editorial_taxonomy_extra = copy.deepcopy(editorial)
-    editorial_taxonomy_extra["taxonomy"]["retired"] = True
-    editorial_corpus.append(editorial_taxonomy_extra)
-
     conn = connect_postgres_test(read_only=False)
     try:
         for payload in verdict_corpus:
@@ -205,13 +168,6 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
                 ]
             )
             assert db_accepts is _python_persisted_form_accepts(TriageVerdict, payload)
-        for payload in editorial_corpus:
-            db_accepts = bool(
-                conn.execute("SELECT news_current_model_editorial_valid(%s) AS valid", (Jsonb(payload),)).fetchone()[
-                    "valid"
-                ]
-            )
-            assert db_accepts is _python_persisted_form_accepts(EditorialEnvelope, payload)
     finally:
         conn.close()
 
@@ -300,9 +256,9 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
     liquidation_corpus.extend(
         ({key: value for key, value in liquidation.items() if key != removed}, False) for removed in liquidation
     )
-    taxonomy_drift = copy.deepcopy(review)
-    taxonomy_drift["taxonomy"]["retired"] = True
-    review_corpus = [review, review | {"retired": True}, taxonomy_drift]
+    taxonomy_drift = review | {"taxonomy_review": review["taxonomy_review"] | {"retired": True}}
+    stated_taxonomy = review | {"taxonomy": {"event_family": "market_access"}}
+    review_corpus = [review, review | {"retired": True}, taxonomy_drift, stated_taxonomy]
     review_corpus.extend({key: value for key, value in review.items() if key != removed} for removed in review)
     selection = {
         "stratum": "random_control",
@@ -364,52 +320,9 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
                     "selection": Jsonb(selection),
                 },
             ).fetchone()
-            assert bool(row["valid"]) is _python_persisted_form_accepts(EventRubricSubmission, payload), (
-                index,
-                payload,
-            )
-        pairwise = BlindPairwiseSubmission(
-            preference="A",
-            critical_errors=["A:unsupported_fact"],
-            evidence_refs=["output:A"],
-        ).model_dump(mode="json")
-        pairwise_selection = _current_pairwise_selection(dataset_role="validation")
-        pairwise_corpus = [
-            pairwise,
-            pairwise | {"retired": True},
-            pairwise | {"preference": "winner"},
-            {key: value for key, value in pairwise.items() if key != "evidence_refs"},
-        ]
-        for payload in pairwise_corpus:
-            row = conn.execute(
-                """
-                SELECT news_current_review_valid(
-                  'judgment', 'pairwise', 'news_review_v8', 'reader_contract_v3',
-                  NULL, NULL, NULL, 'pairwise-current',
-                  NULL, '{}'::jsonb, '{}'::jsonb, NULL, %(evidence_refs)s, '', %(note)s,
-                  %(selection)s, %(payload)s, NULL
-                ) AS valid
-                """,
-                {
-                    "evidence_refs": Jsonb(payload.get("evidence_refs")),
-                    "note": payload.get("note"),
-                    "selection": Jsonb(pairwise_selection),
-                    "payload": Jsonb(payload),
-                },
-            ).fetchone()
-            assert bool(row["valid"]) is _python_persisted_form_accepts(BlindPairwiseSubmission, payload)
-        for dataset_role in ("validation", "development"):
-            owner_selection = _current_pairwise_selection(dataset_role=dataset_role)
-            valid = conn.execute(
-                "SELECT news_current_review_selection_valid(%s, 'pairwise') AS valid",
-                (Jsonb(owner_selection),),
-            ).fetchone()
-            drift = conn.execute(
-                "SELECT news_current_review_selection_valid(%s, 'pairwise') AS valid",
-                (Jsonb(owner_selection | {"retired": True}),),
-            ).fetchone()
-            assert bool(valid["valid"]) is True
-            assert bool(drift["valid"]) is False
+            # A stated taxonomy is still a shape the v8 row contract admits; the desk can no longer write one.
+            expected = _review_row_accepted_by_python(payload) or payload is stated_taxonomy
+            assert bool(row["valid"]) is expected, (index, payload)
     finally:
         conn.close()
 
@@ -491,19 +404,16 @@ def test_the_editorial_validator_holds_every_written_shape_and_refuses_an_invent
         "affected_markets": ["single_asset"],
         "reader_value": "realtime",
     }
-    axes = news_taxonomy(event_family="market_access", change_state="effective").model_dump(mode="json")
+    axes = legacy_taxonomy(event_family="market_access", change_state="effective")
 
     def sealed(payload: dict[str, Any]) -> dict[str, Any]:
         return payload | {"editorial_sha256": canonical_sha(payload)}
 
-    available = EditorialEnvelope.issue(source_authority="issuer_first_party", taxonomy=news_taxonomy()).model_dump(
-        mode="json"
-    )
-    unavailable = EditorialEnvelope.issue(
+    available = legacy_editorial(source_authority="issuer_first_party", taxonomy=legacy_taxonomy()).document
+    unavailable = legacy_editorial(
         source_authority="unknown",
-        taxonomy=None,
         taxonomy_error_code="news_program_output_truncated",
-    ).model_dump(mode="json")
+    ).document
     historical_v3 = sealed(
         {key: value for key, value in available.items() if key != "editorial_sha256"}
         | {"editorial_contract_version": "news_editorial_v3", "relevance": relevance}
@@ -573,21 +483,12 @@ def test_the_editorial_validator_holds_every_written_shape_and_refuses_an_invent
     finally:
         conn.close()
 
-    # And the Python contract agrees about the one shape it is allowed to hold.
-    assert _python_persisted_form_accepts(EditorialEnvelope, available) is True
-    assert _python_persisted_form_accepts(EditorialEnvelope, unavailable) is True
-    assert _python_persisted_form_accepts(EditorialEnvelope, historical_v3) is False
-    assert _python_persisted_form_accepts(EditorialEnvelope, historical_v2) is False
 
+def test_the_review_taxonomy_validator_still_admits_both_historical_shapes() -> None:
+    """Reviews accepted before #706 carry a taxonomy with or without `source_authority`; they are never
+    rewritten, so the validator that guards them keeps admitting both and refusing anything else."""
 
-def test_the_review_taxonomy_validator_admits_the_six_key_shape_this_cut_writes() -> None:
-    """`NewsTaxonomyV1` lost `source_authority`, so `EventRubricSubmission` cannot state one any more.
-
-    Both key sets are admitted for the same reason `0378` admits a reviewer's asset with or without its
-    market: the reviews accepted before the cut carry the authority and are never rewritten.
-    """
-
-    six = news_taxonomy(event_family="market_access", change_state="effective").model_dump(mode="json")
+    six = legacy_taxonomy(event_family="market_access", change_state="effective")
     conn = connect_postgres_test(read_only=False)
     try:
 
@@ -605,7 +506,3 @@ def test_the_review_taxonomy_validator_admits_the_six_key_shape_this_cut_writes(
         assert valid({key: value for key, value in six.items() if key != "event_family"}) is False
     finally:
         conn.close()
-    # A v7 submission states the four model axes only (`ModelTaxonomyV1`); the six-key shape above is what
-    # `NewsTaxonomyV1` persists on the judgment side and what v6 review rows still hold.
-    four = {key: value for key, value in six.items() if key not in {"taxonomy_version", "codebook_sha256"}}
-    assert _python_persisted_form_accepts(ModelTaxonomyV1, four) is True

@@ -597,6 +597,10 @@ async def _graceful_cleanup(
             raise RuntimeError("finite_operation_drain_timeout")
         if components.news_pipeline is not None:
             await _within(components.news_pipeline.close(), started_at)
+        if components.news_updates is not None:
+            # After every semantic turn has drained: the optional News Jev connection is borrowed only
+            # by those turns.
+            await _within(components.news_updates.aclose(), started_at)
         finite.close()
     except TimeoutError as exc:
         raise RuntimeError("graceful_deadline_exceeded") from exc

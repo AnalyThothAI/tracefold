@@ -360,23 +360,14 @@ class CliTests(unittest.TestCase):
                 "models",
                 "triage",
                 "watchlist",
-                "policy",
                 "retention",
                 "push",
                 "chain_tape",
             },
         )
         self.assertEqual(set(news["broker"]), {"url_configured", "name_prefix"})
-        self.assertEqual(
-            news["policy"],
-            {
-                "listing_exempt_from_duplicate": True,
-                "restatement_drop": True,
-                "similarity_max": 0.25,
-                "stale_source_max_age_s": 43_200,
-            },
-        )
-        self.assertIs(news["policy"]["restatement_drop"], True)
+        # #706: `news.policy` was the retired decision table's knobs and is gone with it.
+        self.assertNotIn("policy", news)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
         # Public sources, roster scope and the three current net-buy parameters.
         self.assertEqual(
@@ -400,12 +391,14 @@ class CliTests(unittest.TestCase):
             },
         )
         self.assertFalse(news["broker"]["url_configured"])
-        self.assertTrue(news["models"]["triage_configured"])
-        self.assertEqual(news["models"]["triage_model"], "deepseek-chat")
-        self.assertEqual(news["models"]["reader_card_model"], "deepseek-chat")
-        self.assertIs(news["models"]["reader_card_dedicated"], False)
-        self.assertIsNone(news["models"]["reader_card_fallback_model"])
-        self.assertIs(news["models"]["reader_card_fallback_dedicated"], False)
+        self.assertTrue(news["models"]["configured"])
+        self.assertEqual(news["models"]["extraction_model"], "deepseek-chat")
+        self.assertEqual(news["models"]["card_model"], "deepseek-chat")
+        self.assertIs(news["models"]["card_dedicated"], False)
+        self.assertIsNone(news["models"]["card_fallback_model"])
+        self.assertIs(news["models"]["card_fallback_dedicated"], False)
+        self.assertIs(news["models"]["news_judgment_configured"], False)
+        self.assertIsNone(news["models"]["news_judgment_model"])
         self.assertIsInstance(news["watchlist"], list)
         self.assertNotIn("hourly_cap", news["push"])
         self.assertEqual(

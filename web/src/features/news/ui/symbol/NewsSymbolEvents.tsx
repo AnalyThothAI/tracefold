@@ -7,7 +7,7 @@ import { SourceLine } from "@shared/ui/SourceLine";
 import { Link } from "react-router-dom";
 
 import type { NewsFeedEvent } from "../../api/newsQueries";
-import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
+import { clockTime, displayTime, eventHeadline, formatCount } from "../../model/newsLabels";
 import {
   matchesLane,
   SYMBOL_LANES,
@@ -121,8 +121,8 @@ export function NewsSymbolEvents({
 }
 
 function EventRow({ event }: { event: NewsFeedEvent }) {
-  const triage = event.triage;
-  const headline = triage?.headline_zh?.trim() || event.leader_title;
+  const legacy = event.legacy_verdict;
+  const headline = eventHeadline(event);
   return (
     <article className="news-symbol-row">
       <time
@@ -135,7 +135,7 @@ function EventRow({ event }: { event: NewsFeedEvent }) {
       <NewsKindBadge kind={event.event_kind} />
       <span className="news-symbol-headline">
         <Link to={newsEventPath(event.event_id)}>{headline}</Link>
-        {triage ? <NewsDirectionChip triage={triage} withStrength={false} /> : null}
+        {legacy ? <NewsDirectionChip verdict={legacy} withStrength={false} /> : null}
       </span>
       <span className="news-symbol-outcome">
         <NewsOutcomeBadge outcome={event.outcome} variant="text" />
