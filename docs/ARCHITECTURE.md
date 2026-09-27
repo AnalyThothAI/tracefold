@@ -11,7 +11,7 @@ Tracefold 是一个代码仓库、两个业务域、四种进程角色。**News 
 ```mermaid
 flowchart TB
     Browser["浏览器"] --> Serve
-    Providers["新闻源 / 地址名单 / 链上 RPC"] --> Workers
+    Providers["新闻源 / 地址名单<br/>链上 RPC"] --> Workers
     subgraph Application["共用应用镜像"]
         Serve["Serve<br/>HTTP 查询与静态工作台"]
         Workers["Workers<br/>新闻、市场与钱包任务"]
@@ -21,7 +21,7 @@ flowchart TB
     Serve --> DB[("PostgreSQL<br/>业务事实与可恢复工作")]
     Workers <--> DB
     Analysis <--> DB
-    Workers --> Model["模型 / 公共行情 / 通知适配器"]
+    Workers --> Model["模型 / 公共行情<br/>通知适配器"]
     Analysis --> Model
     Runtime["独立 Nautilus 镜像<br/>账户执行进程"] <--> DB
     Runtime <--> Venue["配置指定的 Binance 连接"]
@@ -42,7 +42,7 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    App["app：装配、接口、跨域映射"] --> News["news：信息产品"]
+    App["app<br/>装配、接口与跨域映射"] --> News["news：信息产品"]
     App --> Trading["trading：研究与执行契约"]
     App --> Integrations["integrations：外部系统适配"]
     App --> Platform["platform：物理基础设施"]
