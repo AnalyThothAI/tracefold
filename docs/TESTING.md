@@ -18,11 +18,11 @@
 | `deploy-e2e` | `ci-deploy-e2e` | PostgreSQL、Node、Docker / Testcontainers | `junit-deploy-e2e.xml` |
 | `frontend` | `ci-frontend` | PostgreSQL、RabbitMQ、Node、Chromium | Python / harness JUnit、Vitest 与 Playwright JSON |
 
-`postgres-behavior` 包含迁移行走与隔离数据库 schema 文档校验；`frontend` 包含外部 codegen、harness 完整性、Vitest、视口交互和 full-stack browser smoke。具体 test selection 和报告名由 [Makefile](../Makefile)拥有，不在手册保留会漂移的测试数量表。
+`postgres-behavior` 包含迁移行走与隔离数据库 schema 文档校验；`frontend` 包含外部 codegen、harness 完整性、Vitest、视口交互和 full-stack browser smoke。具体 test selection 和报告名由 [make/checks.mk](../make/checks.mk)拥有，根 [Makefile](../Makefile)提供统一入口，不在手册保留会漂移的测试数量表。
 
 每个 job 检出并验证 `TESTED_SHA`，PR 使用其 HEAD，按锁文件安装需要的依赖并隔离资源。必需结果写入 `artifacts/test-results/`，由 [require_test_reports.py](../scripts/require_test_reports.py)拒绝缺失、空或不通过的结果。
 
-`ci-gate` 需要所有必需 job success。仓库分支规则是远程设置，执行已授权合并时要核实其实际状态；不在文档复制某个会过期的规则名或绕过名单。部署前 [require_main_ci.py](../scripts/require_main_ci.py)另外验证精确 main push SHA，PR head 的绿灯不自动证明合并后的新 SHA。
+`ci-gate` 需要所有必需 job success。仓库分支规则是远程设置，执行已授权合并时要核实其实际状态；不在文档复制某个会过期的规则名或绕过名单。`make verify-main-ci` 显式调用 [require_main_ci.py](../scripts/require_main_ci.py)验证精确 main push SHA；它属于发布来源核验，不作为诊断、停止或同 schema 镜像恢复的联网依赖。PR head 的绿灯不自动证明合并后的新 SHA。
 
 当前没有必需的覆盖率百分比 gate；`make coverage` 按需测量，必需 lane 不额外承担 tracer 开销。历史运行时间与旧拆分保存在对应 Issue / run，不是当前容量承诺。
 

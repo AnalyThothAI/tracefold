@@ -158,7 +158,7 @@ def _ensure_bootstrap_postgres_password_file(app_home: Path) -> Path:
 
 
 def _ensure_password_file(path: Path) -> Path:
-    if path.exists() and not path.is_file():
+    if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ValueError(f"postgres_password_path_not_file:{path.name}")
     if not path.exists():
         path.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")

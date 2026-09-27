@@ -82,13 +82,15 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
         "./docker/postgres-init-single-login.sh:/docker-entrypoint-initdb.d/10-tracefold-single-login.sh:ro",
     ]
     assert services["postgres"]["entrypoint"] == ["/bin/sh", "/usr/local/bin/tracefold-postgres-entrypoint.sh"]
-    credential = "${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro"
+    credential = (
+        "${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:"
+        "/root/.tracefold/postgres_database_password:ro"
+    )
     shared_app_image = "${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}"
     shared_app_build = {
         "context": ".",
         "target": "app",
         "args": {"TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}"},
-        "secrets": ["github_token"],
     }
     for service_name in ("migrate", "serve", "workers", "analysis", "nautilus"):
         assert credential in services[service_name]["volumes"]
@@ -104,7 +106,6 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
         "context": ".",
         "target": "runtime",
         "args": {"TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}"},
-        "secrets": ["github_token"],
     }
     # PostgreSQL and nothing else. A broker outage or a migration container that has not been rerun
     # must never be what keeps the exposure owner from coming back (#537 D4); the schema head is
@@ -133,8 +134,11 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     # Liveness, like Serve. The runtime's `/readyz` answers 200 with its payload now (#598 D5-b), so
     # it cannot be a health signal, and a blocked-but-alive exposure owner must not be restarted.
     assert "http://127.0.0.1:8767/healthz" in services["nautilus"]["healthcheck"]["test"][3]
-    assert set(compose["secrets"]) == {"postgres_password", DATABASE_SECRET, "github_token"}
-    assert compose["secrets"][DATABASE_SECRET]["file"] == "${HOME}/.tracefold/postgres_database_password"
+    assert set(compose["secrets"]) == {"postgres_password", DATABASE_SECRET}
+    assert (
+        compose["secrets"][DATABASE_SECRET]["file"]
+        == "${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password"
+    )
 
 
 def _run_init_script(tmp_path: Path, password: str) -> subprocess.CompletedProcess[str]:
@@ -201,7 +205,10 @@ def test_compose_preserves_non_postgres_secret_isolation() -> None:
     worker_volumes = services["workers"].get("volumes", [])
     nautilus_volumes = services["nautilus"].get("volumes", [])
 
-    assert "${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro" in worker_volumes
+    assert (
+        "${TRACEFOLD_HOME:-${HOME}/.tracefold}/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro"
+        in worker_volumes
+    )
     # #528 deleted the Telegram control ingress, so nothing reads a webhook secret any more.
     assert all("telegram_webhook_secret" not in volume for volume in worker_volumes)
     assert all("binance_usdm_api_" not in volume for volume in worker_volumes)

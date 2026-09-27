@@ -17,7 +17,7 @@ git worktree list
 项目的 Python 解释器由 `.python-version` 固定，依赖由锁文件管理：
 
 ```bash
-uv sync --frozen
+uv sync --locked
 ```
 
 只有前端相关工作才需要安装前端依赖；只有真实依赖测试才需要准备对应隔离资源。不要为了运行一个文档检查先重启整套部署。
@@ -123,3 +123,5 @@ python3 scripts/check_mandatory_docs_links.py
 PR 可以在远程 CI 等待时提交，但不能把 pending 说成通过。授权合并前核实当前 HEAD 的必需检查及仓库规则；PR HEAD 的测试不证明后续 squash commit 的部署身份。部署和生产验收是另一个明确边界。
 
 提交 PR 不意味着允许合并、部署、数据库变更、接受模型复核或真实账户操作。保留其他任务的工作树与用户未提交修改；只有明确授权后才清理相应任务资源。
+
+部署和开发入口分离：`make sync` 安装锁定开发依赖，`make dev-serve` / `make dev-workers` / `make dev-analysis` 在前台运行隔离实例；普通 Compose 部署不依赖这些宿主机进程。配置与服务归属见[安装](SETUP.md)及[scripts 工具说明](../scripts/README.md)。

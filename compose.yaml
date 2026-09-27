@@ -7,8 +7,6 @@ x-tracefold-app: &tracefold-app
     target: app
     args:
       TRACEFOLD_BUILD_REVISION: ${TRACEFOLD_BUILD_REVISION:-}
-    secrets:
-      - github_token
   # The image cannot hash itself at build time, so the digest arrives at start time.
   # `make up` computes it from the image it just built; an empty value is read back
   # as "unversioned" rather than as an identity the receipt cannot prove.
@@ -123,8 +121,8 @@ services:
       rabbitmq:
         condition: service_healthy
     volumes:
-      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
     command: ["tracefold", "news", "bus-policy", "apply"]
 
   migrate:
@@ -138,9 +136,9 @@ services:
       rabbitmq-policy:
         condition: service_completed_successfully
     volumes:
-      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
-      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:/root/.tracefold/postgres_database_password:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
     command: ["tracefold", "db", "migrate"]
 
   serve:
@@ -155,11 +153,11 @@ services:
     ports:
       - "${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"
     volumes:
-      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
-      - ${HOME}/.tracefold/cache:/root/.tracefold/cache:ro
-      - ${HOME}/.tracefold/archive:/root/.tracefold/archive:ro
-      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:/root/.tracefold/postgres_database_password:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/cache:/root/.tracefold/cache:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/archive:/root/.tracefold/archive:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
     command: ["tracefold", "serve"]
     stop_grace_period: 40s
     deploy:
@@ -198,11 +196,11 @@ services:
     ports:
       - "${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"
     volumes:
-      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
-      - ${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro
-      - ${HOME}/.tracefold/cache:/root/.tracefold/cache
-      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:/root/.tracefold/postgres_database_password:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/cache:/root/.tracefold/cache
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
     command: ["tracefold", "workers"]
     stop_grace_period: 40s
     deploy:
@@ -246,11 +244,11 @@ services:
       migrate:
         condition: service_completed_successfully
     volumes:
-      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
-      - ${HOME}/.tracefold/cache:/root/.tracefold/cache
-      - ${HOME}/.tracefold/archive:/root/.tracefold/archive
-      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:/root/.tracefold/postgres_database_password:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/cache:/root/.tracefold/cache
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/archive:/root/.tracefold/archive
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
     command: ["tracefold", "analysis"]
     stop_grace_period: 45s
     deploy:
@@ -260,13 +258,13 @@ services:
           memory: 2G
     healthcheck:
       # The runner writes a heartbeat every five seconds. The status projection
-      # checks its freshness and that a model endpoint is configured, so a live
-      # container without a working Analysis loop cannot pass the deployment gate.
+      # checks freshness and model availability when enabled. An intentionally
+      # disabled Analysis process is healthy while waiting for graceful shutdown.
       test:
         - CMD-SHELL
         - >-
           tracefold trading status |
-          python -c 'import json,sys; status=json.load(sys.stdin)["data"]["decision"]["state"]; sys.exit(0 if status == "running" else 1)'
+          python -c 'import json,sys; status=json.load(sys.stdin)["data"]["decision"]["state"]; sys.exit(0 if status in ("running", "disabled") else 1)'
       interval: 10s
       timeout: 10s
       retries: 3
@@ -284,14 +282,12 @@ services:
       target: runtime
       args:
         TRACEFOLD_BUILD_REVISION: ${TRACEFOLD_BUILD_REVISION:-}
-      secrets:
-        - github_token
     # The image cannot hash itself at build time, so the digest arrives at start time;
     # `make runtime-up` computes it from the image it is about to run.
     environment:
       TRACEFOLD_IMAGE_DIGEST: ${TRACEFOLD_IMAGE_DIGEST:-}
-    # Canonical deployment enables this profile only when execution.enabled is true. False
-    # remains the default and constructs no TradingNode or credential-capable process.
+    # The lifecycle runner includes the profile in its model but only explicit
+    # runtime-up starts this service, after validating execution.enabled.
     profiles: ["execution"]
     init: true
     restart: unless-stopped
@@ -305,11 +301,11 @@ services:
     ports:
       - "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
     volumes:
-      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
-      - ${HOME}/.tracefold/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro
-      - ${HOME}/.tracefold/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro
-      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:/root/.tracefold/postgres_database_password:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
     command: ["tracefold", "nautilus", "run"]
     # Worst-case shutdown is three sequential 20 s Nautilus stop budgets plus the final projection
     # write; 40 s made SIGKILL the normal exit, which skips `singleton.release()` and leaves a ghost
@@ -326,7 +322,7 @@ services:
       # longer be a health signal, and it should not be one: a runtime that is alive but blocked --
       # startup reconciliation unproven, unexpected exposure, entries paused -- is exactly the
       # process an operator must be able to reach, and `restart: unless-stopped` on an unhealthy
-      # container would restart the owner of an open position instead. What is wrong is in the
+      # container is not an instruction to restart the owner of an open position. What is wrong is in the
       # payload `make runtime-status` prints.
       test:
         [
@@ -347,8 +343,6 @@ volumes:
 
 secrets:
   postgres_password:
-    file: ${HOME}/.tracefold/postgres_password
+    file: ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_password
   postgres_database_password:
-    file: ${HOME}/.tracefold/postgres_database_password
-  github_token:
-    environment: GITHUB_TOKEN
+    file: ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password

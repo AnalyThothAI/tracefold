@@ -41,6 +41,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         from .commands import config
 
         return _finish(config.handle_config(args), stdout)
+    if command == "runtime-manifest":
+        from .commands import runtime_manifest
+
+        return _finish(runtime_manifest.handle_runtime_manifest(args), stdout)
     if command == "db":
         from .commands import db
 

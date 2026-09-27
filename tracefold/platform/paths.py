@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 CONFIG_FILE_NAME = "config.yaml"
@@ -8,6 +9,9 @@ CONFIG_FILE_NAME = "config.yaml"
 def app_home(path_override: str | Path | None = None) -> Path:
     if path_override:
         return Path(path_override).expanduser()
+    configured = os.environ.get("TRACEFOLD_HOME")
+    if configured:
+        return Path(configured).expanduser().resolve()
     return Path.home() / ".tracefold"
 
 

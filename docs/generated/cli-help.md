@@ -6,16 +6,18 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,workers,analysis,nautilus,init,config,db,news,trading,ops} ...
+                 {serve,workers,analysis,nautilus,init,config,runtime-manifest,db,news,trading,ops} ...
 
 positional arguments:
-  {serve,workers,analysis,nautilus,init,config,db,news,trading,ops}
+  {serve,workers,analysis,nautilus,init,config,runtime-manifest,db,news,trading,ops}
     serve               run the HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
     analysis            run the Trading analysis runtime
     nautilus            run the single OI Nautilus Runtime
-    init                create ~/.tracefold/config.yaml
+    init                initialize the configured operator home (default
+                        ~/.tracefold)
     config              print effective runtime configuration
+    runtime-manifest    print this image and configured News program identity
     db                  database lifecycle commands
     news                News V3 broker, ReviewDesk, and judge calibration
                         commands
@@ -103,18 +105,24 @@ options:
 
 ```
 
+## `runtime-manifest`
+
+```
+usage: tracefold runtime-manifest [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
 ## `db`
 
 ```
-usage: tracefold db [-h]
-                    {migrate,news-genesis-manifest,health,audit,query-audit} ...
+usage: tracefold db [-h] {migrate,health,audit,query-audit} ...
 
 positional arguments:
-  {migrate,news-genesis-manifest,health,audit,query-audit}
+  {migrate,health,audit,query-audit}
     migrate             apply PostgreSQL migrations
-    news-genesis-manifest
-                        compute the News genesis target runtime manifest from
-                        this image and config
     health              check PostgreSQL liveness and migration version
     audit               run the fast PostgreSQL schema/role/catalog audit
     query-audit         explain PostgreSQL hot read paths
@@ -128,16 +136,6 @@ options:
 
 ```
 usage: tracefold db migrate [-h]
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
-## `db news-genesis-manifest`
-
-```
-usage: tracefold db news-genesis-manifest [-h]
 
 options:
   -h, --help  show this help message and exit

@@ -39,7 +39,7 @@ RUN set -eu; \
     printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries; \
     for attempt in 1 2 3 4 5; do \
         apt-get update \
-        && apt-get install -y --no-install-recommends build-essential git \
+        && apt-get install -y --no-install-recommends build-essential \
         && rm -rf /var/lib/apt/lists/* \
         && exit 0; \
         rm -rf /var/lib/apt/lists/*; \
@@ -49,28 +49,15 @@ RUN set -eu; \
 
 RUN python -m pip install --no-cache-dir "uv==${UV_VERSION}"
 
-COPY pyproject.toml uv.lock README.md alembic.ini ./
-COPY tracefold ./tracefold
+# Dependency installation is cached independently of application source changes.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_HTTP_TIMEOUT=300 uv sync --locked --no-dev --no-install-project
 
-RUN --mount=type=secret,id=github_token \
-    --mount=type=cache,target=/root/.cache/uv \
-    set -eu; \
-    cleanup() { \
-        if [ -n "${token:-}" ]; then \
-            git config --global --unset-all url."https://x-access-token:${token}@github.com/".insteadOf || true; \
-        fi; \
-    }; \
-    trap cleanup EXIT; \
-    if [ -s /run/secrets/github_token ]; then \
-        token="$(cat /run/secrets/github_token)"; \
-        git config --global url."https://x-access-token:${token}@github.com/".insteadOf "https://github.com/"; \
-    fi; \
-    for attempt in 1 2 3 4 5; do \
-        UV_HTTP_TIMEOUT=300 UV_CONCURRENT_DOWNLOADS=1 uv sync --locked --no-dev \
-        && exit 0; \
-        sleep "$((attempt * 5))"; \
-    done; \
-    exit 1
+COPY README.md alembic.ini ./
+COPY tracefold ./tracefold
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_HTTP_TIMEOUT=300 uv sync --locked --no-dev
 
 RUN /app/.venv/bin/python -c \
     'from tracefold.app.news_updates import news_program_identity; news_program_identity(extraction_model_identity="build", judgment_model_identity="build", card_model_identity="build")'
