@@ -136,7 +136,11 @@ a cited proposition can reject a still-unsubmitted entry as `source_corrected`.
 Amendment joins, research supersession and final-entry checks follow explicit
 claim refs across Events with the existing knowledge-time cutoff. OI keeps its
 own source-key scope. News and Trading remain connected only by the public
-update contract; Trading does not query News tables.
+update contract; Trading does not query News tables. News claim-target and OI
+source-key lookups use separate query branches. News invalidation checks count
+only the sparse indexed target matches, avoiding the early-hit estimate of
+EXISTS that can prefer a history scan when no replacement exists. This is query
+planning over the same facts, not another validity rule.
 
 Serve exposes adopted update revisions, source relations, processing state,
 claim-level plan reasons and exact delivery outcomes. Legacy verdicts remain

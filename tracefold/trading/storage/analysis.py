@@ -51,17 +51,23 @@ def _superseded_sql(*, created_until_param: bool) -> str:
     """
 
     created = " AND newer.created_at_ms<=%s" if created_until_param else ""
-    return f"""EXISTS (
+    # Split News and OI so each branch exposes its own index predicate. Count the sparse
+    # claim-target matches: EXISTS assumes an early hit and can prefer a whole-ledger scan
+    # for a missing target even with the GIN index available.
+    return f"""CASE WHEN original.kind='catalyst' THEN (
+          SELECT count(*)>0 FROM trading_triggers newer
+           WHERE newer.kind='catalyst'
+             AND newer.trigger_id<>original.trigger_id{created}
+             AND newer.payload->'superseded_claim_refs' ?| {_ORIGINAL_CLAIMS}
+        ) ELSE EXISTS (
           SELECT 1 FROM trading_triggers newer
            WHERE newer.kind=original.kind
+             AND newer.source_fact_key=original.source_fact_key
              AND newer.trigger_id<>original.trigger_id{created}
-             AND CASE WHEN original.kind='catalyst'
-                 THEN newer.payload->'superseded_claim_refs' ?| {_ORIGINAL_CLAIMS}
-                 ELSE newer.source_fact_key=original.source_fact_key
-                  AND newer.source_revision<>original.source_revision
-                  AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,newer.first_visible_at_ms)
-                    > COALESCE((original.payload->>'source_recorded_at_ms')::bigint,original.first_visible_at_ms)
-                 END)"""  # noqa: S608 -- module-owned predicate; every value stays bound
+             AND newer.source_revision<>original.source_revision
+             AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,newer.first_visible_at_ms)
+               > COALESCE((original.payload->>'source_recorded_at_ms')::bigint,original.first_visible_at_ms)
+        ) END"""  # noqa: S608 -- module-owned predicates; every value stays bound
 
 
 def _refs(value: object) -> list[str]:
@@ -151,7 +157,7 @@ class AnalysisStorage:
         row = self.conn.execute(
             f"SELECT {_superseded_sql(created_until_param=True)} AS superseded "  # noqa: S608 -- module-owned predicate
             "FROM trading_triggers original WHERE original.trigger_id=%s",
-            (int(known_at_ms), trigger_id),
+            (int(known_at_ms), int(known_at_ms), trigger_id),
         ).fetchone()
         return row is not None and bool(row["superseded"])
 
@@ -1363,8 +1369,8 @@ class AnalysisStorage:
                    case_row.mapping_semantics_digest,case_row.root_expires_at_ms,
                    decision.publish_status,decision.decision_id,decision.decision,
                    {_superseded_sql(created_until_param=False)} AS superseded,
-                   (original.kind='catalyst' AND EXISTS (
-                     SELECT 1 FROM trading_source_amendments amendment
+                   (original.kind='catalyst' AND (
+                     SELECT count(*)>0 FROM trading_source_amendments amendment
                       WHERE amendment.retired_claim_refs ?| {_ORIGINAL_CLAIMS}
                    )) AS corrected
               FROM trading_trade_plans plan
