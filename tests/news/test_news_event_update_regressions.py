@@ -38,7 +38,7 @@ from tracefold.news.updates.judgment import (
     Task,
 )
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update
+from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update, equivalent_is_possible
 
 STAMP = 1_790_405_000_000
 
@@ -213,6 +213,171 @@ def test_real_reversal_is_not_suppressed_by_same_shape_in_older_history() -> Non
     rows = public_updates(updated, semantic_completed_at_ms=STAMP + 200)
     assert [row.kind for row in rows] == ["catalyst_delta"]
     assert rows[0].claim_refs == (updated.claims[-1].ref,)
+
+
+@pytest.mark.parametrize(("external_relation", "change_kind"), [("conflicts", "conflict"), ("corrects", "correction")])
+def test_equivalent_local_claim_keeps_external_relation_without_a_duplicate(
+    external_relation: Relation, change_kind: ChangeKind
+) -> None:
+    # BUG-D shape: the second source repeats the adopted proposition, while a
+    # newly considered claim in another Event disagrees with it.
+    original = evidence("A wire says a second US underwater drone was captured.", 1)
+    head = adopt(original, 1, "25")
+    later = evidence("Another wire reports the same capture and disputes a separate report.", 2)
+    external = head.claims[0].model_copy(update={"ref": "external-claim"})
+    source = frozen((later,), 2, head)
+    source = source.model_copy(
+        update={
+            "prior": (
+                *source.prior,
+                PriorClaim(event_id="external-event", content_revision="external-rev", claim=external),
+            )
+        }
+    )
+    result = assemble_update(
+        source,
+        Extraction(
+            claims=(draft(later),),
+            relations=(
+                relation(head.claims[0], "equivalent"),
+                relation(external, external_relation, change_kind),
+            ),
+            supports=(SupportDraft(slot="capacity", evidence_ref=later.ref, relation="reports"),),
+        ),
+        head,
+        adopted_at_ms=STAMP + 200,
+    )
+    assert result is not None
+    assert [claim.ref for claim in result.claims] == [head.claims[0].ref]
+    assert result.claims[0].first_available_at_ms == head.claims[0].first_available_at_ms
+    assert any(
+        change.current_ref == head.claims[0].ref and change.previous_ref == external.ref and change.kind == change_kind
+        for change in result.changes
+    )
+    assert any(
+        link.claim_ref == head.claims[0].ref and link.evidence_ref == later.ref for link in result.evidence_relations
+    )
+
+
+def test_equivalent_local_claim_with_additional_prior_relation_is_only_a_source_update() -> None:
+    first, head = progressed()
+    later = evidence("A later wire repeats the 50 MW announcement.", 3)
+    result = adopt(
+        later,
+        3,
+        "50",
+        head=head,
+        relations=(
+            relation(head.claims[-1], "equivalent"),
+            relation(first.claims[0], "adds_information", "new_fact"),
+        ),
+    )
+    assert len(result.claims) == len(head.claims)
+    assert any(change.relation == "adds_information" for change in result.changes)
+    assert [row.kind for row in public_updates(result, semantic_completed_at_ms=STAMP + 300)] == ["source_update"]
+
+
+def test_same_complete_headline_survives_an_unrelated_relation_misread() -> None:
+    # The fifth production BUG-D revision repeats a syndicated headline exactly.
+    # The second extraction omits an earlier quantity and the relation says
+    # unrelated, though neither source reports a different occurrence.
+    headline = "Seven people killed in strike on market in Yemen, Houthi-run health ministry says"
+    first_source = evidence(headline, 1, publisher="history")
+    later_source = evidence(headline, 2, publisher="wire")
+    first_draft = DraftClaim(
+        slot="casualties",
+        statement="Houthi-run health ministry says seven people were killed in a strike on a market in Yemen.",
+        fields=ClaimFields(
+            subject="Yemen's Houthi-Run Health Ministry",
+            action="reported casualty figures from a strike on a market in Taiz",
+            object="strike on market in Taiz",
+            mode="observation",
+            quantities=(
+                Quantity(name="people killed", value="7", unit="people"),
+                Quantity(name="people wounded", value="40", unit="people"),
+            ),
+        ),
+        citations=(Citation(evidence_ref=first_source.ref, quote=headline),),
+    )
+    head = assemble_update(frozen((first_source,), 1), Extraction(claims=(first_draft,)), None, adopted_at_ms=STAMP + 1)
+    assert head is not None
+    second_draft = first_draft.model_copy(
+        update={
+            "fields": first_draft.fields.model_copy(
+                update={"quantities": (Quantity(name="people killed", value="7", unit="people"),)}
+            ),
+            "citations": (Citation(evidence_ref=later_source.ref, quote=headline),),
+        }
+    )
+    result = assemble_update(
+        frozen((later_source,), 2, head),
+        Extraction(
+            claims=(second_draft,),
+            relations=(relation(head.claims[0], "unrelated", slot="casualties"),),
+            supports=(SupportDraft(slot="casualties", evidence_ref=later_source.ref, relation="reports"),),
+        ),
+        head,
+        adopted_at_ms=STAMP + 2,
+    )
+    assert result is not None
+    assert [claim.ref for claim in result.claims] == [head.claims[0].ref]
+    assert any(
+        link.claim_ref == head.claims[0].ref and link.evidence_ref == later_source.ref
+        for link in result.evidence_relations
+    )
+    assert [row.kind for row in public_updates(result, semantic_completed_at_ms=STAMP + 2)] == ["source_update"]
+
+
+def test_matching_statement_alone_does_not_override_an_unrelated_relation() -> None:
+    first_source = evidence("Issuer announced 25 MW for the first site.", 1)
+    head = adopt(first_source, 1, "25")
+    later_source = evidence("Issuer announced 25 MW for a different site.", 2)
+    repeated_statement = draft(later_source).model_copy(
+        update={
+            "statement": head.claims[0].statement,
+            "fields": draft(later_source).fields.model_copy(update={"object": "a different facility"}),
+        }
+    )
+    result = assemble_update(
+        frozen((later_source,), 2, head),
+        Extraction(
+            claims=(repeated_statement,),
+            relations=(relation(head.claims[0], "unrelated"),),
+            supports=(SupportDraft(slot="capacity", evidence_ref=later_source.ref, relation="reports"),),
+        ),
+        head,
+        adopted_at_ms=STAMP + 2,
+    )
+    assert result is not None
+    assert len(result.claims) == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("polarity", "negative"),
+        ("phase", "effective"),
+        ("conditions", ("only after approval",)),
+        ("statistical_period", "2026 Q3"),
+    ],
+)
+def test_explicit_proposition_mismatch_cannot_reuse_an_equivalent_hint(field: str, changed: object) -> None:
+    source = evidence("Issuer announces 25 MW subject to approval in 2026 Q2.", 1)
+    original = draft(source).model_copy(
+        update={
+            "fields": draft(source).fields.model_copy(
+                update={
+                    "polarity": "affirmative",
+                    "conditions": ("subject to approval",),
+                    "statistical_period": "2026 Q2",
+                }
+            )
+        }
+    )
+    head = assemble_update(frozen((source,), 1), Extraction(claims=(original,)), None, adopted_at_ms=STAMP + 1)
+    assert head is not None
+    candidate = original.model_copy(update={"fields": original.fields.model_copy(update={field: changed})})
+    assert not equivalent_is_possible(candidate, head.claims[0])
 
 
 def test_invalid_equivalence_for_one_pair_does_not_erase_another_valid_pair() -> None:

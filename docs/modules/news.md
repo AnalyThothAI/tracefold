@@ -129,6 +129,15 @@ is not an instruction to retract a claim or close a question. Explicit grounded
 resolution or retirement of its underlying claim is needed. New documents use
 `news_event_update_v2`; original v1 documents retain their immutable identity.
 
+A Claim ref identifies a proposition or real-world occurrence. New support,
+source, cross-Event conflict or correction relations can change the adopted
+update without creating another ref. Explicit state transitions, including
+A → B → A, retain distinct occurrences. The assembly preserves relation and
+evidence deltas when it reuses a ref. When two feeds carry an identical complete
+cited source text, a same-Event Claim can also be reused despite an `unrelated`
+relation reading, provided its statement matches, no new quantity or occurrence
+transition appears, and the structured identity guards find no mismatch.
+
 The optional extra read chooses only a supplied stored News target, with one durable
 reservation per lineage. It is not arbitrary browsing, a general tool loop, or an
 opportunity to reset its budget after a retry. Its failure cannot undo adoption.
@@ -179,6 +188,13 @@ Final-attempt exhaustion is exposed only after its lease expires, never while it
 worker still owns a valid lease. Current failure/defer writes for notification and
 card work also name the content revision; stale failures cannot postpone a successor.
 These predicates are in [event_updates.py](../../tracefold/news/storage/event_updates.py).
+
+Generated output faults distinguish truncated, empty and schema-invalid responses.
+A configured route with a meaningfully different contract may answer once; fixed
+contract or reference faults do not consume identical semantic retries. Transient
+provider failures retain the bounded retry path. `/api/news/status` counts runnable
+`semantic_pending`, scheduled `semantic_deferred`, active `semantic_in_progress`
+and terminal `semantic_failed_exhausted` separately.
 
 | Independent dimension | What to inspect |
 | --- | --- |
@@ -241,6 +257,12 @@ head and reader revision, including explicit cross-Event correction/replacement
 targets even when the card's own head stayed unchanged. Frozen copy is not silently
 rewritten during send.
 
+CardComposer receives only the selected Claim refs, statements, structured fields,
+exact citation quotes and minimal provenance. It must preserve object, action,
+quantity, attribution and phase in Chinese copy. The frozen-card checks still
+validate refs and shape; a scripted regression does not establish live model
+accuracy.
+
 A proved retryable `not_sent` can reuse the intent under its existing budget.
 `ambiguous` is not blindly resent. Sender outcomes, persisted ledger states and
 queue states are different contracts: a terminal external failure may leave a
@@ -286,3 +308,6 @@ for every retained Event. A count is not the number of notification attempts.
 [Trading amendments](../../tests/integration/test_trading_analysis_public_updates.py)
 exercise different boundaries. Test success does not establish model accuracy,
 production notification quality, provider completeness or trading profitability.
+
+The [Issue 717 one-hour baseline and offline replay](../reports/issue-717-hourly-comparison-2026-09-27.md)
+records the source-backed duplicate, delivery and latency comparison before deployment.

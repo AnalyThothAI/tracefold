@@ -87,17 +87,27 @@ SEMANTIC_WAKE_STATE_SQL: Final = f"""
 # The semantic stage's 24 h health: completed turns, adoptions and visibly failed work. Model health reads
 # these, not legacy verdicts; pending work is bounded like the wake state.
 SEMANTIC_STATUS_SQL: Final = f"""
+    WITH outstanding AS MATERIALIZED (
+      SELECT attempts, last_outcome, next_attempt_at_ms, leased_until_ms
+        FROM news_semantic_work
+       WHERE done_revision IS NULL OR done_revision < wanted_revision
+       ORDER BY next_attempt_at_ms, event_id
+       LIMIT {_WAKE_STATE_LIMIT}
+    )
     SELECT
       (SELECT count(*) FROM news_semantic_observations WHERE completed_at_ms >= %(since)s)
         AS semantic_observations_24h,
       (SELECT count(*) FROM news_event_updates WHERE adopted_at_ms >= %(since)s) AS semantic_adopted_24h,
       (SELECT count(*) FROM news_semantic_work WHERE last_outcome = 'failed' AND updated_at_ms >= %(since)s)
         AS semantic_failed_24h,
-      (SELECT count(*) FROM (
-         SELECT 1 FROM news_semantic_work
-          WHERE done_revision IS NULL OR done_revision < wanted_revision
-          LIMIT {_WAKE_STATE_LIMIT}
-       ) pending) AS semantic_pending
+      (SELECT count(*) FROM outstanding WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}
+         AND next_attempt_at_ms <= %(now)s AND (leased_until_ms IS NULL OR leased_until_ms <= %(now)s))
+        AS semantic_pending,
+      (SELECT count(*) FROM outstanding WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}
+         AND next_attempt_at_ms > %(now)s) AS semantic_deferred,
+      (SELECT count(*) FROM outstanding WHERE leased_until_ms > %(now)s) AS semantic_in_progress,
+      (SELECT count(*) FROM outstanding WHERE attempts >= {SEMANTIC_ATTEMPTS_MAX}
+         AND last_outcome = 'failed') AS semantic_failed_exhausted
 """  # noqa: S608 - code-owned integer constant only
 SEMANTIC_FAILED_CODES_SQL: Final = """
     SELECT COALESCE(last_error_code, 'unknown') AS code, count(*) AS n
@@ -909,7 +919,7 @@ class EventUpdateStorage:
         """The semantic stage's last 24 h, for the status page's model health."""
 
         since = int(now_ms) - 24 * 3_600_000
-        row = self.conn.execute(SEMANTIC_STATUS_SQL, {"since": since}).fetchone()
+        row = self.conn.execute(SEMANTIC_STATUS_SQL, {"since": since, "now": int(now_ms)}).fetchone()
         codes = self.conn.execute(SEMANTIC_FAILED_CODES_SQL, (since,)).fetchall()
         values = {key: int(value or 0) for key, value in dict(row or {}).items()}
         return {
@@ -917,6 +927,9 @@ class EventUpdateStorage:
             "semantic_adopted_24h": values.get("semantic_adopted_24h", 0),
             "semantic_failed_24h": values.get("semantic_failed_24h", 0),
             "semantic_pending": values.get("semantic_pending", 0),
+            "semantic_deferred": values.get("semantic_deferred", 0),
+            "semantic_in_progress": values.get("semantic_in_progress", 0),
+            "semantic_failed_exhausted": values.get("semantic_failed_exhausted", 0),
             "semantic_failed_by_code_24h": {str(r["code"]): int(r["n"]) for r in codes},
         }
 

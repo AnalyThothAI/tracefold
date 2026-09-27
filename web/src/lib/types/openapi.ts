@@ -2492,6 +2492,11 @@ export interface components {
              */
             semantic_adopted_24h: number;
             /**
+             * Semantic Deferred
+             * @default 0
+             */
+            semantic_deferred: number;
+            /**
              * Semantic Failed 24H
              * @default 0
              */
@@ -2500,6 +2505,16 @@ export interface components {
             semantic_failed_by_code_24h?: {
                 [key: string]: number;
             };
+            /**
+             * Semantic Failed Exhausted
+             * @default 0
+             */
+            semantic_failed_exhausted: number;
+            /**
+             * Semantic In Progress
+             * @default 0
+             */
+            semantic_in_progress: number;
             /**
              * Semantic Observations 24H
              * @default 0

@@ -615,6 +615,82 @@ def test_a_correction_is_a_source_update_outbox_row_in_the_app_relay_mapping() -
 # ------------------------------------------------------------------ semantic work bookkeeping
 
 
+def test_semantic_status_separates_runnable_deferred_and_exhausted() -> None:
+    seed_event()
+    now_ms = STAMP + 60_000
+
+    def status() -> dict[str, Any]:
+        conn = connect_postgres_test(read_only=True)
+        try:
+            return repositories_for_connection(conn).news.semantic_status(now_ms=now_ms)
+        finally:
+            conn.close()
+
+    assert (status()["semantic_pending"], status()["semantic_deferred"], status()["semantic_failed_exhausted"]) == (
+        1,
+        0,
+        0,
+    )
+    sql("UPDATE news_semantic_work SET next_attempt_at_ms=%s", (now_ms + 60_000,))
+    assert (status()["semantic_pending"], status()["semantic_deferred"]) == (0, 1)
+    sql("UPDATE news_semantic_work SET attempts=3,last_outcome='failed',last_error_code='output_truncated'")
+    assert (status()["semantic_pending"], status()["semantic_deferred"], status()["semantic_failed_exhausted"]) == (
+        0,
+        0,
+        1,
+    )
+
+
+def test_equivalent_with_external_conflict_keeps_one_claim_through_adoption_plan_and_receipt() -> None:
+    pg, _db, clock = store()
+    head = adopted_head(pg, clock)
+    sender = Sender("sent")
+    composer = Composer()
+    assert asyncio.run(notifications(pg, clock, sender, composer).process(EVENT, "news")) == "sent"
+    assert len(sender.cards) == 1
+
+    repeated = evidence("Another wire repeats the agency's 25% steel tariff.", publisher="other-wire")
+    external = head.claims[0].model_copy(update={"ref": "external-tariff-report"})
+    source = FrozenInput(
+        event_id=EVENT,
+        revision=2,
+        lineage_id="repeat-with-external-conflict",
+        evidence=(repeated,),
+        prior=(
+            PriorClaim(event_id=EVENT, content_revision=head.content_revision, claim=head.claims[0]),
+            PriorClaim(event_id="related-event", content_revision="related-revision", claim=external),
+        ),
+    )
+    extracted = Extraction(
+        claims=(
+            DraftClaim(
+                slot="a",
+                statement=head.claims[0].statement,
+                fields=head.claims[0].fields,
+                citations=(Citation(evidence_ref=repeated.ref, quote=repeated.text),),
+            ),
+        ),
+        relations=(
+            RelationDraft(slot="a", previous_ref=head.claims[0].ref, relation="equivalent"),
+            RelationDraft(slot="a", previous_ref=external.ref, relation="conflicts", change_kind="conflict"),
+        ),
+        supports=(SupportDraft(slot="a", evidence_ref=repeated.ref, relation="reports"),),
+    )
+    adopted, update = asyncio.run(adopt_next(pg, head, source, extracted))
+    assert adopted and [claim.ref for claim in update.claims] == [head.claims[0].ref]
+    assert {row["kind"] for row in trade_rows()} == {"catalyst", "source_update"}
+    assert len(update.evidence_relations) == 2
+    assert any(change.relation == "conflicts" for change in update.changes)
+
+    clock.now_ms += 1_000  # A receipt settled at the prior turn's clock is now visible to history.
+    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    assert snapshot is not None and len(snapshot.reader.receipts) == 1
+    result = asyncio.run(notifications(pg, clock, sender, composer).process(EVENT, "news"))
+    assert result == "no_notification"
+    assert len(sender.cards) == 1 and composer.calls == 1
+    assert sql("SELECT count(*) AS n FROM news_deliveries WHERE state='sent'")[0]["n"] == 1
+
+
 def test_semantic_work_is_leased_bounded_and_reopened_by_a_new_revision() -> None:
     pg, _db, clock = store()
     seed_event()
