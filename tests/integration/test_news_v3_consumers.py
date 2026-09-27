@@ -246,7 +246,7 @@ def test_deduper_wakes_semantic_work_for_every_admitted_event_and_redelivery_is_
         """,
         (sorted(ADMITTED_ADMISSIONS),),
     ).fetchone()["n"]
-    assert suppressed > 0  # suppressed admissions are stored but never wake semantics
+    assert suppressed == 0  # This fixture's ordinary reports now enter semantic work, including PR reports.
 
     # Redelivery of every raw message is a no-op: same items, same events, same evidence, no new wake.
     def state() -> dict[str, Any]:
@@ -484,8 +484,8 @@ def test_a_market_frame_that_matched_no_template_is_stored_raw_and_calls_no_mode
     assert sources["oi"]["raw"] >= 1
 
 
-def test_a_deliverer_retires_legacy_intents_and_without_a_sender_plans_nothing(conn) -> None:
-    """#706: a pending legacy `first` intent is dead-lettered with its reason and never sent.
+def test_a_deliverer_ignores_legacy_intents_and_without_a_sender_plans_nothing(conn) -> None:
+    """A legacy `first` intent inserted after the one-time migration is inert and never sent.
 
     The verdict path that owed those cards is gone; its queue rows are not sent through it after the
     cutover. With no sender configured nothing is planned either: notification work stays visible.
@@ -523,8 +523,6 @@ def test_a_deliverer_retires_legacy_intents_and_without_a_sender_plans_nothing(c
     queued = conn.execute(
         "SELECT kind, state, error_code FROM news_delivery_queue WHERE event_id = %s", (event_id,)
     ).fetchall()
-    assert [dict(item) for item in queued] == [
-        {"kind": "first", "state": "dead", "error_code": "legacy_intent_retired"}
-    ]
+    assert [dict(item) for item in queued] == [{"kind": "first", "state": "pending", "error_code": None}]
     deliveries = conn.execute("SELECT count(*) AS n FROM news_deliveries WHERE event_id = %s", (event_id,))
     assert deliveries.fetchone()["n"] == 0

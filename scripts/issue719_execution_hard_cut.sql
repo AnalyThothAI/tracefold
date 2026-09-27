@@ -27,7 +27,8 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'issue719_scope_or_stopped_runtime_unverified';
   END IF;
-  IF (SELECT version_num FROM public.alembic_version) <> '20260927_0406' THEN
+  -- 0407 only adds News notification decisions; the Trading cut contract is unchanged.
+  IF (SELECT version_num FROM public.alembic_version) NOT IN ('20260927_0406', '20260927_0407') THEN
     RAISE EXCEPTION 'issue719_schema_head_mismatch';
   END IF;
   -- A late retry of an old command keeps its original expiry. Once every old
