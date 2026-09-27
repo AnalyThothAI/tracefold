@@ -324,6 +324,34 @@ def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -
         assert served == {event_id for event_id, row in rows.items() if row["outcome"]["group"] == group}, group
 
 
+def test_feed_counts_keep_sent_precedence_with_multiple_intents(conn) -> None:
+    seeded = _seed(conn)
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        old = seeded["head"]
+        plan = notify_plan(old, key=True)
+        # A later failed attempt must neither hide the earlier sent card nor count the Event twice.
+        settle_intent(
+            conn,
+            old,
+            plan,
+            state="terminal",
+            headline_zh="Earlier revision",
+            body="Earlier revision",
+            error_code="channel_rejected",
+            now_ms=NOW - 1_000,
+        )
+
+    page = _feed(repos.news)
+    assert len(page["events"]) == 4
+    assert page["counts"] == {"total": 4, "pushed": 1, "held": 2, "pending": 1}
+    for group in ("pushed", "held", "pending"):
+        rows = _feed(repos.news, outcome=group)["events"]
+        assert len(rows) == page["counts"][group]
+        assert all(row["outcome"]["group"] == group for row in rows)
+    assert _feed(repos.news, outcome="pushed")["events"][0]["event_id"] == "agent-sent"
+
+
 def test_an_owed_intent_and_a_new_revision_move_the_row_back_to_pending(conn) -> None:
     seeded = _seed(conn)
     repos = repositories_for_connection(conn)
