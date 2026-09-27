@@ -54,7 +54,12 @@ make up
 ---
 config:
   fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
-  flowchart TD
+  flowchart:
+    curve: linear
+    nodeSpacing: 28
+    rankSpacing: 42
+---
+flowchart TD
     accTitle: 镜像内初始化与应用启动
     accDescr: 项目锁保护构建与初始化，先验证配置和运行时 schema 兼容，再启动基础设施，等待迁移成功后启动应用。独立 Nautilus 不由此自动重启。
     Lock["项目级 OS 锁"] --> Build["构建镜像并读取不可变 ID"]
