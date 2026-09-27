@@ -1,1245 +1,317 @@
+"""Behavioral lifecycle tests: exercise the sequencer, not shell spelling in Make."""
+
 from __future__ import annotations
 
-import os
-import shutil
-import signal
+import json
 import subprocess
-import time
+import sys
 from pathlib import Path
 
 import pytest
 
+from scripts.deploy import APP_SERVICES, MUTATIONS, Deployment, DeploymentError, deployment_lock
+
 pytestmark = pytest.mark.deploy
-
 ROOT = Path(__file__).resolve().parents[2]
-TEST_IMAGE_ID = "sha256:" + "a" * 64
+APP_IMAGE = "sha256:" + "a" * 64
+RUNTIME_IMAGE = "sha256:" + "b" * 64
 
 
-def _deploy_image_sandbox(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    shutil.copy(ROOT / "Makefile", repo / "Makefile")
-    shutil.copy(ROOT / "compose.yaml", repo / "compose.yaml")
-    (repo / "scripts").mkdir()
-    shutil.copy(ROOT / "scripts" / "with_deployment_lock.py", repo / "scripts" / "with_deployment_lock.py")
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Tracefold Test"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "Makefile", "compose.yaml"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", head], cwd=repo, check=True)
+class FakeDeployment(Deployment):
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(ROOT, {"HOME": str(tmp_path), "IMAGE_ID": APP_IMAGE})
+        services = {}
+        for name in ("postgres", "rabbitmq", "rabbitmq-policy", "migrate", *APP_SERVICES, "nautilus"):
+            services[name] = {
+                "image": "fixture-image",
+                "volumes": [
+                    {"target": "/root/.tracefold/config.yaml", "source": str(tmp_path / "operator/config.yaml")}
+                ],
+                "ports": [{"host_ip": "127.0.0.1", "published": str({"serve": 8765, "workers": 8766}.get(name, 8767))}],
+            }
+        self._model = {"name": "tracefold-test", "services": services}
+        self.calls: list[tuple[str, ...]] = []
+        self.migration_exit = "0"
+        self.db_head = "head"
+        self.target_head = "head"
+        self.runtime_exists = False
+        self.runtime_running = False
+        self.execution_enabled = False
+        self.bad_config = False
+        self.bad_images: set[str] = set()
+        self.bad_health: set[str] = set()
+        self.states: dict[str, str] = {}
+        self.ready_image = APP_IMAGE
+        self.ready_manifest = "manifest"
+        self.runtime_http_down = False
 
-    external_activity = tmp_path / "external-activity"
-    services_stopped = tmp_path / "services-stopped"
-    trading_control = tmp_path / "trading-control"
-    trading_control.write_text("PAUSED\n", encoding="utf-8")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_docker = bin_dir / "docker"
-    fake_docker.write_text(
-        """#!/bin/sh
-set -eu
-: > "$TRACEFOLD_TEST_EXTERNAL_ACTIVITY"
-printf '%s\n' "$*" >> "$TRACEFOLD_TEST_DOCKER_CALLS"
-if [ "$1" = "info" ]; then exit 0; fi
-if [ "$1" = "wait" ]; then printf '%s\n' "${TRACEFOLD_TEST_MIGRATE_EXIT_CODE:-0}"; exit 0; fi
-if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
-if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then printf '%s\\n' "$TRACEFOLD_TEST_IMAGE"; exit 0; fi
-if [ "$1" = "run" ]; then
-  case "$*" in
-    *runtime_identity*) printf '%s\\n' "${TRACEFOLD_TEST_IMAGE_REVISION:-$(git rev-parse HEAD)}" ;;
-    *) printf '%s\\n' 20260824_0303 ;;
-  esac
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "$2" = "config" ]; then
-  printf '%s\\n' 'postgres:18-bookworm@sha256:pinned' "$TRACEFOLD_APP_IMAGE"
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
-  case "$*" in
-    *"--entrypoint tracefold serve trading status"*)
-      printf '{"ok":true,"data":{"active_capability_snapshot_sha256":"%s"}}\\n' "$TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"
-      ;;
-    *"--entrypoint tracefold migrate db news-genesis-manifest"*)
-      printf '{"ok":true,"data":{"runtime_manifest_sha":"%s","runtime_revision":"%s","image_digest":"%s"}}\\n' \
-        "$TRACEFOLD_TEST_TARGET_MANIFEST" "$TRACEFOLD_TEST_RUNTIME_REVISION" "$TRACEFOLD_TEST_IMAGE"
-      ;;
-    *"nautilus tracefold nautilus run --bootstrap-zero-claims"*)
-      printf '%s\\n' "$*" > "$TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"
-      if [ "$(cat "$TRACEFOLD_TEST_TRADING_CONTROL")" != "PAUSED" ]; then
-        printf '%s\\n' nautilus_bootstrap_requires_paused >&2
-        exit 1
-      fi
-      ;;
-    *"workers trading refresh-capabilities"*)
-      : > "$TRACEFOLD_TEST_CAPABILITY_REFRESH"
-      printf '%s\\n' PAUSED > "$TRACEFOLD_TEST_TRADING_CONTROL"
-      ;;
-    *"--entrypoint tracefold migrate config"*)
-      printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
-      printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
-      printf ',"execution":{"enabled":%s}}}}\\n' "$TRACEFOLD_TEST_EXECUTION_ENABLED"
-      ;;
-  esac
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
-  case "$*" in
-    *news_learning_artifacts*) printf '%s\\n' "$TRACEFOLD_TEST_RECEIPT" ;;
-    *nautilus_bootstrap_account_zero_at_ms*) printf '%s\\n' "$TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO" ;;
-    *to_regclass*) printf '%s\\n' "$TRACEFOLD_TEST_SCHEMA_STATE" ;;
-    *alembic_version*trading_cases_state_check*) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATION_STATE" ;;
-    *) printf '%s\\n' "$TRACEFOLD_TEST_DB_HEAD" ;;
-  esac
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "$2" = "build" ]; then
-  printf '%s\n' "$*" > "$TRACEFOLD_TEST_BUILD_ARGS"
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "$2" = "down" ]; then
-  printf '%s\n' "$*" > "$TRACEFOLD_TEST_DOWN_ARGS"
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "$2" = "rm" ]; then
-  rm -f "$TRACEFOLD_TEST_NAUTILUS_RECREATED"
-  : > "$TRACEFOLD_TEST_NAUTILUS_REMOVED"
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
-  : > "$TRACEFOLD_TEST_SERVICES_STOPPED"
-  printf '%s\n' "$*" > "$TRACEFOLD_TEST_STOP_ARGS"
-  case " $* " in *" nautilus "*) : > "$TRACEFOLD_TEST_NAUTILUS_STOPPED" ;; esac
-  if [ -n "${TRACEFOLD_TEST_DEPLOY_BLOCK:-}" ]; then
-    : > "${TRACEFOLD_TEST_DEPLOY_BLOCK}.entered"
-    while [ ! -e "${TRACEFOLD_TEST_DEPLOY_BLOCK}.release" ]; do sleep 0.01; done
-  fi
-fi
-if [ "$1" = "compose" ] && [ "$2" = "up" ]; then
-  printf '%s\n' "$*" > "$TRACEFOLD_TEST_UP_ARGS"
-  case " $* " in
-    *" nautilus "*) rm -f "$TRACEFOLD_TEST_NAUTILUS_STOPPED"; : > "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ;;
-  esac
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
-  if [ "$#" -eq 3 ] && [ "$3" = "-q" ]; then
-    printf '%s' "${TRACEFOLD_TEST_RUNNING_CONTAINERS:-}"
-    exit 0
-  fi
-  service=''
-  for argument do service="$argument"; done
-  case "$service" in
-    postgres|rabbitmq|rabbitmq-policy|migrate|serve|workers|analysis) printf '%s\\n' "${service}-id" ;;
-    nautilus)
-      if [ -e "$TRACEFOLD_TEST_NAUTILUS_STOPPED" ]; then
-        :
-      elif [ -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
-        printf '%s\\n' nautilus-id
-      elif [ "${TRACEFOLD_TEST_NAUTILUS_PRESENT:-}" = "1" ]; then
-        case " $* " in
-          *" --all "*) printf '%s\\n' nautilus-id ;;
-          *) if [ "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}" = "running" ]; then printf '%s\\n' nautilus-id; fi ;;
-        esac
-      fi
-      ;;
-  esac
-  exit 0
-fi
-if [ "$1" = "inspect" ]; then
-  format="$3"
-  container_id="$4"
-  case "$format" in
-    *State.Status*)
-      if [ "$container_id" = "migrate-id" ] || [ "$container_id" = "rabbitmq-policy-id" ]; then
-        printf '%s\\n' exited
-      elif [ "$container_id" = "nautilus-id" ] && [ ! -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
-        printf '%s\\n' "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}"
-      else
-        printf '%s\\n' running
-      fi
-      ;;
-    *State.ExitCode*) printf '%s\\n' 0 ;;
-    *State.Health*) printf '%s\\n' healthy ;;
-    *Image*)
-      case "$container_id" in
-        migrate-id|rabbitmq-policy-id) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATE_IMAGE" ;;
-        serve-id) printf '%s\\n' "$TRACEFOLD_TEST_SERVE_IMAGE" ;;
-        workers-id) printf '%s\\n' "$TRACEFOLD_TEST_WORKERS_IMAGE" ;;
-        analysis-id) printf '%s\\n' "$TRACEFOLD_TEST_ANALYSIS_IMAGE" ;;
-        nautilus-id) printf '%s\\n' "$TRACEFOLD_TEST_NAUTILUS_IMAGE" ;;
-      esac
-      ;;
-  esac
-  exit 0
-fi
-exit 0
-""",
-        encoding="utf-8",
-    )
-    fake_docker.chmod(0o700)
-    fake_uv = bin_dir / "uv"
-    fake_uv.write_text(
-        """#!/bin/sh
-set -eu
-: > "$TRACEFOLD_TEST_EXTERNAL_ACTIVITY"
-if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "scripts/with_deployment_lock.py" ]; then
-  shift 3
-  exec python3 scripts/with_deployment_lock.py "$@"
-fi
-if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
-  printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
-  printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
-  printf ',"execution":{"enabled":%s}}}}\\n' "$TRACEFOLD_TEST_EXECUTION_ENABLED"
-  exit 0
-fi
-if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
-  case "$4" in
-    *json.load*|*active_capability_snapshot_sha256*) shift 2; exec python3 "$@" ;;
-    *runtime_manifest_sha*) shift 2; exec python3 "$@" ;;
-  esac
-fi
-case "$*" in
-  *image_digest*) printf '%s\\n' "$TRACEFOLD_TEST_READY_IMAGE" ;;
-  *) printf '%s\\n' 20260824_0303 ;;
-esac
-""",
-        encoding="utf-8",
-    )
-    fake_uv.chmod(0o700)
-    fake_curl = bin_dir / "curl"
-    fake_curl.write_text(
-        """#!/bin/sh
-set -eu
-: > "$TRACEFOLD_TEST_EXTERNAL_ACTIVITY"
-url=''
-fail_on_http_error=0
-for argument do
-  case "$argument" in -*f*) fail_on_http_error=1 ;; esac
-  url="$argument"
-done
-case "$url" in
-  *8767/readyz)
-    body="${TRACEFOLD_TEST_NAUTILUS_READYZ:-}"
-    # Nothing listening: curl exits 7 and prints no body.
-    [ -n "$body" ] || exit 7
-    # What the endpoint used to do with a payload whose ok is false, and what -f then did with it.
-    case "$body" in
-      *'"ok": false'*) [ "$fail_on_http_error" = 0 ] || exit 22 ;;
-    esac
-    printf '%s\\n' "$body"
-    ;;
-  */readyz) printf '{"ok":true,"image_digest":"%s","runtime_manifest_sha":"%s"}\\n' \
-    "$TRACEFOLD_TEST_READY_IMAGE" "$TRACEFOLD_TEST_READY_MANIFEST" ;;
-  */) printf '<html></html>\\n' ;;
-esac
-""",
-        encoding="utf-8",
-    )
-    fake_curl.chmod(0o700)
-    fake_gh = bin_dir / "gh"
-    fake_gh.write_text(
-        '#!/bin/sh\n[ "$1 $2" = "auth status" ]\n',
-        encoding="utf-8",
-    )
-    fake_gh.chmod(0o700)
-    env = {
-        **os.environ,
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "TRACEFOLD_TEST_EXTERNAL_ACTIVITY": str(external_activity),
-        "TRACEFOLD_TEST_SERVICES_STOPPED": str(services_stopped),
-        "TRACEFOLD_TEST_STOP_ARGS": str(tmp_path / "stop-args"),
-        "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
-        "TRACEFOLD_TEST_DOCKER_CALLS": str(tmp_path / "docker-calls"),
-        "TRACEFOLD_TEST_BUILD_ARGS": str(tmp_path / "build-args"),
-        "TRACEFOLD_TEST_DOWN_ARGS": str(tmp_path / "down-args"),
-        "TRACEFOLD_TEST_NAUTILUS_REMOVED": str(tmp_path / "nautilus-removed"),
-        "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
-        "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0336|t|t",
-        "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
-        "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
-        "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
-        "TRACEFOLD_TEST_TARGET_MANIFEST": "b" * 64,
-        "TRACEFOLD_TEST_READY_MANIFEST": "b" * 64,
-        "TRACEFOLD_TEST_RUNTIME_REVISION": "c" * 40,
-        "TRACEFOLD_TEST_RECEIPT": "ok",
-        "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
-        "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
-        "TRACEFOLD_TEST_ANALYSIS_IMAGE": TEST_IMAGE_ID,
-        "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
-        "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
-        "TRACEFOLD_TEST_TRADING_ENABLED": "false",
-        "TRACEFOLD_TEST_EXECUTION_ENABLED": "false",
-        "TRACEFOLD_TEST_TRADING_CONTROL": str(trading_control),
-        "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
-        "TRACEFOLD_TEST_NAUTILUS_STOPPED": str(tmp_path / "nautilus-stopped"),
-        "TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP": str(tmp_path / "capability-bootstrap"),
-        "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
-        "TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO": "ready",
-        "TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA": "a" * 64,
-        "TRACEFOLD_TEST_NAUTILUS_READYZ": ('{"ok": false, "alive": false, "entry_block_reason": "runtime_starting"}'),
-    }
-    return repo, external_activity, services_stopped, env
+    def config_data(self) -> dict:
+        return {"trading": {"enabled": True, "execution": {"enabled": self.execution_enabled}}}
+
+    def run(self, *args: str, capture: bool = False, timeout: float | None = None) -> str:
+        self.calls.append(args)
+        if args[: len(self.prefix)] == tuple(self.prefix):
+            command = args[len(self.prefix) :]
+            if command[0] == "ps":
+                service = command[-1]
+                if service == "nautilus":
+                    exists = self.runtime_exists if "--all" in command else self.runtime_running
+                    return "nautilus-id" if exists else ""
+                return service + "-id"
+            if command[:2] == ("config", "--images"):
+                return "fixture-image"
+            if command[0] == "run":
+                if command[-1] == "config":
+                    if self.bad_config:
+                        raise DeploymentError("invalid config")
+                    return json.dumps({"ok": True, "data": self.config_data()})
+                return json.dumps({"ok": True, "data": {"runtime_manifest_sha": "manifest"}})
+            if command[0] == "exec":
+                if command[-1] == "config":
+                    return json.dumps({"ok": True, "data": self.config_data()})
+                return self.db_head
+            if command[0] == "stop" and command[-1] == "nautilus":
+                self.runtime_running = False
+            if command[0] == "up" and command[-1] == "nautilus":
+                self.runtime_exists = self.runtime_running = True
+            return ""
+        if args[:2] == ("docker", "wait"):
+            return self.migration_exit
+        if args[:3] == ("docker", "image", "inspect"):
+            return RUNTIME_IMAGE if "runtime" in args[-1] or args[-1] == RUNTIME_IMAGE else APP_IMAGE
+        if args[:2] == ("docker", "run"):
+            return self.target_head if "-c" in args else "{}"
+        if args[:2] == ("docker", "inspect"):
+            expression, service = args[3], args[4].removesuffix("-id")
+            if expression == "{{.Image}}":
+                if service in self.bad_images:
+                    return "sha256:" + "c" * 64
+                return RUNTIME_IMAGE if service == "nautilus" else APP_IMAGE
+            if "State.Status" in expression:
+                return self.states.get(service, "exited" if service in {"migrate", "rabbitmq-policy"} else "running")
+            if "State.ExitCode" in expression:
+                return self.migration_exit
+            if "State.Health" in expression:
+                return "unhealthy" if service in self.bad_health else "healthy"
+        if args[0] == "git":
+            return "f" * 40 if args[1] == "rev-parse" else ""
+        raise AssertionError(f"unexpected invocation: {args}")
+
+    def http(self, service: str, path: str) -> str:
+        if service == "nautilus":
+            if self.runtime_http_down:
+                raise OSError("offline")
+            return '{"entries_armed":false,"entry_block_reason":"paused"}'
+        if path == "/":
+            return "<!doctype html><html></html>"
+        return json.dumps({"image_digest": self.ready_image, "runtime_manifest_sha": self.ready_manifest})
+
+    def commands(self) -> list[tuple[str, ...]]:
+        return [call[len(self.prefix) :] for call in self.calls if call[: len(self.prefix)] == tuple(self.prefix)]
 
 
-def test_one_command_onboarding_has_one_public_lifecycle() -> None:
-    result = subprocess.run(
-        ["make", "help"],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    targets = {line.split(maxsplit=1)[0] for line in result.stdout.splitlines() if line}
-
-    assert result.returncode == 0, result.stderr
-    assert {
-        "up",
-        "status",
-        "logs",
-        "down",
-    } <= targets
-    assert {
-        "docker-up",
-        "docker-status",
-        "docker-logs",
-        "docker-down",
-    }.isdisjoint(targets)
+@pytest.fixture
+def deployment(tmp_path: Path) -> FakeDeployment:
+    return FakeDeployment(tmp_path)
 
 
-def test_up_never_bootstraps_legacy_capability_or_starts_an_adapter(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
-    env["TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"] = ""
-
-    result = subprocess.run(
-        ["make", "up"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+@pytest.mark.parametrize("action", ["up", "deploy-image"])
+@pytest.mark.parametrize("execution", [True, False])
+def test_application_release_never_moves_execution(deployment: FakeDeployment, action: str, execution: bool) -> None:
+    deployment.runtime_exists = deployment.runtime_running = execution
+    deployment.execution_enabled = execution
+    deployment.execute(action)
+    mutations = [c for c in deployment.commands() if c[0] in {"up", "stop", "rm"}]
+    assert mutations
+    assert all("nautilus" not in c for c in mutations)
+    assert all("gh" not in c and "uv" not in c for c in deployment.calls)
 
 
-@pytest.mark.parametrize("target", ("up", "deploy-image"), ids=("make-up", "deploy-image"))
-def test_deploy_does_not_consult_a_legacy_capability_pointer(tmp_path: Path, target: str) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
-    control = Path(env["TRACEFOLD_TEST_TRADING_CONTROL"])
-    control.write_text("RUNNING\n", encoding="utf-8")
-
-    command = ["make", target]
-    if target == "deploy-image":
-        command.append(f"IMAGE_ID={TEST_IMAGE_ID}")
-    result = subprocess.run(
-        command,
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
-    assert control.read_text(encoding="utf-8").strip() == "RUNNING"
+@pytest.mark.parametrize("action", ["up", "deploy-image"])
+def test_migration_completion_precedes_app_start(deployment: FakeDeployment, action: str) -> None:
+    deployment.execute(action)
+    calls = deployment.calls
+    stop = next(i for i, c in enumerate(calls) if c[-4:] == ("stop", *APP_SERVICES))
+    wait = calls.index(("docker", "wait", "migrate-id"))
+    app_up = next(i for i, c in enumerate(calls) if "up" in c and c[-3:] == APP_SERVICES)
+    assert stop < wait < app_up
+    assert "--no-deps" in calls[app_up]
+    assert "--wait" in calls[app_up]
+    assert deployment.env["TRACEFOLD_APP_IMAGE"] == APP_IMAGE
+    assert deployment.env["TRACEFOLD_IMAGE_DIGEST"] == APP_IMAGE
 
 
-def test_up_does_not_wait_for_a_retired_execution_bootstrap(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
-    env["TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"] = ""
-    env["TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO"] = ""
-
-    result = subprocess.run(
-        ["make", "up", "TRACEFOLD_COMPOSE_WAIT_SECONDS=1"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
+@pytest.mark.parametrize("action", ["up", "deploy-image", "db-migrate"])
+def test_failed_migration_never_starts_readers(deployment: FakeDeployment, action: str) -> None:
+    deployment.migration_exit = "17"
+    with pytest.raises(DeploymentError, match="migrate exited 17"):
+        deployment.execute(action)
+    assert not [c for c in deployment.commands() if c[0] == "up" and "serve" in c]
 
 
-def test_up_proves_the_configured_runtime_manifest_after_start(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-
-    result = subprocess.run(
-        ["make", "up"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
+@pytest.mark.parametrize("action", ["up", "deploy-image", "runtime-up"])
+def test_invalid_config_is_rejected_before_stop(deployment: FakeDeployment, action: str) -> None:
+    deployment.bad_config = True
+    with pytest.raises(DeploymentError, match="invalid config"):
+        deployment.execute(action)
+    assert not [c for c in deployment.commands() if c[0] == "stop"]
 
 
-def test_up_refuses_a_runtime_manifest_mismatch(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_READY_MANIFEST"] = "d" * 64
-
-    result = subprocess.run(
-        ["make", "up"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "Workers runtime manifest does not equal the configured target" in result.stderr
+@pytest.mark.parametrize("action", ["up", "db-migrate"])
+def test_migration_never_changes_schema_under_execution(deployment: FakeDeployment, action: str) -> None:
+    deployment.runtime_exists = deployment.runtime_running = True
+    deployment.target_head = "new-head"
+    with pytest.raises(DeploymentError, match="maintenance window"):
+        deployment.execute(action)
+    assert not [c for c in deployment.commands() if c[0] in {"stop", "up"}]
 
 
-@pytest.mark.parametrize("auth_state", ["missing-cli", "unauthenticated", "authenticated"])
-def test_verify_main_ci_preflights_the_active_github_dot_com_account(tmp_path: Path, auth_state: str) -> None:
-    make = shutil.which("make")
-    assert make is not None
-    verifier_called = tmp_path / "verifier-called"
-    fake_uv = tmp_path / "uv"
-    fake_uv.write_text(
-        '#!/bin/sh\n: > "$TRACEFOLD_TEST_VERIFY_MAIN_CI_CALLED"\n',
-        encoding="utf-8",
-    )
-    fake_uv.chmod(0o700)
-    if auth_state != "missing-cli":
-        fake_gh = tmp_path / "gh"
-        fake_gh.write_text(
-            "#!/bin/sh\n"
-            "command=$1\n"
-            "subcommand=$2\n"
-            "shift 2\n"
-            "active=0\n"
-            "host=''\n"
-            'while [ "$#" -gt 0 ]; do\n'
-            '  case "$1" in\n'
-            "    --active) active=1; shift ;;\n"
-            "    --hostname) host=$2; shift 2 ;;\n"
-            "    *) exit 64 ;;\n"
-            "  esac\n"
-            "done\n"
-            '[ "$command $subcommand" = "auth status" ] || exit 64\n'
-            '[ "$active" = 1 ] || exit 64\n'
-            '[ "$host" = github.com ] || exit 64\n'
-            'exit "$TRACEFOLD_TEST_GH_AUTH_EXIT"\n',
-            encoding="utf-8",
-        )
-        fake_gh.chmod(0o700)
-
-    result = subprocess.run(
-        [make, "--no-print-directory", "verify-main-ci"],
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "PATH": str(tmp_path),
-            "TRACEFOLD_TEST_GH_AUTH_EXIT": "1" if auth_state == "unauthenticated" else "0",
-            "TRACEFOLD_TEST_VERIFY_MAIN_CI_CALLED": str(verifier_called),
-        },
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert (result.returncode == 0) is (auth_state == "authenticated")
-    assert verifier_called.exists() is (auth_state == "authenticated")
-    if auth_state == "missing-cli":
-        assert "GitHub CLI is not installed or not on PATH" in result.stderr
-    elif auth_state == "unauthenticated":
-        assert "GitHub CLI is not authenticated for github.com" in result.stderr
+def test_rollback_needs_matching_image_database_not_current_git_head(deployment: FakeDeployment) -> None:
+    deployment.execute("deploy-image")
+    assert not [c for c in deployment.calls if c[0] in {"git", "gh", "uv"}]
+    assert not [c for c in deployment.commands() if c[0] == "build"]
+    deployment.db_head = "incompatible"
+    deployment.calls.clear()
+    with pytest.raises(DeploymentError, match="Alembic heads differ"):
+        deployment.execute("deploy-image")
+    assert not [c for c in deployment.commands() if c[0] == "stop"]
 
 
-def test_status_rejects_a_still_running_migration(tmp_path: Path) -> None:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_docker = bin_dir / "docker"
-    fake_docker.write_text(
-        """#!/bin/sh
-set -eu
-if [ "$1" = "info" ]; then exit 0; fi
-if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
-if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
-  service=""
-  for argument do service="$argument"; done
-  if [ "$service" = "migrate" ]; then printf '%s\\n' migrate-id; else printf '%s\\n' "${service}-id"; fi
-  exit 0
-fi
-if [ "$1" = "inspect" ]; then
-  format="$3"
-  case "$format" in
-    *State.Status*) printf '%s\\n' running ;;
-    *State.ExitCode*) printf '%s\\n' 0 ;;
-    *State.Health*) printf '%s\\n' healthy ;;
-  esac
-  exit 0
-fi
-exit 1
-""",
-        encoding="utf-8",
-    )
-    fake_docker.chmod(0o700)
-    fake_curl = bin_dir / "curl"
-    fake_curl.write_text(
-        """#!/bin/sh
-url=''
-for argument do url="$argument"; done
-case "$url" in */) printf '<html></html>' ;; esac
-""",
-        encoding="utf-8",
-    )
-    fake_curl.chmod(0o700)
-    fake_uv = bin_dir / "uv"
-    fake_uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    fake_uv.chmod(0o700)
-    github_probe = tmp_path / "github-probe"
-    fake_gh = bin_dir / "gh"
-    fake_gh.write_text(
-        '#!/bin/sh\n: > "$TRACEFOLD_TEST_GH_PROBE"\nexit 99\n',
-        encoding="utf-8",
-    )
-    fake_gh.chmod(0o700)
-
-    result = subprocess.run(
-        ["make", "status"],
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TRACEFOLD_TEST_GH_PROBE": str(github_probe),
-        },
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "migrate: state=running exit_code=0" in result.stderr
-    assert not github_probe.exists()
+@pytest.mark.parametrize("image", ["latest", "", "sha256:abc"])
+def test_rollback_requires_full_image_id(deployment: FakeDeployment, image: str) -> None:
+    deployment.env["IMAGE_ID"] = image
+    with pytest.raises(DeploymentError, match="complete local ID"):
+        deployment.execute("deploy-image")
+    assert not deployment.commands()
 
 
-def test_deploy_image_dry_run_never_invokes_external_tools(tmp_path: Path) -> None:
-    repo, external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-
-    result = subprocess.run(
-        ["make", "-n", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not external_activity.exists()
+@pytest.mark.parametrize("service", ["rabbitmq-policy", "migrate", *APP_SERVICES])
+def test_each_application_role_must_use_requested_image(deployment: FakeDeployment, service: str) -> None:
+    deployment.bad_images.add(service)
+    with pytest.raises(DeploymentError, match="immutable image"):
+        deployment.execute("deploy-image")
 
 
-def test_up_dry_run_never_invokes_external_tools(tmp_path: Path) -> None:
-    repo, external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-
-    result = subprocess.run(
-        ["make", "-n", "up"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not external_activity.exists()
+@pytest.mark.parametrize("field", ["ready_image", "ready_manifest"])
+def test_ready_identity_is_proven_after_start(deployment: FakeDeployment, field: str) -> None:
+    setattr(deployment, field, "wrong")
+    with pytest.raises(DeploymentError, match=r"image_digest|manifest"):
+        deployment.execute("up")
 
 
-def test_up_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-
-    result = subprocess.run(
-        ["make", "up"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+def test_runtime_restart_pins_actual_image_without_build_git_or_migrate(deployment: FakeDeployment) -> None:
+    deployment.runtime_exists = deployment.runtime_running = deployment.execution_enabled = True
+    deployment.execute("runtime-restart")
+    assert deployment.env["TRACEFOLD_RUNTIME_IMAGE"] == RUNTIME_IMAGE
+    assert not [c for c in deployment.calls if c[0] in {"git", "gh", "uv"}]
+    changes = [c for c in deployment.commands() if c[0] in {"up", "stop"}]
+    assert changes[0] == ("stop", "nautilus")  # Compose owns the 90-second grace period.
+    assert changes[1][-1] == "nautilus" and "--no-deps" in changes[1]
+    assert not [c for c in deployment.commands() if c[0] == "build" or c[-1] == "migrate"]
 
 
-@pytest.mark.parametrize("target", ("up", "deploy-image"))
-def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
-    tmp_path: Path,
-    target: str,
+def test_runtime_schema_mismatch_does_not_stop_owner(deployment: FakeDeployment) -> None:
+    deployment.execution_enabled = True
+    deployment.target_head = "different"
+    with pytest.raises(DeploymentError, match="Alembic heads differ"):
+        deployment.execute("runtime-up")
+    assert not [c for c in deployment.commands() if c[0] == "stop"]
+
+
+def test_disabled_execution_is_not_implicitly_activated(deployment: FakeDeployment) -> None:
+    with pytest.raises(DeploymentError, match=r"execution\.enabled is false"):
+        deployment.execute("runtime-up")
+    assert not [c for c in deployment.commands() if c[0] in {"stop", "up"}]
+
+
+def test_runtime_paused_and_unreachable_ready_payload_are_not_restart_signals(deployment: FakeDeployment) -> None:
+    deployment.runtime_exists = deployment.runtime_running = deployment.execution_enabled = True
+    deployment.execute("runtime-status")
+    deployment.runtime_http_down = True
+    deployment.execute("runtime-status")
+    assert not [c for c in deployment.commands() if c[0] in {"up", "stop", "run"}]
+
+
+def test_down_stops_execution_before_removing_stack_and_never_volumes(deployment: FakeDeployment) -> None:
+    deployment.execute("down")
+    assert deployment.commands() == [("stop", "nautilus"), ("rm", "-f", "nautilus"), ("down",)]
+
+
+def test_logs_include_analysis_and_one_shot_policy(deployment: FakeDeployment) -> None:
+    deployment.execute("logs")
+    assert {"analysis", "rabbitmq-policy"} <= set(deployment.commands()[-1])
+
+
+def test_status_reports_execution_even_when_application_failed(
+    deployment: FakeDeployment, capsys: pytest.CaptureFixture
 ) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    command = ["make", target]
-    if target == "deploy-image":
-        command.append(f"IMAGE_ID={TEST_IMAGE_ID}")
-
-    result = subprocess.run(command, cwd=repo, env=env, capture_output=True, check=False, text=True)
-
-    assert result.returncode == 0, result.stderr
-    assert services_stopped.exists()
-    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
+    deployment.bad_health.add("workers")
+    with pytest.raises(DeploymentError, match="workers"):
+        deployment.execute("status")
+    assert "execution runtime: disabled" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-    ("trading_enabled", "credentials_configured", "execution_enabled", "expected_ok", "expected_state"),
-    (
-        ("true", "true", "false", True, "disabled"),
-        ("true", "false", "false", True, "disabled"),
-        ("false", "false", "false", True, "disabled"),
-        ("true", "true", "true", True, "enabled"),
-    ),
-)
-def test_status_does_not_require_an_adapter_before_its_owner_issue(
-    tmp_path: Path,
-    trading_enabled: str,
-    credentials_configured: str,
-    execution_enabled: str,
-    expected_ok: bool,
-    expected_state: str,
-) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = trading_enabled
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = credentials_configured
-    env["TRACEFOLD_TEST_EXECUTION_ENABLED"] = execution_enabled
-    if execution_enabled == "true":
-        env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+@pytest.mark.parametrize("service", ["migrate", "rabbitmq-policy"])
+def test_status_rejects_a_still_running_one_shot(deployment: FakeDeployment, service: str) -> None:
+    deployment.states[service] = "running"
+    with pytest.raises(DeploymentError, match=f"{service}: state=running"):
+        deployment.execute("status-app")
 
-    result = subprocess.run(
-        ["make", "status"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
+
+def test_db_migrate_leaves_application_stopped(deployment: FakeDeployment) -> None:
+    deployment.execute("db-migrate")
+    assert ("stop", *APP_SERVICES) in deployment.commands()
+    assert not [c for c in deployment.commands() if c[0] == "up" and "serve" in c]
+
+
+@pytest.mark.parametrize("action", sorted(MUTATIONS))
+def test_all_mutations_share_lock_including_stops(deployment: FakeDeployment, action: str) -> None:
+    directory = Path(deployment.env["HOME"]) / ".cache/tracefold/deploy"
+    with deployment_lock(directory, deployment.project), pytest.raises(DeploymentError, match="already in progress"):
+        deployment.execute(action)
+    assert not deployment.calls
+
+
+def test_lock_is_released_on_crash(tmp_path: Path) -> None:
+    code = (
+        "from pathlib import Path; from scripts.deploy import deployment_lock; import time; "
+        f'lock=deployment_lock(Path({str(tmp_path)!r}), "test"); lock.__enter__(); '
+        'print("locked", flush=True); time.sleep(60)'
     )
-
-    # The exit code and the reported runtime state are the machine fields. The parenthetical that
-    # follows them tells an operator *why*, and rewording it is not a status regression.
-    assert (result.returncode == 0) is expected_ok
-    reported = [
-        line.removeprefix("execution runtime:").strip()
-        for line in (result.stdout + result.stderr).splitlines()
-        if line.startswith("execution runtime:")
-    ]
-    assert reported, result.stdout + result.stderr
-    assert reported[-1].split(" ", 1)[0] == expected_state
-
-
-def test_exact_image_deploy_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
-
-
-def test_exact_image_deploy_does_not_recreate_nautilus_without_demo_credentials(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize("target", ("up", "deploy-image"))
-@pytest.mark.parametrize("execution_enabled", ("false", "true"))
-def test_a_deploy_never_stops_or_recreates_the_execution_runtime(
-    tmp_path: Path,
-    target: str,
-    execution_enabled: str,
-) -> None:
-    """The inversion of the old contract (#537 D3).
-
-    `make up` used to `stop -t 40 workers serve nautilus` and then recreate all three, so a
-    News-only merge destroyed and rebuilt the process holding a live Binance position: 26 restarts
-    in 56.7 hours, and three Signals lost to `expired`/`account_stale`. The runtime now has its own
-    image and its own `make runtime-*` lifecycle, and a deploy must not name the service at all —
-    with execution enabled or disabled, and whether or not the container is currently running.
-    """
-
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_EXECUTION_ENABLED"] = execution_enabled
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
-    if execution_enabled == "true":
-        env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
-    command = ["make", target]
-    if target == "deploy-image":
-        command.append(f"IMAGE_ID={TEST_IMAGE_ID}")
-
-    result = subprocess.run(command, cwd=repo, env=env, capture_output=True, check=False, text=True)
-
-    assert result.returncode == 0, result.stderr
-    assert services_stopped.exists()
-    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
-    assert "nautilus" not in Path(env["TRACEFOLD_TEST_STOP_ARGS"]).read_text(encoding="utf-8")
-    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_STOPPED"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
-
-
-def _deploy_command(target: str) -> list[str]:
-    return ["make", target, *([f"IMAGE_ID={TEST_IMAGE_ID}"] if target == "deploy-image" else [])]
-
-
-@pytest.mark.parametrize("target", ("up", "deploy-image"))
-def test_serve_and_workers_start_only_after_the_migration_exited_zero(tmp_path: Path, target: str) -> None:
-    """#680 PR-2. Compose's own ordering edge is bounded by `--wait-timeout`, so it is not the order.
-
-    On 2026-09-22 `20260922_0387` ran longer than the 300 s wait, Compose started Workers anyway, and
-    Workers restarted on `migration_status: stale` for ten minutes. The deploy now brings up the
-    migration alone, waits for its container to exit, and only then starts Serve and Workers -- without
-    letting Compose re-run the migration as their dependency.
-    """
-
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-
-    result = subprocess.run(_deploy_command(target), cwd=repo, env=env, capture_output=True, check=False, text=True)
-
-    assert result.returncode == 0, result.stderr
-    calls = Path(env["TRACEFOLD_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8").splitlines()
-    migrate_up = next(i for i, call in enumerate(calls) if call.startswith("compose up") and " migrate" in call)
-    waited = calls.index("wait migrate-id")
-    app_up = next(
-        i for i, call in enumerate(calls) if call.startswith("compose up") and call.endswith("serve workers analysis")
-    )
-    stopped = next(i for i, call in enumerate(calls) if call.startswith("compose stop") and "workers" in call)
-    assert stopped < migrate_up < waited < app_up
-    assert "--wait" not in calls[migrate_up].split()
-    assert {"--no-deps", "--wait"} <= set(calls[app_up].split())
-
-
-@pytest.mark.parametrize("target", ("up", "deploy-image"))
-def test_a_failed_migration_leaves_serve_and_workers_stopped(tmp_path: Path, target: str) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_MIGRATE_EXIT_CODE"] = "1"
-
-    result = subprocess.run(_deploy_command(target), cwd=repo, env=env, capture_output=True, check=False, text=True)
-
-    assert result.returncode != 0
-    assert "migrate exited 1; serve, workers and analysis were not started." in result.stderr
-    calls = Path(env["TRACEFOLD_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8").splitlines()
-    assert "wait migrate-id" in calls
-    assert not [call for call in calls if call.startswith("compose up") and "serve" in call.split()]
-
-
-def test_deploy_image_accepts_an_older_runtime_revision_so_a_rollback_target_exists(
-    tmp_path: Path,
-) -> None:
-    """The image an operator needs during an incident is the previous one, by definition.
-
-    `deploy-image` used to refuse any image whose `runtime_revision` was not current main's SHA,
-    which made the rollback path refuse every rollback target (#537 D12). The Alembic heads are the
-    compatibility rule and they are still enforced; the revision equality is gone.
-    """
-
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_IMAGE_REVISION"] = "f" * 40
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert f"Tracefold deployed exact local image {TEST_IMAGE_ID}." in result.stdout
-    assert services_stopped.exists()
-
-
-def test_deployment_lock_is_released_by_the_os_when_the_owner_crashes(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    gate = tmp_path / "crashing-owner"
-    owner = subprocess.Popen(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env={**env, "TRACEFOLD_TEST_DEPLOY_BLOCK": str(gate)},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
+    child = subprocess.Popen([sys.executable, "-c", code], cwd=ROOT, stdout=subprocess.PIPE, text=True)
     try:
-        deadline = time.monotonic() + 5.0
-        while not gate.with_suffix(".entered").exists() and time.monotonic() < deadline:
-            if owner.poll() is not None:
-                stdout, stderr = owner.communicate()
-                raise AssertionError(f"lock owner exited early: stdout={stdout!r} stderr={stderr!r}")
-            time.sleep(0.01)
-        assert gate.with_suffix(".entered").exists(), "lock owner never reached deployment"
-        os.killpg(owner.pid, signal.SIGKILL)
-        assert owner.wait(timeout=2.0) != 0
-
-        successor = subprocess.run(
-            ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-            cwd=repo,
-            env=env,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=5.0,
-        )
-        assert successor.returncode == 0, successor.stderr
+        assert child.stdout is not None and child.stdout.readline().strip() == "locked"
+        with pytest.raises(DeploymentError, match="already in progress"), deployment_lock(tmp_path, "test"):
+            pass
     finally:
-        if owner.poll() is None:
-            os.killpg(owner.pid, signal.SIGKILL)
-            owner.wait(timeout=2.0)
+        child.kill()
+        child.wait(timeout=5)
+    with deployment_lock(tmp_path, "test"):
+        pass
 
 
-def test_up_and_deploy_image_share_one_cross_process_deployment_lock(tmp_path: Path) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    gate = tmp_path / "deploy-gate"
-    first = subprocess.Popen(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env={**env, "TRACEFOLD_TEST_DEPLOY_BLOCK": str(gate)},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        deadline = time.monotonic() + 5.0
-        while not gate.with_suffix(".entered").exists() and time.monotonic() < deadline:
-            if first.poll() is not None:
-                stdout, stderr = first.communicate()
-                raise AssertionError(f"first deployment exited early: stdout={stdout!r} stderr={stderr!r}")
-            time.sleep(0.01)
-        assert gate.with_suffix(".entered").exists(), "first deployment never reached its mutation boundary"
+def test_every_make_lifecycle_target_is_phony_and_dry_run_is_offline(tmp_path: Path) -> None:
+    from scripts.deploy import ACTIONS
 
-        second = subprocess.run(
-            ["make", "up"],
-            cwd=repo,
-            env=env,
+    for action in ACTIONS:
+        result = subprocess.run(
+            ["make", "--no-print-directory", "-n", action],
+            cwd=ROOT,
+            check=True,
             capture_output=True,
-            check=False,
             text=True,
-            timeout=5.0,
         )
-
-        assert second.returncode != 0
-        assert "deployment is already in progress" in second.stderr
-    finally:
-        gate.with_suffix(".release").touch()
-        try:
-            first_stdout, first_stderr = first.communicate(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            first.kill()
-            first_stdout, first_stderr = first.communicate(timeout=2.0)
-
-    assert first.returncode == 0, f"stdout={first_stdout!r} stderr={first_stderr!r}"
-    assert services_stopped.exists()
-
-
-def test_deploy_image_rejects_database_head_mismatch_before_stopping_services(tmp_path: Path) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_DB_HEAD"] = "20260823_9999"
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "database Alembic head" in result.stderr
-    assert not services_stopped.exists()
-
-
-def test_deploy_image_rejects_tracked_primary_changes_before_stopping_services(tmp_path: Path) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    (repo / "compose.yaml").write_text("name: changed\n", encoding="utf-8")
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "tracked or staged changes" in result.stderr
-    assert not services_stopped.exists()
-
-
-def test_deploy_image_rejects_staged_primary_changes_before_stopping_services(tmp_path: Path) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    (repo / "compose.yaml").write_text("name: staged-change\n", encoding="utf-8")
-    subprocess.run(["git", "add", "compose.yaml"], cwd=repo, check=True)
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "tracked or staged changes" in result.stderr
-    assert not services_stopped.exists()
-
-
-def test_deploy_image_rejects_main_that_is_not_origin_main(tmp_path: Path) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    (repo / "local-only.txt").write_text("ahead\n", encoding="utf-8")
-    subprocess.run(["git", "add", "local-only.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "local-only"], cwd=repo, check=True)
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "origin/main" in result.stderr
-    assert not services_stopped.exists()
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        ("compose.override.yaml", "services: {}\n"),
-        (
-            "tracefold/platform/postgres/alembic/versions/untracked_revision.py",
-            'revision = "untracked"\n',
-        ),
-    ],
-)
-def test_deploy_image_rejects_relevant_untracked_inputs_before_stopping_services(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    target = repo / relative_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "untracked deployment input" in result.stderr
-    assert not services_stopped.exists()
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "content"),
-    [
-        ("compose.override.yaml", "services: {}\n"),
-        (
-            "tracefold/platform/postgres/alembic/versions/ignored_revision.py",
-            'revision = "ignored"\n',
-        ),
-    ],
-)
-def test_deploy_image_rejects_gitignored_deployment_inputs_before_stopping_services(
-    tmp_path: Path,
-    relative_path: str,
-    content: str,
-) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    (repo / ".gitignore").write_text(f"/{relative_path}\n", encoding="utf-8")
-    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "ignore local deployment input"], cwd=repo, check=True)
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", head], cwd=repo, check=True)
-    target = repo / relative_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "untracked deployment input" in result.stderr
-    assert not services_stopped.exists()
-
-
-@pytest.mark.parametrize(
-    ("variable", "value"),
-    [
-        ("COMPOSE_FILE", "untrusted-compose.yaml"),
-        ("COMPOSE_PROJECT_NAME", "not-tracefold"),
-        ("COMPOSE_ENV_FILES", "untrusted-compose.env"),
-        ("COMPOSE_PROFILES", "untrusted-profile"),
-    ],
-)
-def test_deploy_image_rejects_inherited_compose_stack_variables_before_stopping_services(
-    tmp_path: Path,
-    variable: str,
-    value: str,
-) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env[variable] = value
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "inherited Compose stack variables" in result.stderr
-    assert not services_stopped.exists()
-
-
-def test_deploy_image_rejects_gitignored_dotenv_before_stopping_services(tmp_path: Path) -> None:
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
-    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "ignore dotenv"], cwd=repo, check=True)
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", head], cwd=repo, check=True)
-    (repo / ".env").write_text("COMPOSE_FILE=untrusted.yaml\n", encoding="utf-8")
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "untracked deployment input" in result.stderr
-    assert not services_stopped.exists()
-
-
-def test_deploy_image_rejects_a_runtime_container_with_the_wrong_image(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_WORKERS_IMAGE"] = "sha256:" + "b" * 64
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "workers container image" in result.stderr
-    assert "Tracefold deployed exact local image" not in result.stdout
-
-
-def test_deploy_image_rejects_workers_ready_identity_mismatch(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_READY_IMAGE"] = "sha256:" + "c" * 64
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "Workers readiness image_digest" in result.stderr
-    assert "Tracefold deployed exact local image" not in result.stdout
-
-
-def test_deploy_image_deploys_without_asking_the_learning_ledger_to_name_the_image(tmp_path: Path) -> None:
-    """The deploy proves itself, not a ledger the deploy it was blocking is what writes (#598 D5-h).
-
-    The removed gate read the newest `deployment_receipt` and `active_agent` rows out of
-    `news_learning_artifacts` and required both to name the requested image. Workers writes those
-    rows after it boots, so the gate asked a deployment to prove a fact produced by the deployment
-    itself; a News epoch changing under it, or ordinary lag, refused a correct exact-image deploy of
-    the previous image -- the one an operator reaches for during an incident. What the deploy can
-    prove about itself is kept and is asserted by the two tests above: every recreated container
-    runs the requested image ID, and Workers' own `/readyz` reports that digest.
-    """
-
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_RECEIPT"] = "mismatch"
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert f"Tracefold deployed exact local image {TEST_IMAGE_ID}." in result.stdout
-    assert "active/deployment receipt" not in result.stderr
-    assert services_stopped.exists()
-
-
-def test_deploy_image_allows_an_unrelated_untracked_research_notebook(tmp_path: Path) -> None:
-    # The untracked check is a positive allowlist of deployment inputs, so the research workspace
-    # (#274) is allowed by construction rather than by a path carve-out. This pins that: an operator
-    # drafting in `notebooks/` must never be the reason a deploy refuses.
-    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    notebooks = repo / "notebooks"
-    notebooks.mkdir(parents=True)
-    (notebooks / "trading-agent-72h-event-study.ipynb").write_text("{}\n", encoding="utf-8")
-
-    result = subprocess.run(
-        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert f"Tracefold deployed exact local image {TEST_IMAGE_ID}." in result.stdout
-    assert services_stopped.exists()
-
-
-@pytest.mark.parametrize(
-    ("readyz", "expected"),
-    (
-        (
-            '{"ok": false, "alive": false, "entry_block_reason": "runtime_starting"}',
-            "runtime_starting",
-        ),
-        ("", "unreachable"),
-    ),
-    ids=("blocked-payload", "unreachable"),
-)
-def test_runtime_status_prints_the_readiness_payload_it_gets(tmp_path: Path, readyz: str, expected: str) -> None:
-    """`curl -fsS` threw away the body of every answer that mattered (#598 D5-b).
-
-    The runtime's `/readyz` answers 200 with the payload now, and this recipe prints it whatever it
-    says. An endpoint that cannot be reached is reported and the report continues: the container
-    state and health above it are what notice a dead process, and they still decide the exit status.
-    """
-
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_EXECUTION_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
-    env["TRACEFOLD_TEST_NAUTILUS_READYZ"] = readyz
-
-    result = subprocess.run(
-        ["make", "runtime-status"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert expected in result.stdout
-    assert "nautilus readiness failed" not in result.stderr
-
-
-def test_make_down_stops_the_execution_runtime_itself_instead_of_refusing(tmp_path: Path) -> None:
-    """`docker compose down` removes the project's containers and network, runtime included.
-
-    That is why the runtime has to go first -- and for as long as `make down` exited 2 saying so, it
-    was a refusal that knew the exact command it wanted and would not run it (#598 D5-g). It runs
-    `runtime-down` itself now: the same recipe, so the same `-t 90` stop budget, so the runtime's
-    own `singleton.release()` still runs and the account-slot advisory lock is still released
-    before the network goes. Then it stops the stack, and it says which of the two it did.
-    """
-
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
-
-    result = subprocess.run(["make", "down"], cwd=repo, env=env, capture_output=True, check=False, text=True)
-
-    assert result.returncode == 0, result.stderr
-    assert "stopping the execution runtime first" in result.stdout
-    assert "run make runtime-down first" not in result.stderr
-    assert "-t 90 nautilus" in Path(env["TRACEFOLD_TEST_STOP_ARGS"]).read_text(encoding="utf-8")
-    assert Path(env["TRACEFOLD_TEST_NAUTILUS_REMOVED"]).exists()
-    assert Path(env["TRACEFOLD_TEST_DOWN_ARGS"]).read_text(encoding="utf-8").strip() == "compose down"
-
-
-def test_make_down_still_stops_the_stack_when_no_runtime_container_exists(tmp_path: Path) -> None:
-    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-
-    result = subprocess.run(["make", "down"], cwd=repo, env=env, capture_output=True, check=False, text=True)
-
-    assert result.returncode == 0, result.stderr
-    assert "no execution runtime container to stop." in result.stdout
-    assert Path(env["TRACEFOLD_TEST_DOWN_ARGS"]).read_text(encoding="utf-8").strip() == "compose down"
+        assert result.stdout.strip() == f"python3 scripts/deploy.py {action}"
+    makefile = (ROOT / "Makefile").read_text()
+    declared = " ".join(line for line in makefile.splitlines() if line.startswith(".PHONY:"))
+    assert set(ACTIONS) <= set(declared.split())
+    assert "$(shell" not in makefile
+
+
+def test_context_does_not_accept_ambient_topology_or_require_auth(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("COMPOSE_PROJECT_NAME=isolated\n")
+    deployment = Deployment(tmp_path, {"COMPOSE_FILE": "other.yml", "COMPOSE_PROFILES": "wrong"})
+    assert "COMPOSE_FILE" not in deployment.env
+    assert "COMPOSE_PROFILES" not in deployment.env
+    assert str(tmp_path / ".env") in deployment.prefix
+    assert str(tmp_path / "compose.yaml") in deployment.prefix

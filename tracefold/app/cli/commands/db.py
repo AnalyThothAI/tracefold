@@ -1,35 +1,18 @@
 from __future__ import annotations
 
-import re
 from argparse import Namespace
 from typing import Any
 
 from tracefold.app.query_audit import query_audit_for_connection
 from tracefold.app.repository_session import postgres_connection
-from tracefold.app.workers.wiring.news import configured_runtime_manifest_sha
 from tracefold.platform.config.loader import load_settings
 from tracefold.platform.postgres.audit import PostgresOperationalAudit
 from tracefold.platform.postgres.client import postgres_health_check, with_password_from_file
 from tracefold.platform.postgres.migrations import latest_migration_version, upgrade_head
-from tracefold.platform.runtime_identity import runtime_identity
 
 
 def handle_db(args: Namespace) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
-    if args.db_command == "news-genesis-manifest":
-        identity = runtime_identity()
-        if not re.fullmatch(r"[0-9a-f]{40}", identity.runtime_revision) or not re.fullmatch(
-            r"sha256:[0-9a-f]{64}", identity.image_digest
-        ):
-            return 1, {"ok": False, "error": "news_genesis_exact_runtime_identity_required"}
-        return 0, {
-            "ok": True,
-            "data": {
-                "runtime_manifest_sha": configured_runtime_manifest_sha(settings, identity=identity),
-                "runtime_revision": identity.runtime_revision,
-                "image_digest": identity.image_digest,
-            },
-        }
     if args.db_command == "migrate":
         dsn = with_password_from_file(
             settings.storage.postgres.dsn,

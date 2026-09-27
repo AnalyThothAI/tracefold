@@ -2,18 +2,20 @@
 
 [手册](README.md) · [系统架构](ARCHITECTURE.md) · [运维](OPERATIONS.md) · [数据库迁移](MIGRATIONS.md)
 
-推荐使用仓库的 **Make + Docker Compose** 启动完整应用。应用配置只有 `~/.tracefold/config.yaml` 一份；前后端一起构建，Nautilus 执行角色独立管理。
+推荐使用仓库的 **Make + Docker Compose** 启动完整应用。业务配置只有 `TRACEFOLD_HOME/config.yaml` 一份，默认仍为 `~/.tracefold/config.yaml`；前后端一起构建，Nautilus 执行角色独立管理。
 
 ## 1. 前置条件
 
 | 工具 | 用途 |
 | --- | --- |
-| Git、Make | 获取代码与执行仓库工作流 |
-| [uv](https://docs.astral.sh/uv/) | 使用锁文件与项目 Python 3.13；宿主机默认 Python 不必作为项目解释器 |
-| Docker 与 Compose 插件 | 构建应用、运行 PostgreSQL / RabbitMQ 和各进程 |
-| curl | 就绪与工作台检查 |
-| [GitHub CLI](https://cli.github.com/) | 登录、构建访问与精确 main CI 验证 |
-| Node / npm | 仅本地前端开发需要；运行已构建应用镜像不要求宿主机单独启动 Vite |
+| Git、GNU Make | 获取审阅后的代码与调用统一命令 |
+| 系统 Python 3.10+ | 运行仅依赖标准库的部署编排，不安装应用依赖 |
+| Docker 与 Compose v2 | 在镜像内安装锁定依赖、构建前端并运行完整应用 |
+| uv / 项目 Python 3.13 | 仅本地开发、验证及显式发布来源检查需要 |
+| GitHub CLI | 仅 `make verify-main-ci` 的显式精确 main CI 核验需要 |
+| Node / npm | 仅宿主机前端开发需要；部署使用镜像构建阶段 |
+
+部署不要求宿主机安装 uv、npm、curl 或登录 GitHub。应用始终使用镜像中的 Python 3.13；系统 Python 版本不应成为安装整个业务依赖树的理由。
 
 解释器以 [.python-version](../.python-version)为准，Python 依赖以 [uv.lock](../uv.lock)为准，前端以 [package-lock.json](../web/package-lock.json)为准。Docker daemon 必须已启动，当前终端必须能访问它。
 
@@ -22,19 +24,21 @@ macOS 使用具备这些工具的终端；Windows 开发建议在已配置 Docke
 ## 2. 首次启动
 
 ```bash
-gh auth login --hostname github.com
-gh repo clone AnalyThothAI/tracefold
+git clone https://github.com/AnalyThothAI/tracefold.git
 cd tracefold
+make init  # 构建镜像、初始化配置，不启动服务
+# 编辑 ~/.tracefold/config.yaml
 make up
 ```
 
-访问 **http://127.0.0.1:8765/**。使用符合源码与 CI 检查的干净 `main` 主检出目录运行部署；任务 worktree 用于开发，不是跳过检查的理由。
+访问 **http://127.0.0.1:8765/**。生产使用审阅后的干净源码；`make verify-main-ci` 是显式发布来源核验，不是服务恢复的联网依赖。开发 worktree 必须使用独立项目名、配置目录和宿主机端口，不能共享生产写进程。
 
 ```mermaid
 flowchart TD
-    Preflight["工具、源码身份与 main CI"] --> Init["初始化用户配置与文件"]
-    Init --> Build["构建应用镜像与前端"]
-    Build --> Infra["启动 PostgreSQL / RabbitMQ"]
+    Lock["项目级 OS 锁"] --> Build["构建镜像并读取不可变 ID"]
+    Build --> Init["镜像内初始化、配置与运行时清单验证"]
+    Init --> Window["活动执行进程的 schema 兼容检查"]
+    Window --> Infra["启动 PostgreSQL / RabbitMQ"]
     Infra --> Policy["应用 RabbitMQ 策略"]
     Policy --> Migrate["执行一次性迁移并等待结束"]
     Migrate --> Result{"退出码为 0"}
@@ -43,19 +47,31 @@ flowchart TD
     App --> Ready["验证应用、探针与静态工作台"]
 ```
 
-[Makefile](../Makefile)不仅调用 Compose，还等待迁移进程真正退出。不能仅因为 `depends_on` 或部分容器 running 就宣布启动成功。再次 `make up` 会构建并更新应用角色，不应该无故重建已有数据库容器。
+[Makefile](../Makefile)是薄命令入口；[scripts/deploy.py](../scripts/deploy.py)等待迁移进程真正退出，再以 `--no-deps` 启动应用。不能仅因为 `depends_on` 或部分容器 running 就宣布启动成功。再次 `make up` 会构建并更新应用角色，不应该无故重建已有数据库容器。
 
 ```bash
+make topology
 make status-app
-docker compose logs --tail=100 analysis
 make logs
 ```
 
-**`make status-app` 检查应用栈；`make status` 还会检查可选执行 Runtime。** 没有启用 Runtime 时，不用后者的非零结果判断整个新闻应用启动失败。
+**`make status-app` 检查应用栈；`make status` 还会检查可选执行 Runtime。** 未启用 Runtime 时报告 `disabled`；应用检查失败也会继续报告 Runtime。默认禁用的 Analysis 正常等待关闭信号，健康检查不会再将它误判为启动故障。
+
+### 单一职责与配置归属
+
+| 关注点 | 唯一所有者 |
+| --- | --- |
+| 对外命令 | [Makefile](../Makefile)，无隐式联网和重复端口默认值 |
+| 部署、迁移顺序、锁与验收 | [scripts/deploy.py](../scripts/deploy.py)，只依赖系统 Python 标准库 |
+| 服务、挂载、端口、关闭预算 | [compose.yaml](../compose.yaml) |
+| 业务字段和初始化默认值 | [类型化设置](../tracefold/platform/config/models.py)与[初始化器](../tracefold/platform/config/loader.py) |
+| 开发、测试、生成物 | [make/checks.mk](../make/checks.mk)，不参与服务启动 |
+
+所有 Make 生命周期命令使用相同的显式 Compose 文件、项目目录和 `.env`，包括日志、状态、shell 与停止操作。不自动发现其他 Compose override。`make topology` 只输出脱敏拓扑，不打印可能含凭据的完整 Compose 文档。
 
 ## 3. 初始化生成什么
 
-`make up` 自动调用 `tracefold init`；也可以在首次启动前执行 `make init`，先查看和编辑配置。
+`make up` 在选定镜像内、以宿主操作者 UID/GID 调用 `tracefold init`；也可以在首次启动前执行 `make init`，先查看和编辑配置。
 
 ```text
 ~/.tracefold/
@@ -74,11 +90,11 @@ make logs
 
 已有配置内容和数据库密码保留，必要权限会修正。**`tracefold init --force` 会把 config.yaml 替换为生成默认值，不是升级命令，也不会轮换既有数据库密码。** 不要用它处理一个不认识的字段错误。
 
-应用配置不从当前目录读取，不维护另一份手写 `config.example.yaml`，也没有 `.env` fallback。生成配置与[类型化设置](../tracefold/platform/config/models.py)共同解释当前支持的字段。
+默认使用用户目录；可通过 `TRACEFOLD_HOME` 指定其他目录，包括被 Git 忽略的项目 `.tracefold`。不维护第二份手写 `config.example.yaml`，业务配置也不从 `.env` fallback。生成配置与[类型化设置](../tracefold/platform/config/models.py)共同解释当前支持的字段。
 
 ```bash
-uv run tracefold config
-uv run tracefold --help
+make config
+make help
 ```
 
 `config` 输出脱敏值与路径；不要为了排障直接打印所有原始文件。
@@ -129,7 +145,7 @@ trading:
 | Workers 探针 | `127.0.0.1:8766` | Workers 存活、就绪与指标 |
 | Nautilus 探针 | `127.0.0.1:8767` | 仅独立 Runtime 运行时可用 |
 
-[compose.yaml](../compose.yaml)与 Makefile 拥有全部实际绑定。Analysis 也有自己的容器健康检查，不应凭空假设还有一个公开端口。
+[compose.yaml](../compose.yaml)是全部绑定默认值的唯一来源；Make 不再复制一套默认值。Analysis 也有自己的容器健康检查，不应凭空假设还有一个公开端口。
 
 生成的 PostgreSQL DSN 和 broker URL 使用容器网络地址，系统不会为宿主机 CLI 自动改写。因此数据库与 broker 诊断应在具备这些地址和挂载的容器内执行：
 
@@ -140,9 +156,21 @@ docker compose exec -T workers tracefold news bus-policy verify
 
 初始数据库的 bootstrap 密码与应用用户密码不同。应用角色使用普通应用登录，以装配能力、事务设置和 `application_name` 区分用途；不向 Serve / Workers / Analysis 挂载 bootstrap 超级用户凭据。
 
-只有 Nautilus 挂载 Binance 执行密钥。Analysis 使用公共市场 / 模型适配和连接身份，不应为研究顺手获得账户写凭据。
+在长期运行的角色中，只有 Nautilus 挂载 Binance 执行密钥；短暂运行的可信初始化器以操作者身份初始化其目录。Analysis 使用公共市场 / 模型适配和连接身份，不应为研究顺手获得账户写凭据。
 
-改变端口请使用 Makefile 明确支持的命令行变量，不加入另一个未跟踪的 Compose override 或 `.env`。数据库绑定改变可能导致容器重建，应作为运维变更处理。
+需要持久化项目、目录或端口时：
+
+```bash
+cp .env.example .env
+# 修改 COMPOSE_PROJECT_NAME、TRACEFOLD_HOME 和宿主机端口
+make topology
+```
+
+Compose 读取 `.env`；业务 Settings 不读取它。显式 Make 参数 / shell 变量优先于 `.env`，默认值仍由 Compose 定义。配置和 `.env*` 不进入镜像构建上下文。
+
+改变项目名会选择另一组命名数据卷；改变配置目录不会迁移既有密码。开发实例必须同时隔离项目、目录和全部发布端口。数据库绑定改变可能导致容器重建，须作为运维变更处理；不要用它排查新闻逻辑。
+
+容器内路径仍是 `/root/.tracefold`；只改变宿主机挂载来源。修改 broker 初始化凭据还须同步客户端 broker URL，不等于改端口。
 
 `api.host` / `api.port` 是监听地址；`api.public_url` 是读者可访问的绝对 HTTP(S) 链接基础地址，不能有 query / fragment，不从 `0.0.0.0` 或 loopback 猜出来。对公网开放工作台前阅读[安全边界](SECURITY.md)。
 
@@ -154,6 +182,10 @@ docker compose exec -T workers tracefold news bus-policy verify
 
 已有 Runtime 运行时，不能在其持有账户的同时随意改变数据库契约。`make up` 不会替你重启执行进程；精确镜像替换的范围见[运维](OPERATIONS.md#deployment)。
 
+`make deploy-image IMAGE_ID=sha256:<完整 ID>` 仅恢复当前命令契约兼容、且 image / database head 相同的本地镜像，不要求旧镜像与当前 Git HEAD 相同，不构建、不降级数据库、不重启执行。`make db-migrate` 是显式维护操作，会停止应用角色并在迁移后保持停止；日常更新直接使用 `make up`。
+
+只读 `tracefold runtime-manifest` 替代历史数据库 genesis 命令，报告不可变镜像和 News 程序清单。未提交的开发构建标记为 `-dirty`，不伪装成已提交源码；生产应使用审阅后的干净来源。
+
 ## 7. 可选执行生命周期
 
 ```bash
@@ -162,7 +194,7 @@ make runtime-status
 make runtime-logs
 ```
 
-`runtime-build` 生成 `tracefold-runtime:<sha>` 镜像。真正的 `runtime-up`、`runtime-restart`、`runtime-down` 是独立、显式的执行生命周期操作；是否有交易权限取决于实际配置、作用域和账户状态，不取决于是否完成了本安装指南。
+`runtime-build` 生成 `tracefold-runtime:<sha>` 镜像。`make runtime-up RUNTIME_IMAGE=<已有镜像>` 不构建、不迁移、不重建 PostgreSQL；先检查启用状态和 image / database head，再操作执行容器。`runtime-restart` 使用实际容器的不可变 image ID，不跟随可变 tag；关闭预算仍为 Compose 中的 90 秒。真正的 `runtime-up`、`runtime-restart`、`runtime-down` 是独立、显式的执行生命周期操作；是否有交易权限取决于实际配置、作用域和账户状态，不取决于是否完成了本安装指南。
 
 没有内置 Paper 模拟器；`trading.execution.binance.environment` 指定原生适配器目标，`LIVE` / `DEMO` / `TESTNET` 也必须配合相应凭据。不要假设未设置环境就一定是测试连接。
 
@@ -171,7 +203,7 @@ make runtime-logs
 在[独立 worktree](agents/worktrees.md)安装锁定 Python 依赖：
 
 ```bash
-uv sync --frozen
+make sync  # uv sync --locked
 ```
 
 前端开发使用有意配置的后端：
@@ -182,7 +214,7 @@ npm ci
 npm run dev
 ```
 
-需要进程级调试时，先配置**隔离的**数据库 / broker，再在分别管理的终端运行 `uv run tracefold serve`、`uv run tracefold workers`、`uv run tracefold analysis`。不要在生产 Workers 正占有相同数据库时再启动另一个所有者。
+需要进程级调试时，先配置**隔离的**数据库 / broker，再在分别管理的终端运行 `make dev-serve`、`make dev-workers`、`make dev-analysis`。不要在生产 Workers 正占有相同数据库时再启动另一个所有者。
 
 开发服务器与生产镜像路径不是同一验证证据。提交前按[开发指南](DEVELOPMENT.md)与[测试指南](TESTING.md)选择检查，不让每个文档改动都启动完整部署。
 
@@ -193,3 +225,5 @@ make down
 ```
 
 先停止 Nautilus，再停止应用与依赖；保留配置和数据卷。不要把 `docker compose down -v` 加入日常升级或排障步骤。进程停止也不表示交易所仓位自动关闭。
+
+保留的离线迁移和历史研究工具及其调用时机见 [scripts 工具归属](../scripts/README.md)。普通启动不会执行批量重标注、归档搬迁、历史研究或全局 CLI 安装。

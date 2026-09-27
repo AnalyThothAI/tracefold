@@ -13,7 +13,9 @@ def add_runtime_commands(
     nautilus_subcommands = nautilus.add_subparsers(dest="nautilus_command", required=True)
     nautilus_subcommands.add_parser("run", help="run the configured Binance execution Runtime")
 
-    init = subcommands.add_parser("init", help="create ~/.tracefold/config.yaml")
+    init = subcommands.add_parser("init", help="initialize the configured operator home (default ~/.tracefold)")
     init.add_argument("--force", action="store_true", help="overwrite existing config.yaml")
 
     subcommands.add_parser("config", help="print effective runtime configuration")
+
+    subcommands.add_parser("runtime-manifest", help="print this image and configured News program identity")

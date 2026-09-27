@@ -51,25 +51,25 @@ flowchart TB
 
 ### 1. 准备环境
 
-需要 Git、Make、[uv](https://docs.astral.sh/uv/)、已启动的 Docker 与 Compose 插件、curl，以及已登录的 [GitHub CLI](https://cli.github.com/)。项目解释器固定为 Python 3.13，前后端依赖由锁文件管理。
+部署宿主机只需要 **Git、GNU Make、Python 3.10+、Docker 与 Compose v2**。系统 Python 只运行标准库部署脚本；应用 Python 3.13、uv 和前端依赖都在镜像中构建。Windows 使用 WSL，macOS 使用 Docker Desktop。
 
 ```bash
-# 登录 GitHub，获取仓库及构建所需的访问权限
-gh auth login --hostname github.com
-gh repo clone AnalyThothAI/tracefold
+git clone https://github.com/AnalyThothAI/tracefold.git
 cd tracefold
-
-# 在符合部署检查的 main 主检出目录执行
+make init   # 构建镜像并初始化文件，不启动服务
+# 编辑 ~/.tracefold/config.yaml，配置实际需要的能力
 make up
 ```
 
-启动成功后访问 **http://127.0.0.1:8765/**。
+启动成功后访问 **http://127.0.0.1:8765/**。`make up` 也会初始化缺失文件，因此无外部凭据的首次启动可以直接运行它。
 
-`make up` 不是裸 `docker compose up` 的别名：它检查源码与 CI 身份，初始化配置、构建镜像、准备 PostgreSQL / RabbitMQ、应用消息策略和数据库迁移，然后启动 Serve、Workers、Analysis。**它不会启动或重启 Nautilus。**
+[Makefile](Makefile)提供命令，[scripts/deploy.py](scripts/deploy.py)负责配置验证、迁移等待、镜像与就绪检查，[compose.yaml](compose.yaml)定义容器、端口和关闭预算。**应用更新不会启动或重启 Nautilus。**
+
+生产发布使用审阅后的干净源码；`make verify-main-ci` 是显式发布来源核验，不再是诊断、停止或兼容镜像恢复的联网前置条件。只有该核验和本地开发需要宿主机 uv / GitHub CLI；普通部署不需要先登录 GitHub。
 
 ### 2. 配置实际需要的能力
 
-唯一应用配置是 **`~/.tracefold/config.yaml`**，由 `tracefold init` 生成；`make up` 会调用初始化。配置不放在仓库目录，也没有 `.env` 回退配置。
+唯一业务配置是 **`TRACEFOLD_HOME/config.yaml`**，默认仍为 **`~/.tracefold/config.yaml`**，由镜像内的 `tracefold init` 生成。可将 [`.env.example`](.env.example) 复制为 `.env`，持久化 Compose 项目名、配置目录和宿主机端口；它不是第二份业务配置。已有目录、密码文件和命名数据卷不变。
 
 | 初始状态 | 含义 |
 | --- | --- |
@@ -79,9 +79,10 @@ make up
 | 交易分析、Signal 发布、执行分别控制 | 开启研究不等于允许下单；执行默认关闭 |
 
 ```bash
-uv run tracefold config  # 查看脱敏配置，不输出原始密钥
-make status-app         # 检查应用栈
-make logs               # 查看主应用日志；Analysis 详见运维指南
+make topology           # 实际项目、配置路径、服务与端口
+make config             # 用容器镜像查看脱敏配置
+make status             # 同时报告应用和独立执行角色
+make logs               # 包含 Analysis 与一次性准备作业
 ```
 
 完整的配置归属、容器地址、挂载、升级和可选执行操作见[安装与配置](docs/SETUP.md)。已有配置和数据会保留；不要用 `init --force` 或删除数据卷来代替故障诊断。
@@ -112,7 +113,7 @@ notebooks/         离线研究；历史实验不属于在线运行链路
 新开发者可沿 **[架构](docs/ARCHITECTURE.md) → [模块手册](docs/README.md#modules) → 对应源码与测试** 阅读。每份模块文档解释入口、输入输出、状态、失败恢复与验证点，而不是复制全部函数声明。
 
 ```bash
-uv sync --frozen
+make sync  # uv sync --locked
 make check
 make test-fast
 ```
