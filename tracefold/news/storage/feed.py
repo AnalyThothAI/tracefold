@@ -163,15 +163,10 @@ class FeedStorage:
     def _feed_counts(self, *, where: list[str], params: list[Any], now_ms: int) -> dict[str, int]:
         """How the reader's current filter splits across the three outcome groups.
 
-        The three predicates partition the feed exactly (see `OUTCOME_GROUP_SQL`), so one pass with FILTER
-        aggregates answers all four tabs. The joins mirror the feed query so a row counts here if and only if
-        it would be served there, but the lateral takes only the column the predicates read rather than the
-        whole verdict row.
-
-        This is an unbounded aggregate on a three-second poll: it costs one pass over the filtered set, which
-        is the last 24 h by default but the whole retention when the reader picks `hours=all`. Measured at
-        19 ms over the entire table at ~2k Events / 1.3 days of retention; re-measure before letting either
-        grow much, and cap the window here if it stops being free.
+        The predicates partition the feed exactly (see OUTCOME_GROUP_SQL) and use the page's
+        evidence and knowledge joins. Counts select each Event's representative delivery in one
+        ledger pass; the limited page keeps indexed per-Event lookups. This avoids sorting a receipt
+        lookup for every Event in a full-retention count, without changing sent-card precedence.
         """
         row = self.conn.execute(
             feed_counts_sql(" AND ".join(where)),
