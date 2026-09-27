@@ -14,7 +14,7 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.judgment import ContractFault
-from tracefold.news.updates.notification import corroborated
+from tracefold.news.updates.notification import corroborated, is_key
 from tracefold.news.updates.public import public_updates
 from tracefold.news.updates.semantics import assemble_update
 
@@ -222,6 +222,7 @@ def test_v1_archive_identity_survives_v2_topic_transition():
     del document["superseded_claim_refs"]
     legacy = EventUpdate.model_validate(document)
     assert legacy.content_sha == sha
+    assert is_key(legacy.claims[0], legacy) == is_key(head.claims[0], head) is True
     ev = material("Agency adds a separate provision.", publisher="new")
     updated = assemble_update(source_for(legacy, ev), Extraction(claims=()), legacy, adopted_at_ms=STAMP + 100)
     assert updated is not None and updated.schema_version == "news_event_update_v2"

@@ -283,7 +283,8 @@ def corroborated(claim: Claim, update: EventUpdate) -> bool:
 def is_key(claim: Claim, update: EventUpdate) -> bool:
     if claim.fields.content_kind not in KEY_CONTENT_KINDS:
         return False
-    if not set(claim.topics) & KEY_TOPIC_CODES:
+    topics = update.topics if update.schema_version == "news_event_update_v1" else claim.topics
+    if not set(topics) & KEY_TOPIC_CODES:
         return False
     return corroborated(claim, update)
 
