@@ -4,14 +4,14 @@ import { ActionButton } from "@shared/ui/ActionButton";
 import { PageHeader } from "@shared/ui/PageHeader";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
   type NewsFeedFilters,
   type NewsFeedSearch,
-  useNewsFeedHistoryWithToken,
-  useNewsFeedWithToken,
+  uniqueFeedEvents,
+  useNewsFeedWindowWithToken,
   useNewsQuotesWithToken,
   useNewsStatusWithToken,
 } from "../../api/newsQueries";
@@ -50,30 +50,15 @@ const DRAWER_QUERY = "(min-width: 1024px)";
 export function NewsFeedPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = parseFeedFilters(searchParams);
-  const query = useNewsFeedWithToken(token, filters);
+  const feedWindow = useNewsFeedWindowWithToken(token, filters);
+  const query = feedWindow.query;
   const statusQuery = useNewsStatusWithToken(token);
-  const feedIdentity = newsFeedIdentity(filters).join("");
-  const [historyAnchor, setHistoryAnchor] = useState<{
-    cursor: string | null;
-    feedIdentity: string;
-  } | null>(null);
-  const [historyRequested, setHistoryRequested] = useState(false);
-  const firstPage = query.data;
-  useEffect(() => {
-    if (!firstPage || historyAnchor?.feedIdentity === feedIdentity) return;
-    setHistoryAnchor({ cursor: firstPage.next_cursor ?? null, feedIdentity });
-    setHistoryRequested(false);
-  }, [feedIdentity, firstPage, historyAnchor?.feedIdentity]);
-  const historyCursor = historyAnchor?.feedIdentity === feedIdentity ? historyAnchor.cursor : null;
-  const historyQuery = useNewsFeedHistoryWithToken(token, filters, historyCursor, historyRequested);
-  const pages = historyQuery.data?.pages ?? [];
-  const serverEvents = Array.from(
-    new Map(
-      [firstPage?.events ?? [], ...pages.map((page) => page.events)]
-        .flat()
-        .map((event) => [event.event_id, event]),
-    ).values(),
+  const feedIdentity = [...newsFeedIdentity(filters), query.data?.pageParams[0] ?? "first"].join(
+    "",
   );
+  const pages = query.data?.pages ?? [];
+  const firstPage = pages[0];
+  const serverEvents = uniqueFeedEvents(pages);
   const hasAdvanced = hasAdvancedFilters(filters);
   const eventListRef = useRef<HTMLDivElement>(null);
   const eventFeed = useAnchoredEventFeed(
@@ -135,6 +120,9 @@ export function NewsFeedPage({ token }: { token: string }) {
         <PageState.Loading label="正在读取新闻事件" layout="panel" rows={6} />
       ) : null}
       {query.isError && !query.data ? (
+        <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
+      ) : null}
+      {query.isError && query.data ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
       {!query.isLoading && !query.isError && !events.length ? (
@@ -212,16 +200,18 @@ export function NewsFeedPage({ token }: { token: string }) {
                   </div>
                 ))}
               </div>
-              {historyQuery.hasNextPage || (!historyRequested && historyCursor) ? (
+              {feedWindow.olderWindow ? (
+                <ActionButton className="news-load-more" onClick={feedWindow.returnLatest}>
+                  返回最新事件
+                </ActionButton>
+              ) : null}
+              {query.hasNextPage ? (
                 <ActionButton
                   className="news-load-more"
-                  disabled={historyQuery.isFetchingNextPage}
-                  onClick={() => {
-                    if (!historyRequested) setHistoryRequested(true);
-                    else void historyQuery.fetchNextPage();
-                  }}
+                  disabled={query.isFetchingNextPage}
+                  onClick={() => void query.fetchNextPage()}
                 >
-                  {historyQuery.isFetchingNextPage ? "正在加载" : "加载更多事件"}
+                  {query.isFetchingNextPage ? "正在加载" : "加载更多事件"}
                 </ActionButton>
               ) : null}
             </div>

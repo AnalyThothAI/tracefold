@@ -42,6 +42,7 @@
 | `decision_ref` | `TEXT` | True | `None` |
 | `card_copy_input_digest` | `TEXT` | True | `None` |
 | `card_copy_document` | `JSONB` | True | `None` |
+| `settlement` | `JSONB` | True | `None` |
 
 ## `news_delivery_queue`
 
@@ -66,6 +67,7 @@
 | `decision_ref` | `TEXT` | True | `None` |
 | `card_copy_input_digest` | `TEXT` | True | `None` |
 | `card_copy_document` | `JSONB` | True | `None` |
+| `last_settlement` | `JSONB` | True | `None` |
 
 ## `news_event_assets`
 

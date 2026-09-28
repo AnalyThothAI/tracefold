@@ -7,8 +7,7 @@ import {
   NEWS_QUOTES_REFETCH_MS,
   type NewsFeedFilters,
   useNewsEventWithToken,
-  useNewsFeedHistoryWithToken,
-  useNewsFeedWithToken,
+  useNewsFeedWindowWithToken,
   useNewsQuotesWithToken,
 } from "@features/news/api/newsQueries";
 import {
@@ -44,12 +43,6 @@ describe("query hook category contracts", () => {
 
   it.each([
     {
-      interval: NEWS_FEED_REFETCH_MS,
-      key: queryKeys.newsFeed(baseFilters),
-      name: "News feed",
-      useObservedQuery: () => useNewsFeedWithToken("token", baseFilters),
-    },
-    {
       interval: TRADING_STATUS_REFETCH_MS,
       key: queryKeys.tradingStatus(),
       name: "Trading status",
@@ -73,9 +66,9 @@ describe("query hook category contracts", () => {
 
   it.each([
     {
-      key: queryKeys.newsFeed(baseFilters),
+      key: queryKeys.newsFeedWindow(baseFilters, 0),
       name: "missing bearer",
-      useObservedQuery: () => useNewsFeedWithToken("", baseFilters),
+      useObservedQuery: () => useNewsFeedWindowWithToken("", baseFilters),
     },
     {
       key: queryKeys.newsEvent(""),
@@ -86,17 +79,17 @@ describe("query hook category contracts", () => {
     expect(captureQueryOptions(useObservedQuery, key).enabled).toBe(false);
   });
 
-  it("keeps history on-demand, frozen, and separate from the polling first page", () => {
-    const useObservedHistoryQuery = () =>
-      useNewsFeedHistoryWithToken("token", baseFilters, "cursor-1", false);
+  it("keeps one bounded Feed cursor chain with polling only at the latest entry", () => {
     const options = captureQueryOptions(
-      useObservedHistoryQuery,
-      queryKeys.newsFeedHistory(baseFilters, "cursor-1"),
+      () => useNewsFeedWindowWithToken("token", baseFilters),
+      queryKeys.newsFeedWindow(baseFilters, 0),
     );
 
-    expect(options.enabled).toBe(false);
-    expect(options.refetchInterval).toBeUndefined();
-    expect(options.staleTime).toBe(Number.POSITIVE_INFINITY);
+    expect(options.enabled).toBe(true);
+    expect((options as { maxPages?: number }).maxPages).toBe(3);
+    expect(options.staleTime).toBe(2_000);
+    expect(typeof options.refetchInterval).toBe("function");
+    expect(NEWS_FEED_REFETCH_MS).toBeGreaterThan(0);
   });
 
   it("keeps the first-seen quote top 100, then sorts only that selected query identity", () => {

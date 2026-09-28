@@ -107,16 +107,16 @@ tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION \
 
 ### 历史编号事实的 head 归属清理
 
-`tracefold news repair-head-scopes` 只读审计当前编号事实 Event 的已采用 head。输出所有越界 Claim、无法自动判定的数量和整批审计 `digest`。执行前保存并验证当前数据库备份，排空 News 发送进程，再用刚生成的 digest 运行：
+`tracefold news repair-head-scopes` 按 `--after` / `--limit` 有界预览当前编号事实 Event 的已采用 head，逐 Event 输出当前 head、修复证明和无法自动判定的引用。执行前保存并验证当前数据库备份，核对目标 Event 的来源原文、head 与证明，再逐 Event 运行：
 
 ```bash
-docker compose exec -T serve tracefold news repair-head-scopes
+docker compose exec -T serve tracefold news repair-head-scopes --limit 50
 docker compose exec -T serve tracefold news repair-head-scopes \
-  --execute --expected-digest AUDIT_DIGEST
-docker compose exec -T serve tracefold news repair-head-scopes
+  --event EVENT_ID --head HEAD_REVISION --proof PROOF_DIGEST --execute
+docker compose exec -T serve tracefold news repair-head-scopes --limit 50
 ```
 
-执行命令在同一事务中重审证据并核对所有 head；出现未能判定的引用、状态变化或相关发送仍在进行时整批回滚。成功后越界活跃 Claim 应为 0；核对 `news_head_scope_repairs` 的证明、`news_event_updates` 的新旧链和 `news_trade_events` 的 `source_update`，再恢复 News Workers。已完成的通知工作不重新打开，原本待处理的工作改为读取修复后 head；已送回执作为实际外部结果保留，不将它们改写成未发送。
+每个执行命令只在一个 Event 事务中锁定并重审当前 head 与证明；不匹配或无法判定时拒绝该 Event。修复可与 News 发送进程并行：发送许可先取得时，其旧 intent 仍由旧 head 的回执结算；修复先提交时，旧 intent 不能再取得发送许可。成功后逐页复查越界活跃 Claim，核对 `news_head_scope_repairs` 的证明、`news_event_updates` 的新旧链和 `news_trade_events` 的 `source_update`。已完成或耗尽的通知工作不重新打开；仍待处理且有预算的工作改为读取修复后 head，保留已消耗尝试。已送回执作为实际外部结果保留。
 
 ### 通知计划失败
 

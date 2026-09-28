@@ -59,7 +59,13 @@ class Store:
             update=self.update, reader=ReaderSnapshot(channel=channel, revision=READER_REVISION, receipts=())
         )
 
-    async def defer_notification(self, event_id: str, channel: str, expected_content_revision: str) -> None:
+    async def defer_notification(
+        self,
+        event_id: str,
+        channel: str,
+        expected_content_revision: str,
+        expected_work_updated_at_ms: int | None = None,
+    ) -> None:
         self.calls.append(("defer_notification", (event_id, expected_content_revision)))
 
     async def lookup_notification_decision(self, event_id: str, channel: str, input_digest: str):
@@ -71,9 +77,9 @@ class Store:
     async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
         self.calls.append(("record_plan", plan.action))
         if plan.action != "notify":
-            return PlanCommit(recorded=True, effective_plan=plan)
+            return PlanCommit(status="committed", effective_plan=plan)
         return PlanCommit(
-            recorded=True,
+            status="committed",
             effective_plan=plan,
             lease=IntentLease(intent_id=plan.intent_id, lease_token="lease", plan=plan, card=self.card),
         )
@@ -85,15 +91,16 @@ class Store:
         self.calls.append(("save_card", card.intent_id))
         return card
 
-    async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> bool:
+    async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> str:
         self.calls.append(("begin_send", card.intent_id))
-        return self.begin
+        return "begun" if self.begin else "head_changed"
 
     async def release_unsent_intent(self, lease: IntentLease) -> None:
         self.calls.append(("release_unsent", lease.intent_id))
 
     async def settle_send(self, lease: IntentLease, card: FrozenCard, outcome: SendOutcome, *, settled_at_ms: int):
         self.calls.append(("settle", (outcome.state, outcome.error_code)))
+        return outcome.state
 
     def names(self) -> list[str]:
         return [name for name, _ in self.calls]
@@ -286,7 +293,7 @@ def test_a_changed_selection_is_never_sent() -> None:
 
     turn = _turn(store, Planner(_plan(update)), Composer(), sender)
 
-    assert turn.status == "preflight_changed"
+    assert turn.status == "head_changed"
     assert sender.cards == [] and "settle" not in store.names()
 
 

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Final
 
+from ..bus import DeferError, TransientError
 from .contracts import EventUpdate, Extraction, FrozenInput, PriorClaim, ReadTarget, SemanticLease
 from .identity import canonical_json, identity
 from .judgment import Budget, ContractFault, ProviderUnavailable, Question, error_code
@@ -231,8 +232,8 @@ class NewsAgent:
 class NotificationTurn:
     """What one notification turn did.
 
-    `status` is `no_work`, the plan action (`no_notification` / `unresolved`), `deferred_or_already_owned`,
-    `preflight_changed`, or the settled send state. A settled send carries the intent it settled and the
+    `status` is `no_work`, a plan action, a named CAS result, `deferred_or_already_owned`,
+    or the settled send state. A settled send carries the intent it settled and the
     provider's outcome, so a delivery adapter can enrich exactly that receipt afterwards.
     """
 
@@ -297,11 +298,13 @@ class Notifications:
         except asyncio.CancelledError:
             raise
         except Exception:
-            await self.store.defer_notification(event_id, channel, snapshot.update.content_revision)
+            await self.store.defer_notification(
+                event_id, channel, snapshot.update.content_revision, snapshot.work_updated_at_ms
+            )
             raise
         committed = await self.store.atomic_record_plan(plan)
-        if not committed.recorded or committed.effective_plan is None:
-            return NotificationTurn("preflight_changed", update=snapshot.update)
+        if committed.status != "committed" or committed.effective_plan is None:
+            return NotificationTurn(committed.status, update=snapshot.update)
         plan = committed.effective_plan
         if plan.action != "notify":
             return NotificationTurn(plan.action, update=snapshot.update)
@@ -310,7 +313,11 @@ class Notifications:
             return NotificationTurn("deferred_or_already_owned", update=snapshot.update)
         card = lease.card
         if card is None:
-            card = await self._card(lease, snapshot.update, budget)
+            try:
+                card = await self._card(lease, snapshot.update, budget)
+            except asyncio.CancelledError:
+                await self._release_unsent(lease)
+                raise
         return NotificationTurn("ready", update=snapshot.update, lease=lease, card=card)
 
     async def finalize(self, prepared: NotificationTurn, sender: Sender) -> NotificationTurn:
@@ -321,6 +328,57 @@ class Notifications:
         if prepared.lease is None or prepared.update is None or prepared.card is None:
             raise ValueError("news_prepared_notification_incomplete")
         return await self._send(prepared.lease, prepared.update, prepared.card, sender)
+
+    async def release_ready(self, prepared: NotificationTurn) -> None:
+        """Release a prepared owner that the coordinator will never finalize."""
+
+        if prepared.status == "ready" and prepared.lease is not None:
+            await self._release_unsent(prepared.lease)
+
+    async def _release_unsent(self, lease: IntentLease) -> None:
+        cleanup = asyncio.create_task(self.store.release_unsent_intent(lease))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await asyncio.wait_for(asyncio.shield(cleanup), timeout=5)
+            raise
+
+    async def _settle_known(self, lease: IntentLease, card: FrozenCard, outcome: SendOutcome) -> None:
+        settled_at_ms = self.clock()
+        started_at = time.monotonic()
+
+        async def commit() -> None:
+            for attempt in range(3):
+                try:
+                    result = await self.store.settle_send(lease, card, outcome, settled_at_ms=settled_at_ms)
+                    if result not in ("sent", "not_sent", "ambiguous", "terminal", "already_settled"):
+                        raise RuntimeError("news_send_settlement_conflict")
+                    logger.info(
+                        "news send settlement intent_id=%s state=%s retries=%s elapsed_ms=%s",
+                        lease.intent_id,
+                        outcome.state,
+                        attempt,
+                        int((time.monotonic() - started_at) * 1000),
+                    )
+                    return
+                except (DeferError, TransientError) as exc:
+                    if attempt == 2:
+                        raise RuntimeError("news_send_settlement_unavailable") from exc
+                    await asyncio.sleep(0.25 * (attempt + 1))
+
+        owner = asyncio.create_task(commit(), name=f"news-send-settle:{lease.intent_id}")
+        try:
+            await asyncio.shield(owner)
+        except asyncio.CancelledError:
+            # A provider result already exists. The owner retains that exact result while this
+            # caller is cancelled; a bounded failure faults the sender instead of returning idle.
+            try:
+                await asyncio.wait_for(asyncio.shield(owner), timeout=12)
+            except TimeoutError as exc:
+                owner.cancel()
+                await asyncio.gather(owner, return_exceptions=True)
+                raise RuntimeError("news_send_settlement_unavailable") from exc
+            raise
 
     async def _card(self, lease: IntentLease, update: EventUpdate, budget: Budget) -> FrozenCard:
         """Compose copy for exactly the selected claims and freeze it; a failure costs only this card."""
@@ -374,10 +432,11 @@ class Notifications:
                 # Pacer waiting and preflight are over. This short transaction checks
                 # the current reader and head before the external side effect can begin.
                 begin_started = True
-                if not await self.store.atomic_begin_send(lease, card):
-                    return NotificationTurn("preflight_changed", update=update, lease=lease, card=card)
+                begin_status = await self.store.atomic_begin_send(lease, card)
+                if begin_status != "begun":
+                    return NotificationTurn(begin_status, update=update, lease=lease, card=card)
                 if preflight is not None:
-                    await self.store.settle_send(lease, card, preflight, settled_at_ms=self.clock())
+                    await self._settle_known(lease, card, preflight)
                     logger.info("news send settled intent_id=%s state=%s", lease.intent_id, preflight.state)
                     return NotificationTurn(preflight.state, update=update, lease=lease, card=card, outcome=preflight)
                 try:
@@ -397,14 +456,14 @@ class Notifications:
                     ambiguous = SendOutcome(
                         state="ambiguous", payload_sha256=card.payload_sha256, error_code=type(exc).__name__
                     )
-                    await self.store.settle_send(lease, card, ambiguous, settled_at_ms=self.clock())
+                    await self._settle_known(lease, card, ambiguous)
                     raise
-                await self.store.settle_send(lease, card, outcome, settled_at_ms=self.clock())
+                await self._settle_known(lease, card, outcome)
                 logger.info("news send settled intent_id=%s state=%s", lease.intent_id, outcome.state)
                 return NotificationTurn(outcome.state, update=update, lease=lease, card=card, outcome=outcome)
         except asyncio.CancelledError:
             if not begin_started:
-                await self.store.release_unsent_intent(lease)
+                await self._release_unsent(lease)
             raise
 
 

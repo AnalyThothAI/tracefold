@@ -19,7 +19,6 @@ import logging
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final, Literal, cast
 
-from ..events.facts import FactUnit, extract_fact_units
 from ..evidence import query_for
 from ..models import MarketAsset, market_type_of
 from ..reader_history import SIMILAR_TITLE_MAX, TARGETED_HISTORY_WINDOW_MS
@@ -28,7 +27,6 @@ from ..taxonomy import source_authority
 from ..updates.contracts import (
     EventUpdate,
     Evidence,
-    ExtractionScope,
     FrozenInput,
     IdentityHint,
     PriorClaim,
@@ -38,11 +36,12 @@ from ..updates.contracts import (
 )
 from ..updates.identity import digest, identity
 from ..updates.notification import NOTIFICATION_ATTEMPTS_MAX, DeliveredText, FrozenCard, NotificationPlan
-from ..updates.projection import reading_view
+from ..updates.ports import BeginSendStatus
+from ..updates.projection import extraction_scopes, item_text, reading_view
 from .decisions import DecisionStorage
 from .evidence import EvidenceStorage
 from .sql_values import _dumps
-from .trade_projection import TradeProjectionStorage
+from .update_commit import SemanticSource, commit_update, lock_event
 
 log = logging.getLogger("tracefold.news")
 
@@ -117,7 +116,6 @@ SEMANTIC_FAILED_CODES_SQL: Final = """
      WHERE last_outcome = 'failed' AND updated_at_ms >= %s
      GROUP BY 1
 """
-_ADOPT_LOCK_NAMESPACE: Final = 0x4E455755  # 'NEWU', distinct from the storyline lock namespace.
 
 IntentOutcome = Literal["sent", "not_sent", "ambiguous"]
 
@@ -249,15 +247,6 @@ def select_receipts(
     return tuple(row[4] for row in ranked[:limit])
 
 
-def _item_text(item: Mapping[str, Any]) -> str:
-    text = str(item.get("evidence_text") or "").strip()
-    if text:
-        return text
-    return "\n".join(
-        part for part in (str(item.get("title") or "").strip(), str(item.get("description") or "").strip()) if part
-    )
-
-
 def item_evidence(item: Mapping[str, Any]) -> Evidence | None:
     """One stored provider Item as model-visible evidence with code-owned provenance.
 
@@ -265,7 +254,7 @@ def item_evidence(item: Mapping[str, Any]) -> Evidence | None:
     News source-authority classifier over the reporting origin and URL, never a model value.
     """
 
-    text = _item_text(item)
+    text = item_text(item)
     if not text:
         return None
     origin = str(item.get("reporting_origin") or "").strip() or None
@@ -380,54 +369,6 @@ def _related_prior(
     return tuple(row for _, row in sorted(candidates, key=lambda pair: pair[0])[:RELATED_PRIOR_CLAIMS_MAX])
 
 
-def _extraction_scopes(material: Mapping[str, Any], evidence: Sequence[Evidence]) -> tuple[ExtractionScope, ...]:
-    """Join immutable member FactUnits to every new body of their own Item."""
-
-    scopes = []
-    facts = material.get("fact_scopes") or {}
-    items = {str(row["item_id"]): row for row in material.get("items") or ()}
-    recovered: dict[str, dict[str, FactUnit]] = {}
-    for item in evidence:
-        for member in material.get("members") or ():
-            if str(member["item_id"]) != item.source.record_id:
-                continue
-            fact_id = str(member["fact_id"])
-            fact = facts.get(fact_id)
-            if fact is None:
-                item_id = str(member["item_id"])
-                if item_id not in recovered:
-                    original = items.get(item_id)
-                    recovered[item_id] = (
-                        {}
-                        if original is None
-                        else {
-                            unit.fact_id: unit
-                            for unit in extract_fact_units(
-                                item_id=item_id,
-                                raw_text=_item_text(original),
-                                fallback_title=str(original.get("title") or ""),
-                            )
-                        }
-                    )
-                unit = recovered[item_id].get(fact_id)
-                if unit is None or unit.text != str(member["fact_text"]):
-                    log.warning("news_member_fact_scope_unresolved", extra={"item_id": item_id, "fact_id": fact_id})
-                    continue
-                fact = unit.as_dict()
-            if fact.get("method", "whole_item") == "whole_item":
-                continue
-            scopes.append(
-                ExtractionScope(
-                    evidence_ref=item.ref,
-                    fact_id=fact_id,
-                    fact_text=str(member["fact_text"]),
-                    context=str(fact.get("context") or ""),
-                    method=str(fact["method"]),
-                )
-            )
-    return tuple(scopes)
-
-
 def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     """Assemble the frozen semantic input from one consistent read.
 
@@ -473,7 +414,7 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     if not evidence:
         raise LookupError("news_event_input_missing")
     complete = tuple({row.ref: row for row in evidence}.values())
-    all_scopes = () if attached else _extraction_scopes(material, complete)
+    all_scopes = () if attached else extraction_scopes(material, complete)
     # A source ref proves only which body was stored, not which task boundary
     # was read.  Construct the current view before comparing completed reads.
     completed = set((work or {}).get("processed_read_refs") or ())
@@ -1172,78 +1113,20 @@ class EventUpdateStorage:
         event_id = update.event_id
         if event_id != lease.event_id or update.input_revision != lease.wanted_revision:
             raise EventUpdateConflict("news_semantic_update_lease_mismatch")
+        lock_event(self.conn, event_id)
         self.require_semantic_owner(lease, now_ms=now_ms)
-        self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
-        self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_ADOPT_LOCK_NAMESPACE, event_id))
-        head = self.conn.execute(
-            "SELECT update_ref, input_revision FROM news_event_update_heads WHERE event_id = %s", (event_id,)
-        ).fetchone()
-        if (None if head is None else str(head["update_ref"])) != expected_head_ref:
-            return False
-        if head is not None and update.input_revision < int(head["input_revision"]):
-            raise EventUpdateConflict("news_update_input_revision_downgrade")
-        inserted = self.conn.execute(
-            """
-            INSERT INTO news_event_updates (
-              event_id, content_revision, input_revision, previous_content_revision, adopted_at_ms,
-              observation_result_id, document
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
-            ON CONFLICT (event_id, content_revision) DO NOTHING
-            RETURNING content_revision
-            """,
-            (
-                event_id,
-                update.content_revision,
-                update.input_revision,
-                update.previous_content_revision,
-                update.adopted_at_ms,
-                observation_result_id,
-                document_json,
-            ),
-        ).fetchone()
-        if inserted is None:
-            # A content state this Event already adopted once. Its stored revision is the fact; a
-            # different document for the same identity is not silently re-pointed.
-            raise EventUpdateConflict("news_event_update_revision_exists")
-        self.conn.execute(
-            """
-            INSERT INTO news_event_update_heads (event_id, content_revision, input_revision, update_ref, adopted_at_ms)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (event_id) DO UPDATE SET
-              content_revision = EXCLUDED.content_revision,
-              input_revision = GREATEST(news_event_update_heads.input_revision, EXCLUDED.input_revision),
-              update_ref = EXCLUDED.update_ref,
-              adopted_at_ms = EXCLUDED.adopted_at_ms
-            """,
-            (event_id, update.content_revision, update.input_revision, update.ref, update.adopted_at_ms),
-        )
-        outbox = cast(TradeProjectionStorage, self)
-        for kind, payload in public_rows:
-            # The outbox clock is the semantic completion the public payload carries, never adoption:
-            # a slower adoption must not make the same public fact look newer to Trading.
-            if not outbox.enqueue_trade_event(
-                kind=kind,
-                source_fact_key=event_id,
-                source_revision=update.content_revision,
-                payload=payload,
-                source_recorded_at_ms=int(cast(int, payload["semantic_completed_at_ms"])),
-            ):
-                raise EventUpdateConflict("news_public_update_conflict")
-        self.conn.execute(
-            """
-            INSERT INTO news_notification_work (
-              event_id, channel, content_revision, state, attempts, next_attempt_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, 'pending', 0, %s, %s)
-            ON CONFLICT (event_id, channel) DO UPDATE SET
-              content_revision = EXCLUDED.content_revision,
-              state = 'pending',
-              attempts = 0,
-              next_attempt_at_ms = EXCLUDED.next_attempt_at_ms,
-              updated_at_ms = EXCLUDED.updated_at_ms
-            """,
-            (event_id, NEWS_CHANNEL, update.content_revision, int(now_ms), int(now_ms)),
-        )
-        return True
+        try:
+            return commit_update(
+                self,
+                expected_head_ref=expected_head_ref,
+                update=update,
+                document_json=document_json,
+                source=SemanticSource(observation_result_id),
+                public_rows=public_rows,
+                now_ms=now_ms,
+            )
+        except ValueError as exc:
+            raise EventUpdateConflict(str(exc)) from exc
 
     # ------------------------------------------------------------------ notification snapshot and plan
     def lookup_notification_decision(self, *, event_id: str, channel: str, input_digest: str) -> dict[str, Any] | None:
@@ -1298,7 +1181,8 @@ class EventUpdateStorage:
         """The pending head and the actual-reader receipts recalled by the reader-history bands."""
 
         work = self.conn.execute(
-            "SELECT content_revision, state FROM news_notification_work WHERE event_id = %s AND channel = %s",
+            "SELECT content_revision, state, updated_at_ms FROM news_notification_work "
+            "WHERE event_id = %s AND channel = %s",
             (event_id, channel),
         ).fetchone()
         if work is None or work["state"] != "pending":
@@ -1369,6 +1253,7 @@ class EventUpdateStorage:
             else []
         )
         return {
+            "work_updated_at_ms": int(work["updated_at_ms"]),
             "head": head,
             "blocked": blocked,
             "invalidated": invalidated,
@@ -1387,7 +1272,7 @@ class EventUpdateStorage:
         watch_symbols: Iterable[str],
         now_ms: int,
         lease_ms: int = INTENT_LEASE_MS,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         """CAS head/reader, record or reuse an immutable decision, then reserve its stable intent."""
 
         head = self.conn.execute(
@@ -1395,8 +1280,15 @@ class EventUpdateStorage:
             (plan.update_ref,),
         ).fetchone()
         if head is None:
-            return None
+            return {"status": "head_changed"}
         event_id = str(head["event_id"])
+        lock_event(self.conn, event_id)
+        head = self.conn.execute(
+            "SELECT event_id,content_revision FROM news_event_update_heads WHERE event_id=%s AND update_ref=%s",
+            (event_id, plan.update_ref),
+        ).fetchone()
+        if head is None:
+            return {"status": "head_changed"}
         work = self.conn.execute(
             """
             SELECT state, content_revision, attempts FROM news_notification_work
@@ -1404,14 +1296,16 @@ class EventUpdateStorage:
             """,
             (event_id, plan.channel),
         ).fetchone()
-        if work is None or work["state"] != "pending" or work["content_revision"] != head["content_revision"]:
-            return None
+        if work is None or work["content_revision"] != head["content_revision"]:
+            return {"status": "head_changed"}
+        if work["state"] != "pending":
+            return {"status": "already_settled"}
         stamp = reader_revision_stamp(plan.reader_revision)
         if (
             self._reader_revision(event_id=event_id, stamp_ms=stamp, watch_symbols=watch_symbols)
             != plan.reader_revision
         ):
-            return None
+            return {"status": "reader_changed"}
         intent_id = plan.intent_id if plan.action == "notify" else None
         others = self.conn.execute(
             """
@@ -1425,7 +1319,7 @@ class EventUpdateStorage:
             (event_id, intent_id),
         ).fetchall()
         if any(row["lease_token"] is not None and int(row["next_attempt_at_ms"]) > int(now_ms) for row in others):
-            return None
+            return {"status": "overlap"}
         if others:
             # Superseded unsent reservations of this Event: retire them, never a frozen send.
             self.conn.execute(
@@ -1462,7 +1356,12 @@ class EventUpdateStorage:
         plan_json = plan.model_dump_json()
 
         def recorded(intent: str | None = None, card: Any = None) -> dict[str, Any]:
-            return {"plan": plan.model_dump(mode="json"), "intent_id": intent, "frozen_card": card}
+            return {
+                "status": "committed",
+                "plan": plan.model_dump(mode="json"),
+                "intent_id": intent,
+                "frozen_card": card,
+            }
 
         attempts = int(work["attempts"])
         if plan.action == "no_notification":
@@ -1478,15 +1377,15 @@ class EventUpdateStorage:
                 # This exact selection already reached its final outcome: the plan is recorded, not resent.
                 self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
             else:
-                self._retry_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
-            return recorded()
+                self._wait_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
+            return {"status": "already_settled"}
         selected = list(plan.selected_claim_refs)
         reserved = self.conn.execute(
             """
             INSERT INTO news_delivery_queue (
               intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms,
               last_attempt_at_ms, updated_at_ms, content_revision, claim_refs, plan_key, lease_token, decision_ref
-            ) VALUES (%s, %s, 'update', 'pending', 1, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+            ) VALUES (%s, %s, 'update', 'pending', 0, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
             ON CONFLICT (intent_id) DO NOTHING
             RETURNING frozen_card
             """,
@@ -1515,9 +1414,9 @@ class EventUpdateStorage:
             ).fetchone()
             if existing["state"] == "dead":
                 self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
-                return recorded()
+                return {"status": "already_settled"}
             if existing["lease_token"] is not None and int(existing["next_attempt_at_ms"]) > int(now_ms):
-                return recorded()
+                return {"status": "overlap"}
             if int(existing["attempts"]) >= INTENT_ATTEMPTS_MAX:
                 self.conn.execute(
                     """
@@ -1529,11 +1428,11 @@ class EventUpdateStorage:
                     (int(now_ms), int(now_ms), intent_id),
                 )
                 self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
-                return recorded()
+                return {"status": "already_settled"}
             self.conn.execute(
                 """
                 UPDATE news_delivery_queue
-                   SET attempts = attempts + 1, lease_token = %s, next_attempt_at_ms = %s,
+                   SET lease_token = %s, next_attempt_at_ms = %s,
                        last_attempt_at_ms = %s, updated_at_ms = %s
                  WHERE intent_id = %s
                 """,
@@ -1553,14 +1452,13 @@ class EventUpdateStorage:
                 plan_json = plan.model_dump_json()
         # The marker stays pending while the reserved intent is in flight. If this turn dies before
         # the send is settled, the repair turn re-plans after the lease and reclaims the same identity.
-        spent = min(attempts + 1, NOTIFICATION_ATTEMPTS_MAX) if plan.deferred_claim_refs else attempts
-        retry_ms = _retry_delay(NOTIFICATION_RETRY_MS, spent) if plan.deferred_claim_refs else 0
+        retry_ms = NOTIFICATION_RETRY_MS[0] if plan.deferred_claim_refs else 0
         self._settle_work(
             event_id,
             plan,
             plan_json,
             state="pending",
-            attempts=spent,
+            attempts=attempts,
             next_at_ms=int(now_ms) + max(int(lease_ms), retry_ms),
             now_ms=now_ms,
         )
@@ -1571,7 +1469,7 @@ class EventUpdateStorage:
     ) -> None:
         # Deferred claims keep the marker pending for a later turn; otherwise this head is planned.
         if plan.deferred_claim_refs:
-            self._retry_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
+            self._wait_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
         else:
             self._settle_work(event_id, plan, plan_json, state="done", attempts=0, next_at_ms=now_ms, now_ms=now_ms)
 
@@ -1603,6 +1501,17 @@ class EventUpdateStorage:
             state="pending",
             attempts=spent,
             next_at_ms=int(now_ms) + _retry_delay(NOTIFICATION_RETRY_MS, spent),
+            now_ms=now_ms,
+        )
+
+    def _wait_work(self, event_id: str, plan: NotificationPlan, plan_json: str, *, attempts: int, now_ms: int) -> None:
+        self._settle_work(
+            event_id,
+            plan,
+            plan_json,
+            state="pending",
+            attempts=attempts,
+            next_at_ms=int(now_ms) + NOTIFICATION_RETRY_MS[0],
             now_ms=now_ms,
         )
 
@@ -1684,6 +1593,12 @@ class EventUpdateStorage:
         return dict(row["frozen_card"])
 
     def release_unsent_intent(self, *, intent_id: str, lease_token: str, now_ms: int) -> bool:
+        identity_row = self.conn.execute(
+            "SELECT event_id FROM news_delivery_queue WHERE intent_id=%s AND kind='update'", (intent_id,)
+        ).fetchone()
+        if identity_row is None:
+            return False
+        lock_event(self.conn, str(identity_row["event_id"]))
         row = self.conn.execute(
             """UPDATE news_delivery_queue SET lease_token=NULL, next_attempt_at_ms=%s, updated_at_ms=%s
                 WHERE intent_id=%s AND kind='update' AND state='pending' AND lease_token=%s
@@ -1709,7 +1624,7 @@ class EventUpdateStorage:
         card: FrozenCard,
         watch_symbols: Iterable[str],
         now_ms: int,
-    ) -> bool:
+    ) -> BeginSendStatus:
         """Recheck head, reader revision, lease and in-flight overlap, then freeze `sending`.
 
         A changed head, reader or overlapping send releases the unsent reservation (its frozen card is
@@ -1717,6 +1632,12 @@ class EventUpdateStorage:
         touched.
         """
 
+        identity_row = self.conn.execute(
+            "SELECT event_id FROM news_delivery_queue WHERE intent_id=%s AND kind='update'", (intent_id,)
+        ).fetchone()
+        if identity_row is None:
+            return "lease_lost"
+        lock_event(self.conn, str(identity_row["event_id"]))
         queued = self.conn.execute(
             """
             SELECT event_id, state, lease_token, frozen_card, content_revision, claim_refs, plan_key,
@@ -1726,23 +1647,23 @@ class EventUpdateStorage:
             (intent_id,),
         ).fetchone()
         if queued is None or queued["state"] != "pending" or queued["lease_token"] != lease_token:
-            return False
+            return "lease_lost"
         if queued["decision_ref"] != plan.record_ref:
             raise EventUpdateConflict("news_intent_decision_mismatch")
         frozen = queued["frozen_card"]
         if frozen is None or FrozenCard.model_validate(frozen) != card:
             raise EventUpdateConflict("news_intent_card_not_frozen")
         if self.conn.execute("SELECT 1 FROM news_deliveries WHERE intent_id = %s", (intent_id,)).fetchone():
-            return False
+            return "already_settled"
         event_id = str(queued["event_id"])
         head = self.conn.execute(
             "SELECT update_ref FROM news_event_update_heads WHERE event_id = %s", (event_id,)
         ).fetchone()
         stamp = reader_revision_stamp(plan.reader_revision)
-        changed = (
-            head is None
-            or head["update_ref"] != plan.update_ref
-            or self._reader_revision(event_id=event_id, stamp_ms=stamp, watch_symbols=watch_symbols)
+        head_changed = head is None or head["update_ref"] != plan.update_ref
+        reader_changed = (
+            not head_changed
+            and self._reader_revision(event_id=event_id, stamp_ms=stamp, watch_symbols=watch_symbols)
             != plan.reader_revision
         )
         overlap = self.conn.execute(
@@ -1754,7 +1675,7 @@ class EventUpdateStorage:
             """,
             (event_id, list(card.claim_refs)),
         ).fetchone()
-        if changed or overlap is not None:
+        if head_changed or reader_changed or overlap is not None:
             self.conn.execute(
                 """
                 UPDATE news_delivery_queue SET lease_token = NULL, next_attempt_at_ms = %s, updated_at_ms = %s
@@ -1765,7 +1686,7 @@ class EventUpdateStorage:
             self._pend_notification(
                 event_id, expected_content_revision=str(queued["content_revision"]), next_at_ms=now_ms, now_ms=now_ms
             )
-            return False
+            return "head_changed" if head_changed else "reader_changed" if reader_changed else "overlap"
         inserted = self.conn.execute(
             """
             WITH selected AS (
@@ -1820,7 +1741,7 @@ class EventUpdateStorage:
                 "copy_document": _dumps(queued["card_copy_document"]),
             },
         ).fetchone()
-        return inserted is not None
+        return "begun" if inserted is not None else "already_settled"
 
     def settle_intent_send(
         self,
@@ -1835,8 +1756,8 @@ class EventUpdateStorage:
         retry_after_ms: int | None,
         settled_at_ms: int,
         provider_receipt: Mapping[str, Any] | None = None,
-    ) -> str | None:
-        """Record the actual outcome of one frozen send; returns the ledger state written, if any.
+    ) -> str:
+        """Record the actual outcome of one frozen send or verify an identical prior settlement.
 
         Only a `sending` row with this exact payload is settled. Sent keeps the body, digest, provider
         message id and the provider's own receipt (what an in-place edit is later fenced by); a provider
@@ -1845,37 +1766,66 @@ class EventUpdateStorage:
         and the provider's own `Retry-After`, otherwise it is terminal.
         """
 
+        identity_row = self.conn.execute(
+            """SELECT event_id FROM news_deliveries WHERE intent_id=%s
+               UNION ALL SELECT event_id FROM news_delivery_queue WHERE intent_id=%s LIMIT 1""",
+            (intent_id, intent_id),
+        ).fetchone()
+        if identity_row is None:
+            return "conflict"
+        lock_event(self.conn, str(identity_row["event_id"]))
+        expected = {
+            "lease_token": lease_token,
+            "payload_sha256": payload_sha256,
+            "state": state,
+            "error_code": error_code,
+            "retryable": retryable,
+            "retry_after_ms": retry_after_ms,
+            "provider_message_id": provider_message_id,
+            "provider_receipt": dict(provider_receipt or {}),
+        }
+        receipt = {
+            "channel": NEWS_CHANNEL,
+            "payload_sha256": payload_sha256,
+            "provider_message_id": provider_message_id,
+            "pushed_at_ms": int(settled_at_ms),
+            # The provider's own push stamp and target identity fence enrichment edits.
+            **dict(provider_receipt or {}),
+        }
         ledger = self.conn.execute(
             """
-            SELECT event_id, state, payload_sha256, content_revision FROM news_deliveries
+            SELECT event_id, state, payload_sha256, content_revision, error_code, settlement FROM news_deliveries
              WHERE intent_id = %s FOR UPDATE
             """,
             (intent_id,),
         ).fetchone()
-        if ledger is None or ledger["state"] != "sending" or ledger["payload_sha256"] != payload_sha256:
-            return None
+        if ledger is None:
+            previous = self.conn.execute(
+                "SELECT last_settlement FROM news_delivery_queue WHERE intent_id=%s FOR UPDATE", (intent_id,)
+            ).fetchone()
+            return "already_settled" if previous and previous["last_settlement"] == expected else "conflict"
+        if ledger["payload_sha256"] != payload_sha256:
+            return "conflict"
+        if ledger["state"] != "sending":
+            return "already_settled" if ledger["settlement"] == expected else "conflict"
         event_id = str(ledger["event_id"])
         content_revision = str(ledger["content_revision"])
         queued = self.conn.execute(
-            "SELECT attempts, lease_token FROM news_delivery_queue WHERE intent_id = %s FOR UPDATE", (intent_id,)
+            "SELECT attempts, lease_token, last_settlement FROM news_delivery_queue WHERE intent_id = %s FOR UPDATE",
+            (intent_id,),
         ).fetchone()
+        if queued is None or queued["lease_token"] != lease_token:
+            previous = None if queued is None else queued["last_settlement"]
+            return "already_settled" if previous == expected else "conflict"
         now_ms = int(settled_at_ms)
         if state == "sent":
-            receipt = {
-                "channel": NEWS_CHANNEL,
-                "payload_sha256": payload_sha256,
-                "provider_message_id": provider_message_id,
-                "pushed_at_ms": now_ms,
-                # The provider's own fields win: a Telegram receipt's push stamp and target identity are
-                # what its enrichment edit is fenced by.
-                **dict(provider_receipt or {}),
-            }
             self.conn.execute(
                 """
-                UPDATE news_deliveries SET state = 'sent', receipt = %s::jsonb, error_code = NULL, settled_at_ms = %s
+                UPDATE news_deliveries SET state = 'sent', receipt = %s::jsonb, settlement = %s::jsonb,
+                       error_code = NULL, settled_at_ms = %s
                  WHERE intent_id = %s
                 """,
-                (_dumps(receipt), now_ms, intent_id),
+                (_dumps(receipt), _dumps(expected), now_ms, intent_id),
             )
             self.conn.execute("DELETE FROM news_delivery_queue WHERE intent_id = %s", (intent_id,))
             self._complete_intent(event_id, content_revision, now_ms=now_ms)
@@ -1883,25 +1833,34 @@ class EventUpdateStorage:
         if state == "ambiguous":
             self.conn.execute(
                 """
-                UPDATE news_deliveries SET state = 'ambiguous', error_code = %s, settled_at_ms = %s
+                UPDATE news_deliveries SET state = 'ambiguous', error_code = %s,
+                       settlement = %s::jsonb, settled_at_ms = %s
                  WHERE intent_id = %s
                 """,
-                (error_code or "send_outcome_ambiguous", now_ms, intent_id),
+                (error_code or "send_outcome_ambiguous", _dumps(expected), now_ms, intent_id),
             )
             self.conn.execute("DELETE FROM news_delivery_queue WHERE intent_id = %s", (intent_id,))
             self._complete_intent(event_id, content_revision, now_ms=now_ms)
             return "ambiguous"
         owned = queued is not None and queued["lease_token"] == lease_token
-        if retryable and owned and int(queued["attempts"]) < INTENT_ATTEMPTS_MAX:
-            next_at_ms = now_ms + max(_retry_delay(INTENT_RETRY_MS, int(queued["attempts"])), int(retry_after_ms or 0))
+        if retryable and owned and int(queued["attempts"]) + 1 < INTENT_ATTEMPTS_MAX:
+            failures = int(queued["attempts"]) + 1
+            next_at_ms = now_ms + max(_retry_delay(INTENT_RETRY_MS, failures), int(retry_after_ms or 0))
             self.conn.execute("DELETE FROM news_deliveries WHERE intent_id = %s AND state = 'sending'", (intent_id,))
             self.conn.execute(
                 """
                 UPDATE news_delivery_queue
-                   SET lease_token = NULL, error_code = %s, next_attempt_at_ms = %s, updated_at_ms = %s
+                   SET attempts = attempts + 1, lease_token = NULL, error_code = %s,
+                       next_attempt_at_ms = %s, updated_at_ms = %s, last_settlement=%s::jsonb
                  WHERE intent_id = %s
                 """,
-                (error_code or "send_not_sent", next_at_ms, now_ms, intent_id),
+                (
+                    error_code or "send_not_sent",
+                    next_at_ms,
+                    now_ms,
+                    _dumps(expected),
+                    intent_id,
+                ),
             )
             self._pend_notification(
                 event_id, expected_content_revision=content_revision, next_at_ms=next_at_ms, now_ms=now_ms
@@ -1909,30 +1868,39 @@ class EventUpdateStorage:
             return "not_sent"
         self.conn.execute(
             """
-            UPDATE news_deliveries SET state = 'terminal', error_code = %s, settled_at_ms = %s
+            UPDATE news_deliveries SET state = 'terminal', error_code = %s,
+                   settlement = %s::jsonb, settled_at_ms = %s
              WHERE intent_id = %s
             """,
-            (error_code or "send_not_sent", now_ms, intent_id),
+            (error_code or "send_not_sent", _dumps(expected), now_ms, intent_id),
         )
         self.conn.execute(
             """
             UPDATE news_delivery_queue
-               SET state = 'dead', lease_token = NULL, error_code = %s, settled_at_ms = %s, updated_at_ms = %s
+               SET state = 'dead', attempts = LEAST(attempts + 1, %s), lease_token = NULL,
+                   error_code = %s, settled_at_ms = %s, updated_at_ms = %s,
+                   last_settlement = %s::jsonb
              WHERE intent_id = %s
             """,
-            (error_code or "send_not_sent", now_ms, now_ms, intent_id),
+            (INTENT_ATTEMPTS_MAX, error_code or "send_not_sent", now_ms, now_ms, _dumps(expected), intent_id),
         )
         self._complete_intent(event_id, content_revision, now_ms=now_ms)
         return "terminal"
 
     def record_intent_card_failure(self, *, intent_id: str, lease_token: str, error_code: str, now_ms: int) -> bool:
+        identity_row = self.conn.execute(
+            "SELECT event_id FROM news_delivery_queue WHERE intent_id=%s AND kind='update'", (intent_id,)
+        ).fetchone()
+        if identity_row is None:
+            return False
+        lock_event(self.conn, str(identity_row["event_id"]))
         row = self.conn.execute(
             """
             UPDATE news_delivery_queue
-               SET lease_token = NULL, error_code = %s,
-                   state = CASE WHEN attempts >= %s THEN 'dead' ELSE 'pending' END,
-                   settled_at_ms = CASE WHEN attempts >= %s THEN %s::bigint END,
-                   next_attempt_at_ms = %s::bigint + (%s::bigint[])[GREATEST(1, LEAST(attempts, %s))],
+               SET attempts = LEAST(attempts + 1, 3), lease_token = NULL, error_code = %s,
+                   state = CASE WHEN attempts + 1 >= %s THEN 'dead' ELSE 'pending' END,
+                   settled_at_ms = CASE WHEN attempts + 1 >= %s THEN %s::bigint END,
+                   next_attempt_at_ms = %s::bigint + (%s::bigint[])[GREATEST(1, LEAST(attempts + 1, %s))],
                    updated_at_ms = %s
              WHERE intent_id = %s AND kind = 'update' AND state = 'pending' AND lease_token = %s
             RETURNING event_id, state, next_attempt_at_ms, content_revision
@@ -1964,18 +1932,26 @@ class EventUpdateStorage:
         return True
 
     def defer_notification_work(
-        self, *, event_id: str, channel: str, expected_content_revision: str, now_ms: int
+        self,
+        *,
+        event_id: str,
+        channel: str,
+        expected_content_revision: str,
+        expected_work_updated_at_ms: int | None = None,
+        now_ms: int,
     ) -> bool:
         """Spend only the failed snapshot's budget. A superseded turn is a successful no-op."""
 
+        lock_event(self.conn, event_id)
         cursor = self.conn.execute(
             """
             UPDATE news_notification_work
                SET attempts = attempts + 1,
                    next_attempt_at_ms = %s::bigint + (%s::bigint[])[attempts + 1],
-                   updated_at_ms = %s
+                   updated_at_ms = GREATEST(%s, updated_at_ms + 1)
              WHERE event_id = %s AND channel = %s AND content_revision = %s
                AND state = 'pending' AND attempts < %s
+               AND (%s::bigint IS NULL OR updated_at_ms = %s)
             """,
             (
                 int(now_ms),
@@ -1985,6 +1961,8 @@ class EventUpdateStorage:
                 channel,
                 expected_content_revision,
                 NOTIFICATION_ATTEMPTS_MAX,
+                expected_work_updated_at_ms,
+                expected_work_updated_at_ms,
             ),
         )
         return bool(cursor.rowcount)

@@ -101,19 +101,31 @@ class FeedStorage:
         if event_kind and len(event_kind) < len(EVENT_KINDS):
             where.append("e.event_kind = ANY(%s)")
             params.append(list(event_kind))
-        # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
-        # Snapshot the clauses so the outcome group and cursor appended below cannot reach the count query.
+        # First-page counts and rows share one PostgreSQL statement snapshot. Later pages need no count.
         wants_counts = cursor_opened is None
-        counts = self._feed_counts(where=list(where), params=list(params)) if wants_counts else None
+        count_where = " AND ".join(where)
+        count_params = tuple(params)
         if outcome in OUTCOME_GROUP_SQL:
             where.append(OUTCOME_GROUP_SQL[outcome])
         if cursor_opened is not None:
             where.append("(e.opened_at_ms, e.event_id) < (%s, %s)")
             params.extend([cursor_opened, cursor_id])
-        rows = self.conn.execute(
-            feed_page_sql(" AND ".join(where)),
-            (*params, int(limit) + 1),
-        ).fetchall()
+        page_sql = feed_page_sql(" AND ".join(where))
+        if wants_counts:
+            statement = (
+                f"WITH page AS MATERIALIZED ({page_sql}), counts AS MATERIALIZED ({feed_counts_sql(count_where)}) "  # noqa: S608
+                "SELECT page.*, counts.total AS feed_total, counts.pushed AS feed_pushed, "
+                "counts.held AS feed_held, counts.pending AS feed_pending "
+                "FROM counts LEFT JOIN page ON true "
+                "ORDER BY page.opened_at_ms DESC NULLS LAST, page.event_id DESC NULLS LAST"
+            )
+            result = self.conn.execute(statement, (*params, int(limit) + 1, *count_params)).fetchall()
+            count_row = result[0]
+            counts = {key: int(count_row[f"feed_{key}"] or 0) for key in ("total", "pushed", "held", "pending")}
+            rows = [row for row in result if row["event_id"] is not None]
+        else:
+            rows = self.conn.execute(page_sql, (*params, int(limit) + 1)).fetchall()
+            counts = None
         items = [_feed_row(dict(r), now_ms=handoff_now_ms) for r in rows[: int(limit)]]
         next_cursor = None
         if len(rows) > int(limit):
@@ -136,20 +148,6 @@ class FeedStorage:
             },
             "search": search.public_metadata() if search is not None else None,
         }
-
-    def _feed_counts(self, *, where: list[str], params: list[Any]) -> dict[str, int]:
-        """How the reader's current filter splits across the three outcome groups.
-
-        The predicates partition the feed exactly (see OUTCOME_GROUP_SQL) and use the page's
-        evidence and knowledge joins. Counts select each Event's representative delivery in one
-        ledger pass; the limited page keeps indexed per-Event lookups. This avoids sorting a receipt
-        lookup for every Event in a full-retention count, without changing sent-card precedence.
-        """
-        row = self.conn.execute(
-            feed_counts_sql(" AND ".join(where)),
-            tuple(params),
-        ).fetchone()
-        return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
     def item_related_events(self, *, item_id: str, after_event_id: str | None, limit: int) -> dict[str, Any]:
         """Page every Event this Item contributed to, including non-leader membership."""
@@ -257,10 +255,18 @@ class FeedStorage:
         update_error_code = None
         if head is not None:
             prior = update_reads.previous_claims(self.conn, event_id, previous_content_refs(head["document"]))
-            event_update = event_update_view(head, previous_claims=prior, sent_headline=sent_headline(intents))
+            current_intents = [
+                intent for intent in intents if intent.get("content_revision") == head["content_revision"]
+            ]
+            event_update = event_update_view(head, previous_claims=prior, sent_headline=sent_headline(current_intents))
             update_error_code = UPDATE_DECODE_ERROR if event_update is None else None
         statements = {str(claim["ref"]): str(claim["statement"]) for claim in (event_update or {}).get("claims", [])}
-        notification_public = notification_view(notification, statements=statements)
+        current_notification = (
+            notification
+            if head is None or notification is None or notification["content_revision"] == head["content_revision"]
+            else None
+        )
+        notification_public = notification_view(current_notification, statements=statements)
         processing = (
             {
                 "semantic": semantic_view(work),
@@ -289,7 +295,7 @@ class FeedStorage:
             delivery_queue=_owed_intent(queue, deliveries),
             semantic=work,
             adopted=head is not None,
-            notification=_notification_outcome_input(notification),
+            notification=_notification_outcome_input(current_notification),
             evidence_snapshots=snapshots if on_update_path else [],
             revisions=revisions,
             observations=observations,
@@ -529,6 +535,8 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
             "state": row["delivery_state"],
             "settled_at_ms": row.get("delivered_at_ms"),
             "error_code": row.get("delivery_error_code"),
+            "content_revision": row.get("delivery_content_revision"),
+            "payload_sha256": row.get("delivery_payload_sha256"),
         }
         if row.get("delivery_state")
         else None
@@ -536,7 +544,12 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
     outcome = event_outcome(
         admission=row.get("admission"),
         delivery=delivery | {"plan_key": row.get("delivery_plan_key")} if delivery is not None else None,
-        delivery_queue={"state": row.get("delivery_queue_state"), "error_code": row.get("delivery_queue_error_code")},
+        delivery_queue={
+            "state": row.get("delivery_queue_state"),
+            "error_code": row.get("delivery_queue_error_code"),
+            "content_revision": row.get("delivery_queue_content_revision"),
+            "frozen_card": row.get("delivery_queue_frozen"),
+        },
         semantic=(
             {
                 "wanted_revision": row.get("semantic_wanted_revision"),
@@ -552,10 +565,12 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
             {
                 "state": row["notification_state"],
                 "attempts": row.get("notification_attempts"),
+                "content_revision": row.get("notification_content_revision"),
                 "action": row.get("notification_action"),
                 "claim_decisions": row.get("notification_claim_decisions"),
             }
             if row.get("notification_state")
+            and row.get("notification_content_revision") == row.get("update_content_revision")
             else None
         ),
     )
@@ -616,6 +631,7 @@ def _notification_outcome_input(work: Mapping[str, Any] | None) -> dict[str, Any
     return {
         "state": work["state"],
         "attempts": work.get("attempts"),
+        "content_revision": work.get("content_revision"),
         "action": plan.get("action"),
         "claim_decisions": plan.get("claim_decisions"),
     }

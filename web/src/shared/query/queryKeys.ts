@@ -24,10 +24,10 @@ export const newsFeedIdentity = (filters: NewsFeedQueryKeyFilters) =>
 export const queryKeys = {
   bootstrap: () => ["bootstrap"] as const,
   status: () => ["status"] as const,
-  newsFeed: (filters: NewsFeedQueryKeyFilters) =>
-    ["news-feed", ...newsFeedIdentity(filters)] as const,
-  newsFeedHistory: (filters: NewsFeedQueryKeyFilters, firstCursor: string) =>
-    ["news-feed-history", ...newsFeedIdentity(filters), firstCursor] as const,
+  newsFeedWindow: (filters: NewsFeedQueryKeyFilters, generation: number) =>
+    ["news-feed-window", ...newsFeedIdentity(filters), generation] as const,
+  newsFeedFirstPage: (filters: NewsFeedQueryKeyFilters) =>
+    ["news-feed-first-page", ...newsFeedIdentity(filters)] as const,
   newsEvent: (eventId: string) => ["news-event", eventId] as const,
   newsItemRelatedEvents: (itemId: string) => ["news-item-related-events", itemId] as const,
   // #553 PR-1: market observations are their own endpoint and their own key. The kind filter is part of the

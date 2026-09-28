@@ -751,6 +751,9 @@ class ScriptedNotifications:
     async def process(self, event_id: str, channel: str, sender: Any) -> NotificationTurn:
         return await self.finalize(await self.prepare(event_id, channel), sender)
 
+    async def release_ready(self, prepared: NotificationTurn) -> None:
+        assert prepared.status == "ready"
+
 
 def _delivery_news(**overrides: Any) -> RecordingNews:
     responses: dict[str, Any] = {
@@ -775,6 +778,7 @@ def _deliverer(
     price_fetcher_for: Any | None = None,
     tradability_verifier: Any | None = None,
     min_interval_seconds: float = 0.0,
+    notification_prepare_limit: int = 2,
     finite_operations: Any | None = None,
     admission_timeout_for: set[str] | None = None,
 ) -> DelivererLoop:
@@ -783,6 +787,7 @@ def _deliverer(
         sender=sender,
         finite_operations=finite_operations or InlineFinite(),
         min_interval_seconds=min_interval_seconds,
+        notification_prepare_limit=notification_prepare_limit,
         notifications=notifications,  # type: ignore[arg-type]
         candle_fetcher_for=candle_fetcher_for,
         price_fetcher_for=price_fetcher_for,
@@ -1032,6 +1037,45 @@ def test_fast_preparation_finalizes_before_slow_sibling_and_inflight_work_is_bou
     assert worked == 3
     assert notifications.max_active == 2
     assert notifications.finalized == ["fast", "slow"]
+
+
+def test_new_due_work_uses_free_prepare_capacity_while_a_finalizer_waits() -> None:
+    class Controlled(ScriptedNotifications):
+        def __init__(self) -> None:
+            super().__init__(_intent(event_id="a"), _intent(event_id="b"))
+            self.finalizer_started = asyncio.Event()
+            self.release_finalizer = asyncio.Event()
+            self.release_b = asyncio.Event()
+            self.c_prepared = asyncio.Event()
+
+        async def prepare(self, event_id: str, channel: str) -> NotificationTurn:
+            if event_id == "b":
+                await self.release_b.wait()
+            result = await super().prepare(event_id, channel)
+            if event_id == "c":
+                self.c_prepared.set()
+            return result
+
+        async def finalize(self, prepared: NotificationTurn, sender: Any) -> NotificationTurn:
+            if prepared.update is not None and prepared.update.event_id == "a":
+                self.finalizer_started.set()
+                await self.release_finalizer.wait()
+            return await super().finalize(prepared, sender)
+
+    async def scenario() -> tuple[int, Controlled]:
+        notifications = Controlled()
+        consumer = _deliverer(notifications=notifications, sender=RecordingSender(), notification_prepare_limit=3)
+        task = asyncio.create_task(consumer.advance())
+        await asyncio.wait_for(notifications.finalizer_started.wait(), 1)
+        notifications.intents["c"] = _intent(event_id="c")
+        await asyncio.wait_for(notifications.c_prepared.wait(), 2)
+        notifications.release_finalizer.set()
+        notifications.release_b.set()
+        return await asyncio.wait_for(task, 2), notifications
+
+    worked, notifications = asyncio.run(scenario())
+    assert worked == 3
+    assert notifications.processed == ["a", "c", "b"]
 
 
 def test_the_deliverer_prices_exactly_the_selected_claims_primary_assets() -> None:

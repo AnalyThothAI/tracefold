@@ -15,8 +15,8 @@ from .news_common import (
 class NewsFeedUpdateData(ExactApiSchema):
     """The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.
 
-    ``headline`` is the card headline a reader actually received for this Event's latest sent update, else
-    the first claim the head has not retired. It is ``null`` only when every claim is retired.
+    ``headline`` is the card headline only when its sent revision is this head; otherwise
+    it names a current active claim. A historical card keeps its own revision in ``delivery``.
     """
 
     content_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
