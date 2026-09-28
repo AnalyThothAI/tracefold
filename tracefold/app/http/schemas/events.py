@@ -461,6 +461,7 @@ class NewsEventUpdateData(ExactApiSchema):
     input_revision: int = Field(ge=1)
     previous_content_revision: str | None = None
     adopted_at_ms: int
+    scope_repair_id: str | None = None
     # The card headline a reader actually received for the latest sent update, else the first claim the
     # head has not retired.
     headline: str | None = None
