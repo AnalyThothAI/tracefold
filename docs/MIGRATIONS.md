@@ -31,7 +31,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20260927_0407`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20260928_0408`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
@@ -82,6 +82,7 @@ class Runtime execution;
 | `20260926_0404` | Item 修订、语义工作 / 检查点 / 观察、EventUpdate 与 head、通知工作、intent 发送、公开更新与 Trading amendment | [0404](../tracefold/platform/postgres/alembic/versions/20260926_0404_news_event_updates.py) |
 | `20260927_0405` | 来源修订顺序 / 前驱、保留不可变 v1 与新 v2、跨 Event claim 定位索引 | [0405](../tracefold/platform/postgres/alembic/versions/20260927_0405_news_revision_ownership.py) |
 | `20260927_0407` | 不可变通知决策、工作与意图引用、逐命题复核和外部漏报短反馈 | [0407](../tracefold/platform/postgres/alembic/versions/20260927_0407_news_notification_decisions.py) |
+| `20260928_0408` | Trading 同资产来源检索索引与模型请求截止前未派发状态，不改写历史调用或交易事实 | [0408](../tracefold/platform/postgres/alembic/versions/20260928_0408_trading_not_dispatched.py) |
 
 这些切换是前向迁移，不提供通过旧卡片 / verdict 伪造新 Claim 的降级路径。旧 v1 保留原始 hash 与语义，新内容才使用 v2；不得批量改历史 JSON 让它“看起来都是最新版本”。0407 将已有工作计划按原字节标记为 `legacy_work_plan`，不捏造历史模型判断；旧 pending `first`/`followup` 意图以 `legacy_intent_retired` 结算为 dead，已发送及状态不明的账本行保持原样。新 intent 的发送账本保留决策引用。
 

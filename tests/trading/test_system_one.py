@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import dspy
 import httpx2
+import pytest
 from dspy.adapters.types.decision import Choice
 
 from tracefold.app.system_one import SystemOneConnection
@@ -85,3 +87,41 @@ async def _native_predict_choice() -> None:
         assert receipt.cost_microusd == 200
     finally:
         await connection.aclose()
+
+
+def test_native_sdk_does_not_dispatch_after_before_call_consumes_deadline() -> None:
+    async def run() -> None:
+        dispatched = 0
+        receipts = []
+
+        async def respond(_request: httpx2.Request) -> httpx2.Response:
+            nonlocal dispatched
+            dispatched += 1
+            return httpx2.Response(500)
+
+        async def before(_request: dict) -> None:
+            await asyncio.sleep(0.03)
+
+        async def after(receipt) -> None:
+            receipts.append(receipt)
+
+        connection = SystemOneConnection(
+            base_url="https://fixture.invalid/api",
+            api_key="fixture-key",
+            model="jev-fixture",
+            async_transport=httpx2.MockTransport(respond),
+        )
+        try:
+            lm = connection.bind(
+                before_call=before,
+                after_call=after,
+                deadline_at_monotonic=time.monotonic() + 0.01,
+            )
+            with pytest.raises(TimeoutError, match="system_one_deadline_before_dispatch"):
+                await lm.acall(state={"inputs": {}}, questions={"verdict": {"type": "choice"}})
+            assert dispatched == 0
+            assert len(receipts) == 1 and not receipts[0].dispatched
+        finally:
+            await connection.aclose()
+
+    asyncio.run(run())

@@ -131,7 +131,9 @@ def _prepare(source, close, tmp_path, monkeypatch, *, amendments: tuple[dict[str
     )
     snapshot = files.read(prepared.evidence_ref)
     assert snapshot["source_fact"] == source
-    assert json.loads(files.read(prepared.brief_ref)["brief_json"])["source_fact"] == source
+    brief = json.loads(files.read(prepared.brief_ref)["brief_json"])
+    assert brief["source_context"]["kind"] == source["kind"]
+    assert brief["evidence"]["source"] == prepared.brief.evidence_catalog["source"]
     assert snapshot["source_amendments"] == list(amendments)
     return prepared
 
@@ -171,7 +173,7 @@ def test_news_public_catalyst_reaches_citable_evidence_and_final_decision(close,
     )
     assessment = AnalysisProposal(
         selected_plan_id=selected.plan_id,
-        supporting_evidence=("source", "market:perp_bars"),
+        supporting_evidence=selected.required_evidence_refs,
         public_rationale="Recorded source and code-owned price condition.",
     )
     decision = compile_proposal(
@@ -213,8 +215,10 @@ def test_recorded_correction_is_visible_to_analysis_without_changing_the_plan_me
     plain = _prepare(source, "102", tmp_path / "plain", monkeypatch)
     amended = _prepare(source, "102", tmp_path / "amended", monkeypatch, amendments=(amendment,))
     brief = json.loads(amended.brief.text)
-    assert brief["source_amendments"] == [amendment]
-    assert brief["source_amendments"][0]["retired_claim_refs"] == list(catalyst.claim_refs)
+    amendments = [item for ref, item in brief["evidence"].items() if ref.startswith("amendment:")]
+    assert len(amendments) == 1
+    assert amendments[0]["retired_claim_refs"] == list(catalyst.claim_refs)
+    assert amendments[0]["values"]["text"] == correction.text
     # Visibility only: the same citable source and the same plans. The refusal is the last entry check.
     assert [plan.plan_id for plan in amended.plans] == [plan.plan_id for plan in plain.plans]
     assert amended.brief.evidence_catalog["source"] == {

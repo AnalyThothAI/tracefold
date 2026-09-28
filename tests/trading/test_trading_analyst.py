@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from tests.support.scripted_lm import ScriptedLM
 from tracefold.app.llm import ConfiguredLMEndpoint
-from tracefold.app.trading_analyst import TradeAnalyst, _WireProposal
+from tracefold.app.trading_analyst import TradeAnalyst, _BudgetExceeded, _CallLedger, _WireProposal
 from tracefold.trading.engine.brief import AnalystBrief
 from tracefold.trading.engine.plans import AnalysisProposal
 from tracefold.trading.engine.policy import InvalidAssessment
@@ -67,6 +67,43 @@ def test_native_react_finish_and_extract_use_two_physical_requests() -> None:
     asyncio.run(exercise())
 
 
+def test_recording_delay_expires_one_monotonic_budget_before_dispatch() -> None:
+    async def exercise() -> None:
+        finished = []
+
+        async def before(*_args: object) -> None:
+            await asyncio.sleep(0.03)
+
+        async def after(_index: int, call: object) -> None:
+            finished.append(call)
+
+        ledger = _CallLedger(
+            deadline_at_ms=None,
+            timeout_ms=10,
+            max_input_bytes=10_000,
+            max_output_tokens=100,
+            cost_budget_microusd=None,
+            input_price_ceiling=None,
+            output_price_ceiling=None,
+            before_call=before,
+            after_call=after,
+        )
+        with pytest.raises(_BudgetExceeded, match="model_case_deadline_expired"):
+            await ledger.start({"phase": "react", "request": {}})
+        assert len(finished) == 1 and finished[0].status == "not_dispatched"
+        assert ledger.completed()[0].cost_unknown_reason == "not_dispatched"
+
+        delegate = ScriptedLM([{"next_thought": "Unused", "next_tool_name": "finish", "next_tool_args": {}}])
+        analyst = TradeAnalyst(_endpoint(), delegate=delegate, timeout_seconds=0.03)
+        analyst._slots = asyncio.Semaphore(0)
+        receipt = await analyst.assess(_brief())
+        assert receipt.status in ("timeout", "budget_exhausted")
+        assert delegate.requests == []
+        await analyst.aclose()
+
+    asyncio.run(exercise())
+
+
 def test_iteration_limit_allows_valid_extract_without_finish() -> None:
     async def noop() -> str:
         return "ok"
@@ -104,31 +141,38 @@ def test_early_final_extract_remains_eligible() -> None:
     asyncio.run(exercise())
 
 
-def test_invalid_plan_gets_one_recorded_correction() -> None:
+def test_invalid_citation_gets_one_correction_without_changing_plan_choice() -> None:
     class InvalidFirst:
         async def acall(self, **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(
                 trajectory={"tool_name_0": "finish"},
-                proposal=_WireProposal.model_validate({**_proposal(), "selected_plan_id": "invented"}),
+                proposal=_WireProposal.model_validate(
+                    {**_proposal(), "selected_plan_id": "known-plan", "supporting_evidence": ["bad-ref"]}
+                ),
             )
 
     async def exercise() -> None:
-        delegate = ScriptedLM([{"proposal": _proposal()}])
+        delegate = ScriptedLM(
+            [{"proposal": {**_proposal(), "selected_plan_id": "known-plan", "supporting_evidence": ["source"]}}]
+        )
         analyst = TradeAnalyst(_endpoint(), delegate=delegate, react_factory=lambda *_args, **_kwargs: InvalidFirst())
 
         def compile_candidate(proposal: AnalysisProposal) -> None:
-            if proposal.selected_plan_id is not None:
-                raise InvalidAssessment("proposal_plan_outside_menu")
+            if "bad-ref" in proposal.supporting_evidence:
+                raise InvalidAssessment("proposal_evidence_ref_unknown")
 
         receipt = await analyst.assess(
             _brief(),
             compile_candidate=compile_candidate,
-            correction_catalog=lambda: {"plans": [], "evidence_refs": [], "judgment_refs": []},
+            correction_catalog=lambda: {
+                "plans": [{"plan_id": "known-plan"}],
+                "evidence": {"source": {"values": {"text": "fact"}}},
+            },
         )
         assert receipt.status == "provider_success", receipt.error_code
-        assert receipt.assessment is not None and receipt.assessment.selected_plan_id is None
+        assert receipt.assessment is not None and receipt.assessment.selected_plan_id == "known-plan"
         assert receipt.response_payload is not None
-        assert receipt.response_payload["original_candidate"]["selected_plan_id"] == "invented"
+        assert receipt.response_payload["original_candidate"]["selected_plan_id"] == "known-plan"
         assert len(receipt.physical_calls) == 1
         assert len(delegate.requests) == 1
         await analyst.aclose()
@@ -144,7 +188,7 @@ def test_missing_selection_field_is_invalid_not_no_trade() -> None:
         AnalysisProposal.model_validate(incomplete)
 
 
-def test_persistent_invalid_selection_stops_after_one_correction() -> None:
+def test_menu_outside_selection_fails_without_guessing_no_trade() -> None:
     class InvalidFirst:
         async def acall(self, **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(
@@ -153,7 +197,7 @@ def test_persistent_invalid_selection_stops_after_one_correction() -> None:
             )
 
     async def exercise() -> None:
-        delegate = ScriptedLM([{"proposal": {**_proposal(), "selected_plan_id": "still-invented"}}])
+        delegate = ScriptedLM([])
         analyst = TradeAnalyst(_endpoint(), delegate=delegate, react_factory=lambda *_args, **_kwargs: InvalidFirst())
 
         def compile_candidate(proposal: AnalysisProposal) -> None:
@@ -168,8 +212,8 @@ def test_persistent_invalid_selection_stops_after_one_correction() -> None:
         assert receipt.status == "invalid_output"
         assert receipt.error_code == "proposal_plan_outside_menu"
         assert receipt.assessment is None
-        assert len(receipt.physical_calls) == 1
-        assert len(delegate.requests) == 1
+        assert len(receipt.physical_calls) == 0
+        assert len(delegate.requests) == 0
         assert receipt.response_payload is not None
         assert receipt.response_payload["original_candidate"]["selected_plan_id"] == "invented"
         await analyst.aclose()

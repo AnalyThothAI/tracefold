@@ -32,7 +32,12 @@ def test_reclaimed_analysis_restores_the_original_plan_menu(tmp_path) -> None:
     )
     menu = [plan.model_dump(mode="json") for plan in plans]
     evidence_ref = files.write(
-        {"case_id": "case-1", "plan_menu": menu, "entry_reference": {"price": "102", "closed_at_ms": 960_000}}
+        {
+            "snapshot_version": "evidence_snapshot_v2",
+            "case_id": "case-1",
+            "plan_menu": menu,
+            "entry_reference": {"price": "102", "closed_at_ms": 960_000},
+        }
     )
     brief = build_brief(
         target_asset_id="crypto:SOL",
@@ -40,7 +45,6 @@ def test_reclaimed_analysis_restores_the_original_plan_menu(tmp_path) -> None:
         source_fact=source,
         source_history=(),
         evidence={},
-        features={},
         plans=plans,
     )
     brief_ref = files.write({"brief_json": brief.text})
@@ -56,3 +60,14 @@ def test_reclaimed_analysis_restores_the_original_plan_menu(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="frozen_analysis_snapshot_mismatch"):
         asyncio.run(AnalysisRunner._restore_prepared(runner, {**case, "case_id": "other"}, prior))
+
+    old_ref = files.write(
+        {
+            "snapshot_version": "evidence_snapshot_v1",
+            "case_id": "case-1",
+            "plan_menu": menu,
+            "entry_reference": {"price": "102", "closed_at_ms": 960_000},
+        }
+    )
+    with pytest.raises(ValueError, match="frozen_analysis_version_retired"):
+        asyncio.run(AnalysisRunner._restore_prepared(runner, case, {**prior, "evidence_ref": old_ref}))
