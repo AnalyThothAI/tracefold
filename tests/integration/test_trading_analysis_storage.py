@@ -27,6 +27,121 @@ from tracefold.trading.storage.root import TradingRepository
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 
+def test_source_context_filters_before_limit_and_probes_only_matching_rows(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "source-search-db", read_only=False)
+    try:
+        migrate(conn)
+        trading = TradingRepository(conn)
+        index = conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname='public' "
+            "AND indexname='trading_triggers_asset_visible_idx'"
+        ).fetchone()
+        assert index is not None
+        assert "(asset_id, first_visible_at_ms DESC, trigger_id DESC)" in index["indexdef"]
+        base = 100_000_000
+        with conn.transaction():
+            for index in range(10):
+                trading.accept_trigger(
+                    kind="oi",
+                    source_fact_key=f"search-{index}",
+                    source_revision="v1",
+                    payload_sha256=f"{index + 1:064x}",
+                    payload={
+                        "kind": "oi",
+                        "source_recorded_at_ms": base + index,
+                        "provider_event_at_ms": base + index,
+                        "oi_change_bps": 100,
+                        "measurement_definition": "exchange-oi-v1",
+                        "text": "special% catalyst" if index == 0 else "unrelated",
+                        "assets": [{"symbol": "SOL", "market_type": "crypto", "role": "primary"}],
+                    },
+                    selection=_selection(),
+                    now_ms=base + index,
+                    root_ttl_ms=600_000,
+                )
+        recent = trading.recent_asset_source_context(
+            asset_id="crypto:SOL",
+            known_at_ms=base + 9,
+            exclude_trigger_id="none",
+        )
+        assert len(recent) == 8 and "search-0" not in {item["source_fact_key"] for item in recent}
+        matched = trading.recent_asset_source_context(
+            asset_id="crypto:SOL",
+            known_at_ms=base + 9,
+            exclude_trigger_id="none",
+            topic="special%",
+            lookback_minutes=15,
+            include_probe=True,
+        )
+        assert [item["source_fact_key"] for item in matched] == ["search-0"]
+        assert (
+            trading.recent_asset_source_context(
+                asset_id="crypto:SOL",
+                known_at_ms=base + 9,
+                exclude_trigger_id="none",
+                topic="symbol",
+                lookback_minutes=15,
+                include_probe=True,
+            )
+            == []
+        )
+        assert (
+            trading.recent_asset_source_context(
+                asset_id="crypto:SOL",
+                known_at_ms=base - 1,
+                exclude_trigger_id="none",
+                topic="special%",
+                lookback_minutes=15,
+                include_probe=True,
+            )
+            == []
+        )
+        assert (
+            trading.recent_asset_source_context(
+                asset_id="crypto:SOL",
+                known_at_ms=base + 9,
+                exclude_trigger_id="none",
+                topic="no-match",
+                lookback_minutes=15,
+                include_probe=True,
+            )
+            == []
+        )
+        with conn.transaction():
+            claimed = trading.claim_analysis_case(now_ms=base + 100, lease_ms=2_000)
+        assert claimed is not None
+        with conn.transaction():
+            assert trading.record_model_call_start(
+                case_id=claimed["case_id"],
+                claim_attempt=claimed["claim_attempt"],
+                claim_token=claimed["claim_token"],
+                call_index=0,
+                request_ref="request-ref",
+                now_ms=base + 101,
+                timeout_ms=100,
+                reserved_cost_microusd=5,
+            )
+            assert trading.record_model_call_finish(
+                case_id=claimed["case_id"],
+                claim_attempt=claimed["claim_attempt"],
+                claim_token=claimed["claim_token"],
+                call_index=0,
+                response_ref=None,
+                finished_at_ms=base + 102,
+                status="not_dispatched",
+                input_tokens=None,
+                output_tokens=None,
+                cost_microusd=None,
+            )
+        row = conn.execute(
+            "SELECT status,cost_unknown_reason FROM trading_model_calls WHERE case_id=%s",
+            (claimed["case_id"],),
+        ).fetchone()
+        assert row["status"] == row["cost_unknown_reason"] == "not_dispatched"
+    finally:
+        conn.close()
+
+
 def _selection(symbol: str = "SOL"):
     registry = AssetRegistry(
         snapshot_ref="test-catalogue",

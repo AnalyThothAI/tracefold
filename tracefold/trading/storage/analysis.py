@@ -135,6 +135,9 @@ class AnalysisStorage:
         known_at_ms: int,
         exclude_trigger_id: str,
         limit: int = 8,
+        topic: str | None = None,
+        lookback_minutes: int | None = None,
+        include_probe: bool = False,
     ) -> list[dict[str, Any]]:
         """Bounded same-asset source identities visible when this Case was created.
 
@@ -143,13 +146,33 @@ class AnalysisStorage:
 
         if not 1 <= limit <= 8:
             raise ValueError("analysis_source_context_limit_invalid")
+        if lookback_minutes is not None and lookback_minutes not in (15, 60, 240, 1_440):
+            raise ValueError("analysis_source_context_lookback_invalid")
+        if topic is not None and not 1 <= len(topic) <= 80:
+            raise ValueError("analysis_source_context_topic_invalid")
+        pattern = (
+            None if topic is None else "%" + topic.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        )
         rows = self.conn.execute(
             "SELECT trigger_id,kind,source_fact_key,source_revision,payload_sha256,"
             "source_observed_at_ms,first_visible_at_ms,payload "
             "FROM trading_triggers WHERE asset_id=%s AND trigger_id<>%s "
             "AND first_visible_at_ms<=%s "
+            "AND (%s::bigint IS NULL OR first_visible_at_ms >= %s::bigint) "
+            "AND (%s::text IS NULL OR EXISTS ("
+            "SELECT 1 FROM jsonb_path_query(payload, '$.** ? (@.type() == \"string\")') AS fact(value) "
+            "WHERE fact.value #>> '{}' ILIKE %s ESCAPE '\\')) "
             "ORDER BY first_visible_at_ms DESC,trigger_id DESC LIMIT %s",
-            (asset_id, exclude_trigger_id, int(known_at_ms), limit),
+            (
+                asset_id,
+                exclude_trigger_id,
+                int(known_at_ms),
+                None if lookback_minutes is None else int(known_at_ms) - lookback_minutes * 60_000,
+                None if lookback_minutes is None else int(known_at_ms) - lookback_minutes * 60_000,
+                pattern,
+                pattern,
+                limit + int(include_probe),
+            ),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -761,8 +784,11 @@ class AnalysisStorage:
         termination_reason: str | None = None,
     ) -> None:
         """A late claim may leave diagnostics, but gains no settlement authority."""
+        dispatched_count = sum(call.get("status") != "not_dispatched" for call in calls)
         cost_unknown_reason = (
-            ("not_called" if not calls else "one_or_more_physical_costs_unavailable") if cost_microusd is None else None
+            ("not_called" if not dispatched_count else "one_or_more_physical_costs_unavailable")
+            if cost_microusd is None
+            else None
         )
         self.conn.execute(
             """
@@ -787,7 +813,7 @@ class AnalysisStorage:
                 analysis_status,
                 error_code,
                 json.dumps(validation_errors),
-                len(calls),
+                dispatched_count,
                 input_tokens,
                 output_tokens,
                 cost_microusd,
@@ -971,7 +997,7 @@ class AnalysisStorage:
         cost_microusd: int | None,
         served_model: str | None = None,
     ) -> bool:
-        if status not in ("completed", "result_unknown"):
+        if status not in ("completed", "result_unknown", "not_dispatched"):
             raise ValueError("model_call_status_invalid")
         updated = self.conn.execute(
             "UPDATE trading_model_calls call SET status=%s,response_ref=%s,finished_at_ms=%s,"
@@ -988,7 +1014,11 @@ class AnalysisStorage:
                 input_tokens,
                 output_tokens,
                 cost_microusd,
-                "provider_cost_unavailable" if cost_microusd is None else None,
+                "not_dispatched"
+                if status == "not_dispatched"
+                else "provider_cost_unavailable"
+                if cost_microusd is None
+                else None,
                 served_model,
                 case_id,
                 claim_attempt,

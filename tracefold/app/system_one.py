@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -25,6 +26,7 @@ class SystemOneReceipt:
     output_tokens: int | None
     cost_microusd: int | None
     error_type: str | None
+    dispatched: bool = True
 
 
 def _cost(raw: dict[str, Any]) -> int | None:
@@ -143,8 +145,15 @@ class SystemOneConnection:
         before_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         after_call: Callable[[SystemOneReceipt], Awaitable[None]] | None = None,
         timeout_seconds: float | None = None,
+        deadline_at_monotonic: float | None = None,
     ) -> SystemOneLM:
-        return SystemOneLM(self, before_call=before_call, after_call=after_call, timeout_seconds=timeout_seconds)
+        return SystemOneLM(
+            self,
+            before_call=before_call,
+            after_call=after_call,
+            timeout_seconds=timeout_seconds,
+            deadline_at_monotonic=deadline_at_monotonic,
+        )
 
 
 class SystemOneLM:
@@ -160,6 +169,7 @@ class SystemOneLM:
         before_call: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         after_call: Callable[[SystemOneReceipt], Awaitable[None]] | None = None,
         timeout_seconds: float | None = None,
+        deadline_at_monotonic: float | None = None,
     ) -> None:
         self.connection = connection
         self.model = connection.model
@@ -167,6 +177,7 @@ class SystemOneLM:
         self._before_call = before_call
         self._after_call = after_call
         self._timeout_seconds = timeout_seconds
+        self._deadline_at_monotonic = deadline_at_monotonic
 
     def copy(self, **kwargs: Any) -> SystemOneLM:
         return SystemOneLM(
@@ -174,6 +185,7 @@ class SystemOneLM:
             before_call=kwargs.get("before_call", self._before_call),
             after_call=kwargs.get("after_call", self._after_call),
             timeout_seconds=kwargs.get("timeout_seconds", self._timeout_seconds),
+            deadline_at_monotonic=kwargs.get("deadline_at_monotonic", self._deadline_at_monotonic),
         )
 
     def _request(self, state: Any, questions: Mapping[str, Any]) -> dict[str, Any]:
@@ -193,11 +205,23 @@ class SystemOneLM:
             await self._before_call(request)
         response = None
         error: BaseException | None = None
+        dispatched = False
         try:
+            remaining = None if self._deadline_at_monotonic is None else self._deadline_at_monotonic - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise TimeoutError("system_one_deadline_before_dispatch")
+            timeout = (
+                min(self._timeout_seconds, remaining)
+                if self._timeout_seconds is not None and remaining is not None
+                else remaining
+                if remaining is not None
+                else self._timeout_seconds
+            )
+            dispatched = True
             response = await self.connection._async.system_one(
                 state=state,
                 questions=questions,
-                timeout=self._timeout_seconds,
+                timeout=timeout,
             )
             return _answers(response)
         except BaseException as exc:
@@ -211,6 +235,8 @@ class SystemOneLM:
                 response=response,
                 error=error,
             )
+            if not dispatched:
+                receipt = replace(receipt, dispatched=False)
             self.history.append(receipt)
             if self._after_call is not None:
                 await self._after_call(receipt)

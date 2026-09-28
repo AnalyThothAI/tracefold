@@ -64,6 +64,7 @@ _SQL_KEYWORDS = {
     "inserted",
     "jsonb_array_elements",
     "jsonb_each",
+    "jsonb_path_query",
     "lateral",
     "manual_entry",
     "of",

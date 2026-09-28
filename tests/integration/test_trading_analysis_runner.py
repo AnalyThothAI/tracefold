@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import replace
 
 import pytest
 from dspy.lm15 import Message, Response, Usage
@@ -25,6 +26,7 @@ from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.config.models import PostgresConfig, Settings
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
 from tracefold.trading.engine.plans import AnalysisProposal
+from tracefold.trading.engine.policy import is_citable_evidence
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
@@ -302,7 +304,7 @@ def test_runner_finishes_frozen_unpublished_case(tmp_path) -> None:
         assert row["state"] == "DONE" and row["analysis_status"] == "analyzed"
         assert row["action"] == "NO_TRADE" and row["publish_status"] == "not_applicable"
         files = AnalysisFiles(files_root)
-        assert files.read(row["evidence_ref"])["snapshot_version"] == "evidence_snapshot_v1"
+        assert files.read(row["evidence_ref"])["snapshot_version"] == "evidence_snapshot_v2"
         recorded = files.read(row["assessment_ref"])
         assert recorded["validation_status"] == "analyzed"
         assert files.read(recorded["request_ref"])["brief_sha"] == recorded["brief_sha"]
@@ -310,6 +312,86 @@ def test_runner_finishes_frozen_unpublished_case(tmp_path) -> None:
             conn.execute("SELECT count(*) AS n FROM trading_case_outcomes WHERE case_id=%s", (case_id,)).fetchone()["n"]
             == 8
         )
+    finally:
+        conn.close()
+
+
+def test_runner_compiles_partial_frame_with_complete_price_window(tmp_path) -> None:
+    class EarlyGap(_Market):
+        async def fetch(self, request: MarketDataRequest) -> MarketDataResult:
+            result = await super().fetch(request)
+            if request.dataset != "perp_bars":
+                return result
+            return replace(
+                result,
+                status="partial",
+                payload=result.payload[10:],
+                event_start_ms=result.payload[10]["event_at_ms"],
+                missing_reasons=("coverage_incomplete",),
+            )
+
+    class SelectPlan(_Analyst):
+        async def assess(self, brief):
+            prior = await super().assess(brief)
+            plan_id = json.loads(brief.text)["plan_menu"][0]["plan_id"]
+            proposal = AnalysisProposal(selected_plan_id=plan_id, public_rationale="Complete tail window.")
+            return replace(prior, assessment=proposal, response_payload=proposal.model_dump(mode="json"))
+
+    conn = connect_postgres_test(tmp_path / "partial-window-db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        trading = TradingRepository(conn)
+        now_ms = int(time.time() * 1_000)
+        with conn.transaction():
+            _, case_id, result = trading.accept_trigger(
+                kind="oi",
+                source_fact_key="partial-window",
+                source_revision="v1",
+                payload_sha256="f" * 64,
+                payload={
+                    "kind": "oi",
+                    "source_recorded_at_ms": now_ms,
+                    "provider_event_at_ms": now_ms - 1_000,
+                    "oi_change_bps": 100,
+                    "measurement_definition": "exchange-oi-v1",
+                    "assets": [{"symbol": "SOL", "market_type": "crypto", "role": "primary"}],
+                },
+                selection=_selection(),
+                now_ms=now_ms,
+                root_ttl_ms=600_000,
+            )
+        assert result == "accepted"
+        settings = Settings()
+        settings.storage.postgres = PostgresConfig(dsn=postgres_migration_test_dsn(), password_file=None)
+        files_root = tmp_path / "partial-window-archive"
+        runner = AnalysisRunner(settings=settings, market_data=EarlyGap(), analyst=SelectPlan(), files_root=files_root)
+
+        async def process() -> None:
+            try:
+                assert await runner.analyze_one()
+            finally:
+                runner._db_executor.shutdown(wait=True)
+
+        asyncio.run(process())
+        row = conn.execute(
+            "SELECT c.analysis_status,c.evidence_ref,d.action,d.publish_status "
+            "FROM trading_cases c JOIN trading_case_decisions d USING(case_id) WHERE c.case_id=%s",
+            (case_id,),
+        ).fetchone()
+        assert row["analysis_status"] == "analyzed" and row["action"] == "TRADE"
+        snapshot = AnalysisFiles(files_root).read(row["evidence_ref"])
+        assert snapshot["market"]["perp_bars"]["status"] == "partial"
+        assert snapshot["features"]["perp_return_15m_bps"] is not None
+        assert snapshot["features"]["perp_return_240m_bps"] is None
+        price_ref = snapshot["plan_menu"][0]["required_evidence_refs"][1]
+        brief = json.loads(
+            AnalysisFiles(files_root).read(
+                conn.execute("SELECT brief_ref FROM trading_case_attempts WHERE case_id=%s", (case_id,)).fetchone()[
+                    "brief_ref"
+                ]
+            )["brief_json"]
+        )
+        assert is_citable_evidence(brief["evidence"][price_ref])
     finally:
         conn.close()
 

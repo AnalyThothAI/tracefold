@@ -59,6 +59,7 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
   const assessment = record(assessmentReceipt?.assessment);
   const evidence = record(replay.data?.evidence);
   const market = record(evidence?.market);
+  const factCatalog = record(replay.data?.final_manifest?.evidence_catalog);
   const source = record(replay.data?.source_fact);
   const watch = item.watch_observation;
   const watchCondition = record(watch?.condition);
@@ -287,7 +288,11 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
                       结束 {attemptClock(call.finished_at_ms)} · 端点 {word(call.endpoint)} · 模型{" "}
                       {word(call.requested_model)} → {word(call.served_model)} · 请求{" "}
                       {word(call.request_ref)} · 响应 {word(call.response_ref)} · 费用{" "}
-                      {call.cost_microusd == null ? "未知" : `${call.cost_microusd} 微美元`}
+                      {call.status === "not_dispatched"
+                        ? "未派发"
+                        : call.cost_microusd == null
+                          ? "未知"
+                          : `${call.cost_microusd} 微美元`}
                     </p>
                   ))}
                   <ActionButton
@@ -373,7 +378,7 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
             {replay.data.status !== "ok" ? <p>回放状态：{replay.data.status}</p> : null}
             <p>来源：{sourceLabel(source)}</p>
             <p>证据截止：{caseClock(Number(evidence?.knowledge_cutoff_ms) || null)}</p>
-            <p>计划行情来源：Binance USD-M · {word(evidence?.data_environment)}</p>
+            <p>Case 执行环境：{word(evidence?.data_environment)}；各份行情使用自身的数据环境。</p>
             <p>
               模型：{word(assessmentReceipt?.model)} · 调用状态：
               {word(assessmentReceipt?.provider_status)} · 校验：
@@ -397,9 +402,25 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
             {market
               ? Object.entries(market).map(([name, value]) => (
                   <p key={name}>
-                    {name}：{word(record(value)?.status)} · {word(record(value)?.missing_reasons)}
+                    {name}：{word(record(value)?.status)} · 环境 {word(record(value)?.environment)}{" "}
+                    · 范围 {word(record(value)?.request_start_ms)} →{" "}
+                    {word(record(value)?.request_end_ms)} ·{word(record(value)?.missing_reasons)}
                   </p>
                 ))
+              : null}
+            {factCatalog
+              ? Object.entries(factCatalog)
+                  .filter(([ref]) => ref.includes(":window:"))
+                  .map(([ref, value]) => {
+                    const fact = record(value);
+                    return (
+                      <p key={ref}>
+                        可引用窗口 {ref} · {word(fact?.window_start_ms)} →{" "}
+                        {word(fact?.window_end_ms)} ·{word(fact?.row_count)} 根 ·{" "}
+                        {word(fact?.environment)} · 原始归档 {word(fact?.source_ref)}
+                      </p>
+                    );
+                  })
               : null}
             <p>
               模型建议：{word(assessment?.action)} · 方向假设：{word(assessment?.hypothesis_side)} ·
@@ -417,7 +438,10 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
               <p key={`${observation.tool}-${index}`}>
                 工具 {index + 1}：{word(observation.tool)} ·{" "}
                 {word(record(observation.result)?.status)} · {word(observation.available_at_ms)} ·
-                参数 {JSON.stringify(observation.arguments)}
+                引用{" "}
+                {word(record(observation.result)?.ref ?? record(observation.result)?.judgment_ref)}{" "}
+                · 范围 {word(JSON.stringify(record(observation.result)?.ranges ?? ""))} · 参数{" "}
+                {JSON.stringify(observation.arguments)}
               </p>
             ))}
             <p>

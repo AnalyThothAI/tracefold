@@ -32,12 +32,21 @@ from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_
 from tracefold.trading.engine.features import (
     CATALYST_SOURCE_KIND,
     PROFILE_VERSION,
+    WINDOW_VERSION,
     catalyst_text_values,
     extract_features,
     freeze_features,
+    price_plan_window,
     source_recorded_at_ms,
+    window_ref,
 )
-from tracefold.trading.engine.marketdata import Dataset, MarketDataPort, MarketDataRequest, MarketDataResult
+from tracefold.trading.engine.marketdata import (
+    Dataset,
+    MarketDataPort,
+    MarketDataRequest,
+    MarketDataResult,
+    analysis_market_request,
+)
 from tracefold.trading.engine.outcomes import price_path_label
 from tracefold.trading.engine.plans import (
     ENTRY_WINDOW_MS,
@@ -47,7 +56,7 @@ from tracefold.trading.engine.plans import (
     compile_proposal,
     directed_cross,
 )
-from tracefold.trading.engine.policy import InvalidAssessment, decision_identity, is_citable_evidence
+from tracefold.trading.engine.policy import InvalidAssessment, decision_identity
 from tracefold.trading.engine.target import SourceAsset, TargetSelection, TriggerKind, select_target
 from tracefold.trading.execution_contracts import (
     SignalEntryEnvelopeV3,
@@ -58,7 +67,6 @@ from tracefold.trading.execution_contracts import (
 from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prepare_trade_signal_v3
 
 _BAR_MS = 60_000
-_PROFILE_BARS = 241
 _LOG = logging.getLogger(__name__)
 _FILE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-files")
 
@@ -81,6 +89,8 @@ class PreparedAnalysis:
     reference_price: Decimal
     reference_at_ms: int
     plans: tuple[EntryPlan, ...]
+    source_history: tuple[dict[str, Any], ...] = ()
+    source_amendments: tuple[dict[str, Any], ...] = ()
 
 
 class FrozenEvidenceError(ValueError):
@@ -114,43 +124,28 @@ class FrameReader:
         native = str(instrument["native_symbol"])
         now = _clock_ms()
         end = now // _BAR_MS * _BAR_MS
-        start = end - _PROFILE_BARS * _BAR_MS
         deadline = time.monotonic() + 5.0
         environment = str(instrument["environment"])
 
-        def request(dataset: Dataset, symbol: str, *, spot: bool = False) -> MarketDataRequest:
-            bars = dataset.endswith("bars")
-            unit_definition = (
-                "native_contract_quantity_v1"
-                if dataset == "open_interest"
-                else "binance_usdm_contract_rules_v1"
-                if dataset == "instrument_rules"
-                else "quote_price_and_rate_v1"
-                if dataset == "funding_basis"
-                else "quote_per_base_and_volume_v1"
-            )
-            return MarketDataRequest(
+        def request(dataset: Dataset) -> MarketDataRequest:
+            return analysis_market_request(
                 dataset=dataset,
-                native_symbol=symbol,
-                venue="binance.usdm",
-                environment="live" if spot else environment,
-                product="spot" if spot else "perpetual",
-                source_identity="binance_public_v1",
-                unit_definition=unit_definition,
-                start_ms=start if bars else None,
-                end_ms=end if bars else None,
-                interval_ms=_BAR_MS if bars else None,
-                max_age_ms=None if bars else 3_600_000 if dataset == "instrument_rules" else 90_000,
+                native_symbol=native,
+                instrument_environment=environment,
+                end_ms=end if dataset in ("perp_bars", "spot_bars", "market_bars") else None,
+                window_minutes=(
+                    240 if dataset == "perp_bars" else 60 if dataset in ("spot_bars", "market_bars") else None
+                ),
                 deadline_at_monotonic=deadline,
             )
 
         requests = {
-            "perp_bars": request("perp_bars", native),
-            "spot_bars": request("spot_bars", native, spot=True),
-            "open_interest": request("open_interest", native),
-            "funding_basis": request("funding_basis", native),
-            "instrument_rules": request("instrument_rules", native),
-            "market_bars": request("market_bars", "BTCUSDT"),
+            "perp_bars": request("perp_bars"),
+            "spot_bars": request("spot_bars"),
+            "open_interest": request("open_interest"),
+            "funding_basis": request("funding_basis"),
+            "instrument_rules": request("instrument_rules"),
+            "market_bars": request("market_bars"),
         }
         answers = await asyncio.gather(
             *(self.market_data.fetch(item) for item in requests.values()),
@@ -179,7 +174,7 @@ class FrameReader:
             results[name] = result
         knowledge_cutoff = _clock_ms()
         snapshot = {
-            "snapshot_version": "evidence_snapshot_v1",
+            "snapshot_version": "evidence_snapshot_v2",
             "profile_version": PROFILE_VERSION,
             "case_id": case["case_id"],
             "knowledge_cutoff_ms": knowledge_cutoff,
@@ -199,6 +194,11 @@ class FrameReader:
                     "received_at_ms": result.received_at_ms,
                     "missing_reasons": result.missing_reasons,
                     "request_receipts": result.request_receipts,
+                    "request_start_ms": requests[name].start_ms,
+                    "request_end_ms": requests[name].end_ms,
+                    "environment": requests[name].environment,
+                    "product": requests[name].product,
+                    "native_symbol": requests[name].native_symbol,
                 }
                 for name, result in results.items()
             },
@@ -227,21 +227,47 @@ class FrameReader:
                 for result in results.values()
             ):
                 raise ValueError("market_data_received_after_cutoff")
-            if not results["perp_bars"].payload:
+            if any(
+                result.source_identity != requests[name].source_identity
+                or result.unit_definition != requests[name].unit_definition
+                for name, result in results.items()
+            ):
+                raise ValueError("market_response_identity_mismatch")
+            price_rows = price_plan_window(
+                results["perp_bars"],
+                end_ms=end,
+                cutoff_ms=knowledge_cutoff,
+                source_identity=requests["perp_bars"].source_identity,
+                unit_definition=requests["perp_bars"].unit_definition,
+            )
+            if not price_rows:
                 raise ValueError("required_perp_price_unavailable")
             rules = results["instrument_rules"]
             if rules.status != "ok" or not rules.payload or rules.payload[0].get("native_symbol") != native:
                 raise ValueError("executable_contract_unavailable")
-            last_bar = results["perp_bars"].payload[-1]
+            last_bar = price_rows[-1]
             reference_price = Decimal(str(last_bar["close"]))
             reference_at_ms = int(last_bar["event_at_ms"])
-            if reference_price <= 0 or now - reference_at_ms > 120_000:
+            if not reference_price.is_finite() or reference_price <= 0 or now - reference_at_ms > 120_000:
                 raise ValueError("entry_reference_price_stale")
-            features = extract_features(results, source_fact)
+            features = extract_features(
+                results,
+                source_fact,
+                expected_ends={name: end for name in ("perp_bars", "spot_bars", "market_bars")},
+                cutoff_ms=knowledge_cutoff,
+            )
             trigger_context = dict(case.get("manifest") or {}) if case.get("run_kind") == "conditional" else None
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise FrozenEvidenceError(str(exc), failure_evidence_ref) from exc
         snapshot["features"] = features
+        price_window_ref = window_ref(
+            dataset="perp_bars",
+            source=results["perp_bars"].source_identity,
+            unit=results["perp_bars"].unit_definition,
+            environment=environment,
+            symbol=native,
+            rows=price_rows,
+        )
         plans = build_entry_plans(
             asset_id=str(selection["asset_id"]),
             instrument_semantics_digest=str(instrument["mapping_semantics_digest"]),
@@ -250,8 +276,9 @@ class FrameReader:
             source_fact=source_fact,
             source_first_visible_at_ms=source_first_visible_at_ms,
             root_expires_at_ms=int(case["root_expires_at_ms"]),
-            perp_rows=results["perp_bars"].payload,
+            perp_rows=price_rows,
             parent_condition=None if trigger_context is None else trigger_context.get("watch_condition"),
+            price_ref=price_window_ref,
         )
         snapshot["plan_menu"] = [plan.model_dump(mode="json") for plan in plans]
         snapshot["entry_reference"] = {"price": str(reference_price), "closed_at_ms": reference_at_ms}
@@ -315,7 +342,11 @@ class FrameReader:
             {
                 f"market:{name}": {
                     "status": result.status,
+                    "source_ref": evidence_ref,
+                    "dataset": name,
                     "source": result.source_identity,
+                    "environment": requests[name].environment,
+                    "native_symbol": requests[name].native_symbol,
                     "values": {
                         key: result.payload[-1][key]
                         for key in value_fields[name]
@@ -331,11 +362,30 @@ class FrameReader:
                 for name, result in results.items()
             }
         )
+        brief_evidence[price_window_ref] = {
+            "status": "ok",
+            "source_ref": evidence_ref,
+            "projection_version": WINDOW_VERSION,
+            "dataset": "perp_bars",
+            "window_identity": price_window_ref,
+            "source": results["perp_bars"].source_identity,
+            "environment": environment,
+            "native_symbol": native,
+            "window_start_ms": int(price_rows[0]["event_at_ms"]),
+            "window_end_ms": int(price_rows[-1]["event_at_ms"]),
+            "row_count": len(price_rows),
+            "values": {"close": price_rows[-1]["close"]},
+            "unit_definition": results["perp_bars"].unit_definition,
+            "event_at_ms": int(price_rows[-1]["event_at_ms"]),
+            "received_at_ms": results["perp_bars"].received_at_ms,
+            "knowledge_cutoff_ms": knowledge_cutoff,
+        }
         brief_evidence.update(
             {
                 f"feature:{value.feature_id}": {
                     "status": value.status,
                     "source_ref": value.source_ref,
+                    "environment": "live" if value.feature_id.startswith("spot_") else environment,
                     "values": {"value": value.value} if value.status == "ok" else {},
                     "unit_definition": value.unit,
                     "event_at_ms": value.event_at_ms,
@@ -352,14 +402,21 @@ class FrameReader:
             source_fact=source_fact,
             source_history=source_history,
             evidence=brief_evidence,
-            features=features,
             plans=plans,
             trigger_context=trigger_context,
-            typed_evidence=typed_evidence.model_dump(mode="json"),
             source_amendments=source_amendments,
         )
         brief_ref = await _file_io(self.files.write, {"brief_json": brief.text})
-        return PreparedAnalysis(evidence_ref, brief_ref, brief, reference_price, reference_at_ms, plans)
+        return PreparedAnalysis(
+            evidence_ref,
+            brief_ref,
+            brief,
+            reference_price,
+            reference_at_ms,
+            plans,
+            source_history,
+            source_amendments,
+        )
 
 
 _MAX_SOURCE_ASSETS = 8
@@ -601,6 +658,11 @@ class AnalysisRunner:
         brief_artifact = await _file_io(self.files.read, brief_ref)
         brief_text = brief_artifact["brief_json"]
         brief_payload = json.loads(brief_text)
+        if (
+            snapshot.get("snapshot_version") != "evidence_snapshot_v2"
+            or brief_payload.get("brief_version") != "trade_brief_v5"
+        ):
+            raise ValueError("frozen_analysis_version_retired")
         menu = snapshot.get("plan_menu")
         if (
             snapshot["case_id"] != case["case_id"]
@@ -625,6 +687,8 @@ class AnalysisRunner:
             reference_price=Decimal(str(reference["price"])),
             reference_at_ms=int(reference["closed_at_ms"]),
             plans=plans,
+            source_history=tuple(snapshot.get("same_asset_source_history") or ()),
+            source_amendments=tuple(snapshot.get("source_amendments") or ()),
         )
 
     async def relay_once(self, *, batch_size: int = 64) -> int:
@@ -746,13 +810,22 @@ class AnalysisRunner:
             if source is None:
                 raise ValueError("analysis_trigger_missing")
 
-            async def source_history_at(cutoff_ms: int) -> tuple[dict[str, Any], ...]:
+            async def source_history_at(
+                cutoff_ms: int,
+                *,
+                topic: str | None = None,
+                lookback_minutes: int | None = None,
+                include_probe: bool = False,
+            ) -> tuple[dict[str, Any], ...]:
                 return tuple(
                     await self._db_async(
                         lambda repos: repos.trading.recent_asset_source_context(
                             asset_id=str(case["target_asset_id"]),
                             known_at_ms=cutoff_ms,
                             exclude_trigger_id=str(case["trigger_id"]),
+                            topic=topic,
+                            lookback_minutes=lookback_minutes,
+                            include_probe=include_probe,
                         ),
                     )
                 )
@@ -894,12 +967,19 @@ class AnalysisRunner:
                     def correction_catalog() -> dict[str, Any]:
                         return {
                             "plans": [
-                                {"plan_id": plan.plan_id, "kind": plan.kind, "side": plan.side}
+                                {
+                                    "plan_id": plan.plan_id,
+                                    "kind": plan.kind,
+                                    "side": plan.side,
+                                    "reference_price": str(plan.reference_price),
+                                    "reference_at_ms": plan.reference_at_ms,
+                                    "expires_at_ms": plan.expires_at_ms,
+                                    "required_evidence_refs": plan.required_evidence_refs,
+                                    "exit_plan": plan.exit_plan.model_dump(mode="json"),
+                                }
                                 for plan in tool_context.plans.values()
                             ],
-                            "evidence_refs": [
-                                ref for ref, item in tool_context.evidence_catalog.items() if is_citable_evidence(item)
-                            ],
+                            "evidence": tool_context.correction_facts(),
                             "judgment_refs": sorted(tool_context.judgment_refs),
                         }
 
@@ -1015,7 +1095,7 @@ class AnalysisRunner:
                 final_manifest_ref = await _file_io(
                     self.files.write,
                     {
-                        "manifest_version": "trading_final_input_v1",
+                        "manifest_version": "trading_final_input_v2",
                         "case_id": case["case_id"],
                         "claim_attempt": case["claim_attempt"],
                         "seed_evidence_ref": evidence_ref,

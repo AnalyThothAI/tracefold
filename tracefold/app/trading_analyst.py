@@ -34,6 +34,11 @@ refs as judgment_refs; tool refs identify tool records, not judgments. Explain o
 evidence and limitations honestly. Do not invent readings, weights, thresholds,
 order types, approval gates or future outcomes. You may use available tools
 within the research budget; no tool, including Jev, is mandatory.
+The evidence catalog is the single fact view. A raw partial market response can
+still support a separately cited complete closed window; cite the window ref.
+Avoid rereading facts already present. read_evidence uses Unicode character
+ranges [start,end); optional assess_claims ranges must refer to the same facts.
+Jev answers only the precise claim over the selected material, not trade approval.
 """
 PROMPT_SHA = sha256(_INSTRUCTIONS)
 
@@ -64,10 +69,8 @@ class _CorrectionSignature(dspy.Signature):
 
 
 _CORRECTABLE = {
-    "proposal_plan_outside_menu",
     "proposal_evidence_ref_unknown",
     "proposal_judgment_ref_unknown",
-    "proposal_evidence_unavailable",
 }
 
 
@@ -102,7 +105,7 @@ class PhysicalModelCall:
     output_tokens: int | None
     cost_microusd: int | None
     cost_unknown_reason: str | None
-    status: Literal["completed", "result_unknown"] = "completed"
+    status: Literal["completed", "result_unknown", "not_dispatched"] = "completed"
     finished_at_ms: int | None = None
     error_type: str | None = None
     phase: Literal["react", "extract", "jev"] = "react"
@@ -169,8 +172,15 @@ class _CallLedger:
         output_price_ceiling: Decimal | None,
         before_call: Any,
         after_call: Any,
+        started_at_monotonic: float | None = None,
+        started_at_ms: int | None = None,
     ) -> None:
-        self.deadline_at_ms = deadline_at_ms
+        now_ms = int(time.time() * 1000) if started_at_ms is None else started_at_ms
+        started_monotonic = time.monotonic() if started_at_monotonic is None else started_at_monotonic
+        self.deadline_at_monotonic = (
+            started_monotonic
+            + max(0, min(timeout_ms, timeout_ms if deadline_at_ms is None else deadline_at_ms - now_ms)) / 1_000
+        )
         self.timeout_ms = timeout_ms
         self.max_input_bytes = max_input_bytes
         self.max_output_tokens = max_output_tokens
@@ -183,10 +193,10 @@ class _CallLedger:
         self.bounds: list[int | None] = []
 
     def remaining_ms(self) -> int:
-        remaining = self.timeout_ms if self.deadline_at_ms is None else self.deadline_at_ms - int(time.time() * 1000)
+        remaining = int((self.deadline_at_monotonic - time.monotonic()) * 1_000)
         if remaining <= 0:
             raise _BudgetExceeded("model_case_deadline_expired")
-        return min(remaining, self.timeout_ms)
+        return remaining
 
     def _bound(self, request_payload: dict[str, Any]) -> int | None:
         if self.cost_budget_microusd is None:
@@ -208,7 +218,11 @@ class _CallLedger:
         bound = self._bound(request_payload)
         if self.cost_budget_microusd is not None and bound is not None:
             reserved = sum(
-                call.cost_microusd if call is not None and call.cost_microusd is not None else prior_bound or 0
+                0
+                if call is not None and call.status == "not_dispatched"
+                else call.cost_microusd
+                if call is not None and call.cost_microusd is not None
+                else prior_bound or 0
                 for call, prior_bound in zip(self.calls, self.bounds, strict=True)
             )
             if reserved + bound > self.cost_budget_microusd:
@@ -221,7 +235,25 @@ class _CallLedger:
                 raise _RecordFailure("model_call_start_record_failed") from exc
         self.calls.append(None)
         self.bounds.append(bound)
-        return index, timeout_ms
+        try:
+            return index, self.remaining_ms()
+        except _BudgetExceeded:
+            await self.finish(
+                index,
+                PhysicalModelCall(
+                    request_payload=request_payload,
+                    response_payload=None,
+                    input_tokens=None,
+                    output_tokens=None,
+                    cost_microusd=None,
+                    cost_unknown_reason="not_dispatched",
+                    status="not_dispatched",
+                    finished_at_ms=int(time.time() * 1000),
+                    error_type="DeadlineExceeded",
+                    phase=request_payload.get("phase", "react"),
+                ),
+            )
+            raise
 
     async def finish(self, index: int, call: PhysicalModelCall) -> None:
         self.calls[index] = call
@@ -253,7 +285,8 @@ class _AsyncEngine:
         self.slots = slots
 
     async def complete(self, request: Request) -> Response:
-        async with self.slots:
+        await asyncio.wait_for(self.slots.acquire(), timeout=self.ledger.remaining_ms() / 1_000)
+        try:
             phase: Literal["react", "extract"] = "react" if "next_tool_name" in str(request.system) else "extract"
             payload = {"phase": phase, "request": _archive(request)}
             index, timeout_ms = await self.ledger.start(payload)
@@ -291,6 +324,8 @@ class _AsyncEngine:
                         served_model=None if response is None else response.model,
                     ),
                 )
+        finally:
+            self.slots.release()
 
     async def stream(self, request: Request) -> Any:
         for event in response_to_events(await self.complete(request)):
@@ -369,6 +404,7 @@ class TradeAnalyst:
         compile_candidate: Callable[[AnalysisProposal], Any] | None = None,
         correction_catalog: Callable[[], dict[str, Any]] | None = None,
     ) -> AnalystCallReceipt:
+        started_monotonic = time.monotonic()
         started = int(time.time() * 1000)
         ledger = _CallLedger(
             deadline_at_ms=deadline_at_ms,
@@ -380,6 +416,8 @@ class TradeAnalyst:
             output_price_ceiling=self.output_price_ceiling,
             before_call=before_call,
             after_call=after_call,
+            started_at_monotonic=started_monotonic,
+            started_at_ms=started,
         )
         lm = dspy.LM(
             self.model,
@@ -434,6 +472,16 @@ class TradeAnalyst:
                 assessment = candidate
             except (ValidationError, InvalidAssessment, dspy.AdapterParseError) as exc:
                 if isinstance(exc, InvalidAssessment) and str(exc) not in _CORRECTABLE:
+                    response_payload = {
+                        "original_candidate": _archive(raw) if raw is not None else None,
+                        "original_errors": ({"field": "proposal", "type": str(exc)[:200]},),
+                    }
+                    raise
+                if isinstance(exc, ValidationError) and any(
+                    "selected_plan_id" in item["loc"] for item in exc.errors(include_input=False)
+                ):
+                    raise
+                if isinstance(exc, dspy.AdapterParseError) and raw is None:
                     raise
                 first_error = exc
             if first_error is not None:
@@ -501,29 +549,34 @@ class TradeAnalyst:
             else:
                 status, error_code = "provider_error", type(exc).__name__
         calls = ledger.completed()
+        dispatched_calls = tuple(call for call in calls if call.status != "not_dispatched")
         input_tokens = (
-            sum(call.input_tokens for call in calls if call.input_tokens is not None)
-            if calls and all(call.input_tokens is not None for call in calls)
+            sum(call.input_tokens for call in dispatched_calls if call.input_tokens is not None)
+            if dispatched_calls and all(call.input_tokens is not None for call in dispatched_calls)
             else None
         )
         output_tokens = (
-            sum(call.output_tokens for call in calls if call.output_tokens is not None)
-            if calls and all(call.output_tokens is not None for call in calls)
+            sum(call.output_tokens for call in dispatched_calls if call.output_tokens is not None)
+            if dispatched_calls and all(call.output_tokens is not None for call in dispatched_calls)
             else None
         )
         cost = (
-            sum(call.cost_microusd for call in calls if call.cost_microusd is not None)
-            if calls and all(call.cost_microusd is not None for call in calls)
+            sum(call.cost_microusd for call in dispatched_calls if call.cost_microusd is not None)
+            if dispatched_calls and all(call.cost_microusd is not None for call in dispatched_calls)
             else None
         )
-        known_cost = sum(call.cost_microusd for call in calls if call.cost_microusd is not None)
-        unknown_calls = sum(call.cost_microusd is None for call in calls)
+        known_cost = sum(call.cost_microusd for call in dispatched_calls if call.cost_microusd is not None)
+        unknown_calls = sum(call.cost_microusd is None for call in dispatched_calls)
         upper = (
             known_cost
-            + sum(bound or 0 for call, bound in zip(calls, ledger.bounds, strict=True) if call.cost_microusd is None)
-            if calls
+            + sum(
+                bound or 0
+                for call, bound in zip(calls, ledger.bounds, strict=True)
+                if call.status != "not_dispatched" and call.cost_microusd is None
+            )
+            if dispatched_calls
             and all(
-                call.cost_microusd is not None or bound is not None
+                call.status == "not_dispatched" or call.cost_microusd is not None or bound is not None
                 for call, bound in zip(calls, ledger.bounds, strict=True)
             )
             else None

@@ -162,11 +162,10 @@ def test_frozen_brief_lists_exactly_compiler_citable_evidence() -> None:
         source_fact={"kind": "catalyst"},
         source_history=(),
         evidence=catalog,
-        features={},
         plans=(),
     )
     payload = json.loads(brief.text)
-    assert payload["brief_version"] == "trade_brief_v4"
+    assert payload["brief_version"] == "trade_brief_v5"
     assert payload["citable_evidence_ids"] == ["source"]
     compile_proposal(
         proposal=AnalysisProposal(selected_plan_id=None, supporting_evidence=("source",), public_rationale="No plan."),

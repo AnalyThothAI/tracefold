@@ -341,9 +341,14 @@ def test_analysis_sees_the_correction_recorded_for_its_claims(tmp_path, correcti
         files = AnalysisFiles(tmp_path / "archive")
         snapshot = files.read(row["evidence_ref"])
         brief = json.loads(files.read(row["brief_ref"])["brief_json"])
-        for recorded in (snapshot["source_amendments"], brief["source_amendments"]):
-            assert [item["update_id"] for item in recorded] == [correction.update_id]
-            assert recorded[0]["retired_claim_refs"] == list(catalyst.claim_refs)
+        recorded = snapshot["source_amendments"]
+        assert [item["update_id"] for item in recorded] == [correction.update_id]
+        assert recorded[0]["retired_claim_refs"] == list(catalyst.claim_refs)
+        amendment = next(item for ref, item in brief["evidence"].items() if ref.startswith("amendment:"))
+        assert amendment["source_ref"] == row["evidence_ref"]
+        assert amendment["update_id"] == correction.update_id
+        assert amendment["retired_claim_refs"] == list(catalyst.claim_refs)
+        assert "20 bps" in amendment["values"]["text"]
         assert brief["evidence"]["source"]["values"] == {"text": catalyst.text}
         assert brief["plan_menu"]
     finally:
