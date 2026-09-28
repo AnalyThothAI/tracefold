@@ -158,7 +158,7 @@ def test_cross_event_correction_invalidates_frozen_unsent_card():
         ),
     )
     assert asyncio.run(adopt_next(pg, None, source, extraction))[0]
-    assert not asyncio.run(pg.atomic_begin_send(lease, card))
+    assert asyncio.run(pg.atomic_begin_send(lease, card)) == "reader_changed"
     fresh = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert fresh is not None and fresh.reader.invalidated_claim_refs == (head.claims[0].ref,)
     assert sql("SELECT count(*) AS n FROM news_deliveries WHERE kind='update'")[0]["n"] == 0

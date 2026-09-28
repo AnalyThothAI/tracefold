@@ -359,7 +359,7 @@ def test_a_change_against_a_related_events_head_names_that_event(conn) -> None:
     assert change["kind"] == "scope_change"
     assert change["previous_event_id"] == "agent-silent"
     assert change["previous_statement"] == draft.statement
-    assert detail["outcome"]["kind"] == "queued_notification"
+    assert detail["outcome"]["kind"] == "not_notified"
 
 
 def test_an_unsent_later_revision_is_titled_by_the_claim_it_changed(conn) -> None:

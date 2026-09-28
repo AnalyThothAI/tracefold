@@ -157,60 +157,87 @@ def event_outcome(
     adopted: bool = False,
     notification: Mapping[str, Any] | None = None,
 ) -> Outcome:
-    """Resolve durable reader receipts first, then current semantic and notification work."""
-    state = str((delivery or {}).get("state") or "")
-    queue_state = str((delivery_queue or {}).get("state") or "")
-    if state == "sent":
-        return _outcome("delivered", "已推送（重点）" if (delivery or {}).get("plan_key") else "已推送", "")
-    if state == "sending":
-        return _outcome("pending_delivery", "推送中", "")
-    if state in {"terminal", "ambiguous"}:
-        if queue_state == "pending" and semantic is not None:
-            return _outcome("pending_delivery", "待推送", "上一张卡未送达，新的通知待发送")
-        if state == "ambiguous":
-            return _outcome("delivery_ambiguous", "发送结果不确定", "发送后未能确认是否送达，不重发，等待对账")
-        return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery or {}).get("error_code")))
-    if queue_state == "dead":
-        return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery_queue or {}).get("error_code")))
+    """Project current work first; a historical receipt remains a separate delivery fact."""
+
     admission_text = str(admission or "")
     if admission_text == "recovery":
         return _outcome("held_recovery", "补抄件，不推送", ADMISSION_ZH["recovery"])
     if admission_text not in ADMITTED_ADMISSIONS:
         return _outcome("held_gate", "未送审", admission_zh(admission_text))
+
     if semantic is not None:
-        return _update_outcome(semantic, adopted=adopted, notification=notification)
-    return _outcome("no_update", "仅有来源", "没有当前语义工作记录")
-
-
-def _update_outcome(semantic: Mapping[str, Any], *, adopted: bool, notification: Mapping[str, Any] | None) -> Outcome:
-    """The EventUpdate path after the ledger and the Gate: semantic work, the head, then the plan."""
-
-    semantic_now = semantic_state(semantic)
-    if semantic_now == "pending":
-        return _outcome("queued_semantic", "理解中", "等待语义处理新的材料版本")
+        wanted = int(semantic.get("wanted_revision") or 0)
+        done = int(semantic.get("done_revision") or 0)
+        if wanted > done:
+            if semantic_state(semantic) == "failed":
+                return _outcome(
+                    "semantic_failed",
+                    "语义处理失败",
+                    error_code_zh(semantic.get("last_error_code")) or "语义处理失败，等待指定版本重试",
+                )
+            return _outcome("queued_semantic", "理解中", "等待语义处理新的材料版本")
     if not adopted:
-        if semantic_now == "failed":
-            return _outcome(
-                "semantic_failed",
-                "语义处理失败",
-                error_code_zh(semantic.get("last_error_code")) or "语义处理多次失败，等待新的材料版本",
-            )
+        if (delivery or {}).get("state") == "sent":
+            return _outcome("delivered", "已推送", "")
         return _outcome("no_update", "无可采用内容", "语义处理完成，未形成可采用的事件更新")
-    plan_state = notification_state(notification or {})
-    if plan_state == "exhausted":
-        return _outcome("notification_exhausted", "通知规划已耗尽", "本版本不再自动规划，可重试指定版本或等待新事实")
+
+    work_state = notification_state(notification or {})
     action = str((notification or {}).get("action") or "")
-    if action == "unresolved":
-        return _outcome("notification_deferred", "等待前序发送", "重叠的通知发送结果尚未确定")
-    if notification is None or plan_state == "pending":
+    target = str((notification or {}).get("content_revision") or "")
+    queue_current = delivery_queue is not None and (not target or delivery_queue.get("content_revision") == target)
+    delivery_current = delivery is not None and (not target or delivery.get("content_revision") == target)
+    state = str((delivery or {}).get("state") or "")
+    queue_state = str((delivery_queue or {}).get("state") or "")
+
+    if work_state == "exhausted":
+        return _outcome("notification_exhausted", "通知规划已耗尽", "本版本不再自动规划，可重试指定版本")
+    if notification is None and state in {"sent", "ambiguous", "terminal"}:
+        if queue_state == "pending":
+            return _outcome("pending_delivery", "待推送", "仍有未完成的通知任务")
+        if state == "sent":
+            return _outcome("delivered", "已推送（重点）" if (delivery or {}).get("plan_key") else "已推送", "")
+        if state == "ambiguous":
+            return _outcome("delivery_ambiguous", "发送结果不确定", "发送后未能确认是否送达，不重发，等待对账")
+        return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery or {}).get("error_code")))
+    if notification is None:
+        if queue_state == "pending":
+            return _outcome("pending_delivery", "待推送", "仍有未完成的通知任务")
+        if queue_state == "dead":
+            return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery_queue or {}).get("error_code")))
+        return _outcome("not_notified", "没有待执行通知", "当前没有未完成通知责任")
+    if work_state == "pending":
+        if action == "unresolved":
+            return _outcome("notification_deferred", "等待前序发送", "重叠的发送结果尚未确定")
+        if action == "notify":
+            if delivery_current and state == "sending":
+                return _outcome("pending_delivery", "推送中", "通知已获发送许可，等待实际结果")
+            if queue_current and queue_state == "pending":
+                if (delivery_queue or {}).get("frozen_card"):
+                    return _outcome("pending_delivery", "待推送", "通知卡已冻结，等待发送")
+                return _outcome("pending_delivery", "待准备通知卡", "已决定通知，等待生成通知卡")
+            return _outcome("pending_delivery", "待准备通知卡", "已决定通知，等待生成通知卡")
         return _outcome("queued_notification", "待决定通知", "已采用事件更新，等待通知选择")
+
+    if action == "no_notification":
+        return _outcome(
+            "not_notified",
+            "未通知",
+            claim_reasons_zh((notification or {}).get("claim_decisions")) or "没有未覆盖且可通知的命题",
+        )
+    if action == "notify" and queue_current and queue_state == "pending":
+        return _outcome("pending_delivery", "待推送", "已决定通知，等待发送")
+    if state == "sent":
+        return _outcome("delivered", "已推送（重点）" if (delivery or {}).get("plan_key") else "已推送", "")
+    if state == "ambiguous":
+        return _outcome("delivery_ambiguous", "发送结果不确定", "发送后未能确认是否送达，不重发，等待对账")
+    if state == "terminal" or (queue_current and queue_state == "dead"):
+        error = (delivery or {}).get("error_code") or (delivery_queue or {}).get("error_code")
+        return _outcome("delivery_failed", "未送达", delivery_error_zh(error))
+    if state == "sending":
+        return _outcome("pending_delivery", "推送中", "通知已获发送许可，等待实际结果")
     if action == "notify":
-        return _outcome("pending_delivery", "待推送", "通知已选择，等待发送")
-    return _outcome(
-        "not_notified",
-        "未通知",
-        claim_reasons_zh((notification or {}).get("claim_decisions")) or "没有未覆盖且可通知的命题",
-    )
+        return _outcome("delivery_failed", "通知状态异常", "已完成的通知责任缺少可核验的发送结果")
+    return _outcome("not_notified", "未通知", "当前没有未完成通知责任")
 
 
 def _outcome(kind: OutcomeKind, text_zh: str, reason_zh: str) -> Outcome:

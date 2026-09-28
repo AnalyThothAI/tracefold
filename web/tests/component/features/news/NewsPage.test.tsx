@@ -696,7 +696,7 @@ describe("NewsPage", () => {
         ...newsFeedFixture().events,
       ],
     });
-    await rendered.queryClient.invalidateQueries({ queryKey: ["news-feed"] });
+    await rendered.queryClient.invalidateQueries({ queryKey: ["news-feed-window"] });
 
     expect(await screen.findByText("New high-signal event at the top")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /条新事件/ })).not.toBeInTheDocument();
@@ -743,7 +743,7 @@ describe("NewsPage", () => {
       ],
       next_cursor: "page-2",
     });
-    await rendered.queryClient.invalidateQueries({ queryKey: ["news-feed"] });
+    await rendered.queryClient.invalidateQueries({ queryKey: ["news-feed-window"] });
 
     const notice = await screen.findByRole("button", { name: "1 条新事件 · 回到顶部" });
     expect(screen.queryByText("Deferred high-signal event")).not.toBeInTheDocument();

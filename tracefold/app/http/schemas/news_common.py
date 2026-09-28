@@ -57,6 +57,8 @@ class NewsDeliverySummaryData(ExactApiSchema):
     state: str
     settled_at_ms: int | None = None
     error_code: str | None = None
+    content_revision: str | None = None
+    payload_sha256: str | None = None
 
 
 __all__ = [

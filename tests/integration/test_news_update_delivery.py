@@ -382,6 +382,45 @@ def test_a_head_that_changes_before_the_send_retires_the_unsent_reservation() ->
     assert len(provider.sent) == 1
 
 
+@pytest.mark.parametrize("outcome", ["sent", "not_sent"])
+def test_lost_settlement_commit_response_retries_same_result_once(outcome: str) -> None:
+    class LostResponseDb(FaultDb):
+        def __init__(self) -> None:
+            super().__init__()
+            self.settlements = 0
+
+        async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
+            result = await super().tx(name, fn, timeout_seconds=timeout_seconds)
+            if name == "news_update_settle_send":
+                self.settlements += 1
+                if self.settlements == 1:
+                    raise TransientError("injected_lost_commit_response")
+            return result
+
+    clock = Clock()
+    _adopt(clock)
+    provider = (
+        Provider()
+        if outcome == "sent"
+        else Provider(
+            _provider_error("news_delivery_telegram_http_failed", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True)
+        )
+    )
+    db = LostResponseDb()
+    rig = Rig(provider, clock=clock, db=db)
+
+    assert rig.advance() == 1
+    assert db.settlements == 2
+    if outcome == "sent":
+        assert len(provider.sent) == 1
+        assert _ledger()[0]["state"] == "sent"
+        assert _queue() == []
+    else:
+        assert provider.sent == []
+        assert _ledger() == []
+        assert _queue()[0]["attempts"] == 1
+
+
 def test_a_send_the_provider_proved_unsent_retries_the_same_identity_and_payload() -> None:
     clock = Clock()
     _adopt(clock)
@@ -461,7 +500,7 @@ def test_a_crash_after_the_send_leaves_the_sending_payload_untouched_and_it_is_n
     rig = Rig(provider, clock=clock)
     rig.db.fail_operations = {"news_update_settle_send"}
 
-    with pytest.raises(TransientError, match="news_update_settle_send"):
+    with pytest.raises(RuntimeError, match="news_send_settlement_unavailable"):
         rig.advance()
 
     assert len(provider.sent) == 1, "the card really did reach the provider"
@@ -569,7 +608,7 @@ def test_second_event_waits_until_first_provider_receipt_is_durable(fail_settlem
         assert [row["state"] for row in _ledger()] == ["sending"]
         db.release.set()
         if fail_settlement:
-            with pytest.raises(TransientError, match="news_update_settle_send"):
+            with pytest.raises(RuntimeError, match="news_send_settlement_unavailable"):
                 await task
             return
         assert await task == 2

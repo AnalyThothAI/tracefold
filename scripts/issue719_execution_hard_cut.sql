@@ -28,7 +28,7 @@ BEGIN
     RAISE EXCEPTION 'issue719_scope_or_stopped_runtime_unverified';
   END IF;
   -- This one-time cut is reviewed against the current schema only.
-  IF (SELECT version_num FROM public.alembic_version) IS DISTINCT FROM '20260928_0411' THEN
+  IF (SELECT version_num FROM public.alembic_version) IS DISTINCT FROM '20260928_0412' THEN
     RAISE EXCEPTION 'issue719_schema_head_mismatch';
   END IF;
   -- A late retry of an old command keeps its original expiry. Once every old

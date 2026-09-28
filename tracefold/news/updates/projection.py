@@ -7,12 +7,75 @@ shown to this Event's semantic task; it is never a replacement Evidence.
 from __future__ import annotations
 
 import html
+import logging
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
-from ..events.facts import source_blocks
+from ..events.facts import FactUnit, extract_fact_units, source_blocks
 from .contracts import Evidence, ExtractionScope, FrozenInput
 from .identity import digest, identity
+
+log = logging.getLogger("tracefold.news")
+
+
+def item_text(item: Mapping[str, Any]) -> str:
+    text = str(item.get("evidence_text") or "").strip()
+    if text:
+        return text
+    return "\n".join(
+        part for part in (str(item.get("title") or "").strip(), str(item.get("description") or "").strip()) if part
+    )
+
+
+def extraction_scopes(material: Mapping[str, Any], evidence: Sequence[Evidence]) -> tuple[ExtractionScope, ...]:
+    """Join immutable member FactUnits to every new body of their own Item."""
+
+    scopes = []
+    facts = material.get("fact_scopes") or {}
+    items = {str(row["item_id"]): row for row in material.get("items") or ()}
+    recovered: dict[str, dict[str, FactUnit]] = {}
+    for item in evidence:
+        for member in material.get("members") or ():
+            if str(member["item_id"]) != item.source.record_id:
+                continue
+            fact_id = str(member["fact_id"])
+            fact = facts.get(fact_id)
+            if fact is None:
+                item_id = str(member["item_id"])
+                if item_id not in recovered:
+                    original = items.get(item_id)
+                    recovered[item_id] = (
+                        {}
+                        if original is None
+                        else {
+                            unit.fact_id: unit
+                            for unit in extract_fact_units(
+                                item_id=item_id,
+                                raw_text=item_text(original),
+                                fallback_title=str(original.get("title") or ""),
+                            )
+                        }
+                    )
+                unit = recovered[item_id].get(fact_id)
+                if unit is None or unit.text != str(member["fact_text"]):
+                    log.warning("news_member_fact_scope_unresolved", extra={"item_id": item_id, "fact_id": fact_id})
+                    continue
+                fact = unit.as_dict()
+            if fact.get("method", "whole_item") == "whole_item":
+                continue
+            scopes.append(
+                ExtractionScope(
+                    evidence_ref=item.ref,
+                    fact_id=fact_id,
+                    fact_text=str(member["fact_text"]),
+                    context=str(fact.get("context") or ""),
+                    method=str(fact["method"]),
+                )
+            )
+    return tuple(scopes)
+
 
 PROJECTION_VERSION = "news_task_projection_v2"
 _NUMBERED_RE = re.compile(r"^\s*\d{1,2}[.)、:：]\s*\S")

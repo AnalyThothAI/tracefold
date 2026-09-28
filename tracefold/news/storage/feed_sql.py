@@ -44,23 +44,29 @@ READER_DELIVERY_KINDS_SQL: Final = "('update')"
 # beside both statement builders makes the page and count query share one definition.
 # The EventUpdate path (#706), after the ledger and the Gate: semantic work still owed a revision, or an
 # adopted head whose notification is undecided, deferred or decided to notify.
+_SEMANTIC_OWED_SQL: Final = "sw.wanted_revision > COALESCE(sw.done_revision, 0)"
 _UPDATE_PENDING_SQL: Final = (
-    "(sw.wanted_revision > COALESCE(sw.done_revision, 0) AND sw.last_outcome IS DISTINCT FROM 'failed')"
-    " OR (h.event_id IS NOT NULL AND (nw.event_id IS NULL"
-    f" OR (nw.state = 'pending' AND nw.attempts < {NOTIFICATION_ATTEMPTS_MAX})"
-    " OR (nw.state = 'done' AND COALESCE(nd.plan ->> 'action', '') IN ('notify', 'unresolved'))))"
+    f"({_SEMANTIC_OWED_SQL} AND sw.last_outcome IS DISTINCT FROM 'failed')"
+    f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND h.event_id IS NOT NULL"
+    f" AND ((nw.event_id IS NULL AND q.state='pending')"
+    f" OR (nw.state='pending' AND nw.attempts < {NOTIFICATION_ATTEMPTS_MAX})))"
+    f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND nw.state='done' AND d.state='sending')"
+    f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND nw.state='done'"
+    " AND nd.plan->>'action'='notify' AND q.state='pending'"
+    " AND q.content_revision=nw.content_revision)"
 )
-_PENDING_CORE_SQL: Final = (
-    "COALESCE(d.state = 'sending', false)"
-    " OR COALESCE(d.state IN ('terminal', 'ambiguous') AND q.state = 'pending' AND sw.event_id IS NOT NULL, false)"
-    " OR (d.state IS NULL AND q.state IS DISTINCT FROM 'dead'"
-    f" AND e.admission IN ({ADMITTED_SQL}) AND sw.event_id IS NOT NULL"
-    f" AND ({_UPDATE_PENDING_SQL}))"
+_PENDING_CORE_SQL: Final = f"e.admission IN ({ADMITTED_SQL}) AND COALESCE(({_UPDATE_PENDING_SQL}), false)"
+_PUSHED_CORE_SQL: Final = (
+    f"e.admission IN ({ADMITTED_SQL}) AND COALESCE(d.state='sent', false)"
+    f" AND NOT COALESCE({_SEMANTIC_OWED_SQL}, false)"
+    " AND (nw.event_id IS NULL OR (nw.state='done' AND COALESCE(nd.plan->>'action','') <> 'no_notification'))"
+    " AND NOT COALESCE(q.state='pending'"
+    " AND (nw.event_id IS NULL OR q.content_revision=nw.content_revision), false)"
 )
 OUTCOME_GROUP_SQL: Final = {
-    "pushed": "d.state = 'sent'",
-    "pending": f"COALESCE(d.state, '') <> 'sent' AND ({_PENDING_CORE_SQL})",
-    "held": f"COALESCE(d.state, '') <> 'sent' AND NOT ({_PENDING_CORE_SQL})",
+    "pushed": _PUSHED_CORE_SQL,
+    "pending": _PENDING_CORE_SQL,
+    "held": f"NOT ({_PENDING_CORE_SQL}) AND NOT ({_PUSHED_CORE_SQL})",
 }
 # The News feed contains editorial Events. Market observations are stored as
 # facts beside their Item and read through `/api/news/market`.
@@ -269,7 +275,8 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
 _READER_DELIVERY_ORDER_SQL: Final = "(dl.state = 'sent') DESC, dl.created_at_ms DESC, dl.intent_id DESC"
 _FEED_PAGE_DELIVERY_SQL: Final = f"""
           LEFT JOIN LATERAL (
-            SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key
+            SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key,
+                   dl.content_revision, dl.payload_sha256
               FROM news_deliveries dl
              WHERE dl.event_id = e.event_id AND dl.kind IN {READER_DELIVERY_KINDS_SQL}
              ORDER BY {_READER_DELIVERY_ORDER_SQL}
@@ -307,7 +314,8 @@ def _feed_joins_sql(*, bulk_deliveries: bool = False) -> str:
           LEFT JOIN news_notification_decisions nd ON nd.decision_ref = nw.decision_ref
           {delivery_join}
           LEFT JOIN (
-            SELECT DISTINCT ON (owed.event_id) owed.event_id, owed.state, owed.error_code
+            SELECT DISTINCT ON (owed.event_id) owed.event_id, owed.state, owed.error_code,
+                   owed.content_revision, owed.frozen_card IS NOT NULL AS frozen_card
               FROM news_delivery_queue owed
              WHERE owed.kind IN {READER_DELIVERY_KINDS_SQL}
                AND NOT EXISTS (SELECT 1 FROM news_deliveries settled WHERE settled.intent_id = owed.intent_id)
@@ -351,13 +359,16 @@ def feed_page_sql(where_sql: str) -> str:
                    ORDER BY position LIMIT 1)
                ) AS update_claim_headline,
                nw.state AS notification_state, nw.attempts AS notification_attempts,
+               nw.content_revision AS notification_content_revision,
                nd.plan ->> 'action' AS notification_action,
                nd.plan -> 'claim_decisions' AS notification_claim_decisions,
                d.kind AS delivery_kind, d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms,
+               d.content_revision AS delivery_content_revision, d.payload_sha256 AS delivery_payload_sha256,
                d.error_code AS delivery_error_code, d.plan_key AS delivery_plan_key,
-               CASE WHEN d.kind = 'update' AND d.state = 'sent'
+               CASE WHEN d.kind = 'update' AND d.state = 'sent' AND d.content_revision=h.content_revision
                     THEN NULLIF(btrim(d.card ->> 'headline_zh'), '') END AS sent_update_headline,
-               q.state AS delivery_queue_state, q.error_code AS delivery_queue_error_code
+               q.state AS delivery_queue_state, q.error_code AS delivery_queue_error_code,
+               q.content_revision AS delivery_queue_content_revision, q.frozen_card AS delivery_queue_frozen
           FROM news_events e
           {_feed_joins_sql()}
          WHERE {where_sql}

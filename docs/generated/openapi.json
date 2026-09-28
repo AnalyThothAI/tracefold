@@ -2083,6 +2083,17 @@
       "NewsDeliverySummaryData": {
         "additionalProperties": false,
         "properties": {
+          "content_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Revision"
+          },
           "error_code": {
             "anyOf": [
               {
@@ -2093,6 +2104,17 @@
               }
             ],
             "title": "Error Code"
+          },
+          "payload_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Sha256"
           },
           "settled_at_ms": {
             "anyOf": [
@@ -3362,7 +3384,7 @@
       },
       "NewsFeedUpdateData": {
         "additionalProperties": false,
-        "description": "The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.\n\n``headline`` is the card headline a reader actually received for this Event's latest sent update, else\nthe first claim the head has not retired. It is ``null`` only when every claim is retired.",
+        "description": "The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.\n\n``headline`` is the card headline only when its sent revision is this head; otherwise\nit names a current active claim. A historical card keeps its own revision in ``delivery``.",
         "properties": {
           "adopted_at_ms": {
             "title": "Adopted At Ms",

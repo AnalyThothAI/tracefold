@@ -112,7 +112,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert {"read_refs", "reanalysis_reason", "reanalysis_head_ref"} <= semantic_observation_columns
     assert {"observation_result_id", "scope_repair_id"} <= event_update_columns
     assert {"repair_id", "proof", "claim_refs", "projection_version"} <= scope_repair_columns
-    assert {"card_copy_input_digest", "card_copy_document"} <= delivery_queue_columns
+    assert {"card_copy_input_digest", "card_copy_document", "last_settlement"} <= delivery_queue_columns
     assert news_delivery_columns == {
         "history_context",
         "event_id",
@@ -120,6 +120,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "state",
         "card",
         "receipt",
+        "settlement",
         "error_code",
         "attempted_at_ms",
         "settled_at_ms",
@@ -189,7 +190,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "telemetry_deterministic" not in unpublished_index
     assert "liquidation_deterministic" not in unpublished_index
-    assert version == latest_migration_version() == "20260928_0411"
+    assert version == latest_migration_version() == "20260928_0412"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -214,7 +215,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260928_0411"
+    assert version == latest_migration_version() == "20260928_0412"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

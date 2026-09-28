@@ -5,6 +5,7 @@ export type RequestOptions = {
   params?: Record<string, string | number | boolean | null | undefined>;
   etagKey?: string;
   headers?: Record<string, string>;
+  signal?: AbortSignal;
 };
 
 let authToken: string | null = null;
@@ -64,6 +65,7 @@ export async function getApi<T>(
   const response = await fetch(url, {
     headers,
     method: "GET",
+    signal: options.signal,
   });
   if (response.status === 304 && cached) {
     return cached.body as ApiResponse<T>;

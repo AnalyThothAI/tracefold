@@ -105,7 +105,7 @@ PostgreSQL 保存可恢复工作；RabbitMQ 的语义消息只是唤醒。准入
 
 更新已有消息时，系统按既有范围及修订关系读取证据，不把旧正文的字符偏移硬套在新正文上。[唯一阅读投影](../../tracefold/news/updates/projection.py)按本轮来源版本定位任务片段；定位不唯一时展示完整来源。模型只收到该视图，完整 Evidence 仍保存。引用必须同时出现在本轮一个连续可见片段和对应冻结来源中。
 
-编号列表的最后一条任务与其后连续正文构成一个可引用片段；若该任务不是当前 Event 的事实，后文仍只作为共享上下文。更正历史归属时，`scope_retraction` 在新的 EventUpdate 中退休误归属 Claim，并向 Trading 发布 `source_update`；修复证明独立记在 `news_head_scope_repairs`，不伪造模型观察，也不改写旧 EventUpdate、来源或发送回执。修复不重新打开已完成的通知工作；原本待处理的工作才转向修复后 head。
+编号列表的最后一条任务与其后连续正文构成一个可引用片段；若该任务不是当前 Event 的事实，后文仍只作为共享上下文。更正历史归属时，`scope_retraction` 在新的 EventUpdate 中退休误归属 Claim，并向 Trading 发布 `source_update`；修复证明独立记在 `news_head_scope_repairs`，不伪造模型观察，也不改写旧 EventUpdate、来源或发送回执。修复与语义采用共用 Event 锁及提交路径；按 Event/head/proof 有界执行。纯修复不重新打开已完成或耗尽的通知工作，也不重置尝试数；仍有预算的 pending 工作才转向修复后 head。精确命令见[运维指南](../OPERATIONS.md#历史编号事实的-head-归属清理)。
 
 ### 命题身份不随每次关系变化重建
 
@@ -213,7 +213,7 @@ sequenceDiagram
 
 [taxonomy.py](../../tracefold/news/taxonomy.py)保留来源权威类别，例如 `regulatory_filing`、`issuer_first_party`、`reputable_secondary` 与 `unknown`，依据已识别的来源身份。来源权威不是对其引用的第三方说法进行独立核验，更不是交易指令。
 
-新写入使用 `news_event_update_v2`；旧 v1 保留其原始内容和哈希。旧四轴 taxonomy、旧 Program 的 `fact_kind` 输出不是新 Claim 契约。当前 ReviewDesk 只处理通知决策反馈及外部漏报；历史 verdict 仍是数据库中的原始事实，不再提供旧审核任务或丰富详情投影。
+当前 EventUpdate 使用 `news_event_update_v2`；0411 已清除退役 v1 所属 Event、旧 verdict / Review / 学习表。当前 ReviewDesk 处理通知决策反馈及外部漏报，不把旧四轴 taxonomy 或旧 Program 的 `fact_kind` 当作新 Claim 契约。
 
 <a id="state"></a>
 <a id="5-work-progress-and-recovery"></a>
@@ -352,9 +352,9 @@ class Ledger store;
 
 CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精确引用和最少来源身份，而非完整来源全文或整个知识文档。中文表达必须保留对象、动作、数量、归因与阶段；标题压缩也不能把“宣称”写成“核实”、把“宣布”写成“已经实施”。冻结卡片仍检查 refs 与形状；约束和脚本回归不证明真实模型每次都翻译正确。
 
-“选中了某条 Claim”不证明卡片正文完整表达了它。未来的覆盖判断读的是**实际发出的精确正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记。旧 `first` 回执仍保留已发送事实；若没有精确正文及摘要，不能从摘要重建全文并参与覆盖判断。
+“选中了某条 Claim”不证明卡片正文完整表达了它。后续覆盖判断读的是当前 `update` 回执的**实际发送正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记；发送正文与摘要必须来自可核验的冻结卡片。
 
-计划采用和发送前会核对 head 与 reader revision。正文冻结后不因后台新材料到来而改写已开始的发送。适配器区分 `sent`、`not_sent`、`ambiguous`；只有已证明未发送且可重试的结果才按原意图重试。结果不明不能伪装成功，也不能直接再发一份。
+计划采用和发送前会在 Event 锁下核对 head 与 reader revision。正文冻结后不因后台新材料到来而改写已开始的发送。适配器区分 `sent`、`not_sent`、`ambiguous`；只有已证明未发送且可重试的结果才按原意图重试。已知结果的结算使用同一结果重试，队列或账本保留 lease 与结果身份，即使发送回执后续补充也可验证重复结算；旧 lease 的迟到结果不能结算下一次发送。结果不明不能伪装成功，也不能直接再发一份。通知准备保持有界并持续补位，最终发送由单个结算者串行执行；进程启动先确认中断发送的账本状态，再领取新工作。
 
 每次判断保存不可变决策输入与逐命题结果，通知工作和 intent 引用该决策。编辑评估按实际候选、来源、watchlist 和编辑器身份复用；文案按选中命题的完整表达材料和文案器身份复用；最终计划仍按当前 reader/head 重新检查。模型不可用的默认通知会记录状态和错误码，不将数据库、配置或外层期限故障伪装成编辑判断。通知计划失败、文案生成失败、发送失败是三个边界。精确恢复命令及限制见[运维指南](../OPERATIONS.md#news-retry)；任何已有发送账本的 intent 都不能通过 `retry-work` 随意重开。
 
@@ -378,7 +378,7 @@ T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻
 
 先定位 `event_id`、来源修订、wanted / done、content revision、intent，再看[输入范围](../../tests/news/test_news_update_input_scope.py)、[语义 Worker](../../tests/news/test_news_semantic_worker.py)、[通知规则](../../tests/news/test_news_event_update_notifications.py)以及[修订存储](../../tests/integration/test_news_revision_ownership.py)、[EventUpdate 存储](../../tests/integration/test_news_event_update_store.py)、[发送集成](../../tests/integration/test_news_update_delivery.py)。
 
-前端通过新闻流与 Event 详情读取这些维度；只有旧记录的 Event 显示来源与实际发送回执，不由 UI 合成新命题。列表计数与卡片成功率、语义采用率的分母不同，不应混算。
+前端通过新闻流与 Event 详情读取这些维度；历史回执按其真实版本展示，不由 UI 合成当前命题。列表计数与卡片成功率、语义采用率的分母不同，不应混算。
 
 代码测试证明状态、身份、引用与副作用边界；真实新闻理解质量仍需独立复核。保留的[ReviewDesk / 校准](review.md)不是自动优化发布系统。
 
@@ -397,7 +397,7 @@ T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻
 | [semantics.py](../../tracefold/news/updates/semantics.py)、[judgment.py](../../tracefold/news/updates/judgment.py) | 引文校验、命题比较、有限问题、内容组装 |
 | [dspy_backend.py](../../tracefold/news/updates/dspy_backend.py) | DSPy 抽取、中文文案、生成式判断与原生有限选项判断 |
 | [notification.py](../../tracefold/news/updates/notification.py) | 逐命题通知规则、实际正文覆盖比较、稳定意图与冻结卡片 |
-| [event_update_store.py](../../tracefold/news/storage/event_update_store.py)、[event_updates.py](../../tracefold/news/storage/event_updates.py) | 短事务、检查点、不可变更新、head 条件采用、计划和发送账本 |
+| [event_update_store.py](../../tracefold/news/storage/event_update_store.py)、[event_updates.py](../../tracefold/news/storage/event_updates.py)、[update_commit.py](../../tracefold/news/storage/update_commit.py) | 短事务、检查点、共用 EventUpdate 提交、head 条件采用、计划和发送账本 |
 | [public.py](../../tracefold/news/updates/public.py) | 从已采用知识生成公开更新，不依赖读者卡片 |
 | [delivery.py](../../tracefold/news/pipeline/delivery.py)、[maintenance.py](../../tracefold/news/pipeline/maintenance.py) | 通知轮询、真实投递、补唤醒与有界保留清理 |
 

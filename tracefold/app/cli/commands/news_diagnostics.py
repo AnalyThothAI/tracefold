@@ -110,50 +110,55 @@ def _handle_reanalyze(args: Namespace) -> tuple[int, dict[str, Any]]:
 def _handle_repair_head_scopes(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import repositories
     from tracefold.news.bus import now_ms
-    from tracefold.news.storage.head_scope_repairs import audit_scope_rows
+    from tracefold.news.storage.head_scope_repairs import audit_head_scope, audit_scope_rows
+    from tracefold.news.updates.identity import digest
 
-    if args.execute and not args.expected_digest:
-        return 2, {"ok": False, "error": "news_scope_repair_expected_digest_required"}
     settings = load_settings(require_ws_token=False)
+    if args.execute:
+        if not args.event or not args.head or not args.proof:
+            return 2, {"ok": False, "error": "news_scope_repair_exact_target_required"}
+        try:
+            with repositories(settings) as repos, repos.transaction():
+                row = repos.news.head_scope_event(str(args.event))
+                if row is None:
+                    raise ValueError("news_scope_repair_event_not_found")
+                proof = audit_head_scope(row)
+                if proof["head_revision"] != args.head:
+                    raise ValueError("news_scope_repair_head_changed")
+                if digest(proof) != args.proof:
+                    raise ValueError("news_scope_repair_proof_changed")
+                revision = repos.news.adopt_head_scope_repair(
+                    expected_head=str(args.head), proof=proof, now_ms=now_ms()
+                )
+        except ValueError as exc:
+            return 1, {"ok": False, "event_id": args.event, "error": str(exc)}
+        return 0, {"ok": True, "event_id": args.event, "status": "applied", "content_revision": revision}
+
+    if args.limit > 500:
+        return 2, {"ok": False, "error": "news_scope_repair_page_limit_invalid"}
     with repositories(settings) as repos, repos.transaction():
-        report = audit_scope_rows(repos.news.head_scope_material())
-        if args.execute and report["digest"] != args.expected_digest:
-            return 1, {"ok": False, "error": "news_scope_repair_audit_changed", "digest": report["digest"]}
-        if args.execute and report["unresolved_active_claims"]:
-            return 1, {
-                "ok": False,
-                "error": "news_scope_repair_unresolved_claims",
-                "digest": report["digest"],
-                "unresolved_active_claims": report["unresolved_active_claims"],
-            }
-        repaired = []
-        if args.execute:
-            stamp = now_ms()
-            for event in report["events"]:
-                if event["outside"]:
-                    revision = repos.news.adopt_head_scope_repair(
-                        expected_head=event["head_revision"], proof=event, now_ms=stamp
-                    )
-                    repaired.append({"event_id": event["event_id"], "content_revision": revision})
+        rows = repos.news.head_scope_material(after=str(args.after), limit=args.limit + 1)
+    page = rows[: args.limit]
+    report = audit_scope_rows(page)
     return 0, {
         "ok": True,
-        "digest": report["digest"],
         "projection_version": report["projection_version"],
         "heads": report["heads"],
         "affected_heads": report["affected_heads"],
         "outside_active_claims": report["outside_active_claims"],
         "unresolved_active_claims": report["unresolved_active_claims"],
+        "next_cursor": str(page[-1]["event_id"]) if len(rows) > args.limit else None,
         "events": [
             {
-                "event_id": row["event_id"],
-                "head_revision": row["head_revision"],
-                "outside_claim_refs": [item["claim_ref"] for item in row["outside"]],
-                "unresolved": row["unresolved"],
+                "event_id": event["event_id"],
+                "head_revision": event["head_revision"],
+                "proof": digest(event),
+                "outside_claim_refs": [item["claim_ref"] for item in event["outside"]],
+                "unresolved": event["unresolved"],
             }
-            for row in report["events"]
-            if row["outside"] or row["unresolved"]
+            for event in report["events"]
+            if event["outside"] or event["unresolved"]
         ],
-        "repaired": repaired,
     }
 
 

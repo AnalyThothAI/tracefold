@@ -432,10 +432,18 @@ class DelivererLoop:
         self._edit_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx(
-                "news_delivery_reconcile", lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms())
-            )
+        while not stop_event.is_set():
+            try:
+                await self.db.tx(
+                    "news_delivery_reconcile",
+                    lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms()),
+                )
+            except (TransientError, DeferError):
+                await _sleep_or_stop(stop_event, _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS)
+                continue
+            break
+        if stop_event.is_set():
+            return
         # Unlike an initial-send ambiguity, an inherited edit intent cannot be left in a pretend in-flight state:
         # this process owns no edit task yet. Refuse to claim until PostgreSQL records that truth.
         startup_reconciliations = (
@@ -505,46 +513,83 @@ class DelivererLoop:
                 await _sleep_or_stop(stop_event, _DELIVERY_POLL_SECONDS)
 
     async def advance(self) -> int:
-        """One turn, and this loop's one business action: up to `_NOTIFICATIONS_PER_TURN` markers.
-
-        Nothing is planned without a channel to send on: with no sender configured the markers stay
-        pending and visible, and a corrected configuration picks them up (stale content is then refused
-        by the planner's own source-age rule, not by this loop). Each marker is its own set of short
-        transactions; the model calls and the send between them hold no database session.
-        """
+        """Continuously fill a bounded prepare/ready/finalize window from durable due work."""
 
         notifications = self.notifications
         if notifications is None or self.sender is None:
             return 0
-        event_ids = iter(
-            dict.fromkeys(await notifications.store.pending_notification_events(NEWS_CHANNEL, _NOTIFICATIONS_PER_TURN))
-        )
-        tasks: dict[asyncio.Task[NotificationTurn], tuple[str, float]] = {}
+        preparing: dict[asyncio.Task[NotificationTurn], tuple[str, float]] = {}
+        ready: list[tuple[NotificationTurn, float]] = []
+        finalizer: asyncio.Task[NotificationTurn] | None = None
+        seen: set[str] = set()
+        worked = 0
 
-        def fill() -> None:
-            while len(tasks) < self.notification_prepare_limit:
-                event_id = next(event_ids, None)
-                if event_id is None:
-                    return
+        async def fill() -> None:
+            capacity = self.notification_prepare_limit - len(preparing) - len(ready) - int(finalizer is not None)
+            if capacity <= 0 or len(seen) >= _NOTIFICATIONS_PER_TURN:
+                return
+            try:
+                due = await notifications.store.pending_notification_events(
+                    NEWS_CHANNEL, _NOTIFICATIONS_PER_TURN + len(seen)
+                )
+            except (TransientError, DeferError):
+                return
+            for event_id in due:
+                if capacity <= 0 or len(seen) >= _NOTIFICATIONS_PER_TURN:
+                    break
+                if event_id in seen:
+                    continue
+                seen.add(event_id)
                 task = asyncio.create_task(
                     notifications.prepare(event_id, NEWS_CHANNEL), name=f"news-notification-prepare:{event_id}"
                 )
-                tasks[task] = (event_id, time.monotonic())
-                logger.info("news notification prepare started event_id=%s in_flight=%s", event_id, len(tasks))
+                preparing[task] = (event_id, time.monotonic())
+                capacity -= 1
+                logger.info("news notification prepare started event_id=%s in_flight=%s", event_id, len(preparing))
 
-        worked = 0
-        fill()
         try:
-            while tasks:
-                finished, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            await fill()
+            while preparing or ready or finalizer is not None:
+                if finalizer is None and ready:
+                    prepared, ready_at = ready.pop(0)
+                    logger.info(
+                        "news notification ready finalized event_id=%s wait_ms=%s",
+                        prepared.update.event_id if prepared.update else "unknown",
+                        int((time.monotonic() - ready_at) * 1000),
+                    )
+                    finalizer = asyncio.create_task(
+                        notifications.finalize(prepared, self),
+                        name=f"news-notification-finalize:{prepared.update.event_id if prepared.update else 'unknown'}",
+                    )
+                await fill()
+                active: set[asyncio.Task[NotificationTurn]] = set(preparing)
+                if finalizer is not None:
+                    active.add(finalizer)
+                if not active:
+                    continue
+                finished, _ = await asyncio.wait(
+                    active, timeout=_DELIVERY_POLL_SECONDS, return_when=asyncio.FIRST_COMPLETED
+                )
                 for task in finished:
-                    event_id, started_at = tasks.pop(task)
+                    if task is finalizer:
+                        finalizer = None
+                        try:
+                            turn = task.result()
+                        except _RECORDED_TURN_FAILURES as exc:
+                            logger.warning("news notification finalizer failed error=%s", _error_code(exc))
+                            worked += 1
+                            continue
+                        if turn.status == "sent":
+                            self._enrich_sent(turn)
+                        if turn.status != "no_work":
+                            worked += 1
+                        continue
+                    event_id, started_at = preparing.pop(task)
                     try:
                         prepared = task.result()
                     except _RECORDED_TURN_FAILURES as exc:
                         logger.warning("news notification turn failed event_id=%s error=%s", event_id, _error_code(exc))
                         worked += 1
-                        fill()
                         continue
                     logger.info(
                         "news notification prepared event_id=%s status=%s elapsed_ms=%s",
@@ -552,24 +597,21 @@ class DelivererLoop:
                         prepared.status,
                         int((time.monotonic() - started_at) * 1000),
                     )
-                    try:
-                        turn = await notifications.finalize(prepared, self)
-                    except _RECORDED_TURN_FAILURES as exc:
-                        logger.warning("news notification turn failed event_id=%s error=%s", event_id, _error_code(exc))
+                    if prepared.status == "ready":
+                        ready.append((prepared, time.monotonic()))
+                    elif prepared.status != "no_work":
                         worked += 1
-                        fill()
-                        continue
-                    if turn.status == "sent":
-                        self._enrich_sent(turn)
-                    if turn.status != "no_work":
-                        worked += 1
-                    fill()
+            return worked
         finally:
-            for task in tasks:
+            for task in preparing:
                 task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-        return worked
+            if preparing:
+                await asyncio.gather(*preparing, return_exceptions=True)
+            if finalizer is not None:
+                finalizer.cancel()
+                await asyncio.gather(finalizer, return_exceptions=True)
+            for prepared, _ready_at in ready:
+                await notifications.release_ready(prepared)
 
     # ------------------------------------------------------------------ the `Sender` port
     @contextlib.asynccontextmanager

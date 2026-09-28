@@ -1,18 +1,19 @@
 import { routeReferrerFromState } from "@shared/routing/routeReferrer";
+import { ActionButton } from "@shared/ui/ActionButton";
 import { PageHeader } from "@shared/ui/PageHeader";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 
 import {
   NEWS_FEED_DEFAULT_HOURS,
-  useNewsFeedHistoryWithToken,
-  useNewsFeedWithToken,
+  useNewsFeedWindowWithToken,
   useNewsQuotesWithToken,
   useNewsSymbolWithToken,
   type NewsFeedFilters,
+  uniqueFeedEvents,
 } from "../../api/newsQueries";
 import { parseSymbolLane } from "../../model/symbolLanes";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
@@ -61,32 +62,13 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
     }),
     [normalized],
   );
-  const feedQuery = useNewsFeedWithToken(token, filters);
+  const feedWindow = useNewsFeedWindowWithToken(token, filters);
+  const feedQuery = feedWindow.query;
   /* One Case batch feeds both compact Alpha summaries on this symbol page. */
   const quotesQuery = useNewsQuotesWithToken(token, normalized ? [normalized] : []);
 
-  /*
-   * The history anchor is captured once and then held, exactly as the feed and the OI monitor hold theirs:
-   * feeding the polled first page's `next_cursor` straight in would move it whenever an Event lands, change
-   * the infinite query's key, and silently discard every page the reader had loaded.
-   */
-  const [moreRequested, setMoreRequested] = useState(false);
-  const [anchor, setAnchor] = useState<{ base: string; cursor: string | null } | null>(null);
-  const firstPage = feedQuery.data;
-  useEffect(() => {
-    if (!firstPage || anchor?.base === normalized) return;
-    setAnchor({ base: normalized, cursor: firstPage.next_cursor ?? null });
-    setMoreRequested(false);
-  }, [anchor?.base, firstPage, normalized]);
-  const anchorCursor = anchor?.base === normalized ? anchor.cursor : null;
-  const historyQuery = useNewsFeedHistoryWithToken(token, filters, anchorCursor, moreRequested);
-  const rows = Array.from(
-    new Map(
-      [firstPage?.events ?? [], ...(historyQuery.data?.pages ?? []).map((page) => page.events)]
-        .flat()
-        .map((event) => [event.event_id, event]),
-    ).values(),
-  );
+  const firstPage = feedQuery.data?.pages[0];
+  const rows = uniqueFeedEvents(feedQuery.data?.pages ?? []);
 
   return (
     <PageShell archetype="scan" className="news-symbol-shell" label={`代币 ${normalized}`}>
@@ -142,23 +124,25 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
 
         <NewsSymbolEvents
           error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}
-          hasMore={Boolean(moreRequested ? historyQuery.hasNextPage : anchorCursor)}
+          hasMore={Boolean(feedQuery.hasNextPage)}
           lane={lane}
           loading={feedQuery.isLoading}
-          loadingMore={historyQuery.isFetchingNextPage || (moreRequested && historyQuery.isLoading)}
+          loadingMore={feedQuery.isFetchingNextPage}
           onLaneChange={(next) => {
             const params = new URLSearchParams(searchParams);
             if (next === "all") params.delete("lane");
             else params.set("lane", next);
             setSearchParams(params, { replace: true });
           }}
-          onLoadMore={() => {
-            if (!moreRequested) setMoreRequested(true);
-            else void historyQuery.fetchNextPage();
-          }}
+          onLoadMore={() => void feedQuery.fetchNextPage()}
           onRetry={() => void feedQuery.refetch()}
           rows={rows}
         />
+        {feedWindow.olderWindow ? (
+          <ActionButton className="news-load-more" onClick={feedWindow.returnLatest}>
+            返回最新事件
+          </ActionButton>
+        ) : null}
       </div>
     </PageShell>
   );

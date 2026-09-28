@@ -1011,8 +1011,12 @@ export interface components {
         };
         /** NewsDeliverySummaryData */
         NewsDeliverySummaryData: {
+            /** Content Revision */
+            content_revision?: string | null;
             /** Error Code */
             error_code?: string | null;
+            /** Payload Sha256 */
+            payload_sha256?: string | null;
             /** Settled At Ms */
             settled_at_ms?: number | null;
             /** State */
@@ -1491,8 +1495,8 @@ export interface components {
          * NewsFeedUpdateData
          * @description The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.
          *
-         *     ``headline`` is the card headline a reader actually received for this Event's latest sent update, else
-         *     the first claim the head has not retired. It is ``null`` only when every claim is retired.
+         *     ``headline`` is the card headline only when its sent revision is this head; otherwise
+         *     it names a current active claim. A historical card keeps its own revision in ``delivery``.
          */
         NewsFeedUpdateData: {
             /** Adopted At Ms */

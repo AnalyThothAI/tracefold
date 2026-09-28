@@ -447,14 +447,18 @@ options:
 ## `news repair-head-scopes`
 
 ```
-usage: tracefold news repair-head-scopes [-h] [--execute]
-                                         [--expected-digest EXPECTED_DIGEST]
+usage: tracefold news repair-head-scopes [-h] [--execute] [--event EVENT]
+                                         [--head HEAD] [--proof PROOF]
+                                         [--after AFTER] [--limit LIMIT]
 
 options:
-  -h, --help            show this help message and exit
-  --execute             append audited repairs under exact head CAS
-  --expected-digest EXPECTED_DIGEST
-                        required with --execute; digest from a fresh audit
+  -h, --help     show this help message and exit
+  --execute      append audited repairs under exact head CAS
+  --event EVENT  one exact Event ID to repair
+  --head HEAD    expected content revision for that Event
+  --proof PROOF  digest of that Event's preview proof
+  --after AFTER  exclusive Event ID cursor for bounded preview
+  --limit LIMIT  preview page size, at most 500
 
 ```
 

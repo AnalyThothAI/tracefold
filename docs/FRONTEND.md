@@ -104,6 +104,8 @@ Event 详情应分别呈现：最新 wanted 输入是否完成、当前 adopted 
 
 News 状态还要分开 `semantic_pending`、`semantic_deferred`、`semantic_in_progress` 与 `semantic_failed_exhausted`；耗尽工作不能画成仍可自动运行的 pending。
 
+新闻流和资产页的 Event 列表由同一个有界分页 Query 管理，每次最多保留三页。第一页轮询与后续页共用同一过滤身份；翻到较旧窗口后暂停轮询，并提供“返回最新”重新从第一页读取。滚动锚点只保存 Event ID，新版本内容始终从当前查询结果读取。列表的页首统计与第一页事件由同一数据库语句返回；详情中的历史回执保留原始版本，当前标题和状态按当前 head 与通知工作解释。
+
 <a id="section-行情钱包和执行的状态展示"></a>
 ## 04 · 行情、钱包和执行的状态展示
 

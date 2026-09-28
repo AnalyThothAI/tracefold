@@ -31,7 +31,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20260928_0411`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20260928_0412`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
@@ -86,6 +86,7 @@ class Runtime execution;
 | `20260928_0409` | News 任务级已处理阅读身份、定向重分析谱系与通知文案复用字段；删除来源级已处理跳过字段 | [0409](../tracefold/platform/postgres/alembic/versions/20260928_0409_news_task_reads.py) |
 | `20260928_0410` | 历史编号事实归属修复证明；EventUpdate 来源明确区分模型观察与确定性修复 | [0410](../tracefold/platform/postgres/alembic/versions/20260928_0410_news_head_scope_repairs.py) |
 | `20260928_0411` | 清除退役的 News verdict / Review / 学习表及 Trading root tape / Case evaluation；旧市场 Event、v1 EventUpdate 所属 Event 与 `first` / `followup` 发送行删除；Wallet 旧快照字段一次性改写，收紧当前约束 | [0411](../tracefold/platform/postgres/alembic/versions/20260928_0411_retire_historical_contracts.py) |
+| `20260928_0412` | 通知队列保存已证明未发送结果、发送账本保存最终结果的精确结算身份；移除与从零开始的真实失败计数冲突的旧约束 | [0412](../tracefold/platform/postgres/alembic/versions/20260928_0412_news_notification_settlement.py) |
 
 这些切换是前向迁移，不通过旧卡片 / verdict 伪造新 Claim。0407 曾将旧 pending `first` / `followup` 意图结算；0411 将它们连同旧发送行删除。当前 intent 只接受 `update`，发送账本保留决策引用。EventUpdate 的不可变版本与已发送的当前通知保留。
 
@@ -105,6 +106,20 @@ class Runtime execution;
 迁移不是整库重新分析。0411 丢弃退役 verdict / Review / 学习数据；旧静态 Program 资产不接回运行时。
 
 0409 不把旧 `processed_evidence_refs` 推断成所有任务范围已完成：新 `processed_read_refs` 从空开始，由实际完成的阅读写入。切换前排空旧 News writers 和发送 owner，记录 pending、failed、sending、ambiguous 及受影响范围，保存可恢复备份。迁移后 API、Workers 与前端使用同一新契约，不让旧镜像写新 schema。对确证漏范围且仍需修复的 Event 逐项预览并执行 `news reanalyze`；不批量唤醒历史 Event。回退依赖匹配旧镜像的已验证备份或前向修复，不能重新启动旧 writer 对新 schema 写入。
+
+0412 切换前还要导出旧 update intent 的未决/耗尽清单，至少包含 `intent_id`、Event、目标版本、queue state、旧 attempts、lease/下次到期、通知 work 状态及对应 delivery 状态。旧 attempts 混合领取与失败次数，迁移保留原值，不批量归零，也不把它改名为真实失败次数。只有确证仍有通知责任且未进入可能发送边界的精确 intent，才使用当前版本校验做定向恢复；`sending`、`ambiguous`、已有回执和缺少发送证据的记录保持其真实或未知状态。部署时停止旧发送 owner，完成迁移后只启动新 owner，避免两版进程并行消费。
+
+```sql
+SELECT q.intent_id, q.event_id, q.content_revision, q.state AS queue_state,
+       q.attempts AS legacy_attempts, q.lease_token, q.next_attempt_at_ms,
+       w.state AS work_state, w.content_revision AS work_revision,
+       d.state AS delivery_state, d.payload_sha256
+  FROM news_delivery_queue q
+  LEFT JOIN news_notification_work w ON w.event_id=q.event_id AND w.channel='news'
+  LEFT JOIN news_deliveries d ON d.intent_id=q.intent_id
+ WHERE q.kind='update' AND (q.state='pending' OR q.state='dead')
+ ORDER BY q.event_id, q.intent_id;
+```
 
 0410 先新增插入式修复证明表，再允许新 EventUpdate 以 `scope_repair_id` 代替 `observation_result_id`；恰好一个来源必须存在。既有 EventUpdate 和发送账本不回填。历史 head 的实质清理通过[运维命令](OPERATIONS.md#历史编号事实的-head-归属清理)另行执行，采用精确 head CAS 和整批事务；迁移自身不退休 Claim。
 

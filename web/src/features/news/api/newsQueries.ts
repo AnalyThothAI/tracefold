@@ -2,6 +2,7 @@ import { getApi } from "@lib/api/client";
 import type { components } from "@lib/types/openapi";
 import { newsFeedIdentity, queryKeys } from "@shared/query/queryKeys";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 
 type NewsSchemas = components["schemas"];
 
@@ -16,6 +17,16 @@ export const NEWS_EVENT_KINDS = ["news", "listing"] as const satisfies readonly 
 export type NewsFeedEvent = NewsSchemas["NewsFeedEventData"];
 export type NewsEvent = NewsSchemas["NewsEventData"];
 export type NewsFeed = NewsSchemas["NewsFeedData"];
+/** Cursor windows may overlap after a live update; the newest retained page owns each Event row. */
+export function uniqueFeedEvents(pages: readonly NewsFeed[]): NewsFeedEvent[] {
+  const byId = new Map<string, NewsFeedEvent>();
+  for (const page of pages) {
+    for (const event of page.events) {
+      if (!byId.has(event.event_id)) byId.set(event.event_id, event);
+    }
+  }
+  return [...byId.values()];
+}
 export type NewsFeedCounts = NewsSchemas["NewsFeedCountsData"];
 export type NewsFeedSearch = NewsSchemas["NewsFeedSearchData"];
 export type NewsAssetRef = NewsSchemas["NewsAssetRefData"];
@@ -145,12 +156,18 @@ export const NEWS_WALLET_HISTORY_RANGES = ["24h", "72h", "7d"] as const;
 export type NewsWalletHistoryRange = (typeof NEWS_WALLET_HISTORY_RANGES)[number];
 export const NEWS_WALLET_EVENTS_PAGE_SIZE = 25;
 
-const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
+const fetchNewsFeed = async (
+  token: string,
+  filters: NewsFeedFilters,
+  cursor: string | null,
+  signal?: AbortSignal,
+) =>
   (
     await getApi<NewsFeed>("/api/news/feed", {
       // One page of one filter set. `newsFeedIdentity` is the same tuple the React Query key uses, so a
       // filter added there cannot be forgotten here and serve a page its `If-None-Match` never matched.
       etagKey: `news-feed:${JSON.stringify([...newsFeedIdentity(filters), cursor ?? "first"])}`,
+      signal,
       params: {
         admission: filters.admission,
         cursor,
@@ -167,29 +184,32 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
     })
   ).data;
 
-export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
+export const useNewsFeedFirstPageWithToken = (token: string, filters: NewsFeedFilters) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.newsFeed(filters),
-    queryFn: () => fetchNewsFeed(token, filters, null),
+    queryKey: queryKeys.newsFeedFirstPage(filters),
+    queryFn: ({ signal }) => fetchNewsFeed(token, filters, null, signal),
     refetchInterval: NEWS_FEED_REFETCH_MS,
     staleTime: 2_000,
   });
 
-export const useNewsFeedHistoryWithToken = (
-  token: string,
-  filters: NewsFeedFilters,
-  firstCursor: string | null,
-  enabled: boolean,
-) =>
-  useInfiniteQuery({
-    enabled: Boolean(token && firstCursor && enabled),
-    queryKey: queryKeys.newsFeedHistory(filters, firstCursor ?? ""),
-    queryFn: ({ pageParam }) => fetchNewsFeed(token, filters, pageParam),
-    initialPageParam: firstCursor ?? "",
+/** One bounded, sequentially revalidated cursor chain for both News Event lists. */
+export function useNewsFeedWindowWithToken(token: string, filters: NewsFeedFilters) {
+  const [generation, setGeneration] = useState(0);
+  const query = useInfiniteQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.newsFeedWindow(filters, generation),
+    queryFn: ({ pageParam, signal }) => fetchNewsFeed(token, filters, pageParam, signal),
+    initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
-    staleTime: Number.POSITIVE_INFINITY,
+    maxPages: 3,
+    staleTime: 2_000,
+    refetchInterval: (current) =>
+      current.state.data?.pageParams[0] === null ? NEWS_FEED_REFETCH_MS : false,
   });
+  const olderWindow = query.data?.pageParams[0] != null;
+  return { query, olderWindow, returnLatest: () => setGeneration((value) => value + 1) };
+}
 
 const marketKindParam = (kinds: readonly NewsMarketKind[]): string | null =>
   kinds.length && kinds.length < NEWS_MARKET_KINDS.length

@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from tests.news.test_news_head_scope_repair import BODY, historical_head
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_update_pg import STAMP, seed_event, sql
+from tests.support.news_head_scope import BODY, historical_head
+from tests.support.news_update_pg import STAMP, Clock, ThreadedDb, notify_plan, save_card, seed_event, sql
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.events.facts import extract_fact_units
+from tracefold.news.storage.event_update_store import PgNewsStore
 from tracefold.news.storage.head_scope_repairs import audit_scope_rows
+from tracefold.news.storage.update_commit import lock_event
 from tracefold.news.updates.identity import digest
+from tracefold.news.updates.notification import FrozenCard
+from tracefold.news.updates.ports import SendOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
-@pytest.mark.parametrize("notification_state", ("pending", "done"))
-def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(notification_state: str) -> None:
+def _seed_numbered_head(notification_state: str = "pending"):
     event_id = "event-alpha"
+    stored_state = "pending" if notification_state == "exhausted" else notification_state
+    attempts = 3 if notification_state == "exhausted" else 0
     item_id = f"it-{event_id}"
     seed_event(event_id, text=BODY, title="Digest")
     head, _ = historical_head(item_id)
@@ -64,9 +71,17 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
         """INSERT INTO news_notification_work
              (event_id,channel,content_revision,state,decision_ref,
               attempts,next_attempt_at_ms,updated_at_ms)
-           VALUES (%s,'news',%s,%s,%s,0,%s,%s)""",
-        (event_id, head.content_revision, notification_state, decision_ref, STAMP + 1, STAMP + 1),
+           VALUES (%s,'news',%s,%s,%s,%s,%s,%s)""",
+        (event_id, head.content_revision, stored_state, decision_ref, attempts, STAMP + 1, STAMP + 1),
     )
+    return head
+
+
+@pytest.mark.parametrize("notification_state", ("pending", "done", "exhausted"))
+def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(notification_state: str) -> None:
+    event_id = "event-alpha"
+    decision_ref = "historical-decision" if notification_state == "done" else None
+    head = _seed_numbered_head(notification_state)
     conn = connect_postgres_test(read_only=False)
     try:
         repos = repositories_for_connection(conn)
@@ -126,7 +141,122 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
     assert sql("SELECT count(*) AS n FROM news_semantic_observations")[0]["n"] == 1
     assert sql("SELECT content_revision,state,decision_ref FROM news_notification_work")[0] == {
         "content_revision": revision if notification_state == "pending" else head.content_revision,
-        "state": notification_state,
+        "state": "pending" if notification_state == "exhausted" else notification_state,
         "decision_ref": decision_ref if notification_state == "done" else None,
     }
+    if notification_state == "exhausted":
+        assert sql("SELECT attempts FROM news_notification_work")[0]["attempts"] == 3
+        assert sql("SELECT event_id FROM news_notification_work WHERE state='pending' AND attempts < 3") == []
+    if notification_state == "done":
+        reader = connect_postgres_test(read_only=True)
+        try:
+            detail = repositories_for_connection(reader).news.event_detail(event_id)
+        finally:
+            reader.close()
+        assert detail is not None and detail["processing"]["notification"] is None
     assert sql("SELECT count(*) AS n FROM news_deliveries")[0]["n"] == 0
+
+
+def _prepared_intent(head):
+    clock = Clock(STAMP + 2)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
+    snapshot = asyncio.run(store.notification_snapshot(head.event_id, "news"))
+    assert snapshot is not None
+    plan = notify_plan(head, snapshot.reader.revision)
+    committed = asyncio.run(store.atomic_record_plan(plan))
+    assert committed.status == "committed" and committed.lease is not None
+    lease = committed.lease
+    body = "范围\n\n" + "\n\n".join("命题" for _ in plan.selected_claim_refs)
+    card = FrozenCard(
+        intent_id=lease.intent_id,
+        claim_refs=plan.selected_claim_refs,
+        headline_zh="范围",
+        body=body,
+        payload_sha256=digest(body),
+    )
+    asyncio.run(save_card(store, lease, card))
+    return store, lease, card
+
+
+def _repair(head) -> str:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repos = repositories_for_connection(conn)
+        with conn.transaction():
+            proof = audit_scope_rows(repos.news.head_scope_material())["events"][0]
+            return repos.news.adopt_head_scope_repair(
+                expected_head=head.content_revision, proof=proof, now_ms=STAMP + 3
+            )
+    finally:
+        conn.close()
+
+
+def test_repair_before_begin_refuses_the_old_frozen_send() -> None:
+    head = _seed_numbered_head()
+    store, lease, card = _prepared_intent(head)
+    revision = _repair(head)
+
+    assert asyncio.run(store.atomic_begin_send(lease, card)) == "head_changed"
+    assert sql("SELECT intent_id FROM news_deliveries") == []
+    assert sql("SELECT content_revision,attempts FROM news_notification_work") == [
+        {"content_revision": revision, "attempts": 0}
+    ]
+
+
+def test_begin_waiting_for_event_lock_rechecks_head_after_repair_commit() -> None:
+    head = _seed_numbered_head()
+    store, lease, card = _prepared_intent(head)
+
+    async def race() -> str:
+        conn = connect_postgres_test(read_only=False)
+        try:
+            repos = repositories_for_connection(conn)
+            with conn.transaction():
+                lock_event(conn, head.event_id)
+                begin = asyncio.create_task(store.atomic_begin_send(lease, card))
+                for _ in range(100):
+                    waiting = sql(
+                        "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() "
+                        "AND wait_event_type='Lock' AND wait_event='advisory' "
+                        "AND query LIKE 'SELECT pg_advisory_xact_lock%' LIMIT 1"
+                    )
+                    if waiting:
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    begin.cancel()
+                    raise AssertionError("begin did not reach the Event lock")
+                proof = audit_scope_rows(repos.news.head_scope_material())["events"][0]
+                repos.news.adopt_head_scope_repair(expected_head=head.content_revision, proof=proof, now_ms=STAMP + 3)
+            return await asyncio.wait_for(begin, 5)
+        finally:
+            conn.close()
+
+    assert asyncio.run(race()) == "head_changed"
+    assert sql("SELECT intent_id FROM news_deliveries") == []
+
+
+def test_begin_before_repair_keeps_the_old_send_result_owned_by_its_intent() -> None:
+    head = _seed_numbered_head()
+    store, lease, card = _prepared_intent(head)
+    assert asyncio.run(store.atomic_begin_send(lease, card)) == "begun"
+    revision = _repair(head)
+
+    assert sql("SELECT state,content_revision FROM news_deliveries") == [
+        {"state": "sending", "content_revision": head.content_revision}
+    ]
+    result = asyncio.run(
+        store.settle_send(
+            lease,
+            card,
+            SendOutcome(state="sent", payload_sha256=card.payload_sha256, message_id="received"),
+            settled_at_ms=STAMP + 4,
+        )
+    )
+    assert result == "sent"
+    assert sql("SELECT state,content_revision FROM news_deliveries") == [
+        {"state": "sent", "content_revision": head.content_revision}
+    ]
+    assert sql("SELECT state,content_revision FROM news_notification_work") == [
+        {"state": "pending", "content_revision": revision}
+    ]

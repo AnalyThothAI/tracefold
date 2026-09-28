@@ -83,6 +83,7 @@ EVENT_DELIVERIES_SQL: Final = """
 # is either pending or dead.
 EVENT_DELIVERY_QUEUE_SQL: Final = """
     SELECT intent_id, kind, state, attempts, error_code, enqueued_at_ms, next_attempt_at_ms,
+           frozen_card IS NOT NULL AS frozen_card,
            settled_at_ms, content_revision, claim_refs, plan_key
       FROM news_delivery_queue
      WHERE event_id = %s

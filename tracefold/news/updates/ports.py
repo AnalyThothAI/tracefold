@@ -41,6 +41,7 @@ class SemanticObservation(Exact):
 class NotificationSnapshot(Exact):
     update: EventUpdate
     reader: ReaderSnapshot
+    work_updated_at_ms: int | None = None
 
 
 class IntentLease(Exact):
@@ -51,9 +52,12 @@ class IntentLease(Exact):
 
 
 class PlanCommit(Exact):
-    recorded: bool
+    status: Literal["committed", "head_changed", "reader_changed", "lease_lost", "already_settled", "overlap"]
     effective_plan: NotificationPlan | None = None
     lease: IntentLease | None = None
+
+
+BeginSendStatus = Literal["begun", "head_changed", "reader_changed", "lease_lost", "already_settled", "overlap"]
 
 
 class SendOutcome(Exact):
@@ -176,7 +180,7 @@ class NewsStore(Protocol):
         """Release a pending owned intent cancelled before begin_send was called."""
         ...
 
-    async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> bool:
+    async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> BeginSendStatus:
         """Recheck head, reader revision, lease and in-flight overlap; freeze sending.
 
         On a changed selection, retire only the unsent reservation and leave
@@ -191,7 +195,7 @@ class NewsStore(Protocol):
         outcome: SendOutcome,
         *,
         settled_at_ms: int,
-    ) -> None:
+    ) -> str:
         """Fenced actual receipt + queue outcome, atomically.
 
         Sent retains the exact body/hash, target, provider message ID and time.
@@ -202,7 +206,13 @@ class NewsStore(Protocol):
 
     async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None: ...
 
-    async def defer_notification(self, event_id: str, channel: str, expected_content_revision: str) -> None:
+    async def defer_notification(
+        self,
+        event_id: str,
+        channel: str,
+        expected_content_revision: str,
+        expected_work_updated_at_ms: int | None = None,
+    ) -> None:
         """A planning turn failed before a plan was recorded: spend one bounded attempt and back off.
 
         Semantics, the public outbox and any reserved intent are untouched; the caller reports the error.

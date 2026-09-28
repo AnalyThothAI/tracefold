@@ -112,7 +112,11 @@ def add_news_commands(
         "repair-head-scopes", help="audit numbered Event heads and retire proven sibling-fact claims"
     )
     repair.add_argument("--execute", action="store_true", help="append audited repairs under exact head CAS")
-    repair.add_argument("--expected-digest", help="required with --execute; digest from a fresh audit")
+    repair.add_argument("--event", help="one exact Event ID to repair")
+    repair.add_argument("--head", help="expected content revision for that Event")
+    repair.add_argument("--proof", help="digest of that Event's preview proof")
+    repair.add_argument("--after", default="", help="exclusive Event ID cursor for bounded preview")
+    repair.add_argument("--limit", type=_positive_int, default=100, help="preview page size, at most 500")
     news_dlq = news_subcommands.add_parser("dlq", help="inspect, replay, or purge the News dead-letter queue")
     news_dlq.add_argument("dlq_action", choices=("inspect", "replay", "purge"))
     news_dlq.add_argument("--limit", type=_positive_int, default=20, help="messages to inspect/replay")

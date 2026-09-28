@@ -3,7 +3,7 @@ import { ActionButton } from "@shared/ui/ActionButton";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
-import { useNewsFeedWithToken } from "../../api/newsQueries";
+import { useNewsFeedFirstPageWithToken } from "../../api/newsQueries";
 import { parseFeedFilters } from "../../model/feedFilters";
 import { formatCount } from "../../model/newsLabels";
 
@@ -26,7 +26,7 @@ export function NewsEventPager({
 }) {
   const navigate = useNavigate();
   const filters = parseFeedFilters(new URLSearchParams(feedSearch ?? ""));
-  const query = useNewsFeedWithToken(feedSearch == null ? "" : token, filters);
+  const query = useNewsFeedFirstPageWithToken(feedSearch == null ? "" : token, filters);
   const events = query.data?.events ?? [];
   const index = events.findIndex((event) => event.event_id === eventId);
   const previous = index > 0 ? events[index - 1] : null;

@@ -1,21 +1,24 @@
 """The core `NewsStore` and `JudgmentCache` ports over the News PostgreSQL repository (#706).
 
-Each `atomic_*` method, and every other write, is exactly one `NewsDatabasePort.tx` call: one short
-transaction with no model, provider, broker or send inside it. Model documents are serialized and
-parsed outside the transaction. The SQL lives in `event_updates.EventUpdateStorage`.
+Each write attempt is one short `NewsDatabasePort.tx` call with no external I/O inside it.
+Fenced failure settlements may retry that transaction after a lost response. Model documents are
+serialized and parsed outside the transaction. The SQL lives in `event_updates.EventUpdateStorage`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
+from ..bus import DeferError, TransientError
 from ..source_contracts import classify_source_contracts
 from ..updates.contracts import EventUpdate, Evidence, Extraction, FrozenInput, PublicUpdate, ReadTarget
 from ..updates.judgment import Answer
 from ..updates.notification import CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
 from ..updates.ports import (
+    BeginSendStatus,
     IntentLease,
     NotificationSnapshot,
     PlanCommit,
@@ -235,7 +238,7 @@ class PgNewsStore:
             watch_symbols=self.watch_symbols,
             protected_listing_claim_refs=listing_refs,
         )
-        return NotificationSnapshot(update=update, reader=reader)
+        return NotificationSnapshot(update=update, reader=reader, work_updated_at_ms=material["work_updated_at_ms"])
 
     async def lookup_notification_decision(
         self, event_id: str, channel: str, input_digest: str
@@ -263,14 +266,15 @@ class PgNewsStore:
                 lease_ms=self.intent_lease_ms,
             ),
         )
-        if reserved is None:
-            return PlanCommit(recorded=False)
+        status = str(reserved["status"])
+        if status != "committed":
+            return PlanCommit(status=status)
         effective = NotificationPlan.model_validate(reserved["plan"])
         if reserved["intent_id"] is None:
-            return PlanCommit(recorded=True, effective_plan=effective)
+            return PlanCommit(status="committed", effective_plan=effective)
         frozen = reserved["frozen_card"]
         return PlanCommit(
-            recorded=True,
+            status="committed",
             effective_plan=effective,
             lease=IntentLease(
                 intent_id=str(reserved["intent_id"]),
@@ -321,20 +325,18 @@ class PgNewsStore:
             ),
         )
 
-    async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> bool:
+    async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> BeginSendStatus:
         now_ms = self.clock()
-        return bool(
-            await self.db.tx(
-                "news_update_begin_send",
-                lambda repos: repos.news.begin_intent_send(
-                    intent_id=lease.intent_id,
-                    lease_token=lease.lease_token,
-                    plan=lease.plan,
-                    card=card,
-                    watch_symbols=self.watch_symbols,
-                    now_ms=now_ms,
-                ),
-            )
+        return await self.db.tx(
+            "news_update_begin_send",
+            lambda repos: repos.news.begin_intent_send(
+                intent_id=lease.intent_id,
+                lease_token=lease.lease_token,
+                plan=lease.plan,
+                card=card,
+                watch_symbols=self.watch_symbols,
+                now_ms=now_ms,
+            ),
         )
 
     async def settle_send(
@@ -344,10 +346,10 @@ class PgNewsStore:
         outcome: SendOutcome,
         *,
         settled_at_ms: int,
-    ) -> None:
+    ) -> str:
         if outcome.payload_sha256 != card.payload_sha256:
             raise EventUpdateConflict("news_send_outcome_payload_mismatch")
-        await self.db.tx(
+        result = await self.db.tx(
             "news_update_settle_send",
             lambda repos: repos.news.settle_intent_send(
                 intent_id=lease.intent_id,
@@ -362,24 +364,51 @@ class PgNewsStore:
                 provider_receipt=outcome.receipt,
             ),
         )
+        if result == "conflict":
+            raise RuntimeError("news_send_settlement_conflict")
+        return str(result)
 
     async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None:
         now_ms = self.clock()
-        await self.db.tx(
-            "news_update_card_failure",
-            lambda repos: repos.news.record_intent_card_failure(
-                intent_id=lease.intent_id, lease_token=lease.lease_token, error_code=error_code, now_ms=now_ms
-            ),
-        )
+        for attempt in range(3):
+            try:
+                await self.db.tx(
+                    "news_update_card_failure",
+                    lambda repos: repos.news.record_intent_card_failure(
+                        intent_id=lease.intent_id, lease_token=lease.lease_token, error_code=error_code, now_ms=now_ms
+                    ),
+                )
+                return
+            except (DeferError, TransientError):
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.25 * (attempt + 1))
 
-    async def defer_notification(self, event_id: str, channel: str, expected_content_revision: str) -> None:
+    async def defer_notification(
+        self,
+        event_id: str,
+        channel: str,
+        expected_content_revision: str,
+        expected_work_updated_at_ms: int | None = None,
+    ) -> None:
         now_ms = self.clock()
-        await self.db.tx(
-            "news_update_defer_notification",
-            lambda repos: repos.news.defer_notification_work(
-                event_id=event_id, channel=channel, expected_content_revision=expected_content_revision, now_ms=now_ms
-            ),
-        )
+        for attempt in range(3):
+            try:
+                await self.db.tx(
+                    "news_update_defer_notification",
+                    lambda repos: repos.news.defer_notification_work(
+                        event_id=event_id,
+                        channel=channel,
+                        expected_content_revision=expected_content_revision,
+                        expected_work_updated_at_ms=expected_work_updated_at_ms,
+                        now_ms=now_ms,
+                    ),
+                )
+                return
+            except (DeferError, TransientError):
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.25 * (attempt + 1))
 
     # ------------------------------------------------------------------ optional read
     async def reserve_extra_read(self, lineage_id: str, target_ref: str) -> bool:

@@ -30,7 +30,7 @@ def test_new_decision_is_reviewable_without_old_verdict(selected: bool) -> None:
     )
     plan = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
     committed = asyncio.run(pg.atomic_record_plan(plan))
-    assert committed.recorded
+    assert committed.status == "committed"
     assert (committed.lease is not None) == selected
 
     conn = connect_postgres_test(read_only=False)
@@ -100,7 +100,7 @@ def test_identical_decision_input_reuses_persisted_assessment() -> None:
     }
     first = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), **kwargs))
     committed = asyncio.run(pg.atomic_record_plan(first))
-    assert committed.recorded and assessor.calls == 1
+    assert committed.status == "committed" and assessor.calls == 1
     second = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), **kwargs))
     assert assessor.calls == 1
     assert second.record_ref == committed.effective_plan.record_ref
@@ -115,7 +115,7 @@ def test_decision_queue_filters_before_limit_and_uses_one_read_for_a_sparse_page
         NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db)), NotifyAll()
     )
     plan = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
-    assert asyncio.run(pg.atomic_record_plan(plan)).recorded
+    assert asyncio.run(pg.atomic_record_plan(plan)).status == "committed"
     conn = connect_postgres_test(read_only=False)
     try:
         original = conn.execute(

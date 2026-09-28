@@ -50,7 +50,7 @@ _DONE = {"wanted_revision": 1, "done_revision": 1, "last_outcome": "adopted", "l
             "held",
         ),
         ({"semantic": _DONE}, "no_update", "held"),
-        ({"semantic": _DONE, "adopted": True}, "queued_notification", "pending"),
+        ({"semantic": _DONE, "adopted": True}, "not_notified", "held"),
         (
             {"semantic": _DONE, "adopted": True, "notification": {"state": "pending", "action": "unresolved"}},
             "notification_deferred",
@@ -58,8 +58,8 @@ _DONE = {"wanted_revision": 1, "done_revision": 1, "last_outcome": "adopted", "l
         ),
         (
             {"semantic": _DONE, "adopted": True, "notification": {"state": "done", "action": "notify"}},
-            "pending_delivery",
-            "pending",
+            "delivery_failed",
+            "held",
         ),
         (
             {
@@ -127,13 +127,13 @@ def test_outcome_texts_name_the_key_card_and_the_reasons_nothing_was_sent() -> N
         },
     )
     assert silent.reason_zh == "仅进入信息流 ×2 · 已送达内容已覆盖"
-    # A failed newer revision never hides the head the Event already has.
+    # A failed newer semantic revision is the current result even if an older head exists.
     failed_after_head = _outcome(
         semantic={"wanted_revision": 2, "done_revision": 1, "last_outcome": "failed"},
         adopted=True,
         notification={"state": "done", "action": "notify"},
     )
-    assert failed_after_head.kind == "pending_delivery"
+    assert failed_after_head.kind == "semantic_failed"
 
 
 def test_source_only_event_keeps_actual_delivery_receipt_without_inventing_an_old_verdict() -> None:
@@ -325,11 +325,11 @@ def test_the_timeline_narrates_evidence_semantics_the_plan_and_the_intent_in_clo
     assert steps[6]["summary_zh"] == "已送达 · 1 条命题"
 
 
-def test_exhausted_notification_is_held_but_actual_delivery_still_wins() -> None:
+def test_exhausted_notification_is_held_alongside_historical_delivery() -> None:
     work = {"state": "pending", "attempts": 3, "content_revision": "v1", "updated_at_ms": NOW}
     view = notification_view(work, statements={})
     assert view is not None and view["state"] == "exhausted" and view["state_zh"] == "规划已耗尽"
     outcome = _outcome(semantic=_DONE, adopted=True, notification=work)
     assert outcome.kind == "notification_exhausted" and outcome.group == "held"
     outcome = _outcome(semantic=_DONE, adopted=True, notification=work, delivery={"state": "sent"})
-    assert outcome.kind == "delivered"
+    assert outcome.kind == "notification_exhausted"

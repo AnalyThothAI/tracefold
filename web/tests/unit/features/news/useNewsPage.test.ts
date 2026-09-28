@@ -1,14 +1,17 @@
 import {
   useNewsEventWithToken,
-  useNewsFeedWithToken,
+  useNewsFeedWindowWithToken,
   useNewsStatusWithToken,
+  uniqueFeedEvents,
+  type NewsFeedFilters,
 } from "@features/news/api/newsQueries";
 import { queryKeys } from "@shared/query/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import {
   newsEventDetailFixture,
   newsFeedFixture,
+  newsFeedEventFixture,
   newsStatusFixture,
 } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
@@ -16,7 +19,7 @@ import { HttpResponse, http } from "msw";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 
-const baseFilters = {
+const baseFilters: NewsFeedFilters = {
   admission: null,
   eventKinds: [],
   hours: null,
@@ -25,17 +28,59 @@ const baseFilters = {
   sourceAuthorities: [],
   subjectCodes: [],
   symbol: null,
-} as const;
+};
 
-describe("useNewsFeedWithToken", () => {
+describe("useNewsFeedWindowWithToken", () => {
+  it("keeps at most three cursor pages and prefers the newest copy of an overlapping Event", async () => {
+    const requested: string[] = [];
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor") ?? "first";
+        requested.push(cursor);
+        const page = requested.length;
+        return HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [newsFeedEventFixture({ event_id: `event-${page}` })],
+            next_cursor: page < 4 ? `cursor-${page}` : null,
+            counts: page === 1 ? newsFeedFixture().counts : null,
+          }),
+        });
+      }),
+    );
+    const { result } = renderHook(() => useNewsFeedWindowWithToken("token", baseFilters), {
+      wrapper: wrapper(),
+    });
+    await waitFor(() => expect(result.current.query.data?.pages).toHaveLength(1));
+    for (let page = 2; page <= 4; page += 1) {
+      await act(async () => {
+        await result.current.query.fetchNextPage();
+      });
+      await waitFor(() =>
+        expect(result.current.query.data?.pages.at(-1)?.events[0].event_id).toBe(`event-${page}`),
+      );
+    }
+    expect(requested).toEqual(["first", "cursor-1", "cursor-2", "cursor-3"]);
+    expect(result.current.query.data?.pages).toHaveLength(3);
+    expect(result.current.olderWindow).toBe(true);
+    const fresh = newsFeedEventFixture({ event_id: "same", leader_title: "new" });
+    const stale = newsFeedEventFixture({ event_id: "same", leader_title: "old" });
+    expect(
+      uniqueFeedEvents([
+        newsFeedFixture({ events: [fresh] }),
+        newsFeedFixture({ events: [stale] }),
+      ]),
+    ).toEqual([fresh]);
+  });
+
   it("separates Feed cache identities by every server filter", () => {
-    const latest = queryKeys.newsFeed(baseFilters);
-    const pushed = queryKeys.newsFeed({ ...baseFilters, outcome: "pushed" });
+    const latest = queryKeys.newsFeedWindow(baseFilters, 0);
+    const pushed = queryKeys.newsFeedWindow({ ...baseFilters, outcome: "pushed" }, 0);
 
     expect(latest).not.toEqual(pushed);
-    expect(latest[0]).toBe("news-feed");
+    expect(latest[0]).toBe("news-feed-window");
     expect(pushed).toContain("pushed");
-    const held = queryKeys.newsFeed({ ...baseFilters, hours: 6, outcome: "held" });
+    const held = queryKeys.newsFeedWindow({ ...baseFilters, hours: 6, outcome: "held" }, 0);
     expect(held).not.toEqual(latest);
     expect(held).toContain("held");
     expect(held).toContain("6");
@@ -44,7 +89,7 @@ describe("useNewsFeedWithToken", () => {
       { ...baseFilters, subjectCodes: ["medtop:04000000"] as const },
       { ...baseFilters, eventKinds: ["news"] as const },
     ]) {
-      expect(queryKeys.newsFeed(filtered)).not.toEqual(latest);
+      expect(queryKeys.newsFeedWindow(filtered, 0)).not.toEqual(latest);
     }
   });
 
@@ -78,7 +123,7 @@ describe("useNewsFeedWithToken", () => {
     );
     const { result } = renderHook(
       () =>
-        useNewsFeedWithToken("token", {
+        useNewsFeedWindowWithToken("token", {
           admission: "candidate",
           eventKinds: ["news"],
           hours: 24,
@@ -90,7 +135,7 @@ describe("useNewsFeedWithToken", () => {
         }),
       { wrapper: wrapper() },
     );
-    await waitFor(() => expect(result.current.data?.events).toHaveLength(1));
+    await waitFor(() => expect(result.current.query.data?.pages[0].events).toHaveLength(1));
     expect(observed).toEqual({
       admission: "candidate",
       assertion_status: null,
@@ -108,7 +153,7 @@ describe("useNewsFeedWithToken", () => {
       subject_code: "medtop:04000000",
       symbol: "BTC",
     });
-    expect(result.current.data?.events[0].update?.headline_source).toBe("sent_card");
+    expect(result.current.query.data?.pages[0].events[0].update?.headline_source).toBe("sent_card");
   });
 
   it("reads one Event detail by encoded id", async () => {

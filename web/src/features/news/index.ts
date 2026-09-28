@@ -1,6 +1,6 @@
 export {
   useNewsEventWithToken,
-  useNewsFeedWithToken,
+  useNewsFeedWindowWithToken,
   useNewsStatusWithToken,
 } from "./api/newsQueries";
 export { NewsPage } from "./ui/NewsPage";
