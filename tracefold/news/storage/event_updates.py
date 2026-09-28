@@ -19,6 +19,7 @@ import logging
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final, Literal, cast
 
+from ..events.facts import FactUnit, extract_fact_units
 from ..evidence import query_for
 from ..models import MarketAsset, market_type_of
 from ..reader_history import SIMILAR_TITLE_MAX, TARGETED_HISTORY_WINDOW_MS
@@ -386,12 +387,35 @@ def _extraction_scopes(material: Mapping[str, Any], evidence: Sequence[Evidence]
 
     scopes = []
     facts = material.get("fact_scopes") or {}
+    items = {str(row["item_id"]): row for row in material.get("items") or ()}
+    recovered: dict[str, dict[str, FactUnit]] = {}
     for item in evidence:
         for member in material.get("members") or ():
             if str(member["item_id"]) != item.source.record_id:
                 continue
             fact_id = str(member["fact_id"])
-            fact = facts.get(fact_id) or {}
+            fact = facts.get(fact_id)
+            if fact is None:
+                item_id = str(member["item_id"])
+                if item_id not in recovered:
+                    original = items.get(item_id)
+                    recovered[item_id] = (
+                        {}
+                        if original is None
+                        else {
+                            unit.fact_id: unit
+                            for unit in extract_fact_units(
+                                item_id=item_id,
+                                raw_text=_item_text(original),
+                                fallback_title=str(original.get("title") or ""),
+                            )
+                        }
+                    )
+                unit = recovered[item_id].get(fact_id)
+                if unit is None or unit.text != str(member["fact_text"]):
+                    log.warning("news_member_fact_scope_unresolved", extra={"item_id": item_id, "fact_id": fact_id})
+                    continue
+                fact = unit.as_dict()
             if fact.get("method", "whole_item") == "whole_item":
                 continue
             scopes.append(
