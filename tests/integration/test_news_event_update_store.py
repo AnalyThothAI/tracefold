@@ -1191,3 +1191,63 @@ def test_snapshot_member_scopes_recover_each_fact_from_its_own_snapshot() -> Non
         (second.fact_id, second.text, second.context),
     ]
     assert len(source.evidence) == 1 and "Gamma opens" in source.evidence[0].text
+
+
+def test_exact_digest_member_has_its_own_scope_without_focus_snapshot() -> None:
+    from tracefold.news.events.facts import extract_fact_units
+
+    pg, db, clock = store()
+    body = (
+        "1. Agency suspends withdrawals.\n"
+        "2. Beta releases earnings.\n"
+        "3. Gamma opens a factory.\n"
+        "（以上内容仅供参考，不构成投资建议）"
+    )
+    seed_event(text=body, title="Daily digest")
+    leader_item = f"it-{EVENT}"
+    exact_item = f"{leader_item}-exact"
+    leader_fact = extract_fact_units(item_id=leader_item, raw_text=body, fallback_title="Daily digest")[0]
+    exact_fact = extract_fact_units(item_id=exact_item, raw_text=body, fallback_title="Daily digest")[0]
+    sql(
+        """
+        INSERT INTO news_items (
+          item_id, source_id, source_item_key, title, raw_first_line, description, canonical_url,
+          reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+          first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id,
+          evidence_text, evidence_text_sha256
+        )
+        SELECT %s, source_id, %s, title, raw_first_line, description, canonical_url,
+               reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
+               first_ingest_mode, trace_id, created_at_ms, updated_at_ms, %s,
+               evidence_text, evidence_text_sha256
+          FROM news_items WHERE item_id=%s
+        """,
+        (exact_item, exact_item, exact_item, leader_item),
+    )
+    sql("DELETE FROM news_event_members WHERE event_id=%s", (EVENT,))
+    for item_id, fact, match_kind in (
+        (leader_item, leader_fact, "leader"),
+        (exact_item, exact_fact, "exact"),
+    ):
+        sql(
+            "INSERT INTO news_event_members(event_id,item_id,joined_at_ms,match_kind,fact_id,fact_text) "
+            "VALUES(%s,%s,%s,%s,%s,%s)",
+            (EVENT, item_id, STAMP, match_kind, fact.fact_id, fact.text),
+        )
+    asyncio.run(
+        db.tx(
+            "snapshot",
+            lambda r: r.news.append_evidence_snapshot(
+                event_id=EVENT, now_ms=clock(), focus_item_id=leader_item, focus_fact=leader_fact
+            ),
+        )
+    )
+    source = asyncio.run(pg.input_for(EVENT))
+    assert len(source.evidence) == len(source.extraction_scopes) == 2
+    assert {scope.fact_id for scope in source.extraction_scopes} == {leader_fact.fact_id, exact_fact.fact_id}
+    for view in reading_views(source):
+        assert view.mode == "scoped"
+        shown = " ".join(span.text for span in view.spans)
+        assert "Agency suspends withdrawals" in shown
+        assert "不构成投资建议" in shown
+        assert "Beta releases earnings" not in shown

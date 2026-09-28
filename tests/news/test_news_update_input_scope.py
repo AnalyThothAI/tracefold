@@ -67,6 +67,41 @@ def test_member_scopes_preserve_whole_sources_and_do_not_scope_other_members(mon
     assert [s.fact_id for s in changed.extraction_scopes] == ["beta"]
 
 
+def test_exact_member_recovers_its_own_numbered_scope_without_a_focus_snapshot() -> None:
+    body = BODY + "\n（以上内容仅供参考，不构成投资建议）"
+    leader = extract_fact_units(item_id="digest", raw_text=body, fallback_title="Digest")[0]
+    exact = extract_fact_units(item_id="copy", raw_text=body, fallback_title="Digest")[0]
+    assert leader.fact_id != exact.fact_id and leader.text == exact.text
+    data = input_material()
+    data["item_ids"] = ["digest", "copy"]
+    data["items"] = [
+        {**data["items"][0], "title": "Digest", "evidence_text": body},
+        {**data["items"][0], "item_id": "copy", "source_item_key": "copy", "title": "Digest", "evidence_text": body},
+    ]
+    data["members"] = [
+        {"item_id": "digest", "fact_id": leader.fact_id, "fact_text": leader.text},
+        {"item_id": "copy", "fact_id": exact.fact_id, "fact_text": exact.text},
+    ]
+    # Only the leader is a focus FactUnit in the immutable snapshot. The exact
+    # member must recover its own identity from its stored original Item.
+    data["fact_scopes"] = {leader.fact_id: leader.as_dict()}
+    source = frozen_input("near-event", data)
+    assert len(source.evidence) == len(source.extraction_scopes) == 2
+    assert {scope.fact_id for scope in source.extraction_scopes} == {leader.fact_id, exact.fact_id}
+    for item, view in zip(source.evidence, reading_views(source), strict=True):
+        assert item.text == body
+        assert view.mode == "scoped"
+        shown = " ".join(span.text for span in view.spans)
+        assert "Exchange suspends $NEAR withdrawals" in shown
+        assert "不构成投资建议" in shown
+        assert "Beta announces earnings" not in shown
+        sibling = draft(item).model_copy(
+            update={"citations": (Citation(evidence_ref=item.ref, quote="Beta announces earnings."),)}
+        )
+        with pytest.raises(ContractFault, match="news_citation_not_in_visible_source"):
+            validate_extraction(source, Extraction(claims=(sibling,)))
+
+
 def test_whole_item_keeps_whole_item_extraction_and_multiple_scopes_are_unioned() -> None:
     data = input_material()
     data["fact_scopes"]["near"]["method"] = "whole_item"
