@@ -143,6 +143,7 @@ make help
 | 中文卡片路由 | `llm.news_reader_card` 及对应 fallback | 可选独立完整 endpoint；未配置时按实际装配复用默认生成能力 |
 | News 有界原生判断 | `llm.news_judgment` | 可选完整 `api_key / base_url / model`，不从 Trading 路由推断 |
 | 新闻 / 市场推送 | `news.push` | 默认关闭；Feishu / Telegram 各需自身有效目的地与凭据 |
+| News 通知准备上限 | `news.push.notification_prepare_limit` | 默认 2，可设 1–8；限制实际在途准备，不改变同进程唯一发送时隙 |
 | 钱包净买入 | `news.chain_tape` | 默认关闭；名单、RPC、规则与后续价格能力分开诊断 |
 | Trading Analysis | `trading.enabled`、`trading.analysis` | 默认关闭；需要研究模型和有界市场证据 |
 | Signal 发布 | `trading.analysis.publish_signals` | 默认 false；有研究决策也可以不发布 |

@@ -52,7 +52,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260928_0408"
+HEAD = "20260928_0409"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -259,6 +259,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260928_0408",
         "20260927_0407",
         "20260927_0406",
         "20260927_0405",
@@ -338,6 +339,50 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert sorted("_".join(path.stem.split("_")[:2]) for path in VERSIONS.glob("*.py")) == sorted(
         revision.revision for revision in revisions
     )
+
+
+def test_task_read_cut_preserves_history_without_promoting_source_only_completion() -> None:
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260928_0408")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            _seed_pre_cut_oi_event(
+                conn, event_id="ev-read-cut", leader_item="it-read-a", member_item="it-read-b", at_ms=100
+            )
+            conn.execute(
+                "INSERT INTO news_semantic_work "
+                "(event_id,wanted_revision,done_revision,processed_evidence_refs,lineage_id,"
+                "next_attempt_at_ms,updated_at_ms) "
+                "VALUES ('ev-read-cut',1,1,ARRAY['evidence:old'],'lineage-read',100,100)"
+            )
+            conn.execute(
+                "INSERT INTO news_semantic_observations "
+                "(result_id,work_id,event_id,input_revision,input_sha256,program_identity,"
+                "completed_at_ms,understanding,evidence_refs) "
+                "VALUES ('result-read','work-read','ev-read-cut',1,repeat('a',64),'original',100,"
+                "'{}'::jsonb,ARRAY['evidence:old'])"
+            )
+        command.upgrade(config, HEAD)
+        work = conn.execute(
+            "SELECT wanted_revision,done_revision,processed_read_refs FROM news_semantic_work "
+            "WHERE event_id='ev-read-cut'"
+        ).fetchone()
+        observation = conn.execute(
+            "SELECT evidence_refs,read_refs FROM news_semantic_observations WHERE result_id='result-read'"
+        ).fetchone()
+        assert work == {"wanted_revision": 1, "done_revision": 1, "processed_read_refs": []}
+        assert observation == {"evidence_refs": ["evidence:old"], "read_refs": []}
+        assert (
+            conn.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_name='news_semantic_work' "
+                "AND column_name='processed_evidence_refs'"
+            ).fetchone()
+            is None
+        )
+    finally:
+        conn.close()
 
 
 def test_migration_tree_resolves_outside_the_repository() -> None:
@@ -522,7 +567,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="trading_not_dispatched_forward_only"):
+    with pytest.raises(RuntimeError, match="news_task_reads_forward_only_restore_verified_backup"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     command.stamp(config, "20260927_0405")

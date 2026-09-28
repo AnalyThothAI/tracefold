@@ -416,6 +416,7 @@ class CliTests(unittest.TestCase):
                 "telegram_chat_id_configured": False,
                 "telegram_proxy_configured": False,
                 "min_interval_seconds": 0.6,
+                "notification_prepare_limit": 2,
             },
         )
         self.assertNotIn("rss_enabled", news)
@@ -513,6 +514,7 @@ class CliTests(unittest.TestCase):
                 "telegram_chat_id": None,
                 "telegram_proxy_url": None,
                 "min_interval_seconds": 0.6,
+                "notification_prepare_limit": 2,
             },
         )
         self.assertNotIn("providers", payload)

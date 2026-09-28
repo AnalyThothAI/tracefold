@@ -32,8 +32,6 @@ _CLOCK_RE = re.compile(r"^\s*\d{1,2}[:：]\d{2}(?!\d)")
 _WORD_RE = re.compile(r"\w")
 _MIN_EXPLICIT_UNITS = 3
 _MIN_FACT_CHARS = 12
-# Aligned with the model-visible `content` bound so the lead is never trimmed twice.
-_MAX_LEAD_CHARS = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,22 +65,26 @@ def _fact_id(*, item_id: str, ordinal: int, text: str, method: str) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def _blocks(raw_text: str) -> list[tuple[str, int, int]]:
-    """Return cleaned blocks with spans in the decoded provider text."""
+def source_blocks(raw_text: str) -> list[tuple[str, int, int]]:
+    """Return readable blocks with offsets in the *stored* provider text.
 
-    decoded = html.unescape(str(raw_text or ""))
+    Decoding is for structure recognition only.  Evidence and citations retain
+    the exact original bytes; an HTML entity must not shift an evidence offset.
+    """
+
+    original = str(raw_text or "")
     out: list[tuple[str, int, int]] = []
     cursor = 0
-    for match in _BREAK_RE.finditer(decoded):
-        raw = decoded[cursor : match.start()]
-        cleaned = _SPACE_RE.sub(" ", _TAG_RE.sub(" ", raw)).strip()
+    for match in _BREAK_RE.finditer(original):
+        raw = original[cursor : match.start()]
+        cleaned = _SPACE_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", raw))).strip()
         if cleaned:
             out.append((cleaned, cursor, match.start()))
         cursor = match.end()
-    raw = decoded[cursor:]
-    cleaned = _SPACE_RE.sub(" ", _TAG_RE.sub(" ", raw)).strip()
+    raw = original[cursor:]
+    cleaned = _SPACE_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", raw))).strip()
     if cleaned:
-        out.append((cleaned, cursor, len(decoded)))
+        out.append((cleaned, cursor, len(original)))
     return out
 
 
@@ -91,24 +93,13 @@ def _lead_context(blocks: list[tuple[str, int, int]], *, first_numbered_start: i
 
     The block sitting directly on top of the list is the lead that gives every bullet its subject
     ("BREAKING: Nvidia ... Details include:"); anything higher is the poster's framing.  A long preamble is
-    therefore budgeted from the bottom up, so the lead is what survives.  Separator-only blocks — the
-    provider emits a bare ``|`` line between a quote tweet's two authors — carry no subject and are dropped.
+    therefore retained in source order. Separator-only blocks carry no subject.
     """
 
     preamble = [block for block, start, _ in blocks if start < first_numbered_start and _WORD_RE.search(block)]
     if not preamble:
         return ""
-    kept: list[str] = []
-    used = 0
-    for block in reversed(preamble):
-        cost = len(block) + (1 if kept else 0)
-        if used + cost > _MAX_LEAD_CHARS:
-            break
-        kept.append(block)
-        used += cost
-    if not kept:
-        return preamble[-1][:_MAX_LEAD_CHARS]
-    return " ".join(reversed(kept))
+    return " ".join(preamble)
 
 
 def extract_fact_units(*, item_id: str, raw_text: str, fallback_title: str) -> tuple[FactUnit, ...]:
@@ -120,9 +111,9 @@ def extract_fact_units(*, item_id: str, raw_text: str, fallback_title: str) -> t
     three units.  Otherwise a single whole-item unit is returned.
     """
 
-    blocks = _blocks(raw_text)
-    numbered: list[tuple[int, str, int, int]] = []
-    for block, start, end in blocks:
+    blocks = source_blocks(raw_text)
+    numbered: list[tuple[int, str, int, int, int]] = []
+    for block_index, (block, start, end) in enumerate(blocks):
         match = None if _CLOCK_RE.match(block) else _NUMBERED_RE.match(block)
         if match is None:
             continue
@@ -130,29 +121,47 @@ def extract_fact_units(*, item_id: str, raw_text: str, fallback_title: str) -> t
         if len(text) < _MIN_FACT_CHARS:
             numbered = []
             break
-        numbered.append((int(match.group("number")), text, start, end))
+        numbered.append((int(match.group("number")), text, start, end, block_index))
 
     numbers = [row[0] for row in numbered]
     sequential = bool(numbers) and numbers == list(range(numbers[0], numbers[0] + len(numbers)))
     if len(numbered) >= _MIN_EXPLICIT_UNITS and sequential:
         lead = _lead_context(blocks, first_numbered_start=numbered[0][2])
+        # An unnumbered tail may qualify the whole list. Give every task the
+        # complete tail as shared context; its text never enters fact identity.
+        tail = " ".join(block for block, _, _ in blocks[numbered[-1][4] + 1 :] if _WORD_RE.search(block))
         return tuple(
             FactUnit(
                 fact_id=_fact_id(item_id=item_id, ordinal=index, text=text, method="explicit_numbered"),
                 ordinal=index,
                 text=text,
-                context=lead,
+                context=" ".join(
+                    part
+                    for part in (
+                        lead,
+                        " ".join(
+                            block
+                            for block, _, _ in blocks[
+                                block_index + 1 : (
+                                    numbered[index + 1][4] if index + 1 < len(numbered) else block_index + 1
+                                )
+                            ]
+                            if _WORD_RE.search(block)
+                        ),
+                        tail,
+                    )
+                    if part
+                ),
                 span_start=start,
-                span_end=end,
+                span_end=(numbered[index + 1][2] if index + 1 < len(numbered) else numbered[index][3]),
                 method="explicit_numbered",
             )
-            for index, (_, text, start, end) in enumerate(numbered)
+            for index, (_, text, start, _end, block_index) in enumerate(numbered)
         )
 
     title = _SPACE_RE.sub(" ", fallback_title).strip() or "(untitled)"
     context_blocks = [block for block, _, _ in blocks if block != title]
-    context = " ".join(context_blocks)[:600]
-    decoded = html.unescape(str(raw_text or ""))
+    context = " ".join(context_blocks)
     return (
         FactUnit(
             fact_id=_fact_id(item_id=item_id, ordinal=0, text=title, method="whole_item"),
@@ -160,10 +169,10 @@ def extract_fact_units(*, item_id: str, raw_text: str, fallback_title: str) -> t
             text=title,
             context=context,
             span_start=0,
-            span_end=len(decoded),
+            span_end=len(str(raw_text or "")),
             method="whole_item",
         ),
     )
 
 
-__all__ = ["FACT_UNIT_VERSION", "FactUnit", "extract_fact_units"]
+__all__ = ["FACT_UNIT_VERSION", "FactUnit", "extract_fact_units", "source_blocks"]

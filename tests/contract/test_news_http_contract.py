@@ -74,6 +74,12 @@ class _FakeNewsRepository:
         self.event_assets_by_id = {"ev-1": ["COPPER", "SPOT"]}
         self.detail_overrides: dict[str, dict[str, Any]] = {}
 
+    def item_related_events(self, *, item_id: str, after_event_id: str | None, limit: int) -> dict[str, Any]:
+        self.calls.append(
+            ("item_related_events", {"item_id": item_id, "after_event_id": after_event_id, "limit": limit})
+        )
+        return {"item_id": item_id, "total_events": 0, "events": [], "next_cursor": None}
+
     def list_feed(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("list_feed", kwargs))
         if kwargs.get("cursor") == "broken":
@@ -393,6 +399,7 @@ def test_news_exposes_read_routes_and_no_write_route_at_all() -> None:
     assert routes == {
         ("GET", "/api/news/feed"),
         ("GET", "/api/news/events/{event_id}"),
+        ("GET", "/api/news/items/{item_id}/events"),
         ("GET", "/api/news/status"),
         # #88: current quotes and 命中复盘. Both are read-only and bounded; quotes stay off the feed so a
         # price tick cannot invalidate the feed's ETag every three seconds.
@@ -1087,6 +1094,16 @@ def test_event_detail_returns_current_envelope_or_missing_state(client) -> None:
     too_long = http.get(f"/api/news/events/{'x' * 129}", params={"token": TOKEN})
     assert too_long.status_code == 400
     assert too_long.json() == {"ok": False, "error": "news_event_id_invalid", "field": "event_id"}
+
+
+def test_item_related_events_is_bounded_authenticated_and_on_demand(client) -> None:
+    http, news = client
+    response = http.get("/api/news/items/item%3Ashared/events", params={"token": TOKEN, "after": "ev-4", "limit": 5})
+    assert response.status_code == 200
+    assert response.json()["data"] == {"item_id": "item:shared", "total_events": 0, "events": [], "next_cursor": None}
+    assert news.calls[-1] == ("item_related_events", {"item_id": "item:shared", "after_event_id": "ev-4", "limit": 5})
+    assert http.get("/api/news/items/item%3Ashared/events", params={"limit": 5}).status_code == 401
+    assert http.get("/api/news/items/item%3Ashared/events", params={"token": TOKEN, "limit": 51}).status_code == 422
 
 
 def test_event_detail_serves_the_event_update_and_its_processing_beside_no_legacy_verdict(client) -> None:

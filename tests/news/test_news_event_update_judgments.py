@@ -13,6 +13,7 @@ from typing import Any
 import httpx2
 import pytest
 
+from tests.support.news_update_semantic import MemoryCache
 from tracefold.app.system_one import SystemOneConnection
 from tracefold.news.updates.contracts import (
     Citation,
@@ -38,17 +39,6 @@ from tracefold.news.updates.judgment import (
 from tracefold.news.updates.semantics import SemanticAnalyzer
 
 STAMP = 1_790_405_000_000
-
-
-class MemoryCache:
-    def __init__(self) -> None:
-        self.values: dict[str, Answer] = {}
-
-    async def get(self, key: str) -> Answer | None:
-        return self.values.get(key)
-
-    async def put(self, key: str, answer: Answer) -> None:
-        self.values.setdefault(key, answer)
 
 
 class Backend:

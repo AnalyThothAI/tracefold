@@ -150,8 +150,9 @@ class NotificationPlan(Exact):
             "notification_decision",
             self.update_ref,
             self.channel,
-            self.assessment_input_digest
-            or digest(self.model_dump(mode="json", exclude={"reader_revision", "decision_ref"})),
+            self.reader_revision,
+            self.claim_decisions,
+            self.assessment_input_digest,
         )
 
     @model_validator(mode="after")
@@ -197,9 +198,38 @@ class FrozenCard(Exact):
 
 
 class CardComposer(Protocol):
+    identity: str
+
     async def compose(self, claims: tuple[Claim, ...], *, sources: Mapping[str, Source]) -> CardCopy:
         """Chinese copy for exactly the selected claims. The caller bounds the call with asyncio.timeout."""
         ...
+
+
+def card_copy_material(claims: tuple[Claim, ...], sources: Mapping[str, Source]) -> list[dict[str, object]]:
+    """Exactly the claim and provenance fields the Chinese composer receives."""
+
+    return [
+        {
+            "claim_ref": claim.ref,
+            "statement": claim.statement,
+            "fields": claim.fields.model_dump(mode="json"),
+            "citations": [
+                {
+                    "evidence_ref": citation.evidence_ref,
+                    "quote": citation.quote,
+                    "source": None
+                    if (source := sources.get(citation.evidence_ref)) is None
+                    else {
+                        "publisher_id": source.publisher_id,
+                        "attribution": source.attribution,
+                        "origin_id": source.origin_id,
+                    },
+                }
+                for citation in claim.citations
+            ],
+        }
+        for claim in claims
+    ]
 
 
 def large_daily_move(claim: Claim) -> bool:
@@ -275,44 +305,60 @@ class NotificationPlanner:
         material = json.loads(
             canonical_json(
                 {
-                    "update": update,
                     "candidate": assessment_input(
                         tuple(ordinary), sources=evidence, watch_symbols=reader.watch_symbols
                     ),
-                    "reader_receipts": reader.receipts,
-                    "preselection": reasons,
                     "assessor_identity": self.assessor.identity,
                 }
             )
         )
         fingerprint = digest(material)
+        reused = None
         if reuse is not None:
             previous = await reuse(fingerprint)
-            if previous is not None:
-                return previous.model_copy(update={"reader_revision": reader.revision})
+            if (
+                previous is not None
+                and previous.assessment_status == "available"
+                and previous.assessment_identity == self.assessor.identity
+                and previous.assessment_input_digest == fingerprint
+            ):
+                editorial = {
+                    row.claim_ref: row
+                    for row in previous.claim_decisions
+                    if row.reason in {"editor_notify", "editor_key", "editor_feed_only"}
+                }
+                if set(editorial) == {claim.ref for claim in ordinary}:
+                    reused = editorial
         status: Literal["available", "unavailable", "skipped"] = "skipped"
         error_code = None
         if ordinary:
-            try:
-                async with asyncio.timeout(min(budget.remaining() / 3, 20.0)):
-                    assessment = await self.assessor.assess(
-                        tuple(ordinary), sources=evidence, watch_symbols=reader.watch_symbols
-                    )
-                selected = {row.claim_ref: row for row in assessment.decisions}
-                if set(selected) != {claim.ref for claim in ordinary}:
-                    raise ProviderUnavailable("news_attention_refs_invalid")
+            if reused is not None:
                 for claim in ordinary:
-                    row = selected[claim.ref]
-                    reasons[claim.ref] = EDITOR_REASONS[row.disposition]
+                    row = reused[claim.ref]
+                    reasons[claim.ref] = row.reason
                     explanations[claim.ref] = row.reason_zh
                 status = "available"
-            except (ProviderUnavailable, ContractFault, ValidationError, TimeoutError) as exc:
-                if budget.remaining() <= 0:
-                    raise TimeoutError("news_notification_stage_expired") from exc
-                status = "unavailable"
-                error_code = bounded_error_code(exc, default="news_attention")
-                for claim in ordinary:
-                    reasons[claim.ref] = "attention_unavailable_default_notify"
+            else:
+                try:
+                    async with asyncio.timeout(min(budget.remaining() / 3, 20.0)):
+                        assessment = await self.assessor.assess(
+                            tuple(ordinary), sources=evidence, watch_symbols=reader.watch_symbols
+                        )
+                    selected = {row.claim_ref: row for row in assessment.decisions}
+                    if set(selected) != {claim.ref for claim in ordinary}:
+                        raise ProviderUnavailable("news_attention_refs_invalid")
+                    for claim in ordinary:
+                        assessment_row = selected[claim.ref]
+                        reasons[claim.ref] = EDITOR_REASONS[assessment_row.disposition]
+                        explanations[claim.ref] = assessment_row.reason_zh
+                    status = "available"
+                except (ProviderUnavailable, ContractFault, ValidationError, TimeoutError) as exc:
+                    if budget.remaining() <= 0:
+                        raise TimeoutError("news_notification_stage_expired") from exc
+                    status = "unavailable"
+                    error_code = bounded_error_code(exc, default="news_attention")
+                    for claim in ordinary:
+                        reasons[claim.ref] = "attention_unavailable_default_notify"
 
         rows = tuple(
             ClaimDecision(

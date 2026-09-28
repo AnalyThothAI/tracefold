@@ -99,11 +99,11 @@ PostgreSQL 保存可恢复工作；RabbitMQ 的语义消息只是唤醒。准入
 | Claim | 带字段、资产角色、原文引文与稳定引用的命题 | 不等于标题、卡片或一个 ticker |
 | EventUpdate | 一次已采用的知识版本，包含命题、关系、变更与问题 | 不等于一次模型请求或一次推送 |
 
-[extract_fact_units](../../tracefold/news/events/facts.py)只拆**至少三个连续、显式编号块**的高置信度汇总。未编号引言作为共享上下文；不满足该结构时保持一个整体输入。时间、金额和一般段落不应被当作编号列表拆分。
+[extract_fact_units](../../tracefold/news/events/facts.py)只拆**至少三个连续、显式编号块**的高置信度汇总。编号后的连续段落保留在该 FactUnit 范围内，列表前后的公共限定保留为共享上下文；事实身份仍由编号锚决定，不随续段增长而改变。不满足该结构时保持一个整体输入。时间、金额和一般段落不应被当作编号列表拆分。
 
 因此，“一条提供商消息 → 多个 FactUnit → 多个 Event”在当前实现中是有条件的；与此同时，**一个 EventUpdate 本身可以包含多条 Claim**。系统没有让 LLM 自由把每句话扩张成一个独立 Event。
 
-更新已有消息时，系统按既有范围及修订关系读取证据，不把旧正文的字符偏移硬套在新正文上。必须保留命题引文对应的确切来源版本。
+更新已有消息时，系统按既有范围及修订关系读取证据，不把旧正文的字符偏移硬套在新正文上。[唯一阅读投影](../../tracefold/news/updates/projection.py)按本轮来源版本定位任务片段；定位不唯一时展示完整来源。模型只收到该视图，完整 Evidence 仍保存。引用必须同时出现在本轮一个连续可见片段和对应冻结来源中。
 
 ### 命题身份不随每次关系变化重建
 
@@ -162,9 +162,9 @@ sequenceDiagram
 
 ### 冻结输入与增量范围
 
-冻结输入绑定 Event、输入修订、证据范围、prior claims、候选关系、来源时钟以及程序 / 模型身份。抽取只看尚未被已采用知识处理的新材料；旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
+冻结输入绑定 Event、输入修订、证据范围、prior claims、候选关系、来源时钟以及程序 / 模型身份。每个来源的当前 Event 阅读范围产生 `read_ref`，由任务边界、实际片段和投影版本决定。先构造阅读视图再比较已处理的 `processed_read_refs`；同一来源新增范围或条件仍需处理，重投相同任务不重算。旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
 
-“读过但没有命题”的材料也必须记入处理证据。否则同一段空内容会不断进入下一轮。没有新证据或没有实质变化，可以推进 done，而不制造新的内容版本。
+“读过但没有命题”的材料也必须记入任务级处理身份。否则同一段空内容会不断进入下一轮。没有新证据或没有实质变化，可以推进 done，而不制造新的内容版本。对已完成但确认漏范围的 Event，使用精确 wanted/head/read 身份的 `news reanalyze`；它不伪造来源修订或自动重发历史通知。
 
 来源修订使用**本地观察顺序、修订序号和前驱**，不把提供商发布时间猜成可靠的编辑版本号。同一来源的新旧正文可以同时作为历史证据保存，但当前支撑判断只采用该来源的当前贡献，不能把转载或同源修订算成多个独立证实。
 
@@ -189,6 +189,7 @@ sequenceDiagram
 | --- | --- | --- |
 | 语义阶段 | 120 秒 | 一次 `NewsAgent.process` 的共享截止时间 |
 | 通知模型阶段 | 60 秒 | 计划与卡片生成共享，不把外部发送等待算成同一次模型阶段 |
+| 通知准备在途上限 | `news.push.notification_prepare_limit`，默认 2 | 只限制实际准备任务和就绪结果；快 Event 可先完成 |
 | 生成调用预算常量 | 60 秒 | 具体适配使用的调用边界；不等于端到端保证 |
 | 采用冲突尝试 | 2 次 | 处理 head 变化，不无条件重做已完成的抽取 |
 
@@ -326,18 +327,20 @@ flowchart TB
     accTitle: 通知意图到实际发送
     accDescr: 由选中计划保留稳定 intent，生成并冻结文案。发送前复查 head、读者与所有权，不满足时重规划；满足时在事务外发送并保存实际回执。
     Plan["选中命题与计划身份"] --> Intent["保留稳定 intent"]
-    Intent --> Copy["生成所选文案<br/>冻结正文与摘要"]
-    Copy --> Check{"head、读者、所有权<br/>仍符合发送条件？"}
+    Intent --> Copy["按真实输入复用或生成文案<br/>冻结正文与摘要"]
+    Copy --> Slot["等待共用发送时隙<br/>目标检查与最终渲染"]
+    Slot --> Check{"head、读者、所有权<br/>仍符合发送条件？"}
     Check -->|否| Replan["停止本次发送<br/>返回现有重规划路径"]
     Check -->|是| Send["事务外发送"]
-    Send --> Ledger[("精确正文与实际结果<br/>sent / not_sent / ambiguous")]
+    Send --> Ledger[("持久化精确正文与实际结果<br/>sent / not_sent / ambiguous")]
+    Ledger --> Slot
 
     classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
     classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
     classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
     classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
     classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
-class Plan,Intent,Copy,Check,Replan,Send news;
+class Plan,Intent,Copy,Slot,Check,Replan,Send news;
 class Ledger store;
 ```
 
@@ -347,11 +350,11 @@ class Ledger store;
 
 CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精确引用和最少来源身份，而非完整来源全文或整个知识文档。中文表达必须保留对象、动作、数量、归因与阶段；标题压缩也不能把“宣称”写成“核实”、把“宣布”写成“已经实施”。冻结卡片仍检查 refs 与形状；约束和脚本回归不证明真实模型每次都翻译正确。
 
-“选中了某条 Claim”不证明卡片正文完整表达了它。未来的覆盖判断读的是**实际发出的精确正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记。
+“选中了某条 Claim”不证明卡片正文完整表达了它。未来的覆盖判断读的是**实际发出的精确正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记。旧 `first` 回执仍保留已发送事实；若没有精确正文及摘要，不能从摘要重建全文并参与覆盖判断。
 
 计划采用和发送前会核对 head 与 reader revision。正文冻结后不因后台新材料到来而改写已开始的发送。适配器区分 `sent`、`not_sent`、`ambiguous`；只有已证明未发送且可重试的结果才按原意图重试。结果不明不能伪装成功，也不能直接再发一份。
 
-每次判断保存不可变决策输入与逐命题结果，通知工作和 intent 引用该决策；同一输入重试复用结果。模型不可用的默认通知会记录状态和错误码，不将数据库、配置或外层期限故障伪装成编辑判断。通知计划失败、文案生成失败、发送失败是三个边界。精确恢复命令及限制见[运维指南](../OPERATIONS.md#news-retry)；任何已有发送账本的 intent 都不能通过 `retry-work` 随意重开。
+每次判断保存不可变决策输入与逐命题结果，通知工作和 intent 引用该决策。编辑评估按实际候选、来源、watchlist 和编辑器身份复用；文案按选中命题的完整表达材料和文案器身份复用；最终计划仍按当前 reader/head 重新检查。模型不可用的默认通知会记录状态和错误码，不将数据库、配置或外层期限故障伪装成编辑判断。通知计划失败、文案生成失败、发送失败是三个边界。精确恢复命令及限制见[运维指南](../OPERATIONS.md#news-retry)；任何已有发送账本的 intent 都不能通过 `retry-work` 随意重开。
 
 <a id="section-一个具体更新例子"></a>
 ## 07 · 一个具体更新例子

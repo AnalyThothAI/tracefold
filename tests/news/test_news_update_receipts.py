@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tests.news.test_news_event_updates_core import draft, material
+from tests.support.news_update_semantic import draft, material
 from tracefold.news.storage.event_updates import receipt_queries, select_receipts
 from tracefold.news.updates.contracts import Extraction, FrozenInput
 from tracefold.news.updates.identity import digest

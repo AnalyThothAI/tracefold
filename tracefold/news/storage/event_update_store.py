@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from ..source_contracts import classify_source_contracts
 from ..updates.contracts import EventUpdate, Evidence, Extraction, FrozenInput, PublicUpdate, ReadTarget
 from ..updates.judgment import Answer
-from ..updates.notification import FrozenCard, NotificationPlan, ReaderSnapshot
+from ..updates.notification import CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
 from ..updates.ports import (
     IntentLease,
     NotificationSnapshot,
@@ -125,7 +125,9 @@ class PgNewsStore:
                 program_identity=observation.program_identity,
                 completed_at_ms=observation.completed_at_ms,
                 understanding_json=understanding,
-                evidence_refs=observation.evidence_refs,
+                read_refs=observation.read_refs,
+                reanalysis_reason=observation.reanalysis_reason,
+                reanalysis_head_ref=observation.reanalysis_head_ref,
             ),
         )
         stored = SemanticObservation(
@@ -137,7 +139,9 @@ class PgNewsStore:
             program_identity=str(row["program_identity"]),
             completed_at_ms=int(row["completed_at_ms"]),
             understanding=Extraction.model_validate(row["understanding"]),
-            evidence_refs=tuple(row["evidence_refs"]),
+            read_refs=tuple(row["read_refs"]),
+            reanalysis_reason=row["reanalysis_reason"],
+            reanalysis_head_ref=row["reanalysis_head_ref"],
         )
         # The completion clock is the stored winner's; every other field must be the same fact.
         if stored.model_copy(update={"completed_at_ms": observation.completed_at_ms}) != observation:
@@ -276,18 +280,46 @@ class PgNewsStore:
             ),
         )
 
-    async def save_card(self, lease: IntentLease, card: FrozenCard) -> FrozenCard:
+    async def lookup_card_copy(self, input_digest: str) -> CardCopy | None:
+        document = await self.db.read(
+            "news_update_card_copy_lookup",
+            lambda repos: repos.news.lookup_card_copy(input_digest=input_digest),
+        )
+        return None if document is None else CardCopy.model_validate(document)
+
+    async def save_card(self, lease: IntentLease, card: FrozenCard, *, copy: CardCopy, input_digest: str) -> FrozenCard:
         if card.intent_id != lease.intent_id or card.claim_refs != lease.plan.selected_claim_refs:
             raise ValueError("news_card_intent_mismatch")
+        lines = {line.claim_ref: line.text_zh for line in copy.lines}
+        if (
+            len(lines) != len(copy.lines)
+            or set(lines) != set(card.claim_refs)
+            or card.body != "\n\n".join((copy.headline_zh, *(lines[ref] for ref in card.claim_refs)))
+        ):
+            raise ValueError("news_card_copy_mismatch")
         card_json = card.model_dump_json()
         now_ms = self.clock()
         stored = await self.db.tx(
             "news_update_save_card",
             lambda repos: repos.news.save_intent_card(
-                intent_id=lease.intent_id, lease_token=lease.lease_token, card_json=card_json, now_ms=now_ms
+                intent_id=lease.intent_id,
+                lease_token=lease.lease_token,
+                card_json=card_json,
+                copy_json=copy.model_dump_json(),
+                input_digest=input_digest,
+                now_ms=now_ms,
             ),
         )
         return FrozenCard.model_validate(stored)
+
+    async def release_unsent_intent(self, lease: IntentLease) -> None:
+        now_ms = self.clock()
+        await self.db.tx(
+            "news_update_release_unsent",
+            lambda repos: repos.news.release_unsent_intent(
+                intent_id=lease.intent_id, lease_token=lease.lease_token, now_ms=now_ms
+            ),
+        )
 
     async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> bool:
         now_ms = self.clock()

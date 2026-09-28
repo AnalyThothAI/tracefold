@@ -139,6 +139,52 @@
         "title": "ApiEnvelope[NewsFeedData]",
         "type": "object"
       },
+      "ApiEnvelope_NewsItemRelatedEventsData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsItemRelatedEventsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsItemRelatedEventsData]",
+        "type": "object"
+      },
       "ApiEnvelope_NewsMarketData_": {
         "additionalProperties": false,
         "properties": {
@@ -4062,6 +4108,182 @@
           }
         },
         "title": "NewsInstrumentUniverse",
+        "type": "object"
+      },
+      "NewsItemRelatedEventData": {
+        "additionalProperties": false,
+        "properties": {
+          "adopted_content_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted Content Revision"
+          },
+          "done_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Done Revision"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "focus_fact_method": {
+            "title": "Focus Fact Method",
+            "type": "string"
+          },
+          "focus_fact_text": {
+            "title": "Focus Fact Text",
+            "type": "string"
+          },
+          "intent_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent State"
+          },
+          "leader_item_id": {
+            "title": "Leader Item Id",
+            "type": "string"
+          },
+          "match_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Match Kinds",
+            "type": "array"
+          },
+          "member_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Member Scopes",
+            "type": "array"
+          },
+          "notification_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Action"
+          },
+          "notification_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification State"
+          },
+          "semantic_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Error Code"
+          },
+          "semantic_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Outcome"
+          },
+          "sent_count": {
+            "title": "Sent Count",
+            "type": "integer"
+          },
+          "wanted_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wanted Revision"
+          }
+        },
+        "required": [
+          "event_id",
+          "leader_item_id",
+          "member_scopes",
+          "match_kinds",
+          "focus_fact_text",
+          "focus_fact_method",
+          "sent_count"
+        ],
+        "title": "NewsItemRelatedEventData",
+        "type": "object"
+      },
+      "NewsItemRelatedEventsData": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/NewsItemRelatedEventData"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total_events": {
+            "title": "Total Events",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "item_id",
+          "total_events",
+          "events"
+        ],
+        "title": "NewsItemRelatedEventsData",
         "type": "object"
       },
       "NewsLateEvidenceData": {
@@ -12345,6 +12567,71 @@
           }
         },
         "summary": "Get News Feed",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/items/{item_id}/events": {
+      "get": {
+        "operationId": "get_news_item_related_events_api_news_items__item_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "After",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsItemRelatedEventsData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Item Related Events",
         "tags": [
           "api"
         ]

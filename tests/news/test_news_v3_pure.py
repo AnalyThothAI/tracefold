@@ -193,16 +193,15 @@ _BULLETS = (
 )
 
 
-def test_fact_unit_context_keeps_the_lead_when_the_preamble_overflows() -> None:
-    """A long preamble is budgeted from the bottom up: the poster's framing is what gets dropped."""
+def test_fact_unit_context_keeps_the_complete_lead() -> None:
+    """Source context is never shortened before task projection."""
 
     filler = "x" * 400
     raw = f"{filler}\r\n{filler}\r\nWire lead that names the subject:\r\n{_BULLETS}"
     units = extract_fact_units(item_id="item-4", raw_text=raw, fallback_title="fallback")
     assert len(units) == 3
     assert units[0].context.endswith("Wire lead that names the subject:")
-    assert len(units[0].context) <= 600
-    assert units[0].context.count(filler) == 1
+    assert units[0].context.count(filler) == 2
 
 
 def test_fact_units_never_read_a_clock_time_as_a_numbered_item() -> None:

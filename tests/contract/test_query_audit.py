@@ -172,6 +172,11 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_event_asset_projection",
         "news_reaction_attach",
     )
+    assert catalog.query_routes["/api/news/items/{item_id}/events"] == (
+        "news_item_related_count",
+        "news_item_related_keys",
+        "news_item_related_events",
+    )
     assert catalog.query_routes["/api/news/quotes"] == ("news_quote_snapshot_read",)
     # #553: the market surface plans its own statements, and every one of them is named here. A route
     # whose reads were not manifested would let `db query-audit --analyze` report full coverage while

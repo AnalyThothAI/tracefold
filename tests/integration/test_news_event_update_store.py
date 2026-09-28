@@ -4,389 +4,66 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from tests.postgres_test_utils import connect_postgres_test, seed_current_news_evidence
+from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_attention import NotifyAll
+from tests.support.news_update_pg import (
+    EVENT,
+    STAMP,
+    TEXT,
+    Clock,
+    Composer,
+    Sender,
+    StubAnalyzer,
+    TaskBackend,
+    ThreadedDb,
+    adopt_next,
+    adopt_other_event,
+    adopted_head,
+    agent,
+    draft,
+    evidence,
+    extraction_for,
+    notifications,
+    notify_plan,
+    run_agent,
+    save_card,
+    seed_event,
+    sql,
+    store,
+    trade_rows,
+)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore
 from tracefold.news.storage.event_updates import EventUpdateConflict, IntentLeaseLost, frozen_input
 from tracefold.news.updates.contracts import (
     Citation,
-    ClaimFields,
     DraftClaim,
-    EventUpdate,
-    Evidence,
     Extraction,
     FrozenInput,
     PriorClaim,
     ReadTarget,
     RelationDraft,
-    SemanticLease,
-    Source,
     SupportDraft,
 )
 from tracefold.news.updates.identity import digest, identity
-from tracefold.news.updates.judgment import Answer, BatchResult, NewsJudgments, ProviderUnavailable, Question, Task
+from tracefold.news.updates.judgment import Answer, NewsJudgments
 from tracefold.news.updates.notification import (
-    CardCopy,
-    CardLine,
     ClaimDecision,
     FrozenCard,
     NotificationPlan,
     NotificationPlanner,
 )
-from tracefold.news.updates.ports import SemanticObservation, SendOutcome
+from tracefold.news.updates.ports import SemanticObservation
+from tracefold.news.updates.projection import reading_views
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import assemble_update
-from tracefold.news.updates.service import NewsAgent, Notifications
+from tracefold.news.updates.service import Notifications
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
-
-STAMP = 1_790_405_000_000
-EVENT = "ev-tariff"
-TEXT = "Agency orders a 25% tariff on steel imports effective October 1."
-
-
-class Clock:
-    def __init__(self, now_ms: int = STAMP + 60_000) -> None:
-        self.now_ms = now_ms
-
-    def __call__(self) -> int:
-        return self.now_ms
-
-
-class ThreadedDb:
-    """The News database port with one fresh connection and transaction per call, in a worker thread.
-
-    Two coroutines therefore hold two real PostgreSQL transactions at once.
-    """
-
-    def __init__(self) -> None:
-        self.names: list[str] = []
-
-    async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
-        return await asyncio.to_thread(self._run, name, fn)
-
-    async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
-        return await asyncio.to_thread(self._run, name, fn)
-
-    def _run(self, name: str, fn: Callable[[Any], Any]) -> Any:
-        self.names.append(name)
-        conn = connect_postgres_test(read_only=False)
-        try:
-            repos = repositories_for_connection(conn)
-            with repos.transaction():
-                return fn(repos)
-        finally:
-            conn.close()
-
-
-def sql(statement: str, params: Any = None) -> list[dict[str, Any]]:
-    conn = connect_postgres_test(read_only=False)
-    try:
-        cursor = conn.execute(statement, params)
-        rows = [dict(row) for row in cursor.fetchall()] if cursor.description else []
-        conn.commit()
-        return rows
-    finally:
-        conn.close()
-
-
-def seed_event(
-    event_id: str = EVENT,
-    *,
-    text: str = TEXT,
-    title: str = "Agency orders steel tariff",
-    at_ms: int = STAMP,
-    fingerprint: str = "fp-tariff",
-) -> None:
-    item_id = f"it-{event_id}"
-    conn = connect_postgres_test(read_only=False)
-    try:
-        with conn.transaction():
-            conn.execute(
-                """
-                INSERT INTO news_items (
-                  item_id, source_id, source_item_key, title, raw_first_line, description, canonical_url,
-                  reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
-                  first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id,
-                  evidence_text, evidence_text_sha256
-                ) VALUES (%(item)s, 'opennews', %(item)s, %(title)s, %(title)s, '', 'https://www.reuters.com/a',
-                          'Reuters', %(at)s, %(at)s, '{}'::jsonb, '[]'::jsonb, 'live', 'trace', %(at)s, %(at)s,
-                          %(item)s, %(text)s, %(sha)s)
-                """,
-                {"item": item_id, "title": title, "at": at_ms, "text": text, "sha": digest(text)},
-            )
-            conn.execute(
-                """
-                INSERT INTO news_events (
-                  event_id, leader_item_id, dedupe_family, comparison_fingerprint, comparison_title,
-                  leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission, ingest_mode,
-                  trace_id, created_at_ms, updated_at_ms, focus_fact_id, focus_fact_text,
-                  focus_fact_context, focus_fact_method, focus_span_start, focus_span_end, event_kind
-                ) VALUES (%(event)s, %(item)s, 'general', %(fp)s, %(title)s, %(title)s, %(at)s, %(at)s,
-                          %(expires)s, 'candidate', 'live', 'trace', %(at)s, %(at)s, %(fact)s, %(title)s, '',
-                          'whole_item', 0, 10, 'news')
-                """,
-                {
-                    "event": event_id,
-                    "item": item_id,
-                    "fp": fingerprint,
-                    "title": title,
-                    "at": at_ms,
-                    "expires": at_ms + 86_400_000,
-                    "fact": f"fact-{item_id}",
-                },
-            )
-            conn.execute(
-                """
-                INSERT INTO news_event_members (event_id, item_id, joined_at_ms, match_kind, fact_id, fact_text)
-                VALUES (%s, %s, %s, 'leader', %s, %s)
-                """,
-                (event_id, item_id, at_ms, f"fact-{item_id}", title),
-            )
-            seed_current_news_evidence(conn)
-            repositories_for_connection(conn).news.request_semantic_revision(
-                event_id=event_id, lineage_id=f"lineage-{event_id}", now_ms=at_ms
-            )
-    finally:
-        conn.close()
-
-
-def draft(source: Evidence, slot: str = "a", *, action: str = "orders tariff", quote: str | None = None) -> DraftClaim:
-    return DraftClaim(
-        slot=slot,
-        statement=quote or source.text,
-        fields=ClaimFields.model_validate(
-            {
-                "subject": "Agency",
-                "action": action,
-                "mode": "decision",
-                "phase": "ordered",
-                "content_kind": "official_measure",
-                "assets": [{"symbol": "X", "market_type": "equity", "role": "primary"}],
-            }
-        ),
-        citations=(Citation(evidence_ref=source.ref, quote=quote or source.text),),
-    )
-
-
-def extraction_for(source: FrozenInput) -> Extraction:
-    evidence = source.evidence[0]
-    return Extraction(
-        claims=(draft(evidence),),
-        supports=(SupportDraft(slot="a", evidence_ref=evidence.ref, relation="supports"),),
-    )
-
-
-class StubAnalyzer:
-    """The analyzer boundary with a fixed extraction; no model."""
-
-    identity = "stub-analyzer-v1"
-    judgments: Any = None
-
-    def __init__(self, build: Callable[[FrozenInput], Extraction] = extraction_for) -> None:
-        self.build = build
-        self.extract_calls = 0
-
-    async def extract(self, source: FrozenInput, budget: Any) -> Extraction:
-        self.extract_calls += 1
-        return self.build(source)
-
-    async def understand(
-        self,
-        source: FrozenInput,
-        extracted: Extraction,
-        budget: Any,
-        *,
-        rebase_only: bool = False,
-        final_attempt: bool = True,
-    ) -> Extraction:
-        return extracted
-
-
-class TaskBackend:
-    def __init__(self, values: dict[Task, str | bool] | None = None) -> None:
-        self.identity = "generated-test"
-        self.values = values or {}
-        self.calls: list[Task] = []
-
-    async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
-        self.calls.append(task)
-        if task not in self.values:
-            raise ProviderUnavailable("controlled provider failure")
-        return BatchResult(
-            answers=tuple(
-                Answer(item_id=item.item_id, value=self.values[task], backend=self.identity) for item in items
-            )
-        )
-
-
-class Composer:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
-        self.calls += 1
-        return CardCopy(
-            headline_zh="机构对钢铁进口加征关税",
-            lines=tuple(CardLine(claim_ref=claim.ref, text_zh="机构宣布加征百分之二十五关税") for claim in claims),
-        )
-
-
-class Sender:
-    def __init__(self, *outcomes: str) -> None:
-        self.outcomes = list(outcomes) or ["sent"]
-        self.cards: list[FrozenCard] = []
-
-    async def send(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome:
-        assert plan.intent_id == card.intent_id and update.ref == plan.update_ref
-        self.cards.append(card)
-        outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
-        if outcome == "raise":
-            raise RuntimeError("provider connection dropped")
-        if outcome == "not_sent":
-            return SendOutcome(
-                state="not_sent", payload_sha256=card.payload_sha256, error_code="rate_limited", retryable=True
-            )
-        message_id = 40 + len(self.cards)
-        return SendOutcome(
-            state="sent",
-            payload_sha256=card.payload_sha256,
-            message_id=str(message_id),
-            receipt={
-                "provider": "telegram",
-                "message_id": message_id,
-                "pushed_at_ms": STAMP,
-                "target_sha256": "a" * 64,
-            },
-        )
-
-
-def store(clock: Clock | None = None, **kwargs: Any) -> tuple[PgNewsStore, ThreadedDb, Clock]:
-    db = ThreadedDb()
-    clock = clock or Clock()
-    return PgNewsStore(db, clock=clock, **kwargs), db, clock
-
-
-async def run_agent(subject: NewsAgent, event_id: str) -> str:
-    assert isinstance(subject.store, PgNewsStore)
-    lease = await subject.store.claim_semantic_work(event_id, lease_ms=180_000)
-    if lease is None:
-        return "unchanged"
-    return await subject.process(lease)
-
-
-def agent(pg: PgNewsStore, clock: Clock, analyzer: StubAnalyzer | None = None) -> NewsAgent:
-    return NewsAgent(pg, analyzer or StubAnalyzer(), program_identity="program-test", clock=clock)  # type: ignore[arg-type]
-
-
-class Turns:
-    """One notification service and the sender its turns hand the frozen card to, as the Deliverer does."""
-
-    def __init__(self, pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> None:
-        judgments = NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db))
-        self.service = Notifications(
-            pg, NotificationPlanner(judgments, NotifyAll()), composer or Composer(), clock=clock
-        )
-        self.sender = sender
-
-    async def process(self, event_id: str, channel: str) -> str:
-        return (await self.service.process(event_id, channel, self.sender)).status
-
-
-def notifications(pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> Turns:
-    return Turns(pg, clock, sender, composer)
-
-
-def adopted_head(pg: PgNewsStore, clock: Clock) -> EventUpdate:
-    seed_event()
-    assert asyncio.run(run_agent(agent(pg, clock), EVENT)) == "adopted"
-    head = asyncio.run(pg.head(EVENT))
-    assert head is not None
-    return head
-
-
-def evidence(text: str, *, revision: str = "2", publisher: str = "wire") -> Evidence:
-    return Evidence.issue(
-        text,
-        Source(
-            publisher_id=publisher,
-            artifact_id=f"{publisher}-a",
-            artifact_revision=revision,
-            first_available_at_ms=STAMP,
-        ),
-    )
-
-
-async def adopt_next(
-    pg: PgNewsStore,
-    head: EventUpdate | None,
-    source: FrozenInput,
-    extracted: Extraction,
-    *,
-    expected_head_ref: str | None = None,
-    work_id: str = "work-next",
-) -> tuple[bool, EventUpdate]:
-    observation = SemanticObservation(
-        result_id=identity("semantic_result", work_id, source.prior, extracted),
-        work_id=work_id,
-        event_id=source.event_id,
-        input_revision=source.revision,
-        input_sha256=source.input_sha,
-        program_identity="program-test",
-        completed_at_ms=STAMP + 100,
-        understanding=extracted,
-        evidence_refs=tuple(item.ref for item in source.evidence),
-    )
-    await pg.save_observation(observation)
-    # Adoption happens after the semantic completion it adopts; the two clocks stay distinct.
-    update = assemble_update(source, extracted, head, adopted_at_ms=STAMP + 150)
-    assert update is not None
-    # Storage CAS tests prepare a real owner for this controlled frozen input.
-    sql(
-        "UPDATE news_semantic_work SET wanted_revision=GREATEST(wanted_revision,%s),"
-        "lease_token='storage-test', leased_until_ms=%s WHERE event_id=%s",
-        (source.revision, pg.clock() + 180_000, source.event_id),
-    )
-    lease = SemanticLease(source=source, lease_token="storage-test", attempts=1)
-    adopted = await pg.atomic_adopt(
-        lease=lease,
-        expected_head_ref=expected_head_ref if head is None else head.ref,
-        observation=observation,
-        update=update,
-        public=public_updates(update, semantic_completed_at_ms=observation.completed_at_ms),
-    )
-    return adopted, update
-
-
-def notify_plan(head: EventUpdate, revision: str, *, deferred: tuple[str, ...] = ()) -> NotificationPlan:
-    input_snapshot = {"update": head.model_dump(mode="json"), "fixture": "notify", "deferred": deferred}
-    decisions = tuple(
-        ClaimDecision(claim_ref=claim.ref, decision="deferred", reason="send_outcome_unresolved")
-        if claim.ref in deferred
-        else ClaimDecision(claim_ref=claim.ref, decision="notify", reason="editor_notify")
-        for claim in head.claims
-    )
-    return NotificationPlan(
-        action="notify",
-        reason="uncovered_claims",
-        update_ref=head.ref,
-        claim_decisions=decisions,
-        channel="news",
-        reader_revision=revision,
-        assessment_input_digest=digest(input_snapshot),
-        assessment_input=input_snapshot,
-    )
-
-
-def trade_rows() -> list[dict[str, Any]]:
-    return sql("SELECT kind, source_fact_key, source_revision, payload, acknowledged_at_ms FROM news_trade_events")
 
 
 # ------------------------------------------------------------------ identities
@@ -464,7 +141,7 @@ def test_checkpoints_and_observations_are_insert_only() -> None:
         program_identity="program-test",
         completed_at_ms=STAMP + 10,
         understanding=first,
-        evidence_refs=tuple(item.ref for item in source.evidence),
+        read_refs=tuple(view.read_ref for view in reading_views(source)),
     )
     assert asyncio.run(pg.save_observation(observation)) == observation
     replay = observation.model_copy(update={"completed_at_ms": STAMP + 999})
@@ -554,15 +231,6 @@ def test_possible_new_is_adopted_and_marked_for_notification_without_a_public_ro
     assert [row for row in trade_rows() if row["source_fact_key"] == EVENT] == []
     work = sql("SELECT state, content_revision FROM news_notification_work WHERE event_id = %s", (EVENT,))[0]
     assert work == {"state": "pending", "content_revision": update.content_revision}
-
-
-async def adopt_other_event(pg: PgNewsStore) -> PriorClaim:
-    source = FrozenInput(
-        event_id="ev-other", revision=1, lineage_id="lineage-o", evidence=(evidence("Agency orders a 25% tariff."),)
-    )
-    adopted, update = await adopt_next(pg, None, source, extraction_for(source), work_id="work-other")
-    assert adopted
-    return PriorClaim(event_id="ev-other", content_revision=update.content_revision, claim=update.claims[0])
 
 
 def test_a_correction_is_a_source_update_outbox_row_in_the_app_relay_mapping() -> None:
@@ -695,6 +363,23 @@ def test_equivalent_with_external_conflict_keeps_one_claim_through_adoption_plan
     assert result == "no_notification"
     assert len(sender.cards) == 1 and composer.calls == 1
     assert sql("SELECT count(*) AS n FROM news_deliveries WHERE state='sent'")[0]["n"] == 1
+
+
+def test_empty_extraction_records_the_task_read_and_does_not_loop_on_the_same_source() -> None:
+    pg, _db, clock = store()
+    seed_event()
+    analyzer = StubAnalyzer(lambda _source: Extraction(claims=()))
+    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "adopted"
+    first = sql("SELECT processed_read_refs,done_revision FROM news_semantic_work WHERE event_id=%s", (EVENT,))[0]
+    assert len(first["processed_read_refs"]) == 1 and first["done_revision"] == 1
+    observed = sql("SELECT read_refs FROM news_semantic_observations WHERE event_id=%s", (EVENT,))[0]
+    assert observed["read_refs"] == first["processed_read_refs"]
+
+    sql("UPDATE news_semantic_work SET wanted_revision=2 WHERE event_id=%s", (EVENT,))
+    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "unchanged"
+    assert analyzer.extract_calls == 1
+    second = sql("SELECT processed_read_refs,done_revision FROM news_semantic_work WHERE event_id=%s", (EVENT,))[0]
+    assert second == {"processed_read_refs": first["processed_read_refs"], "done_revision": 2}
 
 
 def test_semantic_work_is_leased_bounded_and_reopened_by_a_new_revision() -> None:
@@ -858,7 +543,7 @@ def test_the_janitor_holds_an_unsettled_update_send_ambiguous_and_releases_its_r
         body=body,
         payload_sha256=digest(body),
     )
-    asyncio.run(pg.save_card(lease, card))
+    asyncio.run(save_card(pg, lease, card))
     assert asyncio.run(pg.atomic_begin_send(lease, card))
     conn = connect_postgres_test(read_only=False)
     try:
@@ -991,9 +676,10 @@ def test_begin_send_rechecks_the_head_and_keeps_the_frozen_card_for_the_same_ide
         body="关税\n\n机构加征关税",
         payload_sha256=digest("关税\n\n机构加征关税"),
     )
-    assert asyncio.run(pg.save_card(lease, card)) == card
+    assert asyncio.run(save_card(pg, lease, card)) == card
     other = card.model_copy(update={"body": "另一版本", "payload_sha256": digest("另一版本")})
-    assert asyncio.run(pg.save_card(lease, other)) == card
+    with pytest.raises(ValueError):
+        asyncio.run(save_card(pg, lease, other))
 
     source = FrozenInput(
         event_id=EVENT,
@@ -1012,10 +698,10 @@ def test_begin_send_rechecks_the_head_and_keeps_the_frozen_card_for_the_same_ide
     assert work == {"state": "pending", "content_revision": update.content_revision}
     # The released lease no longer fences a card write.
     with pytest.raises(IntentLeaseLost):
-        asyncio.run(pg.save_card(lease, card))
+        asyncio.run(save_card(pg, lease, card))
 
 
-def test_snapshot_recalls_own_and_band_receipts_and_decodes_legacy_text() -> None:
+def test_snapshot_keeps_legacy_sent_ledger_without_inventing_exact_reader_coverage() -> None:
     pg, _db, clock = store()
     head = adopted_head(pg, clock)
     seed_event("ev-legacy", title="Agency orders steel tariff", fingerprint="fp-tariff", at_ms=STAMP - 7_200_000)
@@ -1038,11 +724,18 @@ def test_snapshot_recalls_own_and_band_receipts_and_decodes_legacy_text() -> Non
     )
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None and snapshot.update == head
-    (legacy,) = snapshot.reader.receipts
-    assert legacy.intent_id == legacy_intent_id("ev-legacy", "first")
-    assert legacy.intent_id.startswith("legacy_intent:")
-    assert legacy.body == "机构加征钢铁关税\n\n影响钢铁进口"
-    assert legacy.payload_sha256 == digest(legacy.body) and legacy.provider_message_id == "7"
+    assert snapshot.reader.receipts == ()
+    legacy = sql("SELECT kind,state,card,receipt,body,payload_sha256 FROM news_deliveries WHERE event_id='ev-legacy'")
+    assert legacy == [
+        {
+            "kind": "first",
+            "state": "sent",
+            "card": card,
+            "receipt": {"message_id": 7},
+            "body": None,
+            "payload_sha256": None,
+        }
+    ]
 
 
 def test_card_failure_releases_the_lease_and_the_third_is_dead() -> None:
@@ -1117,13 +810,13 @@ def test_a_no_notification_plan_is_final_for_the_head_and_retires_an_unsent_rese
     assert asyncio.run(pg.notification_snapshot(EVENT, "news")) is None
 
 
-def test_snapshot_recalls_later_claim_beyond_legacy_leader_bands() -> None:
+def test_snapshot_recalls_exact_sent_text_beyond_leader_bands() -> None:
     pg, db, clock = store()
     adopted_head(pg, clock)
     leader = "Cryptocurrency prices remain stable across global markets"
     sql("UPDATE news_events SET comparison_title = %s WHERE event_id = %s", (leader, EVENT))
 
-    def sent_first(event_id: str, title: str, body: str) -> None:
+    def sent_update(event_id: str, title: str, body: str) -> None:
         seed_event(event_id, title=title, fingerprint=event_id, at_ms=STAMP - 21_600_000)
         context = {
             "comparison_title": title,
@@ -1136,23 +829,28 @@ def test_snapshot_recalls_later_claim_beyond_legacy_leader_bands() -> None:
             """
             INSERT INTO news_deliveries
               (intent_id, event_id, kind, state, card, receipt, attempted_at_ms,
-               settled_at_ms, created_at_ms, history_context)
-            VALUES (%s, %s, 'first', 'sent', %s::jsonb, '{}'::jsonb, %s, %s, %s, %s::jsonb)
+               settled_at_ms, created_at_ms, history_context, content_revision,
+               claim_refs, body, payload_sha256, plan_key)
+            VALUES (%s, %s, 'update', 'sent', %s::jsonb, '{}'::jsonb, %s, %s, %s, %s::jsonb,
+                    %s, '["historical-claim"]'::jsonb, %s, %s, false)
             """,
             (
-                legacy_intent_id(event_id, "first"),
+                identity("intent", event_id),
                 event_id,
                 json.dumps({"header": {"title": {"content": body}}}),
                 STAMP - 18_000_000,
                 STAMP - 18_000_000,
                 STAMP - 18_000_000,
                 json.dumps(context),
+                "a" * 64,
+                body,
+                digest(body),
             ),
         )
 
     for index in range(35):
-        sent_first(f"leader-noise-{index}", leader, "市场价格保持稳定")
-    sent_first("actual-tariff", TEXT, "机构已宣布百分之二十五钢铁进口关税")
+        sent_update(f"leader-noise-{index}", leader, "市场价格保持稳定")
+    sent_update("actual-tariff", TEXT, "机构已宣布百分之二十五钢铁进口关税")
     history = asyncio.run(
         db.read("test_history", lambda repos: repos.news.reader_history(event_id=EVENT, now_ms=clock()))
     )
@@ -1160,7 +858,7 @@ def test_snapshot_recalls_later_claim_beyond_legacy_leader_bands() -> None:
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
     assert len(snapshot.reader.receipts) == 16
-    assert snapshot.reader.receipts[0].intent_id == legacy_intent_id("actual-tariff", "first")
+    assert snapshot.reader.receipts[0].intent_id == identity("intent", "actual-tariff")
 
 
 def test_snapshot_keeps_earlier_incremental_receipt_and_excludes_future_and_deleted() -> None:
@@ -1226,6 +924,8 @@ def test_old_notification_failure_cannot_change_new_head_work(phase: str) -> Non
                 raise RuntimeError("old planner failed")
 
         class FailingComposer:
+            identity = "failing_card_composer"
+
             async def compose(self, *args: Any, **kwargs: Any) -> Any:
                 entered.set()
                 await release.wait()
@@ -1390,7 +1090,7 @@ def test_card_recovery_refuses_any_existing_send_ledger(state: str) -> None:
     from tracefold.news.updates.notification import freeze_card
 
     card = freeze_card(lease.plan, head, asyncio.run(Composer().compose(head.claims, sources={})))
-    asyncio.run(pg.save_card(lease, card))
+    asyncio.run(save_card(pg, lease, card))
     assert asyncio.run(pg.atomic_begin_send(lease, card))
     sql("UPDATE news_deliveries SET state=%s", (state,))
     sql("UPDATE news_delivery_queue SET state='dead', attempts=3, lease_token=NULL, settled_at_ms=%s", (clock(),))
@@ -1404,6 +1104,62 @@ def test_card_recovery_refuses_any_existing_send_ledger(state: str) -> None:
         )
     )
     assert sql("SELECT * FROM news_deliveries") == before
+
+
+def test_targeted_reanalysis_reuses_work_and_preserves_adopted_head() -> None:
+    pg, db, clock = store()
+    head = adopted_head(pg, clock)
+    listing = asyncio.run(
+        db.read("reanalysis_preview", lambda repos: repos.news.reanalysis_scope_list(event_id=EVENT, now_ms=clock()))
+    )
+    assert listing["wanted_revision"] == listing["done_revision"] == 1
+    assert listing["head_revision"] == head.content_revision
+    assert len(listing["scopes"]) == 1 and listing["scopes"][0]["completed"]
+    read_ref = listing["scopes"][0]["read_ref"]
+    next_revision = asyncio.run(
+        db.tx(
+            "reanalysis_request",
+            lambda repos: repos.news.request_reanalysis(
+                event_id=EVENT,
+                expected_wanted_revision=1,
+                expected_head_revision=head.content_revision,
+                read_ref=read_ref,
+                reason="confirmed omitted condition in previous task view",
+                now_ms=clock(),
+            ),
+        )
+    )
+    assert next_revision == 2
+    reopened = asyncio.run(pg.input_for(EVENT))
+    assert reopened.revision == 2 and reopened.evidence
+    assert reopened.reanalysis_reason == "confirmed omitted condition in previous task view"
+    assert reopened.reanalysis_head_ref == head.ref
+    result = asyncio.run(run_agent(agent(pg, clock, StubAnalyzer(lambda _source: Extraction(claims=()))), EVENT))
+    assert result == "unchanged"
+    assert asyncio.run(pg.head(EVENT)) == head
+    observations = sql(
+        "SELECT read_refs,reanalysis_reason,reanalysis_head_ref FROM news_semantic_observations ORDER BY input_revision"
+    )
+    assert observations[-1]["read_refs"] == [read_ref]
+    assert observations[-1]["reanalysis_head_ref"] == head.ref
+    assert sql("SELECT reanalysis_read_ref,done_revision FROM news_semantic_work")[0] == {
+        "reanalysis_read_ref": None,
+        "done_revision": 2,
+    }
+    with pytest.raises(EventUpdateConflict, match="news_reanalysis_wanted_revision_changed_or_incomplete"):
+        asyncio.run(
+            db.tx(
+                "reanalysis_stale",
+                lambda repos: repos.news.request_reanalysis(
+                    event_id=EVENT,
+                    expected_wanted_revision=1,
+                    expected_head_revision=head.content_revision,
+                    read_ref=read_ref,
+                    reason="stale",
+                    now_ms=clock(),
+                ),
+            )
+        )
 
 
 def test_snapshot_member_scopes_recover_each_fact_from_its_own_snapshot() -> None:

@@ -3,8 +3,8 @@
 It sits below the production DSPy JSON adapter as a custom engine, exactly where a chat provider would
 answer, so the News Agent, the judgments, the notification planner and the card composer all run their
 real signatures, parsing and validation. It answers the three generative News signatures from the
-request's own inputs: one grounded claim per evidence item, fixed narrow judgments, and Chinese card copy
-for exactly the selected claims.
+request's own inputs: one grounded claim per visible task segment, fixed narrow judgments, and Chinese
+card copy for exactly the selected claims.
 """
 
 from __future__ import annotations
@@ -49,10 +49,16 @@ def _answer(request: Request) -> dict[str, Any]:
     inputs = _inputs(request)
     if "evidence_json" in inputs:
         frozen = _json(inputs["evidence_json"])
+        task_segments = [
+            (item["ref"], segment["text"])
+            for item in frozen["evidence"]
+            for segment in item["segments"]
+            if segment["role"] in {"task", "whole"}
+        ]
         claims = [
             {
                 "slot": f"s{index}",
-                "statement": item["text"],
+                "statement": text,
                 "fields": {
                     "subject": "exchange",
                     "action": "lists perpetual futures",
@@ -60,9 +66,9 @@ def _answer(request: Request) -> dict[str, Any]:
                     "phase": "announced",
                     "content_kind": "state_change",
                 },
-                "citations": [{"evidence_ref": item["ref"], "quote": item["text"]}],
+                "citations": [{"evidence_ref": evidence_ref, "quote": text}],
             }
-            for index, item in enumerate(frozen["evidence"])
+            for index, (evidence_ref, text) in enumerate(task_segments)
         ]
         return {"result": {"claims": claims}}
     if "criteria_json" in inputs:

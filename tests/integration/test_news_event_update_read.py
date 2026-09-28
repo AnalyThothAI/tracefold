@@ -458,6 +458,51 @@ def test_an_unsent_later_revision_is_titled_by_the_claim_it_changed(conn) -> Non
     assert (row["update"]["headline"], row["update"]["headline_source"]) == (changed.statement, "claim")
 
 
+def test_item_related_events_pages_all_memberships_without_duplicate_events(conn) -> None:
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        for index in range(13):
+            _event(news, f"related-{index:02d}", opened_at_ms=NOW + index)
+        for index in range(1, 13):
+            news.add_member(
+                event_id=f"related-{index:02d}",
+                item_id="item:related-00",
+                joined_at_ms=NOW + index,
+                match_kind="near",
+                jaccard_estimate=0.8,
+                provider_score=None,
+                fact_id=f"shared-{index}",
+                fact_text=f"shared scope {index}",
+                now_ms=NOW + index,
+            )
+        # One Item can contribute multiple facts to one Event; pagination counts the Event once.
+        news.add_member(
+            event_id="related-12",
+            item_id="item:related-00",
+            joined_at_ms=NOW + 20,
+            match_kind="near",
+            jaccard_estimate=0.8,
+            provider_score=None,
+            fact_id="shared-12-extra",
+            fact_text="extra scope",
+            now_ms=NOW + 20,
+        )
+    first = news.item_related_events(item_id="item:related-00", after_event_id=None, limit=5)
+    second = news.item_related_events(item_id="item:related-00", after_event_id=first["next_cursor"], limit=5)
+    third = news.item_related_events(item_id="item:related-00", after_event_id=second["next_cursor"], limit=5)
+    pages = [first, second, third]
+    assert [page["total_events"] for page in pages] == [13, 13, 13]
+    assert [len(page["events"]) for page in pages] == [5, 5, 3]
+    assert third["next_cursor"] is None
+    events = {row["event_id"]: row for page in pages for row in page["events"]}
+    assert len(events) == 13
+    assert events["related-00"]["match_kinds"] == ["leader"]
+    assert events["related-12"]["member_scopes"] == ["extra scope", "shared scope 12"]
+    assert events["related-12"]["leader_item_id"] == "item:related-12"
+    assert all(row["sent_count"] == 0 for row in events.values())
+
+
 @pytest.mark.parametrize("action", ["notify", "unresolved"])
 def test_exhausted_planning_agrees_in_feed_detail_and_tab_counts(conn, action: str) -> None:
     seeded = _seed(conn)

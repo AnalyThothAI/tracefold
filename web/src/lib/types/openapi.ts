@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/news/items/{item_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get News Item Related Events */
+        get: operations["get_news_item_related_events_api_news_items__item_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/news/market": {
         parameters: {
             query?: never;
@@ -405,6 +422,16 @@ export interface components {
         /** ApiEnvelope[NewsFeedData] */
         ApiEnvelope_NewsFeedData_: {
             data?: components["schemas"]["NewsFeedData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsItemRelatedEventsData] */
+        ApiEnvelope_NewsItemRelatedEventsData_: {
+            data?: components["schemas"]["NewsItemRelatedEventsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -1788,6 +1815,50 @@ export interface components {
              * @default 0
              */
             venues: number;
+        };
+        /** NewsItemRelatedEventData */
+        NewsItemRelatedEventData: {
+            /** Adopted Content Revision */
+            adopted_content_revision?: string | null;
+            /** Done Revision */
+            done_revision?: number | null;
+            /** Event Id */
+            event_id: string;
+            /** Focus Fact Method */
+            focus_fact_method: string;
+            /** Focus Fact Text */
+            focus_fact_text: string;
+            /** Intent State */
+            intent_state?: string | null;
+            /** Leader Item Id */
+            leader_item_id: string;
+            /** Match Kinds */
+            match_kinds: string[];
+            /** Member Scopes */
+            member_scopes: string[];
+            /** Notification Action */
+            notification_action?: string | null;
+            /** Notification State */
+            notification_state?: string | null;
+            /** Semantic Error Code */
+            semantic_error_code?: string | null;
+            /** Semantic Outcome */
+            semantic_outcome?: string | null;
+            /** Sent Count */
+            sent_count: number;
+            /** Wanted Revision */
+            wanted_revision?: number | null;
+        };
+        /** NewsItemRelatedEventsData */
+        NewsItemRelatedEventsData: {
+            /** Events */
+            events: components["schemas"]["NewsItemRelatedEventData"][];
+            /** Item Id */
+            item_id: string;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Total Events */
+            total_events: number;
         };
         /** NewsLateEvidenceData */
         NewsLateEvidenceData: {
@@ -4680,6 +4751,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_NewsFeedData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_news_item_related_events_api_news_items__item_id__events_get: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsItemRelatedEventsData_"];
                 };
             };
             /** @description Validation Error */

@@ -130,6 +130,7 @@ news:
     # back by `tracefold config`, which says only whether one is configured.
     telegram_proxy_url:
     min_interval_seconds: 0.6
+    notification_prepare_limit: 2
   retention:
     raw_days: 30
     judged_days: 365

@@ -286,8 +286,8 @@ class InitialSendEntry:
         target check, the pacing and the provider call, and no part of either domain's decision.
 
         `prepare=False` is for a caller that already validated the target *earlier on purpose*. The
-        Deliverer does: it prepares before it writes its durable `sending` row, so a bad channel
-        settles the Event without one. A caller with no such moment -- the market loop -- takes the
+        Deliverer prepares inside its reserved send slot before the durable `sending` transition,
+        so a bad channel settles as not_sent without a provider call. The market loop takes the
         default, because Telegram refuses `send_card` outright on an unvalidated target and a card
         that skipped the check would fail on a channel that is in fact fine.
         """
@@ -296,20 +296,39 @@ class InitialSendEntry:
         if sender is None:
             raise RuntimeError("news_delivery_sender_unavailable")
         async with self._paced():
-            if prepare:
-                # Idempotent -- a validated target returns immediately -- and the adapter
-                # invalidates it again the moment a send fails, so a rotated token is re-checked
-                # rather than cached for the life of the process.
-                await self._finite.run("news_delivery_prepare", sender.prepare, timeout_seconds=self._timeout_seconds)
-            receipt: Mapping[str, Any] = await self._finite.run(
-                operation,
-                sender.send_card,
+            return await self._send_reserved_card(
                 card,
-                channel_payload=dict(channel_payload),
+                channel_payload=channel_payload,
                 presentation=presentation,
-                timeout_seconds=self._timeout_seconds,
+                operation=operation,
+                prepare=prepare,
             )
-            return receipt
+
+    async def _send_reserved_card(
+        self,
+        card: ReaderCard,
+        *,
+        channel_payload: Mapping[str, Any],
+        presentation: ReaderDeliveryPresentation | None,
+        operation: str,
+        prepare: bool,
+    ) -> Mapping[str, Any]:
+        """Called by the initial entry or by News while its send slot is held."""
+
+        sender = self._sender
+        if sender is None:
+            raise RuntimeError("news_delivery_sender_unavailable")
+        if prepare:
+            await self._finite.run("news_delivery_prepare", sender.prepare, timeout_seconds=self._timeout_seconds)
+        receipt: Mapping[str, Any] = await self._finite.run(
+            operation,
+            sender.send_card,
+            card,
+            channel_payload=dict(channel_payload),
+            presentation=presentation,
+            timeout_seconds=self._timeout_seconds,
+        )
+        return receipt
 
     async def send_prepared_edit(
         self,
@@ -387,6 +406,7 @@ class DelivererLoop:
         sender: NewsPushSender | None,
         finite_operations: Any,
         min_interval_seconds: float,
+        notification_prepare_limit: int = 2,
         notifications: Notifications | None = None,
         candle_fetcher_for: DeliveryCandleFetcherFor | None = None,
         price_fetcher_for: DeliveryPriceFetcherFor | None = None,
@@ -396,6 +416,9 @@ class DelivererLoop:
         self.sender = sender
         self.finite = finite_operations
         self.notifications = notifications
+        if not 1 <= notification_prepare_limit <= 8:
+            raise ValueError("news_notification_prepare_limit_invalid")
+        self.notification_prepare_limit = notification_prepare_limit
         # The Deliverer owns the entry and composition hands the same object to the market loop, so
         # there is one pacer for the process rather than one per caller who remembered to share it.
         # The enrichment edit goes through it too (#604 N3).
@@ -405,6 +428,7 @@ class DelivererLoop:
         self._candle_fetcher_for = candle_fetcher_for
         self._price_fetcher_for = price_fetcher_for
         self._tradability_verifier = tradability_verifier
+        self._prepared_send: tuple[str, ReaderCard, Mapping[str, Any], ReaderDeliveryPresentation] | None = None
         self._edit_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
@@ -492,43 +516,72 @@ class DelivererLoop:
         notifications = self.notifications
         if notifications is None or self.sender is None:
             return 0
-        event_ids = await notifications.store.pending_notification_events(NEWS_CHANNEL, _NOTIFICATIONS_PER_TURN)
+        event_ids = iter(
+            dict.fromkeys(await notifications.store.pending_notification_events(NEWS_CHANNEL, _NOTIFICATIONS_PER_TURN))
+        )
+        tasks: dict[asyncio.Task[NotificationTurn], tuple[str, float]] = {}
+
+        def fill() -> None:
+            while len(tasks) < self.notification_prepare_limit:
+                event_id = next(event_ids, None)
+                if event_id is None:
+                    return
+                task = asyncio.create_task(
+                    notifications.prepare(event_id, NEWS_CHANNEL), name=f"news-notification-prepare:{event_id}"
+                )
+                tasks[task] = (event_id, time.monotonic())
+                logger.info("news notification prepare started event_id=%s in_flight=%s", event_id, len(tasks))
+
         worked = 0
-        for event_id in event_ids:
-            status = await self._notify(notifications, event_id)
-            if status != "no_work":
-                worked += 1
+        fill()
+        try:
+            while tasks:
+                finished, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in finished:
+                    event_id, started_at = tasks.pop(task)
+                    try:
+                        prepared = task.result()
+                    except _RECORDED_TURN_FAILURES as exc:
+                        logger.warning("news notification turn failed event_id=%s error=%s", event_id, _error_code(exc))
+                        worked += 1
+                        fill()
+                        continue
+                    logger.info(
+                        "news notification prepared event_id=%s status=%s elapsed_ms=%s",
+                        event_id,
+                        prepared.status,
+                        int((time.monotonic() - started_at) * 1000),
+                    )
+                    try:
+                        turn = await notifications.finalize(prepared, self)
+                    except _RECORDED_TURN_FAILURES as exc:
+                        logger.warning("news notification turn failed event_id=%s error=%s", event_id, _error_code(exc))
+                        worked += 1
+                        fill()
+                        continue
+                    if turn.status == "sent":
+                        self._enrich_sent(turn)
+                    if turn.status != "no_work":
+                        worked += 1
+                    fill()
+        finally:
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
         return worked
 
-    async def _notify(self, notifications: Notifications, event_id: str) -> str:
-        """One notification turn for one Event, and the enrichment edit a sent Telegram card earns."""
-
-        try:
-            turn = await notifications.process(event_id, NEWS_CHANNEL, self)
-        except (TransientError, DeferError):
-            raise
-        except _RECORDED_TURN_FAILURES as exc:
-            # Already recorded by the core: a deferred plan, a spent card attempt, or a lease another
-            # turn now owns. Semantics and the public outbox are untouched; the next due turn resumes.
-            logger.warning("news notification turn failed event_id=%s error=%s", event_id, _error_code(exc))
-            return "failed"
-        except Exception as exc:
-            logger.error("news notification turn crashed event_id=%s (%s)", event_id, type(exc).__name__)
-            raise
-        if turn.status == "sent":
-            self._enrich_sent(turn)
-        return turn.status
-
     # ------------------------------------------------------------------ the `Sender` port
-    async def send(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome:
-        """Send one frozen card through the configured provider and report what the provider proved.
+    @contextlib.asynccontextmanager
+    async def send_slot(self) -> AsyncIterator[None]:
+        async with self.send_entry._paced():
+            try:
+                yield
+            finally:
+                self._prepared_send = None
 
-        The target preflight runs first and provably sends nothing, so any failure there is `not_sent`.
-        A provider failure the adapter proves never reached a reader is `not_sent` (retryable when its
-        cause passes, with the provider's own `Retry-After`); one it cannot account for is `ambiguous`
-        and is never sent again. The body is the frozen copy, rendered whole around code-owned facts.
-        """
-
+    async def preflight(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome | None:
+        """Prepare target and render wire body before the durable sending transition."""
         sender = self.sender
         sha = card.payload_sha256
         if sender is None:
@@ -565,10 +618,23 @@ class DelivererLoop:
                 market_movements=reader_market_movements([asset.symbol for asset in shown], quotes),
             )
         )
+        self._prepared_send = (sha, reader_card, feishu_card(reader_card), presentation)
+        return None
+
+    async def send(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome:
+        """Call the provider for the prepared frozen body and report its actual outcome."""
+
+        prepared = self._prepared_send
+        if prepared is None or prepared[0] != card.payload_sha256:
+            raise RuntimeError("news_delivery_send_without_preflight")
+        sha, reader_card, channel_payload, presentation = prepared
         try:
-            # `prepare=False`: the target was validated above, where a bad channel fails unsent.
-            result = await self.send_entry.send_prepared_card(
-                reader_card, channel_payload=feishu_card(reader_card), presentation=presentation, prepare=False
+            result = await self.send_entry._send_reserved_card(
+                reader_card,
+                channel_payload=channel_payload,
+                presentation=presentation,
+                operation="news_delivery_send",
+                prepare=False,
             )
         except Exception as exc:
             failure = classify_delivery_failure(exc)

@@ -42,6 +42,9 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         news_review_columns = columns("news_reviews")
         news_verdict_columns = columns("news_verdicts")
         news_delivery_columns = columns("news_deliveries")
+        semantic_work_columns = columns("news_semantic_work")
+        semantic_observation_columns = columns("news_semantic_observations")
+        delivery_queue_columns = columns("news_delivery_queue")
         news_ingest_columns = columns("news_ingest_state")
         news_v3_indexes = {
             str(row["indexname"]): str(row["indexdef"])
@@ -105,6 +108,15 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "current_contract_archive_only" not in news_event_columns | news_review_columns
     assert "news_current_event_archive_guard" not in functions
     assert {"model_decision", "novelty_defaulted"}.isdisjoint(news_verdict_columns)
+    assert "processed_evidence_refs" not in semantic_work_columns
+    assert {
+        "processed_read_refs",
+        "reanalysis_read_ref",
+        "reanalysis_reason",
+        "reanalysis_head_ref",
+    } <= semantic_work_columns
+    assert {"read_refs", "reanalysis_reason", "reanalysis_head_ref"} <= semantic_observation_columns
+    assert {"card_copy_input_digest", "card_copy_document"} <= delivery_queue_columns
     assert news_delivery_columns == {
         "history_context",
         "event_id",
@@ -135,6 +147,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "payload_sha256",
         "plan_key",
         "decision_ref",
+        "card_copy_input_digest",
+        "card_copy_document",
     }
     assert news_ingest_columns == {
         "singleton_key",
@@ -187,7 +201,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260928_0408"
+    assert version == latest_migration_version() == "20260928_0409"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -212,7 +226,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260928_0408"
+    assert version == latest_migration_version() == "20260928_0409"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

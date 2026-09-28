@@ -729,16 +729,28 @@ class ScriptedNotifications:
         self.polls += 1
         return tuple(event_id for event_id in self.intents if event_id not in self.processed)[:limit]
 
-    async def process(self, event_id: str, channel: str, sender: Any) -> NotificationTurn:
+    async def prepare(self, event_id: str, channel: str) -> NotificationTurn:
         assert channel == "news"
         self.processed.append(event_id)
         if event_id in self.failures:
             raise self.failures[event_id]
         plan, card, update = self.intents[event_id]
-        outcome = await sender.send(card, plan=plan, update=update)
-        self.outcomes[event_id] = outcome
         lease = IntentLease(intent_id=plan.intent_id, lease_token="lease", plan=plan, card=card)
-        return NotificationTurn(outcome.state, update=update, lease=lease, card=card, outcome=outcome)
+        return NotificationTurn("ready", update=update, lease=lease, card=card)
+
+    async def finalize(self, prepared: NotificationTurn, sender: Any) -> NotificationTurn:
+        assert prepared.lease is not None and prepared.card is not None and prepared.update is not None
+        async with sender.send_slot():
+            outcome = await sender.preflight(prepared.card, plan=prepared.lease.plan, update=prepared.update)
+            if outcome is None:
+                outcome = await sender.send(prepared.card, plan=prepared.lease.plan, update=prepared.update)
+        self.outcomes[prepared.update.event_id] = outcome
+        return NotificationTurn(
+            outcome.state, update=prepared.update, lease=prepared.lease, card=prepared.card, outcome=outcome
+        )
+
+    async def process(self, event_id: str, channel: str, sender: Any) -> NotificationTurn:
+        return await self.finalize(await self.prepare(event_id, channel), sender)
 
 
 def _delivery_news(**overrides: Any) -> RecordingNews:
@@ -781,7 +793,13 @@ def _deliverer(
 
 def _send(consumer: DelivererLoop, intent: Intent) -> SendOutcome:
     plan, card, update = intent
-    return asyncio.run(consumer.send(card, plan=plan, update=update))
+
+    async def run() -> SendOutcome:
+        async with consumer.send_slot():
+            preflight = await consumer.preflight(card, plan=plan, update=update)
+            return preflight or await consumer.send(card, plan=plan, update=update)
+
+    return asyncio.run(run())
 
 
 class _FailingPrepareSender(RecordingSender):
@@ -967,6 +985,54 @@ def test_an_unclassified_turn_failure_faults_the_capability() -> None:
 
     with pytest.raises(KeyError):
         asyncio.run(_deliverer(notifications=notifications, sender=RecordingSender()).advance())
+
+
+def test_fast_preparation_finalizes_before_slow_sibling_and_inflight_work_is_bounded() -> None:
+    class Controlled(ScriptedNotifications):
+        def __init__(self) -> None:
+            super().__init__(
+                _intent(event_id="slow"),
+                _intent(event_id="fast"),
+                _intent(event_id="failed"),
+                failures={"failed": ProviderUnavailable("controlled")},
+            )
+            self.release = asyncio.Event()
+            self.fast_sent = asyncio.Event()
+            self.active = 0
+            self.max_active = 0
+            self.finalized: list[str] = []
+
+        async def prepare(self, event_id: str, channel: str) -> NotificationTurn:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            try:
+                if event_id == "slow":
+                    await self.release.wait()
+                return await super().prepare(event_id, channel)
+            finally:
+                self.active -= 1
+
+        async def finalize(self, prepared: NotificationTurn, sender: Any) -> NotificationTurn:
+            assert prepared.update is not None
+            self.finalized.append(prepared.update.event_id)
+            result = await super().finalize(prepared, sender)
+            if prepared.update.event_id == "fast":
+                self.fast_sent.set()
+            return result
+
+    async def scenario() -> tuple[int, Controlled]:
+        notifications = Controlled()
+        consumer = _deliverer(notifications=notifications, sender=RecordingSender())
+        task = asyncio.create_task(consumer.advance())
+        await asyncio.wait_for(notifications.fast_sent.wait(), 1)
+        assert notifications.finalized == ["fast"]
+        notifications.release.set()
+        return await asyncio.wait_for(task, 1), notifications
+
+    worked, notifications = asyncio.run(scenario())
+    assert worked == 3
+    assert notifications.max_active == 2
+    assert notifications.finalized == ["fast", "slow"]
 
 
 def test_the_deliverer_prices_exactly_the_selected_claims_primary_assets() -> None:

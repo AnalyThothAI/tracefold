@@ -245,11 +245,13 @@ config:
 flowchart TB
     accTitle: 知识与下游记录的所有权
     accDescr: 来源修订进入语义工作与知识。通知保存精确正文及回执。公开 outbox 将可研究来源交给 Case，将 source_update 交给来源修订记录。
-    Input["Item 与来源修订"] --> Work["语义工作<br/>输入版本、租约、预算"]
+    Input["Item 与来源修订"] --> Scope["稳定 FactUnit 与任务阅读投影<br/>完整原文仍保存"]
+    Scope --> Work["语义工作<br/>read_ref、输入版本、租约、预算"]
     Work --> Observation["检查点与语义观察"]
     Observation --> Knowledge[("不可变 EventUpdate<br/>当前 adopted head")]
-    Knowledge --> Notification["通知计划与稳定 intent"]
-    Notification --> Receipt[("冻结正文与发送账本")]
+    Knowledge --> Notification["有界通知准备<br/>输入级编辑/文案复用与稳定 intent"]
+    Notification --> Finalize["共用发送时隙<br/>重检、begin_send、provider、结算"]
+    Finalize --> Receipt[("冻结正文与发送账本")]
     Knowledge --> Public["公开 outbox"]
     Public -->|catalyst_delta / OI| Case["Trading Trigger / Case"]
     Public -->|source_update| Amendment["来源修订<br/>不创建新 Case"]
@@ -261,7 +263,7 @@ flowchart TB
     classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
     classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
 class Input,Work,Observation,Knowledge,Receipt store;
-class Notification news;
+class Scope,Notification,Finalize news;
 class Public news;
 class Case,Amendment,Decision research;
 ```
@@ -291,7 +293,7 @@ class Case,Amendment,Decision research;
 | Item 证据与语义工作 | 同事务提交；再发送唤醒并记录发布，维护任务补偿遗漏 |
 | 语义处理 | 冻结输入、owner token、lease、版本级尝试预算、检查点复用 |
 | EventUpdate 采用 | 比较当前 head 并条件更新；同事务生成公开 outbox 与通知工作 |
-| 通知发送 | 先记录意图和精确正文；事务外发送；再记录实际结果；不盲重试未知结果 |
+| 通知发送 | 先记录意图和精确正文；等待共用发送时隙、完成目标预检，再以短事务重检并记录 sending；事务外发送并在释放时隙前结算实际结果；不盲重试未知结果 |
 | Trading 研究完成 | 校验 Case 所有权、来源有效性与作用域，原子保存决策及可发布 Signal |
 | 钱包采集 | 完整交易事实与连续进度一起提交，不能跳过未完成回执 |
 | 交易所写操作 | 命令与计划只是意图；通过交易所回执、Cache 和对账确定真实结果 |

@@ -5,9 +5,9 @@ import asyncio
 import pytest
 from psycopg.errors import CheckViolation
 
-from tests.integration.test_news_event_update_store import EVENT, TaskBackend, adopted_head, store
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_attention import FeedOnly, NotifyAll
+from tests.support.news_update_pg import EVENT, TaskBackend, adopted_head, store
 from tracefold.news.review.desk import DecisionFeedbackSubmission, DeskQuery, Principal, ReviewDesk, TaskRef
 from tracefold.news.storage.event_update_store import PgJudgmentCache
 from tracefold.news.updates.judgment import Budget, NewsJudgments
@@ -44,7 +44,8 @@ def test_new_decision_is_reviewable_without_old_verdict(selected: bool) -> None:
         assert task["reason"] == ("editor_notify" if selected else "editor_feed_only")
         ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
         evidence = desk.evidence(ref, principal=principal)
-        assert evidence["evidence"]["update"]["event_id"] == EVENT
+        assert evidence["evidence"]["candidate"]["claims"][0]["ref"] == head.claims[0].ref
+        assert evidence["evidence"]["candidate"]["claims"][0]["citations"][0]["quote"]
         source_only = desk.evidence(ref, principal=principal, source_only=True)
         assert "agent" not in source_only and source_only["task"]["task_id"] == task["task_id"]
         with transaction(conn):

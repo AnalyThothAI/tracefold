@@ -490,6 +490,8 @@ class FrozenInput(Exact):
     focus_claim_refs: tuple[str, ...] = ()
     open_questions: dict[str, KnowledgeGap] = Field(default_factory=dict)
     identity_hints: tuple[IdentityHint, ...] = ()
+    reanalysis_reason: str | None = None
+    reanalysis_head_ref: str | None = None
 
     @property
     def input_sha(self) -> str:

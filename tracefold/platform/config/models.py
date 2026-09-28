@@ -279,6 +279,7 @@ class NewsPushSettings(BaseModel):
     # credentials, so `tracefold config` says only whether one is configured.
     telegram_proxy_url: str | None = Field(default=None, repr=False)
     min_interval_seconds: float = 0.6
+    notification_prepare_limit: int = 2
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", "telegram_proxy_url", mode="before")
     @classmethod
@@ -321,6 +322,8 @@ class NewsPushSettings(BaseModel):
     def validate_pacing(self) -> NewsPushSettings:
         if self.min_interval_seconds < 0 or self.min_interval_seconds > 60:
             raise ValueError("news_push_min_interval_invalid")
+        if not 1 <= self.notification_prepare_limit <= 8:
+            raise ValueError("news_notification_prepare_limit_invalid")
         return self
 
 

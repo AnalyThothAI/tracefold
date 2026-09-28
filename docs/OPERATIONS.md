@@ -94,6 +94,17 @@ docker compose exec -T workers tracefold news retry-work \
 
 只恢复对应失败工作版本，保留事实、检查点和发送回执。不是更换模型后的全库重跑，也不续期原始来源。最终尝试仍持有有效 lease 时，不能把它当作已经耗尽并手工抢占。
 
+### 已完成工作确认漏范围
+
+先从 Event 详情或 `news why EVENT_ID` 取得当前 wanted/head，再用 `tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION --head HEAD_REVISION` 预览 wanted/done、head 和各来源任务 `read_ref` 清单。没有 head 时 `--head none`。核对原文与确切漏读范围后，用清单中的 wanted、head、read 值提交定向处理修订：
+
+```bash
+tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION \
+  --head HEAD_REVISION --read READ_REF --reason '已核实的漏读范围说明' --execute
+```
+
+命令使用版本与 head 条件更新；状态已前进、lease 有效或范围不再匹配时返回冲突。它保留原 Event、旧 head、已送账本和来源修订，不授权历史重发。选择名单时记录原文、任务范围与原因；不要对所有旧 Event 盲目执行。
+
 ### 通知计划失败
 
 ```bash

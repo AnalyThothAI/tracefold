@@ -97,6 +97,15 @@ def add_news_commands(
     retry.add_argument("--kind", required=True, choices=("semantic", "notification", "card"))
     retry.add_argument("--revision", required=True, help="wanted input revision, or exact content revision")
     retry.add_argument("--intent", default=None, help="required only for an unsent failed card intent")
+    reanalyze = news_subcommands.add_parser(
+        "reanalyze", help="inspect or request one exact Event task read under wanted/head CAS"
+    )
+    reanalyze.add_argument("--event", required=True, help="exact Event ID")
+    reanalyze.add_argument("--wanted", type=_positive_int, required=True, help="expected wanted revision")
+    reanalyze.add_argument("--head", required=True, help="expected content revision, or 'none'")
+    reanalyze.add_argument("--read", help="exact read_ref from the scope list")
+    reanalyze.add_argument("--reason", help="operator reason, required with --execute")
+    reanalyze.add_argument("--execute", action="store_true", help="open the targeted system processing revision")
     news_dlq = news_subcommands.add_parser("dlq", help="inspect, replay, or purge the News dead-letter queue")
     news_dlq.add_argument("dlq_action", choices=("inspect", "replay", "purge"))
     news_dlq.add_argument("--limit", type=_positive_int, default=20, help="messages to inspect/replay")

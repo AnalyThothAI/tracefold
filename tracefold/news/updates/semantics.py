@@ -37,6 +37,7 @@ from .judgment import (
     ProviderUnavailable,
     Question,
 )
+from .projection import reading_views
 from .topics import CODEBOOK
 
 
@@ -128,6 +129,7 @@ def _claim_material(draft: DraftClaim) -> dict[str, Any]:
 
 def validate_extraction(source: FrozenInput, extraction: Extraction) -> None:
     evidence = {item.ref: item for item in source.evidence}
+    visible = {view.evidence_ref: view.spans for view in reading_views(source)}
     prior = {row.claim.ref for row in source.prior}
     targets = {row.ref for row in source.read_targets}
     for claim in extraction.claims:
@@ -135,6 +137,8 @@ def validate_extraction(source: FrozenInput, extraction: Extraction) -> None:
             item = evidence.get(citation.evidence_ref)
             if item is None or citation.quote not in item.text:
                 raise ContractFault("news_citation_not_in_frozen_source")
+            if not any(citation.quote in span.text for span in visible[item.ref]):
+                raise ContractFault("news_citation_not_in_visible_source")
     for relation in extraction.relations:
         if relation.previous_ref not in prior:
             raise ContractFault("news_relation_previous_not_supplied")
@@ -148,6 +152,8 @@ def validate_extraction(source: FrozenInput, extraction: Extraction) -> None:
             item = evidence.get(citation.evidence_ref)
             if item is None or citation.quote not in item.text:
                 raise ContractFault("news_resolution_not_grounded")
+            if not any(citation.quote in span.text for span in visible[item.ref]):
+                raise ContractFault("news_resolution_not_in_visible_source")
     for gap in extraction.open_questions:
         if gap.target_ref is not None and gap.target_ref not in targets:
             raise ContractFault("news_read_target_not_supplied")

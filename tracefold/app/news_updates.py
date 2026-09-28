@@ -205,7 +205,7 @@ def compose_news_updates(
                 analyzer.judgments,
                 DspyAttentionAssessor(card_lm_factory, model_identity=card_model_identity),
             ),
-            DspyCardComposer(card_lm_factory),
+            DspyCardComposer(card_lm_factory, model_identity=card_model_identity),
         ),
         program_identity=program_identity,
         judgment_connection=connection,
