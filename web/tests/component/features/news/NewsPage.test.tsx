@@ -955,6 +955,62 @@ describe("NewsPage", () => {
   });
 
   // ------------------------------------------------------------------ detail
+  it("loads all Events for a selected non-leader Item only on demand and pages them", async () => {
+    const requests: string[] = [];
+    server.use(
+      http.get(/.*\/api\/news\/items\/news-item-bloomberg\/events$/, ({ request }) => {
+        const after = new URL(request.url).searchParams.get("after") ?? "";
+        requests.push(after);
+        const eventId = after ? "evt-third" : "evt-other";
+        return HttpResponse.json({
+          ok: true,
+          data: {
+            item_id: "news-item-bloomberg",
+            total_events: 3,
+            events: [
+              {
+                event_id: eventId,
+                leader_item_id: "another-item",
+                member_scopes: ["市场条件仍待确认"],
+                match_kinds: ["near"],
+                focus_fact_text: eventId,
+                focus_fact_method: "explicit_numbered",
+                wanted_revision: 2,
+                done_revision: 1,
+                semantic_outcome: "failed",
+                semantic_error_code: "citation_invalid",
+                adopted_content_revision: "a".repeat(64),
+                notification_state: "done",
+                notification_action: "notify",
+                intent_state: "sent",
+                sent_count: 1,
+              },
+            ],
+            next_cursor: after ? null : "evt-other",
+          },
+        });
+      }),
+    );
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+    const related = await screen.findByRole("region", { name: "Item 关联事件" });
+    expect(requests).toHaveLength(0);
+    fireEvent.change(within(related).getByLabelText("选择报道"), {
+      target: { value: "news-item-bloomberg" },
+    });
+    fireEvent.click(within(related).getByRole("button", { name: "查看关联事件" }));
+    expect(await within(related).findByRole("link", { name: "evt-other" })).toHaveAttribute(
+      "href",
+      "/news/events/evt-other",
+    );
+    expect(within(related).getByText(/语义版本：2\/1/)).toBeInTheDocument();
+    fireEvent.click(within(related).getByRole("button", { name: "加载更多" }));
+    expect(await within(related).findByRole("link", { name: "evt-third" })).toBeInTheDocument();
+    expect(requests).toEqual(["", "evt-other"]);
+  });
+
   it("renders Event detail as one conclusion, a timeline, members, and folded technical details", async () => {
     renderNews(
       <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,

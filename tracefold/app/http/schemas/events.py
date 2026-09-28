@@ -587,6 +587,31 @@ class NewsEventDetailData(ExactApiSchema):
     reactions: list[NewsEventReactionData] = Field(default_factory=list)
 
 
+class NewsItemRelatedEventData(ExactApiSchema):
+    event_id: str
+    leader_item_id: str
+    member_scopes: list[str]
+    match_kinds: list[str]
+    focus_fact_text: str
+    focus_fact_method: str
+    wanted_revision: int | None = None
+    done_revision: int | None = None
+    semantic_outcome: str | None = None
+    semantic_error_code: str | None = None
+    adopted_content_revision: str | None = None
+    notification_state: str | None = None
+    notification_action: str | None = None
+    intent_state: str | None = None
+    sent_count: int
+
+
+class NewsItemRelatedEventsData(ExactApiSchema):
+    item_id: str
+    total_events: int
+    events: list[NewsItemRelatedEventData]
+    next_cursor: str | None = None
+
+
 class NewsQuoteData(ExactApiSchema):
     """One current quote (#88). `state` is derived when read, never maintained by a timer write.
 
@@ -638,6 +663,8 @@ __all__ = [
     "NewsEventReviewSummaryData",
     "NewsEventUpdateData",
     "NewsEvidenceSnapshotData",
+    "NewsItemRelatedEventData",
+    "NewsItemRelatedEventsData",
     "NewsLegacyTaxonomyData",
     "NewsModelEditorialData",
     "NewsNotificationPlanData",

@@ -15,7 +15,10 @@ from typing import Any
 
 import pytest
 
-from tests.integration.test_news_event_update_store import (
+from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_attention import FeedOnly, NotifyAll
+from tests.support.news_legacy_storage import legacy_news
+from tests.support.news_update_pg import (
     EVENT,
     STAMP,
     Clock,
@@ -32,9 +35,6 @@ from tests.integration.test_news_event_update_store import (
     seed_event,
     sql,
 )
-from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_attention import FeedOnly, NotifyAll
-from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.bus import TransientError
 from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
@@ -53,7 +53,7 @@ from tracefold.news.updates.contracts import (
     PriorClaim,
 )
 from tracefold.news.updates.judgment import NewsJudgments, ProviderUnavailable
-from tracefold.news.updates.notification import CardCopy, FrozenCard, NotificationPlanner
+from tracefold.news.updates.notification import CardCopy, CardLine, FrozenCard, NotificationPlanner
 from tracefold.news.updates.service import Notifications
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -231,6 +231,10 @@ def test_planner_intent_card_and_send_record_the_exact_frozen_body_and_receipt()
     assert ledger["body"] == card.body and ledger["payload_sha256"] == card.payload_sha256
     assert f"{provider.sent[0].header.subject}\n\n{provider.sent[0].lead}" == card.body
     assert ledger["card"]["headline_zh"] == card.headline_zh
+    assert ledger["card_copy_input_digest"]
+    assert asyncio.run(rig.store.lookup_card_copy(ledger["card_copy_input_digest"])) == CardCopy.model_validate(
+        ledger["card_copy_document"]
+    )
     # The provider's message id and receipt are what the ledger keeps.
     assert ledger["receipt"]["provider_message_id"] == "42"
     assert ledger["receipt"]["message_id"] == 42 and ledger["receipt"]["target_sha256"] == TELEGRAM_TARGET
@@ -509,6 +513,87 @@ def test_two_deliverers_on_one_event_send_one_card() -> None:
 
     assert len(provider.sent) == 1
     assert [row["state"] for row in _ledger()] == ["sent"]
+
+
+@pytest.mark.parametrize("fail_settlement", [False, True])
+def test_second_event_waits_until_first_provider_receipt_is_durable(fail_settlement: bool) -> None:
+    clock = Clock()
+    _adopt(clock)
+    seed_event(
+        "event-second",
+        text="Agency confirms a copper mine closure next month.",
+        title="Agency confirms copper mine closure",
+        fingerprint="fp-second",
+    )
+    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    assert asyncio.run(run_agent(agent(pg, clock), "event-second")) == "adopted"
+
+    class GatedSettlement(FaultDb):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+
+        async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
+            if name == "news_update_settle_send":
+                self.calls += 1
+                if self.calls == 1:
+                    self.entered.set()
+                    await self.release.wait()
+            return await super().tx(name, fn, timeout_seconds=timeout_seconds)
+
+    class DistinctComposer(Composer):
+        async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
+            self.calls += 1
+            copper = any("copper" in claim.statement for claim in claims)
+            return CardCopy(
+                headline_zh="机构确认铜矿关闭" if copper else "机构对钢铁进口加征关税",
+                lines=tuple(
+                    CardLine(
+                        claim_ref=claim.ref,
+                        text_zh="机构确认铜矿下月关闭" if copper else "机构宣布加征百分之二十五关税",
+                    )
+                    for claim in claims
+                ),
+            )
+
+    provider = Provider()
+    db = GatedSettlement()
+    if fail_settlement:
+        db.fail_operations.add("news_update_settle_send")
+    rig = Rig(provider, clock=clock, db=db, composer=DistinctComposer())
+
+    async def run() -> None:
+        task = asyncio.create_task(rig.loop.advance())
+        await asyncio.wait_for(db.entered.wait(), 5)
+        assert len(provider.sent) == 1
+        assert [row["state"] for row in _ledger()] == ["sending"]
+        db.release.set()
+        if fail_settlement:
+            with pytest.raises(TransientError, match="news_update_settle_send"):
+                await task
+            return
+        assert await task == 2
+        # B's prepared reader snapshot is stale once A settles; a fresh turn replans it.
+        assert len(provider.sent) == 1
+        assert await rig.loop.advance() == 1
+        await rig.loop.drain()
+
+    asyncio.run(run())
+    if fail_settlement:
+        assert len(provider.sent) == 1
+        assert [row["state"] for row in _ledger()] == ["sending"]
+        return
+    assert len(provider.sent) == 2, (
+        sql("SELECT event_id,state FROM news_deliveries ORDER BY event_id"),
+        sql(
+            "SELECT w.event_id,w.state,d.plan->>'action' AS action,d.plan->>'reason' AS reason "
+            "FROM news_notification_work w LEFT JOIN news_notification_decisions d "
+            "ON d.decision_ref=w.decision_ref ORDER BY w.event_id"
+        ),
+    )
+    assert [row["state"] for row in _ledger()] == ["sent", "sent"]
 
 
 def test_the_telegram_edit_enriches_the_intents_receipt_and_keeps_the_frozen_card() -> None:

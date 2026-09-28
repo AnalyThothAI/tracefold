@@ -115,6 +115,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     expected = {
         "/api/news/feed": ("get", "ApiEnvelope_NewsFeedData_"),
         "/api/news/events/{event_id}": ("get", "ApiEnvelope_NewsEventDetailData_"),
+        "/api/news/items/{item_id}/events": ("get", "ApiEnvelope_NewsItemRelatedEventsData_"),
         "/api/news/status": ("get", "ApiEnvelope_NewsStatusData_"),
         # #88: current quotes and 命中复盘 are separate response types on purpose — a current rolling change
         # and a fixed post-Event return must never arrive in a field the browser could mistake for the other.

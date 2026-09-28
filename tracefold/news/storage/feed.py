@@ -43,6 +43,9 @@ from .feed_sql import (
     EDITORIAL_EVENT_SQL,
     EVENT_MEMBERS_SQL,
     EVENT_VERDICTS_SQL,
+    ITEM_RELATED_COUNT_SQL,
+    ITEM_RELATED_EVENTS_SQL,
+    ITEM_RELATED_KEYS_SQL,
     OUTCOME_GROUP_SQL,
     SOURCE_AUTHORITY_PREDICATE,
     STATUS_DELIVERY_SQL,
@@ -173,6 +176,49 @@ class FeedStorage:
             (int(now_ms), *params),
         ).fetchone()
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
+
+    def item_related_events(self, *, item_id: str, after_event_id: str | None, limit: int) -> dict[str, Any]:
+        """Page every Event this Item contributed to, including non-leader membership."""
+
+        total = self.conn.execute(ITEM_RELATED_COUNT_SQL, (item_id,)).fetchone()
+        keys = self.conn.execute(
+            ITEM_RELATED_KEYS_SQL,
+            (item_id, after_event_id, after_event_id, limit + 1),
+        ).fetchall()
+        page_ids = [str(row["event_id"]) for row in keys[:limit]]
+        rows = (
+            self.conn.execute(
+                ITEM_RELATED_EVENTS_SQL,
+                (item_id, item_id, page_ids),
+            ).fetchall()
+            if page_ids
+            else []
+        )
+        return {
+            "item_id": item_id,
+            "total_events": int(total["n"] if total else 0),
+            "events": [
+                {
+                    "event_id": str(row["event_id"]),
+                    "leader_item_id": str(row["leader_item_id"]),
+                    "member_scopes": list(row["member_scopes"] or []),
+                    "match_kinds": list(row["match_kinds"] or []),
+                    "focus_fact_text": str(row["focus_fact_text"]),
+                    "focus_fact_method": str(row["focus_fact_method"]),
+                    "wanted_revision": row["wanted_revision"],
+                    "done_revision": row["done_revision"],
+                    "semantic_outcome": row["last_outcome"],
+                    "semantic_error_code": row["last_error_code"],
+                    "adopted_content_revision": row["adopted_content_revision"],
+                    "notification_state": row["notification_state"],
+                    "notification_action": row["notification_action"],
+                    "intent_state": row["intent_state"],
+                    "sent_count": int(row["sent_count"]),
+                }
+                for row in rows
+            ],
+            "next_cursor": page_ids[-1] if len(keys) > limit else None,
+        }
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
         # A retired market Event is immutable history, not a 404 waiting to be a 500: the public

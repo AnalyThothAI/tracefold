@@ -37,6 +37,8 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_dlq(args)
     if args.news_command == "retry-work":
         return _handle_retry_work(args)
+    if args.news_command == "reanalyze":
+        return _handle_reanalyze(args)
     if args.news_command == "why":
         return _handle_why(args)
     if args.news_command == "wallets":
@@ -70,6 +72,37 @@ def _handle_retry_work(args: Namespace) -> tuple[int, dict[str, Any]]:
         "intent_id": args.intent,
         "status": "reopened" if reopened else "not_failed_or_version_changed",
     }
+
+
+def _handle_reanalyze(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repository_session import repositories
+    from tracefold.news.bus import now_ms
+    from tracefold.news.storage.event_updates import EventUpdateConflict
+
+    if args.execute and (not args.read or not args.reason):
+        return 2, {"ok": False, "error": "news_reanalysis_target_or_reason_missing"}
+    expected_head = None if args.head == "none" else str(args.head)
+    settings = load_settings(require_ws_token=False)
+    try:
+        with repositories(settings) as repos:
+            with repos.transaction():
+                listing = repos.news.reanalysis_scope_list(event_id=str(args.event), now_ms=now_ms())
+            if listing["wanted_revision"] != args.wanted or listing["head_revision"] != expected_head:
+                raise EventUpdateConflict("news_reanalysis_version_changed")
+            if not args.execute:
+                return 0, {"ok": True, **listing}
+            with repos.transaction():
+                revision = repos.news.request_reanalysis(
+                    event_id=str(args.event),
+                    expected_wanted_revision=args.wanted,
+                    expected_head_revision=expected_head,
+                    read_ref=str(args.read),
+                    reason=str(args.reason),
+                    now_ms=now_ms(),
+                )
+    except (EventUpdateConflict, LookupError, ValueError) as exc:
+        return 1, {"ok": False, "error": str(exc)}
+    return 0, {"ok": True, "event_id": args.event, "read_ref": args.read, "wanted_revision": revision}
 
 
 def _handle_why(args: Namespace) -> tuple[int, dict[str, Any]]:

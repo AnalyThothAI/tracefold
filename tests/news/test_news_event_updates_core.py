@@ -5,85 +5,22 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from tests.support.news_update_semantic import STAMP, draft, material, prior_of, update_one
 from tracefold.news.updates.contracts import (
     Asset,
     Change,
     Citation,
-    DraftClaim,
     EventUpdate,
     Evidence,
     Extraction,
     FrozenInput,
     IdentityHint,
-    PriorClaim,
     PublicUpdate,
     RelationDraft,
-    Source,
     SupportDraft,
 )
 from tracefold.news.updates.public import public_updates
 from tracefold.news.updates.semantics import assemble_update, equivalent_is_possible
-
-STAMP = 1_790_405_000_000
-
-
-def material(text: str, *, revision: int = 1, publisher: str = "wire") -> Evidence:
-    return Evidence.issue(
-        text,
-        Source(
-            publisher_id=publisher,
-            artifact_id="release-1",
-            artifact_revision=str(revision),
-            first_available_at_ms=STAMP + revision,
-            origin_id="issuer",
-        ),
-    )
-
-
-def draft(
-    evidence: Evidence,
-    *,
-    quantity: str = "25",
-    mode: str = "decision",
-    phase: str = "announced",
-    content_kind: str = "official_measure",
-) -> DraftClaim:
-    return DraftClaim.model_validate(
-        {
-            "slot": "a",
-            "statement": evidence.text,
-            "fields": {
-                "subject": "Agency",
-                "action": "set tariff",
-                "object": "imports",
-                "mode": mode,
-                "phase": phase,
-                "content_kind": content_kind,
-                "effective_at": "2026-10-01",
-                "quantities": [{"name": "rate", "value": quantity, "unit": "%"}],
-                "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}],
-            },
-            "citations": [{"evidence_ref": evidence.ref, "quote": evidence.text}],
-        }
-    )
-
-
-def update_one() -> tuple[FrozenInput, Extraction, EventUpdate]:
-    evidence = material("Agency announces 25% tariff effective October 1.")
-    source = FrozenInput(event_id="event-1", revision=1, lineage_id="line-1", evidence=(evidence,))
-    extracted = Extraction(
-        claims=(draft(evidence),),
-        supports=(SupportDraft(slot="a", evidence_ref=evidence.ref, relation="reports"),),
-    )
-    update = assemble_update(source, extracted, None, adopted_at_ms=STAMP + 5)
-    assert update is not None
-    return source, extracted, update
-
-
-def prior_of(head: EventUpdate) -> tuple[PriorClaim, ...]:
-    return tuple(
-        PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim) for claim in head.claims
-    )
 
 
 def next_revision(

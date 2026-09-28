@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +19,7 @@ from tests.support.news_legacy import (
     legacy_judgment,
 )
 from tests.support.news_legacy_storage import legacy_news
+from tests.support.news_update_pg import Clock, StubAnalyzer, ThreadedDb, run_agent
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
@@ -27,7 +29,11 @@ from tracefold.news.opennews import parse_opennews_message, source_artifact_iden
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.search import compile_news_search
 from tracefold.news.storage.decisions import legacy_intent_id
+from tracefold.news.storage.event_update_store import PgNewsStore
 from tracefold.news.storage.operations import RECOVERY_BACKLOG_LIMIT
+from tracefold.news.updates.contracts import Extraction
+from tracefold.news.updates.judgment import ProviderUnavailable
+from tracefold.news.updates.service import NewsAgent
 
 pytestmark = pytest.mark.integration
 
@@ -1378,6 +1384,85 @@ def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> No
     assert all(row["model_raw_first_line"] == "" for row in rows)
     assert {row["model_title"] for row in rows} == {str(row["focus_fact_text"]) for row in rows}
     conn.commit()
+
+
+def test_fourteen_fact_events_keep_the_last_task_and_adopt_independently(conn) -> None:
+    statements = (
+        "Orbital Labs opens a satellite factory in Texas.",
+        "Harbor Works signs a new shipbuilding contract.",
+        "Cedar Health begins a regional clinical trial.",
+        "North Rail closes a new freight terminal.",
+        "Atlas Foods recalls a packaged grain product.",
+        "Sierra Energy finishes a solar installation.",
+        "Meridian Bank announces a capital increase.",
+        "Aster Motors delays an electric truck launch.",
+        "Delta Water completes a reservoir upgrade.",
+        "Lumen Telecom wins a rural network contract.",
+        "Keystone Mining pauses an ore processing site.",
+        "Pioneer Air adds a new transatlantic route.",
+        "Summit Schools extends its education program.",
+        "Safety regulator approves the final reactor restart condition.",
+    )
+    body = "Global brief:<br/>" + "<br/>".join(f"{index}. {text}" for index, text in enumerate(statements, 1))
+    event = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": _hit(
+                hit_id=920014,
+                text=body,
+                engine="news",
+                score=80,
+                coins=[],
+                source="wire",
+                ts="2026-08-18T21:00:00+08:00",
+            ),
+        },
+    )
+    assert event is not None
+    stamp = int(event.entry.published_at_ms or 0) + 1_000
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        batch = admit_frame(
+            repos,
+            event=event,
+            ingest_mode="live",
+            observed_at_ms=stamp,
+            trace_id="fourteen-task-batch",
+            watchlist_symbols=frozenset(),
+            now_ms=stamp,
+        )
+    assert len(batch.results) == 14
+    event_ids = [result.event_id for result in batch.results]
+    assert len(set(event_ids)) == 14
+    assert (
+        conn.execute("SELECT count(*) AS n FROM news_event_members WHERE item_id=%s", (batch.item_id,)).fetchone()["n"]
+        == 14
+    )
+    assert (
+        conn.execute("SELECT focus_fact_text FROM news_events WHERE event_id=%s", (event_ids[-1],)).fetchone()[
+            "focus_fact_text"
+        ]
+        == statements[-1]
+    )
+    conn.commit()
+
+    class OneFailure(StubAnalyzer):
+        async def extract(self, source, budget):
+            if source.event_id == event_ids[6]:
+                raise ProviderUnavailable("controlled_one_event_failure")
+            return await super().extract(source, budget)
+
+    store = PgNewsStore(ThreadedDb(), clock=Clock(stamp + 60_000))
+    analyzer = OneFailure(lambda _source: Extraction(claims=()))
+    for event_id in event_ids:
+        worker = NewsAgent(store, analyzer, program_identity="fourteen-task-test", clock=Clock(stamp + 60_000))
+        if event_id == event_ids[6]:
+            with pytest.raises(ProviderUnavailable, match="controlled_one_event_failure"):
+                asyncio.run(run_agent(worker, event_id))
+        else:
+            assert asyncio.run(run_agent(worker, event_id)) == "adopted"
+    assert conn.execute("SELECT count(*) AS n FROM news_event_update_heads").fetchone()["n"] == 13
+    assert conn.execute("SELECT 1 FROM news_event_update_heads WHERE event_id=%s", (event_ids[6],)).fetchone() is None
 
 
 def test_a_bare_numbered_digest_never_grounds_one_bullet_on_another(conn) -> None:

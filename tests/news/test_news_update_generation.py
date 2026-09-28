@@ -9,11 +9,16 @@ from typing import Any
 
 import pytest
 
-from tests.news.test_news_event_update_judgments import MemoryCache
-from tests.news.test_news_event_update_notifications import TaskBackend
-from tests.news.test_news_event_updates_core import draft, material, prior_of, update_one
 from tests.support.news_attention import NotifyAll
-from tracefold.news.updates import dspy_backend
+from tests.support.news_update_semantic import (
+    MemoryCache,
+    TaskBackend,
+    draft,
+    generated,
+    material,
+    prior_of,
+    update_one,
+)
 from tracefold.news.updates.contracts import (
     Citation,
     Claim,
@@ -65,19 +70,6 @@ def test_attention_assesses_all_candidates_in_one_physical_request(monkeypatch: 
     assert request["watch_symbols"] == ["BTC"]
 
 
-def generated(monkeypatch: pytest.MonkeyPatch, reply: Any) -> list[dict[str, Any]]:
-    calls: list[dict[str, Any]] = []
-
-    async def answer(signature: Any, route: Any, **inputs: Any) -> Any:
-        calls.append(inputs)
-        value = reply(inputs) if callable(reply) else reply
-        # Apply the same result type used by DSPy's JSON adapter.
-        return SimpleNamespace(result=signature.output_fields["result"].annotation.model_validate(value))
-
-    monkeypatch.setattr(dspy_backend, "_generate", answer)
-    return calls
-
-
 def extraction_source() -> tuple[FrozenInput, dict[str, Any]]:
     _source, _extraction, head = update_one()
     evidence = material("The governor says five people were injured.", revision=2)
@@ -124,7 +116,7 @@ def test_bad_optional_hint_preserves_core_and_existing_understanding_fills_it(
     sent = json.loads(calls[0]["evidence_json"])
     assert sent["evidence"][0]["ref"] == "e1"
     assert sent["prior"][0]["claim"]["ref"] == "p1"
-    assert sent["evidence"][0]["text"] == source.evidence[0].text
+    assert sent["evidence"][0]["segments"][0]["text"] == source.evidence[0].text
     assert "news_extraction_hint_discarded" in caplog.text
     assert [call[0] for call in backend.calls] == ["relation"]
 
@@ -159,6 +151,15 @@ def test_bad_core_citation_is_still_rejected(monkeypatch: pytest.MonkeyPatch, ci
     )
     with pytest.raises(ContractFault, match="news_citation_not_in_frozen_source"):
         asyncio.run(analyzer.extract(source, Budget.start(5)))
+
+
+def test_invalid_optional_topic_is_local_to_one_valid_core_claim(monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+    source, reply = extraction_source()
+    reply["claims"][0]["topics"] = ["outside-codebook"]
+    generated(monkeypatch, reply)
+    value = asyncio.run(DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source))
+    assert len(value.claims) == 1 and value.claims[0].topics == ()
+    assert "news_optional_topic_discarded" in caplog.text
 
 
 def test_link_only_empty_extraction_adopts_without_public_delta_or_card(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,7 +227,7 @@ def test_card_aliases_decode_and_only_cited_provenance_is_passed(monkeypatch: py
         {"headline_zh": "机构宣布关税", "lines": [{"claim_ref": "c1", "text_zh": "机构宣布关税，下月生效。"}]},
     )
     copy = asyncio.run(
-        DspyCardComposer(lambda: None).compose(
+        DspyCardComposer(lambda: None, model_identity="test").compose(
             head.claims,
             sources={source.evidence[0].ref: source.evidence[0].source},
         )
@@ -270,7 +271,7 @@ def test_bug_c_frozen_claim_gives_composer_the_exact_drone_and_capture_fact(monk
         },
     )
     result = asyncio.run(
-        DspyCardComposer(lambda: None).compose(
+        DspyCardComposer(lambda: None, model_identity="test").compose(
             (claim,),
             sources={
                 "ev:bug-c": Source(
@@ -291,7 +292,7 @@ def test_card_cannot_name_an_unselected_alias(monkeypatch: pytest.MonkeyPatch) -
     _, _, head = update_one()
     generated(monkeypatch, {"headline_zh": "标题", "lines": [{"claim_ref": "c9", "text_zh": "正文"}]})
     with pytest.raises(ContractFault, match="news_card_claim_reference_unknown"):
-        asyncio.run(DspyCardComposer(lambda: None).compose(head.claims, sources={}))
+        asyncio.run(DspyCardComposer(lambda: None, model_identity="test").compose(head.claims, sources={}))
 
 
 def test_generated_judgment_maps_local_answers_to_original_cache_id(monkeypatch: pytest.MonkeyPatch) -> None:

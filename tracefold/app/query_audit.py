@@ -97,6 +97,11 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_event_asset_projection",
         "news_reaction_attach",
     ),
+    "/api/news/items/{item_id}/events": (
+        "news_item_related_count",
+        "news_item_related_keys",
+        "news_item_related_events",
+    ),
     # #570 A2. The eleven statements `FeedStorage.status_snapshot` executes, each named as the constant
     # the production read executes: nine of its own, plus the open-incident and recovery-backlog reads it
     # calls `OperationsStorage` for, which own those two statements. `workers_runtime` is the route's,

@@ -21,6 +21,7 @@ export type NewsFeedSearch = NewsSchemas["NewsFeedSearchData"];
 export type NewsAssetRef = NewsSchemas["NewsAssetRefData"];
 export type NewsSymbolNormalization = NewsSchemas["NewsSymbolNormalizationData"];
 export type NewsEventDetail = NewsSchemas["NewsEventDetailData"];
+export type NewsItemRelatedEvents = NewsSchemas["NewsItemRelatedEventsData"];
 export type NewsEventMember = NewsSchemas["NewsEventMemberData"];
 export type NewsVerdict = NewsSchemas["NewsVerdictData"];
 export type NewsDelivery = NewsSchemas["NewsDeliveryData"];
@@ -388,6 +389,30 @@ export const useNewsEventWithToken = (token: string, eventId?: string | null) =>
       ).data,
     refetchInterval: NEWS_EVENT_REFETCH_MS,
     staleTime: 5_000,
+  });
+
+export const useNewsItemRelatedEventsWithToken = (
+  token: string,
+  itemId: string,
+  enabled: boolean,
+) =>
+  useInfiniteQuery({
+    enabled: Boolean(enabled && token && itemId),
+    queryKey: queryKeys.newsItemRelatedEvents(itemId),
+    initialPageParam: "",
+    queryFn: async ({ pageParam }) =>
+      (
+        await getApi<NewsItemRelatedEvents>(
+          `/api/news/items/${encodeURIComponent(itemId)}/events`,
+          {
+            etagKey: `news-item-related-events:${itemId}:${pageParam}`,
+            params: { after: pageParam, limit: 10 },
+            token,
+          },
+        )
+      ).data,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    staleTime: 15_000,
   });
 
 export const useNewsStatusWithToken = (token: string) =>

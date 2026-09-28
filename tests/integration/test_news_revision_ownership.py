@@ -5,7 +5,9 @@ from itertools import pairwise
 
 import pytest
 
-from tests.integration.test_news_event_update_store import (
+from tests.support.news_event_updates import _draft, material
+from tests.support.news_update_admission import TITLE, RecordingBus, add_member_evidence, event_of, raw, work
+from tests.support.news_update_pg import (
     EVENT,
     STAMP,
     Clock,
@@ -13,20 +15,13 @@ from tests.integration.test_news_event_update_store import (
     StubAnalyzer,
     ThreadedDb,
     adopt_next,
+    adopt_other_event,
     notify_plan,
     run_agent,
+    save_card,
     seed_event,
     sql,
 )
-from tests.integration.test_news_semantic_pipeline import (
-    TITLE,
-    RecordingBus,
-    add_member_evidence,
-    event_of,
-    raw,
-    work,
-)
-from tests.support.news_event_updates import _draft, material
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.storage.event_update_store import PgNewsStore
 from tracefold.news.storage.event_updates import SemanticLeaseLost
@@ -146,7 +141,7 @@ def test_cross_event_correction_invalidates_frozen_unsent_card():
     assert lease is not None
     copy = asyncio.run(Composer().compose(head.claims, sources={}))
     card = freeze_card(plan, head, copy)
-    asyncio.run(pg.save_card(lease, card))
+    asyncio.run(save_card(pg, lease, card))
     seed_event("correction", fingerprint="correction")
     ev = material("Correction: Agency did not order the tariff.", publisher="correction")
     source = FrozenInput(
@@ -170,7 +165,6 @@ def test_cross_event_correction_invalidates_frozen_unsent_card():
 
 
 def test_retry_checkpoint_cannot_reuse_extraction_for_changed_prior_context():
-    from tests.integration.test_news_event_update_store import adopt_other_event
     from tracefold.news.updates.judgment import ProviderUnavailable
 
     class FailsOnce(StubAnalyzer):

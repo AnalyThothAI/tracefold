@@ -16,6 +16,7 @@ from ..schemas import events as event_schemas
 
 router = APIRouter()
 _EventEnvelope = api_schemas.ApiEnvelope[event_schemas.NewsEventDetailData]
+_ItemRelatedEnvelope = api_schemas.ApiEnvelope[event_schemas.NewsItemRelatedEventsData]
 _QuotesEnvelope = api_schemas.ApiEnvelope[event_schemas.NewsQuotesData]
 
 
@@ -42,6 +43,22 @@ def get_news_event(request: Request, event_id: str) -> Response:
     if data is None:
         return _json({"ok": False, "error": "news_event_not_found"}, status_code=404)
     return _etagged(data, request, envelope=_EventEnvelope)
+
+
+@router.get("/news/items/{item_id}/events", response_model=_ItemRelatedEnvelope)
+def get_news_item_related_events(
+    request: Request,
+    item_id: str,
+    after: Annotated[str, Query(max_length=128)] = "",
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> Response:
+    _validate_query_params(request, supported={"token", "after", "limit"})
+    if not item_id or len(item_id) > 256:
+        raise ApiBadRequest("news_item_id_invalid", field="item_id")
+    runtime = _authenticated_runtime(request)
+    with runtime.repositories() as repos:
+        data = repos.news.item_related_events(item_id=item_id, after_event_id=after or None, limit=limit)
+    return _etagged(data, request, envelope=_ItemRelatedEnvelope)
 
 
 @router.get("/news/quotes", response_model=_QuotesEnvelope)

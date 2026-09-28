@@ -178,10 +178,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,dlq} ...
+                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,dlq} ...
 
 positional arguments:
-  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,dlq}
+  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,dlq}
     bus-check           declare the News topology and report queue state,
                         effective retry policy, and topology drift
     bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
@@ -199,6 +199,8 @@ positional arguments:
                         delivery
     retry-work          reopen one failed News work version; retain facts and
                         receipts
+    reanalyze           inspect or request one exact Event task read under
+                        wanted/head CAS
     dlq                 inspect, replay, or purge the News dead-letter queue
 
 options:
@@ -420,6 +422,23 @@ options:
   --kind {semantic,notification,card}
   --revision REVISION   wanted input revision, or exact content revision
   --intent INTENT       required only for an unsent failed card intent
+
+```
+
+## `news reanalyze`
+
+```
+usage: tracefold news reanalyze [-h] --event EVENT --wanted WANTED --head HEAD
+                                [--read READ] [--reason REASON] [--execute]
+
+options:
+  -h, --help       show this help message and exit
+  --event EVENT    exact Event ID
+  --wanted WANTED  expected wanted revision
+  --head HEAD      expected content revision, or 'none'
+  --read READ      exact read_ref from the scope list
+  --reason REASON  operator reason, required with --execute
+  --execute        open the targeted system processing revision
 
 ```
 

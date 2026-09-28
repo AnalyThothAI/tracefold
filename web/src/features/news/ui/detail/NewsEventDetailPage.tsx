@@ -1,4 +1,4 @@
-import { newsPath, newsSymbolPath } from "@shared/routing/paths";
+import { newsEventPath, newsPath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
@@ -8,6 +8,7 @@ import { PageReadingContent, PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
 import { ArrowRight, ExternalLink } from "lucide-react";
+import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import {
@@ -21,6 +22,7 @@ import {
   type NewsSymbolNormalization,
   type NewsVerdict,
   useNewsEventWithToken,
+  useNewsItemRelatedEventsWithToken,
   useNewsQuotesWithToken,
 } from "../../api/newsQueries";
 import {
@@ -86,7 +88,7 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
         ) : null}
         {detail ? (
           <NewsQuoteReadState query={quotesQuery}>
-            <EventDocument detail={detail} quotes={quotes} />
+            <EventDocument detail={detail} quotes={quotes} token={token} />
           </NewsQuoteReadState>
         ) : null}
       </PageReadingContent>
@@ -97,9 +99,11 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
 function EventDocument({
   detail,
   quotes,
+  token,
 }: {
   detail: NewsEventDetail;
   quotes: Record<string, NewsQuote>;
+  token: string;
 }) {
   const { event, outcome } = detail;
   const legacy = detail.legacy_verdict ?? null;
@@ -270,6 +274,8 @@ function EventDocument({
           </Card>
         </div>
       </div>
+
+      <RelatedItemEvents members={detail.members} currentEventId={event.event_id} token={token} />
 
       <TechnicalDetails detail={detail} />
     </>
@@ -571,6 +577,87 @@ function MemberList({ members }: { members: NewsEventMember[] }) {
         );
       })}
     </ol>
+  );
+}
+
+function RelatedItemEvents({
+  members,
+  currentEventId,
+  token,
+}: {
+  members: NewsEventMember[];
+  currentEventId: string;
+  token: string;
+}) {
+  const [itemId, setItemId] = useState("");
+  const [opened, setOpened] = useState(false);
+  const query = useNewsItemRelatedEventsWithToken(token, itemId, opened);
+  if (!members.length) return null;
+  return (
+    <Card
+      aria-label="Item 关联事件"
+      title="同一报道的关联事件"
+      hint="按 Item 查询所有归属，包含非首条成员"
+    >
+      <label>
+        选择报道
+        <select
+          value={itemId}
+          onChange={(event) => {
+            setItemId(event.target.value);
+            setOpened(false);
+          }}
+        >
+          <option value="">请选择</option>
+          {members.map((member) => (
+            <option key={member.item_id} value={member.item_id}>
+              {member.title} · {member.item_id}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button disabled={!itemId} onClick={() => setOpened(true)} type="button">
+        查看关联事件
+      </button>
+      {query.isPending && opened ? <p>正在读取关联事件…</p> : null}
+      {query.isError ? <p role="alert">读取失败。请重试。</p> : null}
+      {query.data ? (
+        <>
+          <p>共 {query.data.pages[0].total_events} 个 Event</p>
+          <ol>
+            {query.data.pages
+              .flatMap((page) => page.events)
+              .map((row) => (
+                <li key={row.event_id}>
+                  <Link to={newsEventPath(row.event_id)}>
+                    {row.focus_fact_text || row.event_id}
+                  </Link>
+                  {row.event_id === currentEventId ? " · 当前 Event" : ""}
+                  <p>
+                    范围：{row.member_scopes.join("；") || "—"} · 成员类型：
+                    {row.match_kinds.join("、") || "—"}
+                  </p>
+                  <p>
+                    语义版本：{row.wanted_revision ?? "—"}/{row.done_revision ?? "—"} ·
+                    {row.semantic_outcome ?? "待处理"} · 采纳：{row.adopted_content_revision ?? "—"}{" "}
+                    · 决定：{row.notification_action ?? row.notification_state ?? "待处理"} · 意图：
+                    {row.intent_state ?? "—"} · 已发送 {row.sent_count}
+                  </p>
+                </li>
+              ))}
+          </ol>
+          {query.hasNextPage ? (
+            <button
+              disabled={query.isFetchingNextPage}
+              onClick={() => void query.fetchNextPage()}
+              type="button"
+            >
+              {query.isFetchingNextPage ? "读取中…" : "加载更多"}
+            </button>
+          ) : null}
+        </>
+      ) : null}
+    </Card>
   );
 }
 

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from tests.support.news_update_semantic import MemoryCache, TaskBackend
 from tracefold.news.updates.attention import AttentionAssessment, AttentionDecision
 from tracefold.news.updates.contracts import (
     Asset,
@@ -24,15 +25,11 @@ from tracefold.news.updates.contracts import (
     Source,
     SupportDraft,
 )
-from tracefold.news.updates.identity import digest
+from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import (
-    Answer,
-    BatchResult,
     Budget,
     NewsJudgments,
     ProviderUnavailable,
-    Question,
-    Task,
 )
 from tracefold.news.updates.notification import (
     ClaimDecision,
@@ -40,6 +37,7 @@ from tracefold.news.updates.notification import (
     NotificationPlan,
     NotificationPlanner,
     ReaderSnapshot,
+    card_copy_material,
 )
 from tracefold.news.updates.semantics import assemble_update
 
@@ -47,35 +45,6 @@ STAMP = 1_790_405_000_000
 HOUR_MS = 60 * 60_000
 TARIFF = "medtop:20000384"
 CRYPTO = "medtop:20001279"
-
-
-class MemoryCache:
-    def __init__(self) -> None:
-        self.values: dict[str, Answer] = {}
-
-    async def get(self, key: str) -> Answer | None:
-        return self.values.get(key)
-
-    async def put(self, key: str, answer: Answer) -> None:
-        self.values.setdefault(key, answer)
-
-
-class TaskBackend:
-    """Answers each task with one value; a missing task is a provider failure."""
-
-    def __init__(self, values: dict[Task, str | bool] | None = None, *, identity: str = "generated") -> None:
-        self.identity = identity
-        self.values = values or {}
-        self.calls: list[tuple[Task, tuple[str, ...]]] = []
-
-    async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
-        self.calls.append((task, tuple(item.item_id for item in items)))
-        if task not in self.values:
-            raise ProviderUnavailable("controlled provider failure")
-        value = self.values[task]
-        return BatchResult(
-            answers=tuple(Answer(item_id=item.item_id, value=value, backend=self.identity) for item in items)
-        )
 
 
 def evidence(
@@ -326,17 +295,56 @@ def test_editor_must_cover_exact_candidate_refs():
     assert plan.claim_decisions[0].reason == "attention_unavailable_default_notify"
 
 
-def test_decision_fingerprint_ignores_reader_revision_stamp_but_includes_receipt_content():
+def test_editorial_input_survives_partial_receipt_while_final_plan_tracks_reader_revision():
     update = single()
     first = run_plan(update, reader(revision="r1"))
     second = run_plan(update, reader(revision="r2"))
     assert first.assessment_input_digest == second.assessment_input_digest
+    assert first.record_ref != second.record_ref
     changed = run_plan(
         update,
         reader(revision="r3", receipts=(sent("different copy"),)),
         generated=TaskBackend({"coverage": "partial"}),
     )
-    assert changed.assessment_input_digest != first.assessment_input_digest
+    assert changed.assessment_input_digest == first.assessment_input_digest
+    assert changed.record_ref != first.record_ref
+
+
+def test_editorial_reuse_skips_unchanged_model_input_but_replans_current_reader():
+    update = single()
+    assessor = Assessor()
+    planner = NotificationPlanner(NewsJudgments(generated=TaskBackend(), cache=MemoryCache()), assessor)
+
+    async def scenario() -> tuple[NotificationPlan, NotificationPlan]:
+        first = await planner.plan(update, reader(revision="r1"), Budget.start(5), now_ms=STAMP + 60_000)
+
+        async def reuse(fingerprint: str) -> NotificationPlan | None:
+            assert fingerprint == first.assessment_input_digest
+            return first
+
+        second = await planner.plan(update, reader(revision="r2"), Budget.start(5), now_ms=STAMP + 60_000, reuse=reuse)
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert assessor.calls == [(update.claims[0].ref,)]
+    assert first.assessment_input_digest == second.assessment_input_digest
+    assert first.record_ref != second.record_ref
+
+
+def test_card_copy_input_changes_for_same_ref_with_changed_expression_or_source():
+    update = single()
+    original = update.claims[0]
+    sources = {item.ref: item.source for item in update.evidence}
+
+    def copy_input(claim, provenance=sources) -> str:
+        return identity("news_card_copy_input", "composer-v1", card_copy_material((claim,), provenance))
+
+    baseline = copy_input(original)
+    changed_fields = original.fields.model_copy(update={"conditions": ("only after approval",)})
+    assert copy_input(original.model_copy(update={"statement": "Agency proposes a 25% tariff."})) != baseline
+    assert copy_input(original.model_copy(update={"fields": changed_fields})) != baseline
+    changed_source = next(iter(sources.values())).model_copy(update={"attribution": "Second agency"})
+    assert copy_input(original, {next(iter(sources)): changed_source}) != baseline
 
 
 def test_decision_reason_contract_rejects_mismatch():

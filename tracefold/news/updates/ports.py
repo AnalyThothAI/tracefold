@@ -9,12 +9,13 @@ No port method takes a timeout: callers bound external calls with asyncio.timeou
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from typing import Any, Literal, Protocol
 
 from pydantic import Field
 
 from .contracts import EventUpdate, Evidence, Exact, Extraction, FrozenInput, PublicUpdate, ReadTarget, SemanticLease
-from .notification import FrozenCard, NotificationPlan, ReaderSnapshot
+from .notification import CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
 
 
 class SemanticCheckpoint(Exact):
@@ -32,7 +33,9 @@ class SemanticObservation(Exact):
     program_identity: str
     completed_at_ms: int
     understanding: Extraction
-    evidence_refs: tuple[str, ...]
+    read_refs: tuple[str, ...]
+    reanalysis_reason: str | None = None
+    reanalysis_head_ref: str | None = None
 
 
 class NotificationSnapshot(Exact):
@@ -73,6 +76,14 @@ class ExistingSourceReader(Protocol):
 
 
 class Sender(Protocol):
+    def send_slot(self) -> AbstractAsyncContextManager[None]:
+        """Paced exclusive opportunity held through durable receipt settlement."""
+        ...
+
+    async def preflight(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome | None:
+        """Prepare the target and wire body before begin_send; return a proven unsent failure or None."""
+        ...
+
     async def send(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome:
         """Send the frozen body unchanged on `plan.channel` and report the actual outcome.
 
@@ -155,8 +166,14 @@ class NewsStore(Protocol):
         self, event_id: str, channel: str, input_digest: str
     ) -> NotificationPlan | None: ...
 
-    async def save_card(self, lease: IntentLease, card: FrozenCard) -> FrozenCard:
+    async def lookup_card_copy(self, input_digest: str) -> CardCopy | None: ...
+
+    async def save_card(self, lease: IntentLease, card: FrozenCard, *, copy: CardCopy, input_digest: str) -> FrozenCard:
         """Fenced insert-only payload; an existing frozen payload wins."""
+        ...
+
+    async def release_unsent_intent(self, lease: IntentLease) -> None:
+        """Release a pending owned intent cancelled before begin_send was called."""
         ...
 
     async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> bool:

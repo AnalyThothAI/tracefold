@@ -43,6 +43,7 @@
 | `GET /api/status` | 系统运行角色的已记录状态与测量时钟 |
 | `GET /api/news/feed` | 新闻流、过滤、分页和相应计数 |
 | `GET /api/news/events/{event_id}` | 一个 Event 的证据、知识、工作与通知详情 |
+| `GET /api/news/items/{item_id}/events` | 按 Item 分页读取全部成员 Event，包括非 leader；返回范围、wanted/done、采用、决定、意图与送达摘要 |
 | `GET /api/news/status` | News 能力、处理进展及相关诊断 |
 | `GET /api/news/market` | 类型化市场观察组列表 |
 | `GET /api/news/market/{item_id}` | 单个市场 Item 的原始数据与组内上下文 |
@@ -93,10 +94,12 @@
 | 提供商记录与 Item | 来源记录身份；相同输入重投不创建额外事实 |
 | 来源修订序号 / 前驱 | 同一记录的版本出现顺序；正文哈希不能替代修订身份 |
 | `input_revision` | 语义工作处理的证据版本，不等于采用次数 |
+| `read_ref` | 某 Event 在来源修订下的任务阅读范围及投影契约；同来源不同范围分别结算 |
 | `content_revision` | 已采用知识版本，不等于模型调用次数或推送次数 |
 | `claim_ref` / evidence ref | 命题、引文与更正目标的稳定引用，不用裸标题代替 |
 | notification intent | 针对读者与精确内容的稳定发送意图 |
 | notification decision | 不可变的编辑输入、逐命题选择、模型状态与结果；工作和意图引用其身份 |
+| card copy input digest | 所选命题的完整表达材料和文案器身份；仅相同实际输入复用中文文案 |
 | 冻结正文 / 实际发送账本 | 谁可能收到什么、结果是否已明确 |
 
 新采用内容使用 `news_event_update_v2`；旧 v1 保留原始内容。Event 详情可保留 `legacy_verdict` 作为历史读取，但 UI、公开 outbox 与新 Agent 不由旧 verdict 合成新 Claim。

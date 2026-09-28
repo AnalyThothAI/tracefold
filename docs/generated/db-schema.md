@@ -88,6 +88,8 @@
 | `payload_sha256` | `TEXT` | True | `None` |
 | `plan_key` | `BOOLEAN` | True | `None` |
 | `decision_ref` | `TEXT` | True | `None` |
+| `card_copy_input_digest` | `TEXT` | True | `None` |
+| `card_copy_document` | `JSONB` | True | `None` |
 
 ## `news_delivery_queue`
 
@@ -110,6 +112,8 @@
 | `frozen_card` | `JSONB` | True | `None` |
 | `lease_token` | `TEXT` | True | `None` |
 | `decision_ref` | `TEXT` | True | `None` |
+| `card_copy_input_digest` | `TEXT` | True | `None` |
+| `card_copy_document` | `JSONB` | True | `None` |
 
 ## `news_event_assets`
 
@@ -894,6 +898,9 @@
 | `completed_at_ms` | `BIGINT` | False | `None` |
 | `understanding` | `JSONB` | False | `None` |
 | `evidence_refs` | `ARRAY` | False | `'{}'::text[]` |
+| `read_refs` | `ARRAY` | False | `'{}'::text[]` |
+| `reanalysis_reason` | `TEXT` | True | `None` |
+| `reanalysis_head_ref` | `TEXT` | True | `None` |
 
 ## `news_semantic_work`
 
@@ -902,7 +909,6 @@
 | `event_id` | `TEXT` | False | `None` |
 | `wanted_revision` | `INTEGER` | False | `None` |
 | `done_revision` | `INTEGER` | True | `None` |
-| `processed_evidence_refs` | `ARRAY` | False | `'{}'::text[]` |
 | `lineage_id` | `TEXT` | False | `None` |
 | `attempts` | `INTEGER` | False | `0` |
 | `next_attempt_at_ms` | `BIGINT` | False | `None` |
@@ -916,6 +922,10 @@
 | `attached_evidence` | `JSONB` | True | `None` |
 | `focus_claim_refs` | `JSONB` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `processed_read_refs` | `ARRAY` | False | `'{}'::text[]` |
+| `reanalysis_read_ref` | `TEXT` | True | `None` |
+| `reanalysis_reason` | `TEXT` | True | `None` |
+| `reanalysis_head_ref` | `TEXT` | True | `None` |
 
 ## `news_symbol_aliases`
 

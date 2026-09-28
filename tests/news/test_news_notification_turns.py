@@ -10,6 +10,7 @@ PostgreSQL in `tests/integration/test_news_event_update_store.py` and `test_news
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 import pytest
@@ -64,6 +65,9 @@ class Store:
     async def lookup_notification_decision(self, event_id: str, channel: str, input_digest: str):
         return None
 
+    async def lookup_card_copy(self, input_digest: str):
+        return None
+
     async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
         self.calls.append(("record_plan", plan.action))
         if plan.action != "notify":
@@ -77,13 +81,16 @@ class Store:
     async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None:
         self.calls.append(("card_failure", error_code))
 
-    async def save_card(self, lease: IntentLease, card: FrozenCard) -> FrozenCard:
+    async def save_card(self, lease: IntentLease, card: FrozenCard, *, copy: CardCopy, input_digest: str) -> FrozenCard:
         self.calls.append(("save_card", card.intent_id))
         return card
 
     async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> bool:
         self.calls.append(("begin_send", card.intent_id))
         return self.begin
+
+    async def release_unsent_intent(self, lease: IntentLease) -> None:
+        self.calls.append(("release_unsent", lease.intent_id))
 
     async def settle_send(self, lease: IntentLease, card: FrozenCard, outcome: SendOutcome, *, settled_at_ms: int):
         self.calls.append(("settle", (outcome.state, outcome.error_code)))
@@ -107,6 +114,8 @@ class Planner:
 
 
 class Composer:
+    identity = "test_card_composer"
+
     def __init__(self, *, error: BaseException | None = None) -> None:
         self.error = error
         self.calls = 0
@@ -124,6 +133,13 @@ class Sender:
         self.error = error
         self.payload_sha256 = payload_sha256
         self.cards: list[FrozenCard] = []
+
+    @contextlib.asynccontextmanager
+    async def send_slot(self):
+        yield
+
+    async def preflight(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> None:
+        return None
 
     async def send(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome:
         self.cards.append(card)
@@ -180,6 +196,56 @@ def test_a_failed_card_spends_only_its_intents_card_attempt() -> None:
 
     assert store.calls == [("record_plan", "notify"), ("card_failure", "news_card:ProviderUnavailable")]
     assert sender.cards == []
+
+
+def test_cancelled_pacer_wait_releases_unsent_intent_without_ambiguous_receipt() -> None:
+    update = nvda_update()
+    store = Store(update)
+    entered = asyncio.Event()
+
+    class WaitingSender(Sender):
+        @contextlib.asynccontextmanager
+        async def send_slot(self):
+            entered.set()
+            await asyncio.Event().wait()
+            yield
+
+    async def run() -> None:
+        task = asyncio.create_task(
+            Notifications(store, Planner(_plan(update)), Composer()).process(update.event_id, "news", WaitingSender())
+        )
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert store.names() == ["record_plan", "save_card", "release_unsent"]
+
+
+def test_cancelled_target_preflight_never_starts_a_send() -> None:
+    update = nvda_update()
+    store = Store(update)
+    entered = asyncio.Event()
+
+    class WaitingPreflight(Sender):
+        async def preflight(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> None:
+            entered.set()
+            await asyncio.Event().wait()
+
+    async def run() -> None:
+        task = asyncio.create_task(
+            Notifications(store, Planner(_plan(update)), Composer()).process(
+                update.event_id, "news", WaitingPreflight()
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert store.names() == ["record_plan", "save_card", "release_unsent"]
 
 
 def test_copy_that_cannot_be_frozen_is_a_card_failure_too() -> None:

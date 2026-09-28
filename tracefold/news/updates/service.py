@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from typing import Final
 from .contracts import EventUpdate, Extraction, FrozenInput, PriorClaim, ReadTarget, SemanticLease
 from .identity import canonical_json, identity
 from .judgment import Budget, ContractFault, ProviderUnavailable, Question, error_code
-from .notification import CardComposer, FrozenCard, NotificationPlanner, freeze_card
+from .notification import CardComposer, FrozenCard, NotificationPlanner, card_copy_material, freeze_card
 from .ports import (
     ExistingSourceReader,
     IntentLease,
@@ -20,6 +21,7 @@ from .ports import (
     Sender,
     SendOutcome,
 )
+from .projection import reading_views
 from .public import public_updates
 from .semantics import SemanticAnalyzer, assemble_update
 
@@ -32,6 +34,7 @@ NOTIFICATION_STAGE_SECONDS: Final = 60.0
 GENERATION_CALL_SECONDS: Final = 60.0
 # A CAS collision retries only missing relationships/adoption, not extraction.
 ADOPTION_ATTEMPTS: Final = 2
+logger = logging.getLogger(__name__)
 
 
 def clock_ms() -> int:
@@ -77,9 +80,20 @@ class NewsAgent:
             source.event_id,
             source.revision,
             source.input_sha,
-            self.program_identity,
             self.analyzer.identity,
         )
+        for view in reading_views(source):
+            logger.info(
+                "news semantic read event_id=%s input_revision=%s work_id=%s read_ref=%s "
+                "material_sha=%s chars=%s mode=%s",
+                event_id,
+                source.revision,
+                work_id,
+                view.read_ref,
+                view.material_sha,
+                sum(len(span.text) for span in view.spans),
+                view.mode,
+            )
         if not source.evidence:
             # A snapshot can advance for metadata or for an already adopted source identity.
             # It still needs a durable observation so finish_semantic_work can settle exactly
@@ -159,7 +173,9 @@ class NewsAgent:
             program_identity=self.program_identity,
             completed_at_ms=completed_at_ms,
             understanding=understood,
-            evidence_refs=tuple(item.ref for item in source.evidence),
+            read_refs=tuple(view.read_ref for view in reading_views(source)),
+            reanalysis_reason=source.reanalysis_reason,
+            reanalysis_head_ref=source.reanalysis_head_ref,
         )
 
     async def _extra_read(self, source: FrozenInput, update: EventUpdate, budget: Budget) -> None:
@@ -251,6 +267,10 @@ class Notifications:
         self.stage_seconds = stage_seconds
 
     async def process(self, event_id: str, channel: str, sender: Sender) -> NotificationTurn:
+        prepared = await self.prepare(event_id, channel)
+        return await self.finalize(prepared, sender)
+
+    async def prepare(self, event_id: str, channel: str) -> NotificationTurn:
         """One notification turn for one channel.
 
         A failed plan spends one bounded notification attempt; a failed card spends one attempt of its
@@ -291,7 +311,16 @@ class Notifications:
         card = lease.card
         if card is None:
             card = await self._card(lease, snapshot.update, budget)
-        return await self._send(lease, snapshot.update, card, sender)
+        return NotificationTurn("ready", update=snapshot.update, lease=lease, card=card)
+
+    async def finalize(self, prepared: NotificationTurn, sender: Sender) -> NotificationTurn:
+        """Check current reader state and settle one send inside its paced opportunity."""
+
+        if prepared.status != "ready":
+            return prepared
+        if prepared.lease is None or prepared.update is None or prepared.card is None:
+            raise ValueError("news_prepared_notification_incomplete")
+        return await self._send(prepared.lease, prepared.update, prepared.card, sender)
 
     async def _card(self, lease: IntentLease, update: EventUpdate, budget: Budget) -> FrozenCard:
         """Compose copy for exactly the selected claims and freeze it; a failure costs only this card."""
@@ -302,14 +331,26 @@ class Notifications:
             async with asyncio.timeout(budget.remaining()):
                 cited = {citation.evidence_ref for claim in selected for citation in claim.citations}
                 sources = {item.ref: item.source for item in update.evidence if item.ref in cited}
-                copy = await self.composer.compose(selected, sources=sources)
+                input_digest = identity(
+                    "news_card_copy_input", self.composer.identity, card_copy_material(selected, sources)
+                )
+                copy = await self.store.lookup_card_copy(input_digest)
+                logger.info(
+                    "news card copy event_id=%s intent_id=%s input_digest=%s reused=%s",
+                    update.event_id,
+                    lease.intent_id,
+                    input_digest,
+                    copy is not None,
+                )
+                if copy is None:
+                    copy = await self.composer.compose(selected, sources=sources)
             frozen = freeze_card(plan, update, copy)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             await self.store.record_card_failure(lease, error_code=error_code(exc, default="news_card"))
             raise
-        return await self.store.save_card(lease, frozen)
+        return await self.store.save_card(lease, frozen, copy=copy, input_digest=input_digest)
 
     async def _send(
         self,
@@ -318,22 +359,53 @@ class Notifications:
         card: FrozenCard,
         sender: Sender,
     ) -> NotificationTurn:
-        if not await self.store.atomic_begin_send(lease, card):
-            return NotificationTurn("preflight_changed", update=update, lease=lease, card=card)
+        begin_started = False
+        queued_at = time.monotonic()
         try:
-            outcome = await sender.send(card, plan=lease.plan, update=update)
-            if outcome.payload_sha256 != card.payload_sha256:
-                raise ContractFault("news_sender_changed_frozen_payload")
-        except BaseException as exc:
-            # After entering sending, an unexpected error/cancellation says
-            # nothing about whether the provider committed. Never blindly resend.
-            ambiguous = SendOutcome(
-                state="ambiguous", payload_sha256=card.payload_sha256, error_code=type(exc).__name__
-            )
-            await self.store.settle_send(lease, card, ambiguous, settled_at_ms=self.clock())
+            async with sender.send_slot():
+                logger.info(
+                    "news send slot event_id=%s intent_id=%s wait_ms=%s",
+                    update.event_id,
+                    lease.intent_id,
+                    int((time.monotonic() - queued_at) * 1000),
+                )
+                # All fallible local/target preparation precedes the durable sending boundary.
+                preflight = await sender.preflight(card, plan=lease.plan, update=update)
+                # Pacer waiting and preflight are over. This short transaction checks
+                # the current reader and head before the external side effect can begin.
+                begin_started = True
+                if not await self.store.atomic_begin_send(lease, card):
+                    return NotificationTurn("preflight_changed", update=update, lease=lease, card=card)
+                if preflight is not None:
+                    await self.store.settle_send(lease, card, preflight, settled_at_ms=self.clock())
+                    logger.info("news send settled intent_id=%s state=%s", lease.intent_id, preflight.state)
+                    return NotificationTurn(preflight.state, update=update, lease=lease, card=card, outcome=preflight)
+                try:
+                    provider_at = time.monotonic()
+                    outcome = await sender.send(card, plan=lease.plan, update=update)
+                    logger.info(
+                        "news provider returned intent_id=%s state=%s elapsed_ms=%s",
+                        lease.intent_id,
+                        outcome.state,
+                        int((time.monotonic() - provider_at) * 1000),
+                    )
+                    if outcome.payload_sha256 != card.payload_sha256:
+                        raise ContractFault("news_sender_changed_frozen_payload")
+                except BaseException as exc:
+                    # A crash between begin_send and the provider boundary is not
+                    # provably safe to replay. Keep that intent ambiguous.
+                    ambiguous = SendOutcome(
+                        state="ambiguous", payload_sha256=card.payload_sha256, error_code=type(exc).__name__
+                    )
+                    await self.store.settle_send(lease, card, ambiguous, settled_at_ms=self.clock())
+                    raise
+                await self.store.settle_send(lease, card, outcome, settled_at_ms=self.clock())
+                logger.info("news send settled intent_id=%s state=%s", lease.intent_id, outcome.state)
+                return NotificationTurn(outcome.state, update=update, lease=lease, card=card, outcome=outcome)
+        except asyncio.CancelledError:
+            if not begin_started:
+                await self.store.release_unsent_intent(lease)
             raise
-        await self.store.settle_send(lease, card, outcome, settled_at_ms=self.clock())
-        return NotificationTurn(outcome.state, update=update, lease=lease, card=card, outcome=outcome)
 
 
 class Repair:

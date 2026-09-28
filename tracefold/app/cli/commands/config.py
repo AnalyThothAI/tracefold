@@ -125,6 +125,7 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         # report is what an operator pastes into an issue.
                         "telegram_proxy_configured": push_availability.telegram_proxy_configured,
                         "min_interval_seconds": settings.news.push.min_interval_seconds,
+                        "notification_prepare_limit": settings.news.push.notification_prepare_limit,
                     },
                 },
                 "trading": {

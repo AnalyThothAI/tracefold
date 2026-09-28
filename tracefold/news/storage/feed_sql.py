@@ -9,6 +9,34 @@ from ..models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
 from ..source_contracts import EVENT_KINDS
 from ..updates.notification import NOTIFICATION_ATTEMPTS_MAX
 
+ITEM_RELATED_COUNT_SQL: Final = "SELECT count(DISTINCT event_id) AS n FROM news_event_members WHERE item_id=%s"
+ITEM_RELATED_KEYS_SQL: Final = (
+    "SELECT DISTINCT event_id FROM news_event_members "
+    "WHERE item_id=%s AND (%s::text IS NULL OR event_id > %s) ORDER BY event_id LIMIT %s"
+)
+ITEM_RELATED_EVENTS_SQL: Final = """
+    SELECT e.event_id,e.leader_item_id,e.focus_fact_text,e.focus_fact_method,
+           w.wanted_revision,w.done_revision,w.last_outcome,w.last_error_code,
+           h.content_revision AS adopted_content_revision,
+           n.state AS notification_state,d.plan->>'action' AS notification_action,
+           (SELECT q.state FROM news_delivery_queue q
+             WHERE q.event_id=e.event_id AND q.kind='update'
+             ORDER BY q.updated_at_ms DESC,q.intent_id DESC LIMIT 1) AS intent_state,
+           (SELECT count(*) FROM news_deliveries sent
+             WHERE sent.event_id=e.event_id AND sent.kind='update' AND sent.state='sent') AS sent_count,
+           (SELECT array_agg(DISTINCT m.fact_text ORDER BY m.fact_text)
+              FROM news_event_members m WHERE m.event_id=e.event_id AND m.item_id=%s) AS member_scopes,
+           (SELECT array_agg(DISTINCT m.match_kind ORDER BY m.match_kind)
+              FROM news_event_members m WHERE m.event_id=e.event_id AND m.item_id=%s) AS match_kinds
+      FROM news_events e
+      LEFT JOIN news_semantic_work w ON w.event_id=e.event_id
+      LEFT JOIN news_event_update_heads h ON h.event_id=e.event_id
+      LEFT JOIN news_notification_work n ON n.event_id=e.event_id AND n.channel='news'
+      LEFT JOIN news_notification_decisions d ON d.decision_ref=n.decision_ref
+     WHERE e.event_id=ANY(%s)
+     ORDER BY e.event_id
+"""
+
 ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
 # The legacy Triage verdict contracts. `news_verdicts` receives no writes since #706; every read of it is a
 # read of history under these two names, and the EventUpdate path never consults it.

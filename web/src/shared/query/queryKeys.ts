@@ -33,6 +33,7 @@ export const queryKeys = {
   newsFeedHistory: (filters: NewsFeedQueryKeyFilters, firstCursor: string) =>
     ["news-feed-history", ...newsFeedIdentity(filters), firstCursor] as const,
   newsEvent: (eventId: string) => ["news-event", eventId] as const,
+  newsItemRelatedEvents: (itemId: string) => ["news-item-related-events", itemId] as const,
   // #553 PR-1: market observations are their own endpoint and their own key. The kind filter is part of the
   // identity because every filter is a real request — the per-kind `sources` strip describes the whole
   // window, so a browser-side split would leave it disagreeing with the rows under it.

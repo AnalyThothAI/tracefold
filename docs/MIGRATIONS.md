@@ -83,6 +83,7 @@ class Runtime execution;
 | `20260927_0405` | 来源修订顺序 / 前驱、保留不可变 v1 与新 v2、跨 Event claim 定位索引 | [0405](../tracefold/platform/postgres/alembic/versions/20260927_0405_news_revision_ownership.py) |
 | `20260927_0407` | 不可变通知决策、工作与意图引用、逐命题复核和外部漏报短反馈 | [0407](../tracefold/platform/postgres/alembic/versions/20260927_0407_news_notification_decisions.py) |
 | `20260928_0408` | Trading 同资产来源检索索引与模型请求截止前未派发状态，不改写历史调用或交易事实 | [0408](../tracefold/platform/postgres/alembic/versions/20260928_0408_trading_not_dispatched.py) |
+| `20260928_0409` | News 任务级已处理阅读身份、定向重分析谱系与通知文案复用字段；删除来源级已处理跳过字段 | [0409](../tracefold/platform/postgres/alembic/versions/20260928_0409_news_task_reads.py) |
 
 这些切换是前向迁移，不提供通过旧卡片 / verdict 伪造新 Claim 的降级路径。旧 v1 保留原始 hash 与语义，新内容才使用 v2；不得批量改历史 JSON 让它“看起来都是最新版本”。0407 将已有工作计划按原字节标记为 `legacy_work_plan`，不捏造历史模型判断；旧 pending `first`/`followup` 意图以 `legacy_intent_retired` 结算为 dead，已发送及状态不明的账本行保持原样。新 intent 的发送账本保留决策引用。
 
@@ -96,10 +97,12 @@ class Runtime execution;
 | 原始证据 | 来源正文修订与前驱不丢失，不把相同正文的再次出现当旧版本重投 |
 | 语义工作 | wanted / done、owner / lease、耗尽结算与新版本预算隔离 |
 | 知识 | EventUpdate 不可变，head 不倒退，未变的命题 / 问题保留 |
-| 通知 | 旧实际回执继续约束读者覆盖；新决策与工作 / intent 引用一致，不因 schema 迁移重复推送 |
+| 通知 | 旧实际回执和原卡片继续留在账本；缺少精确正文及摘要的旧 `first` 记录不能作为全文覆盖证据。新决策与工作 / intent 引用一致，不因 schema 迁移重复推送 |
 | Trading | 旧公开 payload 与新契约明确区分；来源更正不制造新 TTL |
 
 迁移不是整库重新分析。保留的 legacy verdict / historical review 只具有其原来含义；也不能把旧静态 Program 资产重新挂回运行时以掩盖切换缺口。
+
+0409 不把旧 `processed_evidence_refs` 推断成所有任务范围已完成：新 `processed_read_refs` 从空开始，由实际完成的阅读写入。切换前排空旧 News writers 和发送 owner，记录 pending、failed、sending、ambiguous 及受影响范围，保存可恢复备份。迁移后 API、Workers 与前端使用同一新契约，不让旧镜像写新 schema。对确证漏范围且仍需修复的 Event 逐项预览并执行 `news reanalyze`；不批量唤醒历史 Event。回退依赖匹配旧镜像的已验证备份或前向修复，不能重新启动旧 writer 对新 schema 写入。
 
 <a id="section-基线之前的备份与严格拒绝"></a>
 ## 04 · 基线之前的备份与严格拒绝

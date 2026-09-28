@@ -489,6 +489,7 @@ def _compose_news_pipeline(
             sender=sender,
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
+            notification_prepare_limit=settings.news.push.notification_prepare_limit,
             price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
             notifications=notifications,
             tradability_verifier=(
